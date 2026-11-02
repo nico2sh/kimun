@@ -61,7 +61,7 @@ The open note's text, its cursor, its selection and its edit history as one valu
 _Avoid_: buffer (collides with ratatui's render buffer), document, model.
 
 **Rope buffer**:
-The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the editor component all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
+The editor's buffer: the **edit buffer** plus kimün's editing policy, and the one `&mut` the **vim** engine, the plain key table, the **find bar** and the **Editor** all take (`RopeBuffer`). Because every mutation on the **plain** and **vim** backends passes through it, the facts that follow from one — did the content change, what range was damaged, which edits belong to one **undo group** — are *derived* there rather than predicted by each caller. It also owns what the engine deliberately refuses: the **find pattern** and its row-wise wrapping search, the yank transport the **unnamed register** fills from, the goal column a vertical motion aims at, the **indent step**, and the `(row, col)` vocabulary every caller speaks. It knows text, not markdown: list continuation, **auto-surround** and emphasis markers are operations *over* it (`markdown_edits`), tested against a bare one.
 _Avoid_: compat shim, textarea shim (the name it grew up under — it owns policy, not a migration), buffer unqualified.
 
 **Editing mode**:
@@ -292,6 +292,60 @@ _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot)
 **Overlay data**:
 An async result addressed to the open **Overlay** — a dialog's validation verdict, its loaded directory list, a RAG answer, an operation error. One event family (`OverlayData`) routed *only* to the **OverlayHost**, never to a screen's owned handling; an overlay data event arriving with no (or the wrong) overlay open is stale by definition and dropped. This replaces the old convention of giving the active overlay first crack at every app event.
 _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation result (names one kind).
+
+### GUI
+
+**GUI**:
+The native desktop frontend built on egui, a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawer, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
+_Avoid_: desktop app, egui app, GUI TUI (it is not a terminal emulator hosting the TUI).
+
+**Logic layer**:
+A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm or egui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
+_Avoid_: model (collides with the **Edit buffer**'s avoid list), view (collides with **drawer view**), backend (collides with **Editor backend**), core (that is the vault crate).
+
+**Renderer**:
+A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, `egui::Event`) into its intents. One per frontend per feature.
+_Avoid_: view, widget, component (too generic).
+
+**Editor display**:
+The editor's drawing state in the **Logic layer** (`EditorDisplay`): parse state, wrap layout, viewport and scroll, per-row caches, overlays as data. Given a width and a height it produces an **Editor frame**; it never sees a terminal or a theme.
+_Avoid_: view (collides with **drawer view**), editor view, render state.
+
+**Editor frame**:
+What the editor shows right now, without any styling decision: the visible rows, each a sequence of **runs** (text, a semantic role, bold/italic/strike modifiers, whether it sits in a code box, which overlays cover it), plus the cursor cell relative to the pane. A **Renderer** maps roles to its own colours and paints it.
+_Avoid_: screen buffer, render output, styled lines.
+
+**Pointer input**:
+A mouse or touch gesture in terminal-free form: a kind (down, drag or up of a button; wheel up or down; move), a cell position relative to the area the widget draws in, and modifiers. The pointer counterpart of **Key input**; a **Renderer** converts its own events into it.
+_Avoid_: mouse event (crossterm's type), click (names only one kind).
+
+**Editor request**:
+Something the editor asks its host to do because the editor does not own the surface that does it — open the note's context menu, open the find bar or step to the next or previous match (vim `/`, `n`, `N`), or note that the viewport scrolled. Queued by the editor and drained by the host; never a flag the host has to poll and clear.
+_Avoid_: callback, intent (collides with the screen-level **Intent**).
+
+**Editor**:
+The **Logic layer**'s plain-or-vim text editor (`Editor`): an **Edit buffer** (through the **Rope buffer**) with its typing and undo grouping, the vim engine when the **Editor backend** selects it, and everything a key, a pointer gesture, a paste or a text action does to them. It reports what it does not own as **Editor requests**; the **TUI**'s find bar, autocomplete popup and nvim engine live around it, not inside it.
+_Avoid_: editor component (the TUI wrapper), widget.
+
+**Editor session**:
+What any editor engine keeps between frames — the open note, the revision clock, search needles, the **Editor display** and its background parse and layout jobs, and the redraw hook — and the one call (`prepare_frame`) that turns a snapshot into a frame's worth of state. Each engine (the **Editor**, and the TUI's nvim engine) keeps its own.
+_Avoid_: editor state (too wide), document, view.
+
+**App message**:
+What a component or background task tells the app (open a note, autosave completed, a file operation, an Ask answer, an update notice): `AppMessage`, carried on the app channel and free of terminal types. The loop's own `AppEvent` wraps it with a terminal **Input source** event, and the **GUI** wraps it with its own input.
+_Avoid_: event (ambiguous with input events), command (the **Vim command** and palette actions are different things).
+
+**Edit surface**:
+The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not egui's `TextEdit`, which has no motion layer and cannot host the vim engine.
+_Avoid_: text box, text area, TextEdit.
+
+**Key input**:
+What the user typed, terminal-neutrally: a character (`$`, `é`) or a named key (Enter, Esc, arrows, F-keys) plus modifiers — the unit the editing engines consume. Distinct from a **key combo**, which names a physical key for the shortcut table.
+_Avoid_: key event (crossterm's type), keystroke.
+
+**Instant-apply preference**:
+A **GUI** Preferences setting that takes effect and is written to `config.toml` the moment it changes — theme, fonts, scale, editor backend, autosave, sorting. Heavy changes (switching a workspace, reindex, the server URL) are explicit actions with confirmation instead. The TUI keeps its explicit Save.
+_Avoid_: auto-save (that is the note **autosave**), live setting.
 
 ### Ask
 

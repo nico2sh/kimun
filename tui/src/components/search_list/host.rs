@@ -20,15 +20,11 @@ pub(super) struct SearchBoxHostSnapshot {
 }
 
 impl AutocompleteHost for SearchBoxHostSnapshot {
-    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot {
+    fn buffer_snapshot(&self) -> crate::logic::editor::snapshot::EditorSnapshot {
         // content_revision unused (cache_key returns None); supply a
         // placeholder so the field stays NonZeroU64.
         let dummy = NonZeroU64::new(1).unwrap();
-        crate::components::text_editor::snapshot::EditorSnapshot::borrowed(
-            &self.lines,
-            self.cursor,
-            dummy,
-        )
+        crate::logic::editor::snapshot::EditorSnapshot::borrowed(&self.lines, self.cursor, dummy)
     }
     fn cache_key(&self) -> Option<std::num::NonZeroU64> {
         // `None` opts out of the controller's per-buffer cache. The

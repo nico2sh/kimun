@@ -66,7 +66,7 @@ pub(super) const CURSOR_HINT_WINDOW: usize = 4;
 /// `ParsedLine`.
 ///
 /// Callers performing an edit that does not satisfy this must not call it:
-/// [`super::view::MarkdownEditorView::note_bulk_edit`] forces the slow path
+/// `EditorDisplay::note_bulk_edit` forces the slow path
 /// for the next update, and every bulk-edit site is expected to use it.
 ///
 /// This used to say distant simultaneous edits "can only happen via
@@ -357,7 +357,7 @@ pub fn code_block_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::text_editor::markdown::ParsedBuffer;
+    use crate::logic::editor::markdown::ParsedBuffer;
 
     fn kinds_of(lines: &[&str]) -> Vec<LineConstructKind> {
         let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
@@ -468,7 +468,7 @@ mod tests {
     /// buffer edited in two distant places, with the cursor on one of them, is
     /// reported as a one-row change. Callers that can produce this shape — a
     /// **replace all**, a whole-buffer `set_text`, a grouped undo of either — must
-    /// call `MarkdownEditorView::note_bulk_edit` instead of relying on this.
+    /// call `EditorDisplay::note_bulk_edit` instead of relying on this.
     #[test]
     fn the_cursor_hint_under_reports_a_two_place_edit() {
         let old: Vec<String> = ["todo", "a", "b", "c", "d", "e", "todo"]
@@ -674,7 +674,7 @@ mod tests {
         // blank line. Pulldown ends each Paragraph; depth drops to
         // 0 at the following blank row. The boundary set should
         // contain every blank row.
-        use super::super::markdown::ParsedBuffer;
+        use crate::logic::editor::markdown::ParsedBuffer;
         let mut lines: Vec<String> = Vec::with_capacity(8);
         for i in 0..4 {
             lines.push(format!("paragraph {i}"));

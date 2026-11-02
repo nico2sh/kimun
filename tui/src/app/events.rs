@@ -22,7 +22,23 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::app::ctrl_h::CtrlHPolicy;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
+use crate::logic::message::{AppMessage, AppTx};
+
+/// What the **App loop** awaits: a terminal-originated input, or a message from
+/// the app's own tasks and components (CONTEXT.md § App shell). Messages are the
+/// shared, terminal-free vocabulary; only `Input` names the terminal.
+#[derive(Debug)]
+pub enum AppEvent {
+    Input(InputEvent),
+    Message(AppMessage),
+}
+
+impl From<AppMessage> for AppEvent {
+    fn from(m: AppMessage) -> Self {
+        AppEvent::Message(m)
+    }
+}
 
 /// Terminal-originated events, already decoded. Boxed rather than generic so
 /// the loop, the app and `main` carry no type parameter for it (the same line
@@ -33,7 +49,7 @@ pub type InputSource = Pin<Box<dyn Stream<Item = AppEvent> + Send>>;
 /// await point for the loop.
 pub struct EventHandler {
     tx: AppTx,
-    rx: mpsc::UnboundedReceiver<AppEvent>,
+    rx: mpsc::UnboundedReceiver<AppMessage>,
     input: InputSource,
 }
 
@@ -72,7 +88,7 @@ impl EventHandler {
     /// always exists while `try_next` runs.
     pub fn try_next(&mut self) -> Option<AppEvent> {
         match self.rx.try_recv() {
-            Ok(msg) => Some(msg),
+            Ok(msg) => Some(AppEvent::Message(msg)),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 unreachable!(
@@ -88,8 +104,8 @@ impl EventHandler {
     pub async fn next(&mut self) -> AppEvent {
         tokio::select! {
             biased;
-            Some(msg) = self.rx.recv() => msg,
-            event = self.input.next() => event.unwrap_or(AppEvent::Quit),
+            Some(msg) = self.rx.recv() => AppEvent::Message(msg),
+            event = self.input.next() => event.unwrap_or(AppEvent::Message(AppMessage::Quit)),
         }
     }
 }
@@ -118,7 +134,7 @@ pub(crate) fn decode(event: io::Result<CrosstermEvent>, ctrl_h: CtrlHPolicy) -> 
         }
         Ok(CrosstermEvent::Mouse(mouse)) => Some(AppEvent::Input(InputEvent::Mouse(mouse))),
         Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Input(InputEvent::Paste(text))),
-        Ok(CrosstermEvent::Resize(_, _)) => Some(AppEvent::Redraw),
+        Ok(CrosstermEvent::Resize(_, _)) => Some(AppEvent::Message(AppMessage::Redraw)),
         Ok(_) => None,
         Err(e) => {
             tracing::warn!("terminal input error: {e}");
@@ -160,7 +176,7 @@ mod tests {
     fn decode_turns_a_resize_into_a_redraw_and_skips_errors() {
         assert!(matches!(
             decode(Ok(CrosstermEvent::Resize(80, 24)), CHORD),
-            Some(AppEvent::Redraw)
+            Some(AppEvent::Message(AppMessage::Redraw))
         ));
         assert!(decode(Err(std::io::Error::other("hangup")), CHORD).is_none());
     }
@@ -199,10 +215,13 @@ mod tests {
     #[tokio::test]
     async fn a_scripted_input_source_is_delivered_in_order() {
         let mut events = EventHandler::from_input(stream::iter([
-            AppEvent::Redraw,
+            AppEvent::Message(AppMessage::Redraw),
             AppEvent::Input(InputEvent::Paste("p".into())),
         ]));
-        assert!(matches!(events.next().await, AppEvent::Redraw));
+        assert!(matches!(
+            events.next().await,
+            AppEvent::Message(AppMessage::Redraw)
+        ));
         assert!(matches!(
             events.next().await,
             AppEvent::Input(InputEvent::Paste(s)) if s == "p"
@@ -211,26 +230,43 @@ mod tests {
 
     #[tokio::test]
     async fn app_messages_are_drained_before_input() {
-        let mut events = EventHandler::from_input(stream::iter([AppEvent::Redraw]));
-        events.app_sender().send(AppEvent::Quit).unwrap();
+        let mut events =
+            EventHandler::from_input(stream::iter([AppEvent::Message(AppMessage::Redraw)]));
+        events.app_sender().send(AppMessage::Quit).unwrap();
         // Biased: the queued app message wins even though input is ready.
-        assert!(matches!(events.next().await, AppEvent::Quit));
-        assert!(matches!(events.next().await, AppEvent::Redraw));
+        assert!(matches!(
+            events.next().await,
+            AppEvent::Message(AppMessage::Quit)
+        ));
+        assert!(matches!(
+            events.next().await,
+            AppEvent::Message(AppMessage::Redraw)
+        ));
     }
 
     #[tokio::test]
     async fn an_exhausted_input_source_yields_quit() {
         let mut events = EventHandler::from_input(stream::empty());
-        assert!(matches!(events.next().await, AppEvent::Quit));
+        assert!(matches!(
+            events.next().await,
+            AppEvent::Message(AppMessage::Quit)
+        ));
         // …and keeps yielding it: the loop may ask once more on its way out.
-        assert!(matches!(events.next().await, AppEvent::Quit));
+        assert!(matches!(
+            events.next().await,
+            AppEvent::Message(AppMessage::Quit)
+        ));
     }
 
     #[test]
     fn try_next_only_peeks_the_app_channel() {
-        let mut events = EventHandler::from_input(stream::iter([AppEvent::Redraw]));
+        let mut events =
+            EventHandler::from_input(stream::iter([AppEvent::Message(AppMessage::Redraw)]));
         assert!(events.try_next().is_none());
-        events.app_sender().send(AppEvent::Redraw).unwrap();
-        assert!(matches!(events.try_next(), Some(AppEvent::Redraw)));
+        events.app_sender().send(AppMessage::Redraw).unwrap();
+        assert!(matches!(
+            events.try_next(),
+            Some(AppEvent::Message(AppMessage::Redraw))
+        ));
     }
 }

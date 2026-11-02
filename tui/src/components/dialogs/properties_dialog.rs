@@ -18,44 +18,16 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::components::button_row::ButtonRow;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, OverlayData};
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, OverlayData};
+use crate::logic::properties::PropertyWriteError;
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
 // Write errors
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub enum PropertyWriteError {
-    /// Core refused the value (`VaultError::InvalidProperty`).
-    Invalid(String),
-    /// The note's frontmatter block does not parse; the dialog turns read-only.
-    Malformed(String),
-    /// Anything else (IO, lock timeout).
-    Other(String),
-}
-
-impl PropertyWriteError {
-    fn from_vault(e: kimun_core::error::VaultError) -> Self {
-        use kimun_core::error::{FSError, VaultError};
-        match &e {
-            VaultError::InvalidProperty { message, .. } => Self::Invalid(message.clone()),
-            VaultError::FSError(FSError::InvalidFrontmatter { .. }) => {
-                Self::Malformed(e.to_string())
-            }
-            _ => Self::Other(e.to_string()),
-        }
-    }
-
-    pub fn message(&self) -> &str {
-        match self {
-            Self::Invalid(m) | Self::Malformed(m) | Self::Other(m) => m,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Dialog state
@@ -150,7 +122,7 @@ impl PropertiesDialog {
         let tx = tx.clone();
         tokio::spawn(async move {
             let result = vault.get_properties(&path).await.map_err(|e| e.to_string());
-            tx.send(AppEvent::OverlayData(OverlayData::PropertiesLoaded {
+            tx.send(AppMessage::OverlayData(OverlayData::PropertiesLoaded {
                 path,
                 result,
             }))
@@ -214,7 +186,7 @@ impl PropertiesDialog {
         match result {
             Ok(flash) => {
                 self.mode = Mode::List;
-                tx.send(AppEvent::FlashMessage(flash.clone())).ok();
+                tx.send(AppMessage::FlashMessage(flash.clone())).ok();
                 self.reload(tx);
                 super::spawn_property_keys(self.vault.clone(), tx);
             }
@@ -301,9 +273,9 @@ impl PropertiesDialog {
                 .map(|_| "property removed".to_string())
                 .map_err(PropertyWriteError::from_vault);
             if result.is_ok() {
-                tx.send(AppEvent::NoteReloadFromDisk(path.clone())).ok();
+                tx.send(AppMessage::NoteReloadFromDisk(path.clone())).ok();
             }
-            tx.send(AppEvent::OverlayData(OverlayData::PropertyWritten {
+            tx.send(AppMessage::OverlayData(OverlayData::PropertyWritten {
                 path,
                 result,
             }))
@@ -334,7 +306,7 @@ impl PropertiesDialog {
             BTN_EDIT => self.open_edit(),
             BTN_DELETE => self.start_delete(),
             BTN_CLOSE => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             _ => {}
         }
@@ -369,7 +341,7 @@ impl PropertiesDialog {
         let can_write = self.can_write();
         match key.code {
             KeyCode::Esc if !self.busy => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = match self.focus {
@@ -1057,9 +1029,9 @@ impl PropertiesDialog {
             // Sent by the task, not the result handler: the editor must
             // reload even when the dialog closed before the result arrives.
             if changed {
-                tx.send(AppEvent::NoteReloadFromDisk(path.clone())).ok();
+                tx.send(AppMessage::NoteReloadFromDisk(path.clone())).ok();
             }
-            tx.send(AppEvent::OverlayData(OverlayData::PropertyWritten {
+            tx.send(AppMessage::OverlayData(OverlayData::PropertyWritten {
                 path,
                 result,
             }))
@@ -1257,7 +1229,7 @@ impl super::Dialog for PropertiesDialog {
     fn key(
         &mut self,
         key: ratatui::crossterm::event::KeyEvent,
-        tx: &crate::components::events::AppTx,
+        tx: &crate::logic::message::AppTx,
     ) -> crate::components::event_state::EventState {
         self.handle_key(key, tx)
     }
@@ -1265,7 +1237,7 @@ impl super::Dialog for PropertiesDialog {
     fn mouse(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
-        tx: &crate::components::events::AppTx,
+        tx: &crate::logic::message::AppTx,
     ) -> crate::components::event_state::EventState {
         self.handle_mouse(m, tx)
     }
@@ -1305,7 +1277,7 @@ mod tests {
     ) -> (
         PropertiesDialog,
         AppTx,
-        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
     ) {
         let vault = temp_vault("props_dialog").await;
         let (tx, rx) = unbounded_channel();
@@ -1431,7 +1403,7 @@ mod tests {
     async fn esc_closes_dialog() {
         let (mut d, tx, mut rx) = dialog_with(sample()).await;
         d.handle_key(k(KeyCode::Esc), &tx);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
     }
 
     #[tokio::test]
@@ -1444,8 +1416,8 @@ mod tests {
         let mut saw_flash = false;
         while let Ok(evt) = rx.try_recv() {
             match evt {
-                AppEvent::NoteReloadFromDisk(_) => saw_reload = true,
-                AppEvent::FlashMessage(m) => saw_flash = m == "property saved",
+                AppMessage::NoteReloadFromDisk(_) => saw_reload = true,
+                AppMessage::FlashMessage(m) => saw_flash = m == "property saved",
                 _ => {}
             }
         }
@@ -1467,13 +1439,13 @@ mod tests {
         d.handle_key(k(KeyCode::Enter), tx);
     }
 
-    async fn next_reload(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> VaultPath {
+    async fn next_reload(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>) -> VaultPath {
         loop {
             let evt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
                 .expect("timely reload")
                 .expect("open channel");
-            if let AppEvent::NoteReloadFromDisk(p) = evt {
+            if let AppMessage::NoteReloadFromDisk(p) = evt {
                 return p;
             }
         }
@@ -1602,14 +1574,14 @@ mod tests {
     }
 
     async fn next_written(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
     ) -> Result<String, PropertyWriteError> {
         loop {
             let evt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
                 .expect("timely")
                 .expect("open channel");
-            if let AppEvent::OverlayData(OverlayData::PropertyWritten { result, .. }) = evt {
+            if let AppMessage::OverlayData(OverlayData::PropertyWritten { result, .. }) = evt {
                 return result;
             }
         }
@@ -2008,10 +1980,10 @@ mod tests {
             .expect("button rendered")
     }
 
-    fn closed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> bool {
+    fn closed(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>) -> bool {
         let mut closed = false;
         while let Ok(evt) = rx.try_recv() {
-            closed |= matches!(evt, AppEvent::CloseOverlay);
+            closed |= matches!(evt, AppMessage::CloseOverlay);
         }
         closed
     }

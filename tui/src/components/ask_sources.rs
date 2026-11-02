@@ -39,7 +39,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AskData, InputEvent, redraw_callback};
+use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
@@ -49,6 +49,7 @@ use crate::components::search_list::{
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
+use crate::logic::message::{AppMessage, AppTx, AskData, redraw_callback};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -639,7 +640,7 @@ impl SourcesPanel {
         let tx = tx.clone();
         tokio::spawn(async move {
             let text = vault.get_note_text(&path).await.ok();
-            let _ = tx.send(AppEvent::Ask(AskData::ReaderNote { path, text }));
+            let _ = tx.send(AppMessage::Ask(AskData::ReaderNote { path, text }));
         });
     }
 
@@ -647,18 +648,18 @@ impl SourcesPanel {
     /// FollowLink intercept) — from any reveal state.
     fn open_selected(&self, tx: &AppTx) {
         if let Some(source) = self.selected_source() {
-            tx.send(AppEvent::open(source.path.clone())).ok();
+            tx.send(AppMessage::open(source.path.clone())).ok();
         }
     }
 
     /// Copy the selected source's path to the OS clipboard, reusing the
-    /// shared [`crate::components::yank`] seam `ThreadPanel` and the FIND
+    /// shared [`crate::logic::clipboard::yank`] seam `ThreadPanel` and the FIND
     /// drawer use.
     fn yank_selected_path(&self, tx: &AppTx) {
         let Some(source) = self.selected_source() else {
             return;
         };
-        crate::components::yank(source.path.to_string(), "path copied", tx);
+        crate::logic::clipboard::yank(source.path.to_string(), "path copied", tx);
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
@@ -1107,7 +1108,7 @@ mod tests {
         // render loop repaints on its own; no Redraw event is required.
         let mut redraws = 0;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::Redraw) {
+            if matches!(ev, AppMessage::Redraw) {
                 redraws += 1;
             }
         }
@@ -1305,7 +1306,7 @@ mod tests {
         assert_eq!(st, EventState::Consumed);
         let mut opened = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::OpenPath { path, .. } = ev {
+            if let AppMessage::OpenPath { path, .. } = ev {
                 opened = Some(path);
             }
         }
@@ -1334,7 +1335,7 @@ mod tests {
         let opened = crate::test_support::drain(&mut rx)
             .into_iter()
             .find_map(|e| match e {
-                AppEvent::OpenPath { path, .. } => Some(path),
+                AppMessage::OpenPath { path, .. } => Some(path),
                 _ => None,
             });
         assert_eq!(opened, Some(VaultPath::new("b.md")));
@@ -1383,7 +1384,7 @@ mod tests {
         assert_eq!(st, EventState::Consumed);
         let mut flashed = false;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::FlashMessage(_)) {
+            if matches!(ev, AppMessage::FlashMessage(_)) {
                 flashed = true;
             }
         }
@@ -1502,7 +1503,7 @@ mod tests {
         );
 
         let event = rx.recv().await.expect("open_reader spawns a ReaderNote");
-        let AppEvent::Ask(data) = event else {
+        let AppMessage::Ask(data) = event else {
             panic!("expected an Ask event");
         };
         p.handle_data(data);
@@ -1938,7 +1939,7 @@ mod tests {
         assert_eq!(selected_heading(&p).as_deref(), Some("ha"));
         // It spawned a load for source 0's note; deliver it and check the section.
         let ev = rx.recv().await.expect("open_reader spawns a ReaderNote");
-        let AppEvent::Ask(data) = ev else {
+        let AppMessage::Ask(data) = ev else {
             panic!("expected an Ask event");
         };
         p.handle_data(data);

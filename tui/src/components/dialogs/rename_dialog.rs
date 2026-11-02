@@ -12,10 +12,10 @@ use tokio::task::JoinHandle;
 use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ impl RenameDialog {
             let exists = vault.exists(&candidate).await;
             // `true` means the name is *available* (does not exist yet).
             tx_clone
-                .send(AppEvent::OverlayData(OverlayData::RenameValidation {
+                .send(AppMessage::OverlayData(OverlayData::RenameValidation {
                     available: !exists,
                 }))
                 .ok();
@@ -139,12 +139,17 @@ impl RenameDialog {
                         let result = vault.rename_entry(&from, &new_path).await;
                         match result {
                             Ok(()) => {
-                                tx2.send(AppEvent::FileOp(FileOp::Renamed { from, to: new_path }))
-                                    .ok();
+                                tx2.send(AppMessage::FileOp(FileOp::Renamed {
+                                    from,
+                                    to: new_path,
+                                }))
+                                .ok();
                             }
                             Err(e) => {
-                                tx2.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
-                                    .ok();
+                                tx2.send(AppMessage::OverlayData(OverlayData::Error(
+                                    e.to_string(),
+                                )))
+                                .ok();
                             }
                         }
                     });
@@ -152,7 +157,7 @@ impl RenameDialog {
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -367,7 +372,7 @@ mod tests {
             .expect("vault creation failed"),
         );
 
-        let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (_tx, _rx) = mpsc::unbounded_channel::<AppMessage>();
         let path = VaultPath::new("notes/projects/kimun.md");
         let (_, expected_filename) = path.get_parent_path();
 
@@ -375,7 +380,7 @@ mod tests {
         assert_eq!(dialog.input.value(), expected_filename);
     }
 
-    /// Verifies that pressing `Esc` sends `AppEvent::CloseOverlay` and returns
+    /// Verifies that pressing `Esc` sends `AppMessage::CloseOverlay` and returns
     /// `EventState::Consumed`, without touching the vault.
     #[test]
     fn esc_sends_close_dialog() {
@@ -394,15 +399,15 @@ mod tests {
             };
 
             let vault = Arc::new(vault);
-            let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
             let mut dialog = RenameDialog::new(VaultPath::new("notes/test.md"), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
-            assert!(matches!(event, AppEvent::CloseOverlay));
+            let event = rx.try_recv().expect("expected AppMessage::CloseOverlay");
+            assert!(matches!(event, AppMessage::CloseOverlay));
         });
     }
 }

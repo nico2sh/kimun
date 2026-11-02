@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers as CKeyMods};
 use serde::{Deserialize, Serialize, de::Visitor, ser::SerializeMap};
 
 pub mod action_shortcuts;
+pub mod crossterm_input;
 pub mod key_combo;
 pub mod key_strike;
 pub mod leader;
@@ -443,11 +444,8 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        KeyBindings,
-        action_shortcuts::{ActionShortcuts, TextAction},
-        key_strike::KeyStrike,
-    };
+    use super::{KeyBindings, action_shortcuts::ActionShortcuts, key_strike::KeyStrike};
+    use crate::logic::text_action::TextAction;
 
     /// `first_combo_for` feeds the footer, F1 and the cheatsheet, so it has
     /// to answer the same thing every time it is asked. It reads a `HashMap`,

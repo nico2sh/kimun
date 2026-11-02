@@ -29,10 +29,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::ask::{AskSource, Thread, Turn, TurnStatus, citations, save};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, AskData, FileOp, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::panel_block;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, AskData, FileOp};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -366,7 +367,7 @@ impl ThreadPanel {
             // Starting over also resets the Sources drawer, which this panel
             // does not own — the leader action does both.
             KeyCode::Char('n') => {
-                tx.send(AppEvent::ExecuteLeaderAction(
+                tx.send(AppMessage::ExecuteLeaderAction(
                     crate::keys::leader::LeaderAction::AskNew,
                 ))
                 .ok();
@@ -462,7 +463,7 @@ impl ThreadPanel {
 
     /// Submit the composer's question. `begin_turn` already guarantees a
     /// client is present (else it pushes no turn), so this spawns the ask job,
-    /// delivering `AppEvent::Ask(AskData::AnswerReady)` on completion.
+    /// delivering `AppMessage::Ask(AskData::AnswerReady)` on completion.
     fn submit(&mut self, tx: &AppTx) {
         let Some((question, history, turn_id)) = self.begin_turn() else {
             return;
@@ -527,19 +528,19 @@ impl ThreadPanel {
                     (a.answer, sources)
                 })
                 .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::Ask(AskData::AnswerReady { turn_id, result }));
+            let _ = tx.send(AppMessage::Ask(AskData::AnswerReady { turn_id, result }));
         });
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
-    /// clipboard, reusing the shared [`crate::components::yank`] seam.
+    /// clipboard, reusing the shared [`crate::logic::clipboard::yank`] seam.
     /// Leader `a y`.
     pub(crate) fn copy_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;
         };
         let text = citations::strip(&turn.answer);
-        crate::components::yank(text, "answer copied", tx);
+        crate::logic::clipboard::yank(text, "answer copied", tx);
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
@@ -551,7 +552,7 @@ impl ThreadPanel {
         };
         let path = save::suggested_path(&turn.question);
         let content = save::note_content(turn);
-        tx.send(AppEvent::FileOp(FileOp::ShowCreateWithContent {
+        tx.send(AppMessage::FileOp(FileOp::ShowCreateWithContent {
             path,
             content,
         }))
@@ -1399,7 +1400,7 @@ mod tests {
         }
 
         /// Render `p` and click the first cell of `text`; returns the events.
-        fn click_text(p: &mut ThreadPanel, text: &str) -> Vec<AppEvent> {
+        fn click_text(p: &mut ThreadPanel, text: &str) -> Vec<AppMessage> {
             use ratatui::{Terminal, backend::TestBackend};
             let theme = Theme::default();
             let mut t = Terminal::new(TestBackend::new(80, 12)).unwrap();
@@ -1422,13 +1423,13 @@ mod tests {
             p.focus = ThreadFocus::Composer;
             let ev = click_text(&mut p, "[e] Save as note");
             assert!(
-                ev.iter().any(|e| matches!(e, AppEvent::FileOp(_))),
+                ev.iter().any(|e| matches!(e, AppMessage::FileOp(_))),
                 "save as note opens the create dialog: {ev:?}"
             );
             let ev = click_text(&mut p, "[n] New");
             assert!(ev.iter().any(|e| matches!(
                 e,
-                AppEvent::ExecuteLeaderAction(crate::keys::leader::LeaderAction::AskNew)
+                AppMessage::ExecuteLeaderAction(crate::keys::leader::LeaderAction::AskNew)
             )));
         }
 

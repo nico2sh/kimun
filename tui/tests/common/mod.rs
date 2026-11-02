@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use kimun_core::{IndexFile, NoteVault, SystemPath, VaultConfig};
-use kimun_notes::components::events::{AppEvent, InputEvent};
+use kimun_notes::app::events::AppEvent;
+use kimun_notes::components::events::InputEvent;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};

@@ -12,8 +12,6 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, SortTarget};
-use crate::components::file_list::{SortField, SortOrder};
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
@@ -21,12 +19,13 @@ use crate::components::search_list::{
     Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
     Unresolvable, VaultSuggestions,
 };
-use crate::components::sortable::{
-    SortState, SortableList, order_of_query, query_with_sort, sort_chip_line,
-};
+use crate::components::sortable::{SortableList, order_of_query, query_with_sort, sort_chip_line};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
+use crate::logic::message::{AppMessage, AppTx, FileOp, SortTarget};
+use crate::logic::sort::SortState;
+use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -201,7 +200,7 @@ impl QueryPanel {
             let slot = redraw_tx.clone();
             Arc::new(move || {
                 if let Some(tx) = slot.lock().unwrap().as_ref() {
-                    let _ = tx.send(AppEvent::Redraw);
+                    let _ = tx.send(AppMessage::Redraw);
                 }
             })
         };
@@ -459,7 +458,7 @@ impl QueryPanel {
                 .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
         {
             if let Some(path) = self.selected_path().cloned() {
-                tx.send(AppEvent::OpenPath {
+                tx.send(AppMessage::OpenPath {
                     path,
                     emphasis: self.emphasis(),
                 })
@@ -478,7 +477,7 @@ impl QueryPanel {
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
-                    tx.send(AppEvent::OpenPath {
+                    tx.send(AppMessage::OpenPath {
                         path,
                         emphasis: self.emphasis(),
                     })
@@ -544,14 +543,14 @@ impl QueryPanel {
         // The `[F1] Syntax` chip opens the query syntax reference.
         if !on_popup && self.syntax_chip.hit(mouse) {
             self.list.close_autocomplete();
-            tx.send(AppEvent::OpenQueryHelp).ok();
+            tx.send(AppMessage::OpenQueryHelp).ok();
             return EventState::Consumed;
         }
         // The sort chip on the query box border opens the sort dialog, in any
         // expand state.
         if !on_popup && self.sort_chip.hit(mouse) {
             self.list.close_autocomplete();
-            tx.send(AppEvent::OpenSortDialog(SortTarget::Query)).ok();
+            tx.send(AppMessage::OpenSortDialog(SortTarget::Query)).ok();
             return EventState::Consumed;
         }
         // Read BEFORE the sync: a selection that vanished in this same event
@@ -624,7 +623,7 @@ impl QueryPanel {
             // Right-click on a result row → file/note context menu.
             SearchMouse::Context(_) => {
                 if let Some(path) = self.selected_path().cloned() {
-                    tx.send(AppEvent::FileOp(FileOp::ShowMenu(path))).ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowMenu(path))).ok();
                 }
                 EventState::Consumed
             }
@@ -694,7 +693,7 @@ impl QueryPanel {
     /// resolved-needle emphasis as the FollowLink / Ctrl+Enter open paths.
     fn open_selected(&self, tx: &AppTx) {
         if let Some(path) = self.selected_path().cloned() {
-            tx.send(AppEvent::OpenPath {
+            tx.send(AppMessage::OpenPath {
                 path,
                 emphasis: self.emphasis(),
             })
@@ -1146,7 +1145,7 @@ mod tests {
 
         let mut opened = None;
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::OpenPath { path, .. } = ev {
+            if let AppMessage::OpenPath { path, .. } = ev {
                 opened = Some(path);
             }
         }
@@ -1178,7 +1177,7 @@ mod tests {
         assert_eq!(st, EventState::Consumed);
         let mut flashed = false;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::FlashMessage(_)) {
+            if matches!(ev, AppMessage::FlashMessage(_)) {
                 flashed = true;
             }
         }
@@ -1764,7 +1763,7 @@ mod tests {
         panel.handle_mouse(&press, &tx);
         let opened = crate::test_support::drain(&mut rx)
             .into_iter()
-            .any(|e| matches!(e, AppEvent::OpenPath { .. }));
+            .any(|e| matches!(e, AppMessage::OpenPath { .. }));
         assert!(opened, "a double-click opens the result");
         assert!(
             panel.preview.is_collapsed(),

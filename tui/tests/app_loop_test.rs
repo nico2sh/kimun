@@ -22,9 +22,9 @@ use kimun_notes::app::{App, run_app};
 use kimun_notes::app_screen::ScreenKind;
 use kimun_notes::app_screen::editor::EditorScreen;
 use kimun_notes::app_screen::preferences::PreferencesScreen;
-use kimun_notes::components::events::AppEvent;
 use kimun_notes::keys::action_shortcuts::ActionShortcuts;
 use kimun_notes::keys::key_event_to_combo;
+use kimun_notes::logic::message::AppMessage;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 
 mod common;
@@ -179,7 +179,7 @@ async fn a_vault_conflict_clears_the_workspace_and_opens_preferences_with_the_er
     let mut events = EventHandler::from_input(stream::empty());
     events
         .app_sender()
-        .send(AppEvent::VaultConflict("case clash: a vs A".into()))
+        .send(AppMessage::VaultConflict("case clash: a vs A".into()))
         .unwrap();
     let mut term = terminal();
     let gen_before = fx.app.screen_generation;
@@ -218,7 +218,7 @@ async fn an_unhandled_note_path_switches_to_the_editor() {
     let vault = fx.app.vault.clone().unwrap();
     let note = VaultPath::note_path_from("routed");
     vault.create_note(&note, "routed").await.unwrap();
-    // The Start screen does send `AppEvent::open(..)` itself, on
+    // The Start screen does send `AppMessage::open(..)` itself, on
     // `IndexingDone` — but it never overrides `try_open_path`, so it cannot
     // *handle* an `OpenPath` it is asked to open; the loop is what routes
     // this one to the editor. (Left to itself, the Start screen's own open
@@ -227,7 +227,7 @@ async fn an_unhandled_note_path_switches_to_the_editor() {
     assert_eq!(kind(&fx.app), ScreenKind::Start);
 
     let mut events = EventHandler::from_input(stream::empty());
-    events.app_sender().send(AppEvent::open(note)).unwrap();
+    events.app_sender().send(AppMessage::open(note)).unwrap();
     let mut term = terminal();
 
     run_app(&mut term, &mut fx.app, &mut events).await.unwrap();

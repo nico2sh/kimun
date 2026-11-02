@@ -6,14 +6,15 @@ use std::time::Duration;
 use tokio::process::ChildStdin;
 use tokio_util::compat::Compat;
 
-use super::rope_buffer::RopeBuffer;
+use crate::logic::editor::rope_buffer::RopeBuffer;
 use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, error::LoopError};
 
 use super::nvim_decode::{DecodedState, decode};
 use super::nvim_rpc::key_event_to_nvim_string;
-use super::snapshot::{EditorMode, NvimSnapshot};
-use super::vim::VimEngine;
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::editor::Editor;
+use crate::logic::editor::session::EditorSession;
+use crate::logic::editor::snapshot::{EditorMode, NvimSnapshot};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::EditorBackendSetting;
 
 type NvimWriter = Compat<ChildStdin>;
@@ -70,57 +71,12 @@ impl Handler for NvimHandler {
 }
 
 // ---------------------------------------------------------------------------
-// InputInterpreter + TextareaBackend
-// ---------------------------------------------------------------------------
-
-/// How key events are translated into edits on the **rope buffer**.
-/// The engine is boxed so the `Direct` arm doesn't pay the engine's size
-/// (registers, dot-repeat state, replace stack — ~230 bytes).
-#[derive(Debug, Default)]
-pub enum InputInterpreter {
-    /// Today's behavior: keys go straight to the textarea.
-    #[default]
-    Direct,
-    /// Built-in vim emulation.
-    Vim(Box<VimEngine>),
-}
-
-/// The in-process textarea storage plus its input interpreter.
-#[derive(Debug)]
-pub struct TextareaBackend {
-    /// Which keystrokes are sharing an undo group. The **plain** backend's
-    /// policy; the **vim** engine has its own and leaves this alone.
-    pub typing: super::typing_run::TypingRun,
-    /// The open note's text and its edit history. Mutations go
-    /// through `RopeBuffer::edit`.
-    pub ta: RopeBuffer,
-    pub input: InputInterpreter,
-}
-
-impl TextareaBackend {
-    pub fn direct(text: crate::ropetext::Text) -> Self {
-        Self {
-            ta: RopeBuffer::new(text),
-            typing: super::typing_run::TypingRun::default(),
-            input: InputInterpreter::Direct,
-        }
-    }
-    pub fn vim(text: crate::ropetext::Text) -> Self {
-        Self {
-            ta: RopeBuffer::new(text),
-            typing: super::typing_run::TypingRun::default(),
-            input: InputInterpreter::Vim(Box::default()),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // BackendState
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::large_enum_variant)]
 pub enum BackendState {
-    Textarea(TextareaBackend),
+    Textarea(Box<Editor>),
     Nvim(NvimBackend),
 }
 
@@ -131,39 +87,33 @@ impl BackendState {
         matches!(self, BackendState::Textarea(_))
     }
 
-    /// True when the active backend is the built-in vim interpreter (any mode).
-    pub fn is_vim(&self) -> bool {
-        matches!(
-            self,
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(_),
-                ..
-            })
-        )
+    /// The textarea editor, when it is the active backend.
+    pub fn as_editor(&self) -> Option<&Editor> {
+        match self {
+            BackendState::Textarea(ed) => Some(ed),
+            BackendState::Nvim(_) => None,
+        }
+    }
+
+    pub fn as_editor_mut(&mut self) -> Option<&mut Editor> {
+        match self {
+            BackendState::Textarea(ed) => Some(ed),
+            BackendState::Nvim(_) => None,
+        }
     }
 
     /// The textarea, when it is the active backend. Textarea-only features
     /// (autocomplete, smart edits, mouse selection) guard on this.
     pub fn as_textarea(&self) -> Option<&RopeBuffer> {
         match self {
-            BackendState::Textarea(tb) => Some(&tb.ta),
-            BackendState::Nvim(_) => None,
-        }
-    }
-
-    /// The buffer and its typing run together, for the key path that needs both.
-    pub fn as_textarea_parts_mut(
-        &mut self,
-    ) -> Option<(&mut RopeBuffer, &mut super::typing_run::TypingRun)> {
-        match self {
-            BackendState::Textarea(tb) => Some((&mut tb.ta, &mut tb.typing)),
+            BackendState::Textarea(ed) => Some(&ed.buf.ta),
             BackendState::Nvim(_) => None,
         }
     }
 
     pub fn as_textarea_mut(&mut self) -> Option<&mut RopeBuffer> {
         match self {
-            BackendState::Textarea(tb) => Some(&mut tb.ta),
+            BackendState::Textarea(ed) => Some(&mut ed.buf.ta),
             BackendState::Nvim(_) => None,
         }
     }
@@ -179,7 +129,7 @@ impl BackendState {
     /// The whole buffer as one string, whichever backend holds it.
     pub fn text(&self) -> String {
         match self {
-            BackendState::Textarea(tb) => tb.ta.text().to_string(),
+            BackendState::Textarea(ed) => ed.buf.ta.text().to_string(),
             BackendState::Nvim(nvim) => nvim.snapshot().lines.join("\n"),
         }
     }
@@ -189,7 +139,7 @@ impl BackendState {
     /// lag the real cursor for a frame), matching the snapshot path.
     pub fn cursor(&self) -> (usize, usize) {
         match self {
-            BackendState::Textarea(tb) => tb.ta.cursor(),
+            BackendState::Textarea(ed) => ed.buf.ta.cursor(),
             BackendState::Nvim(nvim) => {
                 let snap = nvim.snapshot();
                 let max_row = snap.lines.len().saturating_sub(1);
@@ -200,16 +150,15 @@ impl BackendState {
 
     /// If the nvim backend's process has died, replace it with a textarea
     /// holding the last mirrored buffer, and report that it happened so the
-    /// host can re-arm textarea-only features.
-    pub fn recover_from_dead_nvim(&mut self) -> bool {
+    /// host can re-arm textarea-only features. The new editor takes over
+    /// `nvim_session` (see `textarea_after_dead_nvim`).
+    pub fn recover_from_dead_nvim(&mut self, nvim_session: &mut EditorSession) -> bool {
         let fallback_text = match self.as_nvim() {
             Some(nvim) if nvim.is_dead() => nvim.snapshot().lines.join("\n"),
             _ => return false,
         };
         tracing::warn!("nvim process died; falling back to textarea backend");
-        *self = BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::from(
-            fallback_text.as_str(),
-        )));
+        *self = textarea_after_dead_nvim(&fallback_text, nvim_session);
         true
     }
 
@@ -218,149 +167,17 @@ impl BackendState {
     /// selection enters Visual, a cleared one returns to Normal); the other
     /// backends have nothing to reconcile.
     pub fn sync_mouse_selection(&mut self, has_selection: bool) {
-        if let BackendState::Textarea(TextareaBackend {
-            input: InputInterpreter::Vim(e),
-            ta,
-            ..
-        }) = self
-        {
-            e.sync_mouse_selection(has_selection, ta);
-        }
-    }
-
-    /// The range the vim interpreter's Visual selection covers
-    /// (`VimEngine::visual_range`: whole characters, whole rows for `V`).
-    /// `None` outside Visual and on the other backends.
-    pub fn visual_range(&self) -> Option<((usize, usize), (usize, usize))> {
-        match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ta,
-                ..
-            }) => e.visual_range(ta),
-            _ => None,
+        if let BackendState::Textarea(ed) = self {
+            ed.buf.sync_mouse_selection(has_selection);
         }
     }
 
     /// The selection as the user sees it: the Visual range under vim,
     /// otherwise the buffer's own selection. `None` without one, or on nvim.
     pub fn selection_as_shown(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.visual_range()
-            .or_else(|| self.as_textarea().and_then(|ta| ta.selection_range()))
-    }
-
-    /// Whether the vim interpreter is in Visual over nothing — an empty row
-    /// (see `VimEngine::visual_is_empty`). `false` elsewhere.
-    pub fn visual_is_empty(&self) -> bool {
         match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ta,
-                ..
-            }) => e.visual_is_empty(ta),
-            _ => false,
-        }
-    }
-
-    /// Copy the vim interpreter's Visual selection and leave Visual (see
-    /// `VimEngine::copy_visual`). `None` outside Visual and on the other
-    /// backends, where the buffer's own selection is what gets copied.
-    pub fn copy_visual(&mut self) -> Option<String> {
-        match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ta,
-                ..
-            }) => e.copy_visual(ta),
-            _ => None,
-        }
-    }
-
-    /// A mouse drag from `origin` to `pos` under the vim interpreter (see
-    /// `VimEngine::select_dragged`). `false` where the plain drag selection
-    /// stands: the other backends, and vim's Insert and Replace.
-    pub fn select_dragged(&mut self, origin: (usize, usize), pos: (usize, usize)) -> bool {
-        match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ta,
-                ..
-            }) => e.select_dragged(ta, origin, pos),
-            _ => false,
-        }
-    }
-
-    /// Hand the vim interpreter the selection the host just left (see
-    /// `VimEngine::adopt_host_selection`). A no-op for the other backends.
-    pub fn adopt_host_selection(&mut self) {
-        if let BackendState::Textarea(TextareaBackend {
-            input: InputInterpreter::Vim(e),
-            ta,
-            ..
-        }) = self
-        {
-            e.adopt_host_selection(ta);
-        }
-    }
-
-    /// Let the vim interpreter record the live Visual selection for `gv`
-    /// before the host edits it away. A no-op for the other backends.
-    pub fn conclude_visual(&mut self) {
-        if let BackendState::Textarea(TextareaBackend {
-            input: InputInterpreter::Vim(e),
-            ta,
-            ..
-        }) = self
-        {
-            e.conclude_visual(ta);
-        }
-    }
-
-    /// True when a bare Space should start the leader sequence. Only the vim
-    /// interpreter ever says yes (Normal mode, empty pending state); for every
-    /// other backend Space is just typing.
-    pub fn space_leads(&self) -> bool {
-        matches!(self,
-            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
-            if e.space_leads())
-    }
-
-    /// True when the vim interpreter is in linewise Visual (`V`). The
-    /// highlight there must always run the full width of every selected
-    /// row, regardless of the cursor's column.
-    pub fn is_visual_line(&self) -> bool {
-        matches!(self,
-            BackendState::Textarea(TextareaBackend { input: InputInterpreter::Vim(e), .. })
-            if *e.mode() == EditorMode::VisualLine)
-    }
-
-    /// Reset any transient input-interpreter state for a freshly loaded note
-    /// (the vim interpreter returns to Normal; the other backends carry no
-    /// such state).
-    pub fn reset_input_state(&mut self) {
-        if let BackendState::Textarea(TextareaBackend {
-            input: InputInterpreter::Vim(engine),
-            ..
-        }) = self
-        {
-            // The buffer's marks went with its text (`RopeBuffer::replace`).
-            engine.reset_to_normal();
-        }
-    }
-
-    /// If the active backend is the vim interpreter, run it for this key and
-    /// return the outcome. Returns `None` for Direct / Nvim backends.
-    pub fn vim_handle_key(
-        &mut self,
-        key: &ratatui::crossterm::event::KeyEvent,
-    ) -> Option<super::vim::VimKeyOutcome> {
-        match self {
-            BackendState::Textarea(TextareaBackend {
-                ta,
-                input: InputInterpreter::Vim(engine),
-                ..
-            }) => Some(engine.handle_key(key, ta)),
-            _ => None,
+            BackendState::Textarea(ed) => ed.buf.selection_as_shown(),
+            BackendState::Nvim(_) => None,
         }
     }
 
@@ -369,11 +186,8 @@ impl BackendState {
     /// active backend has no pending sequence.
     pub fn pending_input_hint(&self) -> Option<String> {
         match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ..
-            }) => e.pending_hint(),
-            _ => None,
+            BackendState::Textarea(ed) => ed.buf.pending_input_hint(),
+            BackendState::Nvim(_) => None,
         }
     }
 
@@ -381,11 +195,7 @@ impl BackendState {
     /// vim interpreter). `None` for the plain Direct textarea.
     pub fn mode_label(&self) -> Option<String> {
         match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(engine),
-                ..
-            }) => Some(engine.mode_label()),
-            BackendState::Textarea(_) => None,
+            BackendState::Textarea(ed) => ed.buf.mode_label(),
             BackendState::Nvim(nvim) => Some(nvim.snapshot().footer_label()),
         }
     }
@@ -396,11 +206,7 @@ impl BackendState {
     /// `Some(false)` = other modal mode (block cursor).
     pub fn modal_is_insert(&self) -> Option<bool> {
         match self {
-            BackendState::Textarea(TextareaBackend {
-                input: InputInterpreter::Vim(e),
-                ..
-            }) => Some(*e.mode() == EditorMode::Insert),
-            BackendState::Textarea(_) => None,
+            BackendState::Textarea(ed) => ed.buf.modal_is_insert(),
             BackendState::Nvim(nvim) => Some(nvim.snapshot().mode == EditorMode::Insert),
         }
     }
@@ -417,16 +223,27 @@ impl BackendState {
                 }
             }
         }
-        let tb = match editor_backend {
-            EditorBackendSetting::Vim => TextareaBackend::vim(crate::ropetext::Text::new()),
+        let ed = match editor_backend {
+            EditorBackendSetting::Vim => Editor::new(true),
             // Nvim is handled by the early return above; Textarea and any
             // future non-modal setting use the direct interpreter.
-            EditorBackendSetting::Plain | EditorBackendSetting::Nvim => {
-                TextareaBackend::direct(crate::ropetext::Text::new())
-            }
+            EditorBackendSetting::Plain | EditorBackendSetting::Nvim => Editor::new(false),
         };
-        BackendState::Textarea(tb)
+        BackendState::Textarea(Box::new(ed))
     }
+}
+
+/// The hand-over of a dead nvim's place: a direct-typing textarea editor over
+/// `fallback_text` (the last mirrored buffer) that takes over the nvim arm's
+/// session — the open note, revision clock, needles, display, jobs and
+/// notifier — leaving a fresh one behind. The editor's own state (selection,
+/// drag origin, Insert-session bracket) starts empty, as nvim never set it.
+fn textarea_after_dead_nvim(fallback_text: &str, nvim_session: &mut EditorSession) -> BackendState {
+    BackendState::Textarea(Box::new(Editor::from_session(
+        crate::ropetext::Text::from(fallback_text),
+        false,
+        std::mem::take(nvim_session),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +336,10 @@ impl NvimBackend {
         // Pin nvim's tabstop to the renderer's TAB_STOP so tab-column math and
         // cursor placement can never desync.
         let _ = nvim
-            .command(&format!("set tabstop={}", super::markdown::TAB_STOP))
+            .command(&format!(
+                "set tabstop={}",
+                crate::logic::editor::markdown::TAB_STOP
+            ))
             .await;
 
         Ok(Self {
@@ -564,7 +384,7 @@ impl NvimBackend {
                         if res.is_err() {
                             // Sender dropped — nvim IO loop ended.
                             is_dead.store(true, Ordering::SeqCst);
-                            tx.send(AppEvent::Redraw).ok();
+                            tx.send(AppMessage::Redraw).ok();
                             break;
                         }
                         // Flush arrived — state is fresh, query immediately.
@@ -583,12 +403,12 @@ impl NvimBackend {
                 match nvim.exec_lua(STATE_QUERY_LUA, vec![]).await {
                     Ok(value) => {
                         apply_lua_state(&snapshot, &in_flight, value);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     Err(e) => {
                         if e.is_channel_closed() {
                             is_dead.store(true, Ordering::SeqCst);
-                            tx.send(AppEvent::Redraw).ok();
+                            tx.send(AppMessage::Redraw).ok();
                             break;
                         }
                         // Non-fatal (e.g. transient Lua error): log and continue.
@@ -714,7 +534,7 @@ impl NvimBackend {
                 Err(e) => {
                     if e.is_channel_closed() {
                         is_dead.store(true, Ordering::SeqCst);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     tracing::debug!("nvim_paste error: {e}");
                 }
@@ -744,7 +564,7 @@ impl NvimBackend {
                 Err(e) => {
                     if e.is_channel_closed() {
                         is_dead.store(true, Ordering::SeqCst);
-                        tx.send(AppEvent::Redraw).ok();
+                        tx.send(AppMessage::Redraw).ok();
                     }
                     tracing::debug!("nvim_input error: {e}");
                 }
@@ -804,42 +624,82 @@ fn apply_lua_state(
 mod tests {
     use super::*;
 
+    /// Nvim death recovery: the textarea that replaces nvim keeps the open
+    /// note, its revision clock and its armed needles, and shows the text it
+    /// is handed. Nvim itself cannot be started here, so the hand-over is
+    /// exercised on a hand-built session.
+    #[test]
+    fn from_session_keeps_note_revisions_and_needles() {
+        use kimun_core::nfs::VaultPath;
+        fn session() -> EditorSession {
+            let mut session = EditorSession::new();
+            session.note = Some(VaultPath::new("notes/kept.md"));
+            session.revs.bump();
+            session.revs.bump();
+            session.needles = vec!["needle".to_string()];
+            session.revs.arm_needles();
+            session.notifier = Some(std::sync::Arc::new(|| {}));
+            session
+        }
+        let expected_rev = session().revs.current();
+        assert_ne!(expected_rev, EditorSession::new().revs.current());
+
+        let ed = Editor::from_session(
+            crate::ropetext::Text::from("hello\nworld"),
+            false,
+            session(),
+        );
+        assert!(!ed.buf.is_vim());
+        assert_eq!(ed.buffer().text().to_string(), "hello\nworld");
+        assert_eq!(ed.session().note, Some(VaultPath::new("notes/kept.md")));
+        assert_eq!(ed.session().revs.current(), expected_rev);
+        assert_eq!(ed.session().needles, vec!["needle".to_string()]);
+        assert!(!ed.session().revs.needles_stale(), "still armed");
+
+        // The recovery hand-over: the nvim arm's session moves into the new
+        // editor and a fresh one is left behind.
+        let mut nvim_session = session();
+        let backend = textarea_after_dead_nvim("from nvim", &mut nvim_session);
+        assert!(nvim_session.note.is_none());
+        assert!(nvim_session.needles.is_empty());
+        assert!(nvim_session.notifier.is_none());
+        let ed = backend.as_editor().expect("a textarea after recovery");
+        assert!(!ed.buf.is_vim(), "recovery falls back to direct typing");
+        assert_eq!(ed.buffer().text().to_string(), "from nvim");
+        assert_eq!(ed.session().note, Some(VaultPath::new("notes/kept.md")));
+        assert_eq!(ed.session().revs.current(), expected_rev);
+        assert_eq!(ed.session().needles, vec!["needle".to_string()]);
+        assert!(
+            ed.session().notifier.is_some(),
+            "the host's wake-up survives"
+        );
+        assert_eq!(ed.selection(), None);
+        assert_eq!(ed.drag_origin(), None);
+        assert!(!ed.last_insert_session());
+    }
+
     #[test]
     fn direct_backend_has_no_mode_label() {
-        let b = BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()));
+        let b = BackendState::Textarea(Box::new(Editor::new(false)));
         assert_eq!(b.mode_label(), None);
     }
 
     #[test]
     fn vim_backend_reports_normal_label() {
-        let b = BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()));
+        let b = BackendState::Textarea(Box::new(Editor::new(true)));
         assert_eq!(b.mode_label().as_deref(), Some("NORMAL"));
-    }
-
-    #[test]
-    fn space_leads_only_for_vim_backend() {
-        assert!(
-            !BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()))
-                .space_leads()
-        );
-        assert!(
-            BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()))
-                .space_leads()
-        );
     }
 
     #[test]
     fn modal_is_insert_classifies_backends() {
         // Direct textarea → None (non-modal, leave terminal cursor alone).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::direct(crate::ropetext::Text::new()))
-                .modal_is_insert(),
+            BackendState::Textarea(Box::new(Editor::new(false))).modal_is_insert(),
             None
         );
         // Vim backend starts in Normal mode → Some(false) (block cursor).
         assert_eq!(
-            BackendState::Textarea(TextareaBackend::vim(crate::ropetext::Text::new()))
-                .modal_is_insert(),
+            BackendState::Textarea(Box::new(Editor::new(true))).modal_is_insert(),
             Some(false)
         );
     }

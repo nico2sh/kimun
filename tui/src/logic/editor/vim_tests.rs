@@ -6,14 +6,14 @@
 //! precisely because it is *not* a public interface.
 
 use super::*;
+use crate::logic::input::{Key, KeyInput};
 use crate::ropetext::Text;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-fn key(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+fn key(c: char) -> KeyInput {
+    KeyInput::plain(Key::Char(c))
 }
-fn esc() -> KeyEvent {
-    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+fn esc() -> KeyInput {
+    KeyInput::plain(Key::Esc)
 }
 fn ta() -> RopeBuffer {
     RopeBuffer::new(Text::from("hello world\nsecond line"))
@@ -51,8 +51,8 @@ fn parse_seq(e: &mut VimEngine, keys: &str) -> Parsed {
 // Insert mode only. Each test asserts the key now escapes as a host action
 // AND that the engine's own state transitioned with it.
 
-fn ctrl(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+fn ctrl(c: char) -> KeyInput {
+    KeyInput::ctrl(c)
 }
 
 /// Enter charwise Visual over "hello" (cursor lands ON the last 'o', which
@@ -375,8 +375,8 @@ fn esc_returns_to_normal_and_steps_back() {
     let mut e = VimEngine::default();
     let mut t = ta();
     e.handle_key(&key('i'), &mut t);
-    t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
-    t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
+    t.move_cursor(crate::logic::editor::rope_buffer::CursorMove::Forward);
+    t.move_cursor(crate::logic::editor::rope_buffer::CursorMove::Forward);
     let col_before = t.cursor().1;
     let out = e.handle_key(&esc(), &mut t);
     assert_eq!(*e.mode(), EditorMode::Normal);
@@ -503,7 +503,7 @@ fn pending_g_cleared_through_insert() {
     e.handle_key(&key('G'), &mut t);
     e.handle_key(&key('g'), &mut t); // start gg
     e.handle_key(&key('a'), &mut t); // enter insert (should clear pending_g)
-    e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t);
+    e.handle_key(&KeyInput::plain(Key::Esc), &mut t);
     e.handle_key(&key('g'), &mut t); // lone g
     assert_eq!(
         t.cursor().0,
@@ -1276,7 +1276,7 @@ fn esc_clears_pending_g_in_normal() {
     e.handle_key(&key('G'), &mut t); // last line
     assert_eq!(t.cursor().0, 2);
     e.handle_key(&key('g'), &mut t); // start gg
-    e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
+    e.handle_key(&KeyInput::plain(Key::Esc), &mut t); // cancel
     e.handle_key(&key('g'), &mut t); // lone g
     assert_eq!(t.cursor().0, 2, "Esc must cancel pending g");
 }
@@ -1287,7 +1287,7 @@ fn esc_clears_pending_operator_object_in_normal() {
     let mut t = RopeBuffer::new(Text::from("foo bar baz"));
     e.handle_key(&key('d'), &mut t); // operator pending
     e.handle_key(&key('i'), &mut t); // object kind pending (NOT insert — operator pending)
-    e.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut t); // cancel
+    e.handle_key(&KeyInput::plain(Key::Esc), &mut t); // cancel
     // buffer unchanged (no diw happened)
     assert_eq!(t.rows(), &["foo bar baz"]);
     // and we're back to clean Normal: a plain motion works, mode still Normal
@@ -1727,10 +1727,7 @@ fn replace_backspace_restores_overwritten_char() {
     e.handle_key(&key('R'), &mut t);
     e.handle_key(&key('X'), &mut t); // 'a' → X
     e.handle_key(&key('Y'), &mut t); // 'b' → Y
-    e.handle_key(
-        &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        &mut t,
-    );
+    e.handle_key(&KeyInput::plain(Key::Backspace), &mut t);
     e.handle_key(&esc(), &mut t);
     assert_eq!(t.rows(), &["Xbc"]); // 'b' restored (vim replace stack)
 }
@@ -1742,10 +1739,7 @@ fn replace_backspace_removes_appended_char() {
     e.handle_key(&key('R'), &mut t);
     e.handle_key(&key('X'), &mut t); // 'a' → X
     e.handle_key(&key('Y'), &mut t); // appended past EOL
-    e.handle_key(
-        &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        &mut t,
-    );
+    e.handle_key(&KeyInput::plain(Key::Backspace), &mut t);
     e.handle_key(&esc(), &mut t);
     assert_eq!(t.rows(), &["X"]); // appended char removed, not restored
 }
@@ -1893,8 +1887,8 @@ fn replace_mode_arrows_move_cursor() {
     let mut e = VimEngine::default();
     let mut t = RopeBuffer::new(Text::from("abcd"));
     e.handle_key(&key('R'), &mut t);
-    e.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &mut t);
-    e.handle_key(&KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &mut t);
+    e.handle_key(&KeyInput::plain(Key::Right), &mut t);
+    e.handle_key(&KeyInput::plain(Key::Right), &mut t);
     e.handle_key(&key('X'), &mut t); // overwrite 'c'
     e.handle_key(&esc(), &mut t);
     assert_eq!(t.rows(), &["abXd"]);
@@ -1911,7 +1905,7 @@ fn esc_from_insert_clears_stray_selection() {
     e.handle_key(&key('i'), &mut t);
     // simulate a mouse drag mid-insert leaving a live selection
     t.start_selection();
-    t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
+    t.move_cursor(crate::logic::editor::rope_buffer::CursorMove::Forward);
     e.handle_key(&esc(), &mut t);
     assert!(
         t.selection_range().is_none(),
@@ -2684,8 +2678,8 @@ fn esc_in_normal_clears_stray_selection() {
     let mut t = RopeBuffer::new(Text::from("hello world"));
     // simulate a live selection while in Normal mode (as auto-surround/mouse-sync can leave)
     t.start_selection();
-    t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
-    t.move_cursor(crate::components::text_editor::rope_buffer::CursorMove::Forward);
+    t.move_cursor(crate::logic::editor::rope_buffer::CursorMove::Forward);
+    t.move_cursor(crate::logic::editor::rope_buffer::CursorMove::Forward);
     assert!(t.selection_range().is_some());
     let out = e.handle_key(&esc(), &mut t);
     assert!(
@@ -2884,7 +2878,7 @@ fn visual_arrow_uses_the_count() {
     let mut t = RopeBuffer::new(Text::from("a\nb\nc\nd\ne\nf"));
     e.handle_key(&key('v'), &mut t);
     e.handle_key(&key('2'), &mut t);
-    e.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut t);
+    e.handle_key(&KeyInput::plain(Key::Down), &mut t);
     assert_eq!(t.cursor().0, 2);
     e.handle_key(&key('j'), &mut t);
     assert_eq!(t.cursor().0, 3, "no count left over for `j`");
@@ -3440,10 +3434,7 @@ fn gv_after_redo_follows_the_redone_delete() {
     for c in ['j', 'V', 'j', 'd', 'u'] {
         e.handle_key(&key(c), &mut t);
     }
-    e.handle_key(
-        &KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-        &mut t,
-    );
+    e.handle_key(&KeyInput::ctrl('r'), &mut t);
     assert_eq!(t.rows(), &["a", "d"]);
     for c in ['g', 'v'] {
         e.handle_key(&key(c), &mut t);

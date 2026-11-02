@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use super::RagStatus;
 use super::client::server_config;
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::SharedSettings;
 
 /// How often the background task flushes pending changes and refreshes status.
@@ -172,7 +172,7 @@ impl Cadence {
 
 /// Spawns the background sync loop for `vault` if a RAG server is configured.
 /// Returns the task handle (abort it when the vault is rebuilt), or `None` when
-/// the feature is off. Status is delivered to the UI via [`AppEvent::RagStatus`].
+/// the feature is off. Status is delivered to the UI via [`AppMessage::RagStatus`].
 pub fn spawn_rag_sync(
     vault: Arc<NoteVault>,
     settings: &SharedSettings,
@@ -205,7 +205,7 @@ pub fn spawn_rag_sync(
                     }
                     Err(e) => {
                         log::warn!("RAG: cannot read vault id (will retry): {e}");
-                        let _ = tx.send(AppEvent::RagStatus(RagStatus::Offline));
+                        let _ = tx.send(AppMessage::RagStatus(RagStatus::Offline));
                         continue;
                     }
                 }
@@ -218,24 +218,24 @@ pub fn spawn_rag_sync(
             let update = probe.as_ref().and_then(|p| p.server_update.clone());
             if update != server_update {
                 server_update = update;
-                let _ = tx.send(AppEvent::ServerUpdate(server_update.clone()));
+                let _ = tx.send(AppMessage::ServerUpdate(server_update.clone()));
             }
 
             let reconcile = match cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready())
             {
                 Plan::Skip(status) => {
-                    let _ = tx.send(AppEvent::RagStatus(status));
+                    let _ = tx.send(AppMessage::RagStatus(status));
                     continue;
                 }
                 Plan::Wait { flash } => {
                     if let Some(status) = flash {
-                        let _ = tx.send(AppEvent::RagStatus(status));
+                        let _ = tx.send(AppMessage::RagStatus(status));
                     }
                     continue;
                 }
                 Plan::Run { flash, reconcile } => {
                     if let Some(status) = flash {
-                        let _ = tx.send(AppEvent::RagStatus(status));
+                        let _ = tx.send(AppMessage::RagStatus(status));
                     }
                     reconcile
                 }
@@ -259,7 +259,7 @@ pub fn spawn_rag_sync(
                 }
             };
             let status = cadence.settle(outcome);
-            let _ = tx.send(AppEvent::RagStatus(status));
+            let _ = tx.send(AppMessage::RagStatus(status));
         }
     }))
 }

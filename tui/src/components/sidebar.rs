@@ -14,17 +14,16 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{
-    AppEvent, AppTx, AppTxExt, FileOp, InputEvent, SortTarget, redraw_callback,
-};
-use crate::components::file_list::{FileListEntry, SortField, SortOrder, entry_order};
+use crate::components::events::InputEvent;
+use crate::components::file_list::{FileListEntry, entry_order};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
 };
-use crate::components::sortable::{
-    PropertySort, SortState, SortableList, is_blank_property, property_key,
-};
+use crate::components::sortable::{PropertySort, SortableList, is_blank_property, property_key};
 use crate::keys::KeyBindings;
+use crate::logic::message::{AppMessage, AppTx, AppTxExt, FileOp, SortTarget, redraw_callback};
+use crate::logic::sort::SortState;
+use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
@@ -459,10 +458,10 @@ impl SidebarComponent {
                 });
             }
             FileListEntry::Attachment { path, .. } => {
-                tx.send(AppEvent::OpenAttachment(path.clone())).ok();
+                tx.send(AppMessage::OpenAttachment(path.clone())).ok();
             }
             other => {
-                tx.send(AppEvent::open(other.path().clone())).ok();
+                tx.send(AppMessage::open(other.path().clone())).ok();
             }
         }
     }
@@ -520,12 +519,13 @@ impl Component for SidebarComponent {
                 )
             ) && let Some(dir) = self.breadcrumb_at(mouse.column, mouse.row)
             {
-                tx.send(AppEvent::open(dir.clone())).ok();
+                tx.send(AppMessage::open(dir.clone())).ok();
                 return EventState::Consumed;
             }
             // A click on the sort chip opens the sort dialog.
             if self.sort_chip.hit(mouse) {
-                tx.send(AppEvent::OpenSortDialog(SortTarget::Sidebar)).ok();
+                tx.send(AppMessage::OpenSortDialog(SortTarget::Sidebar))
+                    .ok();
                 return EventState::Consumed;
             }
             // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
@@ -546,7 +546,7 @@ impl Component for SidebarComponent {
                                 FileListEntry::Up { .. } | FileListEntry::CreateNote { .. }
                             )
                         {
-                            tx.send(AppEvent::FileOp(FileOp::ShowMenu(entry.path().clone())))
+                            tx.send(AppMessage::FileOp(FileOp::ShowMenu(entry.path().clone())))
                                 .ok();
                         }
                     }
@@ -904,7 +904,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
+                .any(|e| matches!(e, AppMessage::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
         );
     }

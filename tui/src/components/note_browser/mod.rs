@@ -11,12 +11,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{
-    AppEvent, AppTx, AppTxExt, InputEvent, OverlayData, redraw_callback,
-};
-use crate::components::file_list::{
-    FileListEntry, PropertyValues, SortField, SortOrder, entry_order,
-};
+use crate::components::events::InputEvent;
+use crate::components::file_list::{FileListEntry, PropertyValues, entry_order};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::preview_highlight;
@@ -25,10 +21,13 @@ use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
 };
 use crate::components::sortable::{
-    PropertySort, SortState, SortableList, is_blank_property, order_of_query, query_with_sort,
+    PropertySort, SortableList, is_blank_property, order_of_query, query_with_sort,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::message::{AppMessage, AppTx, AppTxExt, OverlayData, redraw_callback};
+use crate::logic::sort::SortState;
+use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -43,7 +42,7 @@ pub mod search_provider;
 /// The Ctrl+K note browser. It hosts a [`SearchList`] engine (query input +
 /// async-loaded result list + hashtag autocomplete) and adds the two things
 /// unique to the browser: a live preview pane for the selected note and the
-/// open-on-enter glue that emits [`AppEvent::OpenPath`].
+/// open-on-enter glue that emits [`AppMessage::OpenPath`].
 /// What the modal is scoped to — drives the input prefix glyph and whether
 /// the query syntax highlighter applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +288,7 @@ impl NoteBrowserModal {
         let handle = tokio::spawn(async move {
             let text = vault.get_note_text(&path).await.unwrap_or_default();
             result_tx.send(text).ok();
-            tx.send(AppEvent::Redraw).ok();
+            tx.send(AppMessage::Redraw).ok();
         });
         self.preview_task = Some(handle);
     }
@@ -366,7 +365,7 @@ impl NoteBrowserModal {
                 match vault.load_or_create_note(&path, None).await {
                     Ok((_, created)) => tx.announce_and_open(path, created),
                     Err(e) => {
-                        tx.send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                        tx.send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
                             .ok();
                     }
                 }
@@ -374,7 +373,7 @@ impl NoteBrowserModal {
             return;
         }
         let path = entry.path().clone();
-        tx.send(AppEvent::OpenPath {
+        tx.send(AppMessage::OpenPath {
             path,
             emphasis: self.emphasis(),
         })
@@ -547,7 +546,7 @@ impl Overlay for NoteBrowserModal {
                         EventState::Consumed
                     }
                     KeyReaction::Cancel => {
-                        tx.send(AppEvent::CloseOverlay).ok();
+                        tx.send(AppMessage::CloseOverlay).ok();
                         EventState::Consumed
                     }
                     KeyReaction::Consumed => {
@@ -792,9 +791,9 @@ impl NoteBrowserModal {
     fn click_chip(&mut self, chip: BrowserChip, tx: &AppTx) -> EventState {
         let event = match chip {
             BrowserChip::Key(key) => return self.handle_input(&InputEvent::Key(key), tx),
-            BrowserChip::Syntax => AppEvent::OpenQueryHelp,
+            BrowserChip::Syntax => AppMessage::OpenQueryHelp,
             BrowserChip::Sort => {
-                AppEvent::OpenSortDialog(crate::components::events::SortTarget::Browser)
+                AppMessage::OpenSortDialog(crate::logic::message::SortTarget::Browser)
             }
         };
         self.list.close_autocomplete();
@@ -845,17 +844,17 @@ pub(crate) fn format_journal_date(date: NaiveDate) -> String {
 /// The number of highlighted matches in `text`, or `None` when there are no
 /// needles (the preview header shows a count only for queries with text terms).
 /// Counts the same ranges [`highlight_matches`] bolds — via the shared
-/// [`preview_highlight::match_ranges`] — so the header never disagrees with the
+/// [`crate::logic::text_match::match_ranges`] — so the header never disagrees with the
 /// visible highlights (overlapping needles are deduped, folds counted).
 fn count_matches(text: &str, needles: &[String]) -> Option<usize> {
     if needles.is_empty() {
         return None;
     }
-    Some(preview_highlight::match_ranges(text, needles).len())
+    Some(crate::logic::text_match::match_ranges(text, needles).len())
 }
 
 /// The preview text with needle matches emphasized in `yellow`.
-/// Matching is byte-safe via [`preview_highlight::match_ranges`], so non-ASCII
+/// Matching is byte-safe via [`crate::logic::text_match::match_ranges`], so non-ASCII
 /// case folds (e.g. `İ`, `ẞ`) are highlighted too, not dropped.
 fn highlight_matches<'a>(
     text: &'a str,
@@ -874,7 +873,7 @@ fn highlight_matches<'a>(
     );
     let mut lines = Vec::new();
     for line in text.lines() {
-        let ranges = preview_highlight::match_ranges(line, needles);
+        let ranges = crate::logic::text_match::match_ranges(line, needles);
         if ranges.is_empty() {
             lines.push(Line::styled(line, base));
             continue;
@@ -891,9 +890,10 @@ fn highlight_matches<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::file_list::{SortField, SortOrder};
     use crate::components::search_list::{Emit, RowSource};
-    use crate::components::sortable::{SortState, SortableList};
+    use crate::components::sortable::SortableList;
+    use crate::logic::sort::SortState;
+    use crate::logic::sort::{SortField, SortOrder};
     use crate::settings::AppSettings;
     use crate::test_support::temp_vault;
     use async_trait::async_trait;
@@ -1008,11 +1008,11 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if *p == path)),
+                .any(|e| matches!(e, AppMessage::OpenPath { path: p, .. } if *p == path)),
             "expected OpenPath, got {events:?}"
         );
         assert!(
-            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
+            !events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)),
             "select must not emit CloseOverlay; editor's OpenPath handler closes the overlay, got {events:?}"
         );
     }
@@ -1054,7 +1054,7 @@ mod tests {
         );
         let mut sent = false;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::CloseOverlay) {
+            if matches!(ev, AppMessage::CloseOverlay) {
                 sent = true;
             }
         }
@@ -1131,7 +1131,7 @@ mod tests {
         assert!(
             !crate::test_support::drain(&mut rx)
                 .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+                .any(|e| matches!(e, AppMessage::CloseOverlay)),
             "the hidden [Esc] chip did not fire"
         );
     }

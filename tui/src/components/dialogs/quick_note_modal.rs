@@ -8,10 +8,10 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, OverlayData};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct QuickNoteModal {
@@ -50,7 +50,7 @@ impl QuickNoteModal {
         // Enter — possibly with Shift to open the new note after creating it.
         if let KeyCode::Enter = key.code {
             if self.input.value().trim().is_empty() {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
             } else {
                 self.submit(tx, key.modifiers.contains(KeyModifiers::SHIFT));
             }
@@ -58,7 +58,7 @@ impl QuickNoteModal {
         }
         match self.input.handle_key(&key) {
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -80,17 +80,17 @@ impl QuickNoteModal {
                     // quick_note always materialises a fresh note — tell the
                     // sidebar so it refreshes if browsing that directory.
                     tx_clone
-                        .send(AppEvent::FileOp(FileOp::Created(details.path.clone())))
+                        .send(AppMessage::FileOp(FileOp::Created(details.path.clone())))
                         .ok();
                     if open_after {
-                        tx_clone.send(AppEvent::open(details.path)).ok();
+                        tx_clone.send(AppMessage::open(details.path)).ok();
                     } else {
-                        tx_clone.send(AppEvent::CloseOverlay).ok();
+                        tx_clone.send(AppMessage::CloseOverlay).ok();
                     }
                 }
                 Err(e) => {
                     tx_clone
-                        .send(AppEvent::OverlayData(OverlayData::Error(e.to_string())))
+                        .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
                         .ok();
                 }
             }

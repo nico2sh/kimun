@@ -26,10 +26,11 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, OverlayData, SaveSource, SortTarget};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
-use crate::components::sortable::SortState;
+use crate::logic::message::{AppMessage, AppTx, OverlayData, SaveSource, SortTarget};
+use crate::logic::sort::SortState;
 use crate::settings::themes::Theme;
 
 /// Load every property key in the background; arrives as
@@ -38,8 +39,10 @@ pub(crate) fn spawn_property_keys(vault: Arc<NoteVault>, tx: &AppTx) {
     let tx = tx.clone();
     tokio::spawn(async move {
         if let Ok(keys) = vault.property_keys().await {
-            tx.send(AppEvent::OverlayData(OverlayData::PropertyKeysLoaded(keys)))
-                .ok();
+            tx.send(AppMessage::OverlayData(OverlayData::PropertyKeysLoaded(
+                keys,
+            )))
+            .ok();
         }
     });
 }
@@ -78,7 +81,7 @@ macro_rules! impl_dialog {
             fn key(
                 &mut self,
                 key: ratatui::crossterm::event::KeyEvent,
-                tx: &$crate::components::events::AppTx,
+                tx: &$crate::logic::message::AppTx,
             ) -> $crate::components::event_state::EventState {
                 self.handle_key(key, tx)
             }
@@ -86,7 +89,7 @@ macro_rules! impl_dialog {
             fn mouse(
                 &mut self,
                 m: &ratatui::crossterm::event::MouseEvent,
-                tx: &$crate::components::events::AppTx,
+                tx: &$crate::logic::message::AppTx,
             ) -> $crate::components::event_state::EventState {
                 self.handle_mouse(m, tx)
             }
@@ -246,9 +249,9 @@ impl ActiveDialog {
         tokio::spawn(async move {
             if let Ok(searches) = vault.list_saved_searches().await {
                 let names = searches.into_iter().map(|s| s.name).collect();
-                tx.send(AppEvent::OverlayData(OverlayData::SavedSearchNamesLoaded(
-                    names,
-                )))
+                tx.send(AppMessage::OverlayData(
+                    OverlayData::SavedSearchNamesLoaded(names),
+                ))
                 .ok();
             }
         });
@@ -519,7 +522,7 @@ mod tests {
     /// Render `dialog` on a 100×40 screen, left-click the first cell of
     /// `text`, and return the events the click sent. Panics if `text` is not
     /// drawn — a chip that moved off-screen should fail loudly.
-    pub(crate) fn click_text(dialog: &mut ActiveDialog, text: &str) -> Vec<AppEvent> {
+    pub(crate) fn click_text(dialog: &mut ActiveDialog, text: &str) -> Vec<AppMessage> {
         let (col, row) = draw_and_find(dialog, text);
         click_at(dialog, col, row)
     }
@@ -536,36 +539,36 @@ mod tests {
     }
 
     /// Left-click (col,row) and return the events sent.
-    pub(crate) fn click_at(dialog: &mut ActiveDialog, col: u16, row: u16) -> Vec<AppEvent> {
+    pub(crate) fn click_at(dialog: &mut ActiveDialog, col: u16, row: u16) -> Vec<AppMessage> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         Overlay::handle_input(dialog, &crate::test_support::mouse_down_at(col, row), &tx);
         crate::test_support::drain(&mut rx)
     }
 
-    fn closed(events: &[AppEvent]) -> bool {
-        events.iter().any(|e| matches!(e, AppEvent::CloseOverlay))
+    fn closed(events: &[AppMessage]) -> bool {
+        events.iter().any(|e| matches!(e, AppMessage::CloseOverlay))
     }
 
-    fn has(events: &[AppEvent], pred: impl Fn(&AppEvent) -> bool) -> bool {
+    fn has(events: &[AppMessage], pred: impl Fn(&AppMessage) -> bool) -> bool {
         events.iter().any(pred)
     }
 
     #[test]
     fn menu_actions_are_clickable() {
-        use crate::components::events::FileOp;
+        use crate::logic::message::FileOp;
         let path = kimun_core::nfs::VaultPath::new("a.md");
         let mut d = ActiveDialog::Menu(FileOpsMenuDialog::new(path));
         assert!(has(&click_text(&mut d, "[D]"), |e| matches!(
             e,
-            AppEvent::FileOp(FileOp::ShowDelete(_))
+            AppMessage::FileOp(FileOp::ShowDelete(_))
         )));
         assert!(has(&click_text(&mut d, "Rename"), |e| matches!(
             e,
-            AppEvent::FileOp(FileOp::ShowRename(_))
+            AppMessage::FileOp(FileOp::ShowRename(_))
         )));
         assert!(has(&click_text(&mut d, "Move"), |e| matches!(
             e,
-            AppEvent::FileOp(FileOp::ShowMove(_))
+            AppMessage::FileOp(FileOp::ShowMove(_))
         )));
         assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
         assert!(closed(&click_at(&mut d, 0, 0)), "outside press cancels");
@@ -627,13 +630,13 @@ mod tests {
             .expect("the click started the move");
         assert!(matches!(
             ev,
-            Some(AppEvent::OverlayData(OverlayData::Error(_))) | Some(AppEvent::FileOp(_))
+            Some(AppMessage::OverlayData(OverlayData::Error(_))) | Some(AppMessage::FileOp(_))
         ));
     }
 
     #[test]
     fn save_search_chips_are_clickable() {
-        use crate::components::events::SavedSearchFlow;
+        use crate::logic::message::SavedSearchFlow;
         let mut d = ActiveDialog::SaveSearch(SaveSearchDialog::new(
             "#tag".into(),
             None,
@@ -645,7 +648,7 @@ mod tests {
         let ev = click_text(&mut d, "[Enter] Save new");
         assert!(has(&ev, |e| matches!(
             e,
-            AppEvent::SavedSearch(SavedSearchFlow::Confirmed { .. })
+            AppMessage::SavedSearch(SavedSearchFlow::Confirmed { .. })
         )));
         assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
     }
@@ -682,7 +685,7 @@ mod tests {
         assert!(
             has(
                 &ev,
-                |e| matches!(e, AppEvent::WorkspaceSwitched(n) if n == "beta")
+                |e| matches!(e, AppMessage::WorkspaceSwitched(n) if n == "beta")
             ),
             "clicking the selected row switches"
         );
@@ -692,7 +695,7 @@ mod tests {
 
     #[test]
     fn update_actions_are_clickable() {
-        use crate::components::events::UpdateFlow;
+        use crate::logic::message::UpdateFlow;
         let status = crate::update::UpdateStatus {
             current: "0.1.0".into(),
             latest: "9.9.9".into(),
@@ -703,11 +706,11 @@ mod tests {
         let mut d = ActiveDialog::update(&status);
         assert!(has(&click_text(&mut d, "Update now"), |e| matches!(
             e,
-            AppEvent::Update(UpdateFlow::Apply)
+            AppMessage::Update(UpdateFlow::Apply)
         )));
         assert!(has(&click_text(&mut d, "[S]"), |e| matches!(
             e,
-            AppEvent::Update(UpdateFlow::Dismiss(_))
+            AppMessage::Update(UpdateFlow::Dismiss(_))
         )));
         assert!(closed(&click_text(&mut d, "[Esc] Close")));
         assert!(closed(&click_at(&mut d, 0, 0)), "outside press closes");
@@ -734,13 +737,13 @@ mod tests {
         let ev = click_text(&mut d, &name);
         assert!(has(&ev, |e| matches!(
             e,
-            AppEvent::ApplyTheme { persist: false, .. }
+            AppMessage::ApplyTheme { persist: false, .. }
         )));
         assert!(!closed(&ev), "first click only previews");
         let ev = click_text(&mut d, &name);
         assert!(has(&ev, |e| matches!(
             e,
-            AppEvent::ApplyTheme { persist: true, .. }
+            AppMessage::ApplyTheme { persist: true, .. }
         )));
         assert!(closed(&ev), "clicking the previewed theme keeps it");
     }
@@ -771,7 +774,7 @@ mod tests {
         assert!(
             has(&ev, |e| matches!(
                 e,
-                AppEvent::ApplyTheme { persist: false, .. }
+                AppMessage::ApplyTheme { persist: false, .. }
             )),
             "reverts the preview"
         );
@@ -813,7 +816,7 @@ mod tests {
 
     #[tokio::test]
     async fn pinned_rows_and_chips_are_clickable() {
-        use crate::components::events::PinnedRow;
+        use crate::logic::message::PinnedRow;
         use kimun_core::nfs::VaultPath;
         let vault = crate::test_support::temp_vault("dlg-pinned-click").await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -846,7 +849,7 @@ mod tests {
     }
 
     fn sidebar_sort() -> ActiveDialog {
-        use crate::components::file_list::{SortField, SortOrder};
+        use crate::logic::sort::{SortField, SortOrder};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let state = SortState {
             field: SortField::Name,
@@ -861,7 +864,7 @@ mod tests {
         let mut d = sidebar_sort();
         assert!(has(&click_text(&mut d, "[s] Save default"), |e| matches!(
             e,
-            AppEvent::SortChanged { persist: true, .. }
+            AppMessage::SortChanged { persist: true, .. }
         )));
         assert!(closed(&click_text(&mut d, "[Esc] Close")));
         assert!(
@@ -917,10 +920,10 @@ mod tests {
 
     #[test]
     fn active_dialog_sort_variant_compiles() {
-        use crate::components::events::SortTarget;
-        use crate::components::file_list::{SortField, SortOrder};
+        use crate::logic::message::SortTarget;
+        use crate::logic::sort::{SortField, SortOrder};
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let state = crate::components::sortable::SortState {
+        let state = crate::logic::sort::SortState {
             field: SortField::Name,
             order: SortOrder::Ascending,
             group_dirs: Some(false),
@@ -936,7 +939,7 @@ mod tests {
     /// those tests failing — so this drives the real `handle_data` path.
     #[tokio::test]
     async fn active_dialog_routes_pinned_notes_loaded_rows() {
-        use crate::components::events::PinnedRow;
+        use crate::logic::message::PinnedRow;
         use kimun_core::nfs::VaultPath;
         use tokio::sync::mpsc::unbounded_channel;
 

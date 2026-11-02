@@ -9,11 +9,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::components::drawer::DrawerView;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::keys::KeyBindings;
+use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::nav::DrawerView;
 use crate::settings::themes::Theme;
 
 /// Total column width the rail occupies, borders included.
@@ -158,7 +159,7 @@ impl ActivityRail {
                 && let Some(view) = self.view_at(mouse.column, mouse.row)
             {
                 self.set_cursor(view);
-                tx.send(AppEvent::OpenDrawerView(view)).ok();
+                tx.send(AppMessage::OpenDrawerView(view)).ok();
                 return EventState::Consumed;
             }
             return EventState::NotConsumed;
@@ -176,7 +177,7 @@ impl ActivityRail {
                 EventState::Consumed
             }
             KeyCode::Enter => {
-                tx.send(AppEvent::OpenDrawerView(self.cursor_view())).ok();
+                tx.send(AppMessage::OpenDrawerView(self.cursor_view())).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -356,7 +357,7 @@ mod tests {
         rail.handle_input(&key(KeyCode::Down), &tx);
         rail.handle_input(&key(KeyCode::Enter), &tx);
         match rx.try_recv() {
-            Ok(AppEvent::OpenDrawerView(view)) => assert_eq!(view, DrawerView::Find),
+            Ok(AppMessage::OpenDrawerView(view)) => assert_eq!(view, DrawerView::Find),
             other => panic!("expected OpenDrawerView, got {other:?}"),
         }
     }

@@ -1,28 +1,22 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod find_bar;
-pub mod find_replace;
 pub mod markdown;
-pub mod markdown_edits;
+mod markdown_style;
 pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
-pub mod parse_incremental;
-pub mod plain_keys;
-mod revisions;
-pub mod rope_buffer;
-pub mod typing_run;
-use revisions::Revisions;
-pub mod snapshot;
-pub mod text_coords;
+use crate::keys::crossterm_input::pointer_input;
+use crate::logic::editor::revisions::Revisions;
+#[cfg(test)]
+use crate::logic::editor::rope_buffer::CursorMove;
+#[cfg(test)]
+use crate::logic::input::KeyInput;
+use crate::logic::input::{Button, PointerInput, PointerKind};
 pub mod view;
-mod vim;
-mod vim_objects;
-pub mod widener_metrics;
 
-use self::rope_buffer::CursorMove;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use std::num::NonZeroU64;
@@ -31,13 +25,13 @@ use std::num::NonZeroU64;
 /// revision. Free function (not a method on `TextEditorComponent`) so
 /// production callers that need to mutate other fields of
 /// `TextEditorComponent` afterwards can pass `&self.backend` and
-/// `self.revs.current()` directly — the borrow checker can split
+/// the session's `revs.current()` directly — the borrow checker can split
 /// borrows across distinct fields but not across method calls.
 fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -> EditorSnapshot {
     match backend {
         BackendState::Textarea(tb) => {
-            let cursor = tb.ta.cursor();
-            EditorSnapshot::of_buffer(tb.ta.text().clone(), cursor, content_revision)
+            let cursor = tb.cursor();
+            EditorSnapshot::of_buffer(tb.buffer().text().clone(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
             let snap = nvim.snapshot();
@@ -55,96 +49,21 @@ fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -
         }
     }
 }
-
-/// Identity for a **replace preview**'s snapshot: the real content revision
-/// folded together with the previewed text.
-///
-/// The view gates parse-cache rebuilds on `content_revision`, so a preview must
-/// not reuse the buffer's — it would show a parse of text that is not on
-/// screen. Deriving it from the previewed lines means an unchanged preview
-/// keeps its cache entry across frames, and any change to the pattern, the
-/// replacement, or the buffer produces a new one.
-fn preview_revision(base: NonZeroU64, lines: &[String]) -> NonZeroU64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    base.get().hash(&mut h);
-    lines.hash(&mut h);
-    NonZeroU64::new(h.finish()).unwrap_or(NonZeroU64::MIN)
-}
-
-/// Returns true if any autocomplete trigger char (`[` for `[[wikilink`,
-/// `#` for `#hashtag`) appears between the start of `line` and the
-/// cursor's char column. Walks backwards from the cursor so the common
-/// "user just typed inside a trigger" case short-circuits quickly. The
-/// scan stays within one row because triggers can't cross a newline.
-///
-/// UTF-8 safe: takes a char column and never slices on a byte that is
-/// not a codepoint boundary. Wikilinks can contain spaces
-/// (`[[my note title`), so the walk does NOT stop at whitespace — only
-/// the trigger char or start-of-row halts it.
-fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
-    let cursor_byte = line
-        .char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len());
-    line[..cursor_byte]
-        .chars()
-        .rev()
-        .any(|c| c == '[' || c == '#')
-}
-
 use self::backend::BackendState;
 #[cfg(test)]
 use self::find_bar::{BarFocus, SearchStatus};
-use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
-use self::rope_buffer::RopeBuffer;
-use self::snapshot::EditorSnapshot;
-use self::view::MarkdownEditorView;
-use crate::util::single_slot_task::SingleSlotTask;
-
-/// Convert a 0-based character column into a byte offset within `line`.
-/// Out-of-range columns return `line.len()`.
-pub(super) fn char_col_to_byte(line: &str, char_col: usize) -> usize {
-    line.char_indices()
-        .nth(char_col)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len())
-}
-
-/// Owned RGBA image data lifted from the system clipboard. Returned by
-/// [`TextEditorComponent::take_clipboard_image`] so the screen layer can
-/// encode + persist without holding the editor's clipboard borrow.
-#[derive(Debug, Clone)]
-pub struct ClipboardImage {
-    pub width: usize,
-    pub height: usize,
-    pub rgba: Vec<u8>,
-}
-
-/// Schemes the paste-over-selection flow recognises as "linkable" — broader
-/// than `core::note::scan::is_remote_url` (http/https only) because users routinely paste
-/// `mailto:` and FTP links and expect them wrapped as markdown links too.
-const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
-
-/// Visual rows one mouse-wheel notch scrolls the editor.
-const WHEEL_SCROLL_ROWS: isize = 1;
-
-fn linkable_url(s: &str) -> Option<&str> {
-    kimun_core::note::scan::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
-}
-
-/// If `clip` is a linkable URL and `selection` is non-empty, returns
-/// `Some("[escaped_selection](url)")`. Otherwise returns `None`, signalling the
-/// caller to insert `clip` verbatim.
-fn try_build_markdown_link(clip: &str, selection: Option<&str>) -> Option<String> {
-    let url = linkable_url(clip)?;
-    let sel = selection.filter(|s| !s.is_empty())?;
-    let escaped = sel.replace('\\', r"\\").replace(']', r"\]");
-    Some(format!("[{escaped}]({url})"))
-}
+use self::view::PainterState;
+use crate::logic::editor::Editor;
+use crate::logic::editor::claim::{
+    ClipboardImage, EditorClaim, FollowTarget, has_trigger_before_cursor,
+};
+use crate::logic::editor::handled::{Handled, KeyPath};
+use crate::logic::editor::overlay::{Overlay, OverlayKind};
+use crate::logic::editor::request::EditorRequest;
+use crate::logic::editor::rope_buffer::RopeBuffer;
+use crate::logic::editor::session::{EditorSession, FrameInput};
+use crate::logic::editor::snapshot::EditorSnapshot;
 
 use std::sync::Arc;
 
@@ -155,45 +74,16 @@ use crate::components::autocomplete::{
     self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
 };
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
-use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
-use crate::components::events::redraw_callback;
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
-use crate::keys::action_shortcuts::TextAction;
+#[cfg(test)]
+use crate::logic::message::AppMessage;
+use crate::logic::message::AppTx;
+use crate::logic::message::Notifier;
+use crate::logic::text_action::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
-
-/// What following resolves to — the **follow target** under the cursor.
-///
-/// Named for the action rather than the destination, because the destination is
-/// not known here: a `Link` is still the raw string as written in the note, and
-/// only `EditorScreen::follow_link` decides whether it names a vault note, an
-/// external URL, or an attachment. Wider than a **note link**, which is
-/// note→note only.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FollowTarget {
-    /// A wiki-link or markdown link, with the raw target string.
-    Link(String),
-    /// A hashtag label with the name **without** the leading `#`.
-    Label(String),
-}
-
-/// Which editor-internal surface currently holds input — the **editor claim**.
-///
-/// Read into the `Intent` classifier's snapshot so ownership is decided once,
-/// there, instead of being re-asserted per event kind further down. The holder
-/// is named rather than merely counted because what a claim blocks differs by
-/// holder: the find bar blocks a paste, a click and a bare Space; the popup
-/// wants all three.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EditorClaim {
-    #[default]
-    None,
-    FindBar,
-    Autocomplete,
-}
 
 /// Snapshot used to satisfy `AutocompleteHost`. Wraps an
 /// `EditorSnapshot` (Cow-borrowed from the textarea on the common
@@ -234,15 +124,15 @@ impl AutocompleteHost for EditorHostSnapshot {
         // user opens a note and types `[[` before the first frame),
         // return a placeholder so the controller still opens the
         // popup. The editor's render path skips drawing it until
-        // `view.last_cursor_screen` is available, then re-anchors and
+        // `painter.last_cursor_screen` is available, then re-anchors and
         // draws with the correct position.
         Some(self.cursor_screen.unwrap_or((0, 0)))
     }
 }
 
 /// Free-function builder for `EditorHostSnapshot`. Production
-/// callers pass `&self.backend`, `self.revs.current()`,
-/// `self.view.last_cursor_screen` directly so the borrow checker
+/// callers pass `&self.backend`, the session's `revs.current()`,
+/// `self.painter.last_cursor_screen` directly so the borrow checker
 /// can split borrows from `&mut self.autocomplete`. Returns `None`
 /// on the Nvim backend (autocomplete is Textarea-only).
 fn build_editor_host_snapshot(
@@ -264,32 +154,23 @@ fn build_editor_host_snapshot(
 /// text edit (text differs) vs. a pure cursor move (text same, cursor
 /// moved) vs. a no-op (both same).
 pub struct TextEditorComponent {
+    /// The editing engine. The textarea arm is a [`Editor`], which owns its
+    /// buffer, its [`EditorSession`] and its textarea-only state (selection,
+    /// drag origin, Insert-session bracket, queued requests).
     backend: BackendState,
-    /// The note on screen, set by [`Self::open_note`]. Whether the next text
-    /// is a *reload* of this note or *another* note is decided by this, never
-    /// by comparing texts: two notes can hold the same text (two empty ones,
-    /// two made from one template), and state that belongs to one — undo
-    /// history, selection, `gv` marks — must not leak into the other.
-    note: Option<kimun_core::nfs::VaultPath>,
-    /// Where the current mouse drag started, so each drag event rebuilds the
-    /// selection from it rather than from a selection the last event reshaped.
-    drag_origin: Option<(usize, usize)>,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
-    view: MarkdownEditorView,
-    /// The one revision clock plus its comparison snapshots (saved,
-    /// needles) — see [`Revisions`]. `revs.current()` advances iff the
-    /// buffer text changes: `bump_content` on the textarea backend, the
-    /// per-frame `adopt` of the snapshot's revision on the nvim backend
-    /// (the snapshot derives it from the backend's `content_gen` under a
-    /// single lock — the only `content_gen → NonZeroU64` site). Cursor
-    /// moves never touch it, so an in-flight autosave's revision token
-    /// survives navigation, and `view.update` reuses its parse cache.
-    revs: Revisions,
-    /// Current selection range in logical (row, byte-col) coordinates.
-    /// Only tracked for the Textarea backend; always `None` for Nvim.
-    selection: Option<((usize, usize), (usize, usize))>,
+    /// The nvim arm's per-frame machinery: the open note, the revision clock,
+    /// needles, the display, the background jobs and the notifier. Unused
+    /// while the textarea is active (its [`Editor`] owns its own); handed over
+    /// to the textarea if nvim dies. Reach either through `session()`.
+    nvim_session: EditorSession,
+    /// The nvim arm's queued asks (a right-click wants the note's context
+    /// menu); drained by `take_requests` together with the editor's.
+    nvim_requests: Vec<EditorRequest>,
+    /// What the painter remembers between frames (cursor anchor and shape).
+    painter: PainterState,
     /// Host-side state and policy for the Nvim backend (pending-Z intercept,
     /// frame sync). See [`nvim_host`].
     nvim_host: NvimHost,
@@ -303,50 +184,10 @@ pub struct TextEditorComponent {
     /// backend so `maybe_recover_from_dead_nvim` can spin up the
     /// autocomplete controller after the fallback to Textarea.
     autocomplete_vault: Option<Arc<NoteVault>>,
-    /// Whether the autocomplete controller's redraw callback has been
-    /// bound to the app event bus. Bound lazily on the first
-    /// `handle_input` because `AppTx` is not available at
-    /// construction.
-    autocomplete_redraw_bound: bool,
-    /// Background full-parse fallback for large buffers (perf #9).
-    /// The view installs a placeholder `ParsedBuffer` and signals
-    /// pending; this slot owns the spawned tokio task that runs
-    /// the real `ParsedBuffer::parse`. `SingleSlotTask` aborts the
-    /// previous spawn on a fresh edit, so a burst of edits resolves
-    /// against the latest content.
-    full_parse_task: SingleSlotTask<()>,
-    /// Background full-wrap fallback for large buffers, the layout-side
-    /// twin of `full_parse_task`. The view installs a `Layout::unwrapped`
-    /// stub and signals pending; this slot owns the spawned tokio task
-    /// that runs the real `Layout::compute`. `SingleSlotTask` aborts the
-    /// previous spawn on a fresh edit, so a burst of edits resolves
-    /// against the latest content.
-    layout_task: SingleSlotTask<()>,
-    /// Whether the last key was handled while vim was in Insert. A change either
-    /// way ends the open **undo group**: leaving Insert closes vim's session,
-    /// entering it starts a fresh one.
-    last_insert_session: bool,
-    /// Set by a right-click with no selection: the host (which owns the note
-    /// path) opens the note's context menu and clears the flag.
-    pub wants_context_menu: bool,
-    /// Lowercased needles to emphasize in the rendered buffer — set when the
-    /// note was opened from a query result ("search match"), and
-    /// dropped on the first edit (`revs.needles_stale()`).
-    search_needles: Vec<String>,
-    full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
-    full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
-    layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, crate::ropetext::Layout)>,
-    layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, crate::ropetext::Layout)>,
-    /// `AppTx` clone bound the first time `handle_input` runs, so the
-    /// spawned full-parse/full-wrap tasks can post `AppEvent::Redraw` on
-    /// completion without waiting for the next user keystroke.
-    redraw_tx: Option<AppTx>,
 }
 
 impl TextEditorComponent {
     pub fn new(key_bindings: KeyBindings, settings: &AppSettings) -> Self {
-        let (full_parse_tx, full_parse_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (layout_tx, layout_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             backend: BackendState::from_settings(
                 &settings.editor_backend,
@@ -354,27 +195,64 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            view: MarkdownEditorView::new(),
-            revs: Revisions::new(),
-            selection: None,
+            nvim_session: EditorSession::new(),
+            nvim_requests: Vec::new(),
+            painter: PainterState::default(),
             nvim_host: NvimHost::new(),
             search: None,
-            note: None,
-            drag_origin: None,
             autocomplete: None,
             autocomplete_vault: None,
-            autocomplete_redraw_bound: false,
-            full_parse_task: SingleSlotTask::empty(),
-            layout_task: SingleSlotTask::empty(),
-            last_insert_session: false,
-            wants_context_menu: false,
-            search_needles: Vec::new(),
-            full_parse_tx,
-            full_parse_rx,
-            layout_tx,
-            layout_rx,
-            redraw_tx: None,
         }
+    }
+
+    /// The active engine's session: the textarea [`Editor`]'s own, or the
+    /// nvim arm's.
+    fn session(&self) -> &EditorSession {
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.session(),
+            BackendState::Nvim(_) => &self.nvim_session,
+        }
+    }
+
+    fn session_mut(&mut self) -> &mut EditorSession {
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.session_mut(),
+            BackendState::Nvim(_) => &mut self.nvim_session,
+        }
+    }
+
+    /// The painted selection. Only the textarea tracks one; always `None` on
+    /// nvim.
+    fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.backend.as_editor().and_then(|ed| ed.selection())
+    }
+
+    /// Set the painted selection. A no-op on nvim, which never has one.
+    #[cfg(test)]
+    fn set_selection(&mut self, selection: Option<((usize, usize), (usize, usize))>) {
+        if let Some(ed) = self.backend.as_editor_mut() {
+            ed.set_selection(selection);
+        }
+    }
+
+    /// The textarea's buffer. Panics on nvim: tests drive the textarea.
+    #[cfg(test)]
+    fn ta(&mut self) -> &mut RopeBuffer {
+        self.backend
+            .as_textarea_mut()
+            .expect("expected Textarea backend")
+    }
+
+    /// The painted selection, for assertions.
+    #[cfg(test)]
+    fn selection_for_test(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.selection()
+    }
+
+    /// The active session's revision clock, for assertions.
+    #[cfg(test)]
+    fn revs_for_test(&self) -> &Revisions {
+        &self.session().revs
     }
 
     /// Attach a vault so autocomplete can query notes/tags. Activates
@@ -388,6 +266,7 @@ impl TextEditorComponent {
                 std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
                 AutocompleteMode::Both,
             ));
+            self.install_notifier_on_autocomplete();
         }
     }
 
@@ -409,24 +288,8 @@ impl TextEditorComponent {
             std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
             AutocompleteMode::Both,
         ));
-        // Fresh controller — `bind_autocomplete_redraw` must rebind
-        // on the next handle_input.
-        self.autocomplete_redraw_bound = false;
-    }
-
-    /// Build a snapshot view of the editor state for the autocomplete
-    /// controller. Method form wraps `build_editor_host_snapshot` for
-    /// callers that do not need to split borrows; production hot
-    /// paths (`refresh_autocomplete_if_open`, `sync_autocomplete`)
-    /// inline the free function instead so `&self.backend` and
-    /// `&mut self.autocomplete` can coexist.
-    #[allow(dead_code)]
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
-        build_editor_host_snapshot(
-            &self.backend,
-            self.revs.current(),
-            self.view.last_cursor_screen,
-        )
+        // Fresh controller — it needs the stored notifier installed.
+        self.install_notifier_on_autocomplete();
     }
 
     /// Pull the latest async query results into the popup state. Called
@@ -455,8 +318,8 @@ impl TextEditorComponent {
         // (the controller below) can coexist via field-disjoint borrows.
         let Some(snapshot) = build_editor_host_snapshot(
             &self.backend,
-            self.revs.current(),
-            self.view.last_cursor_screen,
+            self.session().revs.current(),
+            self.painter.last_cursor_screen,
         ) else {
             self.close_autocomplete();
             return;
@@ -502,8 +365,8 @@ impl TextEditorComponent {
         // `&mut self.autocomplete` can coexist.
         let Some(snapshot) = build_editor_host_snapshot(
             &self.backend,
-            self.revs.current(),
-            self.view.last_cursor_screen,
+            self.session().revs.current(),
+            self.painter.last_cursor_screen,
         ) else {
             if let Some(c) = self.autocomplete.as_mut() {
                 c.close();
@@ -515,272 +378,222 @@ impl TextEditorComponent {
         }
     }
 
-    /// Returns the buffer lines for direct access.
-    ///
-    /// For the Textarea backend, returns the live lines.
-    /// For the Nvim backend, returns an empty slice — use `get_text()` instead,
-    /// which reads from the snapshot.
     /// The open note's text. Empty for the nvim backend, which owns its own.
     pub fn text(&self) -> crate::ropetext::Text {
         match &self.backend {
-            BackendState::Textarea(tb) => tb.ta.text().clone(),
+            BackendState::Textarea(ed) => ed.text(),
             BackendState::Nvim(_) => crate::ropetext::Text::new(),
         }
     }
 
-    /// Single producer for the editor's atomic `(lines, cursor,
-    /// content_revision)` view. Downstream consumers (`MarkdownEditorView`,
-    /// `click_to_logical_u16`, the autocomplete host) take a
-    /// `&EditorSnapshot` and stop guarding against drift between cursor
-    /// and lines on every leaf access — the snapshot owns that
-    /// invariant at construction time.
-    ///
-    /// On the Textarea backend the snapshot borrows live lines (no
-    /// clone) and the cursor is already in-bounds. On the Nvim backend
-    /// the lines are cloned out from behind the `Mutex` (same cost as
-    /// today's render path) and the cursor row is clamped to
+    /// The editor's atomic `(lines, cursor, content_revision)` view
+    /// ([`Editor::view_snapshot`]). On the Nvim backend the lines are cloned
+    /// out from behind the `Mutex` and the cursor row is clamped to
     /// `lines.len() - 1` before the snapshot is returned.
     ///
-    /// Production hot paths that also need `&mut self.view` (notably
+    /// Production hot paths that also need `&mut self.painter` (notably
     /// `render`) must instead inline the snapshot via
-    /// `snapshot_from_backend(&self.backend, self.revs.current())`
+    /// `snapshot_from_backend(&self.backend, self.session().revs.current())`
     /// so the borrow checker can split the borrows across distinct
     /// fields.
     pub fn view_snapshot(&self) -> EditorSnapshot {
-        snapshot_from_backend(&self.backend, self.revs.current())
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.view_snapshot(),
+            BackendState::Nvim(_) => {
+                snapshot_from_backend(&self.backend, self.session().revs.current())
+            }
+        }
     }
 
     /// The cursor's (row, col) without materialising a snapshot — the Nvim
     /// path of `view_snapshot` clones every buffer line, far too heavy for
     /// per-frame consumers that only want the position (status-bar ln/col).
     pub fn cursor_pos(&self) -> (usize, usize) {
-        self.backend.cursor()
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.cursor(),
+            BackendState::Nvim(_) => self.backend.cursor(),
+        }
     }
 
     /// Set the search needles to emphasize in the rendered buffer (the note
     /// was opened from a query result). Cleared automatically on the first
     /// edit.
     pub fn set_search_needles(&mut self, needles: Vec<String>) {
-        self.search_needles = needles
-            .into_iter()
-            .map(|n| n.to_lowercase())
-            .filter(|n| !n.is_empty())
-            .collect();
-        self.revs.arm_needles();
-    }
-
-    /// Show `note` with `text`.
-    ///
-    /// The note already on screen is reloaded ([`Self::set_text`]): unchanged
-    /// text keeps everything — history, selection, scroll, `gv`. Any other
-    /// note is loaded from scratch even when its text is identical, so nothing
-    /// of the previous note carries over.
-    pub fn open_note(&mut self, note: kimun_core::nfs::VaultPath, text: String) {
-        if self.note.as_ref().is_some_and(|open| open.is_like(&note)) {
-            self.set_text(text);
-            return;
-        }
-        self.note = Some(note);
-        self.load(text);
-    }
-
-    /// The note on screen was renamed to `note`: still the same note, so
-    /// nothing is reset, and a later [`Self::open_note`] under the new name is
-    /// a reload.
-    pub fn renamed_to(&mut self, note: kimun_core::nfs::VaultPath) {
-        self.note = Some(note);
-    }
-
-    /// Reload the note on screen with `text`.
-    ///
-    /// A no-op when the buffer would be identical — preserves view scroll,
-    /// selection, edit generation cache, and an open autocomplete popup.
-    /// Saves the expensive lines clone too. Still normalises the saved
-    /// marker: if the buffer was flagged dirty by a previous divergent
-    /// save, reloading the same content from disk should clear that
-    /// flag rather than persist a phantom `[+]` in the title bar.
-    ///
-    /// That shortcut is only right for the *same* note; switching notes goes
-    /// through [`Self::open_note`].
-    pub fn set_text(&mut self, text: String) {
-        if text == self.get_text() {
-            self.revs.mark_saved_current();
-            if let Some(nvim) = self.backend.as_nvim() {
-                nvim.mark_clean();
-            }
-            return;
-        }
-        self.load(text);
-    }
-
-    /// Replace the buffer with `text` and drop everything that described the
-    /// old one: history, selection, input state, popups.
-    fn load(&mut self, text: String) {
-        // A drag under way belonged to the old text.
-        self.drag_origin = None;
         match &mut self.backend {
-            BackendState::Textarea(tb) => {
-                tb.ta.replace(crate::ropetext::Text::from(text.as_str()));
-            }
-            BackendState::Nvim(nvim) => {
-                nvim.set_text(&text);
+            BackendState::Textarea(ed) => ed.set_search_needles(needles),
+            BackendState::Nvim(_) => {
+                self.nvim_session.needles = needles
+                    .into_iter()
+                    .map(|n| n.to_lowercase())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                self.nvim_session.revs.arm_needles();
             }
         }
-        self.backend.reset_input_state();
+    }
+
+    /// Show `note` with `text` ([`Editor::open_note`]).
+    pub fn open_note(&mut self, note: kimun_core::nfs::VaultPath, text: String) {
+        match &mut self.backend {
+            BackendState::Textarea(ed) => {
+                if ed.open_note(note, text) {
+                    self.after_load();
+                }
+            }
+            BackendState::Nvim(_) => {
+                if self
+                    .nvim_session
+                    .note
+                    .as_ref()
+                    .is_some_and(|open| open.is_like(&note))
+                {
+                    self.set_text(text);
+                    return;
+                }
+                self.nvim_session.note = Some(note);
+                self.load_nvim(text);
+            }
+        }
+    }
+
+    /// The note on screen was renamed to `note` ([`Editor::renamed_to`]).
+    pub fn renamed_to(&mut self, note: kimun_core::nfs::VaultPath) {
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.renamed_to(note),
+            BackendState::Nvim(_) => self.nvim_session.note = Some(note),
+        }
+    }
+
+    /// Reload the note on screen with `text` ([`Editor::set_text`]).
+    pub fn set_text(&mut self, text: String) {
+        match &mut self.backend {
+            BackendState::Textarea(ed) => {
+                if ed.set_text(text) {
+                    self.after_load();
+                }
+            }
+            BackendState::Nvim(_) => {
+                if text == self.backend.text() {
+                    self.nvim_session.revs.mark_saved_current();
+                    if let Some(nvim) = self.backend.as_nvim() {
+                        nvim.mark_clean();
+                    }
+                    return;
+                }
+                self.load_nvim(text);
+            }
+        }
+    }
+
+    /// What the TUI layers drop when the buffer was replaced: an open popup
+    /// would linger over the new note (e.g. after Ctrl+G follow-link), and the
+    /// find bar is worse — `armed_empty` surviving a note swap means one Ctrl+A
+    /// deletes every match in a note the user never armed, skipping the
+    /// confirmation the flag exists to force.
+    fn after_load(&mut self) {
+        self.close_autocomplete();
+        self.search = None;
+    }
+
+    /// Replace the nvim buffer with `text` and drop everything that described
+    /// the old one.
+    fn load_nvim(&mut self, text: String) {
+        if let BackendState::Nvim(nvim) = &mut self.backend {
+            nvim.set_text(&text);
+        }
         self.bump_content();
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
-        // Buffer replaced — close any open autocomplete popup so it does
-        // not linger over the new note (e.g. after Ctrl+G follow-link).
-        self.close_autocomplete();
-        // Everything below described the OLD buffer. A textarea swap installs
-        // a fresh, empty history, so recorded **undo groups** now point at
-        // states this history cannot reach — and a group whose `after` is an
-        // empty buffer would hash-match any empty note, popping an extra entry
-        // against unrelated history. The find bar is worse: `armed_empty`
-        // surviving a note swap means one Ctrl+A deletes every match in a note
-        // the user never armed, skipping the confirmation the flag exists to
-        // force. `self.selection` would likewise still describe the old text.
-        self.search = None;
-        self.selection = None;
-        // The whole buffer was replaced. The cursor resets to the top, so if
-        // the line count happens to match and row 0 differs, the damage fast
-        // path would report `0..1` and leave the rest of the note parsed as the
-        // previous one.
-        self.view.note_bulk_edit();
+        self.after_load();
+        self.nvim_session.display.note_bulk_edit();
     }
 
     pub fn get_text(&self) -> String {
-        self.backend.text()
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.get_text(),
+            BackendState::Nvim(_) => self.backend.text(),
+        }
     }
 
-    /// Current content revision. Bumped on every text-mutating handler;
-    /// stable across cursor moves and idle frames. Used by the autosave
-    /// path to record "this snapshot was saved" without rebuilding the
-    /// buffer text on completion. `NonZeroU64` makes 0 unrepresentable
-    /// so callers can express "no revision" as `Option<NonZeroU64>::None`
-    /// without a magic-value sentinel.
+    /// Current content revision ([`Editor::content_revision`]).
     pub fn content_revision(&self) -> NonZeroU64 {
-        self.revs.current()
+        self.session().revs.current()
     }
 
-    /// Mark the buffer as clean iff its current revision still matches
-    /// `rev` (i.e. no edits landed between the save being issued and
-    /// completing). Diverged revision → no-op: leave the saved snapshot
-    /// alone, because some OTHER mechanism (a synchronous `try_save`
-    /// racing this completion) may have already marked a NEWER revision
-    /// clean, and a stale completion must not clobber that. `is_dirty`
-    /// already reads true when the saved snapshot mismatches the current
-    /// revision, so doing nothing on a mismatch keeps the editor correctly
-    /// dirty without overwriting a legitimately-newer saved snapshot.
+    /// Mark the buffer clean iff `rev` is still current
+    /// ([`Editor::mark_saved_at_revision`]).
     pub fn mark_saved_at_revision(&mut self, rev: NonZeroU64) {
-        if !self.revs.mark_saved_at(rev) {
-            return;
-        }
-        // Below the guard on purpose: a stale completion marks nothing, and an
-        // action that did nothing must not close the group. One undo after a
-        // real save lands on exactly what is on disk (CONTEXT.md).
-        self.interrupt_typing();
-        if let Some(nvim) = self.backend.as_nvim() {
-            nvim.mark_clean();
-        }
-    }
-
-    /// Synchronous mark-saved used by `try_save` and `set_text`. Unlike
-    /// `mark_saved_at_revision` (which no-ops on a stale revision because
-    /// it can race a sync mark_saved), this one CLOBBERS the saved snapshot
-    /// to `None` when the supplied text diverges: the sync caller holds
-    /// `&mut self` for the whole save, so there is no concurrent newer
-    /// clean state to preserve, and the user typing between
-    /// `get_text()` and this call must show as dirty.
-    pub fn mark_saved(&mut self, text: String) {
-        self.interrupt_typing();
-        let matches = text == self.get_text();
-        if matches {
-            if let Some(nvim) = self.backend.as_nvim() {
-                nvim.mark_clean();
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.mark_saved_at_revision(rev),
+            BackendState::Nvim(_) => {
+                if !self.nvim_session.revs.mark_saved_at(rev) {
+                    return;
+                }
+                self.interrupt_typing();
+                if let Some(nvim) = self.backend.as_nvim() {
+                    nvim.mark_clean();
+                }
             }
-            self.revs.mark_saved_current();
-        } else {
-            // Textarea: divergent save → stay dirty.
-            // Nvim: snapshot's `dirty` was untouched anyway; the saved
-            // snapshot in `revs` is what is_dirty consults on the
-            // Textarea backend, and we explicitly forget it here.
-            self.revs.mark_diverged();
         }
     }
 
-    /// Something happened that is not a continuation of typing.
-    ///
-    /// One entry point for every path that is not a keystroke — a click, a
-    /// find, an autocomplete accept, a save, a vim motion — because the state it
-    /// closes is kept on the component while those paths reach the buffer by
-    /// four different routes, and a rule applied on one of them is a rule the
-    /// other three forget.
-    ///
-    /// The two halves are deliberately not gated alike:
-    ///
-    /// - The **goal cell** belongs to a run of `↑`/`↓` and to nothing else, so
-    ///   any other action forgets it, in every mode.
-    /// - The **undo group** is closed only outside a vim Insert session. There
-    ///   the session *is* the group (CONTEXT.md), so an autosave landing
-    ///   mid-word, or an auto-surround typed inside Insert, must not split what
-    ///   one `u` is supposed to take back.
+    /// Synchronous mark-saved ([`Editor::mark_saved`]).
+    pub fn mark_saved(&mut self, text: String) {
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.mark_saved(text),
+            BackendState::Nvim(_) => {
+                self.interrupt_typing();
+                let matches = text == self.get_text();
+                if matches {
+                    if let Some(nvim) = self.backend.as_nvim() {
+                        nvim.mark_clean();
+                    }
+                    self.nvim_session.revs.mark_saved_current();
+                } else {
+                    self.nvim_session.revs.mark_diverged();
+                }
+            }
+        }
+    }
+
+    /// Something happened that is not a continuation of typing
+    /// ([`Editor::interrupt_typing`]). Nvim has no typing run: only the
+    /// vertical-motion goal cell is forgotten.
     fn interrupt_typing(&mut self) {
-        self.view.clear_visual_goal();
-        if self.backend.modal_is_insert().unwrap_or(false) {
-            return;
-        }
-        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
-            run.end();
-        }
-    }
-
-    /// Notice that vim entered or left Insert, and close the group if it did.
-    ///
-    /// This marks a session's *start*: the first key of a session arrives here
-    /// with the flag still reading the old mode. The session's *end* is closed by
-    /// [`Self::interrupt_typing`] on the engine path, because `Esc` is consumed
-    /// there and never reaches this function at all.
-    fn sync_insert_session(&mut self) {
-        let in_insert = self.backend.modal_is_insert().unwrap_or(false);
-        if self.last_insert_session == in_insert {
-            return;
-        }
-        self.last_insert_session = in_insert;
-        if let Some((_, run)) = self.backend.as_textarea_parts_mut() {
-            run.end();
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.interrupt_typing(),
+            BackendState::Nvim(_) => self.nvim_session.display.clear_visual_goal(),
         }
     }
 
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
-            BackendState::Textarea(_) => self.revs.is_dirty(),
+            BackendState::Textarea(ed) => ed.is_dirty(),
             BackendState::Nvim(nvim) => nvim.snapshot().dirty,
         }
     }
 
-    /// Whether a bare Space should start the leader (vim Normal mode only).
-    /// Returns `false` for the direct textarea backend, the nvim backend,
-    /// vim Insert/Visual modes, and any pending state.
-    ///
-    /// A pure vim-mode fact. It used to also return false while the find bar
-    /// was open — the bar's claim smuggled through the nearest differently
-    /// named field, because the snapshot had nowhere to put it. That is now
-    /// [`Self::claim`]'s job.
+    /// Whether a bare Space should start the leader ([`Editor::space_leads`]).
+    /// Always false on nvim. The find bar's claim is [`Self::claim`]'s job.
     pub fn space_leads(&self) -> bool {
-        self.backend.space_leads()
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.space_leads(),
+            BackendState::Nvim(_) => false,
+        }
     }
 
     /// Whether a press in this editor moves the cursor to the cell under it.
     ///
     /// False on the **nvim** backend, where the terminal and nvim own the
-    /// mouse: this component's `handle_mouse` returns `NotConsumed` before any
+    /// mouse: `Editor::handle_pointer` (via the component) returns `NotConsumed` before any
     /// `jump_to`. Anything that treats a click as pointing *at* something —
     /// following a link, most obviously — has to ask this first, or it reads a
     /// cursor the click never moved.
     pub fn mouse_drives_cursor(&self) -> bool {
-        self.backend.is_textarea()
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.mouse_drives_cursor(),
+            BackendState::Nvim(_) => false,
+        }
     }
 
     /// Whether this cell is one this editor would place the cursor on.
@@ -788,8 +601,8 @@ impl TextEditorComponent {
     /// Narrower than the editor *column*, which the panel set hit-tests: the
     /// column includes the frame drawn around this component, and `self.rect`
     /// is the interior it was handed at render — minus the find-bar row, which
-    /// `render` already excludes. `handle_mouse` bounds-checks against exactly
-    /// this and returns `NotConsumed` outside it, so a press anywhere else
+    /// `render` already excludes. `handle_input` bounds-checks against exactly
+    /// this and answers `NotConsumed` outside it, so a press anywhere else
     /// leaves the cursor where it was. Callers that read the cursor *after* a
     /// press have to ask, or they read a position the press never set.
     pub fn covers(&self, column: u16, row: u16) -> bool {
@@ -814,141 +627,39 @@ impl TextEditorComponent {
     /// Returns the link or label target under the cursor, or `None` if the
     /// cursor is not inside a wikilink, markdown link, or hashtag span.
     pub fn follow_target_at_cursor(&self) -> Option<FollowTarget> {
-        let (_row, col, line) = match &self.backend {
-            BackendState::Textarea(tb) => {
-                let (row, col) = tb.ta.cursor();
-                let line = tb.ta.row(row)?.into_owned();
-                (row, col, line)
-            }
+        match &self.backend {
+            BackendState::Textarea(ed) => ed.follow_target_at_cursor(),
             BackendState::Nvim(nvim) => {
                 let snap = nvim.snapshot();
                 let (row, col) = snap.cursor;
                 let line = snap.lines.get(row)?.to_string();
-                (row, col, line)
+                crate::logic::editor::claim::follow_target_in_line(&line, col)
             }
-        };
-
-        // F5: Check wiki-link / markdown-link spans first; Link wins over Label
-        // even if a future edit accidentally lets a Label slip through a Link range.
-        if let Some(span) = kimun_core::note::scan::link_char_spans(&line)
-            .into_iter()
-            .find(|s| s.start <= col && col < s.end)
-        {
-            return Some(FollowTarget::Link(span.target));
         }
-
-        // Fallback: check for a hashtag label (via the markdown parser).
-        let parsed = self::markdown::ParsedLine::parse(&line);
-        parsed
-            .elements
-            .iter()
-            .find(|e| {
-                e.kind == self::markdown::ElementKind::Label
-                    && col >= e.start_char
-                    && col < e.end_char
-            })
-            .map(|e| {
-                let span: String = line
-                    .chars()
-                    .skip(e.start_char)
-                    .take(e.end_char - e.start_char)
-                    .collect();
-                let name = span.trim_start_matches('#').to_string();
-                FollowTarget::Label(name)
-            })
     }
 
     /// Copy selected text to the OS clipboard, flashing the outcome.
     ///
-    /// Routed through the shared [`crate::components::yank`] seam so a clipboard
+    /// Routed through the shared [`crate::logic::clipboard::yank`] seam so a clipboard
     /// failure is reported rather than swallowed, and so "nothing was selected"
     /// is distinguishable from "the copy failed".
+    #[cfg(test)]
     fn copy_selection_to_clipboard(&mut self, tx: &AppTx) {
-        // A vim Visual selection copies exactly as the Ctrl-C chord does —
-        // one path for both gestures.
-        if let Some(text) = self.backend.copy_visual() {
-            crate::components::yank(text, "copied", tx);
-            return;
-        }
-        let text = {
-            // Match the highlighted range in vim charwise Visual mode: the
-            // textarea selection is half-open, but the cursor's char is part of
-            // the visual selection, so copy it too (right-click copy reaches
-            // here after a mouse drag that flipped the engine into Visual).
-            // Read-only — must NOT move the cursor or grow the live selection,
-            // since copy leaves the selection active (repeated copy would drift
-            // wider). `extend_visual_selection_inclusive` is for one-shot
-            // consumers (paste/wrap) that collapse the selection afterwards.
-            let selected = self
-                .backend
-                .selection_as_shown()
-                .zip(self.backend.as_textarea())
-                .and_then(|(range, ta)| ta.text_between(range.0, range.1));
-            match selected {
-                Some(t) if !t.is_empty() => t,
-                _ => {
-                    tx.send(AppEvent::FlashMessage("nothing to copy".into()))
-                        .ok();
-                    return;
-                }
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.copy_selection_to_clipboard(tx),
+            // Nvim has no vim-Visual or textarea selection to read from here.
+            BackendState::Nvim(_) => {
+                tx.send(AppMessage::FlashMessage("nothing to copy".into()))
+                    .ok();
             }
-        };
-        crate::components::yank(text, "copied", tx);
+        }
     }
 
-    /// Paint the selection as the user sees it: under vim's Visual modes the
-    /// range Visual covers (`VimEngine::visual_range` decides what that is),
-    /// otherwise the buffer's own selection.
-    ///
-    /// One painting choice on top: a `V` selection's last row is painted to
-    /// the pane's edge rather than to its last character, so linewise reads as
-    /// whole lines. Which rows are covered is still the engine's range.
+    /// Refresh the painted selection ([`Editor::sync_highlight`]). Nvim paints
+    /// its own, so this is a no-op there.
     fn sync_highlight(&mut self) {
-        self.selection = self.backend.selection_as_shown();
-        if self.backend.is_visual_line()
-            && let Some((start, (er, _))) = self.selection
-        {
-            self.selection = Some((start, (er, usize::MAX)));
-        }
-    }
-
-    /// Paste text from the OS clipboard at the cursor, replacing any active
-    /// selection. Every failure is reported — silence here is what made the
-    /// vim-mode paste bug so hard to place.
-    fn paste_from_clipboard(&mut self, tx: &AppTx) {
-        let text = match crate::components::with_clipboard(|c| c.get_text()) {
-            Ok(t) if !t.is_empty() => t,
-            Ok(_) => {
-                tx.send(AppEvent::FlashMessage("clipboard is empty".into()))
-                    .ok();
-                return;
-            }
-            Err(e) => {
-                tx.send(AppEvent::FlashMessage(format!("clipboard: {e}")))
-                    .ok();
-                return;
-            }
-        };
-        self.paste_text(&text, tx);
-        // Report the paste like every other clipboard action. Without this the
-        // footer keeps the raw chord echo, so Ctrl+V was the one clipboard key
-        // that never said what it did.
-        tx.send(AppEvent::FlashMessage("pasted".into())).ok();
-    }
-
-    /// Under vim's Visual modes the live textarea selection is not what the
-    /// highlight shows: charwise it excludes the char under the cursor (vim's
-    /// selection is inclusive), linewise it spans anchor-to-cursor columns
-    /// rather than whole rows. Re-select the range Visual covers
-    /// ([`vim::VimEngine::visual_range`]) so out-of-engine consumers
-    /// (paste-over-selection, bold/italic/strikethrough wrap) act on all of
-    /// it. No-op outside Visual (Direct/Insert/Nvim), where the buffer's
-    /// selection is already what callers want.
-    fn extend_visual_selection_inclusive(&mut self) {
-        if let Some((start, end)) = self.backend.visual_range()
-            && let Some(ta) = self.backend.as_textarea_mut()
-        {
-            ta.set_selection(start, end);
+        if let Some(ed) = self.backend.as_editor_mut() {
+            ed.sync_highlight();
         }
     }
 
@@ -974,31 +685,13 @@ impl TextEditorComponent {
             if let (Some(bar), BackendState::Textarea(tb)) =
                 (self.search.as_mut(), &mut self.backend)
             {
-                bar.paste(text, &mut tb.ta);
+                bar.paste(text, tb.buffer_mut());
             }
             self.apply_edit_outcome();
             return;
         }
-        // The paste consumes a Visual selection: record it for `gv` before the
-        // edit moves the text, and leave Visual after (as the image paste does).
-        self.backend.conclude_visual();
-        self.extend_visual_selection_inclusive();
         match &mut self.backend {
-            BackendState::Textarea(tb) => {
-                let selection = linkable_url(text).and_then(|_| tb.ta.selection_text());
-                let wrapped = try_build_markdown_link(text, selection.as_deref());
-                let insert = wrapped.as_deref().unwrap_or(text).to_string();
-                // Replacing a selection is a cut plus an insert — one paste,
-                // one undo.
-                tb.ta.edit(|ta| {
-                    if ta.selection_range().is_some() {
-                        ta.cut();
-                    }
-                    ta.insert_str(insert);
-                });
-                self.backend.sync_mouse_selection(false);
-                self.after_edit();
-            }
+            BackendState::Textarea(ed) => ed.paste_text(text),
             BackendState::Nvim(nvim) => {
                 nvim.paste(text, tx.clone());
                 self.bump_content();
@@ -1007,7 +700,7 @@ impl TextEditorComponent {
         // The buffer just changed under the popup's feet; reconcile
         // the trigger context so a stale replace_range cannot survive
         // into the next Accept.
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
         self.sync_autocomplete();
     }
 
@@ -1020,20 +713,12 @@ impl TextEditorComponent {
             self.paste_text(text, tx);
             return;
         }
-        // Replacing the selection happens HERE, atomically with the insert, and
-        // not earlier when the paste was merely started: the image encode and
-        // the attachment save can both fail (disk full, read-only vault, a sync
-        // conflict), and a cut done up front would leave the user's selected
-        // text destroyed with nothing in its place and only a save error to
-        // explain it.
-        self.take_selection_for_external_paste();
-        if let Some(ta) = self.backend.as_textarea_mut() {
-            ta.insert_str(text);
-            self.after_edit();
+        if let BackendState::Textarea(ed) = &mut self.backend {
+            ed.insert_at_cursor(text);
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
         self.sync_autocomplete();
     }
 
@@ -1047,12 +732,7 @@ impl TextEditorComponent {
     /// Ctrl+V, and "no image on the clipboard" is the ordinary case, not a
     /// failure to report.
     pub fn take_clipboard_image(&mut self) -> Option<ClipboardImage> {
-        let img = crate::components::with_clipboard(|c| c.get_image()).ok()?;
-        Some(ClipboardImage {
-            width: img.width,
-            height: img.height,
-            rgba: img.bytes.into_owned(),
-        })
+        crate::logic::clipboard::read_image()
     }
 
     /// Prepare the buffer for content arriving from *outside* the editor's own
@@ -1064,123 +744,47 @@ impl TextEditorComponent {
     /// the same door the mouse path uses. Without this the engine keeps a mode
     /// that the buffer no longer supports: still Visual, selection gone.
     pub fn take_selection_for_external_paste(&mut self) {
-        // Before the cut, so `gv` marks move with it rather than being set
-        // from coordinates the cut has just invalidated.
-        self.backend.conclude_visual();
-        self.extend_visual_selection_inclusive();
-        let cut = if let Some(ta) = self.backend.as_textarea_mut() {
-            let cut = ta.selection_range().is_some() && ta.cut();
-            self.selection = ta.selection_range();
-            cut
-        } else {
-            false
-        };
-        if cut {
-            self.apply_edit_outcome();
+        if let BackendState::Textarea(ed) = &mut self.backend {
+            ed.take_selection_for_external_paste();
         }
-        // `false` = no live selection, so a modal engine returns to Normal.
-        // A no-op for Insert and for the non-modal backends.
-        self.backend.sync_mouse_selection(false);
     }
 
-    /// Auto-surround: wrap the selection in `open`…`close`. A vim charwise
-    /// Visual selection is inclusive, so it is widened by one char first
-    /// (otherwise `ve` then Bold yields `**hell**o`). `false` — and nothing
-    /// touched — without a selection or on the Nvim backend.
-    fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
-        self.extend_visual_selection_inclusive();
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return false;
-        };
-        if !markdown_edits::wrap_selection(ta, open, close) {
-            return false;
-        }
-        // The inner text stays selected so wraps chain; under vim that is a
-        // Visual selection, or the mode and the highlight disagree.
-        self.backend.adopt_host_selection();
-        // Only here, past every `return false` above: this function is consulted
-        // for each bare `( [ { < " ' ` * _ ~` keystroke, and the declining ones
-        // fall through to ordinary typing, which must keep its run.
-        self.after_edit();
-        true
-    }
-
-    /// Bold / Italic / Strikethrough: wrap the selection in the marker, or with
-    /// nothing selected insert a pair and leave the cursor between. No-op for
-    /// other actions and on the Nvim backend.
+    /// Bold / Italic / Strikethrough ([`Editor::apply_text_action`]). No-op on
+    /// the Nvim backend.
     pub fn apply_text_action(&mut self, action: TextAction) {
-        let Some(marker) = markdown_edits::emphasis_marker(action) else {
-            return;
-        };
-        // A Visual selection with nothing in it (an empty row): nothing to
-        // wrap, and inserting a marker pair would type into a selection.
-        if self.backend.visual_is_empty() {
-            return;
+        if let BackendState::Textarea(ed) = &mut self.backend {
+            ed.apply_text_action(action);
         }
-        if self.wrap_selection(marker, marker) {
-            return;
-        }
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        markdown_edits::insert_pair(ta, marker, marker);
-        self.after_edit();
     }
 
-    /// Smart Enter — [`markdown_edits::smart_enter`] on the live buffer. `true`
-    /// when handled, so the caller does not insert a plain newline; always
-    /// `false` on the Nvim backend.
+    /// Smart Enter ([`Editor::smart_enter`]). Always `false` on the Nvim
+    /// backend.
     pub fn smart_enter(&mut self) -> bool {
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return false;
-        };
-        if !markdown_edits::smart_enter(ta) {
-            return false;
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.smart_enter(),
+            BackendState::Nvim(_) => false,
         }
-        self.after_edit();
-        true
     }
 
-    /// The OUTLINE drawer's jump — [`markdown_edits::jump_to_row`] on the
-    /// live buffer. No-op on the Nvim backend.
+    /// The OUTLINE drawer's jump ([`Editor::jump_to_row`]). No-op on the Nvim
+    /// backend.
     pub fn jump_to_row(&mut self, row: usize) {
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        if markdown_edits::jump_to_row(ta, row) {
-            self.sync_highlight();
+        if let BackendState::Textarea(ed) = &mut self.backend {
+            ed.jump_to_row(row);
         }
     }
 
-    /// Indent or dedent whole rows by one **indent step** — the cursor's row,
-    /// or every row a selection touches. A selection ending at column 0 of a
-    /// later row does not visually include that row, so it is left alone.
-    /// No-op on the Nvim backend.
+    /// Indent or dedent whole rows ([`Editor::indent_lines`]). No-op on the
+    /// Nvim backend.
     pub fn indent_lines(&mut self, dedent: bool) {
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            return;
-        };
-        let rows = match ta.selection_range() {
-            Some(((sr, _), (er, ec))) => {
-                let last = if ec == 0 && er > sr { er - 1 } else { er };
-                sr..=last
-            }
-            None => {
-                let (row, _) = ta.cursor();
-                row..=row
-            }
-        };
-        if ta.indent_rows(rows, dedent) {
-            self.after_edit();
+        if let BackendState::Textarea(ed) = &mut self.backend {
+            ed.indent_lines(dedent);
         }
     }
 }
 
 impl TextEditorComponent {
-    /// Advances the revision clock. Use at every site that mutates the
-    /// buffer (insert, delete, paste, undo/redo, autocomplete accept) on
-    /// the Textarea backend. `handle_input` uses the revision delta to
-    /// detect a real text change without materialising the buffer.
+    /// Advances the revision clock ([`Editor::bump_content`]).
     ///
     /// Not called by the Nvim path — the reverse-refresh task in
     /// `backend.rs` bumps `snap.content_gen` on real diffs, the frame
@@ -1188,12 +792,12 @@ impl TextEditorComponent {
     /// snapshot's value (see the `revs` field doc).
     #[inline]
     fn bump_content(&mut self) {
-        self.revs.bump();
+        self.session_mut().revs.bump();
     }
 
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
     fn maybe_recover_from_dead_nvim(&mut self) {
-        if self.backend.recover_from_dead_nvim() {
+        if self.backend.recover_from_dead_nvim(&mut self.nvim_session) {
             // Spin up the autocomplete controller now that we're on the
             // textarea backend — set_vault was a no-op at startup when
             // we were still on Nvim.
@@ -1265,11 +869,12 @@ impl TextEditorComponent {
         };
         // Paint the match `n`/`N` landed on. The bar is closed here, so the
         // buffer answers — which is why `match_at_cursor` lives on it.
-        self.selection = if tb.ta.search_repeat(backward) {
-            tb.ta.match_at_cursor()
+        let selection = if tb.buffer_mut().search_repeat(backward) {
+            tb.buffer().match_at_cursor()
         } else {
             None
         };
+        tb.set_selection(selection);
     }
 
     /// Run `f` against the open bar and its buffer, then apply what the buffer
@@ -1284,7 +889,7 @@ impl TextEditorComponent {
         let Some(bar) = self.search.as_mut() else {
             return false;
         };
-        let outcome = f(bar, &mut tb.ta);
+        let outcome = f(bar, tb.buffer_mut());
         if outcome.close {
             self.search = None;
             // Clear the anchor as well as the mirrored range. The bar's cursor
@@ -1292,8 +897,8 @@ impl TextEditorComponent {
             // `selection_start`, so a selection that existed before the search
             // is left live but unpainted — and the next keystroke silently
             // deletes it.
-            tb.ta.cancel_selection();
-            self.selection = None;
+            tb.buffer_mut().cancel_selection();
+            tb.set_selection(None);
         }
         self.apply_edit_outcome();
         true
@@ -1307,7 +912,7 @@ impl TextEditorComponent {
     /// The **replace preview** for this frame, when a bar is open. Test-facing:
     /// production reads it through `FindBar::overlay`.
     #[cfg(test)]
-    fn replace_preview(&self) -> Option<find_replace::Preview> {
+    fn replace_preview(&self) -> Option<crate::logic::editor::find_replace::Preview> {
         let bar = self.search.as_ref()?;
         let buf = self.backend.as_textarea()?;
         bar.preview(buf)
@@ -1322,290 +927,64 @@ impl TextEditorComponent {
         }
     }
 
-    /// Bind the redraw channel up front (e.g. on note open) so the
-    /// background full-parse task can wake the event-driven render loop
-    /// on the FIRST render of a large buffer, before any keystroke has
-    /// run `handle_input`. No-op after the first successful bind.
-    pub fn set_redraw_tx(&mut self, tx: &AppTx) {
-        self.bind_autocomplete_redraw(tx);
+    /// Hand the host's wake-up to the component: the background full-parse
+    /// and full-layout tasks call it when they finish, and the autocomplete
+    /// controller calls it when its query task resolves. Set it up front
+    /// (e.g. on note open) so the FIRST render of a large buffer can wake
+    /// the event-driven render loop.
+    pub fn set_notifier(&mut self, notifier: Notifier) {
+        self.session_mut().notifier = Some(notifier);
+        self.install_notifier_on_autocomplete();
     }
 
-    /// Bind the autocomplete controller's redraw callback AND the
-    /// editor's background-full-parse redraw signal to the app
-    /// event bus. Called from `handle_input` (the first place where
-    /// the editor has access to `AppTx`). The autocomplete piece is
-    /// a no-op after the first successful bind; the redraw_tx clone
-    /// is set unconditionally so a reset autocomplete controller
-    /// (e.g. after Nvim → Textarea fallback) doesn't lose the
-    /// editor's redraw channel.
-    fn bind_autocomplete_redraw(&mut self, tx: &AppTx) {
-        if self.redraw_tx.is_none() {
-            self.redraw_tx = Some(tx.clone());
-        }
-        if self.autocomplete_redraw_bound {
-            return;
-        }
-        if let Some(c) = self.autocomplete.as_mut() {
-            c.set_redraw_callback(redraw_callback(tx.clone()));
-            self.autocomplete_redraw_bound = true;
+    /// Install the stored notifier on the autocomplete controller, if both
+    /// exist. Called whenever either is (re)created.
+    fn install_notifier_on_autocomplete(&mut self) {
+        if let (Some(n), Some(c)) = (self.session().notifier.clone(), self.autocomplete.as_mut()) {
+            c.set_redraw_callback(n);
         }
     }
 
-    /// What every edit made through the buffer owes the component: the typing
-    /// run ends (any non-typing action closes the open **undo group**), the
-    /// selection mirror the renderer reads is refreshed, and the outcome is
-    /// drained — bumping the revision and telling the view what to re-parse.
-    /// Reports whether the text changed.
+    /// TUI-only convenience preserving the lazy binding: callers that still
+    /// receive an `&AppTx` fill in an unset notifier from it. It is a TUI-side
+    /// convenience and stays.
+    fn ensure_notifier(&mut self, tx: &AppTx) {
+        if self.session().notifier.is_none() {
+            self.set_notifier(crate::logic::message::redraw_callback(tx.clone()));
+        }
+    }
+
+    /// What every edit made through the buffer owes the component
+    /// ([`Editor::after_edit`]). Nvim has no edit buffer: the typing state is
+    /// settled and nothing changed.
     fn after_edit(&mut self) -> bool {
-        self.interrupt_typing();
-        self.sync_highlight();
-        self.apply_edit_outcome()
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.after_edit(),
+            BackendState::Nvim(_) => {
+                self.interrupt_typing();
+                false
+            }
+        }
     }
 
-    /// Drain the **rope buffer**'s measured outcome and apply it.
-    ///
-    /// The one place a text change turns into a revision bump and a
-    /// parse-damage signal. Both facts are derived by the buffer from the
-    /// content either side of the edit, so neither can be predicted wrongly
-    /// (an `insert_str` that returns `false` after deleting) or simply
-    /// forgotten at one of 22 sites.
-    ///
-    /// The revision clock stays on the component because it serves the nvim
-    /// backend too, which has no edit buffer.
+    /// Settle an edit a TUI layer (find bar, autocomplete accept) made on the
+    /// buffer ([`Editor::finish_external_edit`]). Nvim has no edit buffer.
     fn apply_edit_outcome(&mut self) -> bool {
-        let Some(outcome) = self.backend.as_textarea_mut().map(|ta| ta.take_outcome()) else {
-            return false;
-        };
-        if outcome.changed {
-            self.bump_content();
+        match &mut self.backend {
+            BackendState::Textarea(ed) => ed.finish_external_edit(),
+            BackendState::Nvim(_) => false,
         }
-        if outcome.bulk {
-            self.view.note_bulk_edit();
-        }
-        if let Some(rows) = outcome.damage {
-            self.view.note_damage(rows, outcome.line_delta);
-        }
-        outcome.changed
     }
 
-    /// Undo one *user action*. The **edit buffer** replays history to the
-    /// state the action started from, so nothing here counts entries.
-    fn undo_grouped(&mut self) -> bool {
-        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.undo());
-        if moved {
-            self.sync_highlight();
-        }
-        moved
-    }
-
-    /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
-    fn redo_grouped(&mut self) -> bool {
-        let moved = self.backend.as_textarea_mut().is_some_and(|ta| ta.redo());
-        if moved {
-            self.sync_highlight();
-        }
-        moved
-    }
-
-    /// Handle a key event when using the Textarea backend.
-    fn handle_textarea_key(
-        &mut self,
-        key: &ratatui::crossterm::event::KeyEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        // No find-bar check here: `handle_input` — this function's one
-        // production caller — already routes to the bar before the vim engine,
-        // so a second check could never fire. It survived only because tests
-        // call this function directly.
-
-        // Whether this key types. Decided here rather than in the plain-key
-        // section below, because a key claimed earlier — Ctrl+Z, a clipboard
-        // chord, Tab — returns before ever reaching it, and a run left open
-        // across an undo would try to extend a group that was just taken back.
-        let stroke = plain_keys::operation(*key).and_then(|op| match op {
-            plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
-            plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
-            plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
-                Some(typing_run::Stroke::Delete)
-            }
-            _ => None,
-        });
-        if stroke.is_none()
-            && let Some((_, run)) = self.backend.as_textarea_parts_mut()
-        {
-            run.end();
-        }
-
-        // System clipboard shortcuts — intercept before passing to textarea.
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('c') => {
-                    self.copy_selection_to_clipboard(tx);
-                    return EventState::Consumed;
-                }
-                KeyCode::Char('v') => {
-                    self.paste_from_clipboard(tx);
-                    return EventState::Consumed;
-                }
-                KeyCode::Char('x') => {
-                    self.copy_selection_to_clipboard(tx);
-                    let cut = if let Some(ta) = self.backend.as_textarea_mut() {
-                        // `ta.cut()` returns `false` when the selection was
-                        // empty / nothing to remove. Use its return value
-                        // directly rather than pre-checking selection_range —
-                        // one source of truth, no spurious view rebuild on
-                        // no-op Ctrl+X.
-                        let cut = ta.cut();
-                        self.selection = ta.selection_range();
-                        cut
-                    } else {
-                        false
-                    };
-                    if cut {
-                        self.apply_edit_outcome();
-                    }
-                    return EventState::Consumed;
-                }
-                _ => {}
-            }
-        }
-
-        // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). Handled before the
-        // textarea borrow below because the **undo group** bookkeeping lives on
-        // the component, and `as_textarea_mut` borrows all of `self`. A replace
-        // is two history entries and must cost one Ctrl+Z, not two.
-        if key.modifiers & !KeyModifiers::SHIFT == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('z') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    if self.undo_grouped() {
-                        self.apply_edit_outcome();
-                    }
-                    return EventState::Consumed;
-                }
-                KeyCode::Char('y') | KeyCode::Char('Z') => {
-                    if self.redo_grouped() {
-                        self.apply_edit_outcome();
-                    }
-                    return EventState::Consumed;
-                }
-                _ => {}
-            }
-        }
-
-        // FocusSidebar / FocusEditor shortcuts are intercepted at the
-        // EditorScreen level for directional navigation.
-
-        // Standard text-editor shortcuts.
-        // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
-        // all navigation and editing shortcuts must be mapped explicitly.
-        // Outcome tracks whether the handled shortcut mutated the buffer, only
-        // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
-        // undo stack) — so the revision clock is not
-        // bumped on true no-ops.
-        // BackTab is what most terminals emit for Shift+Tab.
-        match (key.modifiers, key.code) {
-            (m, KeyCode::Tab)
-                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
-            {
-                self.indent_lines(m.contains(KeyModifiers::SHIFT));
-                return EventState::Consumed;
-            }
-            (_, KeyCode::BackTab) => {
-                self.indent_lines(true);
-                return EventState::Consumed;
-            }
-            _ => {}
-        }
-        if key.code == KeyCode::Enter && key.modifiers.is_empty() && self.smart_enter() {
-            return EventState::Consumed;
-        }
-
-        // Auto-surround: an opening/symmetric pair char typed over a selection
-        // wraps it instead of replacing it (see CONTEXT.md "Auto-surround").
-        // Shift is allowed (most opening chars are shifted keys); Ctrl/Alt
-        // chords fall through. The selection lands on the inner text so wraps
-        // chain: `[` `[` builds a wikilink — and `handle_input`'s post-key
-        // sync legitimately opens the wikilink popup on the chained wrap.
-        if let KeyCode::Char(c) = key.code
-            && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
-            && let Some((open, close)) = markdown_edits::surround_pair(c)
-            && self.wrap_selection(open, close)
-        {
-            return EventState::Consumed;
-        }
-
-        // A change of modal state ends whatever run was open: leaving Insert
-        // closes vim's session, and entering it starts a fresh one. Also read in
-        // `handle_input` for the keys the engine consumes, which never arrive
-        // here — this call is what keeps the direct path (which the tests drive)
-        // bracketed too.
-        self.sync_insert_session();
-
-        // Read before the buffer is borrowed below.
-        let in_insert_session = self.last_insert_session;
-        let Some((ta, run)) = self.backend.as_textarea_parts_mut() else {
+    /// The direct-edit path alone, as the tests that pin it drive it
+    /// ([`Editor::handle_direct_key`]): no popup, find-bar or vim stage, and
+    /// no autocomplete follow-up.
+    #[cfg(test)]
+    fn handle_textarea_key(&mut self, key: KeyInput, tx: &AppTx) -> EventState {
+        let Some(ed) = self.backend.as_editor_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        // Last: what the key means to the plain backend. It runs *after* the
-        // component's own claims — `Tab` indents rows, `Enter` may continue a
-        // list, an opening bracket over a selection wraps it — because those are
-        // the same keys and the component's reading of them wins.
-        if let Some(op) = plain_keys::operation(*key) {
-            // ↑/↓ move by *drawn* line, so they need the layout — which lives on
-            // the view, not the buffer. Everything else the buffer can answer
-            // alone. A run of them keeps its goal cell; anything else ends the run.
-            let vertical = match op {
-                plain_keys::Operation::Move {
-                    to: CursorMove::Up,
-                    extend,
-                } => Some((false, extend)),
-                plain_keys::Operation::Move {
-                    to: CursorMove::Down,
-                    extend,
-                } => Some((true, extend)),
-                _ => None,
-            };
-            if vertical.is_none() {
-                self.view.clear_visual_goal();
-            }
-            // Does this keystroke continue the last one's **undo group**? The
-            // policy is the backend's; the engine only offers a group
-            // that can span keystrokes. Everything that is not typing ends the
-            // run, which is what makes the idle rule correct without a timer:
-            // undo is itself one of those things.
-            if let Some(stroke) = stroke {
-                {
-                    let now = std::time::Instant::now();
-                    // In vim's Insert mode the session is the group: `u` takes
-                    // back everything typed since `i`, so neither a word boundary
-                    // nor a pause may break it. `sync_insert_session` above ended
-                    // the run at the boundary, which marks a session's start.
-                    let carries_on = if in_insert_session {
-                        run.continues_session(stroke, now)
-                    } else {
-                        run.continues(stroke, now)
-                    };
-                    if carries_on {
-                        ta.continue_group();
-                    }
-                }
-            }
-
-            let changed = match vertical {
-                // A stale layout — an edit landed before the frame that re-lays
-                // it out — falls back to the logical move rather than reading it.
-                Some((down, extend)) if self.view.move_cursor_visually(ta, down, extend) => false,
-                _ => plain_keys::apply(op, ta),
-            };
-            self.selection = ta.selection_range();
-            if changed {
-                self.apply_edit_outcome();
-            }
-        }
-        // A key the table declines — a function key, a modifier-only release, an
-        // IME composition event — leaves the buffer alone, so a harmless keypress
-        // cannot mark the note dirty and trigger an autosave.
-        EventState::Consumed
+        event_state(ed.handle_direct_key(key, tx).0)
     }
 
     /// Act on what the autocomplete popup did with a key or a click — one
@@ -1626,112 +1005,68 @@ impl TextEditorComponent {
         }
     }
 
-    /// Handle a mouse event (Textarea backend only).
-    fn handle_mouse(
-        &mut self,
-        mouse: &ratatui::crossterm::event::MouseEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        if !self.covers(mouse.column, mouse.row) {
-            return EventState::NotConsumed;
-        }
-        // Kept for the screen→layout conversion below, which is only reachable
-        // past the bounds check that `covers` just made.
-        let r = self.rect;
-        // Past the bounds check the event is ours, so it is an action: a click
-        // moves the cursor, and even a scroll means attention moved. Placed above
-        // the context-menu return below so a right-click counts too.
+    /// A pointer event inside the editor that has no [`PointerInput`]
+    /// (horizontal scroll), on the nvim engine: still an action, but the
+    /// terminal owns it.
+    fn ignored_nvim_pointer(&mut self) -> EventState {
         self.interrupt_typing();
-        // Right-click: with a selection it copies (unchanged behavior);
-        // without one it asks the host to open the note's context menu
-        // (file & note ops).
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right))
-            && self.selection.is_none_or(|(start, end)| start == end)
+        EventState::NotConsumed
+    }
+
+    /// Drain what the editor has asked its host to do since the last call.
+    pub fn take_requests(&mut self) -> Vec<EditorRequest> {
+        let mut requests = std::mem::take(&mut self.nvim_requests);
+        if let Some(ed) = self.backend.as_editor_mut() {
+            requests.extend(ed.take_requests());
+        }
+        requests
+    }
+
+    /// A pointer event on the nvim engine. The caller has already checked
+    /// that it landed inside the editor. Only the right-press context-menu
+    /// ask is backend-independent; the terminal and nvim own the rest.
+    fn handle_nvim_pointer(&mut self, pointer: &PointerInput) -> EventState {
+        // Past the bounds check the event is ours, so it is an action.
+        self.interrupt_typing();
+        // Right-click without a selection (nvim never has one here) asks the
+        // host to open the note's context menu (file & note ops).
+        if matches!(pointer.kind, PointerKind::Down(Button::Right))
+            && self.selection().is_none_or(|(start, end)| start == end)
         {
-            self.wants_context_menu = true;
+            self.nvim_requests.push(EditorRequest::ContextMenu);
             return EventState::Consumed;
         }
-        // Everything below drives the textarea backend directly; on Nvim the
-        // terminal/nvim own the mouse (only the context-menu ask above is
-        // backend-independent).
-        if !self.backend.is_textarea() {
-            return EventState::NotConsumed;
-        }
-        // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-            self.copy_selection_to_clipboard(tx);
-            self.sync_highlight();
-            return EventState::Consumed;
-        }
-        // A drag under vim selects what it covers, rebuilt from where it began.
-        // With no press in this editor behind it (one that began elsewhere, or
-        // before another note was opened) there is nothing it could select.
-        if matches!(mouse.kind, MouseEventKind::Drag(_)) {
-            let (lrow, lcol) = self
-                .view
-                .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-            match self.drag_origin {
-                Some(origin)
-                    if self
-                        .backend
-                        .select_dragged(origin, (lrow as usize, lcol as usize)) =>
-                {
-                    self.sync_highlight();
-                    return EventState::Consumed;
-                }
-                None if self.backend.is_vim() => return EventState::Consumed,
-                _ => {}
-            }
-        }
-        // The drag, if any, is over.
-        if matches!(mouse.kind, MouseEventKind::Up(_)) {
-            self.drag_origin = None;
-        }
-        // Now extract ta for remaining mouse operations.
-        let Some(ta) = self.backend.as_textarea_mut() else {
-            unreachable!()
+        EventState::NotConsumed
+    }
+
+    /// Act on what the textarea [`Editor`] queued during this input call
+    /// ([`Editor::take_host_requests`]): the find bar and the popup are this
+    /// component's. `ContextMenu` stays queued for the screen's
+    /// [`Self::take_requests`] poll.
+    fn drain_host_requests(&mut self) {
+        let Some(ed) = self.backend.as_editor_mut() else {
+            return;
         };
-        match mouse.kind {
-            MouseEventKind::Down(_) => {
-                self.view.follow_cursor();
-                ta.cancel_selection();
-                let (lrow, lcol) = self
-                    .view
-                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.jump_to(lrow as usize, lcol as usize);
-                ta.start_selection();
-                self.drag_origin = Some(ta.cursor());
-            }
-            MouseEventKind::Drag(_) => {
-                let (lrow, lcol) = self
-                    .view
-                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
-                ta.jump_to(lrow as usize, lcol as usize);
-            }
-            // The wheel moves kimün's own viewport, never the cursor — the
-            // find bar relies on that to let the user read elsewhere mid-search.
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let delta = if mouse.kind == MouseEventKind::ScrollUp {
-                    -WHEEL_SCROLL_ROWS
-                } else {
-                    WHEEL_SCROLL_ROWS
-                };
+        for request in ed.take_host_requests() {
+            match request {
+                EditorRequest::OpenSearch => self.open_or_advance_search(),
+                EditorRequest::SearchNext => self.search_repeat(false),
+                EditorRequest::SearchPrev => self.search_repeat(true),
                 // The popup is anchored to the cursor, which may now be off
                 // screen: left open, it would take keys the user cannot see.
-                if self.view.scroll_by(delta)
-                    && let Some(c) = self.autocomplete.as_mut()
-                {
-                    c.close();
-                }
+                EditorRequest::ViewportScrolled => self.close_autocomplete(),
+                // Never handed out by `take_host_requests`.
+                EditorRequest::ContextMenu => {}
             }
-            // Everything else is somebody else's. The incumbent forwarded these
-            // to the widget, which scrolled a viewport kimün never renders from.
-            _ => {}
         }
-        self.selection = ta.selection_range();
-        // Mouse handling moves the cursor / selection but does not insert
-        // text — click, drag and scroll are all it produces.
-        EventState::Consumed
+    }
+}
+
+/// The one place the editor's neutral answer becomes the TUI's.
+fn event_state(handled: Handled) -> EventState {
+    match handled {
+        Handled::Consumed => EventState::Consumed,
+        Handled::NotConsumed => EventState::NotConsumed,
     }
 }
 
@@ -1742,14 +1077,18 @@ impl TextEditorComponent {
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.maybe_recover_from_dead_nvim();
-        self.bind_autocomplete_redraw(tx);
+        self.ensure_notifier(tx);
 
         match event {
             InputEvent::Key(key) => {
+                // The one crossterm -> neutral conversion for the direct path
+                // and the vim engine. The popup, find bar and nvim stages keep
+                // the raw event: they speak crossterm.
+                let input = crate::keys::crossterm_input::key_input(key);
                 // Every key acts at the cursor, so a wheel-scrolled view comes
                 // back to it — even when the key leaves the cursor where it was
                 // (find-next onto the same match, a motion at the buffer edge).
-                self.view.follow_cursor();
+                self.session_mut().display.follow_cursor();
                 // Cheap popup-open probe first. The snapshot is now a
                 // Cow-borrowed view of the textarea's lines (zero
                 // allocation on the Textarea path — perf #8), so
@@ -1761,8 +1100,8 @@ impl Component for TextEditorComponent {
                 if popup_open
                     && let Some(host) = build_editor_host_snapshot(
                         &self.backend,
-                        self.revs.current(),
-                        self.view.last_cursor_screen,
+                        self.session().revs.current(),
+                        self.painter.last_cursor_screen,
                     )
                     && let Some(controller) = self.autocomplete.as_mut()
                 {
@@ -1773,8 +1112,8 @@ impl Component for TextEditorComponent {
                 }
                 // Find bar intercepts all keys while active. Must run before the
                 // vim engine, which would otherwise consume keys in Normal mode
-                // (the textarea backend also intercepts inside handle_textarea_key,
-                // but the vim Normal-mode path never reaches that).
+                // (the bar is routed only from here; handle_textarea_key has no
+                // find-bar check of its own).
                 if self.dispatch_to_find_bar(key) {
                     // Here rather than inside `dispatch_bar`: that runs for every
                     // key whether or not a bar is open, so interrupting there
@@ -1782,110 +1121,58 @@ impl Component for TextEditorComponent {
                     self.interrupt_typing();
                     return EventState::Consumed;
                 }
-                // Vim interpreter: Normal/Visual consume the key here; Insert
-                // mode returns PassThrough and falls into the direct path below
-                // so typing, autocomplete, auto-surround and smart-Enter all
-                // keep working.
-                if let Some(outcome) = self.backend.vim_handle_key(key) {
-                    use self::vim::VimKeyOutcome;
-                    // Anything the engine consumed is an action rather than a
-                    // continuation of typing. PassThrough is the exception: that
-                    // key falls through to the direct path below, where the plain
-                    // handler decides — and where a run of ↑/↓ keeps its goal.
-                    if !matches!(outcome, VimKeyOutcome::PassThrough) {
-                        self.interrupt_typing();
-                    }
-                    // Whatever the engine did, the buffer measured it. One
-                    // drain replaces the group handshake, the pre-dispatch
-                    // clone and the hand-placed revision bump.
-                    self.apply_edit_outcome();
-                    match outcome {
-                        VimKeyOutcome::TextMutated => {
-                            // No bump here — the drain above already applied
-                            // what the buffer measured.
-                            self.selection = None;
-                            return EventState::Consumed;
-                        }
-                        VimKeyOutcome::CursorOnly => {
-                            // Mirror the textarea's selection into self.selection so
-                            // Visual mode renders through the existing selection pipeline.
-                            // For non-visual CursorOnly (plain motion), selection_range()
-                            // returns None → self.selection = None (no regression).
-                            self.sync_highlight();
-                            self.refresh_autocomplete_if_open();
-                            return EventState::Consumed;
-                        }
-                        VimKeyOutcome::NoOp => return EventState::Consumed,
-                        VimKeyOutcome::PassThrough => { /* fall through to direct path */ }
-                        VimKeyOutcome::Host(action) => {
-                            use self::vim::VimHostAction;
-                            match action {
-                                VimHostAction::OpenPalette => {
-                                    // Reuse the existing palette gateway.
-                                    tx.send(AppEvent::ExecuteLeaderAction(
-                                        crate::keys::leader::LeaderAction::Palette,
-                                    ))
-                                    .ok();
-                                }
-                                VimHostAction::OpenSearch { forward: _ } => {
-                                    // `/` and `?` open the existing find bar.
-                                    // (`?` backward-first is a later refinement;
-                                    // n/N still navigate both directions.)
-                                    self.open_or_advance_search();
-                                }
-                                VimHostAction::SearchNext => self.search_repeat(false),
-                                VimHostAction::SearchPrev => self.search_repeat(true),
-                                // Copy and Cut: the engine already did the
-                                // editing and the mode transition; all that is
-                                // left is the I/O and reporting it.
-                                VimHostAction::ClipboardCopy(text) => {
-                                    self.selection = None;
-                                    crate::components::yank(text, "copied", tx);
-                                }
-                                VimHostAction::ClipboardCut(text) => {
-                                    self.selection = None;
-                                    crate::components::yank(text, "cut", tx);
-                                }
-                                // Paste is different: the engine deliberately
-                                // left the range SELECTED rather than cutting
-                                // it, so the replacement is atomic. Keep the
-                                // selection live — `paste_text` consumes it, and
-                                // a failed/empty read must leave it untouched.
-                                VimHostAction::ClipboardPaste => {
-                                    self.selection = self
-                                        .backend
-                                        .as_textarea()
-                                        .and_then(|ta| ta.selection_range());
-                                    self.paste_from_clipboard(tx);
-                                }
-                            }
-                            return EventState::Consumed;
-                        }
-                    }
-                }
+                // The nvim engine takes the key whole, after the popup and the
+                // bar (the vim stage never fires for it).
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
-                // Diff before/after using cheap counters instead of cloning
-                // the whole buffer. `text_revision` only bumps when the
-                // buffer actually changed (handlers call `bump_text`);
-                // cursor position is two `usize`s. Three outcomes:
-                //   - text changed → sync (may open a fresh popup)
-                //   - text unchanged, cursor moved → refresh (close
-                //     popup if cursor left the trigger range; never
-                //     open new popup just because the cursor passed
-                //     over an existing wikilink/hashtag)
-                //   - both unchanged → no autocomplete work needed
-                let text_rev_before = self.revs.current();
-                let cursor_before = self.textarea_cursor();
-                let result = self.handle_textarea_key(key, tx);
-                let cursor_after = self.textarea_cursor();
-                if self.revs.current() != text_rev_before {
-                    self.sync_autocomplete();
-                } else if cursor_before != cursor_after {
-                    self.refresh_autocomplete_if_open();
+                let Some(ed): Option<&mut Editor> = self.backend.as_editor_mut() else {
+                    unreachable!("handle_nvim_key declined a non-Textarea backend")
+                };
+                // The vim engine, then the direct path ([`Editor::handle_key`]).
+                // A key with no `KeyInput` (e.g. `Null`, media keys) is one vim
+                // can't use: it takes the direct path's "unmapped" branch.
+                let (handled, path) = match input {
+                    Some(i) => ed.handle_key(i, tx),
+                    None => ed.ignore_unmapped_key(),
+                };
+                // Vim's `/`, `?`, `n`, `N` act in this same call.
+                self.drain_host_requests();
+                match path {
+                    // The direct path compares the buffer either side of it
+                    // using cheap counters instead of cloning the whole
+                    // buffer. Three outcomes:
+                    //   - text changed → sync (may open a fresh popup)
+                    //   - text unchanged, cursor moved → refresh (close
+                    //     popup if cursor left the trigger range; never
+                    //     open new popup just because the cursor passed
+                    //     over an existing wikilink/hashtag)
+                    //   - both unchanged → no autocomplete work needed
+                    // A clipboard paste re-syncs first, as every paste does.
+                    KeyPath::Direct {
+                        text_changed,
+                        cursor_moved,
+                        pasted,
+                    } => {
+                        // Mirrors the old paste-then-post-key-diff double
+                        // sync; idempotent when the text did not change.
+                        if pasted {
+                            self.sync_autocomplete();
+                        }
+                        if text_changed {
+                            self.sync_autocomplete();
+                        } else if cursor_moved {
+                            self.refresh_autocomplete_if_open();
+                        }
+                    }
+                    KeyPath::VimCursorOnly => self.refresh_autocomplete_if_open(),
+                    // The buffer just changed under the popup's feet; reconcile
+                    // the trigger context so a stale replace_range cannot
+                    // survive into the next Accept.
+                    KeyPath::VimPasted => self.sync_autocomplete(),
+                    KeyPath::VimOther => {}
                 }
-                result
+                event_state(handled)
             }
             InputEvent::Mouse(mouse) => {
                 // An open popup gets first crack: a click on a suggestion
@@ -1894,8 +1181,8 @@ impl Component for TextEditorComponent {
                 if self.autocomplete.as_ref().is_some_and(|c| c.is_open())
                     && let Some(host) = build_editor_host_snapshot(
                         &self.backend,
-                        self.revs.current(),
-                        self.view.last_cursor_screen,
+                        self.session().revs.current(),
+                        self.painter.last_cursor_screen,
                     )
                     && let Some(controller) = self.autocomplete.as_mut()
                 {
@@ -1904,13 +1191,33 @@ impl Component for TextEditorComponent {
                         return state;
                     }
                 }
-                let text_rev_before = self.revs.current();
+                let text_rev_before = self.session().revs.current();
                 let cursor_before = self.textarea_cursor();
-                let result = self.handle_mouse(mouse, tx);
+                let result = if self.covers(mouse.column, mouse.row) {
+                    let pointer = pointer_input(mouse, (self.rect.x, self.rect.y));
+                    match self.backend.as_editor_mut() {
+                        Some(ed) => {
+                            let handled = match pointer {
+                                Some(pointer) => ed.handle_pointer(&pointer, tx),
+                                None => ed.ignored_pointer(),
+                            };
+                            // A wheel scroll that moved the view closes the
+                            // popup, before the diff below.
+                            self.drain_host_requests();
+                            event_state(handled)
+                        }
+                        None => match pointer {
+                            Some(pointer) => self.handle_nvim_pointer(&pointer),
+                            None => self.ignored_nvim_pointer(),
+                        },
+                    }
+                } else {
+                    EventState::NotConsumed
+                };
                 let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
-                if self.revs.current() != text_rev_before {
+                if self.session().revs.current() != text_rev_before {
                     self.sync_autocomplete();
                 } else if cursor_before != cursor_after {
                     self.refresh_autocomplete_if_open();
@@ -1924,7 +1231,7 @@ impl Component for TextEditorComponent {
 
                 // Reconcile the vim engine's mode by gesture, not by the shape
                 // the selection happens to have: a left press ends Visual, and a
-                // drag selects (`select_dragged`, in `handle_mouse`); scroll,
+                // drag selects (`select_dragged`, in `Editor::handle_pointer`); scroll,
                 // release and right-click leave the mode alone. Insert and
                 // Replace, and the other backends, are untouched either way.
                 if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -1975,199 +1282,106 @@ impl Component for TextEditorComponent {
         let selection = match &self.backend {
             // While the bar is open the **current match** is what gets painted
             // as the selection — the bar owns it rather than writing this field.
-            BackendState::Textarea(_) => match self.search.as_ref() {
+            BackendState::Textarea(ed) => match self.search.as_ref() {
                 Some(bar) => bar.current_match(),
-                None => self.selection,
+                None => ed.selection(),
             },
             BackendState::Nvim(nvim) => {
                 self.nvim_host
                     .frame_sync(nvim, editor_rect.width, editor_rect.height)
             }
         };
-        // Drain any completed background full-parse results BEFORE
-        // running view.update so a just-finished async parse lands
-        // before Gate 1 has a chance to install another placeholder.
-        // Generation mismatches drop silently (the spawned task's
-        // input is older than the current buffer).
-        while let Ok((generation, buf)) = self.full_parse_rx.try_recv() {
-            self.view.install_full_parse(generation, buf);
-        }
-        // Same drain, for a just-finished background full wrap. Order
-        // relative to the parse drain above does not matter — the two
-        // are staleness-gated independently on `generation`.
-        while let Ok((generation, layout)) = self.layout_rx.try_recv() {
-            self.view.install_full_layout(generation, layout);
-        }
-
-        // Phase 2: single producer for the atomic snapshot. Borrowed
-        // on Textarea (zero clone), owned on Nvim (lines cloned out
-        // from behind the Mutex). Use the free function so the borrow
-        // checker can split `&self.backend` from `&mut self.view`.
-        // The **replace preview** is computed before the snapshot borrow so it
-        // owns its lines outright. The buffer is never touched — only this
-        // frame's view of it is substituted, which is what makes the preview
-        // structurally incapable of committing.
-        // One call gets everything the bar wants painted: preview lines and
-        // spans, match spans, and the current match (a candidate seam).
+        // Everything between here and `prepare_frame` is the find bar's: the
+        // **replace preview** is computed before the snapshot so it owns its
+        // lines outright. The buffer is never touched — only this frame's view
+        // of it is substituted, which is what makes the preview structurally
+        // incapable of committing. One call gets everything the bar wants
+        // painted: preview lines and spans, match spans, and the current match.
         let overlay = match (self.search.as_ref(), self.backend.as_textarea()) {
             (Some(bar), Some(buf)) => bar.overlay(buf),
             _ => find_bar::BarOverlay::default(),
         };
-        let preview = overlay.preview;
-        let snap = snapshot_from_backend(&self.backend, self.revs.current());
-        // One revision domain: adopt the snapshot's value (the nvim arm
-        // derived it from the backend's `content_gen` under one lock; the
-        // textarea arm passed `revs.current()` through — a no-op adopt).
-        // Adopt from the REAL snapshot, never the preview's synthetic
-        // revision, or dirty tracking would follow the preview.
-        self.revs.adopt(snap.content_revision);
-        // The lines the view actually draws this frame: the preview's when one
-        // is showing, the buffer's otherwise. Kept in scope because the
-        // deferred full-parse below must parse *these*, not the buffer's.
-        let (view_lines, preview_spans) = match preview {
+        // Single producer for the atomic snapshot: the free function lets the
+        // borrow checker split `&self.backend` from `&mut self.session`.
+        let snap = snapshot_from_backend(&self.backend, self.session().revs.current());
+        let empty_note = snap.text.len_bytes() == 0;
+        let (preview, preview_overlays) = match overlay.preview {
             None => (None, Vec::new()),
-            Some(p) => (Some(p.lines), p.spans),
+            Some(p) => (
+                Some(p.lines),
+                p.spans
+                    .iter()
+                    .map(|p| {
+                        Overlay::new(
+                            p.row,
+                            p.start,
+                            p.end,
+                            if p.is_current {
+                                OverlayKind::PreviewCurrent
+                            } else {
+                                OverlayKind::Preview
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
         };
-        match &view_lines {
-            None => self.view.update(&snap, editor_rect),
-            Some(lines) => {
-                // The parse cache keys on `content_revision`, so the preview
-                // carries an identity of its own — derived from the real
-                // revision plus what is being previewed. Same preview, same
-                // key: the cache still works instead of thrashing per frame.
-                let rev = preview_revision(snap.content_revision, lines);
-                let view_snap = EditorSnapshot::borrowed(lines, snap.cursor, rev);
-                self.view.update(&view_snap, editor_rect);
-            }
-        }
-        // Needles reach the view as **overlays** now; the cell-space post-pass
-        // that used to paint them is gone, and with it the coordinate split
-        // that let a find pattern match text it could never highlight.
-        if self.revs.needles_stale() {
-            self.search_needles.clear();
-            self.revs.disarm_needles();
-        }
-        self.view.set_needles(self.search_needles.clone());
-
-        // Assemble this frame's **overlays**. The view appends the two kinds it
-        // derives from content (tasks, needles) for the visible rows.
-        let mut overlays: Vec<view::Overlay> = Vec::new();
-        if let Some(((sr, sc), (er, ec))) = selection {
-            // A multi-row selection becomes one overlay per row; the middle
-            // rows run to their full width, which `restyle_over_range` clamps.
-            for row in sr..=er {
-                let start = if row == sr { sc } else { 0 };
-                let end = if row == er { ec } else { usize::MAX };
-                overlays.push(view::Overlay::new(
-                    row,
-                    start,
-                    end,
-                    view::OverlayKind::Selection,
-                ));
-            }
-        }
-        overlays.extend(preview_spans.iter().map(|p| {
-            view::Overlay::new(
-                p.row,
-                p.start,
-                p.end,
-                if p.is_current {
-                    view::OverlayKind::PreviewCurrent
-                } else {
-                    view::OverlayKind::Preview
-                },
-            )
-        }));
-        // Find-bar matches. Skipped while previewing: those columns already
-        // carry the preview colour, which is the more important fact.
-        if view_lines.is_none() {
-            overlays.extend(overlay.matches.iter().map(|&(row, start, end)| {
-                view::Overlay::new(row, start, end, view::OverlayKind::Match)
-            }));
-        }
-        self.view.set_overlays(overlays);
-
-        // If `view.update` cap-tripped on a large buffer it
-        // installed a placeholder + pending-flag instead of running
-        // ParsedBuffer::parse synchronously. Spawn the real parse
-        // here so subsequent frames pick up the rich result via the
-        // drain loop above. `SingleSlotTask::spawn` aborts the prior
-        // task, so a burst of large-buffer edits resolves against
-        // the latest content.
-        if let Some(generation) = self.view.take_pending_full_parse() {
-            // Parse the lines the view is DRAWING, not the buffer's. Under a
-            // **replace preview** those differ, and the placeholder this
-            // generation came from was keyed on the preview's synthetic
-            // revision — so handing over the buffer's lines would install a
-            // parse of text that is not on screen and sail through
-            // `install_full_parse`'s staleness check, styling a large note by
-            // element boundaries computed against a different string.
-            // The task gets the text itself. A clone shares its structure, so
-            // handing a 5000-row note to a background parse costs a pointer
-            // rather than a copy of the note — where this used to clone every
-            // row.
-            let text = match &view_lines {
-                Some(lines) => crate::ropetext::Text::from(lines.join("\n").as_str()),
-                None => snap.text.clone(),
-            };
-            let tx = self.full_parse_tx.clone();
-            let redraw = self.redraw_tx.clone();
-            self.full_parse_task.spawn(async move {
-                let buf = ParsedBuffer::parse(&text);
-                let _ = tx.send((generation, buf));
-                // Wake the render loop so the rich parse lands
-                // without waiting for the next keystroke.
-                if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppEvent::Redraw);
-                }
-            });
-        }
-        // Same shape, for the layout side: `view.update` may have installed
-        // a `Layout::unwrapped` stub instead of blocking on `Layout::compute`.
-        // The job already carries its own `Text`/`rendered_cache`/
-        // `gutter_insets` clones — nothing here needs `view_lines`/`snap`.
-        if let Some(job) = self.view.take_pending_full_layout() {
-            let tx = self.layout_tx.clone();
-            let redraw = self.redraw_tx.clone();
-            self.layout_task.spawn(async move {
-                let hints = view::row_hints(&job.rendered_cache, &job.gutter_insets);
-                let layout = crate::ropetext::Layout::compute(
-                    &job.text,
-                    job.width,
-                    crate::ropetext::Metrics::default(),
-                    &hints,
-                );
-                let _ = tx.send((job.generation, layout));
-                if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppEvent::Redraw);
-                }
-            });
-        }
+        // `prepare_frame` ignores find matches while a replace preview shows,
+        // so don't build them then.
+        let matches = if preview.is_some() {
+            Vec::new()
+        } else {
+            overlay
+                .matches
+                .iter()
+                .map(|&(row, start, end)| Overlay::new(row, start, end, OverlayKind::Match))
+                .collect()
+        };
+        // Drain background results, adopt the revision, update the display,
+        // set overlays, spawn pending jobs — in that order. See
+        // [`EditorSession::prepare_frame`].
+        self.session_mut().prepare_frame(FrameInput {
+            snapshot: snap,
+            width: editor_rect.width,
+            height: editor_rect.height,
+            selection,
+            preview,
+            preview_overlays,
+            matches,
+        });
         // When the find bar is active, draw it AFTER the editor so its caret
         // (set via set_cursor_position) wins over the editor's caret call.
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
-        use self::view::CursorShape;
+        use crate::logic::editor::display::CursorShape;
         let cursor_shape = match self.backend.modal_is_insert() {
             None => None, // Direct textarea — leave terminal default
             Some(true) => Some(CursorShape::Bar),
             Some(false) => Some(CursorShape::Block),
         };
-        self.view
-            .render(f, editor_rect, theme, editor_focused, cursor_shape);
+        if editor_rect.height > 0 {
+            let frame = self
+                .session_mut()
+                .display
+                .frame(editor_rect.width, editor_focused);
+            view::paint_frame(
+                f,
+                editor_rect,
+                theme,
+                frame,
+                cursor_shape,
+                &mut self.painter,
+            );
+        }
 
         // Search-match emphasis: paint needle matches and task
         // checkboxes over the rendered viewport. Buffer-level post-pass —
         // viewport-only, so large notes pay nothing beyond the visible rows.
-        if self.revs.needles_stale() {
-            self.search_needles.clear();
-            self.revs.disarm_needles();
-        }
 
         // Empty-note tip: dim ghost text in a fresh/empty buffer,
         // gone the instant the first character lands (the buffer stops being
         // empty). Drawn after the view so it sits over the blank canvas.
-        if snap.text.len_bytes() == 0 && editor_rect.height > 0 {
+        if empty_note && editor_rect.height > 0 {
             let leader = self
                 .key_bindings
                 .first_combo_for(&crate::keys::action_shortcuts::ActionShortcuts::Leader)
@@ -2207,7 +1421,7 @@ impl Component for TextEditorComponent {
         // rather than draw at a stale anchor — the popup state is
         // preserved, so the popup reappears at the correct position
         // once the cursor scrolls back into view.
-        let live_anchor = self.view.last_cursor_screen;
+        let live_anchor = self.painter.last_cursor_screen;
         if let Some(state) = self.autocomplete.as_mut().and_then(|c| c.state_mut()) {
             match live_anchor {
                 Some(anchor) => {
@@ -2285,9 +1499,10 @@ impl Component for TextEditorComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::snapshot::EditorMode;
     use super::*;
     use crate::keys::KeyBindings;
+    use crate::logic::editor::snapshot::EditorMode;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn make_editor() -> TextEditorComponent {
         TextEditorComponent::new(
@@ -2357,99 +1572,76 @@ mod tests {
         assert_eq!(editor.get_text(), "#projects");
     }
 
-    fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {
-        match &mut editor.backend {
-            BackendState::Textarea(tb) => &mut tb.ta,
-            _ => panic!("expected Textarea backend"),
+    /// A large note parses in the background; when that parse finishes the
+    /// component must wake the host through its notifier.
+    #[tokio::test]
+    async fn a_finished_background_parse_wakes_the_host() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut editor = make_editor();
+        let counter = woken.clone();
+        editor.set_notifier(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let text: String = (0..1200)
+            .map(|i| format!("paragraph {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.set_text(text);
+        let theme = Theme::default();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &theme, true))
+            .unwrap();
+        for _ in 0..200 {
+            if woken.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        assert!(woken.load(Ordering::SeqCst) >= 1, "host was never woken");
     }
 
+    /// Tests never call `set_notifier`; the first `handle_input` fills it in
+    /// from the `AppTx` it receives (TUI-only lazy binding).
     #[test]
-    fn has_trigger_before_cursor_finds_bracket() {
-        assert!(has_trigger_before_cursor("hello [[foo", 11));
-        assert!(has_trigger_before_cursor("[[a b c", 7));
-    }
-
-    #[test]
-    fn has_trigger_before_cursor_finds_hashtag() {
-        assert!(has_trigger_before_cursor("text #tag", 9));
-    }
-
-    #[test]
-    fn has_trigger_before_cursor_no_trigger_bails() {
-        assert!(!has_trigger_before_cursor("plain prose here", 16));
-        assert!(!has_trigger_before_cursor("", 0));
-    }
-
-    #[test]
-    fn has_trigger_before_cursor_handles_multibyte_no_panic() {
-        // Regression: the previous 64-byte saturating_sub slice could
-        // land mid-codepoint and panic on CJK / emoji / accented lines.
-        let line = "你好世界".to_string() + &"a".repeat(80);
-        let col = line.chars().count();
-        assert!(!has_trigger_before_cursor(&line, col));
-
-        let with_emoji = "🦀".repeat(20) + "[[note";
-        let col = with_emoji.chars().count();
-        assert!(has_trigger_before_cursor(&with_emoji, col));
-
-        let accented = "é".repeat(100);
-        let col = accented.chars().count();
-        assert!(!has_trigger_before_cursor(&accented, col));
-    }
-
-    #[test]
-    fn has_trigger_before_cursor_ignores_chars_after_cursor() {
-        // Trigger AFTER cursor must not match.
-        assert!(!has_trigger_before_cursor("foo [[bar", 3));
-    }
-
-    #[test]
-    fn has_trigger_before_cursor_wikilink_with_spaces() {
-        // Wikilink contents can contain spaces; we must still detect the
-        // opening bracket far back on the line.
-        assert!(has_trigger_before_cursor("[[my note title", 15));
-    }
-
-    #[test]
-    fn fresh_editor_is_not_dirty() {
-        let editor = make_editor();
-        assert!(!editor.is_dirty());
-    }
-
-    #[test]
-    fn after_set_text_not_dirty() {
+    fn an_unset_notifier_is_filled_in_from_the_first_handle_input_tx() {
         let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        assert!(!editor.is_dirty());
-    }
-
-    #[test]
-    fn get_text_returns_loaded_content() {
-        let mut editor = make_editor();
-        editor.set_text("line one\nline two".to_string());
-        assert_eq!(editor.get_text(), "line one\nline two");
-    }
-
-    #[test]
-    fn mark_saved_clears_dirty() {
-        let mut editor = make_editor();
-        editor.set_text("initial".to_string());
-        let text = editor.get_text();
-        editor.mark_saved(text.clone() + "x"); // saved state diverges
-        assert!(editor.is_dirty());
-        editor.mark_saved(text); // saved state matches again
-        assert!(!editor.is_dirty());
-    }
-
-    #[test]
-    fn trailing_newline_does_not_cause_false_dirty() {
-        let mut editor = make_editor();
-        editor.set_text("content\n".to_string());
-        assert!(
-            !editor.is_dirty(),
-            "trailing newline should not make editor dirty after load"
+        assert!(editor.session().notifier.is_none());
+        editor.handle_input(
+            &InputEvent::Key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Char('a'),
+            )),
+            &dummy_tx(),
         );
+        assert!(editor.session().notifier.is_some());
+    }
+
+    /// Regression: copy is read-only over a vim charwise Visual selection.
+    /// Every clipboard action reports its outcome, paste included. Before this,
+    /// Ctrl+V was the only one that said nothing, so the footer was left showing
+    /// the raw chord echo — indistinguishable from an unbound key.
+    ///
+    /// Drives the production `Editor::paste_from_clipboard` through the
+    /// hermetic clipboard override, so the OS clipboard is never touched.
+    #[test]
+    fn paste_reports_its_outcome() {
+        let mut editor = make_editor();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.set_text("x".to_string());
+        let _clip = crate::logic::clipboard::set_test_clipboard_text(Ok("hello".into()));
+        let ed = editor.backend.as_editor_mut().unwrap();
+        assert!(
+            ed.paste_from_clipboard(&tx),
+            "text arrived and was inserted"
+        );
+        let reported = std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|e| matches!(e, AppMessage::FlashMessage(m) if m == "pasted"));
+        assert!(reported, "a paste attempt must always report something");
+    }
+
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut RopeBuffer {
+        editor.ta()
     }
 
     #[test]
@@ -2494,18 +1686,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_editor_content_revision_is_nonzero() {
-        // Regression: content_revision is typed `NonZeroU64`, which
-        // makes the "do not cache" sentinel for `AutocompleteHost`
-        // expressible as `Option::None` without a magic value.
-        // `NonZeroU64::get()` is always >= 1 by construction; this
-        // test is now a tautological smoke test that the constructor
-        // initialises the field.
-        let editor = make_editor();
-        assert!(editor.content_revision().get() >= 1);
-    }
-
-    #[test]
     fn mouse_down_clears_selection() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
@@ -2514,12 +1694,12 @@ mod tests {
         ta.move_cursor(CursorMove::WordForward);
         assert!(ta.selection_range().is_some());
         ta.cancel_selection();
-        editor.selection = if let BackendState::Textarea(tb) = &editor.backend {
-            tb.ta.selection_range()
-        } else {
-            None
-        };
-        assert!(editor.selection.is_none());
+        let selection = editor
+            .backend
+            .as_textarea()
+            .and_then(|ta| ta.selection_range());
+        editor.set_selection(selection);
+        assert!(editor.selection_for_test().is_none());
     }
 
     #[test]
@@ -2558,58 +1738,6 @@ mod tests {
     }
 
     #[test]
-    fn typing_open_paren_with_selection_wraps_it() {
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        select_range(&mut editor, (0, 0), (0, 5)); // "hello"
-        send_char(&mut editor, '(');
-        assert_eq!(editor.get_text(), "(hello) world");
-        assert!(editor.is_dirty(), "wrap must mark the buffer dirty");
-    }
-
-    #[test]
-    fn wrap_keeps_selection_on_inner_text() {
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        select_range(&mut editor, (0, 0), (0, 5));
-        send_char(&mut editor, '(');
-        // Selection must cover "hello" inside the parens so wraps chain.
-        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
-    }
-
-    #[test]
-    fn chained_brackets_build_a_wikilink() {
-        let mut editor = make_editor();
-        editor.set_text("my note".to_string());
-        select_range(&mut editor, (0, 0), (0, 7));
-        send_char(&mut editor, '[');
-        send_char(&mut editor, '[');
-        assert_eq!(editor.get_text(), "[[my note]]");
-        assert_eq!(editor.selection, Some(((0, 2), (0, 9))));
-    }
-
-    #[test]
-    fn symmetric_chars_wrap_and_chain() {
-        let mut editor = make_editor();
-        editor.set_text("bold".to_string());
-        select_range(&mut editor, (0, 0), (0, 4));
-        send_char(&mut editor, '*');
-        assert_eq!(editor.get_text(), "*bold*");
-        send_char(&mut editor, '*');
-        assert_eq!(editor.get_text(), "**bold**");
-        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
-    }
-
-    #[test]
-    fn closing_char_replaces_selection() {
-        let mut editor = make_editor();
-        editor.set_text("hello world".to_string());
-        select_range(&mut editor, (0, 0), (0, 5));
-        send_char(&mut editor, ')');
-        assert_eq!(editor.get_text(), ") world");
-    }
-
-    #[test]
     fn open_char_without_selection_inserts_normally() {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
@@ -2617,18 +1745,6 @@ mod tests {
         ta.move_cursor(CursorMove::End);
         send_char(&mut editor, '(');
         assert_eq!(editor.get_text(), "hello(");
-    }
-
-    #[test]
-    fn text_action_keeps_selection_on_inner_text() {
-        // Bold/Italic/Strikethrough route through the same wrap mechanism as
-        // auto-surround: the inner text stays selected so wraps chain.
-        let mut editor = make_editor();
-        editor.set_text("bold word".to_string());
-        select_range(&mut editor, (0, 0), (0, 4));
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "**bold** word");
-        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
     }
 
     #[test]
@@ -2650,99 +1766,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn linkable_url_accepts_supported_schemes() {
-        assert_eq!(
-            linkable_url("https://example.com"),
-            Some("https://example.com")
-        );
-        assert_eq!(
-            linkable_url("http://example.com/path?q=1#frag"),
-            Some("http://example.com/path?q=1#frag"),
-        );
-        assert_eq!(
-            linkable_url("  https://example.com  "),
-            Some("https://example.com")
-        );
-        assert_eq!(
-            linkable_url("ftp://files.example.com/x"),
-            Some("ftp://files.example.com/x"),
-        );
-        assert_eq!(
-            linkable_url("ftps://files.example.com/x"),
-            Some("ftps://files.example.com/x"),
-        );
-        assert_eq!(
-            linkable_url("mailto:user@example.com"),
-            Some("mailto:user@example.com"),
-        );
-        assert_eq!(
-            linkable_url("mailto:user@example.com?subject=hi"),
-            Some("mailto:user@example.com?subject=hi"),
-        );
-    }
-
-    #[test]
-    fn linkable_url_rejects_other_schemes_and_plain_text() {
-        assert_eq!(linkable_url("file:///etc/passwd"), None);
-        assert_eq!(linkable_url("ssh://host"), None);
-        assert_eq!(linkable_url("javascript:alert(1)"), None);
-        assert_eq!(linkable_url("example.com"), None);
-        assert_eq!(linkable_url("not a url"), None);
-        assert_eq!(linkable_url(""), None);
-        assert_eq!(linkable_url("https://example.com\nmore"), None);
-    }
-
-    #[test]
-    fn try_build_markdown_link_wraps_selection_when_clip_is_url() {
-        assert_eq!(
-            try_build_markdown_link("https://example.com", Some("click here")).as_deref(),
-            Some("[click here](https://example.com)"),
-        );
-    }
-
-    #[test]
-    fn try_build_markdown_link_trims_url_whitespace() {
-        assert_eq!(
-            try_build_markdown_link("  https://example.com\n", Some("link")).as_deref(),
-            Some("[link](https://example.com)"),
-        );
-    }
-
-    #[test]
-    fn try_build_markdown_link_returns_none_when_no_selection() {
-        assert_eq!(try_build_markdown_link("https://example.com", None), None);
-    }
-
-    #[test]
-    fn try_build_markdown_link_returns_none_when_not_url() {
-        assert_eq!(try_build_markdown_link("plain text", Some("sel")), None);
-    }
-
-    #[test]
-    fn try_build_markdown_link_returns_none_when_selection_empty() {
-        assert_eq!(
-            try_build_markdown_link("https://example.com", Some("")),
-            None
-        );
-    }
-
-    #[test]
-    fn try_build_markdown_link_escapes_close_bracket_in_selection() {
-        assert_eq!(
-            try_build_markdown_link("https://example.com", Some("a]b")).as_deref(),
-            Some(r"[a\]b](https://example.com)"),
-        );
-    }
-
-    #[test]
-    fn try_build_markdown_link_wraps_ftp_url() {
-        assert_eq!(
-            try_build_markdown_link("ftp://files.example.com/x", Some("download")).as_deref(),
-            Some("[download](ftp://files.example.com/x)"),
-        );
-    }
-
     fn key(code: KeyCode, mods: KeyModifiers) -> ratatui::crossterm::event::KeyEvent {
         ratatui::crossterm::event::KeyEvent::new(code, mods)
     }
@@ -2754,12 +1777,12 @@ mod tests {
         let mut ed = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
         ed.set_text("alpha beta".to_string());
         ed.set_search_needles(vec!["Alpha".to_string()]);
-        assert_eq!(ed.search_needles, vec!["alpha"]);
-        assert!(!ed.revs.needles_stale());
+        assert_eq!(ed.session().needles, vec!["alpha"]);
+        assert!(!ed.revs_for_test().needles_stale());
 
         // An edit bumps the revision; the render-side guard would clear.
         ed.set_text("alpha beta gamma".to_string());
-        assert!(ed.revs.needles_stale());
+        assert!(ed.revs_for_test().needles_stale());
     }
 
     #[test]
@@ -2864,7 +1887,7 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
             &tx,
         );
-        assert_eq!(editor.selection, None);
+        assert_eq!(editor.selection_for_test(), None);
     }
 
     #[test]
@@ -2894,7 +1917,7 @@ mod tests {
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         // Esc drops the bar, and the current match goes with it.
         assert!(editor.search.is_none());
-        assert!(editor.selection.is_none());
+        assert!(editor.selection_for_test().is_none());
     }
 
     #[test]
@@ -2933,14 +1956,6 @@ mod tests {
         );
         let state = editor.search.as_ref().unwrap();
         assert!(matches!(state.status, SearchStatus::NoMatch));
-    }
-
-    #[test]
-    fn try_build_markdown_link_wraps_mailto_url() {
-        assert_eq!(
-            try_build_markdown_link("mailto:user@example.com", Some("email me")).as_deref(),
-            Some("[email me](mailto:user@example.com)"),
-        );
     }
 
     #[test]
@@ -2986,15 +2001,7 @@ mod tests {
         select_range(&mut editor, (0, 0), (2, 0));
         editor.indent_lines(false);
         assert_eq!(get_ta(&mut editor).rows(), &["    foo", "    bar", "baz"]);
-        assert_eq!(editor.selection, Some(((0, 4), (2, 0))));
-    }
-
-    #[test]
-    fn unsupported_text_action_is_noop() {
-        let mut editor = make_editor();
-        editor.set_text("hello".to_string());
-        editor.apply_text_action(TextAction::Underline);
-        assert_eq!(editor.get_text(), "hello");
+        assert_eq!(editor.selection_for_test(), Some(((0, 4), (2, 0))));
     }
 
     #[test]
@@ -3011,21 +2018,6 @@ mod tests {
         assert_eq!(editor.get_text(), "hello****");
         assert_eq!(get_ta(&mut editor).cursor(), (0, 7));
         assert!(editor.is_dirty(), "the insert is an edit");
-    }
-
-    #[test]
-    fn jump_to_row_moves_the_view_cursor() {
-        // The OUTLINE drawer reads the position back through the view snapshot.
-        let mut ed = make_editor();
-        ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
-        ed.jump_to_row(3);
-        assert_eq!(ed.view_snapshot().cursor.0, 3);
-        // A click's zero-width selection must not turn the jump into a span
-        // the next keystroke replaces.
-        select_range(&mut ed, (2, 1), (2, 1));
-        ed.jump_to_row(1);
-        assert_eq!(ed.selection, None);
-        assert_eq!(ed.view_snapshot().cursor.0, 1);
     }
 
     #[test]
@@ -3263,82 +2255,6 @@ mod tests {
     }
 
     // ── follow_target_at_cursor: label detection ──────────────────────────────────────
-
-    /// Helper: place cursor at a specific column on the first row.
-    fn place_cursor_at_col(editor: &mut TextEditorComponent, col: usize) {
-        let ta = get_ta(editor);
-        ta.move_cursor(CursorMove::Head);
-        for _ in 0..col {
-            ta.move_cursor(CursorMove::Forward);
-        }
-    }
-
-    #[test]
-    fn follow_target_at_cursor_returns_label_when_cursor_on_hashtag() {
-        let mut editor = make_editor();
-        editor.set_text("see #rust now".to_string());
-        // "#rust" starts at col 4, ends at col 9 (5 chars). Place cursor at col 5 (inside).
-        place_cursor_at_col(&mut editor, 5);
-        assert_eq!(
-            editor.follow_target_at_cursor(),
-            Some(FollowTarget::Label("rust".into())),
-        );
-    }
-
-    #[test]
-    fn follow_target_at_cursor_returns_label_at_hash_char() {
-        let mut editor = make_editor();
-        editor.set_text("see #rust now".to_string());
-        // Cursor exactly on '#' (col 4).
-        place_cursor_at_col(&mut editor, 4);
-        assert_eq!(
-            editor.follow_target_at_cursor(),
-            Some(FollowTarget::Label("rust".into())),
-        );
-    }
-
-    #[test]
-    fn follow_target_at_cursor_returns_none_outside_hashtag() {
-        let mut editor = make_editor();
-        editor.set_text("see #rust now".to_string());
-        // Cursor at col 0 ("s") — not on a hashtag.
-        place_cursor_at_col(&mut editor, 0);
-        assert_eq!(editor.follow_target_at_cursor(), None);
-    }
-
-    #[test]
-    fn follow_target_at_cursor_returns_link_for_wikilink() {
-        let mut editor = make_editor();
-        editor.set_text("open [[my note]] please".to_string());
-        // "my note" is inside [[…]]; cursor at col 7 (inside link text).
-        place_cursor_at_col(&mut editor, 7);
-        let result = editor.follow_target_at_cursor();
-        assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
-            "expected Link variant, got {result:?}"
-        );
-    }
-
-    // ── F5: follow_target_at_cursor prioritises Link over Label ────────────────────────
-
-    #[test]
-    fn follow_target_at_cursor_returns_link_for_markdown_link_with_fragment() {
-        // "[see docs](#section)" — cursor on `#section` should return Note, not Label.
-        // After F3, the Label inside a link is never emitted, so the bug is
-        // structurally prevented. This test guards F5: even if a future edit
-        // accidentally adds a Label, Link wins because link_char_spans is checked first.
-        let line = "[see docs](#section)";
-        let mut editor = make_editor();
-        editor.set_text(line.to_string());
-        // "#section" starts at byte/char offset 11 (after "[see docs](").
-        let cursor = "[see docs](#sec".chars().count(); // col 15, inside #section
-        place_cursor_at_col(&mut editor, cursor);
-        let result = editor.follow_target_at_cursor();
-        assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
-            "expected Link variant for markdown link fragment, got {result:?}"
-        );
-    }
 
     #[test]
     fn vim_normal_i_then_typing_inserts_text() {
@@ -3687,7 +2603,7 @@ mod tests {
     }
 
     /// A mouse drag while the bar is open leaves a multi-row range in
-    /// `self.selection` — `handle_mouse` has no find-bar guard. Reading the
+    /// the editor's selection — `Editor::handle_pointer` has no find-bar guard. Reading the
     /// span from there dropped the end row and handed `replace_range` an
     /// inverted byte range, panicking the whole TUI.
     #[test]
@@ -3697,7 +2613,7 @@ mod tests {
         editor.set_text("alpha beta\nxy".to_string());
         open_replace_bar(&mut editor, &tx, "beta", "Z");
         // Exactly what a drag from row 0 col 6 to row 1 col 1 leaves behind.
-        editor.selection = Some(((0, 6), (1, 1)));
+        editor.set_selection(Some(((0, 6), (1, 1))));
         editor.handle_input(
             &InputEvent::Key(key(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
@@ -4013,13 +2929,13 @@ mod tests {
 
     /// Closing the bar must clear the editor's selection, as `close_search`
     /// did before the bar became a module. A stale mouse-drag range otherwise
-    /// suppresses the right-click context menu, which reads `self.selection`.
+    /// suppresses the right-click context menu, which reads the editor's selection.
     #[test]
     fn closing_the_bar_clears_a_stale_selection() {
         let mut editor = make_editor();
         let tx = dummy_tx();
         editor.set_text("alpha beta".to_string());
-        editor.selection = Some(((0, 0), (0, 5)));
+        editor.set_selection(Some(((0, 0), (0, 5))));
         editor.open_or_advance_search();
         for c in "beta".chars() {
             editor.handle_input(
@@ -4030,7 +2946,8 @@ mod tests {
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         assert!(editor.search.is_none());
         assert_eq!(
-            editor.selection, None,
+            editor.selection_for_test(),
+            None,
             "a selection from before the search must not outlive the bar"
         );
     }
@@ -4092,7 +3009,7 @@ mod tests {
             &tx,
         );
         assert_eq!(
-            editor.selection,
+            editor.selection_for_test(),
             Some(((0, 6), (0, 8))),
             "`n` must paint the match it jumped to"
         );
@@ -4174,7 +3091,7 @@ mod tests {
         );
         assert_eq!(editor.get_text(), "    one\n    two\nthree");
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
-        assert_eq!(editor.selection, None);
+        assert_eq!(editor.selection_for_test(), None);
     }
 
     /// Opening another note forgets the last Visual selection: `gv` there
@@ -4199,7 +3116,7 @@ mod tests {
             );
         }
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
-        assert_eq!(editor.selection, None);
+        assert_eq!(editor.selection_for_test(), None);
     }
 
     fn press(editor: &mut TextEditorComponent, keys: &str) {
@@ -4214,21 +3131,6 @@ mod tests {
 
     fn note(name: &str) -> kimun_core::nfs::VaultPath {
         kimun_core::nfs::VaultPath::note_path_from(name)
-    }
-
-    /// Another note is another note, whatever its text: the one on screen
-    /// before must leave no undo history behind. With the text-equality
-    /// shortcut, `u` in note B restored note A's text — and autosave would
-    /// have written it to B.
-    #[test]
-    fn a_note_with_the_same_text_does_not_inherit_undo_history() {
-        let mut editor = make_vim_editor();
-        editor.open_note(note("alpha"), "one".to_string());
-        press(&mut editor, "x");
-        assert_eq!(editor.get_text(), "ne");
-        editor.open_note(note("beta"), "ne".to_string());
-        press(&mut editor, "u");
-        assert_eq!(editor.get_text(), "ne", "beta has nothing to undo");
     }
 
     /// The common case of identical text: two empty notes. Redo must not
@@ -4261,7 +3163,7 @@ mod tests {
         press(&mut editor, "Vj");
         editor.open_note(note("beta"), "a\nb\nc".to_string());
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
-        assert_eq!(editor.selection, None);
+        assert_eq!(editor.selection_for_test(), None);
         press(&mut editor, "gv");
         assert_eq!(
             vim_mode(&editor),
@@ -4298,32 +3200,6 @@ mod tests {
         editor.open_note(note("beta"), body);
         term.draw(|f| editor.render(f, area, &theme, true)).unwrap();
         assert_eq!(top_row(&term, 20), "line 0");
-    }
-
-    /// Opening the note already on screen is a reload, not a switch: its
-    /// undo history (and `gv`) stay.
-    #[test]
-    fn reopening_the_same_note_keeps_its_history() {
-        let mut editor = make_vim_editor();
-        editor.open_note(note("alpha"), "one".to_string());
-        press(&mut editor, "x");
-        editor.open_note(note("alpha"), "ne".to_string());
-        press(&mut editor, "u");
-        assert_eq!(editor.get_text(), "one");
-    }
-
-    /// A rename is the same note under a new name: history survives it, and
-    /// opening it under the new name afterwards is still the same note.
-    #[test]
-    fn renaming_the_open_note_keeps_its_history() {
-        let mut editor = make_vim_editor();
-        editor.open_note(note("alpha"), "one".to_string());
-        press(&mut editor, "x");
-        editor.renamed_to(note("gamma"));
-        editor.set_text("ne".to_string());
-        editor.open_note(note("gamma"), "ne".to_string());
-        press(&mut editor, "u");
-        assert_eq!(editor.get_text(), "one");
     }
 
     /// A paste from outside the key path (clipboard image) replaces the
@@ -4365,7 +3241,10 @@ mod tests {
             );
         }
         assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
-        assert!(editor.selection.is_some(), "gv must paint the highlight");
+        assert!(
+            editor.selection_for_test().is_some(),
+            "gv must paint the highlight"
+        );
     }
 
     /// End-to-end for the anchor invariant: `n` moved the cursor while a
@@ -4565,17 +3444,227 @@ mod tests {
         assert_eq!(editor.get_text(), "todo and todo");
     }
 
+    // ── Direct-path modifier matrix (pins behaviour across the KeyInput move) ─
+
+    /// A mapped key as the direct path receives it.
+    fn ki(code: KeyCode, mods: KeyModifiers) -> KeyInput {
+        crate::keys::crossterm_input::key_input(&ratatui::crossterm::event::KeyEvent::new(
+            code, mods,
+        ))
+        .expect("mapped key")
+    }
+
+    /// One key through the public path.
+    fn send(
+        editor: &mut TextEditorComponent,
+        tx: &AppTx,
+        code: KeyCode,
+        mods: KeyModifiers,
+    ) -> EventState {
+        editor.handle_input(&InputEvent::Key(key(code, mods)), tx)
+    }
+
+    #[test]
+    fn a_key_with_no_key_input_ends_the_typing_run_and_is_consumed() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        send(&mut editor, &tx, KeyCode::Char('a'), KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Char('b'), KeyModifiers::NONE);
+        let state = send(&mut editor, &tx, KeyCode::Null, KeyModifiers::NONE);
+        assert!(matches!(state, EventState::Consumed));
+        send(&mut editor, &tx, KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "abc");
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "ab", "the Null key ended the run");
+    }
+
+    #[test]
+    fn meta_chord_on_the_direct_path_does_nothing() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        let state = send(&mut editor, &tx, KeyCode::Char('x'), KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+        let state = send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+        select_range(&mut editor, (0, 0), (0, 3));
+        let state = send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo", "Meta+( must not wrap");
+    }
+
+    /// Deliberate deviation: Meta+Tab indented before the `KeyInput` split
+    /// (the old guard only excluded Ctrl and Alt); a META chord has no
+    /// `KeyInput` now, so the direct path ignores it like every other one.
+    #[test]
+    fn meta_tab_is_now_ignored() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        let state = send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::META);
+        assert!(matches!(state, EventState::Consumed));
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn meta_backtab_is_now_ignored() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("- foo".to_string());
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        let indented = editor.get_text();
+        assert_ne!(indented, "- foo", "Tab indents the list line");
+        for (code, mods) in [
+            (KeyCode::BackTab, KeyModifiers::META),
+            (KeyCode::BackTab, KeyModifiers::SHIFT | KeyModifiers::META),
+            (KeyCode::Tab, KeyModifiers::SHIFT | KeyModifiers::META),
+        ] {
+            let state = send(&mut editor, &tx, code, mods);
+            assert!(matches!(state, EventState::Consumed));
+            assert_eq!(
+                editor.get_text(),
+                indented,
+                "{code:?}+{mods:?} must not dedent"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_chords_need_exactly_ctrl() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        // No selection: a copy that fires says so, one that does not is silent.
+        for mods in [
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            send(&mut editor, &tx, KeyCode::Char('c'), mods);
+            assert!(rx.try_recv().is_err(), "{mods:?}+c must not copy");
+        }
+        send(&mut editor, &tx, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(
+            matches!(rx.try_recv(), Ok(AppMessage::FlashMessage(_))),
+            "Ctrl+c copies"
+        );
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn undo_redo_modifier_matrix() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text(String::new());
+        send(&mut editor, &tx, KeyCode::Char('a'), KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "ab");
+
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "", "Ctrl+z undoes");
+        send(
+            &mut editor,
+            &tx,
+            KeyCode::Char('Z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(editor.get_text(), "ab", "Ctrl+Shift+Z redoes");
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "");
+        send(&mut editor, &tx, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "ab", "Ctrl+y redoes");
+
+        // A shifted lowercase z is neither undo nor redo.
+        send(
+            &mut editor,
+            &tx,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(editor.get_text(), "ab");
+        // Alt+z is not undo.
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::ALT);
+        assert_eq!(editor.get_text(), "ab");
+        // Plain z types.
+        send(&mut editor, &tx, KeyCode::Char('z'), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "abz");
+    }
+
+    #[test]
+    fn tab_matrix() {
+        let mut editor = make_editor();
+        let tx = dummy_tx();
+        editor.set_text("foo".to_string());
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "    foo", "Tab indents");
+        send(&mut editor, &tx, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "foo", "BackTab dedents");
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "foo", "Tab+Shift dedents");
+
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let state = send(&mut editor, &tx, KeyCode::Tab, mods);
+            assert!(matches!(state, EventState::Consumed));
+            assert_eq!(editor.get_text(), "foo", "{mods:?}+Tab must not indent");
+        }
+    }
+
+    #[test]
+    fn enter_needs_no_modifiers_for_smart_enter() {
+        let mk = || {
+            let mut editor = make_editor();
+            editor.set_text("- foo".to_string());
+            get_ta(&mut editor).move_cursor(CursorMove::End);
+            editor
+        };
+        let tx = dummy_tx();
+        let mut editor = mk();
+        send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "- foo\n- ", "Enter continues the list");
+        let mut editor = mk();
+        send(&mut editor, &tx, KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(
+            editor.get_text(),
+            "- foo\n",
+            "Shift+Enter is a plain newline"
+        );
+    }
+
+    #[test]
+    fn auto_surround_ignores_shift_but_not_ctrl_alt() {
+        let tx = dummy_tx();
+        let selected = || {
+            let mut editor = make_editor();
+            editor.set_text("foo".to_string());
+            select_range(&mut editor, (0, 0), (0, 3));
+            editor
+        };
+        let mut editor = selected();
+        send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::SHIFT);
+        assert_eq!(editor.get_text(), "(foo)", "Shift+( wraps");
+        let mut editor = selected();
+        send(&mut editor, &tx, KeyCode::Char('('), KeyModifiers::NONE);
+        assert_eq!(editor.get_text(), "(foo)", "( wraps");
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let mut editor = selected();
+            send(&mut editor, &tx, KeyCode::Char('('), mods);
+            assert_ne!(editor.get_text(), "(foo)", "{mods:?}+( must not wrap");
+        }
+    }
+
     // ── Undo grouping ────────────────────────────────────────────────────────
 
     fn type_out(editor: &mut TextEditorComponent, tx: &AppTx, text: &str) {
-        use ratatui::crossterm::event::KeyEvent;
         for c in text.chars() {
             let code = if c == '\n' {
                 KeyCode::Enter
             } else {
                 KeyCode::Char(c)
             };
-            editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+            editor.handle_textarea_key(ki(code, KeyModifiers::NONE), tx);
         }
     }
 
@@ -4615,12 +3704,11 @@ mod tests {
 
     #[test]
     fn backspacing_to_fix_a_typo_is_its_own_action() {
-        use ratatui::crossterm::event::KeyEvent;
         let mut editor = make_editor();
         let tx = dummy_tx();
         editor.set_text(String::new());
         type_out(&mut editor, &tx, "helllo");
-        editor.handle_textarea_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(ki(KeyCode::Backspace, KeyModifiers::NONE), &tx);
         assert_eq!(editor.get_text(), "helll");
 
         assert!(get_ta(&mut editor).undo());
@@ -4771,8 +3859,7 @@ mod tests {
     }
 
     fn arrow(editor: &mut TextEditorComponent, tx: &AppTx, code: KeyCode) {
-        use ratatui::crossterm::event::KeyEvent;
-        editor.handle_textarea_key(&KeyEvent::new(code, KeyModifiers::NONE), tx);
+        editor.handle_textarea_key(ki(code, KeyModifiers::NONE), tx);
     }
 
     #[test]
@@ -4940,10 +4027,7 @@ cccccccc"
         lay_out(&mut editor, 6, 10);
 
         get_ta(&mut editor).jump_to(0, 0);
-        editor.handle_textarea_key(
-            &ratatui::crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
-            &tx,
-        );
+        editor.handle_textarea_key(ki(KeyCode::Down, KeyModifiers::SHIFT), &tx);
         assert_eq!(
             get_ta(&mut editor).selection_range(),
             Some(((0, 0), (0, 5)))
@@ -4961,8 +4045,8 @@ cccccccc"
     /// is not a vim textarea (so test failures are obvious).
     fn vim_mode(editor: &TextEditorComponent) -> EditorMode {
         match &editor.backend {
-            BackendState::Textarea(tb) => match &tb.input {
-                backend::InputInterpreter::Vim(e) => e.mode().clone(),
+            BackendState::Textarea(ed) => match &ed.buf.input {
+                crate::logic::editor::textarea::InputInterpreter::Vim(e) => e.mode().clone(),
                 _ => panic!("expected Vim input interpreter"),
             },
             _ => panic!("expected Textarea backend"),
@@ -5023,26 +4107,6 @@ cccccccc"
             "**hello** world",
             "the whole selected word (including the char under the cursor) must be wrapped"
         );
-    }
-
-    /// Regression: copy is read-only over a vim charwise Visual selection.
-    /// Every clipboard action reports its outcome, paste included. Before this,
-    /// Ctrl+V was the only one that said nothing, so the footer was left showing
-    /// the raw chord echo — indistinguishable from an unbound key.
-    ///
-    /// Headless CI has no clipboard, so accept either the success message or a
-    /// clipboard error; what must never happen is silence.
-    #[test]
-    fn paste_reports_its_outcome() {
-        let mut editor = make_editor();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        editor.set_text("x".to_string());
-        editor.paste_from_clipboard(&tx);
-        let reported = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
-            matches!(e, AppEvent::FlashMessage(m)
-                if m == "pasted" || m == "clipboard is empty" || m.starts_with("clipboard: "))
-        });
-        assert!(reported, "a paste attempt must always report something");
     }
 
     /// The image-paste path bypasses the editor's key handling entirely (the
@@ -5163,7 +4227,7 @@ cccccccc"
                 &tx,
             );
         }
-        assert_eq!(editor.selection, Some(((0, 1), (0, 3))));
+        assert_eq!(editor.selection_for_test(), Some(((0, 1), (0, 3))));
     }
 
     /// A terminal paste over a Visual selection ends Visual: afterwards `x`
@@ -5180,48 +4244,6 @@ cccccccc"
         assert_eq!(editor.get_text(), "keep\nxyz");
         press(&mut editor, "0x");
         assert_eq!(editor.get_text(), "keep\nyz");
-    }
-
-    /// Emphasis over a charwise selection keeps the inner text selected in
-    /// Visual, so a second emphasis wraps exactly it — not its closing marker.
-    #[test]
-    fn two_emphases_over_a_visual_selection_nest_cleanly() {
-        let mut editor = make_vim_editor();
-        editor.set_text("hello world".to_string());
-        press(&mut editor, "ve");
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        editor.apply_text_action(TextAction::Strikethrough);
-        assert_eq!(editor.get_text(), "**~~hello~~** world");
-    }
-
-    /// `[` `[` over a Visual selection builds a wikilink: the first wrap
-    /// leaves the inner text selected *in Visual*, where the second `[` wraps
-    /// again.
-    #[test]
-    fn surround_chains_into_a_wikilink_from_visual() {
-        let mut editor = make_vim_editor();
-        editor.set_text("hello world".to_string());
-        press(&mut editor, "ve[");
-        assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        press(&mut editor, "[");
-        assert!(
-            editor.get_text().starts_with("[[hello]]"),
-            "{:?}",
-            editor.get_text()
-        );
-    }
-
-    /// After the wrap, the mode and the highlight agree: a motion extends a
-    /// Visual selection, not an invisible one under a Normal footer.
-    #[test]
-    fn a_motion_after_a_surround_extends_the_visual_selection() {
-        let mut editor = make_vim_editor();
-        editor.set_text("hello world".to_string());
-        press(&mut editor, "ve*");
-        assert_eq!(editor.get_text(), "*hello* world");
-        assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        assert_eq!(editor.selection, Some(((0, 1), (0, 6))), "the inner text");
     }
 
     /// A wrap typed in Insert (over a mouse selection) stays in Insert —
@@ -5262,6 +4284,23 @@ cccccccc"
         editor
     }
 
+    /// A selectionless right-click asks the host for the context menu, once;
+    /// with a selection it copies instead and asks for nothing.
+    #[test]
+    fn right_click_without_a_selection_requests_the_context_menu_once() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let tx = dummy_tx();
+        let mut editor = rendered_vim_editor("hello world");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Right), 3), &tx);
+        assert_eq!(editor.take_requests(), [EditorRequest::ContextMenu]);
+        assert_eq!(editor.take_requests(), []);
+
+        let mut editor = rendered_vim_editor("hello world");
+        press(&mut editor, "ve");
+        editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Right), 1), &tx);
+        assert!(!editor.take_requests().contains(&EditorRequest::ContextMenu));
+    }
+
     /// Right-click in Visual is Ctrl-C: same copy, and the same return to
     /// Normal — for `v` and for `V`, an empty line included.
     #[test]
@@ -5277,7 +4316,66 @@ cccccccc"
                 EditorMode::Normal,
                 "after `{keys}` on {text:?}"
             );
-            assert_eq!(editor.selection, None);
+            assert_eq!(editor.selection_for_test(), None);
+        }
+    }
+
+    /// The mouse never looked at META/HYPER: those bits must not change what
+    /// a click does.
+    #[test]
+    fn meta_modified_mouse_events_act_like_unmodified_ones() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let tx = dummy_tx();
+        for modifiers in [KeyModifiers::META, KeyModifiers::HYPER] {
+            let ev = |kind, column| {
+                InputEvent::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row: 0,
+                    modifiers,
+                })
+            };
+            let mut editor = rendered_vim_editor("hello world");
+            editor.handle_input(&ev(MouseEventKind::Down(MouseButton::Right), 3), &tx);
+            assert_eq!(
+                editor.take_requests(),
+                [EditorRequest::ContextMenu],
+                "right-click {modifiers:?}"
+            );
+
+            let mut editor = rendered_vim_editor("hello world");
+            editor.handle_input(&ev(MouseEventKind::Down(MouseButton::Left), 4), &tx);
+            assert_eq!(editor.textarea_cursor(), Some((0, 4)), "left {modifiers:?}");
+        }
+    }
+
+    /// Pointer events with no `PointerInput` (horizontal scroll) inside the editor are still the editor's: they are consumed as
+    /// an action that changes nothing, and never open the context menu.
+    #[test]
+    fn an_ignored_pointer_event_inside_is_consumed_and_changes_nothing() {
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        let tx = dummy_tx();
+        let events = [
+            (MouseEventKind::ScrollLeft, KeyModifiers::NONE),
+            (MouseEventKind::ScrollRight, KeyModifiers::NONE),
+        ];
+        for (kind, modifiers) in events {
+            let mut editor = rendered_vim_editor("hello world");
+            let cursor = editor.textarea_cursor();
+            let ev = InputEvent::Mouse(MouseEvent {
+                kind,
+                column: 3,
+                row: 0,
+                modifiers,
+            });
+            assert_eq!(
+                editor.handle_input(&ev, &tx),
+                EventState::Consumed,
+                "{kind:?} {modifiers:?}"
+            );
+            assert_eq!(editor.textarea_cursor(), cursor, "{kind:?} {modifiers:?}");
+            assert_eq!(editor.selection_for_test(), None);
+            assert!(editor.take_requests().is_empty(), "{kind:?} {modifiers:?}");
         }
     }
 
@@ -5292,7 +4390,11 @@ cccccccc"
             editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), from), &tx);
             editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), to), &tx);
             assert_eq!(vim_mode(&editor), EditorMode::Visual);
-            assert_eq!(editor.selection, Some(((0, 0), (0, 5))), "drag {from}→{to}");
+            assert_eq!(
+                editor.selection_for_test(),
+                Some(((0, 0), (0, 5))),
+                "drag {from}→{to}"
+            );
             press(&mut editor, "d");
             assert_eq!(editor.get_text(), " world", "drag {from}→{to}");
         }
@@ -5328,7 +4430,7 @@ cccccccc"
         editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 8), &tx);
         press(&mut editor, "gv");
         assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        assert_eq!(editor.selection, Some(((0, 0), (0, 3))));
+        assert_eq!(editor.selection_for_test(), Some(((0, 0), (0, 3))));
     }
 
     /// Scrolling is not a selection gesture: Visual survives it, even over
@@ -5385,7 +4487,7 @@ cccccccc"
         editor.handle_input(&mouse(MouseEventKind::Down(MouseButton::Left), 1), &tx);
         editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), 2), &tx);
         assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        assert_eq!(editor.selection, Some(((0, 1), (0, 2))));
+        assert_eq!(editor.selection_for_test(), Some(((0, 1), (0, 2))));
         press(&mut editor, "d");
         assert_eq!(editor.get_text(), "hllo");
     }
@@ -5401,62 +4503,9 @@ cccccccc"
         for col in [3, 1, 0, 9, 11] {
             editor.handle_input(&mouse(MouseEventKind::Drag(MouseButton::Left), col), &tx);
         }
-        assert_eq!(editor.selection, Some(((0, 6), (0, 11))));
+        assert_eq!(editor.selection_for_test(), Some(((0, 6), (0, 11))));
         press(&mut editor, "d");
         assert_eq!(editor.get_text(), "hello ");
-    }
-
-    /// `V` then a pair char on an empty row has nothing to wrap: nothing
-    /// happens — no literal char typed while in Normal.
-    #[test]
-    fn a_pair_char_over_an_empty_visual_row_does_nothing() {
-        for keys in ["jV*", "jv*"] {
-            let mut editor = make_vim_editor();
-            editor.set_text("a\n\nb".to_string());
-            press(&mut editor, keys);
-            assert_eq!(editor.get_text(), "a\n\nb", "{keys}");
-            assert_ne!(
-                vim_mode(&editor),
-                EditorMode::Normal,
-                "{keys}: still selecting"
-            );
-        }
-    }
-
-    #[test]
-    fn emphasis_over_an_empty_visual_row_does_nothing() {
-        let mut editor = make_vim_editor();
-        editor.set_text("a\n\nb".to_string());
-        press(&mut editor, "jv");
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "a\n\nb");
-        assert_eq!(vim_mode(&editor), EditorMode::Visual);
-    }
-
-    /// A wrap whose text ends in a line break cannot stay selected in Visual
-    /// (a Visual range cannot end on a newline); it lands in Normal rather
-    /// than chaining into an unbalanced second wrap.
-    #[test]
-    fn a_wrap_ending_in_a_line_break_does_not_chain() {
-        let mut editor = make_vim_editor();
-        editor.set_text("a\n\nz".to_string());
-        press(&mut editor, "vj*");
-        assert_eq!(editor.get_text(), "*a\n*\nz");
-        assert_eq!(vim_mode(&editor), EditorMode::Normal);
-        press(&mut editor, "*");
-        assert_eq!(editor.get_text(), "*a\n*\nz");
-    }
-
-    /// Emphasis from `V` wraps the row and keeps its text selected in Visual.
-    #[test]
-    fn emphasis_from_visual_line_keeps_the_row_text_selected() {
-        let mut editor = make_vim_editor();
-        editor.set_text("hello\nx".to_string());
-        press(&mut editor, "V");
-        editor.apply_text_action(TextAction::Bold);
-        assert_eq!(editor.get_text(), "**hello**\nx");
-        assert_eq!(vim_mode(&editor), EditorMode::Visual);
-        assert_eq!(editor.selection, Some(((0, 2), (0, 7))));
     }
 
     /// Auto-surround over a `V` row wraps the row, matching the highlight.
@@ -5472,17 +4521,6 @@ cccccccc"
             );
         }
         assert_eq!(editor.get_text(), "a\n*bold*\nc");
-    }
-
-    /// The same call outside Visual must not eat anything — Ctrl+V with an
-    /// image on the clipboard is an ordinary insert-at-cursor in Normal mode.
-    #[test]
-    fn external_paste_without_a_selection_leaves_the_buffer_alone() {
-        let mut editor = make_vim_editor();
-        editor.set_text("hello world".to_string());
-        editor.take_selection_for_external_paste();
-        assert_eq!(editor.get_text(), "hello world");
-        assert_eq!(vim_mode(&editor), EditorMode::Normal);
     }
 
     /// Copying a Visual selection from the host (right-click) is the Ctrl-C
@@ -5516,7 +4554,7 @@ cccccccc"
 
     /// Regression: `V` (linewise Visual) must keep the WHOLE line highlighted
     /// no matter where the cursor moves within it afterwards — column position
-    /// is irrelevant to a linewise selection in vim. `self.selection` used to
+    /// is irrelevant to a linewise selection in vim. the painted selection used to
     /// mirror the textarea's raw (charwise) selection range verbatim, which
     /// only looked like a full line right after `V` because it happens to run
     /// Head..End; moving the cursor back then shrank the highlight to
@@ -5532,7 +4570,7 @@ cccccccc"
         );
         assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
         assert_eq!(
-            editor.selection,
+            editor.selection_for_test(),
             Some(((0, 0), (0, usize::MAX))),
             "V must highlight the full line right away"
         );
@@ -5543,7 +4581,7 @@ cccccccc"
             );
         }
         assert_eq!(
-            editor.selection,
+            editor.selection_for_test(),
             Some(((0, 0), (0, usize::MAX))),
             "moving the cursor back must not shrink the linewise highlight"
         );
@@ -5553,7 +4591,7 @@ cccccccc"
     /// flush left) still cancels the buffer selection and drops to Normal, so
     /// the painted highlight must go with it. The engine reported the
     /// no-change case as `NoOp`, and the host's `NoOp` arm returns without
-    /// touching `self.selection` — leaving the rows painted as selected after
+    /// touching the painted selection — leaving the rows painted as selected after
     /// Visual mode had already ended.
     #[test]
     fn vim_visual_outdent_with_nothing_to_remove_clears_the_highlight() {
@@ -5568,7 +4606,7 @@ cccccccc"
         }
         assert_eq!(vim_mode(&editor), EditorMode::VisualLine);
         assert!(
-            editor.selection.is_some(),
+            editor.selection_for_test().is_some(),
             "V over two rows must paint a highlight"
         );
 
@@ -5583,7 +4621,8 @@ cccccccc"
         );
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
         assert_eq!(
-            editor.selection, None,
+            editor.selection_for_test(),
+            None,
             "leaving Visual mode must clear the highlight even when the outdent changed nothing"
         );
     }
@@ -5595,7 +4634,7 @@ cccccccc"
     /// before treating it as "real" (mirrors the same guard at ~line 1014).
     ///
     /// We test `sync_mouse_selection` directly (the exact code that was
-    /// broken) rather than routing through `handle_input` → `handle_mouse`,
+    /// broken) rather than routing through `handle_input` → `Editor::handle_pointer`,
     /// which needs a fully rendered view to resolve screen→logical coordinates.
     #[test]
     fn vim_sync_collapsed_sel_stays_normal() {
@@ -5741,5 +4780,249 @@ cccccccc"
 
         // The buffer must never have been modified.
         assert_eq!(editor.get_text(), "lo xx lo yy lo");
+    }
+
+    // ── Input stage pins (the key/mouse flow moving into `Editor`) ──────────
+
+    /// A popup controller over a fake tag source that knows `projects`, with
+    /// no debounce, so a test can open the popup by typing `#pro`.
+    fn tag_popup_controller() -> AutocompleteController {
+        use crate::components::search_list::{SuggestionItem, SuggestionSource};
+        struct Tags;
+        #[async_trait::async_trait]
+        impl SuggestionSource for Tags {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+                if "projects".starts_with(p) {
+                    vec![SuggestionItem::plain("projects")]
+                } else {
+                    vec![]
+                }
+            }
+        }
+        AutocompleteController::new(std::sync::Arc::new(Tags), AutocompleteMode::Both)
+            .with_debounce(std::time::Duration::ZERO)
+    }
+
+    /// Render `editor` into a 60x20 terminal until its popup has results (or
+    /// give up after a bounded number of yields).
+    async fn draw_until_popup_open(
+        editor: &mut TextEditorComponent,
+        t: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) {
+        let theme = Theme::default();
+        for _ in 0..100 {
+            t.draw(|f| editor.render(f, f.area(), &theme, true))
+                .unwrap();
+            if editor.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Vim `/` opens the find bar within the very `handle_input` call that
+    /// carried it, and `n` / `N` move the painted match in theirs — the
+    /// requests the editor queues are drained before the call returns.
+    #[test]
+    fn vim_search_keys_open_and_repeat_the_find_bar_in_the_same_call() {
+        let mut editor = make_vim_editor();
+        editor.set_text("lo xx lo yy lo".to_string());
+        let tx = dummy_tx();
+        send(&mut editor, &tx, KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(editor.search.is_some(), "`/` opens the bar in its own call");
+        send(&mut editor, &tx, KeyCode::Char('l'), KeyModifiers::NONE);
+        send(&mut editor, &tx, KeyCode::Char('o'), KeyModifiers::NONE);
+        assert_eq!(
+            editor.search.as_ref().unwrap().current_match(),
+            Some(((0, 0), (0, 2)))
+        );
+        send(&mut editor, &tx, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(editor.search.is_none());
+
+        send(&mut editor, &tx, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(editor.cursor_pos(), (0, 6), "`n` steps forward");
+        assert_eq!(editor.selection_for_test(), Some(((0, 6), (0, 8))));
+        send(&mut editor, &tx, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(editor.cursor_pos(), (0, 12));
+        assert_eq!(editor.selection_for_test(), Some(((0, 12), (0, 14))));
+        send(&mut editor, &tx, KeyCode::Char('N'), KeyModifiers::SHIFT);
+        assert_eq!(editor.cursor_pos(), (0, 6), "`N` steps back");
+        assert_eq!(editor.selection_for_test(), Some(((0, 6), (0, 8))));
+        assert_eq!(editor.get_text(), "lo xx lo yy lo");
+    }
+
+    /// The wheel moves the viewport away from the cursor the popup is anchored
+    /// to, so a scroll that moves the view closes the popup.
+    #[tokio::test]
+    async fn wheel_scroll_closes_the_autocomplete_popup() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut editor = make_editor();
+        editor.autocomplete = Some(tag_popup_controller());
+        let text: String = std::iter::once(String::new())
+            .chain((0..60).map(|i| format!("line {i}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        editor.set_text(text);
+        let tx = dummy_tx();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &Theme::default(), true))
+            .unwrap();
+        for c in ['#', 'p', 'r', 'o'] {
+            send(&mut editor, &tx, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        draw_until_popup_open(&mut editor, &mut t).await;
+        assert!(
+            editor.autocomplete.as_ref().unwrap().is_open(),
+            "precondition: the popup is open"
+        );
+        let wheel = InputEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::ScrollDown,
+            column: 50,
+            row: 15,
+            modifiers: KeyModifiers::NONE,
+        });
+        let state = editor.handle_input(&wheel, &tx);
+        assert!(matches!(state, EventState::Consumed));
+        assert!(
+            !editor.autocomplete.as_ref().unwrap().is_open(),
+            "a scroll that moved the view closes the popup"
+        );
+        assert_eq!(
+            editor.cursor_pos(),
+            (0, 4),
+            "the wheel never moves the cursor"
+        );
+    }
+
+    /// A cursor-only vim key re-reads an open popup's trigger: a motion inside
+    /// the tag narrows the query, a motion out of it closes the popup.
+    #[tokio::test]
+    async fn vim_normal_motion_refreshes_an_open_popup() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut editor = make_vim_editor();
+        editor.autocomplete = Some(tag_popup_controller());
+        editor.set_text("#pro".to_string());
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &Theme::default(), true))
+            .unwrap();
+        // Normal mode on the `o`; nothing a vim key does in Normal opens a
+        // popup, so open it the way a text change would.
+        press(&mut editor, "lll");
+        assert_eq!(vim_mode(&editor), EditorMode::Normal);
+        assert_eq!(editor.cursor_pos(), (0, 3));
+        editor.sync_autocomplete();
+        draw_until_popup_open(&mut editor, &mut t).await;
+        assert!(
+            editor.autocomplete.as_ref().unwrap().is_open(),
+            "precondition: the popup is open"
+        );
+        assert_eq!(
+            editor.autocomplete.as_ref().unwrap().state().unwrap().query,
+            "pr"
+        );
+
+        press(&mut editor, "h");
+        assert_eq!(editor.cursor_pos(), (0, 2));
+        assert_eq!(
+            editor
+                .autocomplete
+                .as_ref()
+                .unwrap()
+                .state()
+                .map(|s| s.query.clone()),
+            Some("p".to_string()),
+            "a motion inside the tag refreshes the query"
+        );
+        press(&mut editor, "0");
+        assert!(
+            editor.autocomplete.as_ref().unwrap().state().is_none(),
+            "a motion out of the tag closes the popup"
+        );
+    }
+
+    /// Vim Visual `Ctrl+V` replaces the selection with the clipboard in one
+    /// edit (one undo brings it back), and never destroys it when the
+    /// clipboard read fails or is empty. The clipboard is injected, so the
+    /// test is hermetic.
+    #[test]
+    fn ctrl_v_in_vim_visual_replaces_the_selection_atomically() {
+        let mut editor = make_vim_editor();
+        editor.set_text("hello world".to_string());
+        let tx = dummy_tx();
+        press(&mut editor, "ve");
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        {
+            // A failed read destroys nothing (a fresh editor: the failed
+            // paste leaves Visual).
+            let mut failing = make_vim_editor();
+            failing.set_text("hello world".to_string());
+            press(&mut failing, "ve");
+            let _clip =
+                crate::logic::clipboard::set_test_clipboard_text(Err("no clipboard".into()));
+            send(&mut failing, &tx, KeyCode::Char('v'), KeyModifiers::CONTROL);
+            assert_eq!(
+                failing.get_text(),
+                "hello world",
+                "a failed read destroys nothing"
+            );
+        }
+        let _clip = crate::logic::clipboard::set_test_clipboard_text(Ok("pasted".into()));
+        send(&mut editor, &tx, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(
+            editor.get_text(),
+            "pasted world",
+            "the whole selected word is replaced"
+        );
+        assert_ne!(vim_mode(&editor), EditorMode::Visual);
+        press(&mut editor, "u");
+        assert_eq!(editor.get_text(), "hello world", "one undo restores it");
+    }
+
+    /// A vim Visual paste that lands a link trigger re-syncs the popup
+    /// (`KeyPath::VimPasted`): `#pro` pasted over a selection opens it.
+    #[tokio::test]
+    async fn vim_visual_paste_of_a_link_trigger_resyncs_the_popup() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut editor = make_vim_editor();
+        editor.autocomplete = Some(tag_popup_controller());
+        editor.set_text("hello world".to_string());
+        let tx = dummy_tx();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &Theme::default(), true))
+            .unwrap();
+        press(&mut editor, "ve");
+        assert_eq!(vim_mode(&editor), EditorMode::Visual);
+        assert!(!editor.autocomplete.as_ref().unwrap().is_open());
+        let _clip = crate::logic::clipboard::set_test_clipboard_text(Ok("#pro".into()));
+        send(&mut editor, &tx, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "#pro world");
+        draw_until_popup_open(&mut editor, &mut t).await;
+        let ctl = editor.autocomplete.as_ref().unwrap();
+        assert!(ctl.is_open(), "the paste re-synced the popup");
+        assert_eq!(ctl.state().unwrap().query, "pro");
+    }
+
+    /// Pins that a direct paste re-syncs the popup.
+    #[tokio::test]
+    async fn ctrl_v_on_the_direct_path_resyncs_the_popup() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut editor = make_editor();
+        editor.autocomplete = Some(tag_popup_controller());
+        editor.set_text(String::new());
+        let tx = dummy_tx();
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| editor.render(f, f.area(), &Theme::default(), true))
+            .unwrap();
+        assert!(!editor.autocomplete.as_ref().unwrap().is_open());
+        let _clip = crate::logic::clipboard::set_test_clipboard_text(Ok("#pro".into()));
+        send(&mut editor, &tx, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert_eq!(editor.get_text(), "#pro");
+        draw_until_popup_open(&mut editor, &mut t).await;
+        let ctl = editor.autocomplete.as_ref().unwrap();
+        assert!(ctl.is_open(), "the paste re-synced the popup");
+        assert_eq!(ctl.state().unwrap().query, "pro");
     }
 }
