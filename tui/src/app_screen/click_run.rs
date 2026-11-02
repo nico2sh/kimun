@@ -37,7 +37,7 @@
 //! Firing ends the run: a third click must not pair with the second, because
 //! by then the double has opened a different note under the pointer.
 //!
-//! Like [`TypingRun`](crate::components::text_editor::typing_run::TypingRun),
+//! Like [`TypingRun`](crate::logic::editor::typing_run::TypingRun),
 //! this holds no clock — the caller passes `now`, so a test describes a gap
 //! instead of sleeping through one.
 

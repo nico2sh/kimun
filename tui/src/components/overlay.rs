@@ -9,8 +9,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent, OverlayData};
+use crate::components::events::InputEvent;
 use crate::components::sortable::SortableList;
+use crate::logic::message::{AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 /// Identifies which overlay is active — used for toggle, focus label, and hints.
@@ -34,9 +35,9 @@ impl OverlayKind {
     }
 }
 
-/// Outcome of routing an `AppEvent` to the active overlay. Overlays never
+/// Outcome of routing an `AppMessage` to the active overlay. Overlays never
 /// request their own dismissal here: dialogs close by emitting the
-/// `AppEvent::CloseOverlay` event, which the editor handles separately.
+/// `AppMessage::CloseOverlay` event, which the editor handles separately.
 #[derive(Debug)]
 pub enum OverlayMsg {
     /// The overlay did not recognise the message.

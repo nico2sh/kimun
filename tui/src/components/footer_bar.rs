@@ -18,8 +18,8 @@ use ratatui::widgets::Paragraph;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::components::events::{AppEvent, AppTx};
 use crate::components::hints::Hint;
+use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
 const FLASH_DURATION: Duration = Duration::from_secs(2);
@@ -111,7 +111,7 @@ impl FooterBar {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(FLASH_DURATION).await;
-            let _ = tx2.send(AppEvent::Redraw);
+            let _ = tx2.send(AppMessage::Redraw);
         });
     }
 

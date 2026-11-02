@@ -11,7 +11,7 @@ use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::clickable::is_press_outside;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
@@ -20,6 +20,7 @@ use crate::components::search_list::{
     Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::keys::leader::{LeaderAction, LeaderNode};
+use crate::logic::message::{AppMessage, AppTx, redraw_callback};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -123,8 +124,8 @@ impl CommandPaletteModal {
             let action = entry.action;
             // Close first so the action runs with no overlay open — several
             // actions (dialogs, pickers) no-op while one is.
-            tx.send(AppEvent::CloseOverlay).ok();
-            tx.send(AppEvent::ExecuteLeaderAction(action)).ok();
+            tx.send(AppMessage::CloseOverlay).ok();
+            tx.send(AppMessage::ExecuteLeaderAction(action)).ok();
         }
     }
 }
@@ -142,7 +143,7 @@ impl Overlay for CommandPaletteModal {
                     EventState::Consumed
                 }
                 KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseOverlay).ok();
+                    tx.send(AppMessage::CloseOverlay).ok();
                     EventState::Consumed
                 }
                 // Command rows declare no yank target, but the attempt still
@@ -156,7 +157,7 @@ impl Overlay for CommandPaletteModal {
             },
             InputEvent::Mouse(mouse) => {
                 if is_press_outside(mouse, self.popup_rect) {
-                    tx.send(AppEvent::CloseOverlay).ok();
+                    tx.send(AppMessage::CloseOverlay).ok();
                     return EventState::Consumed;
                 }
                 if let Some(key) = self.hints.hit(mouse) {
@@ -252,7 +253,7 @@ mod tests {
         t.backend().buffer().clone()
     }
 
-    fn click(p: &mut CommandPaletteModal, col: u16, row: u16) -> Vec<AppEvent> {
+    fn click(p: &mut CommandPaletteModal, col: u16, row: u16) -> Vec<AppMessage> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         p.handle_input(&crate::test_support::mouse_down_at(col, row), &tx);
         crate::test_support::drain(&mut rx).into_iter().collect()
@@ -265,14 +266,14 @@ mod tests {
         assert!(
             click(&mut p, 0, 0)
                 .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay))
+                .any(|e| matches!(e, AppMessage::CloseOverlay))
         );
         let buf = drawn(&mut p);
         let (col, row) = crate::test_support::find_text(&buf, "[Esc]").expect("[Esc] chip drawn");
         assert!(
             click(&mut p, col, row)
                 .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay))
+                .any(|e| matches!(e, AppMessage::CloseOverlay))
         );
     }
 
@@ -332,8 +333,8 @@ mod tests {
         let mut order = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                AppEvent::CloseOverlay => order.push("close"),
-                AppEvent::ExecuteLeaderAction(_) => order.push("execute"),
+                AppMessage::CloseOverlay => order.push("close"),
+                AppMessage::ExecuteLeaderAction(_) => order.push("execute"),
                 _ => {}
             }
         }

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 
 use crate::app_screen::panel_set::PanelSet;
-use crate::components::drawer::DrawerView;
-use crate::components::events::{AppTx, AskData};
+use crate::logic::message::{AppTx, AskData};
+use crate::logic::nav::DrawerView;
 use crate::rag::RagStatus;
 use crate::settings::SharedSettings;
 

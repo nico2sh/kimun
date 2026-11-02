@@ -6,10 +6,11 @@ use kimun_core::note::NoteContentData;
 use kimun_core::{NoteVault, strip_order_directive};
 
 use super::format_journal_date;
-use crate::components::file_list::{FileListEntry, SortField, SortOrder, entry_order};
+use crate::components::file_list::{FileListEntry, entry_order};
 use crate::components::query_vars::QueryContext;
 use crate::components::search_list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
 use crate::components::sortable::{directive_of_query, is_blank_property, property_key};
+use crate::logic::sort::{SortField, SortOrder};
 use kimun_core::PropertySortValue;
 use std::collections::HashMap;
 
@@ -154,8 +155,8 @@ fn order_recents<E: std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::redraw_callback;
     use crate::components::search_list::SearchList;
+    use crate::logic::message::redraw_callback;
     use crate::test_support::temp_vault;
     use tokio::sync::mpsc::unbounded_channel;
 

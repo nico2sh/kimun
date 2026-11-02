@@ -1,26 +1,18 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod find_bar;
-pub mod find_replace;
 pub mod markdown;
-pub mod markdown_edits;
+mod markdown_style;
 pub mod nvim_decode;
 pub mod nvim_host;
 pub mod nvim_rpc;
-pub mod parse_incremental;
-pub mod plain_keys;
-mod revisions;
-pub mod rope_buffer;
-pub mod typing_run;
-use revisions::Revisions;
-pub mod snapshot;
-pub mod text_coords;
+use crate::logic::editor::revisions::Revisions;
+use crate::logic::editor::{markdown_edits, typing_run};
 pub mod view;
-mod vim;
-mod vim_objects;
 pub mod widener_metrics;
 
-use self::rope_buffer::CursorMove;
+use crate::logic::editor::plain_keys;
+use crate::logic::editor::rope_buffer::CursorMove;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
@@ -98,11 +90,11 @@ fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
 use self::backend::BackendState;
 #[cfg(test)]
 use self::find_bar::{BarFocus, SearchStatus};
-use self::markdown::ParsedBuffer;
 use self::nvim_host::NvimHost;
-use self::rope_buffer::RopeBuffer;
-use self::snapshot::EditorSnapshot;
 use self::view::MarkdownEditorView;
+use crate::logic::editor::markdown::ParsedBuffer;
+use crate::logic::editor::rope_buffer::RopeBuffer;
+use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
 
 /// Convert a 0-based character column into a byte offset within `line`.
@@ -155,13 +147,13 @@ use crate::components::autocomplete::{
     self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
 };
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
-use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
-use crate::components::events::redraw_callback;
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
-use crate::keys::action_shortcuts::TextAction;
+use crate::logic::message::AppMessage;
+use crate::logic::message::AppTx;
+use crate::logic::message::redraw_callback;
+use crate::logic::text_action::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -338,7 +330,7 @@ pub struct TextEditorComponent {
     layout_tx: tokio::sync::mpsc::UnboundedSender<(u64, crate::ropetext::Layout)>,
     layout_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, crate::ropetext::Layout)>,
     /// `AppTx` clone bound the first time `handle_input` runs, so the
-    /// spawned full-parse/full-wrap tasks can post `AppEvent::Redraw` on
+    /// spawned full-parse/full-wrap tasks can post `AppMessage::Redraw` on
     /// completion without waiting for the next user keystroke.
     redraw_tx: Option<AppTx>,
 }
@@ -838,12 +830,12 @@ impl TextEditorComponent {
         }
 
         // Fallback: check for a hashtag label (via the markdown parser).
-        let parsed = self::markdown::ParsedLine::parse(&line);
+        let parsed = crate::logic::editor::markdown::ParsedLine::parse(&line);
         parsed
             .elements
             .iter()
             .find(|e| {
-                e.kind == self::markdown::ElementKind::Label
+                e.kind == crate::logic::editor::markdown::ElementKind::Label
                     && col >= e.start_char
                     && col < e.end_char
             })
@@ -887,7 +879,7 @@ impl TextEditorComponent {
             match selected {
                 Some(t) if !t.is_empty() => t,
                 _ => {
-                    tx.send(AppEvent::FlashMessage("nothing to copy".into()))
+                    tx.send(AppMessage::FlashMessage("nothing to copy".into()))
                         .ok();
                     return;
                 }
@@ -919,12 +911,12 @@ impl TextEditorComponent {
         let text = match crate::components::with_clipboard(|c| c.get_text()) {
             Ok(t) if !t.is_empty() => t,
             Ok(_) => {
-                tx.send(AppEvent::FlashMessage("clipboard is empty".into()))
+                tx.send(AppMessage::FlashMessage("clipboard is empty".into()))
                     .ok();
                 return;
             }
             Err(e) => {
-                tx.send(AppEvent::FlashMessage(format!("clipboard: {e}")))
+                tx.send(AppMessage::FlashMessage(format!("clipboard: {e}")))
                     .ok();
                 return;
             }
@@ -933,14 +925,14 @@ impl TextEditorComponent {
         // Report the paste like every other clipboard action. Without this the
         // footer keeps the raw chord echo, so Ctrl+V was the one clipboard key
         // that never said what it did.
-        tx.send(AppEvent::FlashMessage("pasted".into())).ok();
+        tx.send(AppMessage::FlashMessage("pasted".into())).ok();
     }
 
     /// Under vim's Visual modes the live textarea selection is not what the
     /// highlight shows: charwise it excludes the char under the cursor (vim's
     /// selection is inclusive), linewise it spans anchor-to-cursor columns
     /// rather than whole rows. Re-select the range Visual covers
-    /// ([`vim::VimEngine::visual_range`]) so out-of-engine consumers
+    /// ([`crate::logic::editor::vim::VimEngine::visual_range`]) so out-of-engine consumers
     /// (paste-over-selection, bold/italic/strikethrough wrap) act on all of
     /// it. No-op outside Visual (Direct/Insert/Nvim), where the buffer's
     /// selection is already what callers want.
@@ -1307,7 +1299,7 @@ impl TextEditorComponent {
     /// The **replace preview** for this frame, when a bar is open. Test-facing:
     /// production reads it through `FindBar::overlay`.
     #[cfg(test)]
-    fn replace_preview(&self) -> Option<find_replace::Preview> {
+    fn replace_preview(&self) -> Option<crate::logic::editor::find_replace::Preview> {
         let bar = self.search.as_ref()?;
         let buf = self.backend.as_textarea()?;
         bar.preview(buf)
@@ -1422,14 +1414,16 @@ impl TextEditorComponent {
         // section below, because a key claimed earlier — Ctrl+Z, a clipboard
         // chord, Tab — returns before ever reaching it, and a run left open
         // across an undo would try to extend a group that was just taken back.
-        let stroke = plain_keys::operation(*key).and_then(|op| match op {
-            plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
-            plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
-            plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
-                Some(typing_run::Stroke::Delete)
-            }
-            _ => None,
-        });
+        let stroke = crate::keys::crossterm_input::key_input(key)
+            .and_then(plain_keys::operation)
+            .and_then(|op| match op {
+                plain_keys::Operation::Insert(c) => Some(typing_run::Stroke::Insert(c)),
+                plain_keys::Operation::InsertNewline => Some(typing_run::Stroke::Insert('\n')),
+                plain_keys::Operation::DeleteBack | plain_keys::Operation::DeleteForward => {
+                    Some(typing_run::Stroke::Delete)
+                }
+                _ => None,
+            });
         if stroke.is_none()
             && let Some((_, run)) = self.backend.as_textarea_parts_mut()
         {
@@ -1550,7 +1544,9 @@ impl TextEditorComponent {
         // component's own claims — `Tab` indents rows, `Enter` may continue a
         // list, an opening bracket over a selection wraps it — because those are
         // the same keys and the component's reading of them wins.
-        if let Some(op) = plain_keys::operation(*key) {
+        if let Some(op) =
+            crate::keys::crossterm_input::key_input(key).and_then(plain_keys::operation)
+        {
             // ↑/↓ move by *drawn* line, so they need the layout — which lives on
             // the view, not the buffer. Everything else the buffer can answer
             // alone. A run of them keeps its goal cell; anything else ends the run.
@@ -1786,8 +1782,12 @@ impl Component for TextEditorComponent {
                 // mode returns PassThrough and falls into the direct path below
                 // so typing, autocomplete, auto-surround and smart-Enter all
                 // keep working.
-                if let Some(outcome) = self.backend.vim_handle_key(key) {
-                    use self::vim::VimKeyOutcome;
+                // A key with no `KeyInput` (e.g. `Null`, media keys) is one vim
+                // can't use: treated as not handled, like a non-vim backend.
+                let vim_outcome = crate::keys::crossterm_input::key_input(key)
+                    .and_then(|input| self.backend.vim_handle_key(&input));
+                if let Some(outcome) = vim_outcome {
+                    use crate::logic::editor::vim::VimKeyOutcome;
                     // Anything the engine consumed is an action rather than a
                     // continuation of typing. PassThrough is the exception: that
                     // key falls through to the direct path below, where the plain
@@ -1818,11 +1818,11 @@ impl Component for TextEditorComponent {
                         VimKeyOutcome::NoOp => return EventState::Consumed,
                         VimKeyOutcome::PassThrough => { /* fall through to direct path */ }
                         VimKeyOutcome::Host(action) => {
-                            use self::vim::VimHostAction;
+                            use crate::logic::editor::vim::VimHostAction;
                             match action {
                                 VimHostAction::OpenPalette => {
                                     // Reuse the existing palette gateway.
-                                    tx.send(AppEvent::ExecuteLeaderAction(
+                                    tx.send(AppMessage::ExecuteLeaderAction(
                                         crate::keys::leader::LeaderAction::Palette,
                                     ))
                                     .ok();
@@ -2118,7 +2118,7 @@ impl Component for TextEditorComponent {
                 // Wake the render loop so the rich parse lands
                 // without waiting for the next keystroke.
                 if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppEvent::Redraw);
+                    let _ = redraw.send(AppMessage::Redraw);
                 }
             });
         }
@@ -2139,7 +2139,7 @@ impl Component for TextEditorComponent {
                 );
                 let _ = tx.send((job.generation, layout));
                 if let Some(redraw) = redraw {
-                    let _ = redraw.send(AppEvent::Redraw);
+                    let _ = redraw.send(AppMessage::Redraw);
                 }
             });
         }
@@ -2285,9 +2285,9 @@ impl Component for TextEditorComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::snapshot::EditorMode;
     use super::*;
     use crate::keys::KeyBindings;
+    use crate::logic::editor::snapshot::EditorMode;
 
     fn make_editor() -> TextEditorComponent {
         TextEditorComponent::new(
@@ -5039,7 +5039,7 @@ cccccccc"
         editor.set_text("x".to_string());
         editor.paste_from_clipboard(&tx);
         let reported = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
-            matches!(e, AppEvent::FlashMessage(m)
+            matches!(e, AppMessage::FlashMessage(m)
                 if m == "pasted" || m == "clipboard is empty" || m.starts_with("clipboard: "))
         });
         assert!(reported, "a paste attempt must always report something");

@@ -80,8 +80,8 @@ impl<R: SearchRow> RowSource<R> for ResolvingRowSource<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::events::redraw_callback;
     use crate::components::search_list::SearchList;
+    use crate::logic::message::redraw_callback;
     use crate::settings::icons::Icons;
     use crate::settings::themes::Theme;
     use kimun_core::nfs::VaultPath;

@@ -7,8 +7,8 @@
 
 use std::time::Instant;
 
-use crate::components::drawer::DrawerView;
-use crate::components::drawer_views::LinksTab;
+use crate::logic::nav::DrawerView;
+use crate::logic::nav::LinksTab;
 
 /// What a leader leaf does. Executed by the editor screen, which owns every
 /// surface the actions touch.

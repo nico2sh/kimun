@@ -2,12 +2,10 @@
 //! when try_incremental_parse takes the incremental splice path the
 //! spliced parsed_buffer must equal a fresh ParsedBuffer::parse.
 
-use kimun_notes::components::text_editor::markdown::ParsedBuffer;
-use kimun_notes::components::text_editor::parse_incremental::{
-    WidenResult, expand_to_reset_boundary,
-};
-use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use kimun_notes::components::text_editor::view::MarkdownEditorView;
+use kimun_notes::logic::editor::markdown::ParsedBuffer;
+use kimun_notes::logic::editor::parse_incremental::{WidenResult, expand_to_reset_boundary};
+use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use proptest::prelude::*;
 use ratatui::layout::Rect;
 use std::num::NonZeroU64;

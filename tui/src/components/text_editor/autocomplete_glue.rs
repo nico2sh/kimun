@@ -6,7 +6,7 @@
 //! offsets the controller reports index the same bytes the rope does, so no
 //! joined copy of the note has to exist for them to be resolved.
 
-use super::rope_buffer::{CursorMove, RopeBuffer};
+use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 

@@ -1,0 +1,475 @@
+//! The app message vocabulary and its payload types. Terminal-free and shared
+//! by the TUI and the GUI, see ADR-0049.
+
+use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc::UnboundedSender;
+
+use kimun_core::{NoteVault, nfs::VaultPath};
+
+use crate::logic::nav::{DrawerView, HeadingTarget};
+use crate::logic::properties::PropertyWriteError;
+use crate::logic::sort::SortState;
+
+/// Which panel a sort selection applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortTarget {
+    Sidebar,
+    Query,
+    /// The open sortable note browser: the Ctrl+K search browser or the
+    /// Ctrl+O file finder.
+    Browser,
+}
+
+/// The surface a save-current-query action sourced its query from. Carried
+/// through the save-search dialog so the editor knows whether the Query
+/// panel's breadcrumb should re-pin after the save — by identity, not by
+/// comparing query text (equal text from different surfaces must not collide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveSource {
+    QueryPanel,
+    NoteBrowser,
+}
+
+/// Terminal-free messages that components, screens and background tasks send
+/// to the app loop, shared by the TUI and the GUI. Terminal input is not part
+/// of it: the TUI loop wraps both in `app::events::AppEvent`.
+#[derive(Debug)]
+pub enum AppMessage {
+    OpenScreen(ScreenEvent),
+
+    // ── App-level messages ───────────────────────────────────────────────────
+    Quit,
+    Redraw,
+    /// Background RAG sync task reporting its connection/sync status. Rendered
+    /// in the editor footer.
+    RagStatus(crate::rag::RagStatus),
+    /// The connected server is out of date: its update check found a newer
+    /// release, or it predates version reporting (`None` clears it: up to
+    /// date, offline, or check disabled). Shown as a passive hint next to the
+    /// RAG status in the editor footer.
+    ServerUpdate(Option<crate::server_client::sync::ServerUpdate>),
+    Autosave,
+    /// A core write (the properties dialog) changed this note on disk: reload
+    /// the editor buffer from disk if it is the open note.
+    NoteReloadFromDisk(VaultPath),
+    /// Background autosave task finished. `saved_revision` carries the
+    /// editor's `content_revision` at the moment the save was *issued*
+    /// on success, `None` if the write failed. The editor screen uses
+    /// `path` to ignore stale completions for notes the user has
+    /// already navigated away from, and `saved_revision` to clear the
+    /// dirty flag iff the buffer is still at that revision (i.e. no
+    /// edits during the save). `NonZeroU64` because the editor's
+    /// `content_revision` is never zero.
+    AutosaveCompleted {
+        path: VaultPath,
+        saved_revision: Option<NonZeroU64>,
+        /// The note's recomputed title (first body line) from the save, so the
+        /// sidebar row can be retitled. `None` when the save failed.
+        title: Option<String>,
+    },
+    /// Open a note (or directory) — `emphasis` carries the originating
+    /// query's needles when the open comes from a query result, so the
+    /// editor lights up the matched spans. Use
+    /// [`AppMessage::open`] for the plain case.
+    OpenPath {
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+    },
+    /// Open an attachment (a non-note file) in the editor area's read-only
+    /// attachment view. Sent by the file browser when an
+    /// attachment row is activated.
+    OpenAttachment(VaultPath),
+    FocusSidebar,
+    /// Switch the drawer to the given view and reveal it (sent by the
+    /// activity rail and, later, by leader paths / mouse clicks).
+    OpenDrawerView(DrawerView),
+    /// Run the query `#<label>` in the FIND drawer (sent by the TAGS drawer).
+    RunTagQuery(String),
+    /// Jump the editor cursor to the heading an OUTLINE row stands for (sent
+    /// by the OUTLINE drawer).
+    JumpToHeading(HeadingTarget),
+    /// Open the search query syntax reference (sent by the `[F1]` syntax
+    /// chips on the FIND query box and the Ctrl+K browser).
+    OpenQueryHelp,
+    /// Open the shown attachment with the OS default program (sent by the
+    /// attachment view's `Open externally` chip; the key is `FollowLink`).
+    OpenAttachmentExternally,
+    /// Open the sort dialog for a list (sent by a click on its sort chip).
+    OpenSortDialog(SortTarget),
+    /// Run a leader-tree action (sent by the command palette after it has
+    /// closed itself, so the action sees no open overlay).
+    ExecuteLeaderAction(crate::keys::leader::LeaderAction),
+    /// Show a transient footer flash — async tasks report results with it.
+    FlashMessage(String),
+    /// A flash for the next screen that can show one. Sent while a screen
+    /// that drops flashes is live (Start, before any editor exists); the app
+    /// parks it and delivers it on the next switch to the editor.
+    ParkFlash(String),
+    /// The self-update lifecycle (one owner in `app::handle_app_message` for the app-global
+    /// bookkeeping, one in the editor screen for display).
+    Update(UpdateFlow),
+    /// Apply (and optionally persist) a resolved theme — sent by the theme
+    /// picker: previews on selection move, persists on Enter. Carries the
+    /// full `Theme` so applying never re-reads the themes directory.
+    ApplyTheme {
+        theme: Box<crate::settings::themes::Theme>,
+        persist: bool,
+    },
+    /// Async-loaded backlink count for the link target under the editor
+    /// cursor (status line 2's `→ target · N backlinks` affordance).
+    LinkTargetMeta {
+        target: String,
+        count: usize,
+    },
+    /// Async-loaded backlink count for the note at `path` (status line 2).
+    BacklinkCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
+    /// Property count of a note for the status bar (async-loaded).
+    PropertyCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
+    /// Async-loaded workspace git summary for the status bar, `None` when
+    /// the workspace is not a git repository.
+    GitStatusLoaded(Option<String>),
+    /// Sent by PreferencesScreen when user confirms Save. The shared settings
+    /// reference already contains the updated values.
+    PreferencesSaved,
+    /// Sent by OnboardingScreen when the user confirms Finish on the summary
+    /// step. The shared settings already contain the committed draft; the App loop
+    /// rebuilds the vault and navigates to Start (same as PreferencesSaved).
+    OnboardingFinished,
+    /// Sent by PreferencesScreen when user discards or closes unchanged.
+    ClosePreferences,
+    /// Sent by VaultSection; PreferencesScreen::handle_app_message intercepts.
+    OpenFileBrowser,
+    /// Sent by IndexingSection; PreferencesScreen intercepts.
+    TriggerFastReindex,
+    TriggerFullReindex,
+    /// Sent by indexing tokio task on completion.
+    IndexingDone(Result<Duration, String>),
+    /// Open (or create) today's journal entry and switch to it in the editor.
+    OpenJournal,
+    /// Dismiss the active editor overlay (note browser, Saved Searches modal,
+    /// or dialog). The single close path for everything owned by `OverlayHost`.
+    CloseOverlay,
+    /// Follow the link under the editor cursor: note name/path or external URL.
+    FollowLink(String),
+    /// Open the search modal pre-filled with `#<name>` to browse notes by label.
+    FollowLabel(String),
+    /// Insert raw text at the editor's cursor (replacing any active selection).
+    /// Used by the screen layer to deliver async results back to the editor —
+    /// e.g. the markdown link generated after a clipboard image is saved as an attachment.
+    InsertAtCursor(String),
+
+    /// File-operation requests and confirmations — owned by the editor
+    /// screen's `handle_file_op`.
+    FileOp(FileOp),
+    /// An async result addressed to the open overlay (see **Overlay data** in
+    /// CONTEXT.md). Routed only to the `OverlayHost`; with no (or the wrong)
+    /// overlay open it is stale by definition and dropped.
+    OverlayData(OverlayData),
+    /// An async result addressed to the Ask workspace (see CONTEXT.md: Ask
+    /// workspace). Its own family — Ask is a panel, not an overlay, so it is
+    /// never routed through `OverlayData`.
+    Ask(AskData),
+
+    /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
+    /// Carries a formatted, human-readable error message.
+    ///
+    /// Handled by `app::handle_app_message`, which clears the workspace,
+    /// saves settings, and opens the settings screen with an error overlay.
+    /// To add a new conflict source: emit this event from the detection site; no
+    /// other files need to change.
+    VaultConflict(String),
+
+    // ── Workspace messages ──────────────────────────────────────────────
+    /// User switched to a different workspace. Carries the workspace name.
+    /// Handled by the App loop to rebuild the vault and navigate to StartScreen.
+    WorkspaceSwitched(String),
+
+    /// The saved-search save/select flow — owned by the editor screen's
+    /// `handle_saved_search`.
+    SavedSearch(SavedSearchFlow),
+
+    /// Sort selection changed in the sort dialog — apply live to `target`
+    /// (through its `SortableList`). When `persist` is set (sidebar's "save
+    /// as default"), also write the choice to settings.
+    SortChanged {
+        target: SortTarget,
+        state: SortState,
+        persist: bool,
+    },
+}
+
+/// Async data addressed to the Ask workspace. Its own family — Ask is a
+/// panel, and `OverlayData` is routed only to the OverlayHost.
+#[derive(Debug)]
+pub enum AskData {
+    /// A completed (or failed) answer for the turn with this id. Stale ids
+    /// (cleared thread, superseded regenerate) are dropped by `Thread`.
+    AnswerReady {
+        turn_id: u64,
+        result: Result<(String, Vec<crate::ask::AskSource>), String>,
+    },
+    /// The note text the source reader asked for. `None` = load failed.
+    ReaderNote {
+        path: VaultPath,
+        text: Option<String>,
+    },
+}
+
+/// The self-update lifecycle. Two owners by design: the App loop (`app::handle_app_message`) keeps the
+/// app-global copy (seeding later-opened screens, persisting dismissals) and
+/// forwards; the editor screen owns display (footer indicator, dialog).
+#[derive(Debug, Clone)]
+pub enum UpdateFlow {
+    /// A newer release was found by the background update check.
+    Available(crate::update::UpdateStatus),
+    /// User chose "Update now" in the update dialog → run the self-update.
+    Apply,
+    /// User skipped a version in the update dialog → persist the dismissal and
+    /// clear the indicator. Carries the version being skipped.
+    Dismiss(String),
+    /// Open the update dialog for the currently-known update (manual check).
+    ShowDialog,
+    /// Self-update finished installing → clear the pending notice (restart
+    /// still required to run the new binary).
+    Applied,
+}
+
+/// File-operation requests (open a dialog) and confirmations (an operation
+/// succeeded). One owner: the editor screen's `handle_file_op`.
+#[derive(Debug, Clone)]
+pub enum FileOp {
+    /// Request to show the file-operations menu (delete / rename / move).
+    ShowMenu(VaultPath),
+    /// Request to show the delete confirmation dialog for the given entry.
+    ShowDelete(VaultPath),
+    /// Request to show the rename dialog for the given entry.
+    ShowRename(VaultPath),
+    /// Request to show the move dialog for the given entry.
+    ShowMove(VaultPath),
+    /// Open the properties dialog for a note (leader `n p`, palette, status bar).
+    ShowProperties(VaultPath),
+    /// Request to show the create-note dialog pre-filled with body content —
+    /// the Ask "save as note" action (`e` in `ThreadPanel`). Plain
+    /// creates (follow-link, missing-note open) go straight through
+    /// `ActiveDialog::create_note` inside the editor screen instead, since
+    /// they already hold `vault` and don't need to cross a component
+    /// boundary.
+    ShowCreateWithContent { path: VaultPath, content: String },
+    /// Notification that a note was just created at this path. The current
+    /// screen refreshes its sidebar if it is browsing the note's directory.
+    /// Opening the note is a separate concern (the creator emits `OpenPath`).
+    Created(VaultPath),
+    /// Confirmation that the given entry was successfully deleted.
+    Deleted(VaultPath),
+    /// Confirmation that an entry was successfully renamed.
+    Renamed { from: VaultPath, to: VaultPath },
+    /// Confirmation that an entry was successfully moved.
+    Moved { from: VaultPath, to: VaultPath },
+}
+
+/// One row of the pinned-notes dialog: the pin and whether its note is
+/// currently on disk (a pin is kept, and shown as missing, when it is not).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedRow {
+    pub path: VaultPath,
+    pub missing: bool,
+}
+
+/// An async result addressed to the open overlay — **Overlay data** in
+/// CONTEXT.md. The `OverlayHost` is the only consumer; arriving with no (or
+/// the wrong) overlay open means the overlay was closed or replaced while
+/// the task ran, so the result is stale and dropped.
+#[derive(Debug, Clone)]
+pub enum OverlayData {
+    /// Rename dialog: name availability check result.
+    RenameValidation { available: bool },
+    /// Move dialog: directory list has loaded.
+    MoveDirectoriesLoaded(Vec<VaultPath>),
+    /// Move dialog: fuzzy filter results are ready.
+    MoveFilterResults(Vec<VaultPath>),
+    /// Move dialog: destination existence check result.
+    MoveDestValidation { available: bool },
+    /// Save-search dialog: existing saved-search names have loaded (drives
+    /// the update/overwrite/save-new hint).
+    SavedSearchNamesLoaded(Vec<String>),
+    /// Pinned-notes dialog: the list (with existence flags) has loaded or
+    /// reloaded after an edit — or that load failed. Carries its own error
+    /// rather than sharing [`OverlayData::Error`], so a failure from some
+    /// other overlay-started task (a rename confirmed just before the
+    /// dialog opened) is never mistaken for the reload this dialog waits on.
+    PinnedNotesLoaded(Result<Vec<PinnedRow>, String>),
+    /// Every property key in the vault (search form), for key pickers.
+    PropertyKeysLoaded(Vec<String>),
+    /// The properties dialog's note (`path`), read: entries in file order, or
+    /// the read error. A dialog ignores a result for another note.
+    PropertiesLoaded {
+        path: VaultPath,
+        result: Result<Vec<kimun_core::note::PropertyEntry>, String>,
+    },
+    /// A properties-dialog write to `path` finished: flash text, or why it
+    /// failed. A dialog ignores a result for another note.
+    PropertyWritten {
+        path: VaultPath,
+        result: Result<String, PropertyWriteError>,
+    },
+    /// An overlay-initiated operation failed; carries a human-readable
+    /// error message.
+    Error(String),
+}
+
+/// The saved-search save/select flow. One owner: the editor screen's
+/// `handle_saved_search`.
+#[derive(Debug, Clone)]
+pub enum SavedSearchFlow {
+    /// Persist a saved search (emitted by the save-search dialog on submit).
+    /// `source` is the surface the query was sourced from, decided when the
+    /// dialog opened — it drives whether the panel breadcrumb re-pins.
+    Confirmed {
+        name: String,
+        query: String,
+        source: SaveSource,
+    },
+    /// A saved search was written to disk (success path of `Confirmed`).
+    /// The editor re-pins the panel breadcrumb here — only once the write
+    /// actually succeeded.
+    Persisted {
+        name: String,
+        query: String,
+        source: SaveSource,
+    },
+    /// The background saved-search write failed; surface it to the user.
+    SaveFailed { name: String },
+    /// A saved search was chosen in the Saved Searches modal.
+    Selected { query: String, name: String },
+}
+
+impl AppMessage {
+    /// `OpenPath` without query emphasis — the common case.
+    pub fn open(path: kimun_core::nfs::VaultPath) -> Self {
+        AppMessage::OpenPath {
+            path,
+            emphasis: None,
+        }
+    }
+}
+
+// ── Screen events ────────────────────────────────────────────────────────
+#[derive(Debug, Clone)]
+pub enum ScreenEvent {
+    Start,
+    OpenPreferences,
+    /// Open the guided-setup (onboarding) screen.
+    OpenOnboarding,
+    /// Open the settings screen with an error overlay already shown.
+    OpenPreferencesWithError(String),
+    /// Navigate to the editor for the given vault root path.
+    OpenEditor(Arc<NoteVault>, VaultPath),
+    /// Navigate to the browse screen for the given vault root and directory path.
+    OpenBrowse(Arc<NoteVault>, VaultPath),
+}
+
+/// Convenience alias used throughout the codebase.
+pub type AppTx = UnboundedSender<AppMessage>;
+
+/// Sender helpers for the create-then-open sequence shared by every
+/// note-creation site (create dialog, quick note, note browser, sidebar,
+/// journal).
+pub trait AppTxExt {
+    /// Announce a freshly created note so sidebars browsing its directory
+    /// refresh, then open it. The notification is gated on `created` (an
+    /// already-existing note needs no refresh); the note is opened regardless.
+    fn announce_and_open(&self, path: VaultPath, created: bool);
+}
+
+impl AppTxExt for AppTx {
+    fn announce_and_open(&self, path: VaultPath, created: bool) {
+        if created {
+            self.send(AppMessage::FileOp(FileOp::Created(path.clone())))
+                .ok();
+        }
+        self.send(AppMessage::open(path)).ok();
+    }
+}
+
+/// Build a `Send + Sync` callback that fires `AppMessage::Redraw` on the
+/// app event bus. Used by long-lived components (autocomplete query
+/// task, etc.) that need to wake the render loop from a background
+/// thread but should not be aware of `AppMessage` themselves.
+pub fn redraw_callback(tx: AppTx) -> Arc<dyn Fn() + Send + Sync + 'static> {
+    Arc::new(move || {
+        let _ = tx.send(AppMessage::Redraw);
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn _assert_new_variants_exist(e: AppMessage) {
+        match e {
+            AppMessage::FileOp(FileOp::ShowDelete(_)) => {}
+            AppMessage::FileOp(FileOp::ShowRename(_)) => {}
+            AppMessage::FileOp(FileOp::ShowMove(_)) => {}
+            AppMessage::FileOp(FileOp::ShowCreateWithContent {
+                path: _,
+                content: _,
+            }) => {}
+            AppMessage::FileOp(FileOp::Deleted(_)) => {}
+            AppMessage::FileOp(FileOp::Renamed { from: _, to: _ }) => {}
+            AppMessage::FileOp(FileOp::Moved { from: _, to: _ }) => {}
+            AppMessage::OverlayData(OverlayData::Error(_)) => {}
+            AppMessage::Ask(AskData::AnswerReady {
+                turn_id: _,
+                result: _,
+            }) => {}
+            AppMessage::Ask(AskData::ReaderNote { path: _, text: _ }) => {}
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn ask_data_variants_construct() {
+        let _ = AppMessage::Ask(AskData::AnswerReady {
+            turn_id: 1,
+            result: Ok(("answer".to_string(), vec![])),
+        });
+        let _ = AppMessage::Ask(AskData::AnswerReady {
+            turn_id: 2,
+            result: Err("failed".to_string()),
+        });
+        let _ = AppMessage::Ask(AskData::ReaderNote {
+            path: VaultPath::new("note.md"),
+            text: Some("body".to_string()),
+        });
+        let _ = AppMessage::Ask(AskData::ReaderNote {
+            path: VaultPath::new("missing.md"),
+            text: None,
+        });
+    }
+
+    #[test]
+    fn sort_events_construct() {
+        use crate::logic::sort::SortState;
+        use crate::logic::sort::{SortField, SortOrder};
+        for target in [SortTarget::Sidebar, SortTarget::Query, SortTarget::Browser] {
+            let _ = AppMessage::SortChanged {
+                target,
+                state: SortState {
+                    field: SortField::Title,
+                    order: SortOrder::Descending,
+                    group_dirs: None,
+                },
+                persist: false,
+            };
+        }
+    }
+}

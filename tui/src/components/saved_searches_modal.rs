@@ -5,7 +5,7 @@
 //! and by a leading 1–9 quick-select index (an exact index match ranks first).
 //! Enter emits [`SavedSearchFlow::Selected`] (the editor runs the query in
 //! the panel and closes this overlay itself); Esc emits
-//! [`AppEvent::CloseOverlay`]; Delete removes the selected user entry.
+//! [`AppMessage::CloseOverlay`]; Delete removes the selected user entry.
 //!
 //! Hosts a [`SearchList`] engine: the vault load is a load-once
 //! [`RowSource`] (`reload_on_query == false`), name/index ranking is the
@@ -22,7 +22,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SavedSearchFlow, redraw_callback};
+use crate::components::events::InputEvent;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::search_list::{
@@ -30,6 +30,7 @@ use crate::components::search_list::{
 };
 use crate::keys::key_combo::KeyCombo;
 use crate::keys::{KeyBindings, key_event_to_combo};
+use crate::logic::message::{AppMessage, AppTx, SavedSearchFlow, redraw_callback};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -256,7 +257,7 @@ impl Overlay for SavedSearchesModal {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
                 SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                     if let Some(item) = self.list.selected_row() {
-                        tx.send(AppEvent::SavedSearch(SavedSearchFlow::Selected {
+                        tx.send(AppMessage::SavedSearch(SavedSearchFlow::Selected {
                             query: item.query.clone(),
                             name: item.name.clone(),
                         }))
@@ -291,7 +292,7 @@ impl Overlay for SavedSearchesModal {
                 }
                 KeyReaction::Submit => {
                     if let Some(item) = self.list.selected_row() {
-                        tx.send(AppEvent::SavedSearch(SavedSearchFlow::Selected {
+                        tx.send(AppMessage::SavedSearch(SavedSearchFlow::Selected {
                             query: item.query.clone(),
                             name: item.name.clone(),
                         }))
@@ -300,7 +301,7 @@ impl Overlay for SavedSearchesModal {
                     EventState::Consumed
                 }
                 KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseOverlay).ok();
+                    tx.send(AppMessage::CloseOverlay).ok();
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => EventState::Consumed,
@@ -587,11 +588,11 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::SavedSearch(SavedSearchFlow::Selected { .. }))),
+                .any(|e| matches!(e, AppMessage::SavedSearch(SavedSearchFlow::Selected { .. }))),
             "expected SavedSearchSelected, got {events:?}"
         );
         assert!(
-            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
+            !events.iter().any(|e| matches!(e, AppMessage::CloseOverlay)),
             "select must not emit CloseOverlay; editor's SavedSearchSelected handler closes the overlay, got {events:?}"
         );
     }

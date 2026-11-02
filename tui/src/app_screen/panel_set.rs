@@ -14,13 +14,15 @@ use crate::components::Component;
 use crate::components::activity_rail::{ActivityRail, RAIL_WIDTH, RailCaps};
 use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
-use crate::components::drawer::{DrawerHost, DrawerView};
+use crate::components::drawer::DrawerHost;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::panel::{PanelKind, panel_block};
 use crate::components::query_panel::QueryPanel;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
+use crate::logic::message::AppTx;
+use crate::logic::nav::DrawerView;
 use crate::settings::themes::Theme;
 
 /// Default drawer width in columns. Resizable at runtime by dragging the

@@ -172,7 +172,12 @@ def main() -> int:
         print("\n".join(core))
         failures += 1
 
-    tui = offenders(Path("tui/src"), TUI_PATTERN)
+    # Every frontend follows the same rule: gui/src is the other one.
+    tui = [
+        hit
+        for root in (Path("tui/src"), Path("gui/src"))
+        for hit in offenders(root, TUI_PATTERN)
+    ]
     if tui:
         print("::error::these belong in kimun_core::system (or nfs, for vault paths):")
         print("\n".join(tui))

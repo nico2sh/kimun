@@ -74,8 +74,8 @@ pub fn mouse_moved_at(col: u16, row: u16) -> InputEvent {
 
 /// Every event sent so far on `rx`.
 pub fn drain(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::components::events::AppEvent>,
-) -> Vec<crate::components::events::AppEvent> {
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::logic::message::AppMessage>,
+) -> Vec<crate::logic::message::AppMessage> {
     std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
 

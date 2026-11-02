@@ -24,15 +24,14 @@ use crate::app_screen::onboarding::OnboardingScreen;
 use crate::app_screen::preferences::PreferencesScreen;
 use crate::app_screen::start::StartScreen;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::events::{
-    AppEvent, AppTx, AppTxExt, FileOp, InputEvent, ScreenEvent, UpdateFlow,
-};
+use crate::components::events::InputEvent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::logic::message::{AppMessage, AppTx, AppTxExt, FileOp, ScreenEvent, UpdateFlow};
 use crate::settings::{AppSettings, SharedSettings};
 use clap::Parser;
 use color_eyre::Result;
-use events::EventHandler;
+use events::{AppEvent, EventHandler};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -171,7 +170,7 @@ pub struct App {
 
     /// One-shot flashes waiting for a screen that can show them, oldest
     /// first: the notice that some key binding cannot reach this terminal,
-    /// and whatever [`AppEvent::ParkFlash`] sent (Start's "your last note is
+    /// and whatever [`AppMessage::ParkFlash`] sent (Start's "your last note is
     /// gone").
     ///
     /// Parked rather than sent, because they are decided while **Start** is
@@ -270,7 +269,7 @@ impl App {
 /// (Re)starts the background RAG sync for the current vault: aborts any prior
 /// task and spawns a fresh one bound to the current `app.vault`. A no-op sync
 /// (no server configured, or no vault) leaves the task `None`.
-fn respawn_rag(app: &mut App, tx: &crate::components::events::AppTx) {
+fn respawn_rag(app: &mut App, tx: &crate::logic::message::AppTx) {
     if let Some(handle) = app.rag_sync_task.take() {
         handle.abort();
     }
@@ -311,7 +310,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     // existed. Non-editor screens ignore the event.
     if let Some(status) = app.update.clone() {
         screen
-            .handle_app_message(AppEvent::Update(UpdateFlow::Available(status)), tx)
+            .handle_app_message(AppMessage::Update(UpdateFlow::Available(status)), tx)
             .await;
     }
     // Drained, not cloned: a flash is a one-shot, and re-firing it on every
@@ -323,14 +322,14 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     if shows_flashes && !app.parked_flashes.is_empty() {
         let msg = std::mem::take(&mut app.parked_flashes).join(" · ");
         screen
-            .handle_app_message(AppEvent::FlashMessage(msg), tx)
+            .handle_app_message(AppMessage::FlashMessage(msg), tx)
             .await;
     }
     screen
-        .handle_app_message(AppEvent::RagStatus(app.rag_status), tx)
+        .handle_app_message(AppMessage::RagStatus(app.rag_status), tx)
         .await;
     screen
-        .handle_app_message(AppEvent::ServerUpdate(app.server_update.clone()), tx)
+        .handle_app_message(AppMessage::ServerUpdate(app.server_update.clone()), tx)
         .await;
     app.current_screen = screen;
     // Bumped here (not at every swap site) because every swap goes through
@@ -508,7 +507,7 @@ fn notice_text(
 
 /// Kick off the background update check (gated on the user's `update_check`
 /// preference). All network/filesystem work runs on `spawn_blocking` inside
-/// `update::check_now`; a found update is surfaced via `AppEvent::Update(UpdateFlow::Available)`. Failures are logged and
+/// `update::check_now`; a found update is surfaced via `AppMessage::Update(UpdateFlow::Available)`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {
     if !app.settings.read().unwrap().update_check() {
@@ -520,7 +519,7 @@ fn spawn_update_check(app: &App, tx: AppTx) {
     tokio::spawn(async move {
         match crate::update::check_now(config_dir, false).await {
             Ok(Some(status)) if status.should_notify() => {
-                let _ = tx.send(AppEvent::Update(UpdateFlow::Available(status)));
+                let _ = tx.send(AppMessage::Update(UpdateFlow::Available(status)));
             }
             Ok(_) => {}
             Err(e) => tracing::debug!("update check failed: {e}"),
@@ -578,11 +577,11 @@ where
         let mut event = events.next().await;
         loop {
             match event {
-                AppEvent::Quit => {
+                AppEvent::Message(AppMessage::Quit) => {
                     app.current_screen.on_exit(&tx).await;
                     return Ok(());
                 }
-                AppEvent::Redraw => {
+                AppEvent::Message(AppMessage::Redraw) => {
                     // No-op: top-of-loop draw already happened (or is about to).
                 }
                 AppEvent::Input(input) => {
@@ -607,14 +606,14 @@ where
                                 };
                                 let handled_global = match action {
                                     Some(ActionShortcuts::Quit) => {
-                                        tx.send(AppEvent::Quit).ok();
+                                        tx.send(AppMessage::Quit).ok();
                                         true
                                     }
                                     Some(ActionShortcuts::OpenPreferences) => {
                                         let already_on_settings = app.current_screen.get_kind()
                                             == ScreenKind::Preferences;
                                         if !already_on_settings {
-                                            tx.send(AppEvent::OpenScreen(
+                                            tx.send(AppMessage::OpenScreen(
                                                 ScreenEvent::OpenPreferences,
                                             ))
                                             .ok();
@@ -646,7 +645,7 @@ where
                         }
                     }
                 }
-                msg => {
+                AppEvent::Message(msg) => {
                     // Capture screen identity around handle_app_message so we
                     // can detect a synchronous screen swap (OpenScreen,
                     // VaultConflict). Use `screen_generation` rather than
@@ -673,35 +672,35 @@ where
     }
 }
 
-async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Result<()> {
+async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::Result<()> {
     match msg {
-        AppEvent::Redraw => {}
-        AppEvent::OpenScreen(screen) => {
+        AppMessage::Redraw => {}
+        AppMessage::OpenScreen(screen) => {
             switch_screen(app, tx, screen).await;
         }
-        AppEvent::ParkFlash(msg) => app.parked_flashes.push(msg),
-        AppEvent::OpenPath { path, emphasis } => {
+        AppMessage::ParkFlash(msg) => app.parked_flashes.push(msg),
+        AppMessage::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = app.current_screen.try_open_path(path, emphasis, tx).await;
             if let Some(path) = unhandled {
                 if let Some(vault) = app.vault.clone() {
                     if path.is_note() {
-                        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
+                        tx.send(AppMessage::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
                             .ok();
                     } else {
-                        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(vault, path)))
+                        tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(vault, path)))
                             .ok();
                     }
                 } else {
                     // No vault → the app is unconfigured. Route to the guided
                     // setup, not Preferences (onboarding replaces the
                     // preferences fallthrough as the no-workspace path).
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenOnboarding))
+                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
                         .ok();
                 }
             }
         }
-        AppEvent::OpenAttachment(path) => {
+        AppMessage::OpenAttachment(path) => {
             // The editor screen shows it in its attachment view; any other
             // screen routes through OpenEditor first, then the attachment opens
             // there. (In practice this is sent from the editor's FILES drawer.)
@@ -709,11 +708,11 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             if let Some(path) = unhandled
                 && let Some(vault) = app.vault.clone()
             {
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
                     .ok();
             }
         }
-        AppEvent::OpenJournal => {
+        AppMessage::OpenJournal => {
             // Resolve today's journal entry (creating it if needed) once, then
             // route it like any other note via OpenPath so it works from every
             // screen — the current screen opens it inline or the loop switches
@@ -726,16 +725,16 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 tx.announce_and_open(details.path, created);
             }
         }
-        AppEvent::PreferencesSaved | AppEvent::OnboardingFinished => {
+        AppMessage::PreferencesSaved | AppMessage::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = App::open_vault(&app.settings).await;
             respawn_rag(app, tx);
-            tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+            tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppEvent::ClosePreferences => {
-            tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+        AppMessage::ClosePreferences => {
+            tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppEvent::VaultConflict(msg) => {
+        AppMessage::VaultConflict(msg) => {
             // The vault has structural conflicts (e.g. case-insensitive path clashes).
             // Clear the workspace so the user is not stuck in a loop, then show
             // the settings screen with the error overlay pre-populated.
@@ -748,7 +747,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             respawn_rag(app, tx);
             switch_screen(app, tx, ScreenEvent::OpenPreferencesWithError(msg)).await;
         }
-        AppEvent::WorkspaceSwitched(name) => {
+        AppMessage::WorkspaceSwitched(name) => {
             {
                 let mut s = app.settings.write().unwrap();
                 if let Some(ref mut wc) = s.workspace_config {
@@ -758,9 +757,9 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             }
             app.vault = App::open_vault(&app.settings).await;
             respawn_rag(app, tx);
-            tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+            tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppEvent::Update(flow) => {
+        AppMessage::Update(flow) => {
             // The app-global half of the update lifecycle: remember the
             // notice (so a later-opened editor is seeded in switch_screen),
             // persist a dismissal, clear on dismiss/install. Every flow
@@ -780,24 +779,24 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 UpdateFlow::Apply | UpdateFlow::ShowDialog => {}
             }
             app.current_screen
-                .handle_app_message(AppEvent::Update(flow), tx)
+                .handle_app_message(AppMessage::Update(flow), tx)
                 .await;
         }
-        AppEvent::RagStatus(status) => {
+        AppMessage::RagStatus(status) => {
             // Same pattern as update: keep app-globally for screen seeding, and
             // forward for immediate display.
             app.rag_status = status;
             app.current_screen
-                .handle_app_message(AppEvent::RagStatus(status), tx)
+                .handle_app_message(AppMessage::RagStatus(status), tx)
                 .await;
         }
-        AppEvent::ServerUpdate(latest) => {
+        AppMessage::ServerUpdate(latest) => {
             app.server_update = latest.clone();
             app.current_screen
-                .handle_app_message(AppEvent::ServerUpdate(latest), tx)
+                .handle_app_message(AppMessage::ServerUpdate(latest), tx)
                 .await;
         }
-        AppEvent::FileOp(op) => {
+        AppMessage::FileOp(op) => {
             // History is app-wide bookkeeping; keep it in step here, whichever
             // screen hosted the operation, then let the screen react.
             match &op {
@@ -813,7 +812,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 _ => {}
             }
             app.current_screen
-                .handle_app_message(AppEvent::FileOp(op), tx)
+                .handle_app_message(AppMessage::FileOp(op), tx)
                 .await;
         }
         other => {
@@ -866,7 +865,7 @@ mod tests {
     /// consuming the flash there loses the only notice the user gets.
     #[tokio::test]
     async fn the_key_warning_waits_for_a_screen_that_shows_flashes() {
-        use crate::components::events::ScreenEvent;
+        use crate::logic::message::ScreenEvent;
         use kimun_core::nfs::VaultPath;
         use kimun_core::{NoteVault, VaultConfig};
 
@@ -909,9 +908,9 @@ mod tests {
         App::from_settings(Arc::new(RwLock::new(settings))).await
     }
 
-    async fn file_op(app: &mut App, op: crate::components::events::FileOp) {
+    async fn file_op(app: &mut App, op: crate::logic::message::FileOp) {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        super::handle_app_message(crate::components::events::AppEvent::FileOp(op), app, &tx)
+        super::handle_app_message(crate::logic::message::AppMessage::FileOp(op), app, &tx)
             .await
             .unwrap();
     }
@@ -936,7 +935,7 @@ mod tests {
     /// next launch finds the old path gone and blames an outside change.
     #[tokio::test]
     async fn renaming_a_note_rewrites_it_in_the_history() {
-        use crate::components::events::FileOp;
+        use crate::logic::message::FileOp;
         use kimun_core::nfs::VaultPath;
 
         let scratch = tempfile::TempDir::new().unwrap();
@@ -954,7 +953,7 @@ mod tests {
 
     #[tokio::test]
     async fn moving_a_directory_rewrites_the_notes_beneath_it() {
-        use crate::components::events::FileOp;
+        use crate::logic::message::FileOp;
         use kimun_core::nfs::VaultPath;
 
         let scratch = tempfile::TempDir::new().unwrap();
@@ -972,7 +971,7 @@ mod tests {
 
     #[tokio::test]
     async fn deleting_drops_the_note_or_everything_beneath_the_directory() {
-        use crate::components::events::FileOp;
+        use crate::logic::message::FileOp;
         use kimun_core::nfs::VaultPath;
 
         let scratch = tempfile::TempDir::new().unwrap();
@@ -988,14 +987,14 @@ mod tests {
     /// before a frame is ever drawn.
     #[tokio::test]
     async fn every_parked_flash_reaches_the_footer() {
-        use crate::components::events::{AppEvent, ScreenEvent};
+        use crate::logic::message::{AppMessage, ScreenEvent};
         use kimun_core::nfs::VaultPath;
 
         let settings = Arc::new(RwLock::new(AppSettings::default()));
         let mut app = App::from_settings(settings).await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         for notice in ["first notice", "second notice"] {
-            super::handle_app_message(AppEvent::ParkFlash(notice.to_string()), &mut app, &tx)
+            super::handle_app_message(AppMessage::ParkFlash(notice.to_string()), &mut app, &tx)
                 .await
                 .unwrap();
         }

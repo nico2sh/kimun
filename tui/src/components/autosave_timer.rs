@@ -1,6 +1,6 @@
 use tokio::task::JoinHandle;
 
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::message::{AppMessage, AppTx};
 
 pub struct AutosaveTimer {
     handle: Option<JoinHandle<()>>,
@@ -17,7 +17,7 @@ impl AutosaveTimer {
         Self { handle: None }
     }
 
-    /// Abort any running timer and start a new one that sends `AppEvent::Autosave`
+    /// Abort any running timer and start a new one that sends `AppMessage::Autosave`
     /// every `interval_secs` seconds (skipping the first tick).
     pub fn restart(&mut self, interval_secs: u64, tx: AppTx) {
         self.stop();
@@ -26,7 +26,7 @@ impl AutosaveTimer {
             interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;
-                if tx.send(AppEvent::Autosave).is_err() {
+                if tx.send(AppMessage::Autosave).is_err() {
                     break;
                 }
             }

@@ -15,8 +15,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::backend::NvimBackend;
-use super::snapshot::EditorMode;
-use crate::components::events::{AppEvent, AppTx};
+use crate::logic::editor::snapshot::EditorMode;
+use crate::logic::message::{AppMessage, AppTx};
 
 /// Logical (row, char-col) selection span, as carried on the snapshot.
 type Selection = ((usize, usize), (usize, usize));
@@ -157,9 +157,9 @@ impl NvimHost {
                     nvim.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), tx.clone());
                 }
                 if kind.saves() {
-                    tx.send(AppEvent::Autosave).ok();
+                    tx.send(AppMessage::Autosave).ok();
                 }
-                tx.send(AppEvent::FocusSidebar).ok();
+                tx.send(AppMessage::FocusSidebar).ok();
             }
             NvimKeyDecision::ReplayZThenForward => {
                 nvim.handle_key(

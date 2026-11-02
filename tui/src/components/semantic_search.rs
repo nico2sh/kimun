@@ -14,11 +14,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, FileOp, InputEvent};
+use crate::components::events::InputEvent;
 use crate::components::file_list::FileListEntry;
 use crate::components::note_browser::format_journal_date;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::search_list::{Emit, RowSource};
+use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::rag::rag_client;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
@@ -112,14 +113,14 @@ impl ListPanelSpec for SemanticSpec {
 
     fn submit(row: &FileListEntry, tx: &AppTx) {
         if let FileListEntry::Note { path, .. } = row {
-            tx.send(AppEvent::open(path.clone())).ok();
+            tx.send(AppMessage::open(path.clone())).ok();
         }
     }
 
-    fn context_event(row: &FileListEntry) -> Option<AppEvent> {
+    fn context_event(row: &FileListEntry) -> Option<AppMessage> {
         match row {
             FileListEntry::Note { path, .. } => {
-                Some(AppEvent::FileOp(FileOp::ShowMenu(path.clone())))
+                Some(AppMessage::FileOp(FileOp::ShowMenu(path.clone())))
             }
             _ => None,
         }

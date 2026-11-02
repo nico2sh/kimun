@@ -12,7 +12,7 @@ use super::{Element, ElementKind, ImagePlaceholder, string_display_width};
 /// sigils as non-content, and pushes a `WikiLink` element for each
 /// span. Skips spans that fall entirely inside an existing element
 /// (e.g. `[[icon]]` inside a markdown link's display text).
-pub(super) fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
+pub(crate) fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
     for span in kimun_core::note::scan::wikilink_char_spans(line) {
         // Skip spans nested inside a markdown link's display text (e.g.
         // `[[icon]]` in `[[[icon]]](url)`). Block-level elements such as

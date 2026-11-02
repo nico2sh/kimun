@@ -8,9 +8,9 @@ use super::ModalShell;
 use crate::components::Component;
 use crate::components::clickable::key_at;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, UpdateFlow};
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
+use crate::logic::message::{AppMessage, AppTx, UpdateFlow};
 use crate::settings::themes::Theme;
 use crate::update::UpdateStatus;
 use unicode_width::UnicodeWidthStr;
@@ -76,18 +76,18 @@ impl UpdateAvailableDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Char('u') | KeyCode::Char('U') if self.eligible => {
-                tx.send(AppEvent::Update(UpdateFlow::Apply)).ok();
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::Update(UpdateFlow::Apply)).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                tx.send(AppEvent::Update(UpdateFlow::Dismiss(self.latest.clone())))
+                tx.send(AppMessage::Update(UpdateFlow::Dismiss(self.latest.clone())))
                     .ok();
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseOverlay).ok();
+                tx.send(AppMessage::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::Consumed, // swallow other keys while open
@@ -256,29 +256,29 @@ mod tests {
 
     #[test]
     fn skip_sends_dismiss_and_close() {
-        let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
         let mut d = UpdateAvailableDialog::new(&status(InstallChannel::Direct));
         let state = d.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), &tx);
         assert_eq!(state, EventState::Consumed);
         assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::Update(UpdateFlow::Dismiss(v))) if v == "0.18.0")
+            matches!(rx.try_recv(), Ok(AppMessage::Update(UpdateFlow::Dismiss(v))) if v == "0.18.0")
         );
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::CloseOverlay)));
+        assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
     }
 
     #[test]
     fn update_now_only_on_eligible_channel() {
-        let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AppMessage>();
         // Eligible: 'u' applies.
         let mut d = UpdateAvailableDialog::new(&status(InstallChannel::Script));
         d.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE), &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::Update(UpdateFlow::Apply))
+            Ok(AppMessage::Update(UpdateFlow::Apply))
         ));
 
         // Not eligible: 'u' is swallowed, no apply.
-        let (tx2, mut rx2) = mpsc::unbounded_channel::<AppEvent>();
+        let (tx2, mut rx2) = mpsc::unbounded_channel::<AppMessage>();
         let mut d2 = UpdateAvailableDialog::new(&status(InstallChannel::Brew));
         let state = d2.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE), &tx2);
         assert_eq!(state, EventState::Consumed);

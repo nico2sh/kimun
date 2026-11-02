@@ -10,8 +10,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use kimun_core::note::property_search_key;
 use kimun_core::{NoteVault, OrderBy, OrderField, SearchTerms, with_order_directive};
 
-use crate::components::events::{AppEvent, AppTx};
-use crate::components::file_list::{PropertyValues, SortField, SortOrder};
+use crate::components::file_list::PropertyValues;
+use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::sort::{SortField, SortOrder, SortState};
 
 /// The clickable sort chip a sortable panel draws right-aligned on its
 /// search box border: ` Name ↑ `, ` Title ↓ `, ` due ↑ ` (a property sort
@@ -66,15 +67,6 @@ pub fn sort_chip_line(
         sort_chip_label(field, order),
         theme.action(),
     ))
-}
-
-/// What the sort dialog shows and changes for one list.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SortState {
-    pub field: SortField,
-    pub order: SortOrder,
-    /// `Some` only for lists that can group directories (the sidebar).
-    pub group_dirs: Option<bool>,
 }
 
 /// A list the sort dialog can sort.
@@ -180,7 +172,7 @@ impl PropertySort {
                     failed,
                 })
                 .ok();
-            tx.send(AppEvent::Redraw).ok();
+            tx.send(AppMessage::Redraw).ok();
         });
     }
 
@@ -260,7 +252,7 @@ impl PropertySort {
 /// missing (the fetch delivers an empty map).
 fn report_fetch_error(key: &str, e: &dyn std::fmt::Display, tx: &AppTx) {
     tracing::warn!("property sort values for {key}: {e}");
-    tx.send(AppEvent::FlashMessage(format!(
+    tx.send(AppMessage::FlashMessage(format!(
         "couldn't load property values: {e}"
     )))
     .ok();
@@ -482,7 +474,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         report_fetch_error("rank", &"db gone", &tx);
         match rx.try_recv() {
-            Ok(AppEvent::FlashMessage(msg)) => {
+            Ok(AppMessage::FlashMessage(msg)) => {
                 assert_eq!(msg, "couldn't load property values: db gone")
             }
             other => panic!("expected a flash, got {other:?}"),

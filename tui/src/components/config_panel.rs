@@ -9,9 +9,10 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::keys::leader::LeaderAction;
+use crate::logic::message::{AppMessage, AppTx, ScreenEvent};
 use crate::settings::themes::Theme;
 
 /// What the CFG drawer view displays — resolved by the host screen when the
@@ -57,12 +58,12 @@ impl ConfigPanel {
         if let InputEvent::Key(key) = event {
             match key.code {
                 KeyCode::Char('t') | KeyCode::Enter => {
-                    tx.send(AppEvent::ExecuteLeaderAction(LeaderAction::VaultTheme))
+                    tx.send(AppMessage::ExecuteLeaderAction(LeaderAction::VaultTheme))
                         .ok();
                     return EventState::Consumed;
                 }
                 KeyCode::Char('p') => {
-                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
                         .ok();
                     return EventState::Consumed;
                 }
@@ -147,7 +148,7 @@ mod tests {
             assert_eq!(panel.handle_input(&key(code), &tx), EventState::Consumed);
             assert!(matches!(
                 rx.try_recv(),
-                Ok(AppEvent::ExecuteLeaderAction(LeaderAction::VaultTheme))
+                Ok(AppMessage::ExecuteLeaderAction(LeaderAction::VaultTheme))
             ));
         }
     }
@@ -164,12 +165,12 @@ mod tests {
         panel.handle_input(&crate::test_support::mouse_down_at(5, 7), &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::ExecuteLeaderAction(LeaderAction::VaultTheme))
+            Ok(AppMessage::ExecuteLeaderAction(LeaderAction::VaultTheme))
         ));
         panel.handle_input(&crate::test_support::mouse_down_at(5, 8), &tx);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+            Ok(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
         ));
         panel.handle_input(&crate::test_support::mouse_down_at(5, 2), &tx);
         assert!(rx.try_recv().is_err(), "info rows are inert");
@@ -185,7 +186,7 @@ mod tests {
         );
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::OpenScreen(ScreenEvent::OpenPreferences))
+            Ok(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
         ));
     }
 

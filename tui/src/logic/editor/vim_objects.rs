@@ -6,7 +6,7 @@
 //! its brackets. The primitives underneath — word classes, the matching
 //! bracket — belong to `ropetext`.
 
-use super::rope_buffer::RopeBuffer;
+use crate::logic::editor::rope_buffer::RopeBuffer;
 
 /// A text object (`iw`, `a"`, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
