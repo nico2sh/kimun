@@ -6,9 +6,11 @@ pub mod actions;
 pub mod clipboard;
 pub mod input;
 pub mod layout;
+pub mod list;
 
 pub mod doc_meta;
 pub mod editor;
+pub mod files;
 
 pub mod message;
 pub mod nav;

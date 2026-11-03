@@ -138,6 +138,9 @@ fn main() {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // The kit's inputs (the FILES filter) draw their caret from the kit theme,
+            // which is not kimün's: give them the editor's caret colour.
+            gpui_kit::component::Theme::global_mut(cx).caret = theme::caret(&theme).into();
             editor_view::init(cx);
             keymap::init(cx, keymap);
             let options = WindowOptions {
@@ -156,7 +159,7 @@ fn main() {
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, theme, layout, LayoutStore::UserConfig, cx);
-                    workspace.start(start, settings, tx, rx, cx);
+                    workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });
                 // The layout starts with the editor focused. Closing the

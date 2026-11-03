@@ -1,0 +1,476 @@
+//! UI integration tests for the FILES drawer view (M5b-2 G3): a real
+//! `Workspace` on a real temp vault, driven through the window's keys and
+//! pointer, checked through the model the view draws and on disk.
+//!
+//! Like the startup tests, each test owns a current-thread tokio runtime and
+//! drives it between GPUI's `run_until_parked` (see `start_tests::drive`).
+#![cfg(test)]
+
+use gpui_kit::test::TestWindowExt;
+use gpui_kit::{AppContext, TestAppContext};
+use kimun_core::nfs::VaultPath;
+use kimun_notes::logic::files::FileListEntry;
+use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::message::{AppMessage, FileOp};
+use tokio::runtime::Runtime;
+
+use super::files::{FILES_ID, row_id};
+use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use crate::startup::FirstNote;
+use crate::test_vault::{TestVault, test_vault};
+
+fn path(p: &str) -> VaultPath {
+    VaultPath::new(p)
+}
+
+/// A short name for a row, as the tests write them: `..`, `name/`, a
+/// note's file name, `+name` for the create row.
+fn short(row: &FileListEntry) -> String {
+    match row {
+        FileListEntry::Up { .. } => "..".into(),
+        FileListEntry::Directory { name, .. } => format!("{name}/"),
+        FileListEntry::Note { filename, .. } => filename.clone(),
+        FileListEntry::Attachment { filename, .. } => filename.clone(),
+        FileListEntry::CreateNote { filename, .. } => format!("+{filename}"),
+    }
+}
+
+impl Started {
+    fn files<R>(&self, cx: &TestAppContext, f: impl FnOnce(&super::FilesPane) -> R) -> R {
+        cx.read(|cx| {
+            let files = self.workspace.read(cx).files.clone().expect("FILES");
+            f(files.read(cx))
+        })
+    }
+
+    /// The rows FILES shows, top to bottom.
+    fn rows(&self, cx: &TestAppContext) -> Vec<String> {
+        self.files(cx, |pane| {
+            pane.model()
+                .core()
+                .map(|core| core.visible_rows().into_iter().map(short).collect())
+                .unwrap_or_default()
+        })
+    }
+
+    fn selected(&self, cx: &TestAppContext) -> Option<String> {
+        self.files(cx, |pane| {
+            pane.model()
+                .core()
+                .and_then(|core| core.selected_row())
+                .map(short)
+        })
+    }
+
+    fn dir(&self, cx: &TestAppContext) -> VaultPath {
+        self.files(cx, |pane| pane.current_dir().clone())
+    }
+
+    fn query(&self, cx: &TestAppContext) -> String {
+        cx.read(|cx| {
+            let files = self.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).query(cx)
+        })
+    }
+
+    /// The note rows marked open.
+    fn marked(&self, cx: &TestAppContext) -> Vec<String> {
+        self.files(cx, |pane| {
+            pane.model()
+                .core()
+                .map(|core| {
+                    core.visible_rows()
+                        .into_iter()
+                        .filter(|r| matches!(r, FileListEntry::Note { is_open: true, .. }))
+                        .map(short)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    fn title_of(&self, filename: &str, cx: &TestAppContext) -> Option<String> {
+        self.files(cx, |pane| {
+            pane.model().core().and_then(|core| {
+                core.rows().iter().find_map(|r| match r {
+                    FileListEntry::Note {
+                        filename: f, title, ..
+                    } if f == filename => Some(title.clone()),
+                    _ => None,
+                })
+            })
+        })
+    }
+
+    /// The element id of the row `name` (see [`short`]).
+    fn row(&self, name: &str, cx: &TestAppContext) -> String {
+        self.files(cx, |pane| {
+            pane.model()
+                .core()
+                .and_then(|core| {
+                    core.visible_rows()
+                        .into_iter()
+                        .find(|r| short(r) == name)
+                        .map(|r| row_id(r).to_string())
+                })
+                .unwrap_or_else(|| panic!("no row {name}"))
+        })
+    }
+
+    fn focused(&self, cx: &TestAppContext) -> Panel {
+        cx.read(|cx| self.workspace.read(cx).layout.focused())
+    }
+
+    fn press_key(&self, key: &str, cx: &mut TestAppContext) {
+        cx.update_window(self.handle, |_, window, cx| window.press(key, cx))
+            .unwrap();
+    }
+
+    fn type_in(&self, text: &str, cx: &mut TestAppContext) {
+        cx.update_window(self.handle, |_, window, cx| window.input(text, cx))
+            .unwrap();
+    }
+
+    fn click_row(&self, name: &str, cx: &mut TestAppContext) {
+        let id = self.row(name, cx);
+        cx.update_window(self.handle, |_, window, cx| window.click(id, cx))
+            .unwrap();
+    }
+
+    fn double_click_row(&self, name: &str, cx: &mut TestAppContext) {
+        let id = self.row(name, cx);
+        cx.update_window(self.handle, |_, window, cx| window.double_click(id, cx))
+            .unwrap();
+    }
+
+    fn open_in_editor(&self, cx: &TestAppContext) -> Option<VaultPath> {
+        cx.read(|cx| self.workspace.read(cx).status.note.clone())
+    }
+
+    fn listed(&self, cx: &TestAppContext) -> bool {
+        self.files(cx, |pane| {
+            pane.model()
+                .core()
+                .is_some_and(|core| !core.is_loading() && core.visible_len() > 0)
+        })
+    }
+}
+
+const NOTES: &[(&str, &str)] = &[
+    ("top.md", "Top"),
+    ("sub/a.md", "Alpha"),
+    ("sub/b.md", "Bravo"),
+    ("sub/deeper/c.md", "Charlie"),
+];
+
+/// Started on `first` (a note named on the command line), driven until its
+/// text shows and FILES has listed its folder.
+fn started_on(cx: &mut TestAppContext, rt: &Runtime, first: &str) -> (TestVault, Started) {
+    let v = rt.block_on(test_vault(NOTES, &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path(first))),
+        v.settings.clone(),
+    );
+    let want = NOTES.iter().find(|(p, _)| *p == first).unwrap().1;
+    drive(rt, cx, |cx| started.text(cx) == want && started.listed(cx));
+    (v, started)
+}
+
+/// FILES gives the keyboard to its filter (`OpenFileBrowser`).
+fn focus_files(started: &Started, cx: &mut TestAppContext) {
+    started.press_key("ctrl-e", cx);
+    assert_eq!(started.focused(cx), Panel::Drawer(Side::Left));
+}
+
+// ── the first listing and the marker ─────────────────────────────────────
+
+/// The first note opened picks FILES' folder, and its row is marked open;
+/// `..` leads (the test config does not group folders first).
+#[gpui_kit::test]
+fn the_first_note_opened_lists_its_folder_and_is_marked(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    assert!(started.dir(cx).is_like(&path("sub")));
+    assert_eq!(started.rows(cx), vec!["..", "a.md", "b.md", "deeper/"]);
+    assert_eq!(started.marked(cx), vec!["a.md"]);
+    assert!(started.shows(FILES_ID, cx));
+    let a = started.row("a.md", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(a.clone()).visible(), "the row is drawn");
+    })
+    .unwrap();
+}
+
+/// An empty history lands on the root: FILES lists it.
+#[gpui_kit::test]
+fn an_empty_history_lists_the_root(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(NOTES, &[]));
+    let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+    drive(&rt, cx, |cx| started.listed(cx));
+    assert!(started.dir(cx).is_root_or_empty());
+    assert_eq!(started.rows(cx), vec!["sub/", "top.md"]);
+}
+
+// ── keys ─────────────────────────────────────────────────────────────────
+
+/// Up/Down move the selection; Enter on a note opens it, gives the editor
+/// the keyboard, and the marker follows the open note.
+#[gpui_kit::test]
+fn the_keys_select_and_enter_opens_the_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    focus_files(&started, cx);
+    assert_eq!(started.selected(cx).as_deref(), Some(".."));
+    started.press_key("down", cx);
+    started.press_key("down", cx);
+    started.press_key("down", cx);
+    assert_eq!(started.selected(cx).as_deref(), Some("deeper/"));
+    started.press_key("down", cx);
+    assert_eq!(
+        started.selected(cx).as_deref(),
+        Some("deeper/"),
+        "stops at the end"
+    );
+    started.press_key("up", cx);
+    assert_eq!(started.selected(cx).as_deref(), Some("b.md"));
+    started.press_key("enter", cx);
+    assert_eq!(started.focused(cx), Panel::Editor);
+    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    assert!(
+        started
+            .open_in_editor(cx)
+            .unwrap()
+            .is_like(&path("sub/b.md"))
+    );
+    assert_eq!(started.marked(cx), vec!["b.md"], "the marker follows");
+}
+
+/// Enter on a folder shows it; Left with an empty filter goes back up,
+/// and Backspace there leaves the folder alone.
+#[gpui_kit::test]
+fn enter_goes_into_a_folder_and_left_goes_back_up(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    focus_files(&started, cx);
+    for _ in 0..3 {
+        started.press_key("down", cx);
+    }
+    assert_eq!(started.selected(cx).as_deref(), Some("deeper/"));
+    started.press_key("enter", cx);
+    assert!(started.dir(cx).is_like(&path("sub/deeper")));
+    assert_eq!(
+        started.focused(cx),
+        Panel::Drawer(Side::Left),
+        "FILES keeps the keyboard"
+    );
+    drive(&rt, cx, |cx| started.listed(cx));
+    assert_eq!(started.rows(cx), vec!["..", "c.md"]);
+    started.press_key("left", cx);
+    assert!(started.dir(cx).is_like(&path("sub")));
+    started.press_key("backspace", cx);
+    assert!(
+        started.dir(cx).is_like(&path("sub")),
+        "Backspace on an empty filter stays put"
+    );
+    started.press_key("left", cx);
+    assert!(started.dir(cx).is_root_or_empty());
+    drive(&rt, cx, |cx| started.listed(cx));
+    // At the root there is nowhere to go up to.
+    started.press_key("left", cx);
+    assert!(started.dir(cx).is_root_or_empty());
+    assert_eq!(started.rows(cx), vec!["sub/", "top.md"]);
+}
+
+/// Typing filters (Up stays, filter-exempt) and offers `Create:`; Backspace
+/// then edits the filter rather than going up; Escape clears it, and a
+/// second Escape gives the editor the keyboard back.
+#[gpui_kit::test]
+fn typing_filters_and_escape_clears_then_leaves(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    focus_files(&started, cx);
+    started.type_in("bm", cx);
+    assert_eq!(started.query(cx), "bm");
+    let rows = started.rows(cx);
+    assert!(
+        rows[0].starts_with("+") && rows[0].contains("bm"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&"..".to_string()),
+        "Up is filter-exempt: {rows:?}"
+    );
+    assert!(rows.contains(&"b.md".to_string()), "{rows:?}");
+    assert!(!rows.contains(&"a.md".to_string()), "{rows:?}");
+    started.press_key("backspace", cx);
+    assert_eq!(started.query(cx), "b");
+    assert!(
+        started.dir(cx).is_like(&path("sub")),
+        "not up: the filter had text"
+    );
+    started.press_key("escape", cx);
+    assert_eq!(started.query(cx), "");
+    assert_eq!(started.rows(cx), vec!["..", "a.md", "b.md", "deeper/"]);
+    assert_eq!(started.focused(cx), Panel::Drawer(Side::Left));
+    started.press_key("escape", cx);
+    assert_eq!(started.focused(cx), Panel::Editor);
+}
+
+/// The `Create:` row makes the note through core, opens it, and FILES lists
+/// it (the `Created` refresh).
+#[gpui_kit::test]
+fn the_create_row_makes_and_opens_the_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    focus_files(&started, cx);
+    started.type_in("zulu", cx);
+    assert_eq!(started.selected(cx).as_deref(), Some("+sub/zulu.md"));
+    started.press_key("enter", cx);
+    assert_eq!(started.focused(cx), Panel::Editor);
+    drive(&rt, cx, |cx| {
+        started
+            .open_in_editor(cx)
+            .is_some_and(|n| n.is_like(&path("sub/zulu.md")))
+            && started.rows(cx).contains(&"zulu.md".to_string())
+    });
+    assert_eq!(started.query(cx), "", "the filter did its job");
+    assert!(
+        rt.block_on(v.vault.get_note_text(&path("sub/zulu.md")))
+            .is_ok()
+    );
+    assert_eq!(started.marked(cx), vec!["zulu.md"]);
+}
+
+// ── the pointer ──────────────────────────────────────────────────────────
+
+/// A click selects; a second click on the row a click selected opens it.
+#[gpui_kit::test]
+fn a_click_selects_and_a_second_click_opens(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    started.click_row("b.md", cx);
+    assert_eq!(started.selected(cx).as_deref(), Some("b.md"));
+    assert_eq!(
+        started.focused(cx),
+        Panel::Drawer(Side::Left),
+        "the click focused FILES"
+    );
+    drive(&rt, cx, |_| true);
+    assert_eq!(started.text(cx), "Alpha", "one click opens nothing");
+    started.click_row("b.md", cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    assert_eq!(started.focused(cx), Panel::Editor);
+}
+
+/// A double-click on a folder shows it (once: not two levels).
+#[gpui_kit::test]
+fn a_double_click_opens_a_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    assert_eq!(started.rows(cx), vec!["sub/", "top.md"]);
+    started.double_click_row("sub/", cx);
+    assert!(started.dir(cx).is_like(&path("sub")));
+    drive(&rt, cx, |cx| started.listed(cx));
+    assert_eq!(started.rows(cx), vec!["..", "a.md", "b.md", "deeper/"]);
+}
+
+// ── the app channel ──────────────────────────────────────────────────────
+
+/// A note created elsewhere (`FileOp::Created`) shows up in the folder FILES
+/// lists; a creation in another folder leaves it alone.
+#[gpui_kit::test]
+fn a_created_note_refreshes_the_listing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    rt.block_on(v.vault.create_note(&path("sub/echo.md"), "Echo"))
+        .unwrap();
+    rt.block_on(v.vault.create_note(&path("other.md"), "Other"))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Created(path("other.md"))),
+        cx,
+    );
+    drive(&rt, cx, |_| true);
+    assert!(!started.rows(cx).contains(&"echo.md".to_string()));
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Created(path("sub/echo.md"))),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.rows(cx).contains(&"echo.md".to_string())
+    });
+    assert_eq!(
+        started.marked(cx),
+        vec!["a.md"],
+        "the marker survives the reload"
+    );
+}
+
+/// Saving retitles the note's row from its first line.
+#[gpui_kit::test]
+fn a_save_retitles_the_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    assert_eq!(started.title_of("a.md", cx).as_deref(), Some("Alpha"));
+    started.type_text_in_editor("New ", cx);
+    started.press_key("ctrl-s", cx);
+    drive(&rt, cx, |cx| {
+        started.title_of("a.md", cx).as_deref() == Some("New Alpha")
+    });
+}
+
+/// `OpenFileBrowser` shows FILES on the note's folder when it lists another
+/// one, and leaves the filter alone when it already lists it.
+#[gpui_kit::test]
+fn open_file_browser_reveals_the_notes_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    // Hide the drawer; the chord shows it again, focused.
+    started.press_key("ctrl-t", cx);
+    assert!(!started.shows(FILES_ID, cx));
+    focus_files(&started, cx);
+    assert!(started.shows(FILES_ID, cx));
+    // Same folder: the filter stays.
+    started.type_in("b", cx);
+    started.press_key("ctrl-e", cx);
+    assert_eq!(started.query(cx), "b");
+    // Elsewhere: back to the note's folder, filter cleared.
+    started.press_key("escape", cx);
+    started.press_key("left", cx);
+    assert!(started.dir(cx).is_root_or_empty());
+    started.press_key("ctrl-e", cx);
+    assert!(started.dir(cx).is_like(&path("sub")));
+    assert_eq!(started.focused(cx), Panel::Drawer(Side::Left));
+}
+
+impl Started {
+    /// Type `text` into the editor (it takes the keyboard first).
+    fn type_text_in_editor(&self, text: &str, cx: &mut TestAppContext) {
+        self.workspace.update(cx, |w, cx| {
+            w.layout.focus(Panel::Editor);
+            cx.notify();
+        });
+        cx.update_window(self.handle, |_, window, cx| {
+            let ws = self.workspace.clone();
+            ws.update(cx, |w, cx| w.apply_focus(window, cx));
+            window.input(text, cx);
+        })
+        .unwrap();
+    }
+}

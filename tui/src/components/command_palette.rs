@@ -17,7 +17,7 @@ use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
+    Filter, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::keys::leader::{LeaderAction, LeaderNode};
 use crate::logic::message::{AppMessage, AppTx, redraw_callback};
@@ -36,16 +36,18 @@ pub struct CommandEntry {
     pub action: LeaderAction,
 }
 
+impl ListRow for CommandEntry {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.haystack)
+    }
+}
+
 impl SearchRow for CommandEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
         RichRow::new("›", self.label.clone())
             .glyph_style(Style::default().fg(theme.gray.to_ratatui()))
             .meta(self.keys.clone())
             .into_list_item(theme)
-    }
-
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.haystack)
     }
 
     fn visual_height(&self) -> u16 {

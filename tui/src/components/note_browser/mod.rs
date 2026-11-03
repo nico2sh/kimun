@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
@@ -833,9 +832,7 @@ fn browser_hints(scope: BrowserScope) -> crate::components::hint_row::HintRow {
     crate::components::hint_row::HintRow::new(&chips).with_indent(0)
 }
 
-pub(crate) fn format_journal_date(date: NaiveDate) -> String {
-    date.format("%A, %B %-d, %Y").to_string()
-}
+pub(crate) use crate::logic::files::format_journal_date;
 
 // ---------------------------------------------------------------------------
 // Tests

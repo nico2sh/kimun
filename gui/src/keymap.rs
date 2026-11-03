@@ -11,10 +11,11 @@
 //! `+`: `primary+shift+f`, `alt+left`, `ctrl+tab`. Modifiers are `primary`
 //! (Cmd on macOS, Ctrl elsewhere), `cmd`, `ctrl`, `alt`, `shift`.
 //!
-//! **The vim rule.** While the editor is focused and runs vim, a bare
-//! Ctrl+letter on Linux and Windows is vim's (page, scroll, window and
-//! insert-mode keys live there), whatever the keymap says. Every default
-//! bound to one therefore also gets a Ctrl+Shift twin, which vim never reads.
+//! **The vim rule.** While the editor is focused and runs vim, the Ctrl+letter
+//! chords the vim engine reads (R, C, X, V) are vim's on Linux and Windows,
+//! whatever the keymap says. Other Ctrl+letters stay the app's, vim or not
+//! (Ctrl+S saves, Ctrl+E opens FILES). Every default bound to a bare
+//! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads.
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
 
@@ -131,13 +132,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Write the open note now (the TUI's leader `w`). Everywhere: the
         // note is the window's, whichever panel has the keyboard.
         A::SaveNote => &["primary+s"],
+        // Show FILES on the open note's folder and focus it (the TUI's
+        // Ctrl+E). Everywhere, as in the TUI.
+        A::OpenFileBrowser => &["primary+e"],
         // Not in the GUI yet (M5b-2, M5b-3, M6).
         A::Quit
         | A::OpenPreferences
         | A::SearchNotes
         | A::OpenNote
         | A::NewJournal
-        | A::OpenFileBrowser
         | A::OpenSortDialog
         | A::FileOperations
         | A::FollowLink
@@ -413,7 +416,7 @@ impl Keymap {
         if self.platform == Platform::LinuxWindows
             && ctx.vim
             && ctx.panel == Panel::Editor
-            && is_bare_ctrl_letter(chord)
+            && is_vim_ctrl_chord(chord)
         {
             return None;
         }
@@ -424,9 +427,16 @@ impl Keymap {
     }
 }
 
-/// Ctrl and a letter, nothing else held: the chords vim owns.
+/// Ctrl and a letter, nothing else held.
 fn is_bare_ctrl_letter(chord: KeyInput) -> bool {
     chord.mods == Mods::CTRL && matches!(chord.key, Key::Char(c) if c.is_ascii_alphabetic())
+}
+
+/// The Ctrl+letter chords the vim engine reads: redo and the clipboard
+/// chords. Every other Ctrl+letter means nothing to the engine, so the app
+/// keeps it (Ctrl+S saves, Ctrl+E opens FILES) even in vim mode.
+fn is_vim_ctrl_chord(chord: KeyInput) -> bool {
+    chord.mods == Mods::CTRL && matches!(chord.key, Key::Char('r' | 'c' | 'x' | 'v'))
 }
 
 /// The keymap in effect, shared by every view that resolves keys.

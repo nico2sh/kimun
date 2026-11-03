@@ -1,5 +1,6 @@
 //! The app's asset source: the kit's default component icons plus the few
-//! Lucide icons the rail needs that the default bundle leaves out. One icon
+//! Lucide icons the rail and the FILES rows need that the default bundle
+//! leaves out. One icon
 //! family (Lucide) throughout; only the listed SVGs are embedded.
 
 use std::borrow::Cow;
@@ -8,7 +9,20 @@ use gpui_kit::{AssetSource, Result, SharedString};
 
 gpui_kit::assets::icon_assets!(
     RailIcons,
-    [Tag, Link, ListTree, Sparkles, MessageCircleQuestionMark]
+    [
+        Tag,
+        Link,
+        ListTree,
+        Sparkles,
+        MessageCircleQuestionMark,
+        CornerLeftUp,
+        Folder,
+        CalendarDays,
+        FileText,
+        Paperclip,
+        Plus,
+        Circle
+    ]
 );
 
 /// The kit's default icons with the rail's extras.
@@ -48,6 +62,18 @@ mod tests {
             assert!(
                 AppAssets.load(&path).unwrap().is_some(),
                 "{view:?}: {path} is not bundled"
+            );
+        }
+    }
+
+    /// Every FILES row icon resolves too.
+    #[test]
+    fn every_files_row_icon_is_bundled() {
+        for icon in crate::workspace::FILES_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
             );
         }
     }

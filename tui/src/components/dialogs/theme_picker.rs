@@ -16,7 +16,7 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
+    Filter, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::AppSettings;
@@ -32,16 +32,18 @@ struct ThemeRow {
     current: bool,
 }
 
+impl ListRow for ThemeRow {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+}
+
 impl SearchRow for ThemeRow {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
         let glyph = if self.current { "●" } else { " " };
         RichRow::new(glyph, self.name.clone())
             .glyph_style(Style::default().fg(theme.gray.to_ratatui()))
             .into_list_item(theme)
-    }
-
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.name)
     }
 
     fn visual_height(&self) -> u16 {

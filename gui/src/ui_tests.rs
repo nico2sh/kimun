@@ -1717,34 +1717,31 @@ fn replacing(view: &Entity<EditorView>, cx: &gpui_kit::App) -> bool {
         .is_some_and(|b| b.is_replacing())
 }
 
-/// The vim rule (ADR-0050 §6): under vim a bare Ctrl+letter is vim's, so
-/// Ctrl-F is vim's (a consumed no-op in Normal) and find moves to its Ctrl+Shift twin.
+/// The vim rule (ADR-0050 §6, narrowed): only the Ctrl+letters the vim engine
+/// reads (R, C, X, V) are vim's. Ctrl-F and Ctrl-H are the app's under vim too,
+/// and the Ctrl+Shift twins work as well.
 #[gpui_kit::test]
-fn under_vim_ctrl_f_is_vims_and_find_is_on_ctrl_shift_f(cx: &mut TestAppContext) {
+fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContext) {
     let all = "foo\nbar\nfoo";
     let (handle, spy) = open_spy(cx, all);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let view = spy.read(cx).editor.clone();
-        // Proof the key reached vim rather than bubbling past the editor:
-        // vim consumes it (the engine has no Ctrl-F page-forward of its own,
-        // and an unmapped Normal key is a consumed no-op), so nothing
-        // bubbles, while Ctrl-T (the drawer, not the editor's) does.
-        window.press("ctrl-f", cx);
-        assert!(!bar_open(&view, cx), "Ctrl-F went to vim");
-        assert_eq!(mode(&view, cx).as_deref(), Some("NORMAL"));
-        assert_eq!(spy.read(cx).bubbled, 0, "vim consumed Ctrl-F");
+        // Ctrl-R is vim's redo: consumed by the engine, nothing bubbles.
+        window.press("ctrl-r", cx);
+        assert!(!bar_open(&view, cx));
+        assert_eq!(spy.read(cx).bubbled, 0, "vim consumed Ctrl-R");
         window.press("ctrl-shift-t", cx);
         assert_eq!(
             spy.read(cx).bubbled,
             1,
             "the drawer chord passes the editor by"
         );
-        window.press("ctrl-shift-f", cx);
-        assert!(bar_open(&view, cx));
+        window.press("ctrl-f", cx);
+        assert!(bar_open(&view, cx), "Ctrl-F is find under vim");
         assert!(!replacing(&view, cx));
         window.input("foo", cx);
-        // An open bar is a plain field: app chords win again, Ctrl-F steps.
+        // An open bar is a plain field: app chords win, Ctrl-F steps.
         let before = view.read(cx).editor.cursor();
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx));
@@ -1755,10 +1752,11 @@ fn under_vim_ctrl_f_is_vims_and_find_is_on_ctrl_shift_f(cx: &mut TestAppContext)
         );
         assert_eq!(query(&view, cx), "foo");
         window.press("escape", cx);
-        // Ctrl-H is vim's too (insert-mode backspace); replace is Ctrl-Shift-H.
-        window.press("ctrl-h", cx);
         assert!(!bar_open(&view, cx));
-        window.press("ctrl-shift-h", cx);
+        window.press("ctrl-shift-f", cx);
+        assert!(bar_open(&view, cx), "the twin finds too");
+        window.press("escape", cx);
+        window.press("ctrl-h", cx);
         assert!(replacing(&view, cx));
         assert_eq!(text(&view, cx), all);
     })

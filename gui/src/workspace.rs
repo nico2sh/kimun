@@ -30,6 +30,10 @@
 //! **The open note (M5b-2 G2).** Opening, saving and the flush before the
 //! window closes are the note session's, hosted in [`note`]; the Footer
 //! shows the note's path and whether it is saved.
+//!
+//! **FILES (M5b-2 G3).** With a vault, the left drawer's FILES view is the
+//! [`files::FilesPane`]; the workspace keeps it in step with the app channel
+//! and does what its rows ask (open a note, hand over an attachment).
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -67,6 +71,9 @@ use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
 use crate::status_row::{self, Status};
 use crate::theme;
 
+use files::FilesPane;
+#[cfg(test)]
+pub(crate) use files::ICONS as FILES_ICONS;
 pub(crate) use note::Closing;
 use note::NoteHost;
 
@@ -196,6 +203,12 @@ pub(crate) struct Workspace {
     /// The restore will land on the history's newest note: the editor Panel
     /// says so until its `OpenPath` arrives.
     restore_pending: bool,
+    /// The note named on the command line, or the restore's, has not been
+    /// asked for yet: FILES waits for it to pick the folder to list.
+    first_open_pending: bool,
+    /// The FILES view, when the window has a vault.
+    pub(crate) files: Option<Entity<FilesPane>>,
+    _files_events: Option<Subscription>,
     /// Keeps the Footer's dirty state in step with the editor.
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
@@ -242,6 +255,9 @@ impl Workspace {
             closing: Closing::Open,
             window: None,
             restore_pending: false,
+            first_open_pending: false,
+            files: None,
+            _files_events: None,
             _editor_watch: editor_watch,
             _on_quit: None,
         }
@@ -250,27 +266,34 @@ impl Workspace {
     /// Put the window on `start` (see [`startup`]): drain the window's app
     /// channel (`rx`; `tx` is its sender, the editor's too), then show the
     /// empty state, or index the vault in the background and land on the
-    /// first note. Must run with a tokio runtime entered.
+    /// first note (FILES lists its folder). Must run with a tokio runtime
+    /// entered.
     pub(crate) fn start(
         &mut self,
         start: Start,
         settings: SharedSettings,
         tx: AppTx,
         rx: UnboundedReceiver<AppMessage>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.listen(rx, cx);
         self.tx = Some(tx.clone());
         self.empty = startup::empty_state(&start);
-        if let Start::Vault(VaultStart { vault, first, .. }) = start {
+        if let Start::Vault(VaultStart { vault, name, first }) = start {
             self.notes = Some(NoteHost::new(NoteSession::new(
                 vault.clone(),
                 settings.clone(),
                 VaultPath::root(),
             )));
+            {
+                let settings = settings.read().unwrap_or_else(|e| e.into_inner());
+                self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
+            }
             self.status.indexing = true;
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
+            self.first_open_pending = matches!(first, FirstNote::Restore | FirstNote::Note(_));
             tokio::spawn(startup::index_and_restore(
                 vault,
                 settings,
@@ -284,6 +307,7 @@ impl Workspace {
                 }
                 FirstNote::Rejected(reason) => self.flash_error(reason, cx),
             }
+            self.ensure_files_listing(cx);
         }
         cx.notify();
     }
@@ -307,8 +331,12 @@ impl Workspace {
     /// Act on one message from the app channel.
     pub(crate) fn on_app_message(&mut self, message: AppMessage, cx: &mut Context<Self>) {
         match message {
-            // A background parse/layout job of the editor finished.
-            AppMessage::Redraw => self.editor.update(cx, |_, cx| cx.notify()),
+            // A background parse/layout job of the editor finished, or
+            // FILES' listing has rows to show.
+            AppMessage::Redraw => {
+                self.editor.update(cx, |_, cx| cx.notify());
+                self.poll_files(cx);
+            }
             // Clipboard notices, the restore's "is gone", ... There is no
             // screen here that drops a flash, so a parked one shows now.
             AppMessage::FlashMessage(text) | AppMessage::ParkFlash(text) => self.flash(text, cx),
@@ -331,8 +359,17 @@ impl Workspace {
                 // The restore's landing (or anything after it): no longer
                 // "opening your last note".
                 self.restore_pending = false;
-                self.open_note(path, cx);
+                self.first_open_pending = false;
+                if path.is_note() {
+                    self.open_note(path, cx);
+                } else {
+                    // A folder (the root, for an empty history): FILES
+                    // shows it, as the TUI's sidebar does.
+                    self.files_show_dir(path, cx);
+                }
             }
+            AppMessage::OpenAttachment(path) => self.open_attachment(&path, cx),
+            AppMessage::FileOp(op) => self.files_file_op(&op, cx),
             AppMessage::Autosave => self.autosave(cx),
             AppMessage::AutosaveCompleted {
                 path,
@@ -348,10 +385,10 @@ impl Workspace {
                 },
                 cx,
             ),
-            // FILES' and links' (G3, G4) and everything the GUI has no
-            // surface for yet.
+            // Links' (G4) and everything the GUI has no surface for yet.
             _ => {}
         }
+        self.ensure_files_listing(cx);
         cx.notify();
     }
 
@@ -399,7 +436,11 @@ impl Workspace {
     fn handle_for(&self, panel: Panel, cx: &App) -> FocusHandle {
         match panel {
             Panel::Rail => self.rail_focus.clone(),
-            Panel::Drawer(_) => self.drawer_focus.clone(),
+            // FILES: its filter, so typing filters.
+            Panel::Drawer(_) => match (self.shown_view(), self.files.as_ref()) {
+                (Some(DrawerView::Files), Some(files)) => files.read(cx).focus_handle(cx),
+                _ => self.drawer_focus.clone(),
+            },
             Panel::Editor => self.editor.read(cx).focus_handle(cx),
         }
     }
@@ -433,6 +474,7 @@ impl Workspace {
         } else {
             self.layout.show(drawer);
             self.layout.focus(drawer);
+            self.ensure_files_listing(cx);
         }
         self.apply_focus(window, cx);
         self.store.save(&self.layout);
@@ -456,6 +498,7 @@ impl Workspace {
         } else {
             let (side, _) = self.layout.open_view(view);
             self.layout.focus(Panel::Drawer(side));
+            self.ensure_files_listing(cx);
         }
         self.apply_focus(window, cx);
         self.store.save(&self.layout);
@@ -543,6 +586,7 @@ impl Workspace {
         match action {
             ActionShortcuts::ToggleSidebar => self.toggle_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
+            ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
             ActionShortcuts::FocusRegion(dir) => match self.layout.focus_dir(*dir) {
                 FocusMove::Moved(_) => self.apply_focus(window, cx),
                 FocusMove::AtEdge => {}
@@ -741,13 +785,16 @@ impl Workspace {
                     .text_color(theme::foreground(&self.theme))
                     .child(shell_layout::view_name(view)),
             )
-            .child(
-                div()
-                    .px_3()
-                    .text_sm()
-                    .text_color(theme::muted(&self.theme))
-                    .child("Coming soon"),
-            )
+            .map(|drawer| match (view, self.files.as_ref()) {
+                (DrawerView::Files, Some(files)) => drawer.child(files.clone()),
+                _ => drawer.child(
+                    div()
+                        .px_3()
+                        .text_sm()
+                        .text_color(theme::muted(&self.theme))
+                        .child("Coming soon"),
+                ),
+            })
             .children(self.focus_bar(Panel::Drawer(Side::Left)))
             .child(
                 resize_handle::<DrawerResize, DragGhost>(divider_id(Side::Left), Axis::Horizontal)
@@ -941,8 +988,11 @@ fn conflict_flash(details: &str) -> String {
     )
 }
 
+mod files;
 mod note;
 
+#[cfg(test)]
+mod files_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]

@@ -236,6 +236,23 @@ pub fn selected_background(theme: &Theme) -> Rgba {
     rgba(mix(panel, accent, SELECTED_MIX))
 }
 
+// ---- FILES rows --------------------------------------------------------------
+
+/// The open-note marker and the `Create:` row: the TUI's accent.
+pub fn accent(theme: &Theme) -> Rgba {
+    to_gpui(&theme.accent, Token::Foreground, theme)
+}
+
+/// A folder's glyph and name: the TUI's directory colour.
+pub fn directory(theme: &Theme) -> Rgba {
+    to_gpui(&theme.color_directory, Token::Foreground, theme)
+}
+
+/// A journal entry's date line: the TUI's journal-date colour.
+pub fn journal_date(theme: &Theme) -> Rgba {
+    to_gpui(&theme.color_journal_date, Token::Foreground, theme)
+}
+
 // ---- Edit surface: Role -> style --------------------------------------------
 
 /// How one run of the **Editor frame** paints: the GPUI counterpart of the
