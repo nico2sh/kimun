@@ -7,10 +7,12 @@ pub mod display;
 // callers use the `Editor` re-export below.
 #[allow(clippy::module_inception)]
 pub mod editor;
+pub mod find_bar;
 pub mod find_replace;
 pub mod frame;
 pub mod handled;
 pub mod jobs;
+pub mod line_field;
 pub mod markdown;
 pub mod markdown_edits;
 pub mod overlay;

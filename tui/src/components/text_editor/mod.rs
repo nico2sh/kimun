@@ -50,17 +50,17 @@ fn snapshot_from_backend(backend: &BackendState, content_revision: NonZeroU64) -
     }
 }
 use self::backend::BackendState;
-#[cfg(test)]
-use self::find_bar::{BarFocus, SearchStatus};
 use self::nvim_host::NvimHost;
 use self::view::PainterState;
 use crate::logic::editor::Editor;
 use crate::logic::editor::claim::{
     ClipboardImage, EditorClaim, FollowTarget, has_trigger_before_cursor,
 };
+#[cfg(test)]
+use crate::logic::editor::find_bar::{BarFocus, SearchStatus};
 use crate::logic::editor::handled::{Handled, KeyPath};
-use crate::logic::editor::overlay::{Overlay, OverlayKind};
 use crate::logic::editor::request::EditorRequest;
+#[cfg(test)]
 use crate::logic::editor::rope_buffer::RopeBuffer;
 use crate::logic::editor::session::{EditorSession, FrameInput};
 use crate::logic::editor::snapshot::EditorSnapshot;
@@ -174,8 +174,10 @@ pub struct TextEditorComponent {
     /// Host-side state and policy for the Nvim backend (pending-Z intercept,
     /// frame sync). See [`nvim_host`].
     nvim_host: NvimHost,
-    /// Active Ctrl+F find bar; `None` when not searching.
-    search: Option<find_bar::FindBar>,
+    /// The find bar's terminal drawing state (its fields' scroll and
+    /// caret). The bar itself is the textarea [`Editor`]'s
+    /// ([`Editor::find_bar`]).
+    find_paint: find_bar::FindBarPaint,
     /// Wikilink/hashtag autocomplete. Only populated for the textarea
     /// backend after `set_vault` is called; remains `None` for the Nvim
     /// backend (nvim users have their own completion ecosystem).
@@ -199,7 +201,7 @@ impl TextEditorComponent {
             nvim_requests: Vec::new(),
             painter: PainterState::default(),
             nvim_host: NvimHost::new(),
-            search: None,
+            find_paint: find_bar::FindBarPaint::default(),
             autocomplete: None,
             autocomplete_vault: None,
         }
@@ -486,13 +488,21 @@ impl TextEditorComponent {
     }
 
     /// What the TUI layers drop when the buffer was replaced: an open popup
-    /// would linger over the new note (e.g. after Ctrl+G follow-link), and the
-    /// find bar is worse — `armed_empty` surviving a note swap means one Ctrl+A
-    /// deletes every match in a note the user never armed, skipping the
-    /// confirmation the flag exists to force.
+    /// would linger over the new note (e.g. after Ctrl+G follow-link). The
+    /// find bar is the [`Editor`]'s, which drops it itself on a load.
     fn after_load(&mut self) {
         self.close_autocomplete();
-        self.search = None;
+    }
+
+    /// Whether the find bar is open. Only the textarea [`Editor`] has one.
+    fn find_open(&self) -> bool {
+        self.backend.as_editor().is_some_and(Editor::find_open)
+    }
+
+    /// The open find bar, for assertions.
+    #[cfg(test)]
+    fn search(&self) -> Option<&crate::logic::editor::find_bar::FindBar> {
+        self.backend.as_editor()?.find_bar()
     }
 
     /// Replace the nvim buffer with `text` and drop everything that described
@@ -615,7 +625,7 @@ impl TextEditorComponent {
     /// The find bar outranks the popup because opening the bar closes it
     /// (`open_or_advance_search`), so the two cannot genuinely coexist.
     pub fn claim(&self) -> EditorClaim {
-        if self.search.is_some() {
+        if self.find_open() {
             EditorClaim::FindBar
         } else if self.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
             EditorClaim::Autocomplete
@@ -673,13 +683,9 @@ impl TextEditorComponent {
         // current match describing text that no longer exists. Route it into
         // the focused field instead, which is what the user meant: pasting a
         // term to search for or to replace with.
-        if self.search.is_some() {
-            if let (Some(bar), BackendState::Textarea(tb)) =
-                (self.search.as_mut(), &mut self.backend)
-            {
-                bar.paste(text, tb.buffer_mut());
-            }
-            self.apply_edit_outcome();
+        if let Some(ed) = self.backend.as_editor_mut()
+            && ed.paste_into_find(text)
+        {
             return;
         }
         match &mut self.backend {
@@ -822,90 +828,55 @@ impl TextEditorComponent {
     /// the Nvim backend, which has its own `/` search. Policy lives here
     /// because only the editor knows which backend is active.
     pub fn open_or_advance_search(&mut self) {
-        if !self.backend.is_textarea() {
+        let Some(ed) = self.backend.as_editor_mut() else {
             return;
+        };
+        if ed.open_find() {
+            // Yield key focus to the bar — close the autocomplete popup so it
+            // stops intercepting Esc / Up / Down / Tab / Enter, which belong
+            // to the bar.
+            self.close_autocomplete();
         }
-        if self.search.is_some() {
-            self.dispatch_bar(|bar, buf| {
-                bar.advance(buf, false);
-                find_bar::KeyOutcome::default()
-            });
-            return;
-        }
-        // Yield key focus to the bar — close the autocomplete popup so it stops
-        // intercepting Esc / Up / Down / Tab / Enter, which belong to the bar.
-        self.close_autocomplete();
-        self.search = Some(find_bar::FindBar::new());
     }
 
     /// Open the find bar with the **replace field** already revealed, or reveal
     /// it on an already-open bar.
     pub fn open_replace(&mut self) {
-        if !self.backend.is_textarea() {
+        let Some(ed) = self.backend.as_editor_mut() else {
             return;
-        }
-        if self.search.is_none() {
+        };
+        if ed.open_replace() {
             self.close_autocomplete();
-            self.search = Some(find_bar::FindBar::new());
-        }
-        if let Some(bar) = self.search.as_mut() {
-            bar.reveal_replace();
         }
     }
 
     /// Repeat the last search (vim `n`/`N`) using the buffer's persisted
-    /// pattern, even when the bar is closed.
+    /// pattern, even when the bar is closed ([`Editor::search_repeat`]).
     fn search_repeat(&mut self, backward: bool) {
-        let BackendState::Textarea(tb) = &mut self.backend else {
-            return;
-        };
-        // Paint the match `n`/`N` landed on. The bar is closed here, so the
-        // buffer answers — which is why `match_at_cursor` lives on it.
-        let selection = if tb.buffer_mut().search_repeat(backward) {
-            tb.buffer().match_at_cursor()
-        } else {
-            None
-        };
-        tb.set_selection(selection);
-    }
-
-    /// Run `f` against the open bar and its buffer, then apply what the buffer
-    /// measured. Returns `false` when no bar is open.
-    fn dispatch_bar(
-        &mut self,
-        f: impl FnOnce(&mut find_bar::FindBar, &mut RopeBuffer) -> find_bar::KeyOutcome,
-    ) -> bool {
-        let BackendState::Textarea(tb) = &mut self.backend else {
-            return false;
-        };
-        let Some(bar) = self.search.as_mut() else {
-            return false;
-        };
-        let outcome = f(bar, tb.buffer_mut());
-        if outcome.close {
-            self.search = None;
-            // Clear the anchor as well as the mirrored range. The bar's cursor
-            // jumps (`search_forward`) move the cursor without touching
-            // `selection_start`, so a selection that existed before the search
-            // is left live but unpainted — and the next keystroke silently
-            // deletes it.
-            tb.buffer_mut().cancel_selection();
-            tb.set_selection(None);
+        if let Some(ed) = self.backend.as_editor_mut() {
+            ed.search_repeat(backward);
         }
-        self.apply_edit_outcome();
-        true
     }
 
-    /// Feed a key to the open bar. The bar consumes every key it sees.
+    /// Feed a key to the open bar ([`Editor::handle_find_key`]), which
+    /// consumes every key it sees. Returns `false` when no bar is open.
     fn dispatch_to_find_bar(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
-        self.dispatch_bar(|bar, buf| bar.handle_key(key, buf))
+        let Some(ed) = self.backend.as_editor_mut() else {
+            return false;
+        };
+        // The field translation, not the engines' one: a field has always
+        // ignored META / HYPER rather than refusing the chord.
+        match crate::keys::crossterm_input::field_key_input(key) {
+            Some(input) => ed.handle_find_key(input),
+            None => ed.ignore_find_key(),
+        }
     }
 
     /// The **replace preview** for this frame, when a bar is open. Test-facing:
-    /// production reads it through `FindBar::overlay`.
+    /// production reads it through `Editor::find_frame_parts`.
     #[cfg(test)]
     fn replace_preview(&self) -> Option<crate::logic::editor::find_replace::Preview> {
-        let bar = self.search.as_ref()?;
+        let bar = self.search()?;
         let buf = self.backend.as_textarea()?;
         bar.preview(buf)
     }
@@ -956,15 +927,6 @@ impl TextEditorComponent {
                 self.interrupt_typing();
                 false
             }
-        }
-    }
-
-    /// Settle an edit a TUI layer (find bar, autocomplete accept) made on the
-    /// buffer ([`Editor::finish_external_edit`]). Nvim has no edit buffer.
-    fn apply_edit_outcome(&mut self) -> bool {
-        match &mut self.backend {
-            BackendState::Textarea(ed) => ed.finish_external_edit(),
-            BackendState::Nvim(_) => false,
         }
     }
 
@@ -1082,8 +1044,9 @@ impl Component for TextEditorComponent {
         match event {
             InputEvent::Key(key) => {
                 // The one crossterm -> neutral conversion for the direct path
-                // and the vim engine. The popup, find bar and nvim stages keep
-                // the raw event: they speak crossterm.
+                // and the vim engine. The find bar takes the field translation
+                // (`field_key_input`, in `dispatch_to_find_bar`); the popup and
+                // nvim stages keep the raw event: they speak crossterm.
                 let input = crate::keys::crossterm_input::key_input(key);
                 // Cheap popup-open probe first. The snapshot is now a
                 // Cow-borrowed view of the textarea's lines (zero
@@ -1096,7 +1059,8 @@ impl Component for TextEditorComponent {
                 // `Editor::handle_key` re-attaches the view to the cursor for
                 // the keys that reach it. These never do, and acted at the
                 // cursor all the same.
-                if popup_open || self.search.is_some() || self.backend.as_editor().is_none() {
+                // The find bar's keys re-attach inside `Editor::handle_find_key`.
+                if popup_open || self.backend.as_editor().is_none() {
                     self.session_mut().display.follow_cursor();
                 }
                 if popup_open
@@ -1116,11 +1080,8 @@ impl Component for TextEditorComponent {
                 // vim engine, which would otherwise consume keys in Normal mode
                 // (the bar is routed only from here; handle_textarea_key has no
                 // find-bar check of its own).
+                // `handle_find_key` ends the typing run itself.
                 if self.dispatch_to_find_bar(key) {
-                    // Here rather than inside `dispatch_bar`: that runs for every
-                    // key whether or not a bar is open, so interrupting there
-                    // would make each keystroke its own undo group.
-                    self.interrupt_typing();
                     return EventState::Consumed;
                 }
                 // The nvim engine takes the key whole, after the popup and the
@@ -1253,7 +1214,11 @@ impl Component for TextEditorComponent {
         // finding, two once a **replace field** is revealed (row one is the
         // pattern and what it matches, row two the replacement and what
         // happens to it).
-        let bar_rows: u16 = self.search.as_ref().map_or(0, |bar| bar.rows());
+        let bar_rows: u16 = self
+            .backend
+            .as_editor()
+            .and_then(Editor::find_bar)
+            .map_or(0, find_bar::rows);
         // Clamp rather than drop: with `rect.height == bar_rows` the old
         // `>` left the bar unrendered while it was still open and still
         // swallowing every key — an invisible modal. Better to show it and
@@ -1284,10 +1249,7 @@ impl Component for TextEditorComponent {
         let selection = match &self.backend {
             // While the bar is open the **current match** is what gets painted
             // as the selection — the bar owns it rather than writing this field.
-            BackendState::Textarea(ed) => match self.search.as_ref() {
-                Some(bar) => bar.current_match(),
-                None => ed.selection(),
-            },
+            BackendState::Textarea(ed) => ed.painted_selection(),
             BackendState::Nvim(nvim) => {
                 self.nvim_host
                     .frame_sync(nvim, editor_rect.width, editor_rect.height)
@@ -1299,46 +1261,14 @@ impl Component for TextEditorComponent {
         // of it is substituted, which is what makes the preview structurally
         // incapable of committing. One call gets everything the bar wants
         // painted: preview lines and spans, match spans, and the current match.
-        let overlay = match (self.search.as_ref(), self.backend.as_textarea()) {
-            (Some(bar), Some(buf)) => bar.overlay(buf),
-            _ => find_bar::BarOverlay::default(),
+        let (preview, preview_overlays, matches) = match self.backend.as_editor() {
+            Some(ed) => ed.find_frame_parts(),
+            None => (None, Vec::new(), Vec::new()),
         };
         // Single producer for the atomic snapshot: the free function lets the
         // borrow checker split `&self.backend` from `&mut self.session`.
         let snap = snapshot_from_backend(&self.backend, self.session().revs.current());
         let empty_note = snap.text.len_bytes() == 0;
-        let (preview, preview_overlays) = match overlay.preview {
-            None => (None, Vec::new()),
-            Some(p) => (
-                Some(p.lines),
-                p.spans
-                    .iter()
-                    .map(|p| {
-                        Overlay::new(
-                            p.row,
-                            p.start,
-                            p.end,
-                            if p.is_current {
-                                OverlayKind::PreviewCurrent
-                            } else {
-                                OverlayKind::Preview
-                            },
-                        )
-                    })
-                    .collect(),
-            ),
-        };
-        // `prepare_frame` ignores find matches while a replace preview shows,
-        // so don't build them then.
-        let matches = if preview.is_some() {
-            Vec::new()
-        } else {
-            overlay
-                .matches
-                .iter()
-                .map(|&(row, start, end)| Overlay::new(row, start, end, OverlayKind::Match))
-                .collect()
-        };
         // Drain background results, adopt the revision, update the display,
         // set overlays, spawn pending jobs — in that order. See
         // [`EditorSession::prepare_frame`].
@@ -1353,7 +1283,7 @@ impl Component for TextEditorComponent {
         });
         // When the find bar is active, draw it AFTER the editor so its caret
         // (set via set_cursor_position) wins over the editor's caret call.
-        let bar_focused = self.search.is_some() && focused;
+        let bar_focused = self.find_open() && focused;
         let editor_focused = focused && !bar_focused;
         use crate::logic::editor::display::CursorShape;
         let cursor_shape = match self.backend.modal_is_insert() {
@@ -1405,8 +1335,16 @@ impl Component for TextEditorComponent {
                 },
             );
         }
-        if let (Some(state), Some(bar_rect)) = (self.search.as_mut(), search_rect) {
-            state.render(f, bar_rect, theme, bar_focused);
+        match (
+            self.backend.as_editor().and_then(Editor::find_bar),
+            search_rect,
+        ) {
+            (Some(bar), Some(bar_rect)) => {
+                self.find_paint.render(bar, f, bar_rect, theme, bar_focused);
+            }
+            // A closed bar's scroll must not carry into the next one.
+            (None, _) => self.find_paint = find_bar::FindBarPaint::default(),
+            _ => {}
         }
 
         // Autocomplete popup sits on top of the editor. Drain async
@@ -1792,9 +1730,9 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
         editor.open_or_advance_search();
-        let state = editor.search.as_ref().expect("find bar opened");
-        assert!(state.input.is_empty());
-        assert!(matches!(state.status, SearchStatus::Empty));
+        let state = editor.search().expect("find bar opened");
+        assert!(state.query().is_empty());
+        assert!(matches!(state.status(), SearchStatus::Empty));
     }
 
     #[test]
@@ -1829,9 +1767,9 @@ mod tests {
                 &tx,
             );
         }
-        let state = editor.search.as_ref().unwrap();
-        assert_eq!(state.input.value(), "bar");
-        assert!(matches!(state.status, SearchStatus::Match));
+        let state = editor.search().unwrap();
+        assert_eq!(state.query(), "bar");
+        assert!(matches!(state.status(), SearchStatus::Match));
         let (_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 4, "cursor jumped to start of 'bar'");
     }
@@ -1874,7 +1812,7 @@ mod tests {
         // "bar" lives at cols 4..7 on row 0. The **current match** belongs to
         // the bar now, not to the editor's selection.
         assert_eq!(
-            editor.search.as_ref().unwrap().current_match(),
+            editor.search().unwrap().current_match(),
             Some(((0, 4), (0, 7)))
         );
     }
@@ -1910,15 +1848,10 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('r'), KeyModifiers::NONE)),
             &tx,
         );
-        assert!(
-            editor
-                .search
-                .as_ref()
-                .is_some_and(|b| b.current_match().is_some())
-        );
+        assert!(editor.search().is_some_and(|b| b.current_match().is_some()));
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
         // Esc drops the bar, and the current match goes with it.
-        assert!(editor.search.is_none());
+        assert!(editor.search().is_none());
         assert!(editor.selection_for_test().is_none());
     }
 
@@ -1928,9 +1861,9 @@ mod tests {
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
         editor.open_or_advance_search();
-        assert!(editor.search.is_some());
+        assert!(editor.search().is_some());
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-        assert!(editor.search.is_none());
+        assert!(editor.search().is_none());
     }
 
     #[test]
@@ -1956,8 +1889,8 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
             &tx,
         );
-        let state = editor.search.as_ref().unwrap();
-        assert!(matches!(state.status, SearchStatus::NoMatch));
+        let state = editor.search().unwrap();
+        assert!(matches!(state.status(), SearchStatus::NoMatch));
     }
 
     #[test]
@@ -2315,21 +2248,21 @@ mod tests {
         editor.set_text("todo".to_string());
         editor.open_or_advance_search();
         assert!(
-            !editor.search.as_ref().unwrap().is_replacing(),
+            !editor.search().unwrap().is_replacing(),
             "a find-only bar must not start with a replace field"
         );
 
         editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
-        let s = editor.search.as_ref().unwrap();
+        let s = editor.search().unwrap();
         assert!(s.is_replacing(), "Tab must reveal the replace field");
         // Pattern is empty, so focus stays in the find field — you cannot type
         // a replacement for nothing.
-        assert_eq!(s.focus, BarFocus::Find);
+        assert_eq!(s.focus(), BarFocus::Find);
 
         editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
-        assert_eq!(editor.search.as_ref().unwrap().focus, BarFocus::Replace);
+        assert_eq!(editor.search().unwrap().focus(), BarFocus::Replace);
         editor.handle_input(&InputEvent::Key(key(KeyCode::Tab, KeyModifiers::NONE)), &tx);
-        assert_eq!(editor.search.as_ref().unwrap().focus, BarFocus::Find);
+        assert_eq!(editor.search().unwrap().focus(), BarFocus::Find);
     }
 
     #[test]
@@ -2431,7 +2364,7 @@ mod tests {
             "todo and todo",
             "the first Ctrl+A on an empty replacement must arm, not delete"
         );
-        assert!(editor.search.as_ref().unwrap().armed_empty);
+        assert!(editor.search().unwrap().is_armed());
 
         editor.handle_input(&ctrl_a, &tx);
         assert_eq!(editor.get_text(), "and todo");
@@ -2448,11 +2381,8 @@ mod tests {
             &tx,
         );
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-        let s = editor
-            .search
-            .as_ref()
-            .expect("Esc disarms before it closes");
-        assert!(!s.armed_empty);
+        let s = editor.search().expect("Esc disarms before it closes");
+        assert!(!s.is_armed());
         assert_eq!(editor.get_text(), "todo");
     }
 
@@ -2535,7 +2465,7 @@ mod tests {
         editor.set_text("todo Todo TODO".to_string());
         open_replace_bar(&mut editor, &tx, "todo", "x");
         assert_eq!(
-            editor.search.as_ref().unwrap().match_count,
+            editor.search().unwrap().match_count(),
             3,
             "an all-lowercase pattern matches any case"
         );
@@ -2552,7 +2482,7 @@ mod tests {
         let tx = dummy_tx();
         editor.set_text("todo Todo TODO".to_string());
         open_replace_bar(&mut editor, &tx, "Todo", "x");
-        assert_eq!(editor.search.as_ref().unwrap().match_count, 1);
+        assert_eq!(editor.search().unwrap().match_count(), 1);
         editor.handle_input(
             &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
             &tx,
@@ -2688,7 +2618,7 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "todo and todo");
-        assert!(editor.search.is_some(), "undo must not close the bar");
+        assert!(editor.search().is_some(), "undo must not close the bar");
     }
 
     /// A zero-width match (`\b`, `x*`) makes the selection empty, so
@@ -2729,10 +2659,13 @@ mod tests {
             &InputEvent::Key(key(KeyCode::Char('a'), KeyModifiers::CONTROL)),
             &tx,
         );
-        assert!(editor.search.as_ref().unwrap().armed_empty);
+        assert!(editor.search().unwrap().is_armed());
 
         editor.set_text("todo elsewhere".to_string());
-        assert!(editor.search.is_none(), "the bar belonged to the old note");
+        assert!(
+            editor.search().is_none(),
+            "the bar belonged to the old note"
+        );
         // The buffer's groups went with it: `set_text` replaces the textarea,
         // and `RopeBuffer::replace` drops states the new history cannot reach.
         assert!(
@@ -2758,11 +2691,10 @@ mod tests {
                 &tx,
             );
         }
-        let state = editor.search.as_ref().unwrap();
-        assert_eq!(state.match_count, 1, "the `[[` sigil is a real match");
+        let state = editor.search().unwrap();
+        assert_eq!(state.match_count(), 1, "the `[[` sigil is a real match");
         let spans = state
-            .pattern
-            .as_ref()
+            .pattern()
             .unwrap()
             .match_spans(editor.backend.as_textarea().unwrap().text().lines());
         assert_eq!(
@@ -2785,7 +2717,7 @@ mod tests {
         open_replace_bar(&mut editor, &tx, "todo", "");
         editor.paste_text("done", &tx);
         assert_eq!(editor.get_text(), "todo", "the buffer is untouched");
-        assert_eq!(editor.search.as_ref().unwrap().replacement(), "done");
+        assert_eq!(editor.search().unwrap().replacement(), "done");
     }
 
     #[test]
@@ -2795,7 +2727,7 @@ mod tests {
         editor.set_text("x".to_string());
         editor.open_or_advance_search();
         editor.paste_text("first\nsecond", &tx);
-        assert_eq!(editor.search.as_ref().unwrap().input.value(), "first");
+        assert_eq!(editor.search().unwrap().query(), "first");
     }
 
     /// With the pane exactly as tall as the bar, the old `>` comparison left
@@ -2946,7 +2878,7 @@ mod tests {
             );
         }
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-        assert!(editor.search.is_none());
+        assert!(editor.search().is_none());
         assert_eq!(
             editor.selection_for_test(),
             None,
@@ -2972,7 +2904,7 @@ mod tests {
             &tx,
         );
         assert_eq!(editor.get_text(), "foo foo");
-        let current = editor.search.as_ref().unwrap().current_match();
+        let current = editor.search().unwrap().current_match();
         if let Some(((row, start), (_, end))) = current {
             let line = &editor.get_text()[..];
             let text: String = line
@@ -4769,7 +4701,7 @@ cccccccc"
 
         // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
         editor.open_or_advance_search();
-        assert!(editor.search.is_some(), "find bar must be open");
+        assert!(editor.search().is_some(), "find bar must be open");
 
         // Type "lo" — should go into the find query, not be processed as vim motions.
         editor.handle_input(
@@ -4785,9 +4717,8 @@ cccccccc"
         // and not the vim engine (which would treat 'l' as a rightward motion
         // and 'o' as Open-line-below, mutating the buffer).
         let q = editor
-            .search
-            .as_ref()
-            .map(|s| s.input.value().to_string())
+            .search()
+            .map(|s| s.query().to_string())
             .unwrap_or_default();
         assert_eq!(q, "lo", "find query must capture typed characters");
 
@@ -4824,7 +4755,7 @@ cccccccc"
 
         // Open the find bar (same path as the '/' key: OpenSearch → open_or_advance_search).
         editor.open_or_advance_search();
-        assert!(editor.search.is_some(), "find bar must open");
+        assert!(editor.search().is_some(), "find bar must open");
 
         // Type "lo" — keys go into the find query (incremental search).
         editor.handle_input(
@@ -4844,7 +4775,7 @@ cccccccc"
             &tx,
         );
         assert!(
-            editor.search.is_some(),
+            editor.search().is_some(),
             "find bar stays open on Enter — it steps, it does not confirm"
         );
         let (_, c1) = editor.cursor_pos();
@@ -4854,7 +4785,7 @@ cccccccc"
         // difference between closing with Esc and closing with Enter, and it
         // silently killed n/N.
         editor.handle_input(&InputEvent::Key(key(KeyCode::Esc, KeyModifiers::NONE)), &tx);
-        assert!(editor.search.is_none(), "Esc must close the find bar");
+        assert!(editor.search().is_none(), "Esc must close the find bar");
 
         // 'n' must navigate, not type into the (now-closed) bar.
         editor.handle_input(
@@ -4918,15 +4849,18 @@ cccccccc"
         editor.set_text("lo xx lo yy lo".to_string());
         let tx = dummy_tx();
         send(&mut editor, &tx, KeyCode::Char('/'), KeyModifiers::NONE);
-        assert!(editor.search.is_some(), "`/` opens the bar in its own call");
+        assert!(
+            editor.search().is_some(),
+            "`/` opens the bar in its own call"
+        );
         send(&mut editor, &tx, KeyCode::Char('l'), KeyModifiers::NONE);
         send(&mut editor, &tx, KeyCode::Char('o'), KeyModifiers::NONE);
         assert_eq!(
-            editor.search.as_ref().unwrap().current_match(),
+            editor.search().unwrap().current_match(),
             Some(((0, 0), (0, 2)))
         );
         send(&mut editor, &tx, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(editor.search.is_none());
+        assert!(editor.search().is_none());
 
         send(&mut editor, &tx, KeyCode::Char('n'), KeyModifiers::NONE);
         assert_eq!(editor.cursor_pos(), (0, 6), "`n` steps forward");

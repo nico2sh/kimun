@@ -82,6 +82,9 @@ pub fn key_input(ks: &Keystroke) -> Option<KeyInput> {
         "pageup" => Some(Key::PageUp),
         "pagedown" => Some(Key::PageDown),
         "space" => Some(Key::Char(' ')),
+        // Ctrl-[ *is* Esc in a terminal (both send 0x1b), so the TUI's engines
+        // only ever see Esc for it. Same key, same meaning here.
+        "[" if m == Mods::CTRL => return Some(KeyInput::plain(Key::Esc)),
         "shift" | "control" | "alt" | "platform" | "function" | "capslock" => return None,
         k => function_key(k),
     };
@@ -338,6 +341,38 @@ mod tests {
         assert_eq!(
             input(ks("a", Some("\u{1}"), with(|m| m.control = true))),
             Some(KeyInput::ctrl('a'))
+        );
+    }
+
+    #[test]
+    fn ctrl_bracket_is_esc_as_in_a_terminal() {
+        let ctrl = with(|m| m.control = true);
+        assert_eq!(input(ks("[", None, ctrl)), Some(KeyInput::plain(Key::Esc)));
+        assert_eq!(
+            input(ks("[", Some("\u{1b}"), ctrl)),
+            Some(KeyInput::plain(Key::Esc))
+        );
+        // Only the bare chord: other modifiers and a plain `[` keep their meaning.
+        assert_eq!(
+            input(ks(
+                "[",
+                None,
+                with(|m| {
+                    m.control = true;
+                    m.alt = true;
+                })
+            )),
+            Some(KeyInput::new(
+                Key::Char('['),
+                Mods {
+                    alt: true,
+                    ..Mods::CTRL
+                }
+            ))
+        );
+        assert_eq!(
+            input(ks("[", Some("["), NONE)),
+            Some(KeyInput::plain(Key::Char('[')))
         );
     }
 

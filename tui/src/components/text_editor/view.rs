@@ -41,6 +41,9 @@ fn overlay_style(kind: OverlayKind, theme: &Theme, style: Style) -> Style {
             .bg(theme.color_replace_preview.to_ratatui())
             .fg(cursor_fg(theme))
             .add_modifier(Modifier::BOLD),
+        // Marks clickable cells for a pointer host; a terminal has no pointer
+        // shape to change, and the role already styles the link.
+        OverlayKind::FollowTarget => style,
     }
 }
 
