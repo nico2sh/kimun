@@ -1,7 +1,7 @@
-//! `PanelOrder` — the pure focus/order/visibility state machine for the
-//! editor screen's persistent **Panels**. Keyed only on `PanelKind`, so it
-//! carries no vault or heavy component state and is testable in isolation.
-//! `PanelSet` (below) composes it with the concrete panels.
+//! `PanelSet` — the editor screen's persistent **Panels** composed with the
+//! shared layout model ([`PanelLayout`], ADR-0050), which decides order,
+//! visibility and focus. The TUI runs it with one drawer (left), one slot and
+//! one editor group, mapping the model's abstract widths to columns.
 
 use std::sync::Arc;
 
@@ -21,6 +21,7 @@ use crate::components::panel::{PanelKind, panel_block};
 use crate::components::query_panel::QueryPanel;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
+use crate::logic::layout::{Panel, PanelLayout, Side, WidthLimits};
 use crate::logic::message::AppTx;
 use crate::logic::nav::DrawerView;
 use crate::settings::themes::Theme;
@@ -33,134 +34,25 @@ const MIN_DRAWER_WIDTH: u16 = 20;
 /// Columns that must always remain for the editor when dragging the divider.
 const MIN_EDITOR_WIDTH: u16 = 20;
 
-struct Slot {
-    kind: PanelKind,
-    visible: bool,
-}
+/// The TUI's one drawer is the model's left drawer.
+const DRAWER: Side = Side::Left;
 
-/// Ordered panels + which one is focused. The layout is fixed left→right:
-/// rail → drawer → editor. The rail and the editor are always visible; the
-/// drawer toggles. Focus tracks a panel by kind and cycles over the visible
-/// panels, wrapping at both ends.
-pub struct PanelOrder {
-    slots: Vec<Slot>,
-    focus: usize,
-}
-
-impl PanelOrder {
-    /// Default layout: rail → drawer (visible) → editor (focused).
-    pub fn new() -> Self {
-        let slots = vec![
-            Slot {
-                kind: PanelKind::Rail,
-                visible: true,
-            },
-            Slot {
-                kind: PanelKind::Drawer,
-                visible: true,
-            },
-            Slot {
-                kind: PanelKind::Editor,
-                visible: true,
-            },
-        ];
-        let focus = slots
-            .iter()
-            .position(|s| s.kind == PanelKind::Editor)
-            .expect("editor slot present");
-        Self { slots, focus }
-    }
-
-    /// The currently focused panel.
-    pub fn focused(&self) -> PanelKind {
-        self.slots[self.focus].kind
-    }
-
-    /// The visible panel one step left of focus, wrapping at the left end.
-    pub fn prev_kind(&self) -> Option<PanelKind> {
-        self.step(|i, n| (i + n - 1) % n)
-    }
-
-    /// The visible panel one step right of focus, wrapping at the right end.
-    pub fn next_kind(&self) -> Option<PanelKind> {
-        self.step(|i, n| (i + 1) % n)
-    }
-
-    /// Step through the *visible* panels from the focused one.
-    fn step(&self, advance: impl Fn(usize, usize) -> usize) -> Option<PanelKind> {
-        let visible = self.visible_in_order();
-        let n = visible.len();
-        if n < 2 {
-            return None;
-        }
-        let i = visible.iter().position(|&k| k == self.focused())?;
-        Some(visible[advance(i, n)])
-    }
-
-    /// Move focus to `kind`. No-op if the kind is not present.
-    pub fn focus(&mut self, kind: PanelKind) {
-        if let Some(i) = self.slots.iter().position(|s| s.kind == kind) {
-            self.focus = i;
-        }
-    }
-
-    /// Whether `kind` is currently visible.
-    pub fn is_visible(&self, kind: PanelKind) -> bool {
-        self.slots
-            .iter()
-            .find(|s| s.kind == kind)
-            .is_some_and(|s| s.visible)
-    }
-
-    /// Reveal `kind`.
-    pub fn show(&mut self, kind: PanelKind) {
-        if let Some(s) = self.slots.iter_mut().find(|s| s.kind == kind) {
-            s.visible = true;
-        }
-    }
-
-    /// Hide `kind`. The rail and the editor are always visible, so hiding
-    /// them is a no-op.
-    pub fn hide(&mut self, kind: PanelKind) {
-        if kind == PanelKind::Editor || kind == PanelKind::Rail {
-            return;
-        }
-        if let Some(s) = self.slots.iter_mut().find(|s| s.kind == kind) {
-            s.visible = false;
-        }
-        // If focus was on the panel we just hid, move it to the nearest
-        // visible panel (the editor is always visible, so a target exists).
-        if !self.slots[self.focus].visible {
-            self.focus = self.nearest_visible(self.focus);
-        }
-    }
-
-    /// The visible panels in their current left→right order. Drives the
-    /// render layout: each panel contributes one column in this sequence.
-    pub fn visible_in_order(&self) -> Vec<PanelKind> {
-        self.slots
-            .iter()
-            .filter(|s| s.visible)
-            .map(|s| s.kind)
-            .collect()
-    }
-
-    /// Index of the nearest visible slot, searching outward from `from`.
-    /// Falls back to `from` if somehow nothing is visible (cannot happen —
-    /// the editor is always visible).
-    fn nearest_visible(&self, from: usize) -> usize {
-        let n = self.slots.len();
-        (1..n)
-            .flat_map(|d| [from.checked_sub(d), Some(from + d).filter(|&i| i < n)])
-            .flatten()
-            .find(|&i| self.slots[i].visible)
-            .unwrap_or(from)
+/// The layout-model panel behind a TUI `PanelKind`.
+fn panel(kind: PanelKind) -> Panel {
+    match kind {
+        PanelKind::Rail => Panel::Rail,
+        PanelKind::Drawer => Panel::Drawer(DRAWER),
+        PanelKind::Editor => Panel::Editor,
     }
 }
 
-impl Default for PanelOrder {
-    fn default() -> Self {
-        Self::new()
+/// The TUI's column floors for drawer resizing, over `available` columns
+/// (the drawer plus the editor).
+fn width_limits(available: u16) -> WidthLimits {
+    WidthLimits {
+        drawer_min: f64::from(MIN_DRAWER_WIDTH),
+        editor_min: f64::from(MIN_EDITOR_WIDTH),
+        available: f64::from(available),
     }
 }
 
@@ -222,12 +114,12 @@ enum EditorAreaContent {
 }
 
 /// The editor screen's persistent **Panels** — the activity rail, the single
-/// drawer, and the editor — plus the `PanelOrder` that decides visibility and
+/// drawer, and the editor — plus the `PanelLayout` that decides visibility and
 /// which one is focused. Routes input and render to the focused / visible
 /// panels; the host (`EditorScreen`) reaches a specific drawer view through
 /// the typed accessors for view-specific calls.
 pub struct PanelSet {
-    order: PanelOrder,
+    order: PanelLayout<DrawerView>,
     rail: ActivityRail,
     drawer: DrawerHost,
     /// The note editor. Retained for the whole screen lifetime — including
@@ -244,8 +136,6 @@ pub struct PanelSet {
     /// (resident `editor`), a read-only attachment view, or the Ask workspace
     /// (resident `ask`). See `EditorAreaContent`.
     content: EditorAreaContent,
-    /// Current drawer width in columns (divider-draggable).
-    drawer_width: u16,
     /// Whether a divider drag is in progress.
     dragging_divider: bool,
     /// The column each visible panel was drawn into on the last render —
@@ -264,14 +154,14 @@ impl PanelSet {
     ) -> Self {
         let mut ask = ThreadPanel::new();
         ask.set_icons(icons.clone());
+        let order = PanelLayout::new(drawer.active_view(), f64::from(DEFAULT_DRAWER_WIDTH));
         Self {
-            order: PanelOrder::new(),
+            order,
             rail: ActivityRail::new(key_bindings, icons, rail_caps),
             drawer,
             editor,
             ask,
             content: EditorAreaContent::Note,
-            drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
             column_rects: Vec::new(),
         }
@@ -308,16 +198,22 @@ impl PanelSet {
         self.ask.set_client(client);
     }
 
-    // ── Order / focus / visibility (delegate to PanelOrder) ─────────────────
+    // ── Order / focus / visibility (delegate to PanelLayout) ────────────────
 
     pub fn focused(&self) -> PanelKind {
-        self.order.focused()
+        self.order.focused().into()
+    }
+
+    /// Current drawer width in columns (divider-draggable). The model holds
+    /// it in abstract units; the TUI's are whole columns.
+    fn drawer_width(&self) -> u16 {
+        self.order.drawer_width(DRAWER) as u16
     }
 
     /// Status-bar label for the focused panel; the drawer resolves to its
     /// active view's label.
     pub fn focused_label(&self) -> &'static str {
-        match self.order.focused() {
+        match self.focused() {
             PanelKind::Drawer => self.drawer.active_view().label(),
             // The editor area showing the Ask workspace reads as ASK, not
             // EDITOR — mirrors the panel frame's "Ask" title.
@@ -327,23 +223,23 @@ impl PanelSet {
     }
 
     pub fn prev_kind(&self) -> Option<PanelKind> {
-        self.order.prev_kind()
+        self.order.prev_panel().map(PanelKind::from)
     }
 
     pub fn next_kind(&self) -> Option<PanelKind> {
-        self.order.next_kind()
+        self.order.next_panel().map(PanelKind::from)
     }
 
     pub fn is_visible(&self, kind: PanelKind) -> bool {
-        self.order.is_visible(kind)
+        self.order.is_visible(panel(kind))
     }
 
     pub fn show(&mut self, kind: PanelKind) {
-        self.order.show(kind);
+        self.order.show(panel(kind));
     }
 
     pub fn hide(&mut self, kind: PanelKind) {
-        self.order.hide(kind);
+        self.order.hide(panel(kind));
     }
 
     /// Move focus to `kind`. Any transition away from the editor closes its
@@ -352,7 +248,7 @@ impl PanelSet {
         if kind != PanelKind::Editor {
             self.editor.close_autocomplete();
         }
-        self.order.focus(kind);
+        self.order.focus(panel(kind));
     }
 
     // ── Drawer view control ─────────────────────────────────────────────────
@@ -375,15 +271,18 @@ impl PanelSet {
         let Some(right) = self.column_rects.iter().map(|(_, r)| r.right()).max() else {
             return;
         };
-        let new = self.drawer_width.saturating_add_signed(delta);
-        let max_width = right.saturating_sub(RAIL_WIDTH + MIN_EDITOR_WIDTH);
-        self.drawer_width = new.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
+        self.order.resize_drawer(
+            DRAWER,
+            f64::from(delta),
+            width_limits(right.saturating_sub(RAIL_WIDTH)),
+        );
     }
 
     /// Switch the drawer's active `view` and rail cursor *without* changing
     /// its visibility — for paths that must not force-reveal a drawer the user
     /// explicitly hid (e.g. leaving the Ask workspace when a note opens).
     pub fn switch_drawer_view(&mut self, view: DrawerView) {
+        self.order.place_view(view);
         self.drawer.set_view(view);
         self.rail.set_cursor(view);
     }
@@ -392,7 +291,7 @@ impl PanelSet {
     /// step so keyboard navigation continues from the active item.
     pub fn open_drawer_view(&mut self, view: DrawerView) {
         self.switch_drawer_view(view);
-        self.order.show(PanelKind::Drawer);
+        self.order.open_view(view);
     }
 
     // ── Typed accessors for panel-specific calls ───────────────────────────
@@ -422,7 +321,7 @@ impl PanelSet {
     pub fn show_attachment(&mut self, view: AttachmentView) {
         self.editor.close_autocomplete();
         self.content = EditorAreaContent::Attachment(Box::new(view));
-        self.order.focus(PanelKind::Editor);
+        self.order.focus(Panel::Editor);
     }
 
     /// Return the editor area to the note editor, discarding any attachment.
@@ -457,7 +356,7 @@ impl PanelSet {
     pub fn show_ask(&mut self) {
         self.editor.close_autocomplete();
         self.content = EditorAreaContent::Ask;
-        self.order.focus(PanelKind::Editor);
+        self.order.focus(Panel::Editor);
     }
 
     /// Return the editor area to the note editor when it's showing Ask. The
@@ -540,7 +439,7 @@ impl PanelSet {
 
     /// Footer hints for the focused panel.
     pub fn focused_hints(&self) -> Vec<(String, String)> {
-        match self.order.focused() {
+        match self.focused() {
             PanelKind::Rail => self.rail.hint_shortcuts(),
             PanelKind::Drawer => self.drawer.hint_shortcuts(),
             PanelKind::Editor => self.editor_area().hint_shortcuts(),
@@ -549,7 +448,7 @@ impl PanelSet {
 
     /// Route an input event to the focused panel.
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        match self.order.focused() {
+        match self.focused() {
             PanelKind::Rail => self.rail.handle_input(event, tx),
             PanelKind::Drawer => self.drawer.handle_input(event, tx),
             PanelKind::Editor => self.editor_area_handle_input(event, tx),
@@ -636,11 +535,10 @@ impl PanelSet {
             .map(|(_, r)| r.right())
             .max()
             .unwrap_or(drawer_rect.right());
-        let max_width = total_right
-            .saturating_sub(drawer_rect.x)
-            .saturating_sub(MIN_EDITOR_WIDTH);
+        let available = total_right.saturating_sub(drawer_rect.x);
         let new_width = column.saturating_sub(drawer_rect.x).saturating_add(1);
-        self.drawer_width = new_width.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
+        self.order
+            .set_drawer_width(DRAWER, f64::from(new_width), width_limits(available));
     }
 
     /// Route a mouse event by hit-testing the panel columns from the last
@@ -696,14 +594,19 @@ impl PanelSet {
     /// is false while an overlay is open, so no panel draws its focused
     /// highlight under the overlay.
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, show_focus: bool) {
-        let visible = self.order.visible_in_order();
+        let visible: Vec<PanelKind> = self
+            .order
+            .visible_panels()
+            .into_iter()
+            .map(PanelKind::from)
+            .collect();
         if visible.is_empty() {
             return;
         }
-        let columns = layout_columns(&visible, area, self.drawer_width);
+        let columns = layout_columns(&visible, area, self.drawer_width());
         self.column_rects = columns.clone();
 
-        let focused = self.order.focused();
+        let focused = self.focused();
         let drawer_view = self
             .is_visible(PanelKind::Drawer)
             .then(|| self.drawer.active_view());
@@ -1033,80 +936,27 @@ mod tests {
             panels.handle_mouse(&drag_at(60, 5), &tx),
             EventState::Consumed
         );
-        assert_eq!(panels.drawer_width, 54); // 60 - 7 + 1
+        assert_eq!(panels.drawer_width(), 54); // 60 - 7 + 1
         // Dragging far left clamps to the minimum drawer width.
         assert_eq!(
             panels.handle_mouse(&drag_at(0, 5), &tx),
             EventState::Consumed
         );
-        assert_eq!(panels.drawer_width, MIN_DRAWER_WIDTH);
+        assert_eq!(panels.drawer_width(), MIN_DRAWER_WIDTH);
         // Dragging far right clamps so the editor keeps its minimum.
         assert_eq!(
             panels.handle_mouse(&drag_at(200, 5), &tx),
             EventState::Consumed
         );
-        assert_eq!(panels.drawer_width, 120 - 7 - MIN_EDITOR_WIDTH);
+        assert_eq!(panels.drawer_width(), 120 - 7 - MIN_EDITOR_WIDTH);
         // Release ends the drag: further drags are plain panel events.
         assert_eq!(
             panels.handle_mouse(&up_at(80, 5), &tx),
             EventState::Consumed
         );
-        let width_before = panels.drawer_width;
+        let width_before = panels.drawer_width();
         panels.handle_mouse(&drag_at(50, 5), &tx);
-        assert_eq!(panels.drawer_width, width_before);
-    }
-
-    #[test]
-    fn default_focus_is_editor() {
-        let order = PanelOrder::new();
-        assert_eq!(order.focused(), PanelKind::Editor);
-    }
-
-    #[test]
-    fn focus_cycle_wraps_over_visible_panels() {
-        let mut order = PanelOrder::new();
-        // Focus = editor (right end); next wraps to the rail.
-        assert_eq!(order.next_kind(), Some(PanelKind::Rail));
-        assert_eq!(order.prev_kind(), Some(PanelKind::Drawer));
-
-        order.focus(PanelKind::Rail);
-        assert_eq!(order.prev_kind(), Some(PanelKind::Editor)); // wrap left
-        assert_eq!(order.next_kind(), Some(PanelKind::Drawer));
-    }
-
-    #[test]
-    fn focus_cycle_skips_hidden_drawer() {
-        let mut order = PanelOrder::new();
-        order.hide(PanelKind::Drawer);
-        assert_eq!(order.next_kind(), Some(PanelKind::Rail));
-        order.focus(PanelKind::Rail);
-        assert_eq!(order.next_kind(), Some(PanelKind::Editor));
-    }
-
-    #[test]
-    fn show_hide_toggles_visibility_except_rail_and_editor() {
-        let mut order = PanelOrder::new();
-        assert!(order.is_visible(PanelKind::Drawer));
-
-        order.hide(PanelKind::Drawer);
-        assert!(!order.is_visible(PanelKind::Drawer));
-        order.show(PanelKind::Drawer);
-        assert!(order.is_visible(PanelKind::Drawer));
-
-        // The rail and the editor cannot be hidden.
-        order.hide(PanelKind::Editor);
-        assert!(order.is_visible(PanelKind::Editor));
-        order.hide(PanelKind::Rail);
-        assert!(order.is_visible(PanelKind::Rail));
-    }
-
-    #[test]
-    fn hiding_focused_panel_moves_focus_to_visible() {
-        let mut order = PanelOrder::new();
-        order.focus(PanelKind::Drawer);
-        order.hide(PanelKind::Drawer);
-        // Focus cannot stay on a hidden panel.
-        assert!(order.is_visible(order.focused()));
+        assert_eq!(panels.drawer_width(), width_before);
     }
 
     #[test]
@@ -1157,15 +1007,6 @@ mod tests {
         assert_eq!(kind_at(&columns, 10, 40), None);
         // No columns yet (before the first render).
         assert_eq!(kind_at(&[], 10, 10), None);
-    }
-
-    #[test]
-    fn open_drawer_view_reveals_and_switches() {
-        let mut order = PanelOrder::new();
-        order.hide(PanelKind::Drawer);
-        assert!(!order.is_visible(PanelKind::Drawer));
-        order.show(PanelKind::Drawer);
-        assert!(order.is_visible(PanelKind::Drawer));
     }
 
     fn test_attachment_view() -> AttachmentView {
@@ -1224,17 +1065,58 @@ mod tests {
         assert!(ps.is_showing_attachment());
     }
 
-    #[test]
-    fn visible_in_order_skips_hidden() {
-        let mut order = PanelOrder::new();
-        assert_eq!(
-            order.visible_in_order(),
-            vec![PanelKind::Rail, PanelKind::Drawer, PanelKind::Editor]
-        );
-        order.hide(PanelKind::Drawer);
-        assert_eq!(
-            order.visible_in_order(),
-            vec![PanelKind::Rail, PanelKind::Editor]
-        );
+    /// Leader grow/shrink (`adjust_drawer_width`) clamps to the same bounds
+    /// as the divider drag, though it derives its room from the rail width
+    /// rather than the drawer's laid-out x. Before the first render it is a
+    /// no-op.
+    #[tokio::test]
+    async fn leader_resize_clamps_like_the_divider_drag() {
+        let mut panels = make_panel_set().await;
+        panels.adjust_drawer_width(4);
+        assert_eq!(panels.drawer_width(), DEFAULT_DRAWER_WIDTH, "no rects yet");
+
+        lay_out(&mut panels);
+        panels.adjust_drawer_width(4);
+        assert_eq!(panels.drawer_width(), DEFAULT_DRAWER_WIDTH + 4);
+        panels.adjust_drawer_width(-8);
+        assert_eq!(panels.drawer_width(), DEFAULT_DRAWER_WIDTH - 4);
+        for _ in 0..40 {
+            panels.adjust_drawer_width(-4);
+        }
+        assert_eq!(panels.drawer_width(), MIN_DRAWER_WIDTH);
+        for _ in 0..40 {
+            panels.adjust_drawer_width(4);
+        }
+        let grown = panels.drawer_width();
+        assert_eq!(grown, 120 - RAIL_WIDTH - MIN_EDITOR_WIDTH);
+
+        // The drag path's ceiling is the same number.
+        let (tx, _rx) = unbounded_channel();
+        lay_out(&mut panels);
+        let (_, drawer) = *panels
+            .column_rects
+            .iter()
+            .find(|(kind, _)| *kind == PanelKind::Drawer)
+            .unwrap();
+        panels.handle_mouse(&mouse_down_at(drawer.right() - 1, 5), &tx);
+        panels.handle_mouse(&drag_at(200, 5), &tx);
+        assert_eq!(panels.drawer_width(), grown);
+    }
+
+    /// The TUI runs the shared layout model with one drawer and one slot:
+    /// the slot always holds the drawer's active view, whether it was
+    /// switched quietly or opened, and nothing ever lands on the right.
+    #[tokio::test]
+    async fn the_layout_slot_tracks_the_drawer_view() {
+        let mut ps = make_panel_set().await;
+        assert_eq!(ps.order.slot_views(Side::Left), vec![DrawerView::Files]);
+        ps.switch_drawer_view(DrawerView::Tags);
+        assert_eq!(ps.order.slot_views(Side::Left), vec![DrawerView::Tags]);
+        ps.hide(PanelKind::Drawer);
+        ps.open_drawer_view(DrawerView::Outline);
+        assert_eq!(ps.order.slot_views(Side::Left), vec![DrawerView::Outline]);
+        assert!(ps.is_visible(PanelKind::Drawer));
+        assert!(ps.order.slot_views(Side::Right).is_empty());
+        assert!(!ps.order.is_visible(Panel::Drawer(Side::Right)));
     }
 }

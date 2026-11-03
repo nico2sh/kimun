@@ -1450,6 +1450,29 @@ mod backend_tests {
         );
     }
 
+    /// The action vocabulary is shared with the GUI (ADR-0050 §6), so a new
+    /// action must be a deliberate TUI choice: either it gets a default chord
+    /// or it goes on `TUI_UNBOUND`. `Text(..)` actions are covered by
+    /// `the_default_table_binds_no_text_action` below.
+    #[test]
+    fn every_action_is_bound_by_default_or_listed_as_tui_unbound() {
+        use crate::keys::action_shortcuts::TUI_UNBOUND;
+
+        let bound = default_keybindings().to_hashmap();
+        for action in ActionShortcuts::ALL {
+            if matches!(action, ActionShortcuts::Text(_)) {
+                continue;
+            }
+            let has_chord = bound.contains_key(&action);
+            let unbound = TUI_UNBOUND.contains(&action);
+            assert!(
+                has_chord != unbound,
+                "{action}: bound by default = {has_chord}, listed in TUI_UNBOUND = {unbound}; \
+                 exactly one must hold"
+            );
+        }
+    }
+
     /// All formatting lives on the leader (`Ctrl+B t b` / `t i` / `t s`), so
     /// the chord table binds no text action at all. `Ctrl+I` cannot work
     /// outside the kitty keyboard protocol — it is Tab's byte — and having

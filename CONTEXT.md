@@ -267,8 +267,12 @@ The fixed-width icon strip on the far left of the editor screen. Each cell names
 _Avoid_: sidebar (the pre-rail name for the file browser), icon bar, toolbar.
 
 **Drawer**:
-The single panel between the **Activity rail** and the editor; renders whichever **drawer view** is active. Toggleable (Ctrl-T) — hiding it gives its width to the editor — and divider-drag resizable. Exactly one drawer renders at a time.
-_Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel.
+A panel beside the editor that holds **drawer views**. The TUI has one, between the **Activity rail** and the editor; the GUI can have two, a left and a right, each a vertical stack of **drawer slots** (hidden and empty on the right by default). Toggleable (Ctrl-T in the TUI) — hiding a drawer gives its width to the editor — and divider-drag resizable. A **drawer view** lives in exactly one slot of one drawer.
+_Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel, dock.
+
+**Drawer slot**:
+One cell of a **drawer**'s vertical stack, showing exactly one **drawer view**. Splitting a drawer adds a slot (up to two for now); the **Activity rail** opens a view into the focused slot of the drawer where that view currently lives. Placing a view that is already visible elsewhere moves it rather than duplicating it.
+_Avoid_: pane, tab.
 
 **Drawer view**:
 What the **Drawer** can show: FILES (the file browser, formerly the sidebar), FIND (the **Query panel**), TAGS, LINKS, OUTLINE, CFG. The rail and the drawer stay in step through the view, not through panel identities.
@@ -278,8 +282,16 @@ The accent recoloring of a FILES-list row's type glyph that flags the note curre
 _Avoid_: active note (collides with the focused **Panel** / selection), current note (that is the `{note}` **query variable** — the open note's clean name).
 
 **PanelSet**:
-The fixed left→right collection of the editor screen's **Panels** (rail → drawer → editor); owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
+The fixed left→right collection of the editor screen's **Panels** (rail → drawer → editor, and in the GUI a second drawer after the editor); owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
 _Avoid_: panel manager, layout, panel stack.
+
+**Editor group**:
+A leaf of the **editor Panel**'s layout: a region of the editor area holding one piece of content at a time — a note editor, an **attachment view** or the **Ask workspace**'s conversation. Each group has its own editor, find bar and open note. The editor Panel stays one **Panel** in the **PanelSet** (rail → drawer → editor); splitting happens inside it. Until splitting exists there is exactly one group.
+_Avoid_: pane (collides with the editor's viewport and the **Preview pane**), split (that is the act, not the region), tab.
+
+**Active group**:
+The **editor group** that owns the keyboard when the editor Panel is focused, and that save, the footer and the `{note}` **query variable** follow. Exactly one at a time.
+_Avoid_: focused group (focus is a **Panel** property).
 
 **Overlay**:
 A transient, modal surface drawn on top of the **Panels** — the **note browser**, the **Saved Searches modal**, or a dialog. Captures all input while open; closing restores focus to the panel that opened it.
