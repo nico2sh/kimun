@@ -27,6 +27,8 @@ Notes from research on companion planting for the [[garden-plan]].
 - Lettuce: can start early, cool-weather crop
 - Radishes: 25-30 days to harvest
 
+![wiki](/assets/logo.png)
+
 ## Sources
 
 - "Carrots Love Tomatoes" by Louise Riotte

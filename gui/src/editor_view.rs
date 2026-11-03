@@ -17,6 +17,11 @@
 //! text input (IME, multi-char text) lands in the bar's focused field, never in
 //! the buffer.
 //!
+//! **Following links.** A single press only places the caret. A double-click
+//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`])
+//! on a link or a label asks the window's owner to follow it, on the app
+//! channel; the `FollowLink` chord bubbles to the owner like any app command.
+//!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
 //! ([`crate::keymap`]) with the editor focused. Find and replace are the
 //! editor's own; any other app command is left to bubble to whoever owns it,
@@ -25,6 +30,7 @@
 
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
@@ -35,11 +41,12 @@ use gpui_kit::{
 };
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::editor::Editor;
+use kimun_notes::logic::editor::claim::FollowTarget;
 use kimun_notes::logic::editor::handled::Handled;
 use kimun_notes::logic::editor::request::EditorRequest;
 use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
 use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::message::{AppTx, redraw_callback};
+use kimun_notes::logic::message::{AppMessage, AppTx, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
 use crate::editor_element::{EditorElement, ShapedRows};
@@ -130,6 +137,39 @@ pub struct Painted {
     pub find_bar: Option<BarPaint>,
 }
 
+/// How close together two presses on a cell must be to follow (ADR-0043;
+/// the TUI's `DOUBLE_CLICK`).
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// The presses forming one double-click (ADR-0043): two plain left presses on
+/// the same cell within [`DOUBLE_CLICK`]. Not a neighbourhood, so two clicks
+/// on adjacent chars never follow; a fired double starts over, so a third
+/// press does not pair with the second. Holds no clock: the caller passes
+/// `now`. GPUI's own `click_count` is not used: its timing and slop are the
+/// platform's, not this rule.
+#[derive(Debug, Default)]
+pub(crate) struct ClickRun {
+    last: Option<(u16, u16, Instant)>,
+}
+
+impl ClickRun {
+    /// Whether a press on (`col`, `row`) at `now` completes a double-click,
+    /// recording it either way.
+    pub(crate) fn completes_double(&mut self, col: u16, row: u16, now: Instant) -> bool {
+        let doubled = self.last.is_some_and(|(c, r, at)| {
+            c == col && r == row && now.saturating_duration_since(at) < DOUBLE_CLICK
+        });
+        self.last = (!doubled).then_some((col, row, now));
+        doubled
+    }
+
+    /// The next press starts a new gesture: a key, a scroll, another
+    /// button, a modifier held, a press off the text.
+    pub(crate) fn end(&mut self) {
+        self.last = None;
+    }
+}
+
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
 pub struct EditorView {
     pub(crate) editor: Editor,
@@ -142,6 +182,8 @@ pub struct EditorView {
     /// A left press in this editor is being dragged. Drags that began
     /// elsewhere are not ours to turn into a selection.
     dragging: bool,
+    /// The presses that may form a double-click (follow the link there).
+    clicks: ClickRun,
     /// IME composition text, shown at the caret but kept out of the buffer
     /// until committed: a preedit is not an edit, so it must not dirty the
     /// note or enter undo history.
@@ -216,6 +258,7 @@ impl EditorView {
             tx,
             scroll: ScrollAccumulator::default(),
             dragging: false,
+            clicks: ClickRun::default(),
             preedit: None,
             input_blocked: false,
             painted: None,
@@ -385,6 +428,9 @@ impl EditorView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !event.keystroke.is_modifier_key() {
+            self.clicks.end();
+        }
         if let Some(key) = input::key_down_input(event) {
             // A dead key or compose sequence finishes as a plain key-down
             // (`´` preedit, then `é` as a keystroke): whatever was being
@@ -451,20 +497,48 @@ impl EditorView {
             && (p.mode_line.is_some() || p.find_bar.is_some())
             && pointer.row >= p.rows
         {
+            self.clicks.end();
             if pointer.kind == PointerKind::Down(Button::Left) {
                 self.focus_bar_row(pointer.row - p.rows);
                 self.settle(window, cx);
             }
             return;
         }
-        // A press on a link (the hand cursor) only places the caret, as the
-        // TUI's first press does. Following it (double-click, Ctrl-N, the
-        // **follow target**) is the editor screen's job: M5.
-        self.editor.handle_pointer(&pointer, &self.tx);
         let left = pointer.kind == PointerKind::Down(Button::Left);
+        // A press on a link (the hand cursor) only places the caret, as the
+        // TUI's first press does. A second plain left press on the same cell
+        // soon after follows the **follow target** the first one put the
+        // caret on (ADR-0043): the workspace does it, as for the chord. With
+        // nothing to follow there, it is an ordinary press.
+        if left && pointer.mods == Mods::NONE {
+            if self
+                .clicks
+                .completes_double(pointer.col, pointer.row, Instant::now())
+                && self.follow_at_caret()
+            {
+                self.dragging = false;
+                self.settle(window, cx);
+                return;
+            }
+        } else {
+            self.clicks.end();
+        }
+        self.editor.handle_pointer(&pointer, &self.tx);
         self.editor.settle_pointer(left);
         self.dragging = left;
         self.settle(window, cx);
+    }
+
+    /// Ask the window's owner to follow the follow target under the caret
+    /// (a link, a label). False when there is none.
+    fn follow_at_caret(&self) -> bool {
+        let message = match self.editor.follow_target_at_cursor() {
+            Some(FollowTarget::Link(target)) => AppMessage::FollowLink(target),
+            Some(FollowTarget::Label(name)) => AppMessage::FollowLabel(name),
+            None => return false,
+        };
+        self.tx.send(message).ok();
+        true
     }
 
     /// A press on find bar row `row` (0 the query, 1 the replacement) gives
@@ -541,6 +615,8 @@ impl EditorView {
         if steps.is_empty() {
             return;
         }
+        // The same cell now shows other text.
+        self.clicks.end();
         for step in &steps {
             self.editor.handle_pointer(step, &self.tx);
         }
@@ -913,6 +989,41 @@ fn char_to_utf16(s: &str, chars: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(millis: u64) -> Instant {
+        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn two_quick_presses_on_one_cell_are_a_double_and_end_the_run() {
+        let mut run = ClickRun::default();
+        assert!(!run.completes_double(4, 2, at(0)), "one press is not");
+        assert!(run.completes_double(4, 2, at(399)));
+        // A third press starts over rather than pairing with the second.
+        assert!(!run.completes_double(4, 2, at(450)));
+    }
+
+    #[test]
+    fn a_slow_pair_or_another_cell_is_no_double() {
+        let mut run = ClickRun::default();
+        assert!(!run.completes_double(4, 2, at(0)));
+        assert!(
+            !run.completes_double(4, 2, at(400)),
+            "the window is exclusive"
+        );
+        assert!(!run.completes_double(5, 2, at(500)), "a neighbour cell");
+        assert!(!run.completes_double(5, 3, at(600)), "another row");
+        assert!(run.completes_double(5, 3, at(700)));
+    }
+
+    #[test]
+    fn ending_the_run_forgets_the_first_press() {
+        let mut run = ClickRun::default();
+        assert!(!run.completes_double(1, 1, at(0)));
+        run.end();
+        assert!(!run.completes_double(1, 1, at(100)));
+    }
 
     #[test]
     fn utf16_offsets_round_trip_through_chars() {

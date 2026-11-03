@@ -1,14 +1,24 @@
 //! The **Footer** docked under the editor Panel (M5b-2): the open note's
 //! path as a breadcrumb, whether it has unsaved edits, what the vault is
 //! doing (indexing), whether notes may be saved, and transient flash
-//! messages. G5 completes it.
+//! messages. G5 completed it with what the TUI's second status line shows
+//! of the document: the caret's line and column, the find bar's place among
+//! its matches, and the open note's backlink and property counts. Display
+//! only: clicking them is M6/M7's.
+//!
+//! **Narrow windows.** The path (and a flash) take only the room the
+//! pinned segments leave, so they shrink first, with an ellipsis; then the
+//! note's counts; the caret, the matches and the save, read-only and
+//! indexing states keep their width.
 //!
 //! The vim mode is not repeated here: the editor's own mode line, the row
 //! right above the Footer, shows it with the pending command.
 //!
 //! The state is plain data owned by the
 //! [`Workspace`](crate::workspace::Workspace), which also owns the flash's
-//! expiry; [`render`] draws it with the kit's `StatusBar` in kimün's theme.
+//! expiry, plus the [`DocFacts`] it reads off the editor and the note
+//! session each frame; [`render`] draws both with the kit's `StatusBar` in
+//! kimün's theme.
 
 use std::time::Duration;
 
@@ -22,6 +32,7 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, div, rems,
 };
 use kimun_core::nfs::VaultPath;
+use kimun_notes::logic::editor::find_bar::MatchPosition;
 use kimun_notes::settings::themes::Theme;
 
 use crate::theme;
@@ -38,6 +49,10 @@ pub(crate) const SAVE_ID: &str = "status-save";
 pub(crate) const FLASH_ID: &str = "status-flash";
 pub(crate) const INDEXING_ID: &str = "status-indexing";
 pub(crate) const READ_ONLY_ID: &str = "status-read-only";
+pub(crate) const CARET_ID: &str = "status-caret";
+pub(crate) const MATCHES_ID: &str = "status-matches";
+pub(crate) const BACKLINKS_ID: &str = "status-backlinks";
+pub(crate) const PROPERTIES_ID: &str = "status-properties";
 
 /// The save state's two labels.
 pub(crate) const UNSAVED: &str = "Unsaved";
@@ -62,17 +77,71 @@ pub(crate) struct Status {
     pub(crate) flash_error: bool,
 }
 
-/// The footer for `status`.
-pub(crate) fn render(status: &Status, theme: &Theme) -> impl IntoElement {
-    let label = |id: &'static str, text: &'static str| {
+/// What the footer reads off the editor and the open note each frame: each
+/// segment shows only when it has a value (the TUI's `DocState` rule).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DocFacts {
+    /// The caret's 1-based (line, column), while the editor has the
+    /// keyboard and its find bar is closed.
+    pub(crate) caret: Option<(usize, usize)>,
+    /// The find bar's place among its matches, while it is open and its
+    /// pattern matches.
+    pub(crate) find: Option<MatchPosition>,
+    /// How many notes link to the open note, once loaded.
+    pub(crate) backlinks: Option<usize>,
+    /// How many properties the open note's front matter holds, once loaded.
+    pub(crate) properties: Option<usize>,
+}
+
+/// The caret segment's text and its spoken form.
+pub(crate) fn caret_label((line, col): (usize, usize)) -> (String, String) {
+    (
+        format!("Ln {line}, Col {col}"),
+        format!("Line {line}, column {col}"),
+    )
+}
+
+/// The matches segment's text and its spoken form: `3/12`, or the count
+/// alone when the caret is on none of them.
+pub(crate) fn matches_label(find: MatchPosition) -> (String, String) {
+    let total = find.total;
+    match find.current {
+        Some(i) => (format!("{i}/{total}"), format!("Match {i} of {total}")),
+        None => {
+            let text = counted(total, "match", "matches");
+            (text.clone(), text)
+        }
+    }
+}
+
+/// `n` and the noun, singular for one.
+pub(crate) fn counted(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The footer for `status` and `facts`.
+pub(crate) fn render(status: &Status, facts: &DocFacts, theme: &Theme) -> impl IntoElement {
+    let label = |id: &'static str, text: SharedString, spoken: SharedString| {
         div()
             .id(id)
             .test_support()
             .role(Role::Status)
-            .aria_label(text)
+            .aria_label(spoken)
             .whitespace_nowrap()
             .child(text)
     };
+    let fixed = |id: &'static str, (text, spoken): (String, String)| {
+        label(id, text.into(), spoken.into()).flex_none()
+    };
+    // The note's counts give up their room before the live segments do.
+    let count = |id: &'static str, text: String| {
+        let text = SharedString::from(text);
+        label(id, text.clone(), text)
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+    };
+    let note_open = status.note.is_some();
     // The path, then the flash: both shrink (the flash first, it is cut
     // short with an ellipsis) rather than pushing the pinned labels out.
     let bar = StatusBar::new()
@@ -98,14 +167,28 @@ pub(crate) fn render(status: &Status, theme: &Theme) -> impl IntoElement {
                     flash.aria_label(text.clone()).child(text)
                 }),
         )
-        .when(status.note.is_some(), |bar| {
-            bar.right(save_state(status.dirty, theme))
+        .when_some(facts.caret, |bar, caret| {
+            bar.right(fixed(CARET_ID, caret_label(caret)))
         })
+        .when_some(facts.find, |bar, find| {
+            bar.right(fixed(MATCHES_ID, matches_label(find)))
+        })
+        .when_some(facts.backlinks.filter(|_| note_open), |bar, n| {
+            bar.right(count(BACKLINKS_ID, counted(n, "backlink", "backlinks")))
+        })
+        .when_some(facts.properties.filter(|_| note_open), |bar, n| {
+            bar.right(count(PROPERTIES_ID, counted(n, "property", "properties")))
+        })
+        .when(note_open, |bar| bar.right(save_state(status.dirty, theme)))
         .when(status.read_only, |bar| {
-            bar.right(label(READ_ONLY_ID, "Read-only").text_color(theme::error(theme)))
+            bar.right(
+                label(READ_ONLY_ID, "Read-only".into(), "Read-only".into())
+                    .flex_none()
+                    .text_color(theme::error(theme)),
+            )
         })
         .when(status.indexing, |bar| {
-            bar.right(label(INDEXING_ID, "Indexing…"))
+            bar.right(label(INDEXING_ID, "Indexing…".into(), "Indexing…".into()).flex_none())
         })
         .bg(theme::panel_background(theme))
         .border_color(theme::divider(theme))
@@ -192,6 +275,7 @@ fn save_state(dirty: bool, theme: &Theme) -> impl IntoElement {
         .role(Role::Status)
         .aria_label(text)
         .flex()
+        .flex_none()
         .flex_row()
         .items_center()
         .gap_1()
@@ -210,7 +294,21 @@ fn save_state(dirty: bool, theme: &Theme) -> impl IntoElement {
 
 #[cfg(test)]
 mod tests {
-    use super::crumbs;
+    use super::{MatchPosition, caret_label, counted, crumbs, matches_label};
+
+    #[test]
+    fn segment_labels_read_and_speak() {
+        assert_eq!(
+            caret_label((12, 4)),
+            ("Ln 12, Col 4".into(), "Line 12, column 4".into())
+        );
+        let at = |current, total| matches_label(MatchPosition { current, total });
+        assert_eq!(at(Some(3), 12), ("3/12".into(), "Match 3 of 12".into()));
+        assert_eq!(at(None, 12), ("12 matches".into(), "12 matches".into()));
+        assert_eq!(at(None, 1).0, "1 match");
+        assert_eq!(counted(0, "backlink", "backlinks"), "0 backlinks");
+        assert_eq!(counted(1, "property", "properties"), "1 property");
+    }
 
     fn c(slices: &[&str]) -> Vec<String> {
         crumbs(slices.iter().map(|s| s.to_string()).collect())

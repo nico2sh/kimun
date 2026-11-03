@@ -281,53 +281,33 @@ impl EditorScreen {
         self.vault.save_search(name, query).await
     }
 
+    /// Follows `target` from the open note: resolve it (`logic::follow`),
+    /// then act — the OS handoff for a URL or an image, open a single match,
+    /// offer to create a missing note, choose between several matches.
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
-        // External URL — hand off to the OS browser/handler.
-        if kimun_core::note::scan::is_remote_url(&target) {
-            match open::that_detached(&target) {
+        use crate::logic::follow::{FollowOutcome, resolve};
+        match resolve(&self.vault, self.session.path(), &target).await {
+            // External URL — hand off to the OS browser/handler.
+            FollowOutcome::External(url) => match open::that_detached(&url) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
                 Err(e) => self.footer.flash(format!("Cannot open URL: {e}"), tx),
-            }
-            return;
-        }
-
-        // Image attachment — resolve the (potentially relative) path against
-        // the current note's directory, convert to an OS path, hand off to the
-        // OS default handler. Images are not notes, so skip the note lookup.
-        if kimun_core::note::scan::target_looks_like_image(&target) {
-            let parent = self.session.path().get_parent_path().0;
-            let resolved = parent.append(&VaultPath::new(target.trim()));
-            let os_path = self.vault.path_to_pathbuf(&resolved);
-            match open::that_detached(&os_path) {
+            },
+            // Image — hand off to the OS default handler.
+            FollowOutcome::OpenFile(os_path) => match open::that_detached(&os_path) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
                 Err(e) => self.footer.flash(format!("Cannot open image: {e}"), tx),
-            }
-            return;
-        }
-
-        // Note reference — look it up in the vault.
-        // Strip any `#section` / `^block` suffix before resolving (e.g.
-        // `notes/design.md#goals` resolves to `notes/design.md`, not
-        // `notes/design.md#goals.md`) — the same split the index uses.
-        let (target_clean, _) = kimun_core::note::scan::split_link_fragment(&target);
-        // Resolve the (possibly relative, e.g. `../work/anton.md`) target
-        // against this note's directory so the existence lookup uses the same
-        // absolute path the note is stored under. Bare names stay name-lookups.
-        let path = kimun_core::nfs::VaultPath::note_path_from(target_clean)
-            .resolve_link_in_note(self.session.path());
-        match self.vault.open_or_search(&path).await {
-            Ok(results) if results.is_empty() => {
+            },
+            FollowOutcome::Missing(path) => {
                 self.present_overlay(Box::new(ActiveDialog::create_note(
                     path,
                     self.vault.clone(),
                     None,
                 )));
             }
-            Ok(mut results) if results.len() == 1 => {
-                let (entry, _) = results.remove(0);
-                self.open_path(entry.path, None, tx).await;
+            FollowOutcome::Note(path) => {
+                self.open_path(path, None, tx).await;
             }
-            Ok(results) => {
+            FollowOutcome::Ambiguous(results) => {
                 use crate::components::note_browser::link_results_provider::LinkResultsProvider;
                 let provider = LinkResultsProvider::from_results(results);
                 let s = self.settings.read().unwrap();
@@ -343,7 +323,7 @@ impl EditorScreen {
                 drop(s);
                 self.present_overlay(Box::new(modal));
             }
-            Err(e) => {
+            FollowOutcome::Error(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
             }
         }

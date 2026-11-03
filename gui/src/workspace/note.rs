@@ -28,6 +28,8 @@ use std::num::NonZeroU64;
 
 use gpui_kit::{App, AppContext, Context, Task, Window};
 use kimun_core::nfs::VaultPath;
+use kimun_notes::logic::doc_meta::DocMeta;
+use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::session::{
     FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
 };
@@ -53,11 +55,16 @@ pub(crate) struct NoteHost {
     save_again: bool,
     /// Lifts [`Closing::Discard`] when its warning's time is up.
     discard_expiry: Option<Task<()>>,
+    /// The open note's backlink and property counts for the Footer,
+    /// fetched in the background on open, save and file operations.
+    pub(crate) meta: DocMeta,
 }
 
 impl NoteHost {
     pub(crate) fn new(session: NoteSession) -> Self {
+        let meta = DocMeta::new(session.vault().clone());
         Self {
+            meta,
             session,
             note: None,
             wanted: None,
@@ -245,6 +252,9 @@ impl Workspace {
         }
         if let SaveOutcome::Saved(saved) = &outcome {
             self.files_note_saved(saved, cx);
+            if self.notes.as_ref().and_then(|h| h.note.as_ref()) == Some(&saved.path) {
+                self.refresh_note_properties();
+            }
         }
         outcome
     }
@@ -345,6 +355,7 @@ impl Workspace {
                     host.session.stop_autosave();
                 }
                 host.note = Some(path.clone());
+                host.meta.load_note_counts(&path, &tx);
                 self.status.note = Some(path.clone());
                 self.files_note_opened(&path, cx);
             }
@@ -441,6 +452,11 @@ impl Workspace {
         if let Some(saved) = &completion.saved {
             self.files_note_saved(saved, cx);
         }
+        // The Footer's property count follows what was written (the TUI's
+        // rule: the open note's completion, written or not).
+        if completion.is_open_note {
+            self.refresh_note_properties();
+        }
         if completion.wrote && matches!(self.closing, Closing::Discard(_)) {
             self.closing = Closing::Open;
         }
@@ -448,6 +464,39 @@ impl Workspace {
             self.flash_error(format!("Couldn't save {path}: {error}"), cx);
         } else if again {
             self.save_note(cx);
+        }
+    }
+
+    // ---- The Footer's counts ----------------------------------------------
+
+    /// Re-read the open note's property count (it was saved).
+    fn refresh_note_properties(&mut self) {
+        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref())
+            && let Some(note) = host.note.clone()
+        {
+            host.meta.refresh_properties(&note, tx);
+        }
+    }
+
+    /// A note, attachment or folder was renamed, moved or deleted: links to
+    /// the open note may have been rewritten or gone with it. Re-read both
+    /// counts, keeping the ones shown until they land.
+    pub(crate) fn refresh_note_counts(&mut self) {
+        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref())
+            && let Some(note) = host.note.clone()
+        {
+            host.meta.refresh_backlinks(&note, tx);
+            host.meta.refresh_properties(&note, tx);
+        }
+    }
+
+    /// A count fetched in the background: kept when it is for the open note.
+    pub(crate) fn note_count_loaded(&mut self, message: AppMessage) {
+        if let Some(host) = self.notes.as_mut()
+            && let Some(note) = host.note.as_ref()
+        {
+            // Only the counts are routed here: nothing comes back.
+            host.meta.handle(message, note);
         }
     }
 
