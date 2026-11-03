@@ -1565,6 +1565,74 @@ mod tests {
         assert_eq!(rows[9], "and a there");
     }
 
+    /// `(col, cells)` stretches of row `row` of the last frame carrying `kind`.
+    fn marked_cells(
+        ed: &Editor,
+        row: usize,
+        kind: crate::logic::editor::overlay::OverlayKind,
+    ) -> Vec<(usize, usize)> {
+        let frame = ed.session.display.frame(40, true);
+        let mut col = 0;
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for run in &frame.rows[row].runs {
+            let w = unicode_width::UnicodeWidthStr::width(run.text.as_str());
+            if run.overlays.contains(kind) && w > 0 {
+                match out.last_mut() {
+                    Some((c, n)) if *c + *n == col => *n += w,
+                    _ => out.push((col, w)),
+                }
+            }
+            col += w;
+        }
+        out
+    }
+
+    #[test]
+    fn an_empty_replacement_previews_the_removal_point_not_the_old_match_columns() {
+        // Regression (GUI manual gate): `ee` -> "" on "Three" showed "Thr",
+        // but painted the old match's columns (the bar's current match, in
+        // REAL text columns) as the selection over the preview row, so the
+        // cells after "Thr" lit up. On a preview row only the preview's own
+        // spans (preview columns) may paint.
+        use crate::logic::editor::overlay::OverlayKind;
+        let mut ed = Editor::new(false);
+        ed.set_text("One Three apples\nsee eel ee".into());
+        ed.open_replace();
+        find_keys(&mut ed, "ee");
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Tab)));
+        assert_eq!(
+            ed.find_bar().unwrap().current_match(),
+            Some(((0, 7), (0, 9)))
+        );
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40), vec!["One Thr apples", "s l "]);
+        // The removal point: one cell, right where "ee" was (after "Thr").
+        assert_eq!(
+            marked_cells(&ed, 0, OverlayKind::PreviewCurrent),
+            vec![(7, 1)]
+        );
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::CurrentMatch), vec![]);
+        // Several matches on one row: the spans sit at the preview's columns.
+        let (_, spans, _) = ed.find_frame_parts();
+        let at: Vec<_> = spans.iter().map(|o| (o.row, o.start, o.end)).collect();
+        assert_eq!(at, vec![(0, 7, 7), (1, 1, 1), (1, 2, 2), (1, 4, 4)]);
+        // A non-empty replacement: the current span covers exactly it.
+        find_keys(&mut ed, "X");
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40)[0], "One ThrX apples");
+        assert_eq!(
+            marked_cells(&ed, 0, OverlayKind::PreviewCurrent),
+            vec![(7, 1)]
+        );
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+        // Closing the bar: no preview, no stale highlight.
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Esc)));
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40)[0], "One Three apples");
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+    }
+
     #[test]
     fn paste_lands_in_the_bar_and_a_reload_drops_it() {
         let mut ed = Editor::new(false);

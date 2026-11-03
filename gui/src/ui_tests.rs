@@ -1665,3 +1665,33 @@ fn a_preview_far_from_the_cursor_paints_and_closes_without_a_stale_row(cx: &mut 
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn an_empty_replacement_marks_the_removal_point_and_nothing_after_it(cx: &mut TestAppContext) {
+    // Regression (manual gate): `ee` -> "" on "Three" lit the cells after
+    // "Thr" with the selection (the old match's real columns).
+    let (handle, view) = open(cx, "One Three apples\nsee eel ee");
+    let t = Theme::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.press("ctrl-h", cx);
+        window.input("ee", cx);
+        window.press("tab", cx);
+        let row = painted_row(&view, 0, cx);
+        assert_eq!(row.text(), "One Thr apples");
+        assert_eq!(painted_row(&view, 1, cx).text(), "s l ");
+        // No selection fill anywhere on the previewed row.
+        let sel = theme::selection_background(&t);
+        assert!(row.fills.iter().all(|f| f.color != sel), "{:?}", row.fills);
+        // The removal point is the one cell after "Thr" (here the space),
+        // filled in the search-match colour (inverse video); nothing else is filled.
+        let preview = theme::fg_of(&t.color_search_match, &t);
+        let fills: Vec<_> = row
+            .fills
+            .iter()
+            .map(|f| (f.col, f.cells, f.color))
+            .collect();
+        assert_eq!(fills, vec![(7, 1, preview)]);
+        assert_eq!(piece(&row, "apples").style.fg, theme::foreground(&t));
+    })
+    .unwrap();
+}

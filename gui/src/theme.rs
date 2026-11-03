@@ -202,7 +202,7 @@ pub struct CellStyle {
 /// How far a dimmed (completed-task) foreground is pulled toward the page.
 const DIM_MIX: f32 = 0.45;
 
-fn fg_of(c: &ThemeColor, theme: &Theme) -> Rgba {
+pub(crate) fn fg_of(c: &ThemeColor, theme: &Theme) -> Rgba {
     to_gpui(c, Token::Foreground, theme)
 }
 
@@ -306,8 +306,12 @@ pub fn run_style(run: &Run, theme: &Theme) -> CellStyle {
             // Clickable cells, for the pointer (`RowPaint::targets`); no ink.
             OverlayKind::FollowTarget => {}
             OverlayKind::PreviewCurrent => {
-                s.bg = bg_of(&theme.color_replace_preview, theme);
-                s.fg = caret(theme);
+                // The match about to be replaced: inverse video in the search
+                // accent, so it stands apart from the other previewed matches
+                // (which share the preview background) at a glance.
+                let (bg, _) = base(theme);
+                s.bg = Some(fg_of(&theme.color_search_match, theme));
+                s.fg = rgba(bg);
                 s.bold = true;
             }
         }
