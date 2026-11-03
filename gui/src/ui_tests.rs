@@ -11,6 +11,7 @@ use kimun_notes::logic::editor::Editor;
 use kimun_notes::settings::themes::Theme;
 
 use crate::editor_view::{self, CaretShape, EditorView, ModeLine, Painted};
+use crate::keymap::{self, Keymap, Platform};
 
 fn open(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<EditorView>) {
     open_with(cx, text, false)
@@ -29,6 +30,8 @@ fn open_with(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        // A fixed platform, so `ctrl-f` means the same on every CI runner.
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let text = text.to_string();
     cx.update(|cx| {
@@ -689,33 +692,38 @@ impl gpui_kit::Render for KeySpy {
     }
 }
 
-#[gpui_kit::test]
-fn a_multi_char_key_reaches_the_platform_only_in_insert(cx: &mut TestAppContext) {
-    use gpui_kit::Keystroke;
+/// A vim editor showing `text` inside a [`KeySpy`].
+fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<KeySpy>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let (handle, spy) = cx
-        .update(|cx| {
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                        Default::default(),
-                        size(px(640.), px(480.)),
-                    ))),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    let editor = cx
-                        .new(|cx| EditorView::new(Some("abc".into()), Theme::default(), true, cx));
-                    window.focus(&editor.read(cx).focus_handle(cx), cx);
-                    cx.new(|_| KeySpy { editor, bubbled: 0 })
-                },
-            )
-        })
-        .expect("open test window");
+    let text = text.to_string();
+    cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(640.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let editor = cx.new(|cx| EditorView::new(Some(text), Theme::default(), true, cx));
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
+                cx.new(|_| KeySpy { editor, bubbled: 0 })
+            },
+        )
+    })
+    .expect("open test window")
+}
+
+#[gpui_kit::test]
+fn a_multi_char_key_reaches_the_platform_only_in_insert(cx: &mut TestAppContext) {
+    use gpui_kit::Keystroke;
+    let (handle, spy) = open_spy(cx, "abc");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         // Text that is not one `char` (no `KeyInput`) bubbles out to the
@@ -1692,6 +1700,125 @@ fn an_empty_replacement_marks_the_removal_point_and_nothing_after_it(cx: &mut Te
             .collect();
         assert_eq!(fills, vec![(7, 1, preview)]);
         assert_eq!(piece(&row, "apples").style.fg, theme::foreground(&t));
+    })
+    .unwrap();
+}
+
+// ---- The GUI keymap (M5b-1) --------------------------------------------------
+
+fn bar_open(view: &Entity<EditorView>, cx: &gpui_kit::App) -> bool {
+    view.read(cx).editor.find_open()
+}
+
+fn replacing(view: &Entity<EditorView>, cx: &gpui_kit::App) -> bool {
+    view.read(cx)
+        .editor
+        .find_bar()
+        .is_some_and(|b| b.is_replacing())
+}
+
+/// The vim rule (ADR-0050 §6): under vim a bare Ctrl+letter is vim's, so
+/// Ctrl-F is vim's (a consumed no-op in Normal) and find moves to its Ctrl+Shift twin.
+#[gpui_kit::test]
+fn under_vim_ctrl_f_is_vims_and_find_is_on_ctrl_shift_f(cx: &mut TestAppContext) {
+    let all = "foo\nbar\nfoo";
+    let (handle, spy) = open_spy(cx, all);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let view = spy.read(cx).editor.clone();
+        // Proof the key reached vim rather than bubbling past the editor:
+        // vim consumes it (the engine has no Ctrl-F page-forward of its own,
+        // and an unmapped Normal key is a consumed no-op), so nothing
+        // bubbles, while Ctrl-T (the drawer, not the editor's) does.
+        window.press("ctrl-f", cx);
+        assert!(!bar_open(&view, cx), "Ctrl-F went to vim");
+        assert_eq!(mode(&view, cx).as_deref(), Some("NORMAL"));
+        assert_eq!(spy.read(cx).bubbled, 0, "vim consumed Ctrl-F");
+        window.press("ctrl-shift-t", cx);
+        assert_eq!(
+            spy.read(cx).bubbled,
+            1,
+            "the drawer chord passes the editor by"
+        );
+        window.press("ctrl-shift-f", cx);
+        assert!(bar_open(&view, cx));
+        assert!(!replacing(&view, cx));
+        window.input("foo", cx);
+        // An open bar is a plain field: app chords win again, Ctrl-F steps.
+        let before = view.read(cx).editor.cursor();
+        window.press("ctrl-f", cx);
+        assert!(bar_open(&view, cx));
+        assert_ne!(
+            view.read(cx).editor.cursor(),
+            before,
+            "stepped to the next match"
+        );
+        assert_eq!(query(&view, cx), "foo");
+        window.press("escape", cx);
+        // Ctrl-H is vim's too (insert-mode backspace); replace is Ctrl-Shift-H.
+        window.press("ctrl-h", cx);
+        assert!(!bar_open(&view, cx));
+        window.press("ctrl-shift-h", cx);
+        assert!(replacing(&view, cx));
+        assert_eq!(text(&view, cx), all);
+    })
+    .unwrap();
+}
+
+/// The plain editor keeps M4's Ctrl-F / Ctrl-H, and the twins work there too.
+#[gpui_kit::test]
+fn the_plain_editor_keeps_ctrl_f_and_ctrl_h(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "foo");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("ctrl-shift-f", cx);
+        assert!(bar_open(&view, cx));
+        window.press("escape", cx);
+        window.press("ctrl-shift-h", cx);
+        assert!(replacing(&view, cx));
+        window.press("escape", cx);
+        window.press("ctrl-h", cx);
+        assert!(replacing(&view, cx));
+        assert_eq!(text(&view, cx), "foo");
+    })
+    .unwrap();
+}
+
+/// On macOS `primary` is Cmd: Cmd-F finds, Cmd-Option-F replaces, and
+/// literal Ctrl-F is the editor's.
+#[gpui_kit::test]
+fn the_macos_table_finds_on_cmd_f(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "foo");
+    cx.update(|cx| keymap::init(cx, Keymap::defaults(Platform::MacOs)));
+    cx.update_window(handle, |_, window, cx| {
+        window.press("ctrl-f", cx);
+        assert!(!bar_open(&view, cx));
+        window.press("cmd-f", cx);
+        assert!(bar_open(&view, cx));
+        assert!(!replacing(&view, cx));
+        window.press("escape", cx);
+        window.press("cmd-alt-f", cx);
+        assert!(replacing(&view, cx));
+    })
+    .unwrap();
+}
+
+/// A chord bound to an app command the editor does not own (focus, the
+/// drawer) is not the editor's to act on: Alt+Left no longer moves by word
+/// (ADR-0050 §4), Ctrl-T does not reach the editor.
+#[gpui_kit::test]
+fn app_chords_pass_the_editor_by(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "foo bar");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("end", cx);
+        let end = view.read(cx).editor.cursor();
+        window.press("alt-left", cx);
+        window.press("ctrl-tab", cx);
+        window.press("ctrl-t", cx);
+        assert_eq!(view.read(cx).editor.cursor(), end);
+        assert_eq!(text(&view, cx), "foo bar");
+        // Ctrl+Left is still word motion.
+        window.press("ctrl-left", cx);
+        assert_ne!(view.read(cx).editor.cursor(), end);
     })
     .unwrap();
 }

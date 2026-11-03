@@ -183,6 +183,53 @@ pub fn divider(theme: &Theme) -> Rgba {
     to_gpui(&theme.border_dim, Token::Foreground, theme)
 }
 
+// ---- The shell (rail, drawer, focus) ----------------------------------------
+
+/// How far the foreground is mixed into the background for a derived hover.
+const HOVER_MIX: f32 = 0.08;
+
+/// The rail and drawer surface: the TUI's panel background (the page when
+/// the theme leaves it to the terminal).
+pub fn panel_background(theme: &Theme) -> Rgba {
+    to_gpui(&theme.bg_panel, Token::Background, theme)
+}
+
+/// The focused panel's edge and the active rail view's marker: the TUI's
+/// focused-border colour.
+pub fn focus_border(theme: &Theme) -> Rgba {
+    to_gpui(&theme.focus_border, Token::Foreground, theme)
+}
+
+/// Bright text: the rail cell under the keyboard cursor.
+pub fn bright(theme: &Theme) -> Rgba {
+    to_gpui(&theme.fg_bright, Token::Foreground, theme)
+}
+
+/// A pointer or cursor sitting on a control: the theme's soft background,
+/// or a tint of the text over the page when that would not show (left to
+/// the terminal, or equal to the panel it sits on).
+pub fn hover_background(theme: &Theme) -> Rgba {
+    let panel = resolve(&theme.bg_panel, Token::Background, theme);
+    match explicit(&theme.bg_soft) {
+        Some(soft) if soft != panel => rgba(soft),
+        _ => {
+            let (_, fg) = base(theme);
+            rgba(mix(panel, fg, HOVER_MIX))
+        }
+    }
+}
+
+/// How far the accent is mixed into the panel for a selected item.
+const SELECTED_MIX: f32 = 0.2;
+
+/// A selected item's fill (the rail's shown view): the panel tinted toward
+/// the focus colour, so it reads as chosen, not as hovered.
+pub fn selected_background(theme: &Theme) -> Rgba {
+    let panel = resolve(&theme.bg_panel, Token::Background, theme);
+    let accent = resolve(&theme.focus_border, Token::Foreground, theme);
+    rgba(mix(panel, accent, SELECTED_MIX))
+}
+
 // ---- Edit surface: Role -> style --------------------------------------------
 
 /// How one run of the **Editor frame** paints: the GPUI counterpart of the
@@ -444,6 +491,24 @@ mod tests {
         );
         assert_eq!(selection_background(&t), rgba((1, 2, 3)));
     }
+    #[test]
+    fn hover_is_visible_on_the_panel_it_sits_on() {
+        for (panel, soft) in [
+            (ThemeColor::Reset, ThemeColor::Reset),
+            (ThemeColor::Rgb(40, 40, 40), ThemeColor::Rgb(40, 40, 40)),
+            (ThemeColor::Rgb(40, 40, 40), ThemeColor::Rgb(60, 60, 60)),
+        ] {
+            let t = Theme {
+                bg_panel: panel,
+                bg_soft: soft,
+                ..Theme::default()
+            };
+            assert_ne!(hover_background(&t), panel_background(&t));
+            assert_ne!(selected_background(&t), panel_background(&t));
+            assert_ne!(selected_background(&t), hover_background(&t));
+        }
+    }
+
     // ---- run_style ----
 
     fn run(role: Role, mods: u8) -> Run {

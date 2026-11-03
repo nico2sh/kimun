@@ -742,15 +742,28 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
     /// `drawer_min` and the editor keeps `editor_min` of `available` (minus
     /// the other drawer when it is visible). Returns the width applied.
     pub fn set_drawer_width(&mut self, side: Side, width: f64, limits: WidthLimits) -> f64 {
+        let applied = self.clamp_drawer_width(side, width, limits);
+        self.drawer_mut(side).width = applied;
+        applied
+    }
+
+    /// `side`'s stored width clamped to `limits` as [`Self::set_drawer_width`]
+    /// clamps, without storing it: what a front end draws when the window
+    /// is narrower than the width was set for, keeping the preference.
+    pub fn clamped_drawer_width(&self, side: Side, limits: WidthLimits) -> f64 {
+        self.clamp_drawer_width(side, self.drawer(side).width, limits)
+    }
+
+    /// The one clamping rule: at least `drawer_min`, and at most what leaves
+    /// the editor `editor_min` beside the other drawer when it is visible.
+    fn clamp_drawer_width(&self, side: Side, width: f64, limits: WidthLimits) -> f64 {
         let other = match side {
             Side::Left => &self.right,
             Side::Right => &self.left,
         };
         let other_width = if other.visible { other.width } else { 0.0 };
         let max = limits.available - limits.editor_min - other_width;
-        let applied = width.clamp(limits.drawer_min, max.max(limits.drawer_min));
-        self.drawer_mut(side).width = applied;
-        applied
+        width.clamp(limits.drawer_min, max.max(limits.drawer_min))
     }
 
     /// Grow or shrink `side` by `delta`, clamped as [`Self::set_drawer_width`].

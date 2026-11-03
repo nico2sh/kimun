@@ -347,6 +347,20 @@ fn drawer_width_never_drops_below_the_drawer_minimum() {
     assert_eq!(order.set_drawer_width(Side::Left, 50.0, tiny), 20.0);
 }
 
+#[test]
+fn the_clamped_width_keeps_the_stored_preference() {
+    let mut order = layout();
+    order.set_drawer_width(Side::Left, 80.0, LIMITS);
+    let narrow = WidthLimits {
+        available: 70.0,
+        ..LIMITS
+    };
+    // 70 - 20 editor = 50 drawn; 80 still stored.
+    assert_eq!(order.clamped_drawer_width(Side::Left, narrow), 50.0);
+    assert_eq!(order.clamped_drawer_width(Side::Left, LIMITS), 80.0);
+    assert_eq!(order.drawer_width(Side::Left), 80.0);
+}
+
 // ── Directional focus ──────────────────────────────────────────────────
 
 #[test]
