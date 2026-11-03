@@ -154,6 +154,35 @@ pub fn caret(theme: &Theme) -> Rgba {
     }
 }
 
+/// The vim mode label in the mode line: the colour the TUI footer gives the
+/// modal-mode label.
+pub fn mode_label(theme: &Theme) -> Rgba {
+    to_gpui(&theme.accent, Token::Foreground, theme)
+}
+
+/// Secondary text (the mode line's pending-input hint): the TUI footer's hint
+/// colour.
+pub fn secondary(theme: &Theme) -> Rgba {
+    to_gpui(&theme.fg_secondary, Token::Foreground, theme)
+}
+
+/// Quiet information (the find bar's match count and key hints): the TUI
+/// find bar's `gray`.
+pub fn muted(theme: &Theme) -> Rgba {
+    to_gpui(&theme.gray, Token::Foreground, theme)
+}
+
+/// A problem the user has to act on (no match, an invalid regex, the armed
+/// replace-all confirm): the TUI find bar's `red`.
+pub fn error(theme: &Theme) -> Rgba {
+    to_gpui(&theme.red, Token::Foreground, theme)
+}
+
+/// The hairline that separates docked chrome (the find bar) from the text.
+pub fn divider(theme: &Theme) -> Rgba {
+    to_gpui(&theme.border_dim, Token::Foreground, theme)
+}
+
 // ---- Edit surface: Role -> style --------------------------------------------
 
 /// How one run of the **Editor frame** paints: the GPUI counterpart of the
@@ -202,10 +231,9 @@ fn role_style(role: Role, theme: &Theme) -> CellStyle {
         }
         Role::BlockquoteBar => s.fg = fg_of(&theme.blockquote_bar, theme),
         Role::Element(kind) => match kind {
-            ElementKind::Bold => {
-                s.fg = fg_of(&theme.accent, theme);
-                s.bold = true;
-            }
+            // Weight only: the GUI has a real bold face, so no colour cue
+            // (the TUI needs one; a terminal cell can't always embolden).
+            ElementKind::Bold => s.bold = true,
             ElementKind::Italic => {
                 s.fg = fg_of(&theme.fg_secondary, theme);
                 s.italic = true;
@@ -275,6 +303,8 @@ pub fn run_style(run: &Run, theme: &Theme) -> CellStyle {
                 s.bg = Some(selection_background(theme));
             }
             OverlayKind::Preview => s.bg = bg_of(&theme.color_replace_preview, theme),
+            // Clickable cells, for the pointer (`RowPaint::targets`); no ink.
+            OverlayKind::FollowTarget => {}
             OverlayKind::PreviewCurrent => {
                 s.bg = bg_of(&theme.color_replace_preview, theme);
                 s.fg = caret(theme);
@@ -445,11 +475,16 @@ mod tests {
         let sigil = run_style(&run(Role::Sigil, 0), &t);
         assert_eq!(sigil.fg, rgba((100, 100, 100)));
         let bold = run_style(&run(Role::Element(ElementKind::Bold), 0), &t);
-        assert_eq!((bold.fg, bold.bold), (rgba((10, 20, 250)), true));
+        assert_eq!((bold.fg, bold.bold), (foreground(&t), true));
         let h3 = run_style(&run(Role::Element(ElementKind::HeadingH3), 0), &t);
         assert_eq!((h3.fg, h3.bold), (rgba((250, 250, 0)), true));
         let link = run_style(&run(Role::Element(ElementKind::Link), 0), &t);
-        assert!(link.underline);
+        assert_eq!(link.fg, rgba((10, 20, 250)));
+        let wiki = run_style(&run(Role::Element(ElementKind::WikiLink), 0), &t);
+        assert_eq!(wiki.fg, fg_of(&t.blue, &t));
+        // Underlined like the TUI editor (user decision, M3 review).
+        assert!(link.underline && wiki.underline);
+        assert!(!(link.bold || link.strike || wiki.bold || wiki.strike));
         // InlineCode's bg_soft is Reset here: no background of its own.
         let code = run_style(&run(Role::Element(ElementKind::InlineCode), 0), &t);
         assert_eq!(code.bg, None);

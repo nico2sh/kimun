@@ -1,27 +1,44 @@
 //! The **Edit surface**'s retained half: an entity that owns the logic
 //! [`Editor`], its focus, and the host glue (the app channel, the redraw hook,
 //! the scroll remainder, the IME preedit). All editing state and rules live in
-//! the `Editor`; this file only routes GPUI input to it and hands the
-//! [`EditorElement`] what it paints.
+//! the `Editor`, vim's modes included; this file only routes GPUI input to it
+//! and hands the [`EditorElement`] what it paints.
+//!
+//! **Vim and text input.** Under vim a keystroke outside Insert is a command,
+//! so text must never reach the buffer around the engine: every key-down goes
+//! through `Editor::handle_key`, and the platform input handler (IME
+//! composition, multi-char text, press-and-hold accents) accepts text only
+//! where the editor types, i.e. plain mode and vim Insert
+//! ([`EditorView::accepts_text`]).
+//!
+//! **The find bar.** While the editor's find bar is open it owns the
+//! keyboard, as in the TUI: every key goes to `Editor::handle_find_key`
+//! (Ctrl-F and Ctrl-H still open / advance it first), and text input (IME,
+//! multi-char text) lands in the bar's focused field, never in the buffer.
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
     App, Bounds, Context, EntityInputHandler, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent, Styled, Task,
-    UTF16Selection, Window, div,
+    MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString,
+    Styled, Task, TextSystem, UTF16Selection, Window, div,
 };
 use kimun_notes::logic::editor::Editor;
 use kimun_notes::logic::editor::handled::Handled;
-use kimun_notes::logic::input::{Button, PointerKind};
+use kimun_notes::logic::editor::request::EditorRequest;
+use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
 use kimun_notes::logic::message::{AppTx, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
-use crate::editor_element::EditorElement;
+use crate::editor_element::{EditorElement, ShapedRows};
+use crate::find_bar::{self, BarPaint};
+use crate::fonts::EditorFonts;
 use crate::grid::CellMetrics;
 use crate::input::{self, ScrollAccumulator};
+use crate::row_paint::RowPaint;
 use crate::theme;
 
 /// The key context of the Edit surface.
@@ -48,15 +65,49 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+/// How the caret is drawn. Mirrors the TUI's terminal cursor shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaretShape {
+    /// A thin bar before the cell: where typing inserts (plain mode, vim
+    /// Insert).
+    Bar,
+    /// The whole cell inverted, its glyph still readable: vim Normal, Visual
+    /// and every other non-Insert mode, where the cursor sits *on* a char.
+    Block,
+}
+
+/// What the mode line shows: vim's mode on the leading edge, the command
+/// typed so far (a count, an operator: `2d`) on the trailing edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeLine {
+    pub label: String,
+    pub hint: Option<String>,
+}
+
 /// Where the last frame put the grid, for input that arrives outside paint
 /// (the IME asking where the caret is) and for tests.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Painted {
     /// Window position of cell (0, 0).
     pub origin: Point<Pixels>,
     pub cells: CellMetrics,
+    /// Text rows of the grid; the mode line, when shown, is the row below.
+    pub rows: u16,
     /// The caret cell in window coordinates, when one is drawn.
     pub caret: Option<Bounds<Pixels>>,
+    /// The caret's shape, when one is drawn.
+    pub caret_shape: Option<CaretShape>,
+    /// The mode line, when one is drawn (vim only).
+    pub mode_line: Option<ModeLine>,
+    /// What each text row painted, top to bottom.
+    pub row_paint: Vec<Rc<RowPaint>>,
+    /// The face it was painted in.
+    pub fonts: EditorFonts,
+    /// Where a block caret's repainted glyph starts, when one is drawn.
+    pub caret_glyph: Option<Point<Pixels>>,
+    /// The find bar, when open: docked in the rows below the text (above the
+    /// mode line). While it is open `caret` is the bar's.
+    pub find_bar: Option<BarPaint>,
 }
 
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
@@ -76,14 +127,20 @@ pub struct EditorView {
     /// note or enter undo history.
     pub(crate) preedit: Option<String>,
     pub(crate) painted: Option<Painted>,
+    /// The face, chosen for the kit theme's monospace family (re-chosen if
+    /// that family changes).
+    fonts: Option<(SharedString, EditorFonts)>,
+    /// Rows painted in recent frames, reused while their content is unchanged.
+    pub(crate) row_cache: ShapedRows,
     _messages: Task<()>,
 }
 
 impl EditorView {
-    /// A plain (non-vim) editor showing `text`, or an empty buffer.
-    pub fn new(text: Option<String>, theme: Theme, cx: &mut Context<Self>) -> Self {
+    /// An editor showing `text`, or an empty buffer: vim's when `vim`, plain
+    /// direct typing otherwise.
+    pub fn new(text: Option<String>, theme: Theme, vim: bool, cx: &mut Context<Self>) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut editor = Editor::new(false);
+        let mut editor = Editor::new(vim);
         // Background parse/layout jobs of a large buffer call this on
         // completion; it lands as a message below and redraws, so the rich
         // parse appears without waiting for a keystroke.
@@ -95,8 +152,8 @@ impl EditorView {
         // foreground executor can drain this one.
         let messages = cx.spawn(async move |this, cx| {
             while let Some(message) = rx.recv().await {
-                // M1 has no footer to flash "copied" / "pasted" or a clipboard
-                // error in, so a message's content is dropped. Each one still
+                // No footer yet (M5) to flash "copied" / "pasted" or a
+                // clipboard error in, so a message's content is dropped. Each one still
                 // redraws: a finished background job sends `Redraw`.
                 drop(message);
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
@@ -113,17 +170,130 @@ impl EditorView {
             dragging: false,
             preedit: None,
             painted: None,
+            fonts: None,
+            row_cache: ShapedRows::default(),
             _messages: messages,
         }
     }
 
-    /// After any input the editor handled: drop the requests M1 does not serve
-    /// and redraw. M1 has no context menu, find bar or palette, and nothing
-    /// (no popup) is anchored to the cursor for `ViewportScrolled` to move.
+    /// After any input the editor handled: serve its requests (the find bar)
+    /// or drop the ones nothing serves yet, and redraw.
     fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        drop(self.editor.take_requests());
+        for request in self.editor.take_requests() {
+            match request {
+                // Vim `/` and `?`: open the find bar (or step, when open).
+                EditorRequest::OpenSearch => self.open_find(),
+                // Vim `n` / `N`: repeat the last search, bar open or not.
+                EditorRequest::SearchNext => self.editor.search_repeat(false),
+                EditorRequest::SearchPrev => self.editor.search_repeat(true),
+                // Vim `:` opens the command palette: M6.
+                EditorRequest::OpenPalette => {}
+                // Right-click with no selection opens the note menu: M6.
+                EditorRequest::ContextMenu => {}
+                // Nothing (no popup) is anchored to the cursor to move yet.
+                EditorRequest::ViewportScrolled => {}
+            }
+        }
         window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
+    }
+
+    /// Whether text input (IME, multi-char text) may land in the buffer: only
+    /// where the editor types, plain mode or vim Insert. Elsewhere vim reads a
+    /// keystroke as a command, which must reach it through `handle_key`.
+    ///
+    /// An open find bar takes text in any mode: it lands in its focused field.
+    pub(crate) fn accepts_text(&self) -> bool {
+        self.editor.find_open() || self.editor.modal_is_insert() != Some(false)
+    }
+
+    /// Open the find bar, or step to the next match when it is open
+    /// (Ctrl-F, vim `/`). A composition in progress belonged to the buffer.
+    fn open_find(&mut self) {
+        if self.editor.open_find() {
+            self.preedit = None;
+        }
+    }
+
+    /// The find bar's own chords, honoured whether or not it is open: literal
+    /// Ctrl-F opens it (or steps), Ctrl-H opens it with the replace field.
+    /// Returns whether `key` was one.
+    fn find_chord(&mut self, key: KeyInput) -> bool {
+        if key.mods != Mods::CTRL {
+            return false;
+        }
+        match key.key {
+            Key::Char('f') => self.open_find(),
+            Key::Char('h') => {
+                if self.editor.open_replace() {
+                    self.preedit = None;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// A key while the find bar is open: the bar takes it, whatever it is.
+    ///
+    /// Ctrl-V (and the platform's Cmd-V) pastes the clipboard into the
+    /// focused field: a terminal pastes through its own channel, a window has
+    /// to ask. Any other Super (Cmd) chord is ignored rather than typed: the
+    /// logic field types a char with Super held, and Cmd-Z must not type `z`.
+    /// Shortcuts stay literal Ctrl (ADR-0049 §7), so Cmd-Z/Cmd-A do not stand
+    /// in for the bar's Ctrl-Z/Ctrl-A.
+    fn find_key(&mut self, key: KeyInput, cx: &mut Context<Self>) {
+        let paste = matches!(key.key, Key::Char('v'))
+            && (key.mods == Mods::CTRL || key.mods == Mods::SUPER);
+        if paste {
+            match cx.read_from_clipboard().and_then(|item| item.text()) {
+                Some(text) if !text.is_empty() => {
+                    self.editor.paste_into_find(&text);
+                }
+                _ => {
+                    self.editor.ignore_find_key();
+                }
+            }
+        } else if key.mods.sup {
+            self.editor.ignore_find_key();
+        } else {
+            self.editor.handle_find_key(key);
+        }
+    }
+
+    /// The caret's shape for the editor's mode: the TUI's rule (bar in vim
+    /// Insert, block in every other vim mode). The plain editor always types,
+    /// so it gets the bar.
+    pub(crate) fn caret_shape(&self) -> CaretShape {
+        match self.editor.modal_is_insert() {
+            Some(false) => CaretShape::Block,
+            Some(true) | None => CaretShape::Bar,
+        }
+    }
+
+    /// The editor's face for the kit's monospace `kit_family` (see
+    /// [`EditorFonts`]); probing the machine's fonts happens once.
+    pub(crate) fn editor_fonts(
+        &mut self,
+        kit_family: &SharedString,
+        text_system: &TextSystem,
+    ) -> EditorFonts {
+        match &self.fonts {
+            Some((family, fonts)) if family == kit_family => fonts.clone(),
+            _ => {
+                let fonts = EditorFonts::resolve(text_system, kit_family);
+                self.fonts = Some((kit_family.clone(), fonts.clone()));
+                fonts
+            }
+        }
+    }
+
+    /// The mode line's content; `None` for the plain editor, which has no mode.
+    pub(crate) fn mode_line(&self) -> Option<ModeLine> {
+        self.editor.mode_label().map(|label| ModeLine {
+            label,
+            hint: self.editor.pending_input_hint(),
+        })
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -132,6 +302,17 @@ impl EditorView {
             // (`´` preedit, then `é` as a keystroke): whatever was being
             // composed is over once a key acts.
             self.preedit = None;
+            if self.find_chord(key) {
+                self.settle(window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            if self.editor.find_open() {
+                self.find_key(key, cx);
+                self.settle(window, cx);
+                cx.stop_propagation();
+                return;
+            }
             let (handled, _) = self.editor.handle_key(key, &self.tx);
             self.settle(window, cx);
             // A consumed key must not also reach the platform's input handler,
@@ -141,14 +322,26 @@ impl EditorView {
             }
             return;
         }
-        // Multi-char text (a grapheme cluster, an emoji sequence) propagates so
-        // the platform hands it to the input handler; a bare modifier is not
-        // an action at all.
-        if input::carries_text(event) || event.keystroke.is_modifier_key() {
+        // A bare modifier is not an action at all.
+        if event.keystroke.is_modifier_key() {
             return;
         }
-        // A key with no editing meaning still ends the typing run (TUI parity).
-        self.editor.ignore_unmapped_key();
+        // Multi-char text (a grapheme cluster, an emoji sequence) propagates so
+        // the platform hands it to the input handler, where the editor types.
+        // In a vim command mode it is no command: it ends up as an unmapped
+        // key below, and must not reach the handler either.
+        let carries_text = input::carries_text(event);
+        if carries_text && self.accepts_text() {
+            return;
+        }
+        if carries_text {
+            cx.stop_propagation();
+        }
+        // A key with no editing meaning still ends the typing run (TUI parity);
+        // the open find bar owns it all the same.
+        if !self.editor.ignore_find_key() {
+            self.editor.ignore_unmapped_key();
+        }
         self.settle(window, cx);
     }
 
@@ -164,11 +357,46 @@ impl EditorView {
         let Some(pointer) = input::pointer_down(event, origin, cells) else {
             return;
         };
+        // The find bar and the mode line are not text: a press on them only
+        // focuses (and, on the bar's other field, moves the keyboard there).
+        // Without either (plain mode) a press below the last full row still
+        // reaches the editor, as in M1.
+        if let Some(p) = &self.painted
+            && (p.mode_line.is_some() || p.find_bar.is_some())
+            && pointer.row >= p.rows
+        {
+            if pointer.kind == PointerKind::Down(Button::Left) {
+                self.focus_bar_row(pointer.row - p.rows);
+                self.settle(window, cx);
+            }
+            return;
+        }
+        // A press on a link (the hand cursor) only places the caret, as the
+        // TUI's first press does. Following it (double-click, Ctrl-N, the
+        // **follow target**) is the editor screen's job: M5.
         self.editor.handle_pointer(&pointer, &self.tx);
         let left = pointer.kind == PointerKind::Down(Button::Left);
         self.editor.settle_pointer(left);
         self.dragging = left;
         self.settle(window, cx);
+    }
+
+    /// A press on find bar row `row` (0 the query, 1 the replacement) gives
+    /// that field the keyboard. The bar's own Tab is the one way it moves
+    /// focus, so the press uses it.
+    fn focus_bar_row(&mut self, row: u16) {
+        let Some(bar) = self.editor.find_bar() else {
+            return;
+        };
+        let want = match row {
+            0 => kimun_notes::logic::editor::find_bar::BarFocus::Find,
+            1 if bar.is_replacing() => kimun_notes::logic::editor::find_bar::BarFocus::Replace,
+            _ => return,
+        };
+        if bar.focus() != want {
+            self.preedit = None;
+            self.editor.handle_find_key(KeyInput::plain(Key::Tab));
+        }
     }
 
     pub(crate) fn pointer_move(
@@ -238,7 +466,18 @@ impl EditorView {
     /// spliced in at the caret. The IME only ever needs the text around the
     /// caret, and a row-local document keeps every query O(row) instead of
     /// O(buffer). The preedit is in the document but not in the buffer.
+    ///
+    /// While the find bar is open the document is its focused field instead.
     fn document(&self) -> Document {
+        if let Some(bar) = self.editor.find_bar() {
+            let field = find_bar::focused_field(bar);
+            return Document::new(
+                0,
+                field.value().to_string(),
+                field.cursor_char_offset(),
+                self.preedit.as_deref(),
+            );
+        }
         let (row, caret) = self.editor.cursor();
         let buffer_line = self
             .editor
@@ -272,7 +511,50 @@ impl EditorView {
                 doc.to_buffer(r.start)..doc.to_buffer(r.end.max(r.start)),
             )
         });
-        self.editor.commit_text(target, text);
+        if self.editor.find_open() {
+            self.commit_to_bar(target.map(|(_, cols)| cols), text);
+        } else {
+            self.editor.commit_text(target, text);
+        }
+    }
+
+    /// Committed text into the find bar's focused field: over `cols` (chars
+    /// of the field) when given, else at its caret. The field is the logic
+    /// bar's, reached only through its key and paste API, so a range is
+    /// walked to with Left / Right, cleared with Backspace, and the text goes
+    /// in as the one key it is, or as a paste (first line only; a field is
+    /// one line).
+    fn commit_to_bar(&mut self, cols: Option<Range<usize>>, text: &str) {
+        let press = |editor: &mut Editor, key: Key, n: usize| {
+            for _ in 0..n {
+                editor.handle_find_key(KeyInput::plain(key));
+            }
+        };
+        if let Some(cols) = cols
+            && let Some(bar) = self.editor.find_bar()
+        {
+            let caret = find_bar::focused_field(bar).cursor_char_offset();
+            let len = find_bar::focused_field(bar).value().chars().count();
+            let end = cols.end.min(len);
+            let start = cols.start.min(end);
+            if caret > end {
+                press(&mut self.editor, Key::Left, caret - end);
+            } else {
+                press(&mut self.editor, Key::Right, end - caret);
+            }
+            press(&mut self.editor, Key::Backspace, end - start);
+        }
+        let mut chars = text.chars();
+        match (chars.next(), chars.next()) {
+            (None, _) => {}
+            (Some(c), None) if c.is_control() => {}
+            (Some(c), None) => {
+                self.editor.handle_find_key(KeyInput::plain(Key::Char(c)));
+            }
+            _ => {
+                self.editor.paste_into_find(text);
+            }
+        }
     }
 }
 
@@ -394,9 +676,11 @@ impl EntityInputHandler for EditorView {
         let (row, line) = (doc.row, &doc.line);
         let col = doc.caret_col;
         let caret = doc.caret;
+        // A find bar field has a caret and no selection.
         let selection = self
             .editor
             .selection()
+            .filter(|_| !self.editor.find_open())
             .filter(|((sr, _), (er, _))| *sr == row && *er == row);
         Some(match selection {
             Some(((_, sc), (_, ec))) => UTF16Selection {
@@ -422,15 +706,28 @@ impl EntityInputHandler for EditorView {
         self.document().marked()
     }
 
+    /// Turns the platform's text services (IME) off outside plain mode and vim
+    /// Insert. Linux and Windows honour it each frame; the methods below gate
+    /// on the same rule for a platform that does not.
+    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        self.accepts_text()
+    }
+
     /// Ending composition keeps what was composed (GPUI's contract): with the
     /// preedit outside the buffer, that means committing it now.
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.preedit.take() {
-            self.commit(None, &text);
+            if self.accepts_text() {
+                self.commit(None, &text);
+            }
             self.settle(window, cx);
         }
     }
 
+    /// Committed text. Outside plain mode and vim Insert it is not typing: a
+    /// single char the platform composed (a dead-key `é`, say) goes to vim as
+    /// the keystroke it is, so `r` then `é` still replaces; anything longer
+    /// is dropped.
     fn replace_text_in_range(
         &mut self,
         range: Option<Range<usize>>,
@@ -438,7 +735,16 @@ impl EntityInputHandler for EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.commit(range, text);
+        if self.accepts_text() {
+            self.commit(range, text);
+        } else {
+            self.preedit = None;
+            let mut chars = text.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                self.editor
+                    .handle_key(KeyInput::plain(Key::Char(c)), &self.tx);
+            }
+        }
         self.settle(window, cx);
     }
 
@@ -454,16 +760,29 @@ impl EntityInputHandler for EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // No composing where the editor does not type.
+        if !self.accepts_text() {
+            self.preedit = None;
+            self.settle(window, cx);
+            return;
+        }
         let doc = self.document();
         if let Some(r) = range.filter(|r| Some(r) != doc.marked().as_ref()) {
             let cols = doc.to_buffer(r.start)..doc.to_buffer(r.end.max(r.start));
-            self.editor.commit_text(Some((doc.row, cols)), "");
+            // The preedit is not in the field/buffer: drop it before editing.
+            self.preedit = None;
+            if self.editor.find_open() {
+                self.commit_to_bar(Some(cols), "");
+            } else {
+                self.editor.commit_text(Some((doc.row, cols)), "");
+            }
         }
         self.preedit = (!new_text.is_empty()).then(|| new_text.to_string());
         self.settle(window, cx);
     }
 
-    /// Where the IME should put its candidate window: the caret cell.
+    /// Where the IME should put its candidate window: the caret cell (the
+    /// find bar's while it is open).
     fn bounds_for_range(
         &mut self,
         _range_utf16: Range<usize>,
@@ -471,7 +790,7 @@ impl EntityInputHandler for EditorView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.painted.and_then(|p| p.caret)
+        self.painted.as_ref().and_then(|p| p.caret)
     }
 
     fn character_index_for_point(

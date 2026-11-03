@@ -38,6 +38,8 @@ pub struct EditorSession {
     /// The host's wake-up hook. The background parse/layout tasks call it on
     /// completion so the host redraws without waiting for the next keystroke.
     pub notifier: Option<Notifier>,
+    /// The last frame drew a **replace preview** instead of the buffer.
+    showed_preview: bool,
 }
 
 /// What the caller supplies for one frame.
@@ -101,6 +103,7 @@ impl EditorSession {
             display: EditorDisplay::new(),
             jobs: BackgroundJobs::new(),
             notifier: None,
+            showed_preview: false,
         }
     }
 
@@ -128,6 +131,12 @@ impl EditorSession {
         self.jobs.pump(&mut self.display);
 
         self.revs.adopt(snap.content_revision);
+        // A preview swapping in, changing or out is no edit of the text the
+        // display last drew (see `note_swapped_snapshot`).
+        if preview.is_some() || self.showed_preview {
+            self.display.note_swapped_snapshot();
+        }
+        self.showed_preview = preview.is_some();
         match &preview {
             None => self.display.update_sized(&snap, width, height),
             Some(lines) => {
