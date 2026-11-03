@@ -142,6 +142,9 @@ fn default_tables() {
             lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("ctrl+n", A::FollowLink),
+            lw("ctrl+shift+n", A::FollowLink),
+            lw("ctrl+enter", A::FollowLink),
             lw("ctrl+f", A::FindInBuffer),
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
@@ -161,6 +164,8 @@ fn default_tables() {
             lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("cmd+n", A::FollowLink),
+            lw("cmd+enter", A::FollowLink),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
             lw("cmd+alt+left", A::FocusRegion(Dir::Left)),
@@ -220,6 +225,45 @@ fn open_file_browser_is_primary_e_from_every_panel() {
         mac.resolve(chord("ctrl+e"), ctx(Panel::Editor, false)),
         None
     );
+}
+
+/// Follow link (M5b-2 G4) is primary+N and primary+Enter in the editor,
+/// under vim too (the vim engine reads neither Ctrl+N nor Ctrl+Enter), and
+/// nothing elsewhere. Shift+Enter stays the editor's plain newline.
+#[test]
+fn follow_link_is_primary_n_or_primary_enter_in_the_editor() {
+    let lw = Keymap::defaults(LinuxWindows);
+    for written in ["ctrl+n", "ctrl+shift+n", "ctrl+enter"] {
+        for vim in [false, true] {
+            assert_eq!(
+                lw.resolve(chord(written), ctx(Panel::Editor, vim)),
+                Some(&A::FollowLink),
+                "{written} vim={vim}"
+            );
+        }
+        for panel in PANELS.into_iter().filter(|p| *p != Panel::Editor) {
+            assert_eq!(lw.resolve(chord(written), ctx(panel, false)), None);
+        }
+    }
+    let mac = Keymap::defaults(MacOs);
+    for written in ["cmd+n", "cmd+enter"] {
+        for vim in [false, true] {
+            assert_eq!(
+                mac.resolve(chord(written), ctx(Panel::Editor, vim)),
+                Some(&A::FollowLink),
+                "{written} vim={vim}"
+            );
+        }
+    }
+    for keymap in [&lw, &mac] {
+        for written in ["shift+enter", "enter", "alt+enter"] {
+            assert_eq!(
+                keymap.resolve(chord(written), ctx(Panel::Editor, false)),
+                None,
+                "{written} stays the editor's"
+            );
+        }
+    }
 }
 
 #[test]
@@ -332,6 +376,7 @@ fn linux_windows_resolution_table() {
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
+    let follow = Some(A::FollowLink);
     resolution(
         LinuxWindows,
         &[
@@ -344,6 +389,9 @@ fn linux_windows_resolution_table() {
             ("ctrl+shift+t", [toggle.clone(), toggle.clone(), toggle]),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
+            ("ctrl+n", [follow.clone(), follow.clone(), None]),
+            ("ctrl+shift+n", [follow.clone(), follow.clone(), None]),
+            ("ctrl+enter", [follow.clone(), follow, None]),
             // Vim reads these: the app gives them up in the vim editor.
             ("ctrl+r", [None, None, None]),
             ("alt+left", [left.clone(), left.clone(), left]),
@@ -374,6 +422,7 @@ fn macos_resolution_table() {
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
+    let follow = Some(A::FollowLink);
     resolution(
         MacOs,
         &[
@@ -382,6 +431,8 @@ fn macos_resolution_table() {
             ("cmd+alt+f", [replace.clone(), replace, None]),
             ("cmd+t", [toggle.clone(), toggle.clone(), toggle]),
             ("cmd+e", [files.clone(), files.clone(), files]),
+            ("cmd+n", [follow.clone(), follow.clone(), None]),
+            ("cmd+enter", [follow.clone(), follow, None]),
             ("cmd+alt+left", [left.clone(), left.clone(), left]),
             ("cmd+alt+right", [right.clone(), right.clone(), right]),
             ("cmd+alt+up", [up.clone(), up.clone(), up]),
@@ -393,6 +444,8 @@ fn macos_resolution_table() {
             ("ctrl+h", [None, None, None]),
             ("ctrl+t", [None, None, None]),
             ("ctrl+e", [None, None, None]),
+            ("ctrl+n", [None, None, None]),
+            ("ctrl+enter", [None, None, None]),
             ("cmd+h", [None, None, None]),
             ("alt+left", [None, None, None]),
             ("cmd+shift+f", [None, None, None]),

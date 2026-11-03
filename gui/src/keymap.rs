@@ -135,6 +135,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Show FILES on the open note's folder and focus it (the TUI's
         // Ctrl+E). Everywhere, as in the TUI.
         A::OpenFileBrowser => &["primary+e"],
+        // Follow the link under the caret (the TUI's Ctrl+N, and its kitty
+        // Ctrl+Enter, which a window always receives). Editor only. The vim
+        // engine reads neither Ctrl+N nor Ctrl+Enter; Ctrl+N still gets the
+        // Ctrl+Shift twin every bare Ctrl+letter gets. Never Shift+Enter: in
+        // the editor that is a plain newline.
+        A::FollowLink => &["primary+n", "primary+enter"],
         // Not in the GUI yet (M5b-2, M5b-3, M6).
         A::Quit
         | A::OpenPreferences
@@ -143,7 +149,6 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         | A::NewJournal
         | A::OpenSortDialog
         | A::FileOperations
-        | A::FollowLink
         | A::QuickNote
         | A::YankRow
         | A::ToggleQueryPanel

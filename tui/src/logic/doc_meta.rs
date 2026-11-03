@@ -68,8 +68,23 @@ impl DocMeta {
     /// A note was (re)opened: reset and re-fetch its backlink count, and
     /// refresh the git summary.
     pub fn note_opened(&mut self, path: &VaultPath, tx: &AppTx) {
+        self.load_note_counts(path, tx);
+        self.refresh_git(tx);
+    }
+
+    /// A note was (re)opened: forget the last note's backlink and property
+    /// counts and fetch this one's. No git: [`Self::note_opened`] adds it
+    /// for a frontend that shows it.
+    pub fn load_note_counts(&mut self, path: &VaultPath, tx: &AppTx) {
         self.backlink_count = None;
-        let path_for_props = path.clone();
+        self.refresh_backlinks(path, tx);
+        self.property_count = None;
+        self.refresh_properties(path, tx);
+    }
+
+    /// Re-read the open note's backlink count, keeping the one shown until
+    /// it lands (a rename or a delete elsewhere may have changed it).
+    pub fn refresh_backlinks(&mut self, path: &VaultPath, tx: &AppTx) {
         let vault = self.vault.clone();
         let path = path.clone();
         let tx2 = tx.clone();
@@ -82,9 +97,6 @@ impl DocMeta {
             tx2.send(AppMessage::BacklinkCountLoaded { path, count })
                 .ok();
         });
-        self.property_count = None;
-        self.refresh_properties(&path_for_props, tx);
-        self.refresh_git(tx);
     }
 
     /// Re-read the open note's property count (note open, save, dialog write).
@@ -339,6 +351,46 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let back = dm.handle(AppMessage::Redraw, &note("/a.md"));
         assert!(matches!(back, Some(AppMessage::Redraw)));
+    }
+
+    /// Loading a note's counts forgets the last note's at once and fetches
+    /// both for the new one; a refresh keeps the count on show until the
+    /// new one lands.
+    #[tokio::test]
+    async fn loading_counts_resets_then_fetches_both() {
+        let (mut dm, _dir) = meta().await;
+        let current = note("/a.md");
+        dm.handle(
+            AppMessage::BacklinkCountLoaded {
+                path: current.clone(),
+                count: 5,
+            },
+            &current,
+        );
+        dm.handle(
+            AppMessage::PropertyCountLoaded {
+                path: current.clone(),
+                count: 2,
+            },
+            &current,
+        );
+        let (tx, mut rx) = unbounded_channel();
+        dm.refresh_backlinks(&current, &tx);
+        assert_eq!(dm.backlinks(), Some(5), "a refresh keeps the shown count");
+        let next = note("/b.md");
+        dm.load_note_counts(&next, &tx);
+        assert_eq!((dm.backlinks(), dm.properties()), (None, None));
+        let mut backlinks_for = Vec::new();
+        let mut props_for = Vec::new();
+        while backlinks_for.len() < 2 || props_for.is_empty() {
+            match rx.recv().await.expect("a count") {
+                AppMessage::BacklinkCountLoaded { path, .. } => backlinks_for.push(path),
+                AppMessage::PropertyCountLoaded { path, .. } => props_for.push(path),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(backlinks_for.contains(&next) && backlinks_for.contains(&current));
+        assert_eq!(props_for, vec![next]);
     }
 
     #[tokio::test]

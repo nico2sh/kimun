@@ -126,6 +126,16 @@ pub const REPLACE_HINTS: &str =
 /// waits for its confirming press.
 pub const REPLACE_HINTS_ARMED: &str = "  delete every match? [Ctrl+A] confirm  [Esc] cancel";
 
+/// Where the find bar stands among the **find pattern**'s matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchPosition {
+    /// The **current match**'s place among them, 1-based; `None` when the
+    /// bar has no current match (after a replace all, say).
+    pub current: Option<usize>,
+    /// Matches across the whole buffer.
+    pub total: usize,
+}
+
 /// How a piece of bar text reads: quiet information, or a problem the user
 /// has to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +222,27 @@ impl FindBar {
     /// The **current match**, for the editor to hand the view as its selection.
     pub fn current_match(&self) -> Option<((usize, usize), (usize, usize))> {
         self.current
+    }
+
+    /// Where the bar stands among its matches, for a status line (`3/12`).
+    /// `None` while nothing matches (the empty query, an invalid pattern, no
+    /// match). Costs one pass over the buffer, as the match highlight does.
+    pub fn match_position(&self, buf: &RopeBuffer) -> Option<MatchPosition> {
+        if self.status != SearchStatus::Match {
+            return None;
+        }
+        let current = match (self.current, self.pattern.as_ref()) {
+            (Some(((row, col), _)), Some(pattern)) => pattern
+                .match_spans(buf.text().lines())
+                .iter()
+                .position(|&(r, start, _)| r == row && start == col)
+                .map(|i| i + 1),
+            _ => None,
+        };
+        Some(MatchPosition {
+            current,
+            total: self.match_count,
+        })
     }
 
     /// The compiled **find pattern**, when the query compiles and is non-empty.
@@ -704,6 +735,26 @@ mod tests {
         assert_eq!(b.cursor(), (0, 6));
         press(&mut bar, &mut b, Key::Enter, Mods::SHIFT);
         assert_eq!(b.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn the_match_position_follows_the_current_match() {
+        let mut b = buf("bar\nx bar bar");
+        let mut bar = FindBar::new();
+        assert_eq!(bar.match_position(&b), None, "empty query");
+        type_str(&mut bar, &mut b, "bar");
+        let at =
+            |bar: &FindBar, b: &RopeBuffer| bar.match_position(b).map(|p| (p.current, p.total));
+        assert_eq!(at(&bar, &b), Some((Some(1), 3)));
+        press(&mut bar, &mut b, Key::Enter, Mods::NONE);
+        assert_eq!(at(&bar, &b), Some((Some(2), 3)));
+        press(&mut bar, &mut b, Key::Enter, Mods::NONE);
+        assert_eq!(at(&bar, &b), Some((Some(3), 3)));
+        type_str(&mut bar, &mut b, "q");
+        assert_eq!(bar.match_position(&b), None, "no match");
+        press(&mut bar, &mut b, Key::Backspace, Mods::NONE);
+        type_str(&mut bar, &mut b, "(");
+        assert_eq!(bar.match_position(&b), None, "invalid pattern");
     }
 
     #[test]

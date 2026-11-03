@@ -11,6 +11,7 @@ pub mod list;
 pub mod doc_meta;
 pub mod editor;
 pub mod files;
+pub mod follow;
 
 pub mod message;
 pub mod nav;

@@ -10,7 +10,7 @@ use crate::logic::editor::claim::{
     ClipboardImage, FollowTarget, WHEEL_SCROLL_ROWS, follow_target_in_line, linkable_url,
     try_build_markdown_link,
 };
-use crate::logic::editor::find_bar::FindBar;
+use crate::logic::editor::find_bar::{FindBar, MatchPosition};
 use crate::logic::editor::handled::{Handled, KeyPath};
 use crate::logic::editor::request::EditorRequest;
 use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
@@ -852,6 +852,12 @@ impl Editor {
         self.find.as_ref()
     }
 
+    /// Where the open find bar stands among its matches (`3/12`), for a
+    /// status line. `None` when the bar is closed or nothing matches.
+    pub fn find_match_position(&self) -> Option<MatchPosition> {
+        self.find.as_ref()?.match_position(&self.buf.ta)
+    }
+
     /// Whether a find bar is open (and so holds the **editor claim**).
     pub fn find_open(&self) -> bool {
         self.find.is_some()
@@ -1383,6 +1389,14 @@ impl Editor {
                     .display
                     .click_at_screen(pointer.row as usize, pointer.col as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
+            }
+            // A press that never became a drag leaves an empty selection
+            // anchored at the caret; left armed, the next cursor motion
+            // (vim's `k`) would grow it. Only a real drag keeps its range.
+            PointerKind::Up(_) => {
+                if ta.selection_range().is_none_or(|(a, b)| a == b) {
+                    ta.cancel_selection();
+                }
             }
             // The wheel moves kimün's own viewport, never the cursor — the
             // find bar relies on that to let the user read elsewhere mid-search.
@@ -2040,6 +2054,38 @@ mod tests {
             "a press selects nothing"
         );
         assert!(ed.take_requests().is_empty());
+    }
+
+    #[test]
+    fn a_click_then_vim_motion_selects_nothing() {
+        for vim in [true, false] {
+            let mut ed = Editor::new(vim);
+            ed.set_text("one\ntwo\nthree\nfour".to_string());
+            lay_out(&mut ed, 40, 10);
+            let tx = tx();
+            ed.handle_pointer(&pointer(PointerKind::Down(Button::Left), 1, 2), &tx);
+            ed.settle_pointer(true);
+            ed.handle_pointer(&pointer(PointerKind::Up(Button::Left), 1, 2), &tx);
+            ed.settle_pointer(false);
+            if vim {
+                assert_eq!(ed.mode_label().as_deref(), Some("NORMAL"));
+            }
+            ed.handle_key(
+                if vim {
+                    typed('k')
+                } else {
+                    KeyInput::plain(Key::Up)
+                },
+                &tx,
+            );
+            assert_eq!(ed.cursor(), (1, 1));
+            assert!(
+                ed.selection().is_none_or(|(a, b)| a == b),
+                "motion after a click must not select: {:?}",
+                ed.selection()
+            );
+            assert!(ed.painted_selection().is_none_or(|(a, b)| a == b));
+        }
     }
 
     #[test]

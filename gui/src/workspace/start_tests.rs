@@ -103,6 +103,16 @@ pub(super) fn open_started(
     start: Start,
     settings: SharedSettings,
 ) -> Started {
+    open_started_with(cx, start, settings, false)
+}
+
+/// [`open_started`], with the vim editor when `vim`.
+pub(super) fn open_started_with(
+    cx: &mut TestAppContext,
+    start: Start,
+    settings: SharedSettings,
+    vim: bool,
+) -> Started {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
@@ -114,7 +124,7 @@ pub(super) fn open_started(
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let editor =
-                    cx.new(|cx| EditorView::on_channel(Theme::default(), false, tx.clone(), cx));
+                    cx.new(|cx| EditorView::on_channel(Theme::default(), vim, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, Theme::default(), layout, LayoutStore::Off, cx);

@@ -34,6 +34,9 @@
 //! **FILES (M5b-2 G3).** With a vault, the left drawer's FILES view is the
 //! [`files::FilesPane`]; the workspace keeps it in step with the app channel
 //! and does what its rows ask (open a note, hand over an attachment).
+//!
+//! **Links (M5b-2 G4).** The `FollowLink` chord and the editor's
+//! double-click follow the link under the caret ([`follow`]).
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -68,7 +71,7 @@ use crate::input;
 use crate::keymap::{self, KeyCtx};
 use crate::shell_layout::{self, RAIL_REMS, RAIL_VIEWS};
 use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
-use crate::status_row::{self, Status};
+use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
 
 use files::FilesPane;
@@ -209,6 +212,10 @@ pub(crate) struct Workspace {
     /// The FILES view, when the window has a vault.
     pub(crate) files: Option<Entity<FilesPane>>,
     _files_events: Option<Subscription>,
+    /// The link lookup under way (a newer follow replaces it).
+    following: Option<Task<()>>,
+    /// Hands URLs, images and attachments to the system's default program.
+    pub(crate) opener: follow::Opener,
     /// Keeps the Footer's dirty state in step with the editor.
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
@@ -258,6 +265,8 @@ impl Workspace {
             first_open_pending: false,
             files: None,
             _files_events: None,
+            following: None,
+            opener: follow::system_opener(),
             _editor_watch: editor_watch,
             _on_quit: None,
         }
@@ -342,8 +351,11 @@ impl Workspace {
             AppMessage::FlashMessage(text) | AppMessage::ParkFlash(text) => self.flash(text, cx),
             AppMessage::IndexingDone(result) => {
                 self.status.indexing = false;
-                if let Err(e) = result {
-                    self.flash_error(format!("Indexing failed: {e}"), cx);
+                match result {
+                    // A note opened while the index caught up counted its
+                    // backlinks against the old one.
+                    Ok(_) => self.refresh_note_counts(),
+                    Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
                 }
             }
             AppMessage::VaultConflict(details) => {
@@ -369,7 +381,13 @@ impl Workspace {
                 }
             }
             AppMessage::OpenAttachment(path) => self.open_attachment(&path, cx),
-            AppMessage::FileOp(op) => self.files_file_op(&op, cx),
+            AppMessage::FileOp(op) => {
+                self.files_file_op(&op, cx);
+                self.refresh_note_counts();
+            }
+            // The Footer's counts for the open note.
+            message @ (AppMessage::BacklinkCountLoaded { .. }
+            | AppMessage::PropertyCountLoaded { .. }) => self.note_count_loaded(message),
             AppMessage::Autosave => self.autosave(cx),
             AppMessage::AutosaveCompleted {
                 path,
@@ -385,7 +403,10 @@ impl Workspace {
                 },
                 cx,
             ),
-            // Links' (G4) and everything the GUI has no surface for yet.
+            // The editor's double-click on a link or a label.
+            AppMessage::FollowLink(target) => self.follow_link(target, cx),
+            AppMessage::FollowLabel(name) => self.follow_label(&name, cx),
+            // Everything the GUI has no surface for yet.
             _ => {}
         }
         self.ensure_files_listing(cx);
@@ -587,6 +608,10 @@ impl Workspace {
             ActionShortcuts::ToggleSidebar => self.toggle_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
+            // Nothing followable under the caret: the chord does nothing.
+            ActionShortcuts::FollowLink => {
+                self.follow_at_cursor(cx);
+            }
             ActionShortcuts::FocusRegion(dir) => match self.layout.focus_dir(*dir) {
                 FocusMove::Moved(_) => self.apply_focus(window, cx),
                 FocusMove::AtEdge => {}
@@ -884,8 +909,40 @@ impl Workspace {
                 this.focus_panel(Panel::Editor, window, cx)
             }))
             .child(document)
-            .child(status_row::render(&self.status, &self.theme))
+            .child(status_row::render(
+                &self.status,
+                &self.doc_facts(empty.is_none(), cx),
+                &self.theme,
+            ))
             .children(self.focus_bar(Panel::Editor))
+    }
+
+    /// What the Footer reads off the editor and the open note this frame.
+    /// The caret only while the editor is shown and has the keyboard with
+    /// its find bar closed; the find bar's matches while it is open; the
+    /// note's counts once loaded, while a note is open.
+    pub(crate) fn doc_facts(&self, editor_shown: bool, cx: &App) -> DocFacts {
+        let editor = &self.editor.read(cx).editor;
+        let focused = editor_shown && self.layout.focused() == Panel::Editor;
+        let find_open = editor.find_open();
+        let meta = self
+            .notes
+            .as_ref()
+            .filter(|h| h.note.is_some())
+            .map(|h| &h.meta);
+        DocFacts {
+            caret: (focused && !find_open).then(|| {
+                let (row, col) = editor.cursor();
+                (row + 1, col + 1)
+            }),
+            find: if editor_shown && find_open {
+                editor.find_match_position()
+            } else {
+                None
+            },
+            backlinks: meta.and_then(|m| m.backlinks()),
+            properties: meta.and_then(|m| m.properties()),
+        }
     }
 
     /// Why there is no note to edit, centred in the editor Panel.
@@ -989,10 +1046,15 @@ fn conflict_flash(details: &str) -> String {
 }
 
 mod files;
+mod follow;
 mod note;
 
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod follow_tests;
+#[cfg(test)]
+mod footer_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]

@@ -720,7 +720,7 @@ impl Workspace {
             return;
         };
         let os_path = files.read(cx).vault().path_to_pathbuf(path);
-        match open::that_detached(&os_path) {
+        match (self.opener)(os_path.as_os_str()) {
             Ok(()) => self.flash(format!("Opening {path}…"), cx),
             Err(e) => self.flash_error(format!("Couldn't open {path}: {e}"), cx),
         }
