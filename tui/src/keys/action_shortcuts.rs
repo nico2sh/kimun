@@ -1,8 +1,30 @@
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize};
-
+pub use crate::logic::actions::ActionShortcuts;
+use crate::logic::layout::Dir;
 use crate::logic::text_action::TextAction;
+
+/// Actions the TUI deliberately ships without a default chord. Every action in
+/// [`ActionShortcuts::ALL`] is either bound by `default_keybindings` or listed
+/// here (or is a `Text(..)` action: formatting lives on the leader), pinned by
+/// a test in `settings`. The layout actions (ADR-0050) have no TUI meaning yet:
+/// the TUI has one drawer, one slot and one group, and its shortcut tier
+/// ignores them even if a user binds one.
+pub const TUI_UNBOUND: [ActionShortcuts; 11] = [
+    // Reachable via the rail and leader; no free chord.
+    ActionShortcuts::ToggleQueryPanel,
+    // `Tab` from an open find bar reaches the same state.
+    ActionShortcuts::ReplaceInBuffer,
+    ActionShortcuts::FocusRegion(Dir::Left),
+    ActionShortcuts::FocusRegion(Dir::Right),
+    ActionShortcuts::FocusRegion(Dir::Up),
+    ActionShortcuts::FocusRegion(Dir::Down),
+    ActionShortcuts::MoveViewToLeftDrawer,
+    ActionShortcuts::MoveViewToRightDrawer,
+    ActionShortcuts::SplitDrawerSlot,
+    ActionShortcuts::UnsplitDrawerSlot,
+    ActionShortcuts::ToggleRightDrawer,
+];
 
 /// Groups an [`ActionShortcuts`] variant for display in the help modal.
 /// The `Ord` order determines the section render order.
@@ -25,56 +47,6 @@ impl Display for ShortcutCategory {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub enum ActionShortcuts {
-    Quit,
-    OpenPreferences,
-    SearchNotes,
-    OpenNote,
-    NewJournal,
-    Text(TextAction),
-    // TUI navigation / file list
-    ToggleSidebar,
-    OpenFileBrowser,
-    FocusEditor,
-    FocusSidebar,
-    OpenSortDialog,
-    // File operations
-    FileOperations,
-    // Editor link navigation
-    FollowLink,
-    // Quick capture
-    QuickNote,
-    /// Copy the selected list row's [yank
-    /// target](crate::components::search_list::YankTarget) to the OS clipboard.
-    /// Claimed only when the editor is not focused, so the editor keeps this
-    /// chord for redo.
-    YankRow,
-    // Query panel
-    ToggleQueryPanel,
-    OpenSavedSearches,
-    SaveCurrentQuery,
-    /// Switch to the Ask workspace (ask a question, get an LLM answer with
-    /// cited sources).
-    OpenAsk,
-    // Workspace
-    SwitchWorkspace,
-    // In-buffer find (Ctrl+F by default; reopens / advances to next match if
-    // already open).
-    FindInBuffer,
-    // In-buffer replace: opens the find bar with the replace field already
-    // revealed. Ships with no default chord — the Ctrl-letter namespace is
-    // full, and `Tab` from an open find bar reaches the same state.
-    ReplaceInBuffer,
-    /// The leader gateway (Ctrl+B by default): starts a key sequence against
-    /// the leader tree in every context, including mid-typing.
-    Leader,
-    /// The command palette (Ctrl+Shift+P by default): every leader command
-    /// as a fuzzy list.
-    OpenCommandPalette,
-}
-
 impl ActionShortcuts {
     pub fn category(&self) -> ShortcutCategory {
         match self {
@@ -88,7 +60,13 @@ impl ActionShortcuts {
             | ActionShortcuts::ToggleQueryPanel
             | ActionShortcuts::OpenSavedSearches
             | ActionShortcuts::SaveCurrentQuery
-            | ActionShortcuts::SwitchWorkspace => ShortcutCategory::Navigation,
+            | ActionShortcuts::SwitchWorkspace
+            | ActionShortcuts::FocusRegion(_)
+            | ActionShortcuts::MoveViewToLeftDrawer
+            | ActionShortcuts::MoveViewToRightDrawer
+            | ActionShortcuts::SplitDrawerSlot
+            | ActionShortcuts::UnsplitDrawerSlot
+            | ActionShortcuts::ToggleRightDrawer => ShortcutCategory::Navigation,
 
             ActionShortcuts::SearchNotes
             | ActionShortcuts::OpenNote
@@ -132,6 +110,15 @@ impl ActionShortcuts {
             ActionShortcuts::ReplaceInBuffer => "Replace in note".into(),
             ActionShortcuts::Leader => "Leader menu".into(),
             ActionShortcuts::OpenCommandPalette => "Command palette".into(),
+            ActionShortcuts::FocusRegion(Dir::Left) => "Focus region left".into(),
+            ActionShortcuts::FocusRegion(Dir::Right) => "Focus region right".into(),
+            ActionShortcuts::FocusRegion(Dir::Up) => "Focus region up".into(),
+            ActionShortcuts::FocusRegion(Dir::Down) => "Focus region down".into(),
+            ActionShortcuts::MoveViewToLeftDrawer => "Move view to left drawer".into(),
+            ActionShortcuts::MoveViewToRightDrawer => "Move view to right drawer".into(),
+            ActionShortcuts::SplitDrawerSlot => "Split drawer".into(),
+            ActionShortcuts::UnsplitDrawerSlot => "Unsplit drawer".into(),
+            ActionShortcuts::ToggleRightDrawer => "Toggle right drawer".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -143,95 +130,6 @@ impl ActionShortcuts {
                 TextAction::Strikethrough => "Strikethrough".into(),
             },
         }
-    }
-}
-
-impl Display for ActionShortcuts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let action = match self {
-            ActionShortcuts::Quit => "Quit".to_string(),
-            ActionShortcuts::OpenPreferences => "OpenSettings".to_string(),
-            ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
-            ActionShortcuts::OpenNote => "OpenNote".to_string(),
-            ActionShortcuts::NewJournal => "NewJournal".to_string(),
-            ActionShortcuts::Text(text_action) => format!("TextEditor-{}", text_action),
-            ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
-            ActionShortcuts::OpenFileBrowser => "OpenFileBrowser".to_string(),
-            ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
-            ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
-            ActionShortcuts::OpenSortDialog => "OpenSortDialog".to_string(),
-            ActionShortcuts::FileOperations => "FileOperations".to_string(),
-            ActionShortcuts::FollowLink => "FollowLink".to_string(),
-            ActionShortcuts::QuickNote => "QuickNote".to_string(),
-            ActionShortcuts::YankRow => "YankRow".to_string(),
-            ActionShortcuts::ToggleQueryPanel => "ToggleQueryPanel".to_string(),
-            ActionShortcuts::OpenSavedSearches => "OpenSavedSearches".to_string(),
-            ActionShortcuts::OpenAsk => "OpenAsk".to_string(),
-            ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
-            ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
-            ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
-            ActionShortcuts::ReplaceInBuffer => "ReplaceInBuffer".to_string(),
-            ActionShortcuts::Leader => "Leader".to_string(),
-            ActionShortcuts::OpenCommandPalette => "OpenCommandPalette".to_string(),
-        };
-        write!(f, "{}", action)
-    }
-}
-
-impl TryFrom<String> for ActionShortcuts {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let action = match value.as_str() {
-            "Quit" => ActionShortcuts::Quit,
-            // "OpenSettings" is the stable on-disk name; "OpenPreferences"
-            // accepted as an alias since the screen is named Preferences now.
-            "OpenSettings" | "OpenPreferences" => ActionShortcuts::OpenPreferences,
-            "SearchNotes" => ActionShortcuts::SearchNotes,
-            "OpenNote" => ActionShortcuts::OpenNote,
-            "NewJournal" => ActionShortcuts::NewJournal,
-            "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
-            "OpenFileBrowser" => ActionShortcuts::OpenFileBrowser,
-            "FocusEditor" => ActionShortcuts::FocusEditor,
-            "FocusSidebar" => ActionShortcuts::FocusSidebar,
-            "OpenSortDialog" => ActionShortcuts::OpenSortDialog,
-            "CycleSortField" => ActionShortcuts::OpenSortDialog,
-            "SortReverseOrder" => ActionShortcuts::OpenSortDialog,
-            "FileOperations" => ActionShortcuts::FileOperations,
-            "FollowLink" => ActionShortcuts::FollowLink,
-            "QuickNote" => ActionShortcuts::QuickNote,
-            "YankRow" => ActionShortcuts::YankRow,
-            "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
-            "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
-            "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,
-            // "OpenAsk" is the stable on-disk name; "OpenRagAnswer" is the
-            // legacy name from the pre-workspace Ask overlay, kept so
-            // existing keybinding configs keep working.
-            "OpenAsk" | "OpenRagAnswer" => ActionShortcuts::OpenAsk,
-            "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
-            "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
-            "FindInBuffer" => ActionShortcuts::FindInBuffer,
-            "ReplaceInBuffer" => ActionShortcuts::ReplaceInBuffer,
-            "Leader" => ActionShortcuts::Leader,
-            "OpenCommandPalette" => ActionShortcuts::OpenCommandPalette,
-            _ => {
-                if let Some(text_action) = value.strip_prefix("TextEditor-") {
-                    match TextAction::try_from(text_action.to_string()) {
-                        Ok(ta) => ActionShortcuts::Text(ta),
-                        Err(e) => return Err(format!("Error extracting Text Action: {}", e)),
-                    }
-                } else {
-                    return Err(format!("Error, non valid Action: {}", value));
-                }
-            }
-        };
-        Ok(action)
-    }
-}
-
-impl From<ActionShortcuts> for String {
-    fn from(value: ActionShortcuts) -> Self {
-        value.to_string()
     }
 }
 
@@ -396,18 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn file_operations_roundtrip() {
-        assert_eq!(
-            ActionShortcuts::FileOperations.to_string(),
-            "FileOperations"
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("FileOperations".to_string()),
-            Ok(ActionShortcuts::FileOperations)
-        );
-    }
-
-    #[test]
     fn open_file_browser_roundtrip() {
         assert_eq!(
             ActionShortcuts::OpenFileBrowser.to_string(),
@@ -420,65 +306,6 @@ mod tests {
         assert_eq!(
             ActionShortcuts::OpenFileBrowser.category(),
             ShortcutCategory::Navigation
-        );
-    }
-
-    #[test]
-    fn saved_search_actions_roundtrip() {
-        assert_eq!(
-            ActionShortcuts::ToggleQueryPanel.to_string(),
-            "ToggleQueryPanel"
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("ToggleQueryPanel".to_string()),
-            Ok(ActionShortcuts::ToggleQueryPanel)
-        );
-        // legacy alias still parses to the renamed action
-        assert_eq!(
-            ActionShortcuts::try_from("ToggleBacklinks".to_string()),
-            Ok(ActionShortcuts::ToggleQueryPanel)
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("OpenSavedSearches".to_string()),
-            Ok(ActionShortcuts::OpenSavedSearches)
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("SaveCurrentQuery".to_string()),
-            Ok(ActionShortcuts::SaveCurrentQuery)
-        );
-    }
-
-    #[test]
-    fn open_ask_roundtrip_and_legacy_alias() {
-        assert_eq!(ActionShortcuts::OpenAsk.to_string(), "OpenAsk");
-        assert_eq!(
-            ActionShortcuts::try_from("OpenAsk".to_string()),
-            Ok(ActionShortcuts::OpenAsk)
-        );
-        // legacy name from the pre-workspace Ask overlay still parses
-        assert_eq!(
-            ActionShortcuts::try_from("OpenRagAnswer".to_string()),
-            Ok(ActionShortcuts::OpenAsk)
-        );
-    }
-
-    #[test]
-    fn open_sort_dialog_roundtrip_and_legacy_alias() {
-        assert_eq!(
-            ActionShortcuts::OpenSortDialog.to_string(),
-            "OpenSortDialog"
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("OpenSortDialog".to_string()),
-            Ok(ActionShortcuts::OpenSortDialog)
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("CycleSortField".to_string()),
-            Ok(ActionShortcuts::OpenSortDialog)
-        );
-        assert_eq!(
-            ActionShortcuts::try_from("SortReverseOrder".to_string()),
-            Ok(ActionShortcuts::OpenSortDialog)
         );
     }
 }

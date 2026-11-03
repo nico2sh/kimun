@@ -2,8 +2,10 @@
 //! sight. `.github/scripts/check-logic-layer.sh` fails CI if anything under this
 //! tree names `ratatui`, `crossterm`, `egui`, `eframe` or `gpui`. See ADR-0049.
 
+pub mod actions;
 pub mod clipboard;
 pub mod input;
+pub mod layout;
 
 pub mod editor;
 
