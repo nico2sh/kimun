@@ -7,11 +7,14 @@ pub mod clipboard;
 pub mod input;
 pub mod layout;
 
+pub mod doc_meta;
 pub mod editor;
 
 pub mod message;
 pub mod nav;
 pub mod properties;
+pub mod session;
 pub mod sort;
+pub mod startup;
 pub mod text_action;
 pub mod text_match;

@@ -725,6 +725,24 @@ impl AppSettings {
         Self::load_read_only_from(system::app_dir()?.join(BASE_CONFIG_FILE).into_path_buf())
     }
 
+    /// [`Self::load_read_only`] plus what the TUI's load does in memory: the
+    /// config migrations and the missing default bindings. Still writes
+    /// nothing and renames nothing, so an old file stays as it is on disk
+    /// (the TUI migrates it on its own start). For the GUI, which consumes
+    /// `workspace_config` and `key_bindings`, not just the theme.
+    pub fn load_read_only_migrated() -> Result<Self, SettingsError> {
+        Self::load_read_only_migrated_from(
+            system::app_dir()?.join(BASE_CONFIG_FILE).into_path_buf(),
+        )
+    }
+
+    fn load_read_only_migrated_from(path: PathBuf) -> Result<Self, SettingsError> {
+        let mut settings = Self::load_read_only_from(path)?;
+        config_migration::ConfigMigration::run(&mut settings)?;
+        settings.merge_missing_default_bindings();
+        Ok(settings)
+    }
+
     fn load_read_only_from(path: PathBuf) -> Result<Self, SettingsError> {
         if !path.exists() {
             return Ok(Self::defaults_for_config_file(path));
@@ -760,12 +778,9 @@ impl AppSettings {
     ) -> Result<(), SettingsError> {
         let mut settings = if path.exists() {
             // Parse errors come back as errors: no `.corrupt` rename here.
-            let mut settings = Self::load_read_only_from(path)?;
             // What `load_from_file` does after parsing; the write below
             // saves the migration along with the edit.
-            config_migration::ConfigMigration::run(&mut settings)?;
-            settings.merge_missing_default_bindings();
-            settings
+            Self::load_read_only_migrated_from(path)?
         } else {
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
@@ -1780,6 +1795,47 @@ created = "2026-01-01T00:00:00Z"
         assert_eq!(settings.theme, "Nord");
         assert_eq!(settings.config_version, 3, "must not be migrated in memory");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    }
+
+    /// The GUI's read: an old config comes back exactly as the TUI's load
+    /// leaves it (migrated, default bindings merged), with nothing written.
+    #[test]
+    fn load_read_only_migrated_equals_the_tui_load_and_writes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let body = "config_version = 3\ntheme = \"Nord\"\n";
+        let ro_path = config_dir.join("ro").join("config.toml");
+        let tui_path = config_dir.join("tui").join("config.toml");
+        for p in [&ro_path, &tui_path] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+
+        let migrated = AppSettings::load_read_only_migrated_from(ro_path.clone()).unwrap();
+        let tui = AppSettings::load_from_file(tui_path).unwrap();
+
+        assert_eq!(
+            migrated.config_version,
+            config_migration::CURRENT_CONFIG_VERSION
+        );
+        assert_eq!(migrated.key_bindings, tui.key_bindings);
+        assert_eq!(migrated.workspace_config, tui.workspace_config);
+        assert_eq!(migrated.theme, tui.theme);
+        assert_eq!(std::fs::read_to_string(&ro_path).unwrap(), body);
+        assert_eq!(
+            std::fs::read_dir(ro_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn load_read_only_migrated_missing_file_creates_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("config.toml");
+        AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
+        assert!(!path.exists());
     }
 
     /// The GUI's save path: an old config comes back migrated, exactly as a

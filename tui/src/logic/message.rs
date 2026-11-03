@@ -69,6 +69,9 @@ pub enum AppMessage {
         /// The note's recomputed title (first body line) from the save, so the
         /// sidebar row can be retitled. `None` when the save failed.
         title: Option<String>,
+        /// Why the save failed, `None` on success (the TUI ignores it; a
+        /// frontend may flash it).
+        error: Option<String>,
     },
     /// Open a note (or directory) — `emphasis` carries the originating
     /// query's needles when the open comes from a query result, so the

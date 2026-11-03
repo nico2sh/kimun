@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 kimun-notes = { path = "../tui" }
+kimun_core = { path = "../core" }
 gpui-kit = "0.9.0"
 tokio = { workspace = true }
 tracing = "0.1"

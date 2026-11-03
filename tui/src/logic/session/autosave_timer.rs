@@ -33,6 +33,11 @@ impl AutosaveTimer {
         }));
     }
 
+    /// Whether a tick task is running.
+    pub fn is_running(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
     pub fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();

@@ -79,12 +79,15 @@ pub enum ActionShortcuts {
     UnsplitDrawerSlot,
     /// Show or hide the right drawer.
     ToggleRightDrawer,
+    /// Save the open note now (the leader's `w` in the TUI, which binds no
+    /// chord to it).
+    SaveNote,
 }
 
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 45] = [
+    pub const ALL: [ActionShortcuts; 46] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -130,6 +133,7 @@ impl ActionShortcuts {
         ActionShortcuts::SplitDrawerSlot,
         ActionShortcuts::UnsplitDrawerSlot,
         ActionShortcuts::ToggleRightDrawer,
+        ActionShortcuts::SaveNote,
     ];
 
     /// The layout direction a `FocusRegion` action moves focus in.
@@ -177,6 +181,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SplitDrawerSlot => "SplitDrawerSlot".to_string(),
             ActionShortcuts::UnsplitDrawerSlot => "UnsplitDrawerSlot".to_string(),
             ActionShortcuts::ToggleRightDrawer => "ToggleRightDrawer".to_string(),
+            ActionShortcuts::SaveNote => "SaveNote".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -227,6 +232,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SplitDrawerSlot" => ActionShortcuts::SplitDrawerSlot,
             "UnsplitDrawerSlot" => ActionShortcuts::UnsplitDrawerSlot,
             "ToggleRightDrawer" => ActionShortcuts::ToggleRightDrawer,
+            "SaveNote" => ActionShortcuts::SaveNote,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -287,9 +293,10 @@ mod tests {
             ActionShortcuts::SplitDrawerSlot => 27,
             ActionShortcuts::UnsplitDrawerSlot => 28,
             ActionShortcuts::ToggleRightDrawer => 29,
+            ActionShortcuts::SaveNote => 30,
         }
     }
-    const VARIANTS: usize = 30;
+    const VARIANTS: usize = 31;
 
     #[test]
     fn all_lists_every_variant() {
@@ -348,6 +355,20 @@ mod tests {
                 "UnsplitDrawerSlot",
                 "ToggleRightDrawer",
             ]
+        );
+    }
+
+    /// `SaveNote`'s on-disk name is permanent: GUI keymaps write it.
+    #[test]
+    fn save_note_name() {
+        assert_eq!(ActionShortcuts::SaveNote.to_string(), "SaveNote");
+        assert_eq!(
+            ActionShortcuts::try_from("SaveNote".to_string()),
+            Ok(ActionShortcuts::SaveNote)
+        );
+        assert_eq!(
+            ActionShortcuts::ALL.last(),
+            Some(&ActionShortcuts::SaveNote)
         );
     }
 

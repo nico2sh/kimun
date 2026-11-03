@@ -148,6 +148,8 @@ fn default_tables() {
             lw("alt+right", A::FocusRegion(Dir::Right)),
             lw("alt+up", A::FocusRegion(Dir::Up)),
             lw("alt+down", A::FocusRegion(Dir::Down)),
+            lw("ctrl+s", A::SaveNote),
+            lw("ctrl+shift+s", A::SaveNote),
         ]
     );
     assert_eq!(
@@ -162,7 +164,31 @@ fn default_tables() {
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
             lw("cmd+alt+up", A::FocusRegion(Dir::Up)),
             lw("cmd+alt+down", A::FocusRegion(Dir::Down)),
+            lw("cmd+s", A::SaveNote),
         ]
+    );
+}
+
+/// Save (M5b-2 G2) is primary+S from every panel; under vim on Linux and
+/// Windows the bare Ctrl+S stays vim's and the Ctrl+Shift twin saves.
+#[test]
+fn save_is_primary_s_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    for panel in PANELS {
+        assert_eq!(
+            lw.resolve(chord("ctrl+s"), ctx(panel, false)),
+            Some(&A::SaveNote)
+        );
+        assert_eq!(
+            lw.resolve(chord("ctrl+shift+s"), ctx(panel, true)),
+            Some(&A::SaveNote)
+        );
+    }
+    assert_eq!(lw.resolve(chord("ctrl+s"), ctx(Panel::Editor, true)), None);
+    let mac = Keymap::defaults(MacOs);
+    assert_eq!(
+        mac.resolve(chord("cmd+s"), ctx(Panel::Editor, true)),
+        Some(&A::SaveNote)
     );
 }
 

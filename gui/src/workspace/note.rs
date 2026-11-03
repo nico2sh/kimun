@@ -1,0 +1,607 @@
+//! The **note session**'s GPUI host (M5b-2 G2): open → edit → save.
+//!
+//! The logic [`NoteSession`] owns the rules (one writer at a time, saves
+//! declining while an open is pending, stale completions); this file drives
+//! its prepare / run / apply steps from GPUI. Each `run` future is spawned on
+//! tokio (the main thread has the runtime entered) and its `JoinHandle` is
+//! awaited in a `cx.spawn`, so no borrow of the session or the buffer lives
+//! across an await, and every wake-up comes from the thread driving tokio.
+//!
+//! **Opening.** One switch runs at a time: save the open note (a flush), then
+//! read the new one and load it. An open asked for meanwhile replaces the
+//! wanted note and runs when the current switch ends. A flush that fails
+//! keeps the old note open (its edits stay in the buffer) and says why. A
+//! note that is not there, or would not read, is flashed and the editor
+//! stays on the note it had.
+//!
+//! **Saving.** The periodic tick and the Save chord write in the background
+//! and report on the app channel; a failed write is flashed with core's
+//! error. Nothing is written while the vault is read-only (a case conflict)
+//! or before a note was opened.
+//!
+//! **Closing.** Closing the window with something to save flushes first
+//! (bounded by the session's timeouts) and closes once it is written. A
+//! failed flush, or edits that cannot be saved (read-only, no note), keep
+//! the window open with a flash saying so; closing again discards them.
+
+use std::num::NonZeroU64;
+
+use gpui_kit::{App, AppContext, Context, Task, Window};
+use kimun_core::nfs::VaultPath;
+use kimun_notes::logic::session::{
+    FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
+};
+use tokio::task::JoinError;
+
+use super::Workspace;
+use crate::status_row::FLASH_DURATION;
+
+/// The note session and the switch in progress. `Some` on the workspace only
+/// when a vault is open.
+pub(crate) struct NoteHost {
+    pub(crate) session: NoteSession,
+    /// The note the editor holds (the last open that succeeded), `None`
+    /// before the first one. Saves need it.
+    pub(crate) note: Option<VaultPath>,
+    /// The note asked for, not yet being read.
+    wanted: Option<VaultPath>,
+    /// The switch under way (its flush, then its read). Dropped with the
+    /// workspace; the tokio halves finish on their own.
+    switching: Option<Task<()>>,
+    /// A Save chord found a background save in flight: save again once it
+    /// reports, so the edits made since are written too.
+    save_again: bool,
+    /// Lifts [`Closing::Discard`] when its warning's time is up.
+    discard_expiry: Option<Task<()>>,
+}
+
+impl NoteHost {
+    pub(crate) fn new(session: NoteSession) -> Self {
+        Self {
+            session,
+            note: None,
+            wanted: None,
+            switching: None,
+            save_again: false,
+            discard_expiry: None,
+        }
+    }
+
+    /// Whether a switch (flush or read) is under way.
+    pub(crate) fn is_switching(&self) -> bool {
+        self.switching.is_some()
+    }
+}
+
+/// Where closing the window stands.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Closing {
+    /// Not closing.
+    #[default]
+    Open,
+    /// Asked while a switch ran: the switch hands over to the close flush
+    /// when it ends.
+    Requested,
+    /// The close flush is running; the window closes when it has written.
+    Flushing,
+    /// The user was told the edits cannot be saved: the next close
+    /// discards them, as long as the buffer is still at this revision and
+    /// the warning's flash is up. A later successful save clears it too.
+    Discard(NonZeroU64),
+    /// Everything is written: the window may go.
+    Closed,
+}
+
+/// Why a flush wrote nothing, for a flash; `None` when it did its job.
+fn flush_problem(outcome: &SaveOutcome) -> Option<String> {
+    match outcome {
+        SaveOutcome::Saved(_) | SaveOutcome::Clean => None,
+        SaveOutcome::Failed(e) => Some(e.clone()),
+        SaveOutcome::InFlightTimedOut => Some("an earlier save did not finish in time".into()),
+        SaveOutcome::FlushPending => Some("another save is still running".into()),
+    }
+}
+
+/// Whether a buffer still dirty after this flush may be flushed again: the
+/// flush wrote (`Saved`) or had nothing to capture yet (`Clean`).
+fn rewritable(outcome: Option<&SaveOutcome>) -> bool {
+    matches!(outcome, Some(SaveOutcome::Saved(_) | SaveOutcome::Clean))
+}
+
+impl Workspace {
+    /// Whether the open note may be written now: a note is open and the
+    /// vault is not read-only.
+    pub(crate) fn can_save(&self) -> bool {
+        !self.status.read_only && self.notes.as_ref().is_some_and(|h| h.note.is_some())
+    }
+
+    fn editor_dirty(&self, cx: &App) -> bool {
+        self.editor.read(cx).editor.is_dirty()
+    }
+
+    fn editor_revision(&self, cx: &App) -> NonZeroU64 {
+        self.editor.read(cx).editor.content_revision()
+    }
+
+    /// The user was just told the edits cannot be saved: the next close
+    /// discards them, if it comes before any new edit and while the warning
+    /// is up.
+    fn arm_discard(&mut self, cx: &mut Context<Self>) {
+        let revision = self.editor_revision(cx);
+        self.closing = Closing::Discard(revision);
+        let expiry = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH_DURATION).await;
+            this.update(cx, |workspace, _| {
+                if workspace.closing == Closing::Discard(revision) {
+                    workspace.closing = Closing::Open;
+                }
+            })
+            .ok();
+        });
+        if let Some(host) = self.notes.as_mut() {
+            host.discard_expiry = Some(expiry);
+        }
+    }
+
+    /// Keep the editor from taking input while an open is pending: the keys
+    /// would be lost when the new note loads, so they are not taken at all.
+    fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
+        self.editor
+            .update(cx, |view, _| view.input_blocked = blocked);
+    }
+
+    /// Why the edits in the editor cannot be written, for a flash.
+    fn unsaveable(&self) -> String {
+        match self.notes.as_ref().and_then(|h| h.note.as_ref()) {
+            Some(note) if self.status.read_only => {
+                format!("Read-only: your edits to {note} can't be saved.")
+            }
+            Some(note) => format!("Your edits to {note} can't be saved."),
+            None => "Your text is not in a note and can't be saved.".into(),
+        }
+    }
+
+    // ---- Opening -------------------------------------------------------------
+
+    /// Open the note at `path` in the editor: save the open one, then read
+    /// and load this one. A directory (the root, when the history is empty)
+    /// or an attachment shows nothing until the FILES view (G3).
+    pub(crate) fn open_note(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        if !path.is_note() || matches!(self.closing, Closing::Requested | Closing::Flushing) {
+            return;
+        }
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        host.wanted = Some(path);
+        if !host.is_switching() {
+            self.switch(cx);
+        }
+    }
+
+    /// Start the switch to the wanted note: flush the open one first.
+    fn switch(&mut self, cx: &mut Context<Self>) {
+        let can_save = self.can_save();
+        let dirty = self.editor_dirty(cx);
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        if host.wanted.is_none() {
+            return;
+        }
+        let flush = if can_save {
+            match host
+                .session
+                .prepare_flush(Some(&self.editor.read(cx).editor))
+            {
+                Ok(flush) => Some(flush),
+                // One switch or close at a time holds the only flush.
+                Err(_) => {
+                    tracing::warn!("note switch: a flush is still outstanding");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        host.switching = Some(cx.spawn(async move |this, cx| {
+            let flushed = match flush {
+                Some(flush) => Some(tokio::spawn(flush.run()).await),
+                None => None,
+            };
+            this.update(cx, |workspace, cx| workspace.switch_flushed(flushed, cx))
+                .ok();
+        }));
+        if !can_save && dirty {
+            let text = format!("{} They were not kept.", self.unsaveable());
+            self.flash_error(text, cx);
+        }
+    }
+
+    /// Apply a finished flush to the session and the buffer.
+    fn apply_flush(
+        &mut self,
+        result: Result<FlushResult, JoinError>,
+        cx: &mut Context<Self>,
+    ) -> SaveOutcome {
+        let Some(host) = self.notes.as_mut() else {
+            return SaveOutcome::Clean;
+        };
+        let outcome = match result {
+            Ok(result) => self.editor.update(cx, |view, cx| {
+                let outcome = host.session.apply_flush(result, Some(&mut view.editor));
+                cx.notify();
+                outcome
+            }),
+            Err(e) => SaveOutcome::Failed(e.to_string()),
+        };
+        if matches!(outcome, SaveOutcome::Saved(_)) && matches!(self.closing, Closing::Discard(_)) {
+            self.closing = Closing::Open;
+        }
+        outcome
+    }
+
+    /// The switch's flush ended: read the wanted note, unless the flush
+    /// failed (stay, edits kept) or the window is closing.
+    fn switch_flushed(
+        &mut self,
+        flushed: Option<Result<FlushResult, JoinError>>,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = flushed.map(|result| self.apply_flush(result, cx));
+        let dirty = self.editor_dirty(cx);
+        let can_save = self.can_save();
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        host.switching = None;
+        if let Some(problem) = outcome.as_ref().and_then(flush_problem) {
+            host.wanted = None;
+            let note = host.note.clone().unwrap_or_else(VaultPath::root);
+            self.flash_error(
+                format!("Couldn't save {note}: {problem}. It stays open."),
+                cx,
+            );
+            self.continue_close(cx);
+            return;
+        }
+        if self.closing == Closing::Requested {
+            host.wanted = None;
+            self.close_flush(cx);
+            return;
+        }
+        // Typed while the flush ran: write that too before leaving. Only
+        // when that flush could capture the buffer: never on a pending open
+        // (it captures nothing, and the loop would never end).
+        if can_save && dirty && rewritable(outcome.as_ref()) && !host.session.is_open_pending() {
+            self.switch(cx);
+            return;
+        }
+        let Some(path) = host.wanted.take() else {
+            return;
+        };
+        let read = host.session.begin_open(path);
+        host.switching = Some(cx.spawn(async move |this, cx| {
+            let read = tokio::spawn(read.run()).await;
+            this.update(cx, |workspace, cx| workspace.switch_read(read, cx))
+                .ok();
+        }));
+        self.block_input(true, cx);
+    }
+
+    /// The wanted note was read: load it (history, autosave tick), or stay
+    /// on the open note and say why not.
+    pub(crate) fn switch_read(
+        &mut self,
+        read: Result<NoteRead, JoinError>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tx) = self.tx.clone() else {
+            return;
+        };
+        let read_only = self.status.read_only;
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        host.switching = None;
+        let read = match read {
+            Ok(read) => read,
+            Err(e) => {
+                // The read never came back: drop the pending open, so the
+                // note the buffer holds saves again.
+                tracing::error!("note read failed to finish: {e}");
+                host.session.cancel_open();
+                self.block_input(false, cx);
+                self.flash_error(format!("Couldn't open the note: {e}"), cx);
+                self.after_switch(cx);
+                return;
+            }
+        };
+        self.block_input(false, cx);
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        let previous = host.note.clone();
+        let outcome = self.editor.update(cx, |view, cx| {
+            let outcome = host.session.finish_open(read, Some(&mut view.editor), &tx);
+            if matches!(outcome, OpenOutcome::Opened(_)) {
+                // A composition in progress belonged to the old text.
+                view.preedit = None;
+            }
+            cx.notify();
+            outcome
+        });
+        match outcome {
+            OpenOutcome::Opened(path) => {
+                if read_only {
+                    host.session.stop_autosave();
+                }
+                host.note = Some(path.clone());
+                self.status.note = Some(path);
+            }
+            // The editor still holds the note it had: point the session back
+            // at it, so nothing is saved under the missing path.
+            OpenOutcome::NotFound(path) => {
+                host.session
+                    .set_path(previous.unwrap_or_else(VaultPath::root));
+                self.flash_error(format!("{path} not found"), cx);
+            }
+            OpenOutcome::ReadFailed { path, .. } => {
+                host.session
+                    .set_path(previous.unwrap_or_else(VaultPath::root));
+                self.flash_error(format!("Couldn't open {path} (see the log)"), cx);
+            }
+            OpenOutcome::Superseded => {}
+        }
+        self.after_switch(cx);
+    }
+
+    /// A switch ended: hand over to a waiting close, or to the next open.
+    fn after_switch(&mut self, cx: &mut Context<Self>) {
+        if self.closing == Closing::Requested {
+            self.close_flush(cx);
+        } else if self.notes.as_ref().is_some_and(|h| h.wanted.is_some()) {
+            self.switch(cx);
+        }
+        cx.notify();
+    }
+
+    // ---- Saving --------------------------------------------------------------
+
+    /// The periodic tick: write the open note in the background if dirty.
+    pub(crate) fn autosave(&mut self, cx: &mut Context<Self>) {
+        if !self.can_save() {
+            return;
+        }
+        let Some(tx) = self.tx.clone() else {
+            return;
+        };
+        if let Some(host) = self.notes.as_mut() {
+            host.session
+                .spawn_autosave(Some(&self.editor.read(cx).editor), &tx);
+        }
+    }
+
+    /// The Save chord: write the open note now (in the background, as the
+    /// tick does). Already saved: nothing to do, the Footer says "Saved".
+    pub(crate) fn save_note(&mut self, cx: &mut Context<Self>) {
+        let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) else {
+            return;
+        };
+        if self.status.read_only {
+            let text = format!(
+                "Read-only: {note} can't be saved until the names that differ only by case are fixed."
+            );
+            self.flash_error(text, cx);
+            return;
+        }
+        if !self.editor_dirty(cx) {
+            return;
+        }
+        let Some(tx) = self.tx.clone() else {
+            return;
+        };
+        if let Some(host) = self.notes.as_mut()
+            && !host
+                .session
+                .spawn_autosave(Some(&self.editor.read(cx).editor), &tx)
+        {
+            // A save is in flight (or a switch's flush, which saves anyway):
+            // go again when it reports.
+            host.save_again = true;
+        }
+    }
+
+    /// A background save reported: mark the buffer saved (if it still holds
+    /// what was written), flash a failure.
+    pub(crate) fn autosave_completed(&mut self, done: SaveCompleted, cx: &mut Context<Self>) {
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        let path = done.path.clone();
+        let completion = self.editor.update(cx, |view, cx| {
+            let completion = host
+                .session
+                .on_autosave_completed(done, Some(&mut view.editor));
+            cx.notify();
+            completion
+        });
+        let again = std::mem::take(&mut host.save_again);
+        if completion.wrote && matches!(self.closing, Closing::Discard(_)) {
+            self.closing = Closing::Open;
+        }
+        if let Some(error) = completion.error {
+            self.flash_error(format!("Couldn't save {path}: {error}"), cx);
+        } else if again {
+            self.save_note(cx);
+        }
+    }
+
+    // ---- Closing -------------------------------------------------------------
+
+    /// Ask the window to check with the workspace before it closes (see the
+    /// module docs), and warn in the log when the app quits another way with
+    /// unsaved edits.
+    pub(crate) fn guard_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window = Some(window.window_handle());
+        let this = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            this.update(cx, |workspace, cx| workspace.should_close(cx))
+                .unwrap_or(true)
+        });
+        self._on_quit = Some(cx.on_app_quit(|workspace, cx| {
+            if workspace.editor_dirty(cx) {
+                let note = workspace
+                    .notes
+                    .as_ref()
+                    .and_then(|h| h.note.as_ref())
+                    .map_or_else(|| "the editor".to_string(), ToString::to_string);
+                tracing::warn!("quitting with unsaved edits to {note}");
+                eprintln!("kimun-gui: quitting with unsaved edits to {note}");
+            }
+            async {}
+        }));
+    }
+
+    /// Whether the window may close now. With edits to write it starts the
+    /// close flush and says no; the flush closes the window when done.
+    pub(crate) fn should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.closing {
+            Closing::Requested | Closing::Flushing => return false,
+            Closing::Closed => return true,
+            // Warned, and nothing typed since: the edits go.
+            Closing::Discard(revision) if revision == self.editor_revision(cx) => return true,
+            // New edits since the warning: start over.
+            Closing::Discard(_) => self.closing = Closing::Open,
+            Closing::Open => {}
+        }
+        // No vault: the editor is not even shown.
+        if self.notes.is_none() {
+            return true;
+        }
+        let dirty = self.editor_dirty(cx);
+        if !self.can_save() {
+            if dirty {
+                let text = format!("{} Close again to discard them.", self.unsaveable());
+                self.arm_discard(cx);
+                self.flash_error(text, cx);
+                return false;
+            }
+            return true;
+        }
+        let Some(host) = self.notes.as_mut() else {
+            return true;
+        };
+        if host.is_switching() {
+            host.session.stop_autosave();
+            self.closing = Closing::Requested;
+            return false;
+        }
+        if !dirty && !host.session.is_autosave_in_flight() {
+            host.session.stop_autosave();
+            return true;
+        }
+        self.close_flush(cx);
+        false
+    }
+
+    /// A switch ended while a close waited on it, without leaving the open
+    /// note clean to close on: give up this close (the flash says why). The
+    /// next close tries the flush again, and warns before it discards.
+    fn continue_close(&mut self, cx: &mut Context<Self>) {
+        if self.closing == Closing::Requested {
+            self.closing = Closing::Open;
+            self.restart_tick();
+            cx.notify();
+        }
+    }
+
+    fn restart_tick(&mut self) {
+        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
+            host.session.restart_autosave(tx);
+        }
+    }
+
+    /// Flush the open note before the window closes; close it once written.
+    fn close_flush(&mut self, cx: &mut Context<Self>) {
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        host.session.stop_autosave();
+        let flush = match host
+            .session
+            .prepare_flush(Some(&self.editor.read(cx).editor))
+        {
+            Ok(flush) => flush,
+            Err(_) => {
+                tracing::warn!("close: a flush is still outstanding");
+                self.closing = Closing::Open;
+                return;
+            }
+        };
+        self.closing = Closing::Flushing;
+        if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
+            self.flash(format!("Saving {note}…"), cx);
+        }
+        let window = self.window;
+        // Detached: removing the window drops the workspace, which must not
+        // cancel the task that removes it.
+        cx.spawn(async move |this, cx| {
+            let result = tokio::spawn(flush.run()).await;
+            let close = this
+                .update(cx, |workspace, cx| workspace.close_flushed(result, cx))
+                .unwrap_or(false);
+            if close && let Some(window) = window {
+                cx.update_window(window, |_, window, _| window.remove_window())
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The close flush ended: close when everything is written; otherwise
+    /// stay open and say why (closing again discards).
+    fn close_flushed(
+        &mut self,
+        result: Result<FlushResult, JoinError>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let outcome = self.apply_flush(result, cx);
+        if let Some(problem) = flush_problem(&outcome) {
+            let note = self
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.clone())
+                .unwrap_or_else(VaultPath::root);
+            self.closing = Closing::Open;
+            self.restart_tick();
+            self.arm_discard(cx);
+            self.flash_error(
+                format!("Couldn't save {note}: {problem}. Close again to discard your edits."),
+                cx,
+            );
+            return false;
+        }
+        if self.editor_dirty(cx) {
+            // Typed while the flush ran: write that too. Only when that flush
+            // could capture the buffer (never on a pending open, which would
+            // spin): otherwise say so and let the next close discard.
+            let pending = self
+                .notes
+                .as_ref()
+                .is_some_and(|h| h.session.is_open_pending());
+            if rewritable(Some(&outcome)) && !pending {
+                self.close_flush(cx);
+            } else {
+                self.closing = Closing::Open;
+                self.restart_tick();
+                let text = format!("{} Close again to discard them.", self.unsaveable());
+                self.arm_discard(cx);
+                self.flash_error(text, cx);
+            }
+            return false;
+        }
+        self.closing = Closing::Closed;
+        true
+    }
+}
