@@ -146,41 +146,69 @@ pub struct EditorView {
     /// until committed: a preedit is not an edit, so it must not dirty the
     /// note or enter undo history.
     pub(crate) preedit: Option<String>,
+    /// The editor takes no input (keys, text, composition): its owner is
+    /// loading another note into it, which would drop whatever was typed.
+    /// App chords still resolve.
+    pub(crate) input_blocked: bool,
     pub(crate) painted: Option<Painted>,
     /// The face, chosen for the kit theme's monospace family (re-chosen if
     /// that family changes).
     fonts: Option<(SharedString, EditorFonts)>,
     /// Rows painted in recent frames, reused while their content is unchanged.
     pub(crate) row_cache: ShapedRows,
-    _messages: Task<()>,
+    /// Drains the editor's own channel, when it has one (the tests'
+    /// stand-alone `EditorView::new`).
+    _messages: Option<Task<()>>,
 }
 
 impl EditorView {
-    /// An editor showing `text`, or an empty buffer: vim's when `vim`, plain
-    /// direct typing otherwise.
+    /// A stand-alone editor showing `text`, or an empty buffer: vim's when
+    /// `vim`, plain direct typing otherwise. It drains its own app channel
+    /// and only redraws on a message (no window owner to dispatch to). The
+    /// rendering tests' editor; the app's is [`Self::on_channel`].
+    #[cfg(test)]
     pub fn new(text: Option<String>, theme: Theme, vim: bool, cx: &mut Context<Self>) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut editor = Editor::new(vim);
-        // Background parse/layout jobs of a large buffer call this on
-        // completion; it lands as a message below and redraws, so the rich
-        // parse appears without waiting for a keystroke.
-        editor.session_mut().notifier = Some(redraw_callback(tx.clone()));
-        if let Some(text) = text {
-            editor.set_text(text);
-        }
         // tokio's channels need no tokio executor to be awaited, so GPUI's
         // foreground executor can drain this one.
         let messages = cx.spawn(async move |this, cx| {
             while let Some(message) = rx.recv().await {
-                // No footer yet (M5) to flash "copied" / "pasted" or a
-                // clipboard error in, so a message's content is dropped. Each one still
-                // redraws: a finished background job sends `Redraw`.
+                // Nothing here shows a flash, so a message's content is
+                // dropped. Each one still redraws: a finished background job
+                // sends `Redraw`.
                 drop(message);
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }
             }
         });
+        Self::build(text, theme, vim, tx, Some(messages), cx)
+    }
+
+    /// An editor reporting on the window's app channel `tx`, which its owner
+    /// (the [`Workspace`](crate::workspace::Workspace)) drains and
+    /// dispatches: redraws and clipboard flashes. The note session loads
+    /// notes into its [`Editor`] (`pub(crate) editor`) through `NoteBuffer`.
+    pub fn on_channel(theme: Theme, vim: bool, tx: AppTx, cx: &mut Context<Self>) -> Self {
+        Self::build(None, theme, vim, tx, None, cx)
+    }
+
+    fn build(
+        text: Option<String>,
+        theme: Theme,
+        vim: bool,
+        tx: AppTx,
+        messages: Option<Task<()>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut editor = Editor::new(vim);
+        // Background parse/layout jobs of a large buffer call this on
+        // completion; it lands as a `Redraw` on the channel and redraws, so
+        // the rich parse appears without waiting for a keystroke.
+        editor.session_mut().notifier = Some(redraw_callback(tx.clone()));
+        if let Some(text) = text {
+            editor.set_text(text);
+        }
         Self {
             editor,
             theme,
@@ -189,6 +217,7 @@ impl EditorView {
             scroll: ScrollAccumulator::default(),
             dragging: false,
             preedit: None,
+            input_blocked: false,
             painted: None,
             fonts: None,
             row_cache: ShapedRows::default(),
@@ -245,6 +274,10 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> bool {
         self.preedit = None;
+        if self.input_blocked {
+            // Taken, so it reaches nothing else either.
+            return true;
+        }
         if self.editor.find_open() {
             self.find_key(key, cx);
             self.settle(window, cx);
@@ -770,7 +803,7 @@ impl EntityInputHandler for EditorView {
     /// preedit outside the buffer, that means committing it now.
     fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.preedit.take() {
-            if self.accepts_text() {
+            if self.accepts_text() && !self.input_blocked {
                 self.commit(None, &text);
             }
             self.settle(window, cx);
@@ -788,7 +821,9 @@ impl EntityInputHandler for EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.accepts_text() {
+        if self.input_blocked {
+            self.preedit = None;
+        } else if self.accepts_text() {
             self.commit(range, text);
         } else {
             self.preedit = None;
@@ -814,7 +849,7 @@ impl EntityInputHandler for EditorView {
         cx: &mut Context<Self>,
     ) {
         // No composing where the editor does not type.
-        if !self.accepts_text() {
+        if self.input_blocked || !self.accepts_text() {
             self.preedit = None;
             self.settle(window, cx);
             return;

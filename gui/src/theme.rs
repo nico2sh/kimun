@@ -178,6 +178,12 @@ pub fn error(theme: &Theme) -> Rgba {
     to_gpui(&theme.red, Token::Foreground, theme)
 }
 
+/// A note with unsaved edits (the Footer's save-state dot): the TUI
+/// footer's `● modified` colour.
+pub fn unsaved(theme: &Theme) -> Rgba {
+    to_gpui(&theme.yellow, Token::Foreground, theme)
+}
+
 /// The hairline that separates docked chrome (the find bar) from the text.
 pub fn divider(theme: &Theme) -> Rgba {
     to_gpui(&theme.border_dim, Token::Foreground, theme)

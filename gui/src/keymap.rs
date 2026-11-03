@@ -128,6 +128,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // is macOS's app switcher.
         A::FocusEditor => &["ctrl+tab"],
         A::FocusSidebar => &["ctrl+shift+tab"],
+        // Write the open note now (the TUI's leader `w`). Everywhere: the
+        // note is the window's, whichever panel has the keyboard.
+        A::SaveNote => &["primary+s"],
         // Not in the GUI yet (M5b-2, M5b-3, M6).
         A::Quit
         | A::OpenPreferences

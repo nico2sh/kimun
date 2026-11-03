@@ -17,32 +17,58 @@
 //! **Persistence.** The drawer's width, visibility and view are written to
 //! the `[gui]` table when a divider drag ends, the drawer is toggled, or the
 //! rail switches its view, through the TUI's own settings save path.
+//!
+//! **The vault and the app channel (M5b-2).** [`Workspace::start`] puts the
+//! window on what `main` decided ([`Start`]): an empty state in the editor
+//! Panel when there is no vault, or the vault, indexed in the background
+//! while the Footer says so. The workspace owns the window's one app
+//! channel: the editor reports on it, background jobs (indexing, the
+//! restore, the note session's saves and autosave ticks) send their
+//! completions on it, and [`Workspace::on_app_message`] dispatches them on
+//! the main thread.
+//!
+//! **The open note (M5b-2 G2).** Opening, saving and the flush before the
+//! window closes are the note session's, hosted in [`note`]; the Footer
+//! shows the note's path and whether it is saved.
 
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_handle};
+use gpui_kit::component::empty::{
+    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
 use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext, Axis, ClickEvent, Context, DragMoveEvent, Entity, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
-    rems,
+    AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, Context, DragMoveEvent, Entity,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, Window, div, px, rems,
 };
+use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{FocusMove, Panel, PanelLayout, Side, WidthLimits};
+use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::nav::DrawerView;
-use kimun_notes::settings::AppSettings;
+use kimun_notes::logic::session::{NoteSession, SaveCompleted};
 use kimun_notes::settings::themes::Theme;
+use kimun_notes::settings::{AppSettings, SharedSettings};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::editor_view::EditorView;
 use crate::input;
 use crate::keymap::{self, KeyCtx};
 use crate::shell_layout::{self, RAIL_REMS, RAIL_VIEWS};
+use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
+use crate::status_row::{self, Status};
 use crate::theme;
+
+pub(crate) use note::Closing;
+use note::NoteHost;
 
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
@@ -131,6 +157,9 @@ pub(crate) fn divider_id(side: Side) -> &'static str {
     }
 }
 
+/// The element id of the editor Panel's empty state.
+pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
+
 /// The window's root view. See the module docs.
 pub(crate) struct Workspace {
     pub(crate) layout: PanelLayout<DrawerView>,
@@ -146,6 +175,30 @@ pub(crate) struct Workspace {
     /// (px), so the edge follows the pointer without jumping to it.
     grab: f64,
     store: LayoutStore,
+    /// Why the editor Panel shows no editor (no workspace, or it would not
+    /// open). `None`: the editor.
+    empty: Option<EmptyState>,
+    /// What the Footer shows.
+    pub(crate) status: Status,
+    /// The note session over the vault, when the window has one (not in the
+    /// empty states, nor in the tests that feed the editor text directly).
+    pub(crate) notes: Option<NoteHost>,
+    /// The window's app channel, once [`Self::start`] set it up: the sender
+    /// background jobs report on, and the task draining its receiver.
+    tx: Option<AppTx>,
+    _messages: Option<Task<()>>,
+    /// Takes the flash down when it expires; replaced by a newer flash.
+    flash_expiry: Option<Task<()>>,
+    /// Where closing the window stands.
+    pub(crate) closing: Closing,
+    /// The window, for closing it once the close flush has written.
+    window: Option<AnyWindowHandle>,
+    /// The restore will land on the history's newest note: the editor Panel
+    /// says so until its `OpenPath` arrives.
+    restore_pending: bool,
+    /// Keeps the Footer's dirty state in step with the editor.
+    _editor_watch: Subscription,
+    _on_quit: Option<Subscription>,
 }
 
 impl Workspace {
@@ -161,6 +214,15 @@ impl Workspace {
             .first()
             .and_then(|v| RAIL_VIEWS.iter().position(|r| r == v))
             .unwrap_or(0);
+        // Every edit notifies the editor; the Footer only redraws when the
+        // dirty state flips.
+        let editor_watch = cx.observe(&editor, |this, editor, cx| {
+            let dirty = editor.read(cx).editor.is_dirty();
+            if this.status.dirty != dirty {
+                this.status.dirty = dirty;
+                cx.notify();
+            }
+        });
         Self {
             layout,
             editor,
@@ -171,7 +233,159 @@ impl Workspace {
             resizing: false,
             grab: 0.0,
             store,
+            empty: None,
+            status: Status::default(),
+            notes: None,
+            tx: None,
+            _messages: None,
+            flash_expiry: None,
+            closing: Closing::Open,
+            window: None,
+            restore_pending: false,
+            _editor_watch: editor_watch,
+            _on_quit: None,
         }
+    }
+
+    /// Put the window on `start` (see [`startup`]): drain the window's app
+    /// channel (`rx`; `tx` is its sender, the editor's too), then show the
+    /// empty state, or index the vault in the background and land on the
+    /// first note. Must run with a tokio runtime entered.
+    pub(crate) fn start(
+        &mut self,
+        start: Start,
+        settings: SharedSettings,
+        tx: AppTx,
+        rx: UnboundedReceiver<AppMessage>,
+        cx: &mut Context<Self>,
+    ) {
+        self.listen(rx, cx);
+        self.tx = Some(tx.clone());
+        self.empty = startup::empty_state(&start);
+        if let Start::Vault(VaultStart { vault, first, .. }) = start {
+            self.notes = Some(NoteHost::new(NoteSession::new(
+                vault.clone(),
+                settings.clone(),
+                VaultPath::root(),
+            )));
+            self.status.indexing = true;
+            let restore = first == FirstNote::Restore;
+            self.restore_pending = restore;
+            tokio::spawn(startup::index_and_restore(
+                vault,
+                settings,
+                restore,
+                tx.clone(),
+            ));
+            match first {
+                FirstNote::Restore => {}
+                FirstNote::Note(path) => {
+                    tx.send(AppMessage::open(path)).ok();
+                }
+                FirstNote::Rejected(reason) => self.flash_error(reason, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Dispatch the window's app channel on the main thread. tokio's
+    /// channels need no tokio executor to be awaited, so GPUI's foreground
+    /// executor drains it.
+    fn listen(&mut self, mut rx: UnboundedReceiver<AppMessage>, cx: &mut Context<Self>) {
+        self._messages = Some(cx.spawn(async move |this, cx| {
+            while let Some(message) = rx.recv().await {
+                if this
+                    .update(cx, |workspace, cx| workspace.on_app_message(message, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Act on one message from the app channel.
+    pub(crate) fn on_app_message(&mut self, message: AppMessage, cx: &mut Context<Self>) {
+        match message {
+            // A background parse/layout job of the editor finished.
+            AppMessage::Redraw => self.editor.update(cx, |_, cx| cx.notify()),
+            // Clipboard notices, the restore's "is gone", ... There is no
+            // screen here that drops a flash, so a parked one shows now.
+            AppMessage::FlashMessage(text) | AppMessage::ParkFlash(text) => self.flash(text, cx),
+            AppMessage::IndexingDone(result) => {
+                self.status.indexing = false;
+                if let Err(e) = result {
+                    self.flash_error(format!("Indexing failed: {e}"), cx);
+                }
+            }
+            AppMessage::VaultConflict(details) => {
+                self.status.indexing = false;
+                self.status.read_only = true;
+                // Nothing is written from here on: no tick to run.
+                if let Some(host) = self.notes.as_mut() {
+                    host.session.stop_autosave();
+                }
+                self.flash_error(conflict_flash(&details), cx);
+            }
+            AppMessage::OpenPath { path, .. } => {
+                // The restore's landing (or anything after it): no longer
+                // "opening your last note".
+                self.restore_pending = false;
+                self.open_note(path, cx);
+            }
+            AppMessage::Autosave => self.autosave(cx),
+            AppMessage::AutosaveCompleted {
+                path,
+                saved_revision,
+                title,
+                error,
+            } => self.autosave_completed(
+                SaveCompleted {
+                    path,
+                    saved_revision,
+                    title,
+                    error,
+                },
+                cx,
+            ),
+            // FILES' and links' (G3, G4) and everything the GUI has no
+            // surface for yet.
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Show the notice `text` in the Footer for
+    /// [`status_row::FLASH_DURATION`], replacing a notice on show. An error
+    /// on show keeps its time: the notice is dropped.
+    pub(crate) fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        if self.status.flash.is_some() && self.status.flash_error {
+            return;
+        }
+        self.show_flash(text.into(), false, cx);
+    }
+
+    /// Show the problem `text` in the Footer, in the error colour, for
+    /// [`status_row::FLASH_DURATION`], replacing any flash on show.
+    pub(crate) fn flash_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show_flash(text.into(), true, cx);
+    }
+
+    fn show_flash(&mut self, text: SharedString, error: bool, cx: &mut Context<Self>) {
+        self.status.flash = Some(text);
+        self.status.flash_error = error;
+        self.flash_expiry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(status_row::FLASH_DURATION)
+                .await;
+            this.update(cx, |workspace, cx| {
+                workspace.status.flash = None;
+                workspace.status.flash_error = false;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// The left drawer's view, when it is shown.
@@ -328,6 +542,7 @@ impl Workspace {
     ) -> bool {
         match action {
             ActionShortcuts::ToggleSidebar => self.toggle_drawer(window, cx),
+            ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FocusRegion(dir) => match self.layout.focus_dir(*dir) {
                 FocusMove::Moved(_) => self.apply_focus(window, cx),
                 FocusMove::AtEdge => {}
@@ -569,11 +784,51 @@ impl Workspace {
             )
     }
 
+    /// What the editor Panel shows in place of the editor while a vault is
+    /// open but no note is (yet): typing there could never be saved. `None`
+    /// once a note is open, and without a vault (the fixture tests' editor).
+    pub(crate) fn note_empty_state(&self) -> Option<EmptyState> {
+        let host = self.notes.as_ref()?;
+        if host.note.is_some() {
+            return None;
+        }
+        let (title, detail) = if self.restore_pending {
+            (
+                "Opening your last note…",
+                "It opens once the workspace is indexed.",
+            )
+        } else if host.is_switching() {
+            ("Opening the note…", "")
+        } else {
+            (
+                "No note open",
+                "Start kimun-gui with a note's path to open it.",
+            )
+        };
+        Some(EmptyState {
+            title: title.into(),
+            detail: detail.into(),
+            failed: false,
+        })
+    }
+
+    /// The editor Panel: the editor (or the empty state) over the Footer.
     fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty = self.empty.clone().or_else(|| self.note_empty_state());
+        let document = match &empty {
+            None => div()
+                .flex_1()
+                .min_h_0()
+                .child(self.editor.clone())
+                .into_any_element(),
+            Some(empty) => self.render_empty(empty).into_any_element(),
+        };
         div()
             .id("editor-panel")
             .test_support()
             .relative()
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -581,8 +836,47 @@ impl Workspace {
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.focus_panel(Panel::Editor, window, cx)
             }))
-            .child(self.editor.clone())
+            .child(document)
+            .child(status_row::render(&self.status, &self.theme))
             .children(self.focus_bar(Panel::Editor))
+    }
+
+    /// Why there is no note to edit, centred in the editor Panel.
+    fn render_empty(&self, empty: &EmptyState) -> impl IntoElement {
+        let (icon, tint) = if empty.failed {
+            (IconName::TriangleAlert, theme::error(&self.theme))
+        } else {
+            (IconName::FolderOpen, theme::muted(&self.theme))
+        };
+        div()
+            .id(EMPTY_STATE_ID)
+            .test_support()
+            .role(Role::Group)
+            .aria_label(SharedString::from(empty.title.clone()))
+            .aria_description(SharedString::from(empty.detail.clone()))
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .child(
+                Empty::new()
+                    .border_0()
+                    .text_color(theme::foreground(&self.theme))
+                    .header(
+                        EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .bg(theme::panel_background(&self.theme))
+                                    .child(Icon::new(icon).text_color(tint)),
+                            )
+                            .title(EmptyTitle::new().child(empty.title.clone()))
+                            .description(
+                                EmptyDescription::new()
+                                    .text_color(theme::muted(&self.theme))
+                                    .child(empty.detail.clone()),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -628,5 +922,30 @@ impl Render for Workspace {
     }
 }
 
+/// The flash for a case conflict: one line, the count; the full list went to
+/// the log (`index_and_restore` logs it).
+fn conflict_flash(details: &str) -> String {
+    let count = details
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let (names, differ) = if count == 1 {
+        ("name", "differs")
+    } else {
+        ("names", "differ")
+    };
+    format!(
+        "Read-only: {count} {names} in this vault {differ} only by case (see the log). \
+         Rename them, then restart."
+    )
+}
+
+mod note;
+
+#[cfg(test)]
+mod note_tests;
+#[cfg(test)]
+mod start_tests;
 #[cfg(test)]
 mod tests;

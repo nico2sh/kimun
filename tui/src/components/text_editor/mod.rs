@@ -1024,6 +1024,41 @@ impl TextEditorComponent {
     }
 }
 
+/// The note session drives both engines (textarea and nvim) through this.
+impl crate::logic::session::NoteBuffer for TextEditorComponent {
+    fn is_dirty(&self) -> bool {
+        TextEditorComponent::is_dirty(self)
+    }
+
+    fn get_text(&self) -> String {
+        TextEditorComponent::get_text(self)
+    }
+
+    fn content_revision(&self) -> NonZeroU64 {
+        TextEditorComponent::content_revision(self)
+    }
+
+    fn open_note(&mut self, note: kimun_core::nfs::VaultPath, text: String) {
+        TextEditorComponent::open_note(self, note, text);
+    }
+
+    fn set_text(&mut self, text: String) {
+        TextEditorComponent::set_text(self, text);
+    }
+
+    fn renamed_to(&mut self, note: kimun_core::nfs::VaultPath) {
+        TextEditorComponent::renamed_to(self, note);
+    }
+
+    fn mark_saved(&mut self, text: String) {
+        TextEditorComponent::mark_saved(self, text);
+    }
+
+    fn mark_saved_at_revision(&mut self, rev: NonZeroU64) {
+        TextEditorComponent::mark_saved_at_revision(self, rev);
+    }
+}
+
 /// The one place the editor's neutral answer becomes the TUI's.
 fn event_state(handled: Handled) -> EventState {
     match handled {

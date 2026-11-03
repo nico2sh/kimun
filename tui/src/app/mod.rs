@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
 
 use color_eyre::eyre;
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::NoteVault;
 use ratatui::Terminal;
 use ratatui::prelude::Backend;
 
@@ -215,7 +215,7 @@ impl App {
     /// name (if any) and starts on the **Start** screen. The door tests use —
     /// nothing here touches the config file.
     pub async fn from_settings(settings: SharedSettings) -> Self {
-        let vault = Self::open_vault(&settings).await;
+        let vault = crate::logic::startup::open_vault(&settings).await;
         Self {
             current_screen: Box::new(StartScreen::new(settings.clone(), vault.clone())),
             settings,
@@ -226,49 +226,6 @@ impl App {
             rag_sync_task: None,
             rag_status: crate::rag::RagStatus::Disabled,
             server_update: None,
-        }
-    }
-
-    /// A fresh `NoteVault` for whatever workspace the settings currently
-    /// resolve to, wired to the configured index and the workspace's inbox.
-    /// `None` if no workspace is configured or the vault fails to open.
-    ///
-    /// Used at startup and every time the workspace changes (preferences
-    /// saved, onboarding finished, workspace switched).
-    pub async fn open_vault(settings: &SharedSettings) -> Option<Arc<NoteVault>> {
-        let (workspace_path, cache_path, inbox_path) = {
-            let s = settings.read().unwrap();
-            let wp = s.resolve_workspace_path();
-            let name = s.current_workspace_name();
-            let cache = name.as_ref().map(|n| s.index_for(n));
-            let ip = s
-                .workspace_config
-                .as_ref()
-                .and_then(|wc| wc.get_current_workspace())
-                .map(|e| e.effective_inbox_path());
-            (wp, cache, ip)
-        };
-        let workspace = workspace_path?;
-        let mut config = VaultConfig::new(workspace.clone());
-        if let Some(cp) = cache_path {
-            config = config.with_index(cp);
-        }
-        match NoteVault::new(config).await {
-            Ok(mut v) => {
-                if let Some(ref ip) = inbox_path {
-                    v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
-                }
-                Some(Arc::new(v))
-            }
-            // Don't swallow the cause: since the index self-heal, opening the
-            // vault can fail on a cache probe error (e.g. the cache is locked
-            // by another kimun process). The app falls back to the no-vault
-            // start screen either way, but the reason must reach the log
-            // instead of looking like an unconfigured workspace.
-            Err(e) => {
-                tracing::error!("could not open vault at {}: {e}", workspace);
-                None
-            }
         }
     }
 }
@@ -734,7 +691,7 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
         }
         AppMessage::PreferencesSaved | AppMessage::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
-            app.vault = App::open_vault(&app.settings).await;
+            app.vault = crate::logic::startup::open_vault(&app.settings).await;
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
@@ -762,7 +719,7 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
                 }
                 s.save_to_disk().ok();
             }
-            app.vault = App::open_vault(&app.settings).await;
+            app.vault = crate::logic::startup::open_vault(&app.settings).await;
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
