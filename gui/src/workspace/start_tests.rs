@@ -118,7 +118,7 @@ pub(super) fn open_started(
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, Theme::default(), layout, LayoutStore::Off, cx);
-                    workspace.start(start, settings, tx, rx, cx);
+                    workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });
                 workspace.update(cx, |w, cx| {

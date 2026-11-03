@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{Emit, RowSource, SearchRow};
+use super::{Emit, ListRow, RowSource};
 use crate::components::query_vars::{QueryContext, query_is_unresolvable, resolve_query};
 
 /// What to do when a template is purely note-dependent but no note is available
@@ -30,13 +30,13 @@ pub enum Unresolvable {
 /// A [`RowSource`] that resolves query variables against a per-load
 /// [`QueryContext`] before delegating to `inner`. Generic over the row type, so
 /// the same adapter serves every query-variable surface.
-pub struct ResolvingRowSource<R: SearchRow> {
+pub struct ResolvingRowSource<R: ListRow> {
     inner: Arc<dyn RowSource<R>>,
     ctx: Arc<dyn Fn() -> QueryContext + Send + Sync>,
     on_unresolvable: Unresolvable,
 }
 
-impl<R: SearchRow> ResolvingRowSource<R> {
+impl<R: ListRow> ResolvingRowSource<R> {
     pub fn new(
         inner: Arc<dyn RowSource<R>>,
         ctx: impl Fn() -> QueryContext + Send + Sync + 'static,
@@ -51,7 +51,7 @@ impl<R: SearchRow> ResolvingRowSource<R> {
 }
 
 #[async_trait]
-impl<R: SearchRow> RowSource<R> for ResolvingRowSource<R> {
+impl<R: ListRow> RowSource<R> for ResolvingRowSource<R> {
     async fn load(&self, query: &str, emit: Emit<R>) {
         let ctx = (self.ctx)();
         if query_is_unresolvable(query, &ctx) {
@@ -80,7 +80,7 @@ impl<R: SearchRow> RowSource<R> for ResolvingRowSource<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::search_list::SearchList;
+    use crate::components::search_list::{SearchList, SearchRow};
     use crate::logic::message::redraw_callback;
     use crate::settings::icons::Icons;
     use crate::settings::themes::Theme;
@@ -93,12 +93,15 @@ mod tests {
     /// load — the assertion surface for "what did the wrapper hand through?".
     #[derive(Clone)]
     struct EchoRow(String);
+    impl ListRow for EchoRow {
+        fn match_text(&self) -> Option<&str> {
+            Some(&self.0)
+        }
+    }
+
     impl SearchRow for EchoRow {
         fn to_list_item(&self, _: &Theme, _: &Icons, _: bool) -> ListItem<'static> {
             ListItem::new(self.0.clone())
-        }
-        fn match_text(&self) -> Option<&str> {
-            Some(&self.0)
         }
     }
 

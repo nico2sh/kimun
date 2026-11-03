@@ -138,6 +138,8 @@ fn default_tables() {
         vec![
             lw("ctrl+t", A::ToggleSidebar),
             lw("ctrl+shift+t", A::ToggleSidebar),
+            lw("ctrl+e", A::OpenFileBrowser),
+            lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
             lw("ctrl+f", A::FindInBuffer),
@@ -156,6 +158,7 @@ fn default_tables() {
         table(&Keymap::defaults(MacOs)),
         vec![
             lw("cmd+t", A::ToggleSidebar),
+            lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
             lw("cmd+f", A::FindInBuffer),
@@ -169,8 +172,8 @@ fn default_tables() {
     );
 }
 
-/// Save (M5b-2 G2) is primary+S from every panel; under vim on Linux and
-/// Windows the bare Ctrl+S stays vim's and the Ctrl+Shift twin saves.
+/// Save (M5b-2 G2) is primary+S from every panel, under vim too: the vim
+/// engine reads no Ctrl+S.
 #[test]
 fn save_is_primary_s_from_every_panel() {
     let lw = Keymap::defaults(LinuxWindows);
@@ -180,15 +183,42 @@ fn save_is_primary_s_from_every_panel() {
             Some(&A::SaveNote)
         );
         assert_eq!(
-            lw.resolve(chord("ctrl+shift+s"), ctx(panel, true)),
+            lw.resolve(chord("ctrl+s"), ctx(panel, true)),
             Some(&A::SaveNote)
         );
     }
-    assert_eq!(lw.resolve(chord("ctrl+s"), ctx(Panel::Editor, true)), None);
     let mac = Keymap::defaults(MacOs);
     assert_eq!(
         mac.resolve(chord("cmd+s"), ctx(Panel::Editor, true)),
         Some(&A::SaveNote)
+    );
+}
+
+/// FILES (M5b-2 G3) is primary+E from every panel, as the TUI's Ctrl+E, under
+/// vim too: the vim engine reads no Ctrl+E.
+#[test]
+fn open_file_browser_is_primary_e_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    for panel in PANELS {
+        assert_eq!(
+            lw.resolve(chord("ctrl+e"), ctx(panel, false)),
+            Some(&A::OpenFileBrowser)
+        );
+        assert_eq!(
+            lw.resolve(chord("ctrl+e"), ctx(panel, true)),
+            Some(&A::OpenFileBrowser)
+        );
+    }
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        assert_eq!(
+            mac.resolve(chord("cmd+e"), ctx(panel, true)),
+            Some(&A::OpenFileBrowser)
+        );
+    }
+    assert_eq!(
+        mac.resolve(chord("ctrl+e"), ctx(Panel::Editor, false)),
+        None
     );
 }
 
@@ -301,16 +331,21 @@ fn linux_windows_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let files = Some(A::OpenFileBrowser);
     resolution(
         LinuxWindows,
         &[
             //                 plain editor  vim editor  drawer / rail
-            ("ctrl+f", [find.clone(), None, None]),
+            ("ctrl+f", [find.clone(), find.clone(), None]),
             ("ctrl+shift+f", [find.clone(), find, None]),
-            ("ctrl+h", [replace.clone(), None, None]),
+            ("ctrl+h", [replace.clone(), replace.clone(), None]),
             ("ctrl+shift+h", [replace.clone(), replace, None]),
-            ("ctrl+t", [toggle.clone(), None, toggle.clone()]),
+            ("ctrl+t", [toggle.clone(), toggle.clone(), toggle.clone()]),
             ("ctrl+shift+t", [toggle.clone(), toggle.clone(), toggle]),
+            ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
+            ("ctrl+shift+e", [files.clone(), files.clone(), files]),
+            // Vim reads these: the app gives them up in the vim editor.
+            ("ctrl+r", [None, None, None]),
             ("alt+left", [left.clone(), left.clone(), left]),
             ("alt+right", [right.clone(), right.clone(), right]),
             ("alt+up", [up.clone(), up.clone(), up]),
@@ -338,6 +373,7 @@ fn macos_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let files = Some(A::OpenFileBrowser);
     resolution(
         MacOs,
         &[
@@ -345,6 +381,7 @@ fn macos_resolution_table() {
             ("cmd+f", [find.clone(), find, None]),
             ("cmd+alt+f", [replace.clone(), replace, None]),
             ("cmd+t", [toggle.clone(), toggle.clone(), toggle]),
+            ("cmd+e", [files.clone(), files.clone(), files]),
             ("cmd+alt+left", [left.clone(), left.clone(), left]),
             ("cmd+alt+right", [right.clone(), right.clone(), right]),
             ("cmd+alt+up", [up.clone(), up.clone(), up]),
@@ -355,6 +392,7 @@ fn macos_resolution_table() {
             ("ctrl+f", [None, None, None]),
             ("ctrl+h", [None, None, None]),
             ("ctrl+t", [None, None, None]),
+            ("ctrl+e", [None, None, None]),
             ("cmd+h", [None, None, None]),
             ("alt+left", [None, None, None]),
             ("cmd+shift+f", [None, None, None]),
@@ -366,24 +404,24 @@ fn macos_resolution_table() {
 
 #[test]
 fn an_override_replaces_the_defaults_and_primary_follows_the_platform() {
-    let o = overrides(&[("FindInBuffer", &["primary+g"])]);
+    let o = overrides(&[("FindInBuffer", &["primary+r"])]);
     for p in PLATFORMS {
         let (keymap, errors) = Keymap::load(p, &o);
         assert!(errors.is_empty(), "{errors:?}");
         let editor = ctx(Panel::Editor, false);
-        let g = parse_chord("primary+g", p).unwrap();
+        let g = parse_chord("primary+r", p).unwrap();
         assert_eq!(keymap.resolve(g, editor), Some(&A::FindInBuffer));
         let f = parse_chord("primary+f", p).unwrap();
         assert_eq!(keymap.resolve(f, editor), None, "{p:?}: default gone");
     }
-    // Overrides are literal: no vim twin, so under vim Ctrl+G is vim's.
+    // Overrides are literal: no vim twin, so under vim Ctrl+R is vim's.
     let (keymap, _) = Keymap::load(LinuxWindows, &o);
     assert_eq!(
-        keymap.resolve(chord("ctrl+g"), ctx(Panel::Editor, true)),
+        keymap.resolve(chord("ctrl+r"), ctx(Panel::Editor, true)),
         None
     );
     assert_eq!(
-        keymap.resolve(chord("ctrl+shift+g"), ctx(Panel::Editor, true)),
+        keymap.resolve(chord("ctrl+shift+r"), ctx(Panel::Editor, true)),
         None
     );
 }

@@ -25,7 +25,7 @@ use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
-use crate::components::search_list::{Emit, RowSource, SearchRow, YankTarget};
+use crate::components::search_list::{Emit, ListRow, RowSource, SearchRow, YankTarget};
 use crate::keys::key_combo::KeyCombo;
 use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::settings::icons::Icons;
@@ -41,22 +41,9 @@ pub struct TagEntry {
     pub count: usize,
 }
 
-impl SearchRow for TagEntry {
-    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
-        let aqua = Style::default().fg(theme.aqua.to_ratatui());
-        RichRow::new("#", self.label.clone())
-            .glyph_style(aqua)
-            .title_style(aqua)
-            .meta(self.count.to_string())
-            .into_list_item(theme)
-    }
-
+impl ListRow for TagEntry {
     fn match_text(&self) -> Option<&str> {
         Some(&self.label)
-    }
-
-    fn visual_height(&self) -> u16 {
-        1
     }
 
     fn yank_target(&self) -> Option<YankTarget> {
@@ -69,6 +56,21 @@ impl SearchRow for TagEntry {
             self.label.clone()
         };
         Some(YankTarget::new(text, "tag"))
+    }
+}
+
+impl SearchRow for TagEntry {
+    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
+        let aqua = Style::default().fg(theme.aqua.to_ratatui());
+        RichRow::new("#", self.label.clone())
+            .glyph_style(aqua)
+            .title_style(aqua)
+            .meta(self.count.to_string())
+            .into_list_item(theme)
+    }
+
+    fn visual_height(&self) -> u16 {
+        1
     }
 }
 
@@ -173,6 +175,16 @@ impl LinkEntry {
     }
 }
 
+impl ListRow for LinkEntry {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.filename)
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        Some(YankTarget::path(self.path.to_string()))
+    }
+}
+
 impl SearchRow for LinkEntry {
     fn to_list_item(&self, theme: &Theme, icons: &Icons, _selected: bool) -> ListItem<'static> {
         let title = if self.title.is_empty() {
@@ -183,14 +195,6 @@ impl SearchRow for LinkEntry {
         RichRow::new(icons.note, title)
             .filename(self.filename.clone())
             .into_list_item(theme)
-    }
-
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.filename)
-    }
-
-    fn yank_target(&self) -> Option<YankTarget> {
-        Some(YankTarget::path(self.path.to_string()))
     }
 
     fn visual_height(&self) -> u16 {
@@ -533,6 +537,18 @@ impl OutlineEntry {
     }
 }
 
+impl ListRow for OutlineEntry {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.target.text)
+    }
+
+    fn yank_target(&self) -> Option<YankTarget> {
+        // The heading text alone — the row carries no note path, and the depth
+        // is presentation, not content.
+        Some(YankTarget::new(self.target.text.clone(), "heading"))
+    }
+}
+
 impl SearchRow for OutlineEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
         let indent = "  ".repeat(self.depth.saturating_sub(1));
@@ -541,18 +557,8 @@ impl SearchRow for OutlineEntry {
             .into_list_item(theme)
     }
 
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.target.text)
-    }
-
     fn visual_height(&self) -> u16 {
         1
-    }
-
-    fn yank_target(&self) -> Option<YankTarget> {
-        // The heading text alone — the row carries no note path, and the depth
-        // is presentation, not content.
-        Some(YankTarget::new(self.target.text.clone(), "heading"))
     }
 }
 

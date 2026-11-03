@@ -5013,6 +5013,7 @@ dependencies = [
  "gpui-kit",
  "kimun-notes",
  "kimun_core",
+ "open",
  "tempfile",
  "tokio",
  "toml 1.1.2+spec-1.1.0",

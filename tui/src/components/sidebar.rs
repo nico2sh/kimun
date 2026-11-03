@@ -1,11 +1,8 @@
 use std::sync::Arc;
 
 use crate::settings::themes::Theme;
-use async_trait::async_trait;
-use chrono::NaiveDate;
-use futures::StreamExt;
+use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
@@ -15,109 +12,23 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
-use crate::components::file_list::{FileListEntry, entry_order};
-use crate::components::search_list::{
-    Emit, Filter, KeyReaction, OrderFn, RowSource, SearchList, SearchMouse,
-};
-use crate::components::sortable::{PropertySort, SortableList, is_blank_property, property_key};
+use crate::components::file_list::FileListEntry;
+use crate::components::search_list::{KeyReaction, SearchList, SearchMouse};
+use crate::components::sortable::SortableList;
 use crate::keys::KeyBindings;
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, FileOp, SortTarget, redraw_callback};
+use crate::logic::files::{Activation, FilesModel, spawn_create_and_open};
+use crate::logic::message::{AppMessage, AppTx, FileOp, SortTarget};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
-/// Streamed `RowSource` over one directory's listing. Pushes an `Up` row first
-/// (when not at root) so it is always present, then forwards each entry the
-/// moment `browse_vault_stream` yields it — rows show up while a slow drive is
-/// still being read. Ordering is the engine's job (`order_by`, see
-/// [`listing_order`]), so nothing is re-delivered at the end. Loads once; a
-/// local `Filter::Fuzzy` narrows the set and `leading_row` provides the
-/// "Create: …" affordance.
-struct DirListingSource {
-    vault: Arc<NoteVault>,
-    dir: VaultPath,
-}
-
-#[async_trait]
-impl RowSource<FileListEntry> for DirListingSource {
-    async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
-        // Up row first (if not root) — pushed so it's always present.
-        if !self.dir.is_root_or_empty() {
-            emit.push(FileListEntry::Up {
-                parent: self.dir.get_parent_path().0,
-            });
-        }
-
-        let options = VaultBrowseOptionsBuilder::new(&self.dir)
-            .recursive(false)
-            .validation(NotesValidation::Full)
-            .build();
-
-        let mut stream = std::pin::pin!(self.vault.browse_vault_stream(options));
-        while let Some(item) = stream.next().await {
-            let result = match item {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::warn!("sidebar directory listing failed: {e}");
-                    break;
-                }
-            };
-            // `is_like` ignores relative/absolute form: skip the current dir's
-            // own "." entry whichever form each side carries.
-            if matches!(result.rtype, ResultType::Directory) && result.path.is_like(&self.dir) {
-                continue;
-            }
-            let journal_date = self
-                .vault
-                .journal_date(&result.path)
-                .map(format_journal_date);
-            emit.push(FileListEntry::from_result(result, journal_date));
-        }
-        emit.done();
-    }
-
-    fn leading_row(&self, query: &str) -> Option<FileListEntry> {
-        if query.is_empty() {
-            None
-        } else {
-            let path = self.dir.append(&VaultPath::note_path_from(query)).flatten();
-            Some(FileListEntry::CreateNote {
-                filename: path.to_string(),
-                path,
-            })
-        }
-    }
-
-    fn reload_on_query(&self) -> bool {
-        // Load the directory once; the local fuzzy filter narrows it and
-        // `leading_row` keeps the create affordance in sync per keystroke.
-        false
-    }
-}
-
+/// The FILES drawer view: a [`FilesModel`] (directory, marker, sort, the
+/// listing and its rules) whose listing is a [`SearchList`] — the filter
+/// input, viewport, keys and mouse — plus the breadcrumb and sort chip it
+/// draws. Activations the model reports are performed here.
 pub struct SidebarComponent {
-    current_dir: VaultPath,
-    /// The note currently open in the editor, if any — drives the open-note
-    /// marker. `None` on the Browse screen (it never opens notes). Matched
-    /// against `FileListEntry::Note` rows by `is_like`.
-    open_note: Option<VaultPath>,
-    list: Option<SearchList<FileListEntry>>,
-    vault: Arc<NoteVault>,
-    icons: Icons,
-    default_sort_field: SortField,
-    default_sort_order: SortOrder,
-    journal_sort_field: SortField,
-    journal_sort_order: SortOrder,
-    /// Sort field/order of the active listing. Set per `navigate` from the
-    /// per-dir defaults (kept across a refresh of the same directory); the
-    /// sort dialog changes it via `apply_sort`, which hands the engine a new
-    /// order.
-    sort: (SortField, SortOrder),
-    /// Index values a property sort orders by, fetched per key.
-    property_sort: PropertySort,
-    /// "Group directories first" for the active listing; see `sort`.
-    group_dirs: bool,
+    model: FilesModel<SearchList<FileListEntry>>,
     rendered_rect: Rect,
     /// Screen cell each breadcrumb segment was drawn into on the last render,
     /// with the directory it navigates to — clickable breadcrumb hit-test.
@@ -149,27 +60,39 @@ impl SidebarComponent {
         icons: Icons,
         settings: &AppSettings,
     ) -> Self {
-        let default_sort_field = SortField::from(settings.default_sort_field);
-        let default_sort_order = SortOrder::from(settings.default_sort_order);
-        Self {
-            current_dir: VaultPath::root(),
-            open_note: None,
-            list: None,
+        let list_bindings = key_bindings.clone();
+        let model = FilesModel::with_list(
             vault,
-            icons,
-            default_sort_field: default_sort_field.clone(),
-            default_sort_order,
-            journal_sort_field: SortField::from(settings.journal_sort_field),
-            journal_sort_order: SortOrder::from(settings.journal_sort_order),
-            sort: (default_sort_field, default_sort_order),
-            property_sort: PropertySort::default(),
-            group_dirs: settings.group_directories,
+            settings,
+            Box::new(move |source, setup, redraw| {
+                let mut builder = SearchList::builder(source, redraw)
+                    .filter(setup.filter)
+                    .initial_query(setup.query)
+                    .yank_combos_from(&list_bindings)
+                    .icons(icons.clone());
+                if let Some(order) = setup.order {
+                    builder = builder.order_by(order);
+                }
+                builder.build()
+            }),
+        );
+        Self {
+            model,
             rendered_rect: Rect::default(),
             breadcrumb_cells: Vec::new(),
             sort_chip: Default::default(),
             show_sort_chip: true,
             key_bindings,
         }
+    }
+
+    /// The FILES model this view draws.
+    pub fn model(&self) -> &FilesModel<SearchList<FileListEntry>> {
+        &self.model
+    }
+
+    pub fn model_mut(&mut self) -> &mut FilesModel<SearchList<FileListEntry>> {
+        &mut self.model
     }
 
     /// The breadcrumb segment under the given screen cell, if any.
@@ -181,191 +104,50 @@ impl SidebarComponent {
     }
 
     pub fn current_dir(&self) -> &VaultPath {
-        &self.current_dir
+        self.model.current_dir()
     }
 
     /// `true` until a directory has been loaded (no engine yet). The editor
     /// uses this to decide whether to issue the first-open navigation.
     pub fn is_empty(&self) -> bool {
-        self.list.is_none()
+        self.model.is_empty()
     }
 
-    /// Sort field/order to apply for `dir` (journal dirs get their own).
-    fn sort_for(&self, dir: &VaultPath) -> (SortField, SortOrder) {
-        if dir.is_like(self.vault.journal_path()) {
-            (self.journal_sort_field.clone(), self.journal_sort_order)
-        } else {
-            (self.default_sort_field.clone(), self.default_sort_order)
-        }
-    }
-
-    /// (Re)build the engine for `dir`, replacing any prior listing. This is the
-    /// single directory-navigation entry point: changing directory = rebuild
-    /// the engine with a fresh `DirListingSource` for the new dir, sorted by
-    /// that directory's default.
+    /// Show `dir`; see [`FilesModel::navigate`].
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
-        self.sort = self.sort_for(&dir);
-        self.current_dir = dir;
-        self.build_listing(tx);
+        self.model.navigate(dir, tx);
     }
 
-    /// A fresh engine over `current_dir`, ordered by the active sort. A
-    /// property sort uses the values cached for its key and fetches them
-    /// again, so edits since the last fetch show up.
-    fn build_listing(&mut self, tx: &AppTx) {
-        let source = DirListingSource {
-            vault: self.vault.clone(),
-            dir: self.current_dir.clone(),
-        };
-        self.list = Some(
-            SearchList::builder(source, redraw_callback(tx.clone()))
-                .filter(Filter::Fuzzy)
-                .order_by(self.order())
-                .yank_combos_from(&self.key_bindings)
-                .icons(self.icons.clone())
-                .build(),
-        );
-        self.fetch_property_values(tx);
-    }
-
-    /// Start a fetch of the active property sort's values, if it is one;
-    /// any other sort forgets the cached values.
-    fn fetch_property_values(&mut self, tx: &AppTx) {
-        match property_key(&self.sort.0) {
-            Some(key) => self.property_sort.fetch(&self.vault, key, tx),
-            None => self.property_sort.clear(),
-        }
-    }
-
-    /// The engine order for the active sort. A property sort whose values
-    /// have not arrived yet orders by name (see [`entry_order`]).
-    fn order(&self) -> OrderFn<FileListEntry> {
-        let (field, order) = self.sort.clone();
-        let values = self.property_sort.values_for_field(&field);
-        entry_order(field, order, self.group_dirs, values)
-    }
-
-    /// Re-sort the loaded rows by the active sort (no reload). A property
-    /// sort still waiting for its values keeps the current order.
-    fn reorder(&mut self) {
-        if self.property_sort.is_awaiting(&self.sort.0) {
-            return;
-        }
-        let order = self.order();
-        if let Some(list) = &mut self.list {
-            list.set_order(Some(order));
-        }
-    }
-
-    /// Property values fetched for `key` landed: re-sort if they belong to
-    /// the active sort. `false` when they are stale and were dropped.
+    /// Property values fetched for `key` landed; see
+    /// [`FilesModel::on_property_sort_values`].
+    #[cfg(test)]
     pub(crate) fn on_property_sort_values(
         &mut self,
         key: &str,
         values: crate::components::file_list::PropertyValues,
     ) -> bool {
-        let accepted = self.property_sort.receive(key, values);
-        if accepted {
-            self.reorder();
-        }
-        accepted
+        self.model.on_property_sort_values(key, values)
     }
 
-    /// Apply property values that arrived since the last frame.
-    fn poll_property_sort(&mut self) {
-        if let Some((key, values)) = self.property_sort.poll() {
-            self.on_property_sort_values(&key, values);
-        }
-    }
-
-    /// Rebuild the listing only when it is currently showing `dir`, so a
-    /// create/rename/delete/move in that directory is reflected without yanking
-    /// the user away from an unrelated directory they browsed to. The active
-    /// sort is kept (a property sort refetches its values). A no-op
-    /// otherwise. Shared by every screen that hosts a sidebar.
+    /// See [`FilesModel::refresh_if_showing`]. Shared by every screen that
+    /// hosts a sidebar.
     pub fn refresh_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
-        if dir.is_like(&self.current_dir) {
-            self.build_listing(tx);
-        }
+        self.model.refresh_if_showing(dir, tx);
     }
 
-    /// Set (or clear) the note the editor currently has open, then re-stamp the
-    /// marker on the live rows. The editor calls this on every open and on an
-    /// open-note rename.
+    /// See [`FilesModel::set_open_note`].
     pub fn set_open_note(&mut self, path: Option<VaultPath>) {
-        self.open_note = path;
-        self.stamp_open_marker();
+        self.model.set_open_note(path);
     }
 
-    /// Re-apply `is_open` to the rows so exactly the open note's row is marked.
-    /// Idempotent: a full reload rebuilds rows without the flag, so this runs
-    /// again after each load (see `render`).
-    fn stamp_open_marker(&mut self) {
-        let open = self.open_note.clone();
-        if let Some(list) = &mut self.list {
-            list.update_rows(|row| {
-                if let FileListEntry::Note { path, is_open, .. } = row {
-                    let want = open.as_ref().is_some_and(|o| path.is_like(o));
-                    if *is_open != want {
-                        *is_open = want;
-                        return true;
-                    }
-                }
-                false
-            });
-        }
-    }
-
-    /// Update the title of the row whose note path matches `path`, if it is in
-    /// the current listing. Called when a note is saved and its title (first
-    /// body line) may have changed. Position is left unchanged (no re-sort).
+    /// See [`FilesModel::update_note_row`].
     pub fn update_note_row(&mut self, path: &VaultPath, new_title: &str) {
-        if let Some(list) = &mut self.list {
-            list.update_rows(|row| {
-                if let FileListEntry::Note {
-                    path: row_path,
-                    title,
-                    ..
-                } = row
-                    && row_path.is_like(path)
-                    && title != new_title
-                {
-                    *title = new_title.to_string();
-                    return true;
-                }
-                false
-            });
-        }
+        self.model.update_note_row(path, new_title);
     }
 
-    /// Move the row at `from` to `to` (path + filename + journal_date) in
-    /// place, for a same-directory note rename. The row is re-sorted into its
-    /// new spot under the active `listing_order` (a Name sort reads the very
-    /// field this changes) and keeps the highlight if it had it.
-    /// `journal_date` is recomputed so a rename into/out of a
-    /// `YYYY-MM-DD` name under the journal directory flips the glyph and the
-    /// secondary date line correctly.
+    /// See [`FilesModel::rename_note_row`].
     pub fn rename_note_row(&mut self, from: &VaultPath, to: &VaultPath) {
-        let new_filename = to.get_parent_path().1;
-        let new_journal_date = self.vault.journal_date(to).map(format_journal_date);
-        if let Some(list) = &mut self.list {
-            list.update_rows(|row| {
-                if let FileListEntry::Note {
-                    path,
-                    filename,
-                    journal_date,
-                    ..
-                } = row
-                    && path.is_like(from)
-                {
-                    *path = to.clone();
-                    *filename = new_filename.clone();
-                    *journal_date = new_journal_date.clone();
-                    return true;
-                }
-                false
-            });
-        }
+        self.model.rename_note_row(from, to);
     }
 
     /// Draw (and accept clicks on) the sort chip — on by default; off for a
@@ -374,126 +156,72 @@ impl SidebarComponent {
         self.show_sort_chip = show;
     }
 
-    /// Seed the directory the sidebar will show before its first `navigate`.
-    /// Lets a screen open at a non-root path while keeping `current_dir` the
-    /// single source of truth for the browsed directory.
+    /// Seed the directory the sidebar will show before its first `navigate`;
+    /// see [`FilesModel::set_current_dir`].
     pub fn set_current_dir(&mut self, dir: VaultPath) {
-        self.current_dir = dir;
+        self.model.set_current_dir(dir);
     }
 
     /// Current sort field/order for the active listing.
     pub fn current_sort(&self) -> (SortField, SortOrder) {
-        self.sort.clone()
+        self.model.current_sort()
     }
 
     /// Current "group directories first" flag.
     pub fn group_dirs(&self) -> bool {
-        self.group_dirs
+        self.model.group_dirs()
     }
 
-    /// Apply a sort selection from the sort dialog: the engine re-orders the
-    /// rows it already holds — no second walk of the directory. A property
-    /// sort orders by the values cached for its key; without them the current
-    /// order stays until they arrive (see [`SortableList::apply_sort`]).
+    /// Apply a sort selection; see [`FilesModel::apply_sort`].
     pub fn apply_sort(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
-        self.sort = (field, order);
-        self.group_dirs = group_dirs;
-        self.reorder();
+        self.model.apply_sort(field, order, group_dirs);
     }
 
-    /// `true` when the active directory is the journal (so its sort default is
-    /// the journal one). Lets the caller persist to the matching settings.
+    /// See [`FilesModel::is_current_journal`].
     pub fn is_current_journal(&self) -> bool {
-        self.current_dir.is_like(self.vault.journal_path())
+        self.model.is_current_journal()
     }
 
-    /// Record `field` / `order` as the in-session default for the active
-    /// context (journal vs. normal) without re-sorting — the sidebar's "save
-    /// as default", for callers that already applied the sort. Without it the
-    /// cached per-context defaults that `sort_for`/`navigate` read stay at
-    /// their construction-time values until restart. Never called with a
-    /// property sort (it can't be a default).
+    /// See [`FilesModel::remember_default`].
     pub fn remember_default(&mut self, field: SortField, order: SortOrder) {
-        if self.is_current_journal() {
-            self.journal_sort_field = field;
-            self.journal_sort_order = order;
-        } else {
-            self.default_sort_field = field;
-            self.default_sort_order = order;
-        }
+        self.model.remember_default(field, order);
     }
 
     /// Number of note rows currently visible (excludes Up / dirs / create).
     fn note_count(&self) -> usize {
-        match &self.list {
-            None => 0,
-            Some(list) => list
-                .visible_rows()
-                .iter()
-                .filter(|e| matches!(e, FileListEntry::Note { .. }))
-                .count(),
-        }
+        self.model.note_count()
     }
 
-    /// Act on the selected row: Up/Note/Directory → `OpenPath` (directories and
-    /// Up route back through the editor's navigate, rebuilding the engine);
-    /// CreateNote → materialise the note, then open it.
+    /// Act on the selected row: the model says what it asks for, this host
+    /// does it. Up/Note/Directory → `OpenPath` (directories and Up route back
+    /// through the screen's navigate, rebuilding the engine); Attachment →
+    /// `OpenAttachment`; CreateNote → materialise the note, then open it.
     fn activate_selected_entry(&self, tx: &AppTx) {
-        let Some(list) = &self.list else { return };
-        let Some(entry) = list.selected_row() else {
+        let Some(activation) = self.model.activate() else {
             return;
         };
-        match entry {
-            FileListEntry::CreateNote { path, .. } => {
-                let path = path.clone();
-                let vault = Arc::clone(&self.vault);
-                let tx2 = tx.clone();
-                tokio::spawn(async move {
-                    match vault.load_or_create_note(&path, None).await {
-                        Ok((_, created)) => tx2.announce_and_open(path, created),
-                        Err(e) => {
-                            tracing::warn!("create note failed for {path}: {e}");
-                        }
-                    }
-                });
+        match activation {
+            Activation::Create(path) => {
+                spawn_create_and_open(Arc::clone(self.model.vault()), path, tx.clone());
             }
-            FileListEntry::Attachment { path, .. } => {
-                tx.send(AppMessage::OpenAttachment(path.clone())).ok();
+            Activation::OpenAttachment(path) => {
+                tx.send(AppMessage::OpenAttachment(path)).ok();
             }
-            other => {
-                tx.send(AppMessage::open(other.path().clone())).ok();
+            Activation::Navigate(path) | Activation::Open(path) => {
+                tx.send(AppMessage::open(path)).ok();
             }
         }
     }
-}
-
-/// Format a `NaiveDate` as a human-readable string with day-of-week.
-/// Example: "Wednesday, March 17, 2026"
-fn format_journal_date(date: NaiveDate) -> String {
-    date.format("%A, %B %-d, %Y").to_string()
 }
 
 impl SortableList for SidebarComponent {
     fn sort_state(&self) -> SortState {
-        let (field, order) = self.current_sort();
-        SortState {
-            field,
-            order,
-            group_dirs: Some(self.group_dirs),
-        }
+        self.model.sort_state()
     }
 
-    /// A `None` group flag keeps the current grouping. A property sort on a
-    /// new key fetches its values from the index and re-sorts when they
-    /// land; on the same key (an Order / Group toggle) it reuses the cached
-    /// values. One with no key yet is ignored.
+    /// See [`FilesModel::apply_sort_state`].
     fn apply_sort(&mut self, state: &SortState, tx: &AppTx) {
-        if is_blank_property(&state.field) {
-            return;
-        }
-        let group_dirs = state.group_dirs.unwrap_or(self.group_dirs);
-        SidebarComponent::apply_sort(self, state.field.clone(), state.order, group_dirs);
-        self.property_sort.sync(&self.vault, &state.field, tx);
+        self.model.apply_sort_state(state, tx);
     }
 
     fn allows_property(&self) -> bool {
@@ -533,7 +261,7 @@ impl Component for SidebarComponent {
             // hit-tests the wheel against the recorded panel rect (the whole
             // sidebar — header and search box included) and clicks against
             // the list rect.
-            if let Some(list) = &mut self.list {
+            if let Some(list) = self.model.list_mut() {
                 match list.handle_mouse(mouse) {
                     SearchMouse::Activated(_) | SearchMouse::DoubleClicked { repeat: false, .. } => {
                         self.activate_selected_entry(tx)
@@ -567,10 +295,10 @@ impl Component for SidebarComponent {
         }
 
         if let InputEvent::Key(key) = event {
-            if self.list.is_none() {
+            let Some(list) = self.model.list_mut() else {
                 return EventState::NotConsumed;
-            }
-            let reaction = self.list.as_mut().unwrap().handle_key(key);
+            };
+            let reaction = list.handle_key(key);
             match reaction {
                 KeyReaction::Submit => {
                     self.activate_selected_entry(tx);
@@ -618,7 +346,7 @@ impl Component for SidebarComponent {
         let border_style = theme.border_style(focused);
 
         let header = Block::default()
-            .title(format!("─ Files · {} ", self.current_dir))
+            .title(format!("─ Files · {} ", self.model.current_dir()))
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
@@ -653,7 +381,7 @@ impl Component for SidebarComponent {
                 *x += w;
             };
         push_segment(&mut spans, &mut x, "~".to_string(), VaultPath::root());
-        let slices = self.current_dir.get_slices();
+        let slices = self.model.current_dir().get_slices();
         let mut acc = String::new();
         for slice in &slices {
             spans.push(Span::styled(" / ", sep_style));
@@ -702,12 +430,8 @@ impl Component for SidebarComponent {
         // Poll the engine so a just-completed load's rows are applied, then
         // re-stamp the open-note marker (the reload rebuilt rows without it)
         // before the list renders.
-        if let Some(list) = &mut self.list {
-            list.poll();
-        }
-        self.poll_property_sort();
-        self.stamp_open_marker();
-        if let Some(list) = &mut self.list {
+        self.model.poll();
+        if let Some(list) = self.model.list_mut() {
             list.render_query(f, search_inner, theme, focused);
             list.render(f, list_inner, theme, focused);
             // Record the rendered-items rect (block inner area) for mouse
@@ -723,19 +447,15 @@ impl Component for SidebarComponent {
 #[cfg(test)]
 impl SidebarComponent {
     pub(crate) fn poll_for_test(&mut self) {
-        if let Some(list) = &mut self.list {
-            list.poll();
-        }
-        self.poll_property_sort();
-        self.stamp_open_marker();
+        self.model.poll();
     }
 
     pub(crate) fn is_loading_for_test(&self) -> bool {
-        self.list.as_ref().is_some_and(|l| l.is_loading())
+        self.model.list().is_some_and(|l| l.is_loading())
     }
 
     pub(crate) fn note_row_is_open_for_test(&self, name: &str) -> bool {
-        self.list.as_ref().is_some_and(|l| {
+        self.model.list().is_some_and(|l| {
             l.rows().iter().any(|r| {
                 matches!(r, FileListEntry::Note { path, is_open, .. }
                     if path.get_name() == name && *is_open)
@@ -744,7 +464,7 @@ impl SidebarComponent {
     }
 
     pub(crate) fn note_row_title_for_test(&self, name: &str) -> Option<String> {
-        self.list.as_ref().and_then(|l| {
+        self.model.list().and_then(|l| {
             l.rows().iter().find_map(|r| match r {
                 FileListEntry::Note { path, title, .. } if path.get_name() == name => {
                     Some(title.clone())
@@ -755,7 +475,7 @@ impl SidebarComponent {
     }
 
     pub(crate) fn note_row_journal_date_for_test(&self, path: &VaultPath) -> Option<String> {
-        self.list.as_ref().and_then(|l| {
+        self.model.list().and_then(|l| {
             l.rows().iter().find_map(|r| match r {
                 FileListEntry::Note {
                     path: row_path,
@@ -771,8 +491,12 @@ impl SidebarComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::file_list::entry_order;
+    use crate::components::search_list::{Emit, Filter, RowSource};
+    use crate::logic::files::DirListingSource;
     use crate::settings::AppSettings;
     use crate::test_support::{mouse_down_at, temp_vault};
+    use async_trait::async_trait;
     use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -854,7 +578,7 @@ mod tests {
         // The streamed source awaits `browse_vault_stream`; give the background
         // work real time to land, polling the engine between waits.
         for _ in 0..50 {
-            if let Some(list) = &mut sidebar.list {
+            if let Some(list) = sidebar.model.list_mut() {
                 list.poll();
                 if !list.is_loading() {
                     break;
@@ -862,7 +586,7 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        if let Some(list) = &mut sidebar.list {
+        if let Some(list) = sidebar.model.list_mut() {
             list.poll();
         }
     }
@@ -883,7 +607,7 @@ mod tests {
         };
         // The engine records the rendered-items rect; clicks hit-test as
         // `row - rect.y`, so row 0 (y=9) is the first item.
-        if let Some(list) = &mut sidebar.list {
+        if let Some(list) = sidebar.model.list_mut() {
             list.set_list_rect(Rect {
                 x: 0,
                 y: 9,
@@ -928,7 +652,7 @@ mod tests {
         // A 1-row viewport over 2 notes, so the list overflows and can scroll.
         // The panel rect covers the whole sidebar, so the wheel works from the
         // header/search box too.
-        if let Some(list) = &mut sidebar.list {
+        if let Some(list) = sidebar.model.list_mut() {
             list.set_list_rect(Rect {
                 x: 0,
                 y: 9,
@@ -944,8 +668,8 @@ mod tests {
         }
 
         let first = sidebar
-            .list
-            .as_ref()
+            .model
+            .list()
             .unwrap()
             .selected_row()
             .map(|e| e.path().to_string());
@@ -954,8 +678,8 @@ mod tests {
         let result = sidebar.handle_input(&scroll_event_at(5, 4, MouseEventKind::ScrollDown), &tx);
         assert_eq!(result, EventState::Consumed);
         let after = sidebar
-            .list
-            .as_ref()
+            .model
+            .list()
             .unwrap()
             .selected_row()
             .map(|e| e.path().to_string());
@@ -997,7 +721,7 @@ mod tests {
     /// have arrived.
     async fn poll_to_idle(sidebar: &mut SidebarComponent) {
         for _ in 0..50 {
-            if let Some(list) = &mut sidebar.list {
+            if let Some(list) = sidebar.model.list_mut() {
                 list.poll();
                 if !list.is_loading() {
                     break;
@@ -1005,7 +729,7 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        if let Some(list) = &mut sidebar.list {
+        if let Some(list) = sidebar.model.list_mut() {
             list.poll();
         }
     }
@@ -1013,8 +737,8 @@ mod tests {
     /// Names of the visible note rows, in display order.
     fn note_names(sidebar: &SidebarComponent) -> Vec<String> {
         sidebar
-            .list
-            .as_ref()
+            .model
+            .list()
             .unwrap()
             .visible_rows()
             .iter()
@@ -1033,10 +757,7 @@ mod tests {
         use crate::components::search_list::Loaded;
 
         let sidebar = sidebar_with_notes("sidebar-stream", &["charlie", "alpha", "bravo"]).await;
-        let source = DirListingSource {
-            vault: sidebar.vault.clone(),
-            dir: VaultPath::root(),
-        };
+        let source = DirListingSource::new(sidebar.model.vault().clone(), VaultPath::root());
         let (emit, rx) = Emit::capture();
 
         source.load("", emit).await;
@@ -1070,7 +791,7 @@ mod tests {
 
         sidebar.apply_sort(SortField::Name, SortOrder::Descending, false);
 
-        let list = sidebar.list.as_ref().unwrap();
+        let list = sidebar.model.list().unwrap();
         assert!(
             !list.is_loading(),
             "a sort change must not reload the listing"
@@ -1134,8 +855,8 @@ mod tests {
     /// Kinds of the visible rows, in display order (excluding the Up row).
     fn row_kinds(sidebar: &SidebarComponent) -> Vec<&'static str> {
         sidebar
-            .list
-            .as_ref()
+            .model
+            .list()
             .unwrap()
             .visible_rows()
             .iter()
@@ -1232,8 +953,8 @@ mod tests {
         );
         // Also verify the filename field itself was updated to the new name.
         let renamed_filename = sb
-            .list
-            .as_ref()
+            .model
+            .list()
             .unwrap()
             .rows()
             .iter()
@@ -1366,7 +1087,7 @@ mod tests {
     async fn poll_property_values(sidebar: &mut SidebarComponent) {
         for _ in 0..100 {
             sidebar.poll_for_test();
-            if !sidebar.property_sort.is_pending() {
+            if !sidebar.model.property_sort().is_pending() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -1445,7 +1166,8 @@ mod tests {
         assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
 
         sidebar
-            .vault
+            .model
+            .vault()
             .save_note(
                 &VaultPath::note_path_from("bravo"),
                 "---\nrank: 9\n---\nbody",
@@ -1475,7 +1197,7 @@ mod tests {
             &tx,
         );
         poll_property_values(&mut sidebar).await;
-        let fetches = sidebar.property_sort.fetches;
+        let fetches = sidebar.model.property_sort().fetches;
         assert_eq!(fetches, 1);
 
         for order in [SortOrder::Descending, SortOrder::Ascending] {
@@ -1485,10 +1207,11 @@ mod tests {
         grouped.group_dirs = Some(true);
         SortableList::apply_sort(&mut sidebar, &grouped, &tx);
         assert_eq!(
-            sidebar.property_sort.fetches, fetches,
+            sidebar.model.property_sort().fetches,
+            fetches,
             "toggles: no refetch"
         );
-        assert!(!sidebar.property_sort.is_pending());
+        assert!(!sidebar.model.property_sort().is_pending());
         assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
 
         SortableList::apply_sort(
@@ -1497,7 +1220,7 @@ mod tests {
             &tx,
         );
         assert_eq!(
-            sidebar.property_sort.fetches,
+            sidebar.model.property_sort().fetches,
             fetches + 1,
             "new key fetches"
         );
@@ -1505,7 +1228,7 @@ mod tests {
 
         sidebar.refresh_if_showing(&VaultPath::root(), &tx);
         assert_eq!(
-            sidebar.property_sort.fetches,
+            sidebar.model.property_sort().fetches,
             fetches + 2,
             "refresh refetches"
         );
@@ -1528,7 +1251,8 @@ mod tests {
         poll_property_values(&mut sidebar).await;
         assert_eq!(note_names(&sidebar), ["bravo.md", "alpha.md", "charlie.md"]);
         sidebar
-            .vault
+            .model
+            .vault()
             .save_note(
                 &VaultPath::note_path_from("bravo"),
                 "---\nrank: 9\n---\nbody",
@@ -1543,7 +1267,11 @@ mod tests {
             &property_state("rank", SortOrder::Ascending),
             &tx,
         );
-        assert_eq!(sidebar.property_sort.fetches, 2, "back to rank refetches");
+        assert_eq!(
+            sidebar.model.property_sort().fetches,
+            2,
+            "back to rank refetches"
+        );
         poll_property_values(&mut sidebar).await;
         assert_eq!(note_names(&sidebar), ["alpha.md", "bravo.md", "charlie.md"]);
     }

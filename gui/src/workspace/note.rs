@@ -71,6 +71,11 @@ impl NoteHost {
     pub(crate) fn is_switching(&self) -> bool {
         self.switching.is_some()
     }
+
+    /// Whether an open was asked for and waits for the switch under way.
+    pub(crate) fn is_open_wanted(&self) -> bool {
+        self.wanted.is_some()
+    }
 }
 
 /// Where closing the window stands.
@@ -238,6 +243,9 @@ impl Workspace {
         if matches!(outcome, SaveOutcome::Saved(_)) && matches!(self.closing, Closing::Discard(_)) {
             self.closing = Closing::Open;
         }
+        if let SaveOutcome::Saved(saved) = &outcome {
+            self.files_note_saved(saved, cx);
+        }
         outcome
     }
 
@@ -337,7 +345,8 @@ impl Workspace {
                     host.session.stop_autosave();
                 }
                 host.note = Some(path.clone());
-                self.status.note = Some(path);
+                self.status.note = Some(path.clone());
+                self.files_note_opened(&path, cx);
             }
             // The editor still holds the note it had: point the session back
             // at it, so nothing is saved under the missing path.
@@ -363,6 +372,8 @@ impl Workspace {
         } else if self.notes.as_ref().is_some_and(|h| h.wanted.is_some()) {
             self.switch(cx);
         }
+        // The first open settled (or failed): FILES may pick its folder.
+        self.ensure_files_listing(cx);
         cx.notify();
     }
 
@@ -427,6 +438,9 @@ impl Workspace {
             completion
         });
         let again = std::mem::take(&mut host.save_again);
+        if let Some(saved) = &completion.saved {
+            self.files_note_saved(saved, cx);
+        }
         if completion.wrote && matches!(self.closing, Closing::Discard(_)) {
             self.closing = Closing::Open;
         }

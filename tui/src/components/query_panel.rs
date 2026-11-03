@@ -16,8 +16,8 @@ use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, Focus, KeyReaction, ResolvingRowSource, RowSource, SearchList, SearchMouse, SearchRow,
-    Unresolvable, VaultSuggestions,
+    Emit, Focus, KeyReaction, ListRow, ResolvingRowSource, RowSource, SearchList, SearchMouse,
+    SearchRow, Unresolvable, VaultSuggestions,
 };
 use crate::components::sortable::{SortableList, order_of_query, query_with_sort, sort_chip_line};
 use crate::keys::KeyBindings;
@@ -65,6 +65,18 @@ pub struct BacklinkEntry {
     pub full_text: Option<String>,
 }
 
+impl ListRow for BacklinkEntry {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.filename)
+    }
+
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        Some(crate::components::search_list::YankTarget::path(
+            self.path.to_string(),
+        ))
+    }
+}
+
 impl SearchRow for BacklinkEntry {
     fn to_list_item(&self, theme: &Theme, icons: &Icons, selected: bool) -> ListItem<'static> {
         let title_display = if self.title.is_empty() {
@@ -88,18 +100,8 @@ impl SearchRow for BacklinkEntry {
             .into_list_item(theme)
     }
 
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.filename)
-    }
-
     fn visual_height(&self) -> u16 {
         1
-    }
-
-    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
-        Some(crate::components::search_list::YankTarget::path(
-            self.path.to_string(),
-        ))
     }
 }
 

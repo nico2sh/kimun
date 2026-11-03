@@ -1,0 +1,102 @@
+# ─── Kimün configuration ────────────────────────────────────────────────────
+#
+# KEY BINDINGS
+# ────────────
+# Supported combinations:
+#   - ctrl and/or alt (with optional shift) + a letter (a-z)
+#   - bare F-key (F1–F12, no modifier required)
+# Any combo that does not follow these rules is silently ignored when loaded.
+#
+# Format per action:
+#   ActionName = ["<modifiers> & <letter>", ...]
+#
+# Available modifiers (combine with +):  ctrl   alt   shift
+#
+# Examples:
+#   Quit         = ["ctrl&Q"]            # Ctrl+Q
+#   SearchNotes  = ["ctrl&K"]            # Ctrl+K
+#   OpenNote     = ["ctrl&O"]            # Ctrl+O  (fuzzy file finder)
+#   OpenSettings = ["F4", "ctrl&,"]     # F4 (Ctrl+, alias)
+#   NewJournal   = ["ctrl&J"]            # Ctrl+J
+#   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
+#   Leader       = ["ctrl&B"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
+#   OpenCommandPalette = ["ctrl&P"]      # Ctrl+P  (every leader command, fuzzy)
+#
+# OTHER SETTINGS
+# ──────────────
+#   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
+#   leader_timeout_ms = 400               # hesitation before the which-key menu
+#   ctrl_h            = "auto"            # auto | backspace | chord
+#       What a bare 0x08 byte means. Backspace and Ctrl-H are the same byte
+#       on terminals without the kitty keyboard protocol, so only one of the
+#       two can work there. "auto" keeps the Ctrl-H chord unless the tty's
+#       erase character is 0x08; set "backspace" if your Backspace key moves
+#       focus instead of deleting, "chord" to always keep the chord.
+#
+# LEADER TREE OVERRIDES
+# ─────────────────────
+#   Remap, add, or remove leader sequences ([leader.bind]) and rename group
+#   captions ([leader.labels]). Keys are the sequence AFTER the gateway;
+#   bind values are action ids (see the cheatsheet) or "none" to unbind.
+#   [leader.bind]
+#   "o f" = "find.files"     # remap: leader o f now opens the file picker
+#   "x"   = "note.daily"     # add:   leader x opens today's journal
+#   "g p" = "none"           # remove the git-sync stub binding
+#   [leader.labels]
+#   "f"   = "+search"        # rename the +find group caption
+#
+# ─────────────────────────────────────────────────────────────────────────────
+config_version = 7
+theme = "Catppuccin Frappé"
+cache_dir = "."
+history_dir = "history"
+autosave_interval_secs = 5
+leader_timeout_ms = 400
+use_nerd_fonts = true
+editor_backend = "vim"
+default_sort_field = "name"
+default_sort_order = "ascending"
+journal_sort_field = "name"
+journal_sort_order = "descending"
+group_directories = false
+ctrl_h = "auto"
+
+[global]
+current_workspace = "personal"
+update_check = true
+mouse = true
+
+[workspaces.personal]
+path = "/home/nico/Development/kimun/example/personal"
+created = "2026-11-03T17:46:03.708231452Z"
+file_key = "d6eab63db51d"
+
+[key_bindings]
+Quit = ["ctrl&Q"]
+OpenSettings = ["F4", "ctrl&,"]
+SearchNotes = ["ctrl&K"]
+OpenNote = ["ctrl&O"]
+NewJournal = ["ctrl&J"]
+ToggleSidebar = ["ctrl&T"]
+OpenFileBrowser = ["ctrl&E"]
+FocusEditor = ["ctrl&L"]
+FocusSidebar = ["ctrl&H"]
+OpenSortDialog = ["ctrl&R"]
+FileOperations = ["F2"]
+FollowLink = ["ctrl&N"]
+QuickNote = ["ctrl&W"]
+YankRow = ["ctrl&Y"]
+OpenSavedSearches = ["F3"]
+SaveCurrentQuery = ["ctrl&D"]
+OpenAsk = ["F6"]
+SwitchWorkspace = ["F5"]
+FindInBuffer = ["ctrl&F"]
+Leader = ["ctrl&B"]
+OpenCommandPalette = ["ctrl&P"]
+
+[leader]
+
+[gui]
+drawer_left = ["files"]
+drawer_left_visible = true
+drawer_left_width = 299.0

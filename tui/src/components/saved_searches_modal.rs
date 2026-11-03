@@ -26,7 +26,7 @@ use crate::components::events::InputEvent;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::search_list::{
-    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
+    Emit, Filter, KeyReaction, ListRow, RowSource, SearchList, SearchMouse, SearchRow,
 };
 use crate::keys::key_combo::KeyCombo;
 use crate::keys::{KeyBindings, key_event_to_combo};
@@ -62,6 +62,28 @@ impl SearchItem {
     }
 }
 
+impl ListRow for SearchItem {
+    /// The virtual backlinks row is filter-exempt: returning `None` makes the
+    /// engine keep it present regardless of the query (it is also prepended by
+    /// the engine when the rank closure drops it).
+    fn match_text(&self) -> Option<&str> {
+        if self.is_virtual {
+            None
+        } else {
+            Some(&self.name)
+        }
+    }
+
+    /// The stored query, not the display name — the query is the reusable
+    /// thing (paste it into another search, or into a note).
+    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+        Some(crate::components::search_list::YankTarget::new(
+            self.query.clone(),
+            "query",
+        ))
+    }
+}
+
 impl SearchRow for SearchItem {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
         let prefix = match self.index {
@@ -85,26 +107,6 @@ impl SearchRow for SearchItem {
 
     fn visual_height(&self) -> u16 {
         1
-    }
-
-    /// The virtual backlinks row is filter-exempt: returning `None` makes the
-    /// engine keep it present regardless of the query (it is also prepended by
-    /// the engine when the rank closure drops it).
-    fn match_text(&self) -> Option<&str> {
-        if self.is_virtual {
-            None
-        } else {
-            Some(&self.name)
-        }
-    }
-
-    /// The stored query, not the display name — the query is the reusable
-    /// thing (paste it into another search, or into a note).
-    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
-        Some(crate::components::search_list::YankTarget::new(
-            self.query.clone(),
-            "query",
-        ))
     }
 }
 

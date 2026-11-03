@@ -44,7 +44,7 @@ use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Filter, Focus, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
+    Filter, Focus, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -108,16 +108,7 @@ impl SourceRow {
     }
 }
 
-impl SearchRow for SourceRow {
-    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
-        source_row(self.rank, &self.source, theme).into_list_item(theme)
-    }
-
-    fn visual_height(&self) -> u16 {
-        // Title line + dim filename line (the date is inline on the title).
-        2
-    }
-
+impl ListRow for SourceRow {
     fn match_text(&self) -> Option<&str> {
         Some(&self.filter_text)
     }
@@ -126,6 +117,17 @@ impl SearchRow for SourceRow {
         Some(crate::components::search_list::YankTarget::path(
             self.source.path.to_string(),
         ))
+    }
+}
+
+impl SearchRow for SourceRow {
+    fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
+        source_row(self.rank, &self.source, theme).into_list_item(theme)
+    }
+
+    fn visual_height(&self) -> u16 {
+        // Title line + dim filename line (the date is inline on the title).
+        2
     }
 }
 
