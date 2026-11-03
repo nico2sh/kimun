@@ -13,8 +13,15 @@
 //!
 //! **The find bar.** While the editor's find bar is open it owns the
 //! keyboard, as in the TUI: every key goes to `Editor::handle_find_key`
-//! (Ctrl-F and Ctrl-H still open / advance it first), and text input (IME,
-//! multi-char text) lands in the bar's focused field, never in the buffer.
+//! (the keymap's find and replace chords still open / advance it first), and
+//! text input (IME, multi-char text) lands in the bar's focused field, never in
+//! the buffer.
+//!
+//! **The keymap.** Every key-down is first resolved against the GUI keymap
+//! ([`crate::keymap`]) with the editor focused. Find and replace are the
+//! editor's own; any other app command is left to bubble to whoever owns it,
+//! and never reaches the editor. Under vim the keymap hands bare Ctrl+letter
+//! chords to the editor (the vim rule, ADR-0050 §6).
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -26,10 +33,12 @@ use gpui_kit::{
     MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString,
     Styled, Task, TextSystem, UTF16Selection, Window, div,
 };
+use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::editor::Editor;
 use kimun_notes::logic::editor::handled::Handled;
 use kimun_notes::logic::editor::request::EditorRequest;
 use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
+use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::{AppTx, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
@@ -38,6 +47,7 @@ use crate::find_bar::{self, BarPaint};
 use crate::fonts::EditorFonts;
 use crate::grid::CellMetrics;
 use crate::input::{self, ScrollAccumulator};
+use crate::keymap::{self, KeyCtx};
 use crate::row_paint::RowPaint;
 use crate::theme;
 
@@ -59,10 +69,20 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-c", NoAction, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-c", NoAction, Some(KEY_CONTEXT)),
         // gpui-component's inspector toggle (debug builds), global: in the
-        // editor every Ctrl chord is the editor's (literal Ctrl, ADR-0049 §7).
+        // editor a Ctrl chord is the editor's or the GUI keymap's (ADR-0050 §6).
         KeyBinding::new("ctrl-shift-i", NoAction, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-alt-i", NoAction, Some(KEY_CONTEXT)),
     ]);
+}
+
+/// What the keymap made of a key-down, from the editor's side.
+enum AppCommand {
+    /// Not bound to an app command here: the editor's key.
+    None,
+    /// An editor command (find, replace), done.
+    Handled,
+    /// Another owner's command (focus, the drawer): not the editor's.
+    NotOurs,
 }
 
 /// How the caret is drawn. Mirrors the TUI's terminal cursor shapes.
@@ -215,23 +235,56 @@ impl EditorView {
         }
     }
 
-    /// The find bar's own chords, honoured whether or not it is open: literal
-    /// Ctrl-F opens it (or steps), Ctrl-H opens it with the replace field.
-    /// Returns whether `key` was one.
-    fn find_chord(&mut self, key: KeyInput) -> bool {
-        if key.mods != Mods::CTRL {
-            return false;
+    /// `key` as the editor's own (the find bar's while it is open), past the
+    /// keymap. True when it was consumed. The workspace uses it to hand back
+    /// a chord it does not act on (Alt+Up with nothing stacked, ADR-0050 §4).
+    pub(crate) fn editor_key(
+        &mut self,
+        key: KeyInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.preedit = None;
+        if self.editor.find_open() {
+            self.find_key(key, cx);
+            self.settle(window, cx);
+            return true;
         }
-        match key.key {
-            Key::Char('f') => self.open_find(),
-            Key::Char('h') => {
+        let (handled, _) = self.editor.handle_key(key, &self.tx);
+        self.settle(window, cx);
+        handled == Handled::Consumed
+    }
+
+    /// Where a key arrives, for the keymap: the editor, running vim unless
+    /// the find bar (a plain field whatever the backend) has the keyboard.
+    /// The workspace resolves the chords the editor lets bubble in this same
+    /// context, so the two never disagree about whose a key is.
+    pub(crate) fn key_ctx(&self) -> KeyCtx {
+        KeyCtx {
+            panel: Panel::Editor,
+            vim: self.editor.is_vim() && !self.editor.find_open(),
+        }
+    }
+
+    /// Act on `key` if the keymap binds it to an app command here, whether or
+    /// not the find bar is open: find opens the bar (or steps), replace opens
+    /// it with the replace field.
+    fn app_command(&mut self, key: KeyInput, cx: &App) -> AppCommand {
+        let keymap = keymap::active(cx);
+        match keymap.resolve(key, self.key_ctx()) {
+            None => AppCommand::None,
+            Some(ActionShortcuts::FindInBuffer) => {
+                self.open_find();
+                AppCommand::Handled
+            }
+            Some(ActionShortcuts::ReplaceInBuffer) => {
                 if self.editor.open_replace() {
                     self.preedit = None;
                 }
+                AppCommand::Handled
             }
-            _ => return false,
+            Some(_) => AppCommand::NotOurs,
         }
-        true
     }
 
     /// A key while the find bar is open: the bar takes it, whatever it is.
@@ -240,8 +293,10 @@ impl EditorView {
     /// focused field: a terminal pastes through its own channel, a window has
     /// to ask. Any other Super (Cmd) chord is ignored rather than typed: the
     /// logic field types a char with Super held, and Cmd-Z must not type `z`.
-    /// Shortcuts stay literal Ctrl (ADR-0049 §7), so Cmd-Z/Cmd-A do not stand
-    /// in for the bar's Ctrl-Z/Ctrl-A.
+    /// The bar's own field keys (Ctrl-Z undo, Ctrl-A replace-all) are the
+    /// logic bar's literal Ctrl chords, not keymap actions, so Cmd-Z/Cmd-A do
+    /// not stand in for them; only the app commands go through the GUI keymap
+    /// (ADR-0050 §6).
     fn find_key(&mut self, key: KeyInput, cx: &mut Context<Self>) {
         let paste = matches!(key.key, Key::Char('v'))
             && (key.mods == Mods::CTRL || key.mods == Mods::SUPER);
@@ -302,23 +357,21 @@ impl EditorView {
             // (`´` preedit, then `é` as a keystroke): whatever was being
             // composed is over once a key acts.
             self.preedit = None;
-            if self.find_chord(key) {
-                self.settle(window, cx);
-                cx.stop_propagation();
-                return;
-            }
-            if self.editor.find_open() {
-                self.find_key(key, cx);
-                self.settle(window, cx);
-                cx.stop_propagation();
-                return;
-            }
-            let (handled, _) = self.editor.handle_key(key, &self.tx);
-            self.settle(window, cx);
-            // A consumed key must not also reach the platform's input handler,
-            // or typed text would be inserted twice.
-            if handled == Handled::Consumed {
-                cx.stop_propagation();
+            match self.app_command(key, cx) {
+                AppCommand::Handled => {
+                    self.settle(window, cx);
+                    cx.stop_propagation();
+                }
+                // Bubbles to the command's owner (the workspace); the editor
+                // never sees it unless the owner hands it back.
+                AppCommand::NotOurs => {}
+                AppCommand::None => {
+                    // A consumed key must not also reach the platform's input
+                    // handler, or typed text would be inserted twice.
+                    if self.editor_key(key, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }
             }
             return;
         }

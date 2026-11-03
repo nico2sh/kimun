@@ -57,6 +57,13 @@ pub fn main() -> Result<ExitCode> {
     runtime.block_on(entry())
 }
 
+/// File logging in the app's log directory, set up as the TUI's own; for
+/// another frontend (the GUI). Keep the guard alive for the process's life
+/// so the log is flushed. `None` (reported on stderr) when it cannot start.
+pub fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    bootstrap::init_logging(&kimun_core::system::log_dir().into_path_buf())
+}
+
 async fn entry() -> Result<ExitCode> {
     // Computed once, reused by logging and the panic hook. The guard is held
     // to the end of this function, and every exit path returns through here,

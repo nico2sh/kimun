@@ -35,6 +35,7 @@ use kimun_core::system::{self, SystemPath};
 
 use crate::keys::KeyBindings;
 pub mod config_migration;
+pub mod gui;
 pub mod history;
 pub mod icons;
 pub mod themes;
@@ -220,6 +221,11 @@ pub struct AppSettings {
     /// (see [`crate::app::ctrl_h`]); this picks which.
     #[serde(default)]
     pub ctrl_h: CtrlHSetting,
+    /// The `[gui]` table (ADR-0050 §5): the GUI's drawers and key overrides.
+    /// The TUI never reads it; it is kept as written so a TUI save
+    /// round-trips it untouched, and left out of the file while empty.
+    #[serde(default, skip_serializing_if = "gui::GuiSettings::is_empty")]
+    pub gui: gui::GuiSettings,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -503,6 +509,7 @@ impl Default for AppSettings {
             journal_sort_order: default_journal_sort_order(),
             group_directories: false,
             ctrl_h: CtrlHSetting::default(),
+            gui: gui::GuiSettings::default(),
             config_file: None,
         }
     }
@@ -622,7 +629,35 @@ impl AppSettings {
             .unwrap_or(true)
     }
 
+    /// Saves the settings. The `[gui]` table is the GUI's (ADR-0050 §5): it
+    /// is taken from the file as it is now, not from this copy, so a TUI
+    /// that loaded before the GUI's last layout change does not revert it.
+    /// A file that is missing or does not parse keeps this copy's table.
     pub fn save_to_disk(&self) -> Result<(), SettingsError> {
+        let path = self.get_config_file_path()?;
+        match Self::gui_on_disk(&path) {
+            Some(gui) if gui != self.gui => {
+                let mut fresh = self.clone();
+                fresh.gui = gui;
+                fresh.write_to_disk()
+            }
+            _ => self.write_to_disk(),
+        }
+    }
+
+    /// The `[gui]` table of the config at `path`, when it exists and parses.
+    fn gui_on_disk(path: &std::path::Path) -> Option<gui::GuiSettings> {
+        #[derive(serde::Deserialize)]
+        struct GuiOnly {
+            #[serde(default)]
+            gui: gui::GuiSettings,
+        }
+        let body = std::fs::read_to_string(path).ok()?;
+        toml::from_str::<GuiOnly>(&body).ok().map(|g| g.gui)
+    }
+
+    /// Writes exactly these settings, `[gui]` included.
+    fn write_to_disk(&self) -> Result<(), SettingsError> {
         tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
         // Atomic: the config is rewritten on every preference change and on
@@ -701,6 +736,48 @@ impl AppSettings {
         setting.config_file = Some(path.clone());
         setting.resolve_paths(&Self::config_base_dir(&path));
         Ok(setting)
+    }
+
+    /// Rewrites the `[gui]` table of the default config file with `edit`
+    /// applied, through the same load, migrate and save path the TUI uses
+    /// for any preference ([`Self::update_gui_at`]). For the GUI, whose own
+    /// copy of the settings is read-only and unmigrated.
+    pub fn update_gui(edit: impl FnOnce(&mut gui::GuiSettings)) -> Result<(), SettingsError> {
+        Self::update_gui_at(Self::default_config_file_path()?, edit)
+    }
+
+    /// Rewrites the `[gui]` table of the config at `path`: the file is read
+    /// fresh (so whatever the TUI saved meanwhile is kept), migrated and
+    /// completed as [`Self::load_from_file`] does, edited, and saved
+    /// atomically. A file that does not parse is left alone and reported,
+    /// never renamed to `.corrupt` on the GUI's behalf.
+    ///
+    /// The file is read once. A missing one is created with the defaults
+    /// plus the edit, in one write.
+    pub fn update_gui_at(
+        path: PathBuf,
+        edit: impl FnOnce(&mut gui::GuiSettings),
+    ) -> Result<(), SettingsError> {
+        let mut settings = if path.exists() {
+            // Parse errors come back as errors: no `.corrupt` rename here.
+            let mut settings = Self::load_read_only_from(path)?;
+            // What `load_from_file` does after parsing; the write below
+            // saves the migration along with the edit.
+            config_migration::ConfigMigration::run(&mut settings)?;
+            settings.merge_missing_default_bindings();
+            settings
+        } else {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                system::create_dir(parent)?;
+            }
+            Self::defaults_for_config_file(path)
+        };
+        edit(&mut settings.gui);
+        // Not `save_to_disk`: that keeps the `[gui]` on disk, and this edit
+        // is the one that must land.
+        settings.write_to_disk()
     }
 
     pub fn load_from_file(path: PathBuf) -> Result<Self, SettingsError> {
@@ -1703,6 +1780,95 @@ created = "2026-01-01T00:00:00Z"
         assert_eq!(settings.theme, "Nord");
         assert_eq!(settings.config_version, 3, "must not be migrated in memory");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    }
+
+    /// The GUI's save path: an old config comes back migrated, exactly as a
+    /// TUI preference save would write it, with the `[gui]` edit applied.
+    #[test]
+    fn update_gui_saves_through_the_migrated_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("config.toml");
+        std::fs::write(&path, "config_version = 3\ntheme = \"Nord\"\n").unwrap();
+
+        AppSettings::update_gui_at(path.clone(), |gui| {
+            gui.set_drawer_width(crate::logic::layout::Side::Left, 300.0);
+            gui.set_drawer_visible(crate::logic::layout::Side::Left, false);
+        })
+        .unwrap();
+
+        let back = AppSettings::load_read_only_from(path).unwrap();
+        assert_eq!(back.theme, "Nord");
+        assert_eq!(
+            back.config_version,
+            config_migration::CURRENT_CONFIG_VERSION,
+            "never written back unmigrated"
+        );
+        assert_eq!(
+            back.gui.drawer_width(crate::logic::layout::Side::Left),
+            300.0
+        );
+        assert!(!back.gui.drawer_visible(crate::logic::layout::Side::Left));
+    }
+
+    /// A TUI that loaded before the GUI changed its layout keeps that layout
+    /// on its next save, and its own change still lands.
+    #[test]
+    fn a_tui_save_after_a_gui_edit_keeps_the_gui_layout() {
+        use crate::logic::layout::Side;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("config.toml");
+        let current = config_migration::CURRENT_CONFIG_VERSION;
+        std::fs::write(
+            &path,
+            format!("config_version = {current}\ntheme = \"Nord\"\n"),
+        )
+        .unwrap();
+        let mut tui = AppSettings::load_from_file(path.clone()).unwrap();
+
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 333.0))
+            .unwrap();
+        tui.set_theme("Gruvbox Dark".into());
+        tui.save_to_disk().unwrap();
+
+        let back = AppSettings::load_read_only_from(path).unwrap();
+        assert_eq!(back.theme, "Gruvbox Dark");
+        assert_eq!(back.gui.drawer_width(Side::Left), 333.0);
+    }
+
+    #[test]
+    fn update_gui_creates_a_missing_config_once_with_the_edit() {
+        use crate::logic::layout::Side;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("sub")
+            .join("config.toml");
+
+        AppSettings::update_gui_at(path.clone(), |gui| {
+            gui.set_drawer_visible(Side::Left, false)
+        })
+        .unwrap();
+
+        let back = AppSettings::load_read_only_from(path).unwrap();
+        // The defaults the TUI's own first start writes, plus the edit.
+        assert!(!back.gui.drawer_visible(Side::Left));
+        assert_eq!(back.theme, AppSettings::default().theme);
+    }
+
+    #[test]
+    fn update_gui_leaves_a_corrupt_config_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+        let body = "not = valid toml [[[";
+        std::fs::write(&path, body).unwrap();
+
+        assert!(AppSettings::update_gui_at(path.clone(), |_| {}).is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        assert_eq!(std::fs::read_dir(&config_dir).unwrap().count(), 1);
     }
 
     #[test]
