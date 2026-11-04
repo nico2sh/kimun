@@ -345,6 +345,11 @@ pub fn search_match(theme: &Theme) -> Rgba {
     to_gpui(&theme.color_search_match, Token::Foreground, theme)
 }
 
+/// A tag's glyph and name in TAGS: the colour a `#tag` has in the editor.
+pub fn tag(theme: &Theme) -> Rgba {
+    to_gpui(&theme.color_tag, Token::Foreground, theme)
+}
+
 // ---- Edit surface: Role -> style --------------------------------------------
 
 /// How one run of the **Editor frame** paints: the GPUI counterpart of the

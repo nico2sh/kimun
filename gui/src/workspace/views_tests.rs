@@ -434,8 +434,8 @@ fn the_leader_and_the_palette_pick_the_tab(cx: &mut TestAppContext) {
     assert_eq!(link_rows(&started, &rt, cx), ["gamma"]);
 }
 
-/// LINKS and OUTLINE draw their views, not the placeholder; the views not
-/// built yet keep it.
+/// LINKS, OUTLINE, FIND and TAGS draw their views, not the placeholder;
+/// CFG (not built yet) keeps it.
 #[gpui_kit::test]
 fn the_placeholder_is_gone_for_links_and_outline(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -449,10 +449,15 @@ fn the_placeholder_is_gone_for_links_and_outline(cx: &mut TestAppContext) {
     let built = |view: DrawerView, cx: &TestAppContext| {
         cx.read(|cx| started.workspace.read(cx).view_content(view).is_some())
     };
-    assert!(built(DrawerView::Links, cx) && built(DrawerView::Outline, cx));
-    for view in [DrawerView::Find, DrawerView::Tags, DrawerView::Config] {
-        assert!(!built(view, cx), "{view:?} keeps the placeholder");
+    for view in [
+        DrawerView::Links,
+        DrawerView::Outline,
+        DrawerView::Find,
+        DrawerView::Tags,
+    ] {
+        assert!(built(view, cx), "{view:?} is built");
     }
+    assert!(!built(DrawerView::Config, cx), "CFG keeps the placeholder");
 }
 
 /// Hidden views do no work: opening notes, typing and saving read nothing

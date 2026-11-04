@@ -66,6 +66,71 @@ pub fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+/// Soft-wrap `line` for a monospace view `columns` cells wide: the byte
+/// ranges of its rows, in order, together covering the whole line (so a
+/// match's byte range can be cut to the rows it spans, see
+/// [`split_ranges`]).
+///
+/// Widths are display cells (`unicode-width`): a wide character (CJK) takes
+/// two, a combining mark none; a grapheme cluster is never split. A row
+/// breaks after the last whitespace that lets the next word fit; a word wider
+/// than `columns` breaks by character. Whitespace never forces a break: it
+/// hangs at the end of its row (invisible), so a row's visible text fits
+/// `columns`; the one exception is a single grapheme wider than the whole
+/// row, which gets a row of its own. An empty line, or `columns` 0, is one
+/// row.
+pub fn wrap_ranges(line: &str, columns: usize) -> Vec<std::ops::Range<usize>> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    use unicode_width::UnicodeWidthStr as _;
+
+    if columns == 0 || line.is_empty() {
+        return std::iter::once(0..line.len()).collect();
+    }
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut width = 0;
+    // Just after the last whitespace in the current row, and the row's width
+    // up to there: where a word that does not fit moves to the next row.
+    let mut space: Option<(usize, usize)> = None;
+    for (at, g) in line.grapheme_indices(true) {
+        let w = g.width();
+        if g.chars().all(char::is_whitespace) {
+            width += w;
+            space = Some((at + g.len(), width));
+            continue;
+        }
+        while width + w > columns && at > start {
+            match space.take() {
+                Some((after, upto)) if after > start => {
+                    rows.push(start..after);
+                    start = after;
+                    width -= upto;
+                }
+                _ => {
+                    rows.push(start..at);
+                    start = at;
+                    width = 0;
+                }
+            }
+        }
+        width += w;
+    }
+    rows.push(start..line.len());
+    rows
+}
+
+/// The parts of `ranges` (byte ranges into a line, ascending) that fall in
+/// `row` (a byte range of the same line, e.g. from [`wrap_ranges`]),
+/// relative to the row's start. A range spanning several rows is cut at each
+/// row edge; an empty row has none.
+pub fn split_ranges(ranges: &[(usize, usize)], row: std::ops::Range<usize>) -> Vec<(usize, usize)> {
+    ranges
+        .iter()
+        .filter(|&&(s, e)| s < row.end && e > row.start)
+        .map(|&(s, e)| (s.max(row.start) - row.start, e.min(row.end) - row.start))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +190,95 @@ mod tests {
     #[test]
     fn wrap_line_empty_string() {
         assert_eq!(wrap_line("", 10), vec![""]);
+    }
+
+    /// Each row of `wrap_ranges` as text.
+    fn rows(line: &str, columns: usize) -> Vec<&str> {
+        wrap_ranges(line, columns)
+            .into_iter()
+            .map(|r| &line[r])
+            .collect()
+    }
+
+    #[test]
+    fn wrap_ranges_breaks_after_the_space_and_keeps_it() {
+        assert_eq!(rows("hello world foo bar", 12), ["hello world ", "foo bar"]);
+        assert_eq!(rows("short", 20), ["short"]);
+    }
+
+    #[test]
+    fn wrap_ranges_cover_the_whole_line_in_order() {
+        let line = "the quick  brown fox jumps over   the lazy dog";
+        for columns in 1..=line.len() + 1 {
+            let ranges = wrap_ranges(line, columns);
+            assert_eq!(ranges.first().unwrap().start, 0);
+            assert_eq!(ranges.last().unwrap().end, line.len());
+            assert!(ranges.windows(2).all(|w| w[0].end == w[1].start));
+            for r in &ranges {
+                assert!(
+                    line[r.clone()].trim_end().len() <= columns,
+                    "{columns}: {:?}",
+                    &line[r.clone()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_ranges_exact_width_is_one_row() {
+        assert_eq!(rows("abcde", 5), ["abcde"]);
+        // A space after a full row hangs; the next word starts the next row.
+        assert_eq!(rows("abcde f", 5), ["abcde ", "f"]);
+        assert_eq!(rows("abcdef", 5), ["abcde", "f"]);
+    }
+
+    #[test]
+    fn wrap_ranges_hard_break_an_unbroken_line() {
+        assert_eq!(rows("abcdefghijk", 4), ["abcd", "efgh", "ijk"]);
+        // A long word after a short one: the short one keeps its row.
+        assert_eq!(rows("ab cdefghij", 4), ["ab ", "cdef", "ghij"]);
+    }
+
+    #[test]
+    fn wrap_ranges_count_wide_characters_as_two_cells() {
+        assert_eq!(rows("日本語テスト", 4), ["日本", "語テ", "スト"]);
+        assert_eq!(rows("日本語テスト", 5), ["日本", "語テ", "スト"]);
+        // A wide character in a row too narrow for it still gets a row.
+        assert_eq!(rows("日本", 1), ["日", "本"]);
+        assert_eq!(rows("a日b", 2), ["a", "日", "b"]);
+    }
+
+    #[test]
+    fn wrap_ranges_keep_combining_marks_with_their_letter() {
+        // `e` + U+0301 is one cell, one grapheme: never split.
+        let line = "cafe\u{301}s";
+        assert_eq!(rows(line, 4), ["cafe\u{301}", "s"]);
+        assert_eq!(rows(line, 5), [line]);
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // one row, as a range
+    fn wrap_ranges_empty_line_and_zero_columns() {
+        assert_eq!(wrap_ranges("", 10), [0..0]);
+        assert_eq!(wrap_ranges("abc", 0), [0..3]);
+        assert_eq!(rows("   ", 1), ["   "], "blanks never force a break");
+    }
+
+    #[test]
+    fn split_ranges_cuts_a_match_across_rows() {
+        let line = "abcd efgh";
+        let hits = match_ranges(line, &needles(&["cd ef", "h"]));
+        let parts: Vec<Vec<&str>> = wrap_ranges(line, 4)
+            .into_iter()
+            .map(|row| {
+                let text = &line[row.clone()];
+                split_ranges(&hits, row)
+                    .into_iter()
+                    .map(|(s, e)| &text[s..e])
+                    .collect()
+            })
+            .collect();
+        assert_eq!(parts, vec![vec!["cd "], vec!["ef", "h"]]);
+        assert!(split_ranges(&hits, 0..0).is_empty());
     }
 }

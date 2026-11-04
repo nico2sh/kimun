@@ -17,8 +17,9 @@ mod vars;
 pub use self::breadcrumb::SavedSearchBreadcrumb;
 pub use self::emphasis::{emphasis_needles, error_reason};
 pub use self::find::{
-    BacklinkEntry, BacklinkSource, DEFAULT_QUERY, DEFAULT_QUERY_LONG, extract_context_multi,
-    is_default_query, load_query, split_paragraphs,
+    BacklinkEntry, BacklinkSource, DEFAULT_QUERY, DEFAULT_QUERY_LONG, QueryHit, QueryPage,
+    QueryPageSource, cut_context, extract_context_multi, is_default_query, load_query,
+    load_query_page, split_paragraphs,
 };
 pub use self::syntax::{SYNTAX, SyntaxSection};
 pub use self::vars::{

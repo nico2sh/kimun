@@ -1,5 +1,5 @@
 //! The **drawer list** (M7a G1): the one list component behind the
-//! note-scoped drawer views — LINKS and OUTLINE now, TAGS and FIND later.
+//! drawer views — LINKS, OUTLINE, TAGS and FIND.
 //! A view hands it rows (a [`RowSource`] loaded off the UI thread, or rows it
 //! already has) and says what to show when there are none; the list draws
 //! them and turns keys and clicks into selection and [`DrawerListEvent`]s.
@@ -117,12 +117,45 @@ impl<R: DrawerRow> DrawerList<R> {
         empty: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
-        self.core = Some(ListCore::new(
-            source,
-            self.redraw.clone(),
-            ListSetup::default(),
-        ));
+        self.load_with(source, ListSetup::default(), empty, cx);
+    }
+
+    /// [`Self::load`] with the list's own setup: a local filter over the
+    /// rows (TAGS), or the query a reloading source runs first (FIND).
+    pub(crate) fn load_with(
+        &mut self,
+        source: Arc<dyn RowSource<R>>,
+        setup: ListSetup<R>,
+        empty: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.core = Some(ListCore::new(source, self.redraw.clone(), setup));
         self.restart(empty, cx);
+    }
+
+    /// Hand the listing a new query: a source that loads per query runs it
+    /// (the load under way is aborted, its rows never land); a loaded set
+    /// is filtered again here and now. Nothing before the first load.
+    pub(crate) fn set_query(&mut self, query: impl Into<String>, cx: &mut Context<Self>) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        core.set_query(query);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Run the current query again (the vault changed under the rows).
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(core) = self.core.as_mut() {
+            core.reload();
+            cx.notify();
+        }
+    }
+
+    /// The query the rows were asked for.
+    pub(crate) fn query(&self) -> &str {
+        self.core.as_ref().map_or("", ListCore::query)
     }
 
     /// List `rows`, here and now; `empty` is what the list says when there
@@ -162,8 +195,7 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
-    /// Whether rows were asked for and have not landed yet (tests).
-    #[cfg(test)]
+    /// Whether rows were asked for and have not landed yet.
     pub(crate) fn is_loading(&self) -> bool {
         self.core.as_ref().is_some_and(ListCore::is_loading)
     }
@@ -189,12 +221,37 @@ impl<R: DrawerRow> DrawerList<R> {
         &self.empty
     }
 
+    /// How many rows are shown.
+    pub(crate) fn len(&self) -> usize {
+        self.core.as_ref().map_or(0, ListCore::visible_len)
+    }
+
+    /// The first row shown.
+    pub(crate) fn first_row(&self) -> Option<&R> {
+        self.core.as_ref().and_then(|core| core.visible_row(0))
+    }
+
+    /// The selected row's position.
+    pub(crate) fn selected(&self) -> Option<usize> {
+        self.core.as_ref().and_then(ListCore::selected)
+    }
+
     /// The row Enter would activate.
     pub(crate) fn selected_row(&self) -> Option<&R> {
         self.core.as_ref().and_then(ListCore::selected_row)
     }
 
     // ---- Selection and activation --------------------------------------------
+
+    /// Move the selection one row down (`true`) or up, as the arrows do
+    /// (FIND's query field steps the list it heads).
+    pub(crate) fn step(&mut self, down: bool, cx: &mut Context<Self>) {
+        if down {
+            self.select(ListCore::select_next, cx);
+        } else {
+            self.select(ListCore::select_prev, cx);
+        }
+    }
 
     fn select(&mut self, pick: impl FnOnce(&mut ListCore<R>), cx: &mut Context<Self>) {
         let Some(core) = self.core.as_mut() else {
