@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -39,6 +38,9 @@ use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::logic::editor::request::EditorRequest;
+use crate::logic::leader_route::{
+    self, AskStep, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
+};
 use crate::logic::message::{
     AppMessage, AppTx, FileOp, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent, SortTarget,
     UpdateFlow,
@@ -277,7 +279,11 @@ impl EditorScreen {
     /// Persist a saved search via core. Used by the SaveSearchConfirmed handler
     /// and unit tests.
     #[cfg(test)]
-    async fn persist_saved_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
+    async fn persist_saved_search(
+        &self,
+        name: &str,
+        query: &str,
+    ) -> Result<(), kimun_core::error::VaultError> {
         self.vault.save_search(name, query).await
     }
 
@@ -624,7 +630,7 @@ impl EditorScreen {
         };
         match target {
             FooterTarget::Props => {
-                if let Some(path) = self.open_note().cloned() {
+                if let Some(path) = self.open_note() {
                     tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
                         .ok();
                 }
@@ -949,10 +955,7 @@ impl EditorScreen {
     /// file finder): it parks the browser (`OverlayHost::open_over`) so
     /// closing the dialog brings it back with focus unchanged.
     fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
-        let stacks = matches!(
-            open,
-            OverlayOpen::SortBrowser | OverlayOpen::QueryHelpOverBrowser
-        );
+        let stacks = open.stacks();
         if self.overlays.is_open() != stacks {
             return;
         }
@@ -1003,99 +1006,15 @@ impl EditorScreen {
         )))
     }
 
-    /// The note the editor area is showing, if any — what every "+this
-    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m i`) acts on.
-    /// `None` on the vault root, in the attachment view (the session path is
-    /// then the attachment's path, never a note) and while the Ask
-    /// workspace is up (the session path still names the note it replaced, but
-    /// the user is not looking at it). The one definition of "this note",
-    /// so the m-group cannot disagree about it.
-    fn open_note(&self) -> Option<&VaultPath> {
-        if self.panels.is_showing_ask() || !self.session.path().is_note() {
-            None
-        } else {
-            Some(self.session.path())
-        }
+    /// The facts a **Leader route** reads from this screen.
+    fn route_facts(&self) -> RouteFacts {
+        RouteFacts::new(self.session.path().clone(), self.panels.is_showing_ask())
     }
 
-    /// [`Self::open_note`], flashing "no note open" when there is none.
-    fn open_note_or_flash(&self, tx: &AppTx) -> Option<VaultPath> {
-        let note = self.open_note().cloned();
-        if note.is_none() {
-            tx.send(AppMessage::FlashMessage("no note open".into()))
-                .ok();
-        }
-        note
-    }
-
-    /// Leader `m i`: pin the open note, or unpin it if pinned. Refused with
-    /// a flash when nothing is open (see [`Self::open_note`]), when the
-    /// open note is no longer on disk, or when the vault already holds the
-    /// cap.
-    fn toggle_pin_open_note(&self, tx: &AppTx) {
-        let Some(path) = self.open_note_or_flash(tx) else {
-            return;
-        };
-        let vault = self.vault.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let msg = match vault.toggle_pinned_note(&path).await {
-                Ok(kimun_core::PinToggle::Pinned { position }) => format!(
-                    "pinned as {} of {}",
-                    position + 1,
-                    kimun_core::PINNED_NOTES_CAP
-                ),
-                Ok(kimun_core::PinToggle::Unpinned) => "unpinned".to_string(),
-                Ok(kimun_core::PinToggle::Full) => format!(
-                    "already {} pinned — unpin one first",
-                    kimun_core::PINNED_NOTES_CAP
-                ),
-                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-                    format!("note not found: {path}")
-                }
-                Err(e) => {
-                    tracing::warn!("failed to toggle pin on {path}: {e}");
-                    format!("could not update pinned notes: {e}")
-                }
-            };
-            tx.send(AppMessage::FlashMessage(msg)).ok();
-        });
-    }
-
-    /// Leader digit `n`: open pinned note `n` (1-based). A slot with no pin,
-    /// or a pin whose note is missing on disk, flashes instead.
-    fn jump_to_pinned(&self, n: u8, tx: &AppTx) {
-        let vault = self.vault.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let pins = match vault.list_pinned_notes().await {
-                Ok(pins) => pins,
-                Err(e) => {
-                    tx.send(AppMessage::FlashMessage(format!(
-                        "could not read pinned notes: {e}"
-                    )))
-                    .ok();
-                    return;
-                }
-            };
-            let Some(path) = pins.get(usize::from(n).saturating_sub(1)).cloned() else {
-                tx.send(AppMessage::FlashMessage(format!("no pinned note {n}")))
-                    .ok();
-                return;
-            };
-            if !vault.exists(&path).await {
-                tx.send(AppMessage::FlashMessage(format!(
-                    "pinned note not found: {path}"
-                )))
-                .ok();
-                return;
-            }
-            tx.send(AppMessage::OpenPath {
-                path,
-                emphasis: None,
-            })
-            .ok();
-        });
+    /// The note the editor area is showing, if any — the one definition of
+    /// "this note" ([`RouteFacts::open_note`]).
+    fn open_note(&self) -> Option<VaultPath> {
+        self.route_facts().open_note().cloned()
     }
 
     /// Apply a sort dialog selection to `target` — the one path every sort
@@ -2003,96 +1922,57 @@ impl EditorScreen {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> EventState {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        match key.code {
-            KeyCode::Esc => {
-                self.leader.cancel();
-                self.focus_editor();
+        use crate::logic::input::Key;
+        // The neutral key feed (`LeaderEngine::key`); a key with no neutral
+        // form is swallowed like any other non-leader key.
+        let Some(input) = crate::keys::crossterm_input::field_key_input(key) else {
+            tx.send(AppMessage::Redraw).ok();
+            return EventState::Consumed;
+        };
+        match self.leader.key(input) {
+            LeaderOutcome::Cancelled if input.key == Key::Esc => self.focus_editor(),
+            // Stepping past the root cancels — no reveal to re-arm then.
+            LeaderOutcome::SteppedUp | LeaderOutcome::Descended => {
+                self.schedule_whichkey_reveal(tx)
             }
-            KeyCode::Backspace => {
-                let outcome = self.leader.step_up();
-                // Stepping past the root cancels — no reveal to re-arm then.
-                if outcome == LeaderOutcome::SteppedUp {
-                    self.schedule_whichkey_reveal(tx);
+            LeaderOutcome::Fired(action) => self.execute_leader_action(action, tx),
+            LeaderOutcome::Invalid => {
+                // Gentle feedback; the sequence stays pending.
+                if let Key::Char(c) = input.key {
+                    self.footer.flash(format!("leader: no entry for '{c}'"), tx);
                 }
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match self.leader.feed(c) {
-                    LeaderOutcome::Fired(action) => self.execute_leader_action(action, tx),
-                    LeaderOutcome::Invalid => {
-                        // Gentle feedback; the sequence stays pending.
-                        self.footer.flash(format!("leader: no entry for '{c}'"), tx);
-                        self.schedule_whichkey_reveal(tx);
-                    }
-                    LeaderOutcome::Descended => self.schedule_whichkey_reveal(tx),
-                    _ => {}
-                }
+                self.schedule_whichkey_reveal(tx);
             }
             // Other keys (arrows, function keys, …) are swallowed; the
             // sequence stays pending. Ctrl-chords never reach here — the
-            // intercept in handle_input cancels and re-dispatches them.
-            _ => {}
+            // intercept in handle_input cancels and re-dispatches them — so a
+            // passed chord is swallowed too.
+            LeaderOutcome::Cancelled | LeaderOutcome::Swallowed | LeaderOutcome::Passed => {}
         }
         tx.send(AppMessage::Redraw).ok();
         EventState::Consumed
     }
 
-    /// Execute a fired leader leaf. Stubs for surfaces that land in later
-    /// phases flash a "coming soon" notice instead of silently doing nothing.
+    /// Execute a fired leader leaf: route it (`logic::leader_route`), then
+    /// perform the route with this screen's surfaces. Stubs for surfaces that
+    /// land in later phases flash a "coming soon" notice instead of silently
+    /// doing nothing.
     fn execute_leader_action(&mut self, action: LeaderAction, tx: &AppTx) {
-        match action {
-            LeaderAction::OpenDrawer(view) => self.open_drawer_view(view, tx),
+        let route = leader_route::route(action, &self.route_facts());
+        self.perform_route(route, tx);
+    }
 
-            LeaderAction::AppCheckUpdates => {
-                if let Some(status) = self.update.clone() {
-                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
-                } else {
-                    // No cached notice — run a forced check and report the result.
-                    let tx2 = tx.clone();
-                    tx.send(AppMessage::FlashMessage("Checking for updates…".into()))
-                        .ok();
-                    tokio::spawn(async move {
-                        let Ok(config_dir) = crate::settings::config_dir() else {
-                            return;
-                        };
-                        match crate::update::check_now(config_dir, true).await {
-                            Ok(Some(status)) if status.update_available => {
-                                // Manual check: surface the notice AND open the
-                                // dialog the user explicitly asked for (shown even
-                                // if previously skipped — they asked).
-                                tx2.send(AppMessage::Update(UpdateFlow::Available(status)))
-                                    .ok();
-                                tx2.send(AppMessage::Update(UpdateFlow::ShowDialog)).ok();
-                            }
-                            Ok(_) => {
-                                tx2.send(AppMessage::FlashMessage("kimün is up to date".into()))
-                                    .ok();
-                            }
-                            Err(e) => {
-                                tx2.send(AppMessage::FlashMessage(format!(
-                                    "Update check failed: {e}"
-                                )))
-                                .ok();
-                            }
-                        }
-                    });
-                }
+    /// The TUI performer of a [`LeaderRoute`].
+    fn perform_route(&mut self, route: LeaderRoute, tx: &AppTx) {
+        match route {
+            LeaderRoute::Overlay(open) => self.open_overlay(open, tx),
+            LeaderRoute::Drawer(view) => self.open_drawer_view(view, tx),
+            LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, None, tx),
+            LeaderRoute::LinksTab(tab) => {
+                self.open_drawer_view(DrawerView::Links, tx);
+                self.panels.links_mut().show_tab(tab, tx);
             }
-
-            // +find — list-style leaves route to today's pickers; the
-            // telescope modal takes them over in phase 08.
-            LeaderAction::FindFiles => self.open_overlay(OverlayOpen::FileFinder, tx),
-            LeaderAction::FindGrep => self.open_overlay(OverlayOpen::SearchBrowser, tx),
-            LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
-            LeaderAction::FindBacklinks => {
-                self.open_find_with_query("<{note}".to_string(), None, tx)
-            }
-            LeaderAction::FindSaved => self.open_overlay(OverlayOpen::SavedSearches, tx),
-            LeaderAction::FindRecent => self.open_overlay(OverlayOpen::SearchBrowser, tx),
-            LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
-
-            // +note
-            LeaderAction::NoteNew => {
+            LeaderRoute::NewNote => {
                 // The FILES filter doubles as the create field (typing a new
                 // name offers "Create: …"); the telescope picker (08) gives
                 // this a dedicated door.
@@ -2100,47 +1980,47 @@ impl EditorScreen {
                 self.footer
                     .flash("type a name — Enter creates".to_string(), tx);
             }
-            LeaderAction::NoteDaily => {
+            LeaderRoute::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
-            LeaderAction::NoteFromTemplate => {
-                self.footer.flash("templates — coming soon".to_string(), tx);
+            LeaderRoute::Quit => {
+                tx.send(AppMessage::Quit).ok();
             }
-            LeaderAction::NoteRename => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowRename(path))).ok();
-                }
+            LeaderRoute::OpenPreferences => {
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
+                    .ok();
             }
-            LeaderAction::NoteMove => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowMove(path))).ok();
-                }
+            LeaderRoute::OpenOnboarding => {
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
+                    .ok();
             }
-            LeaderAction::NoteProperties => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
-                        .ok();
-                }
+            LeaderRoute::NoteDialog(dialog, path) => {
+                tx.send(AppMessage::FileOp(dialog.file_op(path))).ok();
             }
-            LeaderAction::NoteDelete => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowDelete(path))).ok();
-                }
+            LeaderRoute::NoNoteOpen => {
+                tx.send(AppMessage::FlashMessage("no note open".into()))
+                    .ok();
             }
-
-            // +links
-            LeaderAction::LinksTab(tab) => {
-                self.open_drawer_view(DrawerView::Links, tx);
-                self.panels.links_mut().show_tab(tab, tx);
+            LeaderRoute::Yank { text, label } => crate::logic::clipboard::yank(text, label, tx),
+            // +text — markdown formatting, the only route to it. Gated on the
+            // editor having focus for the same reason the shortcut tier gates
+            // `ActionShortcuts::Text` on `editor_active`: the action reads the
+            // editor's own selection, and applying it from a focused drawer
+            // would edit a buffer the user is not looking at.
+            LeaderRoute::Text(action) => self.apply_text_from_leader(action, tx),
+            LeaderRoute::Save => {
+                // Flush the periodic autosave immediately (no manual-save
+                // concept; this force-persists the current buffer if dirty).
+                self.spawn_autosave(tx);
             }
-            LeaderAction::LinksGraph => {
-                self.footer
-                    .flash("local graph — coming soon".to_string(), tx);
+            LeaderRoute::Layout(LayoutStep::Zen) => {
+                self.panels.hide(PanelKind::Drawer);
+                self.focus_editor();
             }
-
-            // +git/sync — status is live; the rest are display-only stubs
-            // (git interactions are out of scope).
-            LeaderAction::GitStatus => {
+            LeaderRoute::Layout(LayoutStep::GrowDrawer) => self.panels.adjust_drawer_width(4),
+            LeaderRoute::Layout(LayoutStep::ShrinkDrawer) => self.panels.adjust_drawer_width(-4),
+            LeaderRoute::Job(job) => self.run_leader_job(job, tx),
+            LeaderRoute::GitStatus => {
                 self.doc_meta.refresh_git(tx);
                 let msg = self
                     .doc_meta
@@ -2149,109 +2029,59 @@ impl EditorScreen {
                     .unwrap_or_else(|| "not a git repository".to_string());
                 self.footer.flash(msg, tx);
             }
-            LeaderAction::GitSync | LeaderAction::GitLog | LeaderAction::GitDiff => {
-                self.footer
-                    .flash("git is display-only for now".to_string(), tx);
-            }
+            LeaderRoute::Ask(step) => self.perform_ask_step(step, tx),
+            LeaderRoute::Soon(notice) => self.footer.flash(notice.to_string(), tx),
+        }
+    }
 
-            // +vault
-            LeaderAction::VaultSwitch => self.open_overlay(OverlayOpen::WorkspaceSwitcher, tx),
-            LeaderAction::VaultReindex => {
-                // Fast reindex right here — the same pipeline the Settings
-                // screen runs, result surfaced as a footer flash.
-                let vault = self.vault.clone();
-                let tx2 = tx.clone();
+    /// Spawn an asynchronous leader leaf (`leader_route::jobs`).
+    fn run_leader_job(&mut self, job: LeaderJob, tx: &AppTx) {
+        match job {
+            LeaderJob::TogglePin(path) => {
+                tokio::spawn(jobs::toggle_pin(self.vault.clone(), path, tx.clone()));
+            }
+            LeaderJob::JumpToPinned(n) => {
+                tokio::spawn(jobs::jump_to_pinned(self.vault.clone(), n, tx.clone()));
+            }
+            LeaderJob::Reindex => {
                 self.footer.flash("reindexing…".to_string(), tx);
-                tokio::spawn(async move {
-                    let started = std::time::Instant::now();
-                    let result = vault.index_notes(kimun_core::NotesValidation::Fast).await;
-                    let msg = match result {
-                        Ok(_) => format!("reindexed in {:.1?}", started.elapsed()),
-                        Err(e) => format!("reindex failed: {e}"),
-                    };
-                    tx2.send(AppMessage::FlashMessage(msg)).ok();
-                });
+                tokio::spawn(jobs::reindex(self.vault.clone(), tx.clone()));
             }
-            // `v c` opens the config panel (the CFG drawer); `v t` opens the
-            // theme picker directly (also reachable inside CFG via `t`).
-            LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
-            LeaderAction::VaultTheme => self.open_overlay(OverlayOpen::ThemePicker, tx),
-            LeaderAction::VaultPreferences => {
-                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
-                    .ok();
-            }
-            LeaderAction::AppOnboarding => {
-                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
-                    .ok();
-            }
-
-            // +window
-            LeaderAction::WindowZen => {
-                self.panels.hide(PanelKind::Drawer);
-                self.focus_editor();
-            }
-            LeaderAction::WindowSplit => {
-                self.footer
-                    .flash("editor splits — coming soon".to_string(), tx);
-            }
-            LeaderAction::WindowGrowDrawer => self.panels.adjust_drawer_width(4),
-            LeaderAction::WindowShrinkDrawer => self.panels.adjust_drawer_width(-4),
-
-            // +this note
-            LeaderAction::NoteToggleTodo => {
-                self.footer
-                    .flash("toggle todo — coming soon".to_string(), tx);
-            }
-            LeaderAction::NotePreview => {
-                self.footer
-                    .flash("preview — lands with phase 09".to_string(), tx);
-            }
-            LeaderAction::NoteCopyWikilink => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    let link = format!("[[{}]]", path.get_clean_name());
-                    crate::logic::clipboard::yank(link, "wikilink copied", tx);
+            LeaderJob::CheckUpdates => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                } else {
+                    // No cached notice — run a forced check and report the result.
+                    tx.send(AppMessage::FlashMessage("Checking for updates…".into()))
+                        .ok();
+                    tokio::spawn(jobs::check_updates(tx.clone()));
                 }
             }
-            LeaderAction::NoteExport => {
-                self.footer.flash("export — coming soon".to_string(), tx);
-            }
-            LeaderAction::NoteYankPath => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    crate::logic::clipboard::yank(path.to_string(), "note path copied", tx);
-                }
-            }
+        }
+    }
 
-            // +text — markdown formatting, the only route to it. Gated on the
-            // editor having focus for the same reason the shortcut tier gates
-            // `ActionShortcuts::Text` on `editor_active`: the action reads the
-            // editor's own selection, and applying it from a focused drawer
-            // would edit a buffer the user is not looking at.
-            LeaderAction::TextBold => self.apply_text_from_leader(TextAction::Bold, tx),
-            LeaderAction::TextItalic => self.apply_text_from_leader(TextAction::Italic, tx),
-            LeaderAction::TextStrikethrough => {
-                self.apply_text_from_leader(TextAction::Strikethrough, tx)
-            }
-
-            // +ask — the Ask workspace's conversation actions.
-            LeaderAction::AskFocus => self.open_ask_workspace(tx),
-            LeaderAction::AskNew => {
+    /// `+ask` — the Ask workspace's conversation actions.
+    fn perform_ask_step(&mut self, step: AskStep, tx: &AppTx) {
+        match step {
+            AskStep::Focus => self.open_ask_workspace(tx),
+            AskStep::New => {
                 self.with_ask_panel(tx, |panel, _tx| {
                     panel.thread_mut().clear();
                     panel.focus_composer();
                 });
                 self.panels.ask_sources_mut().reset(tx);
             }
-            LeaderAction::AskCopy => {
+            AskStep::Copy => {
                 self.with_ask_panel(tx, |panel, tx| panel.copy_selected(tx));
             }
-            LeaderAction::AskSave => {
+            AskStep::Save => {
                 self.with_ask_panel(tx, |panel, tx| panel.save_selected(tx));
             }
-            LeaderAction::AskRegenerate => {
+            AskStep::Regenerate => {
                 self.with_ask_panel(tx, |panel, tx| panel.regenerate_selected(tx));
                 self.ask.sync_sources(&mut self.panels, tx);
             }
-            LeaderAction::AskSource => {
+            AskStep::Source => {
                 self.ensure_ask_workspace(tx);
                 // The top source of the selected turn — sync the drawer to the
                 // current turn first, then open its first source in the reader.
@@ -2259,23 +2089,6 @@ impl EditorScreen {
                 self.panels.ask_sources_mut().open_reader(0, tx);
                 self.panels.focus(PanelKind::Drawer);
             }
-
-            LeaderAction::Palette => self.open_overlay(OverlayOpen::CommandPalette, tx),
-            LeaderAction::Help => self.open_overlay(OverlayOpen::Cheatsheet, tx),
-
-            LeaderAction::NoteSave => {
-                // Flush the periodic autosave immediately (no manual-save
-                // concept; this force-persists the current buffer if dirty).
-                self.spawn_autosave(tx);
-            }
-            LeaderAction::AppQuit => {
-                tx.send(AppMessage::Quit).ok();
-            }
-
-            // +pinned
-            LeaderAction::FindPinned => self.open_overlay(OverlayOpen::PinnedNotes, tx),
-            LeaderAction::NoteTogglePin => self.toggle_pin_open_note(tx),
-            LeaderAction::PinnedJump(n) => self.jump_to_pinned(n, tx),
         }
     }
 
@@ -2565,10 +2378,11 @@ impl AppScreen for EditorScreen {
 
         // which-key overlay — docked above the status bar once the user
         // hesitates mid-sequence.
-        let whichkey_visible = self
-            .leader
-            .pending_since()
-            .is_some_and(|since| since.elapsed() >= leader_timeout);
+        let whichkey_visible = crate::logic::which_key::revealed(
+            &self.leader,
+            std::time::Instant::now(),
+            leader_timeout,
+        );
         if whichkey_visible {
             let gateway = gateway_label;
             let area = f.area();

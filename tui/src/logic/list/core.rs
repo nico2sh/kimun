@@ -31,6 +31,19 @@ fn fuzzy_indices<R: ListRow>(rows: &[R], base: &[usize], query: &str) -> Vec<usi
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
+/// Every row of `rows` ranked against `query` the way a [`Filter::Fuzzy`]
+/// list ranks them: all rows in order for a blank query, else the matches,
+/// best first (ties keep row order). For a frontend that filters a small,
+/// static row set itself (the GUI's command palette).
+pub fn fuzzy_rank<R: ListRow>(rows: &[R], query: &str) -> Vec<usize> {
+    let base: Vec<usize> = (0..rows.len()).collect();
+    if query.is_empty() {
+        base
+    } else {
+        fuzzy_indices(rows, &base, query)
+    }
+}
+
 /// How a list is set up before its rows arrive: the local filter, an optional
 /// total order, and the opening query.
 pub struct ListSetup<R: ListRow> {

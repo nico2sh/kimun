@@ -6,12 +6,14 @@
 //! drives it between GPUI's `run_until_parked` (see `start_tests::drive`).
 #![cfg(test)]
 
+use gpui_kit::Focusable as _;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::FileListEntry;
-use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout::{Panel, Region, Side};
 use kimun_notes::logic::message::{AppMessage, FileOp};
+use kimun_notes::logic::nav::DrawerView;
 use tokio::runtime::Runtime;
 
 use super::files::{FILES_ID, row_id};
@@ -473,4 +475,163 @@ impl Started {
         })
         .unwrap();
     }
+}
+
+// ── arranging FILES: the shell chords win over the filter's keys ────────
+
+impl Started {
+    fn views(&self, side: Side, cx: &TestAppContext) -> Vec<DrawerView> {
+        cx.read(|cx| self.workspace.read(cx).layout.slot_views(side))
+    }
+
+    fn region(&self, cx: &TestAppContext) -> Region {
+        cx.read(|cx| self.workspace.read(cx).layout.focused_region())
+    }
+
+    /// Whether the FILES filter has GPUI focus.
+    fn filter_focused(&self, cx: &mut TestAppContext) -> bool {
+        let files = cx.read(|cx| self.workspace.read(cx).files.clone().unwrap());
+        cx.update_window(self.handle, |_, window, cx| {
+            files.read(cx).focus_handle(cx).is_focused(window)
+        })
+        .unwrap()
+    }
+}
+
+/// With the FILES filter holding the keyboard (where the kit's input binds
+/// Alt+Shift+Left/Right to word selection and Alt+Shift+Up/Down to extra
+/// carets), the move chords still carry FILES between the drawers, both
+/// ways, and the keyboard stays in its filter.
+#[gpui_kit::test]
+fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    focus_files(&started, cx);
+    assert!(started.filter_focused(cx));
+
+    started.press_key("alt-shift-right", cx);
+    assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Right,
+            index: 0
+        }
+    );
+    assert!(started.filter_focused(cx));
+
+    started.press_key("alt-shift-left", cx);
+    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
+    assert!(started.views(Side::Right, cx).is_empty());
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Left,
+            index: 0
+        }
+    );
+    assert!(started.filter_focused(cx));
+    assert_eq!(started.query(cx), "", "the filter saw none of it");
+
+    // Reached by Alt+Arrow on the right, then moved back from there.
+    started.press_key("alt-shift-right", cx);
+    started.press_key("alt-left", cx);
+    started.press_key("alt-right", cx);
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Right,
+            index: 0
+        }
+    );
+    assert!(started.filter_focused(cx));
+    started.press_key("alt-shift-left", cx);
+    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
+
+    // From the rail, the cursor's view.
+    cx.update_window(started.handle, |_, window, cx| window.click("rail", cx))
+        .unwrap();
+    started.press_key("alt-shift-right", cx);
+    assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
+    started.press_key("alt-shift-left", cx);
+    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
+    assert_eq!(started.focused(cx), Panel::Rail);
+}
+
+/// The swap chords reorder a split drawer whichever slot holds the
+/// keyboard: the FILES filter, or a placeholder view. The keyboard follows
+/// the moved view.
+#[gpui_kit::test]
+fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    focus_files(&started, cx);
+    started.press_key("alt-shift-s", cx);
+    assert_eq!(
+        started.views(Side::Left, cx),
+        [DrawerView::Files, DrawerView::Find]
+    );
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Left,
+            index: 1
+        }
+    );
+
+    // From the placeholder.
+    started.press_key("alt-shift-up", cx);
+    assert_eq!(
+        started.views(Side::Left, cx),
+        [DrawerView::Find, DrawerView::Files]
+    );
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Left,
+            index: 0
+        }
+    );
+
+    // From the FILES filter, now the bottom slot.
+    started.press_key("alt-down", cx);
+    assert!(started.filter_focused(cx));
+    started.press_key("alt-shift-up", cx);
+    assert_eq!(
+        started.views(Side::Left, cx),
+        [DrawerView::Files, DrawerView::Find]
+    );
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Left,
+            index: 0
+        }
+    );
+    assert!(started.filter_focused(cx));
+    started.press_key("alt-shift-down", cx);
+    assert_eq!(
+        started.views(Side::Left, cx),
+        [DrawerView::Find, DrawerView::Files]
+    );
+    assert!(started.filter_focused(cx));
+    assert_eq!(started.query(cx), "");
+
+    // Moved to the empty right drawer (its top slot) and split there,
+    // from the filter: the new view fills the free bottom position.
+    started.press_key("alt-shift-right", cx);
+    assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
+    started.press_key("alt-shift-s", cx);
+    assert_eq!(started.views(Side::Right, cx)[0], DrawerView::Files);
+    started.press_key("alt-up", cx);
+    assert!(started.filter_focused(cx));
+    started.press_key("alt-shift-down", cx);
+    assert_eq!(
+        started.views(Side::Right, cx)[1],
+        DrawerView::Files,
+        "swapped from the filter in the right drawer"
+    );
+    assert!(started.filter_focused(cx));
 }

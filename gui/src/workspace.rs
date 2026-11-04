@@ -1,22 +1,37 @@
 //! The **Workspace**: the window's root view, composing the editor screen's
-//! Panels left to right — the **Activity rail**, the left **Drawer**, and
-//! the editor Panel (the [`EditorView`], unchanged inside). ADR-0050.
+//! Panels left to right — the **Activity rail**, the left **Drawer**, the
+//! editor Panel (the [`EditorView`], unchanged inside) and the right
+//! **Drawer**. ADR-0050.
 //!
-//! **State.** Which panels are shown, the drawer's view and width, and which
-//! panel has the keyboard live in the logic [`PanelLayout`]; this view only
-//! renders it and keeps GPUI focus in step with it. The drawer shows a
-//! placeholder per view until the views themselves arrive (M5b-2).
+//! **State.** Which panels are shown, the views in each drawer's **drawer
+//! slots** (up to two, stacked), the drawers' widths and split ratios, and
+//! which region has the keyboard live in the logic [`PanelLayout`]; this
+//! view only renders it and keeps GPUI focus in step with it. A view
+//! without a GUI yet shows a placeholder in its slot.
+//!
+//! **Arranging (M5b-3).** Each view keeps a placement (side and drawer
+//! slot) in the layout model, shown or hidden. The rail shows a view where
+//! it is placed, hiding the view sharing its slot, and a click on a shown
+//! view hides it (its slot closes while the drawer shows another view, else
+//! the drawer hides); the move, swap, split and unsplit chords rearrange
+//! the views from the rail or a drawer; each drawer has its own toggle. A
+//! view is shown in at most one slot, so FILES (one entity) renders
+//! wherever it is.
 //!
 //! **Keys.** Keys go to the focused Panel only. A chord the GUI keymap binds
 //! to a workspace command (toggle the drawer, move or cycle focus) bubbles
 //! here from whichever panel has focus — the editor lets those pass by —
 //! and is resolved in that panel's context, as the editor resolves its own.
+//! With the rail or a drawer focused, the workspace resolves its chords
+//! before any key binding, so a field inside a drawer (the FILES filter)
+//! cannot swallow them.
 //! Alt+Up/Down with nothing stacked to move to is handed back to the editor
 //! (ADR-0050 §4: not swallowed).
 //!
-//! **Persistence.** The drawer's width, visibility and view are written to
-//! the `[gui]` table when a divider drag ends, the drawer is toggled, or the
-//! rail switches its view, through the TUI's own settings save path.
+//! **Persistence.** Both drawers' widths, visibility, views and split
+//! ratios are written to the `[gui]` table when a divider drag ends, a
+//! drawer is toggled, or a view is opened, moved, split off or folded away,
+//! through the TUI's own settings save path.
 //!
 //! **The vault and the app channel (M5b-2).** [`Workspace::start`] puts the
 //! window on what `main` decided ([`Start`]): an empty state in the editor
@@ -43,6 +58,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::ResizeHandleRenderer;
 use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_handle};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
@@ -51,14 +67,18 @@ use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, Context, DragMoveEvent, Entity,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, px, rems,
+    FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
+    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Rgba, Role, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, px, relative,
+    rems,
 };
 use kimun_core::nfs::VaultPath;
+use kimun_notes::keys::leader::{self, LeaderNode};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::layout::{FocusMove, Panel, PanelLayout, Side, WidthLimits};
+use kimun_notes::logic::layout::{
+    FocusMove, LayoutError, MAX_DRAWER_SLOTS, Panel, PanelLayout, Region, Side, WidthLimits,
+};
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::{NoteSession, SaveCompleted};
@@ -66,7 +86,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::editor_view::EditorView;
+use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
 use crate::keymap::{self, KeyCtx};
 use crate::shell_layout::{self, RAIL_REMS, RAIL_VIEWS};
@@ -77,8 +97,10 @@ use crate::theme;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
+use modal::ModalKind;
 pub(crate) use note::Closing;
 use note::NoteHost;
+pub(crate) use palette::Palette;
 
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
@@ -120,6 +142,18 @@ impl LayoutStore {
 /// The payload of a drawer-divider drag: which drawer it resizes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DrawerResize(Side);
+
+/// The payload of a slot-divider drag: whose drawer's split it moves.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SlotResize(Side);
+
+/// Index of `side` in the per-side arrays.
+fn side_ix(side: Side) -> usize {
+    match side {
+        Side::Left => 0,
+        Side::Right => 1,
+    }
+}
 
 /// What a divider drag shows under the pointer: nothing, the drawer itself
 /// follows.
@@ -167,6 +201,42 @@ pub(crate) fn divider_id(side: Side) -> &'static str {
     }
 }
 
+/// The element id of the divider between `side`'s two stacked slots.
+pub(crate) fn split_divider_id(side: Side) -> &'static str {
+    match side {
+        Side::Left => "drawer-left-split",
+        Side::Right => "drawer-right-split",
+    }
+}
+
+/// The element id of the slot showing `view` (`slot-files`, ...): a view
+/// is shown in at most one slot, so its id names the slot.
+pub(crate) fn slot_id(view: DrawerView) -> SharedString {
+    format!("slot-{}", view.id()).into()
+}
+
+/// A divider's look: a one-pixel hairline (a physical boundary, not
+/// zoomed) along the band, in the divider colour at rest and the focus
+/// colour while hovered, pressed or dragged.
+fn hairline(axis: Axis, line: Rgba, active: Rgba) -> ResizeHandleRenderer {
+    Rc::new(move |handle: &ResizeHandleContext, _, _| {
+        let color = if handle.state() == gpui_kit::base::ResizeHandleState::Idle {
+            line
+        } else {
+            active
+        };
+        // The hairline fills the band's one-pixel content box.
+        let bar = div().flex_none().bg(color);
+        Some(
+            match axis {
+                Axis::Horizontal => bar.h_full().w(px(1.)),
+                Axis::Vertical => bar.w_full().h(px(1.)),
+            }
+            .into_any_element(),
+        )
+    })
+}
+
 /// The element id of the editor Panel's empty state.
 pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 
@@ -176,14 +246,20 @@ pub(crate) struct Workspace {
     pub(crate) editor: Entity<EditorView>,
     theme: Theme,
     rail_focus: FocusHandle,
-    drawer_focus: FocusHandle,
+    /// Each drawer's own scope (left, right): never focused itself, it holds
+    /// its slots' focus.
+    drawer_focus: [FocusHandle; 2],
+    /// Each drawer view's slot handle, the keyboard target of a slot whose
+    /// view has no focusable content of its own (all but FILES).
+    view_focus: Vec<(DrawerView, FocusHandle)>,
     /// The rail cell the keyboard is on (an index into [`RAIL_VIEWS`]).
     rail_cursor: usize,
     /// A divider drag is in progress (persisted when it ends).
     resizing: bool,
-    /// Where on the divider the press landed, from the drawer's drawn edge
-    /// (px), so the edge follows the pointer without jumping to it.
-    grab: f64,
+    /// Where the divider press landed (px along the drag's axis) and the
+    /// size it was resizing then (the drawn width, or the split ratio): a
+    /// drag moves the edge by the pointer's travel, without jumping to it.
+    press: (f64, f64),
     store: LayoutStore,
     /// Why the editor Panel shows no editor (no workspace, or it would not
     /// open). `None`: the editor.
@@ -219,6 +295,19 @@ pub(crate) struct Workspace {
     /// Keeps the Footer's dirty state in step with the editor.
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
+    /// Resolves the workspace's chords before a drawer's own key bindings
+    /// can take them ([`Self::intercept_shell_key`]).
+    _shell_keys: Subscription,
+    /// What the window's one modal slot holds, while the kit says a dialog
+    /// is open ([`modal`]).
+    pub(crate) modal: Option<ModalKind>,
+    /// The command palette's view while it is open (tests read its rows).
+    pub(crate) palette: Option<WeakEntity<Palette>>,
+    /// The settings the window started on (the leader tree): `None` before
+    /// [`Self::start`] and in the tests that never call it.
+    settings: Option<SharedSettings>,
+    /// The editor's requests that need the window (vim `:`).
+    _editor_events: Subscription,
 }
 
 impl Workspace {
@@ -227,6 +316,7 @@ impl Workspace {
         theme: Theme,
         layout: PanelLayout<DrawerView>,
         store: LayoutStore,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let rail_cursor = layout
@@ -243,15 +333,27 @@ impl Workspace {
                 cx.notify();
             }
         });
+        let this = cx.entity().downgrade();
+        let shell_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            this.update(cx, |workspace, cx| {
+                workspace.intercept_shell_key(event, window, cx)
+            })
+            .ok();
+        });
+        let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
         Self {
             layout,
             editor,
             theme,
             rail_focus: cx.focus_handle(),
-            drawer_focus: cx.focus_handle(),
+            drawer_focus: [cx.focus_handle(), cx.focus_handle()],
+            view_focus: DrawerView::ALL
+                .into_iter()
+                .map(|view| (view, cx.focus_handle()))
+                .collect(),
             rail_cursor,
             resizing: false,
-            grab: 0.0,
+            press: (0.0, 0.0),
             store,
             empty: None,
             status: Status::default(),
@@ -260,7 +362,9 @@ impl Workspace {
             _messages: None,
             flash_expiry: None,
             closing: Closing::Open,
-            window: None,
+            // Captured now: an app-channel message (no `Window` of its own)
+            // may need it to open or close a modal ([`Self::with_window`]).
+            window: Some(window.window_handle()),
             restore_pending: false,
             first_open_pending: false,
             files: None,
@@ -269,6 +373,36 @@ impl Workspace {
             opener: follow::system_opener(),
             _editor_watch: editor_watch,
             _on_quit: None,
+            _shell_keys: shell_keys,
+            modal: None,
+            palette: None,
+            settings: None,
+            _editor_events: editor_events,
+        }
+    }
+
+    /// The editor asked for something only the window has.
+    fn on_editor_event(
+        &mut self,
+        _: &Entity<EditorView>,
+        event: &EditorEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            EditorEvent::OpenPalette => self.open_palette(window, cx),
+        }
+    }
+
+    /// The configured leader tree (`[leader]` overrides applied), the one
+    /// the palette lists; the default tree before [`Self::start`].
+    pub(crate) fn leader_tree(&self) -> LeaderNode {
+        match self.settings.as_ref() {
+            Some(settings) => settings
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .leader_tree(),
+            None => leader::leader_tree(),
         }
     }
 
@@ -288,6 +422,7 @@ impl Workspace {
     ) {
         self.listen(rx, cx);
         self.tx = Some(tx.clone());
+        self.settings = Some(settings.clone());
         self.empty = startup::empty_state(&start);
         if let Start::Vault(VaultStart { vault, name, first }) = start {
             self.notes = Some(NoteHost::new(NoteSession::new(
@@ -382,6 +517,7 @@ impl Workspace {
             }
             AppMessage::OpenAttachment(path) => self.open_attachment(&path, cx),
             AppMessage::FileOp(op) => {
+                self.file_op_closes_modals(&op, cx);
                 self.files_file_op(&op, cx);
                 self.refresh_note_counts();
             }
@@ -406,6 +542,23 @@ impl Workspace {
             // The editor's double-click on a link or a label.
             AppMessage::FollowLink(target) => self.follow_link(target, cx),
             AppMessage::FollowLabel(name) => self.follow_label(&name, cx),
+            // A leader leaf asked for from outside a key handler (the TUI's
+            // palette and vim `:` send these): its route runs with the
+            // window. Never under a modal — a modal closes before it runs
+            // what it chose — but never dropped silently either.
+            AppMessage::ExecuteLeaderAction(action) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    if modal::dialog_open(window, cx) {
+                        tracing::warn!("ExecuteLeaderAction({action:?}) dropped: a modal is open");
+                        return;
+                    }
+                    let route = workspace.route_of(action);
+                    workspace.perform_route(route, window, cx);
+                });
+            }
+            // Results addressed to an open modal: none of the GUI's modals
+            // takes data yet, so every one is stale by definition.
+            AppMessage::OverlayData(_) => {}
             // Everything the GUI has no surface for yet.
             _ => {}
         }
@@ -446,28 +599,78 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The left drawer's view, when it is shown.
-    fn shown_view(&self) -> Option<DrawerView> {
+    /// Whether `view` is in a slot of a drawer that is shown: its rail cell
+    /// reads as selected.
+    fn is_shown(&self, view: DrawerView) -> bool {
         self.layout
-            .is_visible(Panel::Drawer(Side::Left))
-            .then(|| self.layout.slot_views(Side::Left).first().copied())
-            .flatten()
+            .view_location(&view)
+            .is_some_and(|(side, _)| self.layout.is_visible(Panel::Drawer(side)))
+    }
+
+    /// The view in `side`'s slot `index`.
+    fn slot_view(&self, side: Side, index: usize) -> Option<DrawerView> {
+        self.layout.slot_views(side).get(index).copied()
+    }
+
+    /// The first view the rail offers that is shown nowhere (placed
+    /// nowhere, or hidden in a drawer): what fills a drawer's free slot when
+    /// the drawer has no hidden view of its own.
+    fn first_unshown(&self) -> Option<DrawerView> {
+        RAIL_VIEWS
+            .into_iter()
+            .find(|v| self.layout.view_location(v).is_none())
+    }
+
+    /// What a split or an empty drawer being shown fills its slot with: the
+    /// view the drawer's last unsplit merged away (this session only), else
+    /// the drawer's next hidden view, else the first view shown nowhere.
+    fn next_for(&self, side: Side) -> Option<DrawerView> {
+        self.layout
+            .next_hidden(side)
+            .or_else(|| self.first_unshown())
+    }
+
+    /// `view`'s slot handle.
+    fn slot_focus(&self, view: DrawerView) -> &FocusHandle {
+        self.view_focus
+            .iter()
+            .find(|(v, _)| *v == view)
+            .map(|(_, handle)| handle)
+            .expect("every drawer view has a slot handle")
+    }
+
+    /// Where the keyboard goes in `view`'s slot: FILES' filter, so typing
+    /// filters; the slot itself for the views without content yet.
+    fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
+        match (view, self.files.as_ref()) {
+            (DrawerView::Files, Some(files)) => files.read(cx).focus_handle(cx),
+            _ => self.slot_focus(view).clone(),
+        }
     }
 
     fn handle_for(&self, panel: Panel, cx: &App) -> FocusHandle {
         match panel {
             Panel::Rail => self.rail_focus.clone(),
-            // FILES: its filter, so typing filters.
-            Panel::Drawer(_) => match (self.shown_view(), self.files.as_ref()) {
-                (Some(DrawerView::Files), Some(files)) => files.read(cx).focus_handle(cx),
-                _ => self.drawer_focus.clone(),
+            // The drawer's focused slot.
+            Panel::Drawer(side) => match self
+                .layout
+                .focused_slot(side)
+                .and_then(|index| self.slot_view(side, index))
+            {
+                Some(view) => self.view_handle(view, cx),
+                None => self.drawer_focus[side_ix(side)].clone(),
             },
             Panel::Editor => self.editor.read(cx).focus_handle(cx),
         }
     }
 
-    /// Give the keyboard to the panel the layout says is focused.
+    /// Give the keyboard to the region the layout says is focused. Not
+    /// while a modal is open: it has the keyboard, and gives it back to its
+    /// opener when it closes ([`modal`]).
     pub(crate) fn apply_focus(&self, window: &mut Window, cx: &mut App) {
+        if modal::dialog_open(window, cx) {
+            return;
+        }
         let handle = self.handle_for(self.layout.focused(), cx);
         window.focus(&handle, cx);
     }
@@ -479,13 +682,23 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show the left drawer (and focus it, as the TUI does), or hide it and
-    /// give its width to the editor. Persisted.
+    /// Focus `region` (a press anywhere in a drawer slot).
+    fn focus_region(&mut self, region: Region, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout.focus_region(region);
+        self.apply_focus(window, cx);
+        cx.notify();
+    }
+
+    /// Show `side`'s drawer (and focus it, as the TUI does), or hide it and
+    /// give its width to the editor. The drawer comes back with the views it
+    /// showed; one showing nothing (its views moved away or hidden) comes
+    /// back with its next hidden view, else the first view shown nowhere.
+    /// Persisted.
     ///
     /// Hiding the focused drawer gives the keyboard back to the document,
     /// not to the rail the model falls back to (the TUI keeps that).
-    fn toggle_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let drawer = Panel::Drawer(Side::Left);
+    fn toggle_drawer(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
+        let drawer = Panel::Drawer(side);
         if self.layout.is_visible(drawer) {
             let had_focus = self.layout.focused() == drawer;
             self.layout.hide(drawer);
@@ -493,6 +706,11 @@ impl Workspace {
                 self.layout.focus(Panel::Editor);
             }
         } else {
+            if self.layout.slot_views(side).is_empty()
+                && let Some(view) = self.next_for(side)
+            {
+                self.layout.move_view(view, side);
+            }
             self.layout.show(drawer);
             self.layout.focus(drawer);
             self.ensure_files_listing(cx);
@@ -502,8 +720,13 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A rail cell was activated: the shown view closes the drawer (the
-    /// TUI's rail), any other opens in it and takes the keyboard. Persisted.
+    /// A rail cell was activated. A shown view is hidden: in a split drawer
+    /// its slot closes and the other view fills the drawer and takes the
+    /// keyboard; as a drawer's only view, the drawer hides (the TUI's rail).
+    /// Either way the view stays placed (side and slot position). Any other
+    /// view is shown where it is placed (a view placed nowhere: in the left
+    /// drawer's focused slot), hiding the view sharing its slot position,
+    /// and takes the keyboard. Persisted.
     fn activate_rail_view(
         &mut self,
         view: DrawerView,
@@ -513,17 +736,127 @@ impl Workspace {
         if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == view) {
             self.rail_cursor = i;
         }
-        let drawer = Panel::Drawer(Side::Left);
-        if self.shown_view() == Some(view) {
-            self.layout.hide(drawer);
-        } else {
-            let (side, _) = self.layout.open_view(view);
-            self.layout.focus(Panel::Drawer(side));
-            self.ensure_files_listing(cx);
+        match self.layout.view_location(&view) {
+            Some(_) if self.is_shown(view) => {
+                if let Some(side) = self.layout.hide_view(&view)
+                    && self.layout.is_visible(Panel::Drawer(side))
+                    && let Some(index) = self.layout.focused_slot(side)
+                {
+                    self.layout.focus_region(Region::Slot { side, index });
+                }
+            }
+            _ => {
+                let (side, index) = self.layout.open_view(view);
+                self.layout.focus_region(Region::Slot { side, index });
+                self.ensure_files_listing(cx);
+            }
         }
         self.apply_focus(window, cx);
         self.store.save(&self.layout);
         cx.notify();
+    }
+
+    /// The view a move acts on: the focused slot's, or the one under the
+    /// rail's cursor (placed or not). `None` from the editor.
+    fn arranged_view(&self) -> Option<DrawerView> {
+        match self.layout.focused_region() {
+            Region::Slot { side, index } => self.slot_view(side, index),
+            Region::Rail => RAIL_VIEWS.get(self.rail_cursor).copied(),
+            Region::Group(_) => None,
+        }
+    }
+
+    /// `MoveViewTo…Drawer`: move the focused view (or the rail cursor's) to
+    /// the drawer on `to` and show it; the keyboard follows a focused view.
+    /// It fits the target: a split one keeps the view's slot position, an
+    /// unsplit or empty one takes it into its single slot, replacing the
+    /// view shown there — never a new split. The model moves, it never
+    /// duplicates. Persisted.
+    fn move_view(&mut self, to: Side, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(view) = self.arranged_view() else {
+            return false;
+        };
+        self.layout.move_view(view, to);
+        self.ensure_files_listing(cx);
+        self.apply_focus(window, cx);
+        self.store.save(&self.layout);
+        true
+    }
+
+    /// `MoveViewUp` / `MoveViewDown`: in a split drawer, put the focused
+    /// view (or the rail cursor's) at the top (`up`) or bottom slot
+    /// position, trading places with the view shown there; a focused view
+    /// keeps the keyboard. Already there: handled, nothing moves. In an
+    /// unsplit drawer, and for a view placed nowhere, nothing changes and
+    /// the key is not handled, so it passes on. Persisted.
+    fn move_view_vertically(
+        &mut self,
+        up: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((view, (side, _))) = self
+            .arranged_view()
+            .and_then(|view| self.layout.placement(&view).map(|p| (view, p)))
+        else {
+            return false;
+        };
+        if self.layout.set_view_slot(&view, if up { 0 } else { 1 }) {
+            self.apply_focus(window, cx);
+            self.store.save(&self.layout);
+            return true;
+        }
+        self.layout.slot_views(side).len() > 1
+    }
+
+    /// `SplitDrawerSlot`: show a view in the focused drawer's free slot
+    /// position — the view its last unsplit merged away, else its next
+    /// hidden view, else the first view shown nowhere ([`Self::next_for`])
+    /// — and focus it (a rail click then puts another view there). Unsplit
+    /// then split returns to the same split, at the drawer's ratio. A full
+    /// drawer says so. Persisted.
+    fn split_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Panel::Drawer(side) = self.layout.focused() else {
+            return false;
+        };
+        if self.layout.slot_views(side).len() >= MAX_DRAWER_SLOTS {
+            self.flash("This drawer already holds two views", cx);
+            return true;
+        }
+        let Some(view) = self.next_for(side) else {
+            return true;
+        };
+        match self.layout.split_slot(side, view) {
+            Ok(index) => {
+                self.layout.focus_region(Region::Slot { side, index });
+                self.ensure_files_listing(cx);
+                self.apply_focus(window, cx);
+                self.store.save(&self.layout);
+            }
+            Err(LayoutError::SlotCap) => self.flash("This drawer already holds two views", cx),
+            Err(_) => {}
+        }
+        true
+    }
+
+    /// `UnsplitDrawerSlot`: close the focused slot, merging every view
+    /// placed there into the other slot (the closed view hidden), so the
+    /// drawer stays unsplit with the other view focused, and showing any of
+    /// its views later replaces the shown one. A drawer's only slot stays
+    /// (the toggle hides a drawer). Persisted.
+    fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Region::Slot { side, index } = self.layout.focused_region() else {
+            return false;
+        };
+        if self.layout.slot_views(side).len() < 2 {
+            self.flash("This drawer holds one view", cx);
+            return true;
+        }
+        if self.layout.close_slot(side, index).is_ok() {
+            self.apply_focus(window, cx);
+            self.store.save(&self.layout);
+        }
+        true
     }
 
     /// The model's sizing floors for this window.
@@ -534,17 +867,13 @@ impl Workspace {
         )
     }
 
-    /// Where the left drawer starts: the rail's end, in px.
-    fn drawer_left_edge(window: &Window) -> f64 {
-        f64::from(RAIL_REMS) * f64::from(window.rem_size())
-    }
-
-    /// A press on `side`'s divider: remember where on it, relative to the
-    /// drawer's drawn edge.
+    /// A press on `side`'s width divider at `x`: remember it with the width
+    /// drawn then.
     fn grab_divider(&mut self, side: Side, x: f64, window: &Window) {
-        let edge = Self::drawer_left_edge(window)
-            + shell_layout::shown_width(&self.layout, side, Self::limits(window));
-        self.grab = x - edge;
+        self.press = (
+            x,
+            shell_layout::shown_width(&self.layout, side, Self::limits(window)),
+        );
     }
 
     fn on_drag_move(
@@ -554,9 +883,43 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let DrawerResize(side) = *event.drag(cx);
-        let width = f64::from(event.event.position.x) - self.grab - Self::drawer_left_edge(window);
+        let (from, width) = self.press;
+        let travel = f64::from(event.event.position.x) - from;
+        // The left drawer's edge is its trailing one, the right's its
+        // leading one: dragging toward the editor widens either.
+        let width = match side {
+            Side::Left => width + travel,
+            Side::Right => width - travel,
+        };
         self.layout
             .set_drawer_width(side, width, Self::limits(window));
+        self.resizing = true;
+        cx.notify();
+    }
+
+    /// A press on `side`'s split divider at `y`: remember it with the ratio
+    /// then.
+    fn grab_split(&mut self, side: Side, y: f64) {
+        self.press = (y, self.layout.split_ratio(side).unwrap_or(0.5));
+    }
+
+    /// A split-divider drag over `side`'s drawer (`event.bounds` is the
+    /// drawer): the first slot's share follows the pointer, clamped by the
+    /// model so both slots keep a usable share.
+    fn on_split_drag(
+        &mut self,
+        side: Side,
+        event: &DragMoveEvent<SlotResize>,
+        cx: &mut Context<Self>,
+    ) {
+        let SlotResize(dragged) = *event.drag(cx);
+        let height = f64::from(event.bounds.size.height);
+        if dragged != side || height <= 0.0 {
+            return;
+        }
+        let (from, ratio) = self.press;
+        let travel = f64::from(event.event.position.y) - from;
+        self.layout.set_split_ratio(side, ratio + travel / height);
         self.resizing = true;
         cx.notify();
     }
@@ -564,7 +927,7 @@ impl Workspace {
     /// The pointer came up (in the window or outside it): a divider drag in
     /// progress ends and is persisted. Idempotent.
     fn end_resize(&mut self, cx: &mut Context<Self>) {
-        self.grab = 0.0;
+        self.press = (0.0, 0.0);
         if std::mem::take(&mut self.resizing) {
             self.store.save(&self.layout);
             cx.notify();
@@ -580,13 +943,58 @@ impl Workspace {
         }
     }
 
+    /// A key while the rail or a drawer holds GPUI focus, seen before any
+    /// key binding: a chord the keymap gives the workspace there runs now.
+    /// GPUI dispatches bindings before key-down listeners, so without this
+    /// a focused element's own binding (the FILES filter's Alt+Shift+Left is
+    /// the kit input's select-word-left) would swallow the chord before
+    /// [`Self::on_key_down`] sees it. With any other region focused app
+    /// chords win (ADR-0050 §6). A key the workspace does not handle goes on
+    /// as usual; text the platform composed (AltGr) is left alone.
+    fn intercept_shell_key(
+        &mut self,
+        event: &KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.input_preference == InputPreference::CharacterInput {
+            return;
+        }
+        // A modal owns every key but its own chord (the palette's toggle).
+        if modal::dialog_open(window, cx) {
+            if self.intercept_modal_key(event, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+            return;
+        }
+        let in_shell = self.rail_focus.contains_focused(window, cx)
+            || self
+                .drawer_focus
+                .iter()
+                .any(|handle| handle.contains_focused(window, cx));
+        if !in_shell || self.layout.focused() == Panel::Editor {
+            return;
+        }
+        let Some(key) = input::key_input(&event.keystroke) else {
+            return;
+        };
+        let Some(action) = keymap::active(cx).resolve(key, self.key_ctx(cx)).cloned() else {
+            return;
+        };
+        if self.workspace_command(&action, Some(key), window, cx) {
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = input::key_down_input(event) else {
             return;
         };
         let action = keymap::active(cx).resolve(key, self.key_ctx(cx)).cloned();
         let handled = match action {
-            Some(action) => self.workspace_command(&action, key, window, cx),
+            Some(action) => self.workspace_command(&action, Some(key), window, cx),
             None => self.layout.focused() == Panel::Rail && self.rail_key(key, window, cx),
         };
         if handled {
@@ -596,16 +1004,32 @@ impl Workspace {
     }
 
     /// Act on a keymap command that is the workspace's. False for one that
-    /// is not (find, replace: the editor already had its chance).
+    /// is not (find, replace: the editor already had its chance), and for a
+    /// focus move with nothing to move to, which is the focused panel's key.
+    /// `key` is the chord pressed; `None` when the command palette runs the
+    /// command (nothing to hand back to the editor then).
     fn workspace_command(
         &mut self,
         action: &ActionShortcuts,
-        key: KeyInput,
+        key: Option<KeyInput>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
-            ActionShortcuts::ToggleSidebar => self.toggle_drawer(window, cx),
+            ActionShortcuts::OpenCommandPalette => self.toggle_palette(window, cx),
+            ActionShortcuts::Quit => self.request_close(window, cx),
+            ActionShortcuts::ToggleSidebar => self.toggle_drawer(Side::Left, window, cx),
+            ActionShortcuts::ToggleRightDrawer => self.toggle_drawer(Side::Right, window, cx),
+            ActionShortcuts::MoveViewToLeftDrawer => return self.move_view(Side::Left, window, cx),
+            ActionShortcuts::MoveViewToRightDrawer => {
+                return self.move_view(Side::Right, window, cx);
+            }
+            ActionShortcuts::MoveViewUp => return self.move_view_vertically(true, window, cx),
+            ActionShortcuts::MoveViewDown => {
+                return self.move_view_vertically(false, window, cx);
+            }
+            ActionShortcuts::SplitDrawerSlot => return self.split_drawer(window, cx),
+            ActionShortcuts::UnsplitDrawerSlot => return self.unsplit_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
             // Nothing followable under the caret: the chord does nothing.
@@ -616,12 +1040,18 @@ impl Workspace {
                 FocusMove::Moved(_) => self.apply_focus(window, cx),
                 FocusMove::AtEdge => {}
                 // Nothing stacked above or below: the chord is the focused
-                // panel's own key, not a focus move (ADR-0050 §4).
+                // panel's own key, not a focus move (ADR-0050 §4). The
+                // editor already let it pass, so it is handed back; anywhere
+                // else it goes on unswallowed.
                 FocusMove::NotHandled => {
-                    if self.layout.focused() == Panel::Editor {
-                        self.editor
-                            .update(cx, |editor, cx| editor.editor_key(key, window, cx));
+                    let Some(key) = key else {
+                        return true;
+                    };
+                    if self.layout.focused() != Panel::Editor {
+                        return false;
                     }
+                    self.editor
+                        .update(cx, |editor, cx| editor.editor_key(key, window, cx));
                 }
             },
             ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
@@ -657,11 +1087,11 @@ impl Workspace {
         true
     }
 
-    /// The focused panel's marker: a thin bar in the focus colour across
-    /// its top edge, laid over the panel so focusing never shifts content.
-    /// Subtle, but always there (design guides: state must be visible).
-    fn focus_bar(&self, panel: Panel) -> Option<impl IntoElement> {
-        (self.layout.focused() == panel).then(|| {
+    /// The focused region's marker: a thin bar in the focus colour across
+    /// its top edge, laid over it so focusing never shifts content. Subtle,
+    /// but always there (design guides: state must be visible).
+    fn focus_bar(&self, region: Region) -> Option<impl IntoElement> {
+        (self.layout.focused_region() == region).then(|| {
             div()
                 .absolute()
                 .top_0()
@@ -675,12 +1105,11 @@ impl Workspace {
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&self.theme);
         let focused = self.layout.focused() == Panel::Rail;
-        let shown = self.shown_view();
         let (top, pinned) = RAIL_VIEWS.split_at(RAIL_VIEWS.len() - 1);
         let cell = |i: usize, view: DrawerView, cx: &mut Context<Self>| {
             self.render_rail_cell(
                 view,
-                shown == Some(view),
+                self.is_shown(view),
                 focused && i == self.rail_cursor,
                 cx,
             )
@@ -715,7 +1144,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(pinned)
             // Last, so it paints over a highlighted cell.
-            .children(self.focus_bar(Panel::Rail))
+            .children(self.focus_bar(Region::Rail))
     }
 
     fn render_rail_cell(
@@ -774,21 +1203,37 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_drawer(
-        &self,
-        view: DrawerView,
-        width: f64,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let panel_bg = theme::panel_background(&self.theme);
-        let line = theme::divider(&self.theme);
-        let active = theme::focus_border(&self.theme);
+    /// `side`'s drawer, `width` px wide: its slots stacked top to bottom
+    /// (the first at the persisted share when there are two), and the width
+    /// divider on the edge it shares with the editor.
+    fn render_drawer(&self, side: Side, width: f64, cx: &mut Context<Self>) -> impl IntoElement {
+        let views = self.layout.slot_views(side);
+        let split = (views.len() > 1)
+            .then(|| self.layout.split_ratio(side))
+            .flatten();
+        let label = views
+            .iter()
+            .map(|v| shell_layout::view_name(*v))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let slots: Vec<AnyElement> = views
+            .iter()
+            .enumerate()
+            .map(|(index, view)| {
+                let share = if index == 0 { split } else { None };
+                self.render_slot(side, index, *view, share, cx)
+            })
+            .collect();
+        let edge = match side {
+            Side::Left => HandleEdge::Trailing,
+            Side::Right => HandleEdge::Leading,
+        };
         div()
-            .id(drawer_id(Side::Left))
+            .id(drawer_id(side))
             .test_support()
-            .track_focus(&self.drawer_focus)
+            .track_focus(&self.drawer_focus[side_ix(side)])
             .role(Role::Group)
-            .aria_label(shell_layout::view_name(view))
+            .aria_label(SharedString::from(label))
             .relative()
             .flex()
             .flex_col()
@@ -796,9 +1241,65 @@ impl Workspace {
             .h_full()
             // Measured runtime geometry: the user's dragged width, in pixels.
             .w(px(width as f32))
-            .bg(panel_bg)
-            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                this.focus_panel(Panel::Drawer(Side::Left), window, cx)
+            .bg(theme::panel_background(&self.theme))
+            // The split divider's drag, measured against this drawer.
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<SlotResize>, _, cx| {
+                    this.on_split_drag(side, event, cx)
+                }),
+            )
+            .children(slots)
+            .child(
+                resize_handle::<DrawerResize, DragGhost>(divider_id(side), Axis::Horizontal)
+                    .inside(edge)
+                    .with_appearance(hairline(
+                        Axis::Horizontal,
+                        theme::divider(&self.theme),
+                        theme::focus_border(&self.theme),
+                    ))
+                    .on_drag(DrawerResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, _| {
+                            this.grab_divider(side, f64::from(event.position.x), window)
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_resize(cx)),
+                    ),
+            )
+    }
+
+    /// Slot `index` of `side`'s drawer, showing `view`: its title over the
+    /// view (FILES, or the placeholder of a view not built yet). `share` is
+    /// the first slot's part of a split drawer's height; that slot also
+    /// carries the divider between the two.
+    fn render_slot(
+        &self,
+        side: Side,
+        index: usize,
+        view: DrawerView,
+        share: Option<f64>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let region = Region::Slot { side, index };
+        div()
+            .id(slot_id(view))
+            .test_support()
+            .track_focus(self.slot_focus(view))
+            .role(Role::Group)
+            .aria_label(shell_layout::view_name(view))
+            .relative()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .map(|slot| match share {
+                Some(share) => slot.flex_none().h(relative(share as f32)),
+                None => slot.flex_1(),
+            })
+            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                this.focus_region(region, window, cx)
             }))
             .child(
                 div()
@@ -810,9 +1311,9 @@ impl Workspace {
                     .text_color(theme::foreground(&self.theme))
                     .child(shell_layout::view_name(view)),
             )
-            .map(|drawer| match (view, self.files.as_ref()) {
-                (DrawerView::Files, Some(files)) => drawer.child(files.clone()),
-                _ => drawer.child(
+            .map(|slot| match (view, self.files.as_ref()) {
+                (DrawerView::Files, Some(files)) => slot.child(files.clone()),
+                _ => slot.child(
                     div()
                         .px_3()
                         .text_sm()
@@ -820,40 +1321,30 @@ impl Workspace {
                         .child("Coming soon"),
                 ),
             })
-            .children(self.focus_bar(Panel::Drawer(Side::Left)))
-            .child(
-                resize_handle::<DrawerResize, DragGhost>(divider_id(Side::Left), Axis::Horizontal)
-                    .inside(HandleEdge::Trailing)
-                    .with_appearance(Rc::new(move |handle: &ResizeHandleContext, _, _| {
-                        let color = if handle.state() == gpui_kit::base::ResizeHandleState::Idle {
-                            line
-                        } else {
-                            active
-                        };
-                        // The hairline fills the band's one-pixel content box.
-                        Some(
-                            div()
-                                .flex_none()
-                                .h_full()
-                                .w(px(1.))
-                                .bg(color)
-                                .into_any_element(),
+            .children(self.focus_bar(region))
+            .when(share.is_some(), |slot| {
+                slot.child(
+                    resize_handle::<SlotResize, DragGhost>(split_divider_id(side), Axis::Vertical)
+                        .inside(HandleEdge::Trailing)
+                        .with_appearance(hairline(
+                            Axis::Vertical,
+                            theme::divider(&self.theme),
+                            theme::focus_border(&self.theme),
+                        ))
+                        .on_drag(SlotResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                                this.grab_split(side, f64::from(event.position.y))
+                            }),
                         )
-                    }))
-                    .on_drag(DrawerResize(Side::Left), |_, _, _, cx| {
-                        cx.new(|_| DragGhost)
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, _| {
-                            this.grab_divider(Side::Left, f64::from(event.position.x), window)
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.end_resize(cx)),
-                    ),
-            )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.end_resize(cx)),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     /// What the editor Panel shows in place of the editor while a vault is
@@ -914,7 +1405,7 @@ impl Workspace {
                 &self.doc_facts(empty.is_none(), cx),
                 &self.theme,
             ))
-            .children(self.focus_bar(Panel::Editor))
+            .children(self.focus_bar(Region::Group(self.layout.active_group())))
     }
 
     /// What the Footer reads off the editor and the open note this frame.
@@ -993,12 +1484,12 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let limits = Self::limits(window);
-        let drawer = self.shown_view().map(|view| {
-            (
-                view,
-                shell_layout::shown_width(&self.layout, Side::Left, limits),
-            )
-        });
+        let drawer = |side: Side| {
+            (self.layout.is_visible(Panel::Drawer(side))
+                && self.layout.focused_slot(side).is_some())
+            .then(|| shell_layout::shown_width(&self.layout, side, limits))
+        };
+        let (left, right) = (drawer(Side::Left), drawer(Side::Right));
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
@@ -1019,10 +1510,13 @@ impl Render for Workspace {
             .size_full()
             .bg(theme::background(&self.theme))
             .child(self.render_rail(cx))
-            .when_some(drawer, |row, (view, width)| {
-                row.child(self.render_drawer(view, width, cx))
+            .when_some(left, |row, width| {
+                row.child(self.render_drawer(Side::Left, width, cx))
             })
             .child(self.render_editor(cx))
+            .when_some(right, |row, width| {
+                row.child(self.render_drawer(Side::Right, width, cx))
+            })
     }
 }
 
@@ -1047,8 +1541,13 @@ fn conflict_flash(details: &str) -> String {
 
 mod files;
 mod follow;
+mod modal;
 mod note;
+mod palette;
+mod route;
 
+#[cfg(test)]
+mod drawer_tests;
 #[cfg(test)]
 mod files_tests;
 #[cfg(test)]
@@ -1057,6 +1556,8 @@ mod follow_tests;
 mod footer_tests;
 #[cfg(test)]
 mod note_tests;
+#[cfg(test)]
+mod palette_tests;
 #[cfg(test)]
 mod start_tests;
 #[cfg(test)]

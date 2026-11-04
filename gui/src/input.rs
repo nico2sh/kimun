@@ -23,6 +23,42 @@ pub fn mods(m: &Modifiers) -> Mods {
     }
 }
 
+/// A chord as a GPUI [`Keystroke`], for showing it the platform's way (the
+/// kit's `Kbd`). The inverse of [`key_input`] for every chord a keymap can
+/// hold: `BackTab` is Shift+Tab, a space is `space`.
+pub fn keystroke(key: KeyInput) -> Keystroke {
+    let name = match key.key {
+        Key::Char(' ') => "space".to_string(),
+        Key::Char(c) => c.to_string(),
+        Key::Enter => "enter".into(),
+        Key::Esc => "escape".into(),
+        Key::Tab | Key::BackTab => "tab".into(),
+        Key::Backspace => "backspace".into(),
+        Key::Delete => "delete".into(),
+        Key::Insert => "insert".into(),
+        Key::Left => "left".into(),
+        Key::Right => "right".into(),
+        Key::Up => "up".into(),
+        Key::Down => "down".into(),
+        Key::Home => "home".into(),
+        Key::End => "end".into(),
+        Key::PageUp => "pageup".into(),
+        Key::PageDown => "pagedown".into(),
+        Key::F(n) => format!("f{n}"),
+    };
+    Keystroke {
+        modifiers: Modifiers {
+            control: key.mods.ctrl,
+            alt: key.mods.alt,
+            shift: key.mods.shift || key.key == Key::BackTab,
+            platform: key.mods.sup,
+            function: false,
+        },
+        key: name,
+        key_char: None,
+    }
+}
+
 /// Convert a key-down event. See [`key_input`], except for character-input
 /// keys: when the platform says the modifiers *produced* the text
 /// (`prefer_character_input`: AltGr on Windows arrives as Ctrl+Alt with `@` in
@@ -291,6 +327,43 @@ mod tests {
     }
     fn input(k: Keystroke) -> Option<KeyInput> {
         key_input(&k)
+    }
+
+    /// Every chord shape a keymap holds survives the trip to a GPUI
+    /// keystroke and back.
+    #[test]
+    fn a_chord_round_trips_through_its_keystroke() {
+        for chord in [
+            KeyInput::new(
+                Key::Char('p'),
+                Mods {
+                    ctrl: true,
+                    shift: true,
+                    ..Mods::NONE
+                },
+            ),
+            KeyInput::new(Key::Char('q'), Mods::SUPER),
+            KeyInput::new(
+                Key::Left,
+                Mods {
+                    alt: true,
+                    shift: true,
+                    ..Mods::NONE
+                },
+            ),
+            KeyInput::new(
+                Key::BackTab,
+                Mods {
+                    ctrl: true,
+                    shift: true,
+                    ..Mods::NONE
+                },
+            ),
+            KeyInput::new(Key::Enter, Mods::CTRL),
+            KeyInput::plain(Key::F(2)),
+        ] {
+            assert_eq!(key_input(&keystroke(chord)), Some(chord), "{chord:?}");
+        }
     }
 
     #[test]

@@ -1116,6 +1116,9 @@ mod tests {
         ps.open_drawer_view(DrawerView::Outline);
         assert_eq!(ps.order.slot_views(Side::Left), vec![DrawerView::Outline]);
         assert!(ps.is_visible(PanelKind::Drawer));
+        // A view shown before comes back in the one slot, never stacked.
+        ps.open_drawer_view(DrawerView::Files);
+        assert_eq!(ps.order.slot_views(Side::Left), vec![DrawerView::Files]);
         assert!(ps.order.slot_views(Side::Right).is_empty());
         assert!(!ps.order.is_visible(Panel::Drawer(Side::Right)));
     }

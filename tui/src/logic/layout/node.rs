@@ -66,7 +66,7 @@ pub(crate) struct Node<L> {
 }
 
 /// Smallest share a ratio setter leaves either side of a split.
-const MIN_RATIO: f64 = 0.1;
+pub(crate) const MIN_RATIO: f64 = 0.1;
 
 impl<L: Clone + PartialEq> Node<L> {
     /// A single leaf.
@@ -112,6 +112,7 @@ impl<L: Clone + PartialEq> Node<L> {
     }
 
     /// Number of leaves.
+    #[cfg(test)]
     pub(crate) fn leaf_count(&self) -> usize {
         match &self.kind {
             Kind::Leaf(_) => 1,
@@ -200,22 +201,8 @@ impl<L: Clone + PartialEq> Node<L> {
         true
     }
 
-    /// Swap the leaf `old` for `new` in place. False when `old` is absent.
-    pub(crate) fn replace_leaf(&mut self, old: &L, new: L) -> bool {
-        match &mut self.kind {
-            Kind::Leaf(id) if id == old => {
-                *id = new;
-                true
-            }
-            Kind::Leaf(_) => false,
-            Kind::Split { children, .. } => children
-                .iter_mut()
-                .find(|c| c.node.contains(old))
-                .is_some_and(|c| c.node.replace_leaf(old, new)),
-        }
-    }
-
     /// The root split's children as fractions summing to 1; empty for a leaf.
+    #[cfg(test)]
     pub(crate) fn ratios(&self) -> Vec<f64> {
         match &self.kind {
             Kind::Leaf(_) => Vec::new(),
@@ -352,15 +339,6 @@ mod tests {
         assert!(!n.remove_leaf(&'a'));
         assert!(!n.remove_leaf(&'z'));
         assert_eq!(n, Node::leaf('a'));
-    }
-
-    #[test]
-    fn replace_swaps_a_leaf_in_place() {
-        let mut n = Node::leaf('a');
-        n.split_leaf(&'a', Axis::Vertical, 'b');
-        assert!(n.replace_leaf(&'b', 'x'));
-        assert_eq!(n.leaves(), vec![&'a', &'x']);
-        assert!(!n.replace_leaf(&'z', 'y'));
     }
 
     #[test]

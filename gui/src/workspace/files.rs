@@ -43,7 +43,7 @@ use gpui_kit::{
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
-use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::layout::{Panel, Region};
 use kimun_notes::logic::message::{AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::Saved;
@@ -800,15 +800,16 @@ impl Workspace {
             .map_or_else(VaultPath::root, |note| note.get_parent_path().0)
     }
 
-    /// `OpenFileBrowser`: show FILES in the left drawer, on the open note's
-    /// folder when it shows another one (a filter and a selection in the
-    /// right folder stay), and give it the keyboard.
+    /// `OpenFileBrowser`: show FILES in the drawer where it lives (its home
+    /// side when it is in no slot), on the open note's folder when it shows
+    /// another one (a filter and a selection in the right folder stay), and
+    /// give it the keyboard.
     pub(super) fn open_file_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (side, _) = self.layout.open_view(DrawerView::Files);
+        let (side, index) = self.layout.open_view(DrawerView::Files);
         if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == DrawerView::Files) {
             self.rail_cursor = i;
         }
-        self.layout.focus(Panel::Drawer(side));
+        self.layout.focus_region(Region::Slot { side, index });
         if !self.opening_first() {
             let dir = self.open_note_dir();
             if let Some(files) = self.files.as_ref() {

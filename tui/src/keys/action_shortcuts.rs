@@ -11,7 +11,7 @@ use crate::logic::text_action::TextAction;
 /// the TUI has one drawer, one slot and one group, and its shortcut tier
 /// ignores them even if a user binds one. `SaveNote` is the leader's `w`
 /// (save now); the TUI has no free chord for it.
-pub const TUI_UNBOUND: [ActionShortcuts; 12] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 14] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -26,6 +26,8 @@ pub const TUI_UNBOUND: [ActionShortcuts; 12] = [
     ActionShortcuts::UnsplitDrawerSlot,
     ActionShortcuts::ToggleRightDrawer,
     ActionShortcuts::SaveNote,
+    ActionShortcuts::MoveViewUp,
+    ActionShortcuts::MoveViewDown,
 ];
 
 /// Groups an [`ActionShortcuts`] variant for display in the help modal.
@@ -68,7 +70,9 @@ impl ActionShortcuts {
             | ActionShortcuts::MoveViewToRightDrawer
             | ActionShortcuts::SplitDrawerSlot
             | ActionShortcuts::UnsplitDrawerSlot
-            | ActionShortcuts::ToggleRightDrawer => ShortcutCategory::Navigation,
+            | ActionShortcuts::ToggleRightDrawer
+            | ActionShortcuts::MoveViewUp
+            | ActionShortcuts::MoveViewDown => ShortcutCategory::Navigation,
 
             ActionShortcuts::SearchNotes
             | ActionShortcuts::OpenNote
@@ -123,6 +127,8 @@ impl ActionShortcuts {
             ActionShortcuts::UnsplitDrawerSlot => "Unsplit drawer".into(),
             ActionShortcuts::ToggleRightDrawer => "Toggle right drawer".into(),
             ActionShortcuts::SaveNote => "Save note".into(),
+            ActionShortcuts::MoveViewUp => "Move view up".into(),
+            ActionShortcuts::MoveViewDown => "Move view down".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),

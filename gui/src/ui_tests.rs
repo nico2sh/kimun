@@ -586,7 +586,8 @@ fn undo_redo_and_dot_repeat_reach_the_engine(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn requests_nothing_serves_yet_are_dropped(cx: &mut TestAppContext) {
-    // `:` asks for the palette (M6).
+    // `:` asks for the palette, which the editor's owner opens (none here):
+    // the request is served as an event, never left queued.
     let (handle, view) = open_vim(cx, "abc");
     cx.update_window(handle, |_, window, cx| {
         window.input(":", cx);
@@ -1735,7 +1736,14 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         assert_eq!(
             spy.read(cx).bubbled,
             1,
-            "the drawer chord passes the editor by"
+            "the right drawer's chord passes the editor by"
+        );
+        // Ctrl-T has no vim twin, but vim reads no Ctrl-T: it passes too.
+        window.press("ctrl-t", cx);
+        assert_eq!(
+            spy.read(cx).bubbled,
+            2,
+            "the left drawer's chord passes the editor by"
         );
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx), "Ctrl-F is find under vim");

@@ -3,9 +3,8 @@
 //! `LeaderEngine` currently sits on, so it can never drift from the tree:
 //! same data, two surfaces.
 //!
-//! Reveal policy: hidden while a sequence is typed fluently; shown once the
-//! user hesitates past `leader_timeout_ms`. Hidden the instant the sequence
-//! fires or cancels (the engine simply stops being pending).
+//! The model (pressed keys, caption, rows) and the reveal policy live in the
+//! Logic layer (`logic::which_key`); this module only draws them.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -15,6 +14,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::keys::leader::LeaderEngine;
+use crate::logic::which_key::{CONTROLS, WhichKey};
 use crate::settings::themes::Theme;
 
 /// Minimum column width for a `key → target` cell.
@@ -26,7 +26,7 @@ const CELL_WIDTH: u16 = 24;
 /// counting raw `children()` here would reserve extra blank rows wherever a
 /// digit run (or any future collapse) shrinks the grid.
 pub fn desired_height(engine: &LeaderEngine, width: u16) -> u16 {
-    let n = engine.current_node().display_children().len() as u16;
+    let n = WhichKey::new(engine, "").rows().len() as u16;
     let cols = (width.saturating_sub(2) / CELL_WIDTH).max(1);
     let grid_rows = n.div_ceil(cols);
     grid_rows + 3 // top border + header + grid + bottom border
@@ -55,7 +55,7 @@ pub fn render(
         return;
     }
 
-    let node = engine.current_node();
+    let model = WhichKey::new(engine, gateway_label);
     let keycap = Style::default()
         .fg(theme.yellow.to_ratatui())
         .add_modifier(Modifier::BOLD);
@@ -63,12 +63,8 @@ pub fn render(
     let caption_style = Style::default().fg(theme.fg_secondary.to_ratatui());
 
     // ── Header: pressed keycaps · caption · right-aligned controls ─────────
-    let mut pressed = format!(" {gateway_label}");
-    for c in engine.path() {
-        pressed.push(' ');
-        pressed.push(*c);
-    }
-    let controls = "Esc cancel · BkSp up ";
+    let pressed = format!(" {}", model.pressed());
+    let controls = format!("{CONTROLS} ");
     let controls_w = controls.len() as u16;
     let header_cols = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Horizontal)
@@ -80,7 +76,7 @@ pub fn render(
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(pressed, keycap),
-            Span::styled(format!("  {}", node.label()), caption_style),
+            Span::styled(format!("  {}", model.caption()), caption_style),
         ])),
         header_cols[0],
     );
@@ -91,7 +87,7 @@ pub fn render(
     );
 
     // ── Body: multi-column key → target grid ───────────────────────────────
-    let children = node.display_children();
+    let children = model.rows();
     if children.is_empty() {
         return;
     }

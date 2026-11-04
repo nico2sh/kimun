@@ -34,10 +34,10 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
-    App, Bounds, Context, EntityInputHandler, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent, SharedString,
-    Styled, Task, TextSystem, UTF16Selection, Window, div,
+    App, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent,
+    SharedString, Styled, Task, TextSystem, UTF16Selection, Window, div,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::editor::Editor;
@@ -47,6 +47,7 @@ use kimun_notes::logic::editor::request::EditorRequest;
 use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::{AppMessage, AppTx, redraw_callback};
+use kimun_notes::logic::text_action::TextAction;
 use kimun_notes::settings::themes::Theme;
 
 use crate::editor_element::{EditorElement, ShapedRows};
@@ -91,6 +92,16 @@ enum AppCommand {
     /// Another owner's command (focus, the drawer): not the editor's.
     NotOurs,
 }
+
+/// What the editor asks of the window that owns it, beyond the app channel:
+/// a surface that needs a `Window` to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// Vim `:` — open the command palette.
+    OpenPalette,
+}
+
+impl EventEmitter<EditorEvent> for EditorView {}
 
 /// How the caret is drawn. Mirrors the TUI's terminal cursor shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,8 +289,8 @@ impl EditorView {
                 // Vim `n` / `N`: repeat the last search, bar open or not.
                 EditorRequest::SearchNext => self.editor.search_repeat(false),
                 EditorRequest::SearchPrev => self.editor.search_repeat(true),
-                // Vim `:` opens the command palette: M6.
-                EditorRequest::OpenPalette => {}
+                // Vim `:` opens the command palette, which the window owns.
+                EditorRequest::OpenPalette => cx.emit(EditorEvent::OpenPalette),
                 // Right-click with no selection opens the note menu: M6.
                 EditorRequest::ContextMenu => {}
                 // Nothing (no popup) is anchored to the cursor to move yet.
@@ -340,6 +351,45 @@ impl EditorView {
             panel: Panel::Editor,
             vim: self.editor.is_vim() && !self.editor.find_open(),
         }
+    }
+
+    /// Open the find bar (`replace`: with its replace field), or step to the
+    /// next match when open — the find and replace chords, run from the
+    /// command palette.
+    pub(crate) fn find_command(
+        &mut self,
+        replace: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.input_blocked {
+            return;
+        }
+        if replace {
+            if self.editor.open_replace() {
+                self.preedit = None;
+            }
+        } else {
+            self.open_find();
+        }
+        self.settle(window, cx);
+    }
+
+    /// Bold, italic or strikethrough on the selection (the leader's `+text`,
+    /// run from the command palette). Nothing while the editor takes no
+    /// input or its find bar has the keyboard.
+    pub(crate) fn apply_text_action(
+        &mut self,
+        action: TextAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.input_blocked || self.editor.find_open() {
+            return;
+        }
+        self.preedit = None;
+        self.editor.apply_text_action(action);
+        self.settle(window, cx);
     }
 
     /// Act on `key` if the keymap binds it to an app command here, whether or
