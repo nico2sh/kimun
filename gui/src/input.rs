@@ -66,13 +66,18 @@ pub fn keystroke(key: KeyInput) -> Keystroke {
 /// Ctrl/Alt/Super it took are not a chord. Shift is kept, as for any typed
 /// symbol.
 pub fn key_down_input(event: &KeyDownEvent) -> Option<KeyInput> {
-    if event.prefer_character_input
-        && let Some(text) = typed_text(&event.keystroke)
-    {
+    keystroke_input(&event.keystroke, event.prefer_character_input)
+}
+
+/// [`key_down_input`] for a bare keystroke (a keystroke interceptor's):
+/// `character_input` says the platform composed the text with the modifiers
+/// held (GPUI's `InputPreference::CharacterInput`).
+pub fn keystroke_input(ks: &Keystroke, character_input: bool) -> Option<KeyInput> {
+    if character_input && let Some(text) = typed_text(ks) {
         // Multi-char text goes to the input handler (`carries_text`).
         let c = single_char(Some(text))?;
         if !c.is_control() {
-            let shift = event.keystroke.modifiers.shift;
+            let shift = ks.modifiers.shift;
             return Some(KeyInput::new(
                 Key::Char(c),
                 Mods {
@@ -82,7 +87,7 @@ pub fn key_down_input(event: &KeyDownEvent) -> Option<KeyInput> {
             ));
         }
     }
-    key_input(&event.keystroke)
+    key_input(ks)
 }
 
 /// Convert a GPUI keystroke, or `None` for modifier-only presses, keys with no

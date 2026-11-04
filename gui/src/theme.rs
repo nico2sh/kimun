@@ -236,6 +236,58 @@ pub fn selected_background(theme: &Theme) -> Rgba {
     rgba(mix(panel, accent, SELECTED_MIX))
 }
 
+// ---- The which-key popup -------------------------------------------------------
+
+/// A key in the which-key popup (the pressed keys, each row's key): the
+/// TUI's which-key keycap colour.
+pub fn key_cap(theme: &Theme) -> Rgba {
+    to_gpui(&theme.yellow, Token::Foreground, theme)
+}
+
+/// A row of the which-key popup that opens a group rather than running a
+/// command: the TUI's which-key group colour.
+pub fn key_group(theme: &Theme) -> Rgba {
+    to_gpui(&theme.aqua, Token::Foreground, theme)
+}
+
+// ---- The kit's own theme ------------------------------------------------------
+
+/// Give the kit's components (the command palette's dialog, its filter
+/// input, its rows) kimün's colours instead of the kit's stock white. Only
+/// the roles the GUI's kit-drawn surfaces read are set; the rest keep the
+/// kit's values.
+pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
+    let surface = panel_background(theme);
+    let text = foreground(theme);
+    let hover = hover_background(theme);
+    let focus = focus_border(theme);
+    // One tone for the dialog frame and its list (`popover`), so no seam shows
+    // where the frame is taller than the rows: the panel surface, as the drawers.
+    kit.background = surface.into();
+    kit.foreground = text.into();
+    kit.popover = surface.into();
+    kit.popover_foreground = text.into();
+    kit.border = divider(theme).into();
+    kit.input = divider(theme).into();
+    kit.muted = hover.into();
+    kit.muted_foreground = muted(theme).into();
+    kit.accent = hover.into();
+    kit.accent_foreground = text.into();
+    kit.secondary = hover.into();
+    kit.secondary_foreground = text.into();
+    kit.primary = focus.into();
+    kit.primary_foreground = background(theme).into();
+    kit.ring = focus.into();
+    kit.selection = selection_background(theme).into();
+    kit.caret = caret(theme).into();
+    kit.list_even = surface.into();
+    kit.list_hover = hover.into();
+    kit.list_active = selected_background(theme).into();
+    kit.list_active_border = focus.into();
+    kit.danger = error(theme).into();
+    kit.warning = unsaved(theme).into();
+}
+
 // ---- FILES rows --------------------------------------------------------------
 
 /// The open-note marker and the `Create:` row: the TUI's accent.
@@ -407,6 +459,25 @@ fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dialog surface reads the kit's per-component tokens, not its
+    /// colours: `Theme::update` must carry kimün's panel surface (the dialog's one tone) to both.
+    #[gpui_kit::test]
+    fn the_kit_dialog_surface_takes_the_panel_surface(cx: &mut gpui_kit::TestAppContext) {
+        let t = theme(
+            ThemeColor::Rgb(10, 20, 30),
+            ThemeColor::Rgb(200, 200, 200),
+            ThemeColor::Rgb(60, 60, 90),
+        );
+        let want: gpui_kit::Hsla = panel_background(&t).into();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::component::Theme::update(cx, |kit| apply_to_kit(&t, kit));
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert_eq!(kit.background, want);
+            assert_eq!(kit.tokens.background.color, want);
+        });
+    }
 
     fn theme(bg: ThemeColor, fg: ThemeColor, sel: ThemeColor) -> Theme {
         Theme {

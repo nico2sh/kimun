@@ -173,10 +173,11 @@ struct Drawer<V> {
     width: f64,
     /// The first slot's share when both positions show a view.
     ratio: f64,
-    /// The view last merged away by an unsplit ([`PanelLayout::close_slot`]),
-    /// what a split shows again first. Session-only, never persisted;
-    /// forgotten once that view is shown or leaves the drawer.
-    merged: Option<V>,
+    /// The **empty slot** a split opened: a slot position that shows no
+    /// view, only a hint, beside the drawer's one shown view. Session-only,
+    /// never persisted; cleared when a view lands there, on unsplit, when
+    /// the drawer hides or when its other slot empties.
+    empty: Option<usize>,
 }
 
 /// The layout state: panels, drawers with their placed and shown views,
@@ -214,7 +215,7 @@ impl<V: Clone + PartialEq> Drawer<V> {
             visible,
             width,
             ratio: DEFAULT_RATIO,
-            merged: None,
+            empty: None,
         }
     }
 
@@ -293,13 +294,13 @@ impl<V: Clone + PartialEq> Drawer<V> {
 
     /// Show `view`, placed here: the view shown at its slot position, if
     /// any, is hidden (and stays placed). Slot focus on that view moves to
-    /// `view`. A view merged away is no longer remembered once shown.
+    /// `view`. A view shown at the empty slot's position fills it.
     fn show(&mut self, view: &V) {
         let Some(slot) = self.get(view).map(|p| p.slot) else {
             return;
         };
-        if self.merged.as_ref() == Some(view) {
-            self.merged = None;
+        if self.empty == Some(slot) {
+            self.empty = None;
         }
         let mut prev = self.focused_view();
         for p in &mut self.placed {
@@ -350,6 +351,28 @@ impl<V: Clone + PartialEq> Drawer<V> {
             [view] => self.get(view).map(|p| p.slot),
             _ => None,
         }
+    }
+
+    /// The displayed slots, top → bottom: each shown view, and `None` at
+    /// the empty slot's position.
+    fn slots(&self) -> Vec<Option<V>> {
+        let mut slots: Vec<(usize, Option<V>)> = self
+            .placed
+            .iter()
+            .filter(|p| p.shown)
+            .map(|p| (p.slot, Some(p.view.clone())))
+            .collect();
+        if let Some(pos) = self.empty {
+            slots.push((pos, None));
+            slots.sort_by_key(|(pos, _)| *pos);
+        }
+        slots.into_iter().map(|(_, view)| view).collect()
+    }
+
+    /// Hide the drawer; its empty slot goes with it.
+    fn conceal_drawer(&mut self) {
+        self.visible = false;
+        self.empty = None;
     }
 
     /// The shown views as a slot tree, the first at the drawer's ratio;
@@ -436,9 +459,12 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         self.step(|i, n| (i + 1) % n)
     }
 
-    /// Step through the *visible* panels from the focused one.
+    /// Step through the *focusable* panels from the focused one.
     fn step(&self, advance: impl Fn(usize, usize) -> usize) -> Option<Panel> {
-        let visible = self.visible_panels();
+        let visible: Vec<Panel> = PANEL_ORDER
+            .into_iter()
+            .filter(|&p| self.is_focusable(p))
+            .collect();
         let n = visible.len();
         if n < 2 {
             return None;
@@ -455,6 +481,15 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
             return;
         }
         self.focus = panel;
+    }
+
+    /// Whether `panel` can take focus: visible, and for a drawer showing a
+    /// view (an empty drawer is visible but has nothing to focus).
+    fn is_focusable(&self, panel: Panel) -> bool {
+        match panel {
+            Panel::Drawer(side) => self.is_visible(panel) && self.drawer(side).count() > 0,
+            _ => self.is_visible(panel),
+        }
     }
 
     /// Whether `panel` is currently visible.
@@ -475,19 +510,36 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         }
     }
 
+    /// Toggle `side`'s drawer open (the GUI's drawer toggle): it becomes
+    /// visible even when it shows nothing. A drawer showing nothing but
+    /// holding hidden placed views shows the first of them (top position
+    /// first); one with no placed view opens **empty**, a hint in place of
+    /// a view, and focus stays where it is. Returns whether it shows a view.
+    pub fn open_drawer(&mut self, side: Side) -> bool {
+        let drawer = self.drawer_mut(side);
+        if drawer.count() == 0
+            && let Some(first) = drawer.placed.first().map(|p| p.view.clone())
+        {
+            drawer.show(&first);
+        }
+        drawer.visible = true;
+        drawer.count() > 0
+    }
+
     /// Hide `panel`. The rail and the editor are always visible. Focus on a
     /// hidden panel moves to the nearest visible one.
     pub fn hide(&mut self, panel: Panel) {
         if let Panel::Drawer(side) = panel {
-            self.drawer_mut(side).visible = false;
+            self.drawer_mut(side).conceal_drawer();
         }
         self.fix_focus();
     }
 
-    /// If focus sits on a hidden panel, move it to the nearest visible one,
-    /// searching outward in panel order (left first at each distance).
+    /// If focus sits on a panel it cannot stay on (hidden, or a drawer
+    /// showing nothing), move it to the nearest focusable one, searching
+    /// outward in panel order (left first at each distance).
     fn fix_focus(&mut self) {
-        if self.is_visible(self.focus) {
+        if self.is_focusable(self.focus) {
             return;
         }
         let from = PANEL_ORDER
@@ -498,7 +550,7 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         if let Some(i) = (1..n)
             .flat_map(|d| [from.checked_sub(d), Some(from + d).filter(|&i| i < n)])
             .flatten()
-            .find(|&i| self.is_visible(PANEL_ORDER[i]))
+            .find(|&i| self.is_focusable(PANEL_ORDER[i]))
         {
             self.focus = PANEL_ORDER[i];
         }
@@ -676,6 +728,19 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         self.drawer(side).placed_views()
     }
 
+    /// `side`'s displayed slots, top → bottom: the shown views, and `None`
+    /// at its empty slot ([`Self::split_empty`]). Empty for a drawer that
+    /// shows nothing.
+    pub fn slots(&self, side: Side) -> Vec<Option<V>> {
+        self.drawer(side).slots()
+    }
+
+    /// The slot position of `side`'s empty slot (0 top, 1 bottom; also its
+    /// index in [`Self::slots`]), `None` without one.
+    pub fn empty_slot(&self, side: Side) -> Option<usize> {
+        self.drawer(side).empty
+    }
+
     /// The focused slot of `side`, `None` when it shows no view.
     pub fn focused_slot(&self, side: Side) -> Option<usize> {
         let drawer = self.drawer(side);
@@ -729,9 +794,6 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         let drawer = self.drawer_mut(side);
         let prev = drawer.focused_view();
         drawer.placed.retain(|p| p.view != *view);
-        if drawer.merged.as_ref() == Some(view) {
-            drawer.merged = None;
-        }
         drawer.refocus(prev);
         self.settle_empty(side);
     }
@@ -741,7 +803,7 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         let drawer = self.drawer_mut(side);
         if drawer.count() == 0 {
             drawer.focused = 0;
-            drawer.visible = false;
+            drawer.conceal_drawer();
             self.fix_focus();
         }
     }
@@ -770,13 +832,22 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
     /// stays put. A hidden one is shown where it is placed, hiding the view
     /// shown at its slot position (which stays placed there). A view placed
     /// nowhere is placed on the left at the focused slot's position (top in
-    /// an empty drawer), so it takes that slot.
+    /// an empty drawer), so it takes that slot. Never fills an empty slot:
+    /// a view placed at an empty slot's position is shown at the drawer's
+    /// shown slot instead (only a move reaches an empty slot).
     pub fn place_view(&mut self, view: V) -> (Side, usize) {
         if let Some(loc) = self.view_location(&view) {
             return loc;
         }
         match self.placement(&view) {
-            Some((side, _)) => self.drawer_mut(side).show(&view),
+            Some((side, slot)) => {
+                let drawer = self.drawer_mut(side);
+                if drawer.empty == Some(slot) {
+                    let to = drawer.focused_pos();
+                    drawer.put(view.clone(), to);
+                }
+                drawer.show(&view);
+            }
             None => {
                 let slot = self.left.focused_pos();
                 self.left.put(view.clone(), slot);
@@ -843,15 +914,66 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         Ok(self.follow(&view, had_focus).1)
     }
 
+    /// Open an **empty slot** in `side` (Split): the free slot position
+    /// beside the drawer's one shown view shows a hint instead of a view
+    /// until a view is moved there ([`Self::fill_empty_slot`]). Session
+    /// only, never persisted. Slot focus stays on the shown view. Returns
+    /// the empty slot's position. Refused with nothing shown
+    /// ([`LayoutError::NoSuchSlot`]) and in a full drawer, both positions
+    /// taken by views or the empty slot ([`LayoutError::SlotCap`]).
+    pub fn split_empty(&mut self, side: Side) -> Result<usize, LayoutError> {
+        let drawer = self.drawer_mut(side);
+        if drawer.count() == 0 {
+            return Err(LayoutError::NoSuchSlot);
+        }
+        if drawer.empty.is_some() {
+            return Err(LayoutError::SlotCap);
+        }
+        let free = drawer.free_slot().ok_or(LayoutError::SlotCap)?;
+        drawer.empty = Some(free);
+        drawer.visible = true;
+        Ok(free)
+    }
+
+    /// Close `side`'s empty slot (Unsplit on a drawer with one): the shown
+    /// view fills the drawer again. False when there is none.
+    pub fn close_empty_slot(&mut self, side: Side) -> bool {
+        self.drawer_mut(side).empty.take().is_some()
+    }
+
+    /// Move `view` into `side`'s empty slot and show it there; the drawer is
+    /// revealed. A view shown in `side` leaves its own slot, which becomes
+    /// the empty one (the marker follows it). Any other view — hidden here,
+    /// in the other drawer, or placed nowhere — is placed at the empty slot
+    /// (a drawer it leaves showing nothing hides). Focus follows the view
+    /// when its slot was focused. `None` (nothing changes) without an empty
+    /// slot in `side`.
+    pub fn fill_empty_slot(&mut self, side: Side, view: V) -> Option<(Side, usize)> {
+        let pos = self.drawer(side).empty?;
+        let had_focus = self.view_has_focus(&view);
+        let shown_here = self.view_location(&view).is_some_and(|(s, _)| s == side);
+        if self.placement(&view).map(|(s, _)| s) != Some(side) {
+            self.remove_view(&view);
+        }
+        let drawer = self.drawer_mut(side);
+        let from = drawer.get(&view).map(|p| p.slot);
+        drawer.put(view.clone(), pos);
+        drawer.show(&view);
+        if shown_here {
+            drawer.empty = from;
+        }
+        drawer.visible = true;
+        Some(self.follow(&view, had_focus))
+    }
+
     /// Close slot `index` of `side` (an explicit unsplit) and return the
     /// view it showed, now hidden. In a split drawer the slot **merges**
     /// into the other one: every view placed at the closed slot's position
     /// (shown or hidden) moves to the other position, so all the drawer's
     /// views share one slot and showing any of them replaces the shown one
-    /// rather than splitting the drawer again. The closed view is
-    /// remembered for the drawer's next split ([`Self::next_hidden`]). A
-    /// drawer's only slot just hides its view, and the drawer, left
-    /// showing nothing, is hidden.
+    /// rather than splitting the drawer again. A drawer's only slot just
+    /// hides its view, and the drawer, left showing nothing, is hidden.
+    /// An empty slot is closed by [`Self::close_empty_slot`].
     pub fn close_slot(&mut self, side: Side, index: usize) -> Result<V, LayoutError> {
         let Some(view) = self.drawer(side).views().get(index).cloned() else {
             return Err(LayoutError::NoSuchSlot);
@@ -860,10 +982,7 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         let from = drawer.get(&view).map_or(0, |p| p.slot);
         drawer.conceal(&view);
         match drawer.single_pos() {
-            Some(to) if drawer.count() == 1 => {
-                drawer.merge(from, to);
-                drawer.merged = Some(view.clone());
-            }
+            Some(to) if drawer.count() == 1 => drawer.merge(from, to),
             _ => self.settle_empty(side),
         }
         Ok(view)
@@ -884,29 +1003,6 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
         Some(side)
     }
 
-    /// A hidden view placed in `side` to show next (what a split fills):
-    /// the view last merged away by [`Self::close_slot`] in this session,
-    /// while it is still placed here and hidden; else one at the drawer's
-    /// free slot position; else the first hidden one. `None` when every
-    /// placed view is shown.
-    pub fn next_hidden(&self, side: Side) -> Option<V> {
-        let drawer = self.drawer(side);
-        let hidden = || drawer.placed.iter().filter(|p| !p.shown);
-        let merged = drawer
-            .merged
-            .as_ref()
-            .filter(|v| drawer.get(v).is_some_and(|p| !p.shown));
-        merged
-            .or_else(|| {
-                drawer
-                    .free_slot()
-                    .and_then(|free| hidden().find(|p| p.slot == free))
-                    .or_else(|| hidden().next())
-                    .map(|p| &p.view)
-            })
-            .cloned()
-    }
-
     /// Move `view` to the drawer on `to`, shown, and reveal it, fitting the
     /// target: in a split drawer it keeps its slot position (top when it
     /// was placed nowhere) and replaces the view shown there; in an unsplit
@@ -914,8 +1010,14 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
     /// is shown) and replaces the shown view — it never splits the target.
     /// The replaced view stays placed, hidden. A view placed in `to`
     /// already is just shown. Focus follows the view when its slot was
-    /// focused.
+    /// focused. A target with an empty slot takes any view not shown there
+    /// into that slot first ([`Self::fill_empty_slot`]).
     pub fn move_view(&mut self, view: V, to: Side) -> (Side, usize) {
+        if self.view_location(&view).map(|(s, _)| s) != Some(to)
+            && let Some(loc) = self.fill_empty_slot(to, view.clone())
+        {
+            return loc;
+        }
         let from = self.placement(&view);
         if from.is_some_and(|(side, _)| side != to) || from.is_none() {
             let had_focus = self.view_has_focus(&view);
@@ -939,11 +1041,17 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
     /// hidden one just changes position. Slot focus follows the view.
     /// False (nothing changes) when `view` is placed nowhere, its drawer is
     /// unsplit (fewer than two shown views), `slot` is not a position, or
-    /// it is there already.
+    /// it is there already. A shown view moved to its drawer's empty slot
+    /// goes there and leaves the empty slot behind it.
     pub fn set_view_slot(&mut self, view: &V, slot: usize) -> bool {
         let Some((side, from)) = self.placement(view) else {
             return false;
         };
+        if self.drawer(side).empty == Some(slot)
+            && self.view_location(view).is_some_and(|(s, _)| s == side)
+        {
+            return self.fill_empty_slot(side, view.clone()).is_some();
+        }
         if slot >= MAX_DRAWER_SLOTS || slot == from || self.drawer(side).count() < 2 {
             return false;
         }
@@ -978,22 +1086,24 @@ impl<V: Clone + PartialEq> PanelLayout<V> {
     }
 
     /// The share of `side`'s height its first slot takes when both slot
-    /// positions show a view; `None` while fewer than two views are placed
-    /// there. Rounded to [`RATIO_DECIMALS`] places so a saved value is
+    /// positions are displayed (two views, or a view and the empty slot);
+    /// `None` while fewer than two views are placed there and it has no
+    /// empty slot. Rounded to [`RATIO_DECIMALS`] places so a saved value is
     /// stable (no `0.30000000000000004` in `config.toml`).
     pub fn split_ratio(&self, side: Side) -> Option<f64> {
         let scale = 10f64.powi(RATIO_DECIMALS);
         let drawer = self.drawer(side);
-        (drawer.placed.len() >= 2).then(|| (drawer.ratio * scale).round() / scale)
+        (drawer.placed.len() >= 2 || drawer.empty.is_some())
+            .then(|| (drawer.ratio * scale).round() / scale)
     }
 
     /// Set the share of `side`'s height its first slot takes (clamped to
     /// leave each slot a usable share). One ratio per drawer: it applies to
     /// whichever pair is shown. False (and nothing changes) while fewer than
-    /// two views are placed there.
+    /// two views are placed there and it has no empty slot.
     pub fn set_split_ratio(&mut self, side: Side, ratio: f64) -> bool {
         let drawer = self.drawer_mut(side);
-        if drawer.placed.len() < 2 || !ratio.is_finite() {
+        if (drawer.placed.len() < 2 && drawer.empty.is_none()) || !ratio.is_finite() {
             return false;
         }
         drawer.ratio = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);

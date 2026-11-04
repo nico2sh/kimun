@@ -884,15 +884,11 @@ fn placements_outlive_other_changes_to_the_drawer() {
         vec![DrawerView::Files, DrawerView::Tags]
     );
 
-    // A split fills the free position with the view hidden there.
+    // A split opens the free position empty, even with a view hidden there.
     let mut order = split_left(0.3);
     order.hide_view(&DrawerView::Files);
-    assert_eq!(order.next_hidden(Side::Left), Some(DrawerView::Files));
-    assert_eq!(order.split_slot(Side::Left, DrawerView::Files), Ok(0));
-    assert_eq!(
-        order.slot_views(Side::Left),
-        vec![DrawerView::Files, DrawerView::Links]
-    );
+    assert_eq!(order.split_empty(Side::Left), Ok(0));
+    assert_eq!(order.slots(Side::Left), vec![None, Some(DrawerView::Links)]);
 
     // An explicit unsplit merges: showing the view again replaces.
     let mut order = split_left(0.3);
@@ -1053,7 +1049,7 @@ fn set_view_slot_swaps_in_a_split_drawer_only() {
     assert_eq!(order.placement(&DrawerView::Links), Some((Side::Left, 1)));
 }
 
-// ── Unsplit merges; split brings the merged view back ──────────────────
+// ── Unsplit merges ──────────────────
 
 #[test]
 fn unsplit_merges_every_view_of_the_closed_slot() {
@@ -1086,45 +1082,6 @@ fn unsplit_merges_every_view_of_the_closed_slot() {
 }
 
 #[test]
-fn split_after_unsplit_returns_to_the_same_split() {
-    for closed in [0, 1] {
-        let mut order = split_left(0.3);
-        let view = order.close_slot(Side::Left, closed).unwrap();
-        assert_eq!(order.next_hidden(Side::Left), Some(view));
-        assert_eq!(order.split_slot(Side::Left, view), Ok(closed));
-        assert_eq!(
-            order.slot_views(Side::Left),
-            vec![DrawerView::Files, DrawerView::Links],
-            "closed slot {closed}"
-        );
-        assert_eq!(order.split_ratio(Side::Left), Some(0.3));
-    }
-}
-
-#[test]
-fn the_merged_view_is_remembered_only_while_hidden_here() {
-    // Another hidden view placed first at that position does not win.
-    let mut order = split_left(0.5);
-    order.place(Side::Left, DrawerView::Tags, 0, false);
-    order.close_slot(Side::Left, 1).unwrap();
-    assert_eq!(order.next_hidden(Side::Left), Some(DrawerView::Links));
-    // Shown (a rail click replaces), then hidden again: forgotten.
-    order.open_view(DrawerView::Links);
-    order.open_view(DrawerView::Files);
-    assert_eq!(order.next_hidden(Side::Left), Some(DrawerView::Tags));
-
-    // Moved to the other drawer and back: forgotten.
-    let mut order = split_left(0.5);
-    order.place(Side::Left, DrawerView::Tags, 0, false);
-    order.close_slot(Side::Left, 1).unwrap();
-    order.move_view(DrawerView::Links, Side::Right);
-    order.hide_view(&DrawerView::Links);
-    order.move_view(DrawerView::Links, Side::Left);
-    order.open_view(DrawerView::Files);
-    assert_eq!(order.next_hidden(Side::Left), Some(DrawerView::Tags));
-}
-
-#[test]
 fn moving_into_an_unsplit_drawer_replaces_its_shown_view() {
     let mut order = split_left(0.5);
     order.move_view(DrawerView::Outline, Side::Right);
@@ -1146,4 +1103,212 @@ fn moving_into_an_unsplit_drawer_replaces_its_shown_view() {
         (Side::Right, 0)
     );
     assert_eq!(order.placement(&DrawerView::Links), Some((Side::Right, 0)));
+}
+
+// ── Empty drawers and empty slots (ADR-0050 follow-up, 2026-11-04) ─────
+
+#[test]
+fn opening_a_drawer_with_no_placed_view_leaves_it_empty() {
+    let mut order = layout();
+    assert!(!order.open_drawer(Side::Right));
+    assert!(order.is_visible(R));
+    assert!(order.slots(Side::Right).is_empty());
+    assert_eq!(order.focused_slot(Side::Right), None);
+    // Nothing to focus in it: focus stays, and cycling skips it.
+    order.focus(R);
+    assert_eq!(order.focused(), Panel::Editor);
+    assert_eq!(order.next_panel(), Some(Panel::Rail));
+    order.focus(Panel::Rail);
+    assert_eq!(order.prev_panel(), Some(Panel::Editor));
+    // Hidden again by the toggle.
+    order.hide(R);
+    assert!(!order.is_visible(R));
+}
+
+#[test]
+fn opening_a_drawer_with_hidden_views_shows_the_top_one() {
+    let mut order = layout();
+    order.place(Side::Right, DrawerView::Tags, 1, false);
+    order.place(Side::Right, DrawerView::Links, 0, false);
+    assert!(order.open_drawer(Side::Right));
+    assert_eq!(order.slot_views(Side::Right), vec![DrawerView::Links]);
+    // A drawer already showing a view keeps it.
+    assert!(order.open_drawer(Side::Left));
+    assert_eq!(order.slot_views(Side::Left), vec![DrawerView::Files]);
+}
+
+#[test]
+fn moving_a_view_into_an_empty_drawer_fills_it() {
+    let mut order = layout();
+    order.open_drawer(Side::Right);
+    assert_eq!(
+        order.move_view(DrawerView::Files, Side::Right),
+        (Side::Right, 0)
+    );
+    assert_eq!(order.slot_views(Side::Right), vec![DrawerView::Files]);
+    assert!(!order.is_visible(L), "the left drawer, left empty, hides");
+}
+
+#[test]
+fn split_opens_an_empty_slot_and_keeps_focus_on_the_view() {
+    let mut order = layout();
+    order.focus_region(slot(Side::Left, 0));
+    assert_eq!(order.split_empty(Side::Left), Ok(1));
+    assert_eq!(order.empty_slot(Side::Left), Some(1));
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files), None]);
+    assert_eq!(order.slot_views(Side::Left), vec![DrawerView::Files]);
+    assert_eq!(order.focused_region(), slot(Side::Left, 0));
+    // A split drawer with an empty slot has a ratio like any split.
+    assert_eq!(order.split_ratio(Side::Left), Some(0.5));
+    assert!(order.set_split_ratio(Side::Left, 0.3));
+    assert_eq!(order.split_ratio(Side::Left), Some(0.3));
+    // Full: a second split is refused.
+    assert_eq!(order.split_empty(Side::Left), Err(LayoutError::SlotCap));
+    // No view shown: nothing to split.
+    assert_eq!(order.split_empty(Side::Right), Err(LayoutError::NoSuchSlot));
+    assert_eq!(order.empty_slot(Side::Right), None);
+    // Two shown views: full.
+    let mut order = split_left(0.5);
+    assert_eq!(order.split_empty(Side::Left), Err(LayoutError::SlotCap));
+}
+
+#[test]
+fn the_empty_slot_sits_at_the_free_position() {
+    // Only the bottom position shows a view: the top is the empty slot.
+    let mut order = split_left(0.5);
+    order.hide_view(&DrawerView::Files);
+    assert_eq!(order.split_empty(Side::Left), Ok(0));
+    assert_eq!(order.slots(Side::Left), vec![None, Some(DrawerView::Links)]);
+    assert_eq!(order.focused_region(), Region::Group(order.active_group()));
+}
+
+#[test]
+fn the_empty_slot_clears_on_unsplit_hide_and_when_its_view_leaves() {
+    // Unsplit.
+    let mut order = layout();
+    order.split_empty(Side::Left).unwrap();
+    assert!(order.close_empty_slot(Side::Left));
+    assert_eq!(order.empty_slot(Side::Left), None);
+    assert!(!order.close_empty_slot(Side::Left));
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files)]);
+    // The drawer hides (and comes back unsplit).
+    order.split_empty(Side::Left).unwrap();
+    order.hide(L);
+    assert_eq!(order.empty_slot(Side::Left), None);
+    order.show(L);
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files)]);
+    // Hiding the drawer's shown view hides the drawer: cleared.
+    order.split_empty(Side::Left).unwrap();
+    order.hide_view(&DrawerView::Files);
+    assert_eq!(order.empty_slot(Side::Left), None);
+    // The other slot empties: its view moved away.
+    let mut order = layout();
+    order.split_empty(Side::Left).unwrap();
+    order.move_view(DrawerView::Files, Side::Right);
+    assert_eq!(order.empty_slot(Side::Left), None);
+    assert!(!order.is_visible(L));
+    // Or closed.
+    let mut order = layout();
+    order.split_empty(Side::Left).unwrap();
+    order.close_slot(Side::Left, 0).unwrap();
+    assert_eq!(order.empty_slot(Side::Left), None);
+}
+
+#[test]
+fn moving_a_view_up_or_down_into_the_empty_slot_moves_the_marker() {
+    let mut order = layout();
+    order.focus_region(slot(Side::Left, 0));
+    order.split_empty(Side::Left).unwrap();
+    // Down: Files takes the bottom, the top becomes the empty slot.
+    assert!(order.set_view_slot(&DrawerView::Files, 1));
+    assert_eq!(order.slots(Side::Left), vec![None, Some(DrawerView::Files)]);
+    assert_eq!(order.placement(&DrawerView::Files), Some((Side::Left, 1)));
+    assert_eq!(order.empty_slot(Side::Left), Some(0));
+    assert_eq!(order.focused_region(), slot(Side::Left, 0), "focus stays");
+    // There already: nothing.
+    assert!(!order.set_view_slot(&DrawerView::Files, 1));
+    // Up: back on top.
+    assert!(order.set_view_slot(&DrawerView::Files, 0));
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files), None]);
+    assert_eq!(order.empty_slot(Side::Left), Some(1));
+}
+
+#[test]
+fn a_view_moved_from_the_other_drawer_takes_the_empty_slot_first() {
+    let mut order = layout();
+    order.move_view(DrawerView::Outline, Side::Right);
+    order.place(Side::Right, DrawerView::Tags, 0, false);
+    order.split_empty(Side::Right).unwrap();
+    // Files, top on the left, lands in the empty bottom slot rather than
+    // replacing Outline at the top.
+    assert_eq!(
+        order.move_view(DrawerView::Files, Side::Right),
+        (Side::Right, 1)
+    );
+    assert_eq!(
+        order.slot_views(Side::Right),
+        vec![DrawerView::Outline, DrawerView::Files]
+    );
+    assert_eq!(order.empty_slot(Side::Right), None);
+    // A view placed nowhere, and one hidden in the target, fill it too.
+    let mut order = layout();
+    order.split_empty(Side::Left).unwrap();
+    assert_eq!(
+        order.move_view(DrawerView::Find, Side::Left),
+        (Side::Left, 1)
+    );
+    assert_eq!(
+        order.slot_views(Side::Left),
+        vec![DrawerView::Files, DrawerView::Find]
+    );
+    let mut order = layout();
+    order.place(Side::Left, DrawerView::Tags, 0, false);
+    order.split_empty(Side::Left).unwrap();
+    assert_eq!(
+        order.move_view(DrawerView::Tags, Side::Left),
+        (Side::Left, 1)
+    );
+    assert_eq!(order.placement(&DrawerView::Tags), Some((Side::Left, 1)));
+}
+
+#[test]
+fn fill_empty_slot_takes_hidden_and_unplaced_views() {
+    let mut order = layout();
+    assert_eq!(order.fill_empty_slot(Side::Left, DrawerView::Tags), None);
+    order.split_empty(Side::Left).unwrap();
+    assert_eq!(
+        order.fill_empty_slot(Side::Left, DrawerView::Tags),
+        Some((Side::Left, 1))
+    );
+    assert_eq!(
+        order.slots(Side::Left),
+        vec![Some(DrawerView::Files), Some(DrawerView::Tags)]
+    );
+    // Focus was not on Tags: it stays on Files.
+    assert_eq!(order.focused_slot(Side::Left), Some(0));
+}
+
+#[test]
+fn the_rail_never_fills_an_empty_slot() {
+    // A view placed nowhere joins the shown slot.
+    let mut order = layout();
+    order.focus_region(slot(Side::Left, 0));
+    order.split_empty(Side::Left).unwrap();
+    assert_eq!(order.open_view(DrawerView::Tags), (Side::Left, 0));
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Tags), None]);
+    // A view placed at the empty slot's position shows at the shown slot.
+    let mut order = split_left(0.5);
+    order.hide_view(&DrawerView::Links);
+    order.split_empty(Side::Left).unwrap();
+    assert_eq!(order.open_view(DrawerView::Links), (Side::Left, 0));
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Links), None]);
+    assert_eq!(order.placement(&DrawerView::Links), Some((Side::Left, 0)));
+}
+
+#[test]
+fn hiding_a_view_of_a_split_leaves_no_empty_slot() {
+    let mut order = split_left(0.5);
+    order.hide_view(&DrawerView::Links);
+    assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files)]);
+    assert_eq!(order.empty_slot(Side::Left), None);
 }
