@@ -149,11 +149,16 @@ fn default_tables() {
             lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("ctrl+r", A::OpenSortDialog),
+            lw("ctrl+shift+r", A::OpenSortDialog),
             lw("f(2)", A::FileOperations),
             lw("ctrl+enter", A::FollowLink),
             lw("ctrl+shift+w", A::QuickNote),
             lw("ctrl+c", A::YankRow),
             lw("ctrl+shift+c", A::YankRow),
+            lw("f(3)", A::OpenSavedSearches),
+            lw("ctrl+d", A::SaveCurrentQuery),
+            lw("ctrl+shift+d", A::SaveCurrentQuery),
             lw("ctrl+f", A::FindInBuffer),
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
@@ -186,10 +191,13 @@ fn default_tables() {
             lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("cmd+r", A::OpenSortDialog),
             lw("f(2)", A::FileOperations),
             lw("cmd+enter", A::FollowLink),
             lw("cmd+shift+w", A::QuickNote),
             lw("cmd+c", A::YankRow),
+            lw("f(3)", A::OpenSavedSearches),
+            lw("cmd+d", A::SaveCurrentQuery),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
             lw("cmd+shift+b", A::Leader),
@@ -421,6 +429,34 @@ fn the_search_chord_from_every_panel() {
     assert_eq!(mac.chord_for(&A::SearchNotes), Some(chord("cmd+k")));
 }
 
+/// The saved searches (F3, M7b G6) from every panel, vim or not; saving
+/// the query (Ctrl/Cmd+D and Ctrl+Shift+D) only from the rail or a drawer:
+/// in the editor the chord stays the editor's (vim's half-page down), and
+/// the search browser takes it by [`Keymap::is_bound`] whatever opened it.
+#[test]
+fn the_saved_search_chords() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(lw.resolve(chord("f3"), at), Some(&A::OpenSavedSearches));
+            assert_eq!(mac.resolve(chord("f3"), at), Some(&A::OpenSavedSearches));
+            let save = (panel != Panel::Editor).then_some(&A::SaveCurrentQuery);
+            assert_eq!(lw.resolve(chord("ctrl+d"), at), save, "{panel:?} vim={vim}");
+            assert_eq!(lw.resolve(chord("ctrl+shift+d"), at), save, "{panel:?}");
+            assert_eq!(mac.resolve(chord("cmd+d"), at), save, "{panel:?}");
+        }
+    }
+    for written in ["ctrl+d", "ctrl+shift+d"] {
+        assert!(lw.is_bound(chord(written), &A::SaveCurrentQuery));
+    }
+    assert!(mac.is_bound(chord("cmd+d"), &A::SaveCurrentQuery));
+    assert!(!lw.is_bound(chord("ctrl+k"), &A::SaveCurrentQuery));
+    assert_eq!(lw.chord_for(&A::SaveCurrentQuery), Some(chord("ctrl+d")));
+    assert_eq!(lw.chord_for(&A::OpenSavedSearches), Some(chord("f3")));
+}
+
 /// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim
 /// too; bare Ctrl+B stays unbound (desktop "Bold"), and the gateway has no
 /// twin of its own.
@@ -611,8 +647,10 @@ fn linux_windows_resolution_table() {
             ("ctrl+n", [None, None, None]),
             ("ctrl+shift+n", [None, None, None]),
             ("ctrl+enter", [follow.clone(), follow, None]),
-            // Vim reads these: the app gives them up in the vim editor.
-            ("ctrl+r", [None, None, None]),
+            // Vim reads Ctrl+R (redo): the sort dialog's chord is the rail's
+            // and the drawers' only, so the editor keeps it, vim or not.
+            ("ctrl+r", [None, None, Some(A::OpenSortDialog)]),
+            ("ctrl+shift+r", [None, None, Some(A::OpenSortDialog)]),
             ("alt+left", [left.clone(), left.clone(), left]),
             ("alt+right", [right.clone(), right.clone(), right]),
             ("alt+up", [up.clone(), up.clone(), up]),
@@ -627,13 +665,16 @@ fn linux_windows_resolution_table() {
             ("alt+shift+down", [None, None, view_down]),
             ("alt+shift+s", [None, None, split]),
             ("alt+shift+u", [None, None, unsplit]),
+            // Saving FIND's query: the drawers' only; the editor (vim's
+            // half-page down) keeps Ctrl+D.
+            ("ctrl+d", [None, None, Some(A::SaveCurrentQuery)]),
+            ("ctrl+shift+d", [None, None, Some(A::SaveCurrentQuery)]),
             // The old right-drawer chord is free again.
             ("ctrl+alt+b", [None, None, None]),
             // Not bound here: they reach the editor (or nothing).
             ("cmd+f", [None, None, None]),
             ("cmd+alt+left", [None, None, None]),
             ("ctrl+left", [None, None, None]),
-            ("ctrl+d", [None, None, None]),
             ("alt+f", [None, None, None]),
         ],
     );
@@ -792,7 +833,7 @@ fn unknown_actions_and_bad_chords_are_reported_and_the_rest_loads() {
 #[test]
 fn a_chord_held_by_another_action_is_rejected_not_stolen() {
     // Ctrl+T is ToggleSidebar's default; the override loses, the default stays.
-    let o = overrides(&[("ToggleRightDrawer", &["primary+t", "primary+shift+r"])]);
+    let o = overrides(&[("ToggleRightDrawer", &["primary+t", "primary+shift+g"])]);
     let (keymap, errors) = Keymap::load(LinuxWindows, &o);
     assert_eq!(
         errors,
@@ -808,7 +849,7 @@ fn a_chord_held_by_another_action_is_rejected_not_stolen() {
         Some(&A::ToggleSidebar)
     );
     assert_eq!(
-        keymap.resolve(chord("ctrl+shift+r"), drawer),
+        keymap.resolve(chord("ctrl+shift+g"), drawer),
         Some(&A::ToggleRightDrawer)
     );
 }
@@ -911,4 +952,28 @@ fn errors_read_as_config_lines() {
 #[test]
 fn the_current_platform_matches_the_build_target() {
     assert_eq!(Platform::current() == MacOs, cfg!(target_os = "macos"));
+}
+
+/// The sort dialog (M7b G7): Ctrl/Cmd+R and the Ctrl+Shift+R twin only from
+/// the rail or a drawer; never in the editor, where Ctrl+R is vim's redo
+/// (and the plain editor's own key), vim or not. The search browser takes
+/// it by [`Keymap::is_bound`] whatever opened it.
+#[test]
+fn the_sort_chord_is_scoped_to_lists() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            let sort = (panel != Panel::Editor).then_some(&A::OpenSortDialog);
+            assert_eq!(lw.resolve(chord("ctrl+r"), at), sort, "{panel:?} vim={vim}");
+            assert_eq!(lw.resolve(chord("ctrl+shift+r"), at), sort, "{panel:?}");
+            assert_eq!(mac.resolve(chord("cmd+r"), at), sort, "{panel:?}");
+        }
+    }
+    for written in ["ctrl+r", "ctrl+shift+r"] {
+        assert!(lw.is_bound(chord(written), &A::OpenSortDialog));
+    }
+    assert!(mac.is_bound(chord("cmd+r"), &A::OpenSortDialog));
+    assert_eq!(lw.chord_for(&A::OpenSortDialog), Some(chord("ctrl+r")));
 }

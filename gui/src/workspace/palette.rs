@@ -44,7 +44,9 @@ use kimun_notes::logic::palette::palette_rows;
 
 use super::Workspace;
 use super::modal::ModalKind;
-use super::route::{NEEDS_DRAWER_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE};
+use super::route::{
+    NEEDS_DRAWER_FOCUS, NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE,
+};
 use crate::input;
 use crate::keymap;
 use crate::theme;
@@ -171,6 +173,9 @@ fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
         ("+links · follow link at caret", A::FollowLink),
         ("+links · copy selected row", A::YankRow),
         ("+note · quick note…", A::QuickNote),
+        ("+find · save query…", A::SaveCurrentQuery),
+        // The focused list (FILES or FIND); FILES when none is focused.
+        ("+view · sort…", A::OpenSortDialog),
     ]
 }
 
@@ -182,6 +187,7 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::OpenDrawer(DrawerView::Files) => Some(ActionShortcuts::OpenFileBrowser),
         LeaderAction::FindFiles => Some(ActionShortcuts::OpenNote),
         LeaderAction::FindGrep | LeaderAction::FindRecent => Some(ActionShortcuts::SearchNotes),
+        LeaderAction::FindSaved => Some(ActionShortcuts::OpenSavedSearches),
         LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
         _ => None,
     }
@@ -334,8 +340,11 @@ impl Workspace {
             A::SplitDrawerSlot | A::UnsplitDrawerSlot => {
                 (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_DRAWER_FOCUS)
             }
-            A::QuickNote => self.notes.is_none().then_some(NO_WORKSPACE),
+            A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
+            A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
+                && self.focused_view() == Some(DrawerView::Find)))
+            .then_some(NEEDS_FIND_FOCUS),
             _ => None,
         }
     }

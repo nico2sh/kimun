@@ -57,6 +57,7 @@ use kimun_notes::settings::themes::Theme;
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::key_suggestions::KeySuggestions;
 use super::modal::{self, ModalKind};
 use super::note::{Closing, flush_problem};
 use super::route::{NO_NOTE, NO_WORKSPACE};
@@ -103,8 +104,6 @@ const DIALOG_REMS: f32 = 36.;
 const ROW_REMS: f32 = 1.75;
 /// The most rows the table shows before it scrolls.
 const VISIBLE_ROWS: usize = 8;
-/// The most key suggestions shown under the Key field.
-const SUGGESTIONS: usize = 5;
 
 /// What a confirmed form or delete asks the workspace to write.
 pub(crate) enum PropertyJob {
@@ -138,10 +137,9 @@ struct FormView {
     key: Entity<InputState>,
     value: Entity<InputState>,
     kind: Entity<SelectState<Vec<&'static str>>>,
-    /// Known keys matching the Key field (not itself), best first.
-    suggestions: Vec<String>,
-    /// The suggestion Up/Down is on; Enter takes it.
-    highlighted: Option<usize>,
+    /// Known keys matching the Key field (not itself), and the one Up/Down
+    /// is on; Enter takes it.
+    suggestions: KeySuggestions,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -500,8 +498,7 @@ impl PropertiesDialog {
             key,
             value,
             kind,
-            suggestions: Vec::new(),
-            highlighted: None,
+            suggestions: KeySuggestions::default(),
             _subscriptions: subscriptions,
         });
         focus.update(cx, |input, cx| input.focus(window, cx));
@@ -535,26 +532,7 @@ impl PropertiesDialog {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        let typed = form.fields.key.trim().to_lowercase();
-        form.highlighted = None;
-        form.suggestions.clear();
-        if !typed.is_empty() {
-            let mut hits: Vec<(bool, &String)> = self
-                .known_keys
-                .iter()
-                .filter_map(|k| {
-                    let lower = k.to_lowercase();
-                    (lower != typed && lower.contains(&typed))
-                        .then(|| (!lower.starts_with(&typed), k))
-                })
-                .collect();
-            hits.sort();
-            form.suggestions = hits
-                .into_iter()
-                .take(SUGGESTIONS)
-                .map(|(_, k)| k.clone())
-                .collect();
-        }
+        form.suggestions.refresh(&self.known_keys, &form.fields.key);
         cx.notify();
     }
 
@@ -589,17 +567,9 @@ impl PropertiesDialog {
         let Some(form) = self.form.as_mut() else {
             return false;
         };
-        if form.suggestions.is_empty() {
+        if !form.suggestions.step(down) {
             return false;
         }
-        let last = form.suggestions.len() - 1;
-        form.highlighted = match (form.highlighted, down) {
-            (None, true) => Some(0),
-            (None, false) => None,
-            (Some(ix), true) => Some((ix + 1).min(last)),
-            (Some(0), false) => None,
-            (Some(ix), false) => Some(ix - 1),
-        };
         cx.notify();
         true
     }
@@ -661,7 +631,7 @@ impl PropertiesDialog {
     pub(crate) fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.form.as_ref() {
             None => self.open_edit(window, cx),
-            Some(form) => match form.highlighted {
+            Some(form) => match form.suggestions.highlighted() {
                 Some(ix) => self.accept_suggestion(ix, window, cx),
                 None => self.submit(None, window, cx),
             },
@@ -676,8 +646,8 @@ impl PropertiesDialog {
             return false;
         }
         match self.form.as_mut() {
-            Some(form) if form.highlighted.is_some() => {
-                form.highlighted = None;
+            Some(form) if form.suggestions.highlighted().is_some() => {
+                form.suggestions.release();
                 cx.notify();
                 false
             }
@@ -741,7 +711,7 @@ impl PropertiesDialog {
     pub(crate) fn suggestions(&self) -> Vec<String> {
         self.form
             .as_ref()
-            .map(|f| f.suggestions.clone())
+            .map(|f| f.suggestions.shown().to_vec())
             .unwrap_or_default()
     }
 
@@ -1036,36 +1006,18 @@ impl PropertiesDialog {
         let busy = self.busy;
         let label = |text: &'static str| div().text_xs().text_color(theme::muted(t)).child(text);
         let field = || div().flex().flex_col().gap_1();
-        let show_suggestions = !form.suggestions.is_empty() && self.key_focused(window, cx);
-        let suggestions = show_suggestions.then(|| {
-            let hover = theme::hover_background(t);
-            div()
-                .id("property-suggestions")
-                .role(Role::ListBox)
-                .aria_label("Known keys")
-                .flex()
-                .flex_col()
-                .children(form.suggestions.iter().enumerate().map(|(ix, key)| {
-                    let highlighted = form.highlighted == Some(ix);
-                    div()
-                        .id(suggestion_id(key))
-                        .test_support()
-                        .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(key.clone()))
-                        .aria_selected(highlighted)
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .text_sm()
-                        .text_color(theme::foreground(t))
-                        .when(highlighted, |row| row.bg(theme::selected_background(t)))
-                        .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))
-                        .child(key.clone())
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.accept_suggestion(ix, window, cx);
-                        }))
-                }))
-        });
+        let suggestions = if self.key_focused(window, cx) {
+            form.suggestions.render(
+                "property-suggestions",
+                "Known keys",
+                suggestion_id,
+                t,
+                cx,
+                |this: &mut Self, ix, window, cx| this.accept_suggestion(ix, window, cx),
+            )
+        } else {
+            None
+        };
         let current = form
             .fields
             .current_kind

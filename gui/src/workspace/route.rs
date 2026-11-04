@@ -40,6 +40,9 @@ pub(crate) const NEEDS_DRAWER_FOCUS: &str = "Needs a drawer focused";
 /// Copying a row needs a drawer list (LINKS, OUTLINE, FIND, TAGS) to have
 /// the keyboard.
 pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a drawer list focused";
+/// Saving a query needs FIND to have the keyboard (the search browser
+/// saves its own with the chord).
+pub(crate) const NEEDS_FIND_FOCUS: &str = "Needs FIND focused";
 /// Resizing a drawer with none shown.
 pub(crate) const NO_DRAWER: &str = "No drawer shown";
 
@@ -114,16 +117,19 @@ impl Workspace {
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
-            // Leader `f f` and `n d`: the finder, today's journal.
-            // Leader `f f`, `f g` / `f r` and `n d`: the finder, the search
-            // browser, today's journal.
-            LeaderRoute::Overlay(OverlayOpen::FileFinder | OverlayOpen::SearchBrowser)
+            // Leader `f f`, `f g` / `f r`, `f s` and `n d`: the finder, the
+            // search browser, the saved searches, today's journal.
+            LeaderRoute::Overlay(
+                OverlayOpen::FileFinder | OverlayOpen::SearchBrowser | OverlayOpen::SavedSearches,
+            )
             | LeaderRoute::OpenJournal
                 if has_vault =>
             {
                 None
             }
-            LeaderRoute::Overlay(OverlayOpen::FileFinder | OverlayOpen::SearchBrowser)
+            LeaderRoute::Overlay(
+                OverlayOpen::FileFinder | OverlayOpen::SearchBrowser | OverlayOpen::SavedSearches,
+            )
             | LeaderRoute::OpenJournal => Some(NO_WORKSPACE),
             // Leader `f b`: the open note's backlinks (LINKS' Backlinks tab); any other
             // query opens FIND on it.
@@ -193,6 +199,9 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
             LeaderRoute::Overlay(OverlayOpen::FileFinder) => self.open_finder(window, cx),
             LeaderRoute::Overlay(OverlayOpen::SearchBrowser) => self.open_search(None, window, cx),
+            LeaderRoute::Overlay(OverlayOpen::SavedSearches) => {
+                self.open_saved_searches(window, cx)
+            }
             // Leader `f b` is the open note's backlinks, which LINKS owns (its
             // Backlinks tab): show that, not FIND on a query.
             LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {

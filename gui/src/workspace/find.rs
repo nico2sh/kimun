@@ -29,7 +29,15 @@
 //! Desktop keys only, as LINKS and OUTLINE (decision 13).
 //!
 //! **Pointer.** A click selects, a double-click opens; the preview button
-//! cycles the preview; the `Syntax` button shows the query syntax.
+//! cycles the preview; `Save…` saves the query (as the `SaveCurrentQuery`
+//! chord does here); the `Syntax` button shows the query syntax; the sort
+//! chip opens the sort dialog, which rewrites the query's order directive
+//! (M7b G7, [`super::sort`]).
+//!
+//! **Saved searches (M7b G6).** A saved search run from the Saved Searches
+//! names FIND: its title is the search's name, `name • edited` once the
+//! query is edited away from the saved text, back to the name when saved
+//! again (the TUI's breadcrumb, `logic::query::SavedSearchBreadcrumb`).
 //!
 //! **When it works.** Only while shown: hidden, it neither runs queries nor
 //! reads notes; revealed, it keeps the query as it was and catches up.
@@ -39,11 +47,10 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::Icon;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown};
-use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Disableable as _, Icon};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
@@ -53,9 +60,11 @@ use gpui_kit::{
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{ListSetup, ResolvingRowSource, RowSource, Unresolvable};
+use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppTx, redraw_callback};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::preview::PreviewModel;
@@ -63,7 +72,7 @@ use kimun_notes::logic::query::{
     QueryContext, QueryHit, QueryPageSource, SavedSearchBreadcrumb, emphasis_needles, error_reason,
     is_default_query, query_has_variables, resolve_query,
 };
-use kimun_notes::logic::sort::{order_of_query, sort_chip_label};
+use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_sort};
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
@@ -71,8 +80,18 @@ use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
 use super::files::{ellipsis, row_frame};
 use super::picker::query_problem;
 use super::search::SearchPreview;
+use super::sort::{chip_label, sort_chip};
 use crate::input;
+use crate::keymap;
 use crate::theme;
+
+/// `Save…`'s tooltip: what it does, and the chord that does it here.
+fn save_tip(cx: &App) -> SharedString {
+    match keymap::chord_label(cx, &ActionShortcuts::SaveCurrentQuery) {
+        Some(chord) => format!("Save the query as a saved search ({chord})").into(),
+        None => "Save the query as a saved search".into(),
+    }
+}
 
 /// Element ids, for tests.
 pub(crate) const FIND_ID: &str = "find";
@@ -82,6 +101,7 @@ pub(crate) const FIND_TITLE_ID: &str = "find-title";
 pub(crate) const FIND_SORT_ID: &str = "find-sort";
 pub(crate) const FIND_EXPAND_ID: &str = "find-expand";
 pub(crate) const FIND_HELP_ID: &str = "find-help";
+pub(crate) const FIND_SAVE_ID: &str = "find-save";
 pub(crate) const FIND_ERROR_ID: &str = "find-query-error";
 pub(crate) const FIND_MORE_ID: &str = "find-more";
 pub(crate) const FIND_PREVIEW_ID: &str = "find-preview";
@@ -163,6 +183,10 @@ impl DrawerRow for QueryHit {
 pub(crate) enum FindEvent {
     /// F1 or the `Syntax` button: the query syntax.
     Help,
+    /// `Save…`: save the query.
+    Save,
+    /// The sort chip: the sort dialog on FIND.
+    Sort,
     /// Escape in the field: back to the editor.
     Dismiss,
 }
@@ -190,6 +214,9 @@ pub(crate) struct FindView {
     shown: bool,
     /// The needles of (query, note), memoised.
     needles: (String, VaultPath, Arc<[String]>),
+    /// The `SaveCurrentQuery` chord as `Save…`'s tooltip names it, rebuilt
+    /// when the keymap is replaced.
+    save_tip: SharedString,
     theme: Theme,
     _subscriptions: Vec<Subscription>,
     /// Queries run (tests: the debounce runs one per pause).
@@ -225,6 +252,10 @@ impl FindView {
             }),
             // A selection move, or rows landing: the preview follows.
             cx.observe(&list, |this, _, cx| this.sync_preview(cx)),
+            keymap::observe(cx, |this: &mut Self, cx| {
+                this.save_tip = save_tip(cx);
+                cx.notify();
+            }),
         ];
         Self {
             list,
@@ -240,6 +271,7 @@ impl FindView {
             stale: false,
             shown: false,
             needles: (String::new(), VaultPath::empty(), Arc::from(Vec::new())),
+            save_tip: save_tip(cx),
             theme,
             _subscriptions: subscriptions,
             #[cfg(test)]
@@ -340,20 +372,69 @@ impl FindView {
         cx.notify();
     }
 
-    /// Put `query` in the field and run it (a tag, a leader route): the
-    /// preview starts collapsed. Hidden, it runs when shown.
+    /// Put `query` in the field and run it (a tag, a leader route, a saved
+    /// search `name`, which then names FIND): the preview starts collapsed.
+    /// Hidden, it runs when shown.
     pub(crate) fn apply_query(
         &mut self,
         query: String,
+        name: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.input.update(cx, |input, cx| {
             input.set_value(query.clone(), window, cx);
         });
-        self.breadcrumb.set(None, &query);
+        self.breadcrumb.set(name, &query);
         self.model.reset();
         self.run(cx);
+    }
+
+    /// A sort dialog pick: the query's order directive becomes `field` /
+    /// `order` and the query runs again. A sort is an edit: a saved
+    /// search's name reads "• edited" after it. A property sort with no key
+    /// changes nothing.
+    pub(crate) fn apply_sort(
+        &mut self,
+        field: &SortField,
+        order: SortOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self.query(cx);
+        let Some(sorted) = query_with_sort(&query, field, order) else {
+            return;
+        };
+        if sorted == query {
+            return;
+        }
+        // `set_value` reports no change: the edit's rules run here.
+        self.input.update(cx, |input, cx| {
+            input.set_value(sorted.clone(), window, cx);
+        });
+        let blank = sorted.trim().is_empty() || is_default_query(&sorted);
+        self.breadcrumb.on_query_consumed(None, &sorted, blank);
+        self.model.reset();
+        self.run(cx);
+    }
+
+    /// The saved search the query came from (FIND's name for it), if any:
+    /// what the save dialog offers as the name.
+    pub(crate) fn saved_name(&self) -> Option<String> {
+        self.breadcrumb.name().map(str::to_string)
+    }
+
+    /// The query was saved as `name` (a FIND-sourced save whose name is not
+    /// the query itself): FIND is named for it, no longer edited.
+    pub(crate) fn repin(&mut self, name: String, query: &str, cx: &mut Context<Self>) {
+        self.breadcrumb.set(Some(name), query);
+        cx.notify();
+    }
+
+    /// FIND's title as shown (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_title(&self, cx: &App) -> String {
+        self.title(&self.query(cx)).to_string()
     }
 
     /// Enter in the field: run a query still waiting, and give the results
@@ -579,24 +660,9 @@ impl FindView {
         let querying = !query.trim().is_empty();
         let chip = querying.then(|| {
             let (field, order) = order_of_query(query);
-            let label = SharedString::from(sort_chip_label(&field, order).trim().to_string());
-            div()
-                .id(FIND_SORT_ID)
+            sort_chip(FIND_SORT_ID, chip_label(&field, order), t)
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Sort)))
                 .test_support()
-                .role(Role::Status)
-                .aria_label(SharedString::from(format!("Sorted by {label}")))
-                .flex_none()
-                .whitespace_nowrap()
-                .px_1p5()
-                .rounded_md()
-                .border_1()
-                .border_color(theme::divider(t))
-                .text_color(theme::muted(t))
-                .child(label)
-                .tooltip(|window, cx| {
-                    Tooltip::new("The order the query asks for (or:title, -or:file…)")
-                        .build(window, cx)
-                })
         });
         let (icon, tip) = if self.model.is_full() {
             (IconName::Minimize, "Back to the results (Space)")
@@ -617,6 +683,13 @@ impl FindView {
                 this.cycle(cx);
                 this.focus_list(window, cx);
             }));
+        let save = Button::new(FIND_SAVE_ID)
+            .ghost()
+            .xsmall()
+            .label("Save…")
+            .tooltip(self.save_tip.clone())
+            .disabled(!querying)
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save)));
         let help = Button::new(FIND_HELP_ID)
             .ghost()
             .xsmall()
@@ -651,6 +724,7 @@ impl FindView {
             })
             .children(chip)
             .child(expand)
+            .child(save)
             .child(help)
     }
 }
@@ -838,6 +912,8 @@ impl Workspace {
     ) {
         match event {
             FindEvent::Help => self.open_query_help(window, cx),
+            FindEvent::Save => self.save_find_query(window, cx),
+            FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
             FindEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
         }
     }
@@ -864,13 +940,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_find_named(query, None, window, cx);
+    }
+
+    /// [`Self::open_find_with_query`] for a saved search: FIND is named
+    /// `name` (the TUI's `apply_saved_search`).
+    pub(crate) fn open_find_named(
+        &mut self,
+        query: String,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(find) = self.find.clone() else {
             self.flash(super::route::NO_WORKSPACE, cx);
             return;
         };
         // Put in first: hidden, it waits for the reveal, which runs it once
         // (never the query it replaces), for the open note.
-        find.update(cx, |view, cx| view.apply_query(query, window, cx));
+        find.update(cx, |view, cx| view.apply_query(query, name, window, cx));
         self.show_view(DrawerView::Find, window, cx);
     }
 

@@ -190,6 +190,12 @@ pub fn unsaved(theme: &Theme) -> Rgba {
     to_gpui(&theme.yellow, Token::Foreground, theme)
 }
 
+/// A step that replaces something kept (the save-search dialog's
+/// "Overwrites …" hint): the TUI dialog's yellow warning.
+pub fn caution(theme: &Theme) -> Rgba {
+    to_gpui(&theme.yellow, Token::Foreground, theme)
+}
+
 /// The hairline that separates docked chrome (the find bar) from the text.
 pub fn divider(theme: &Theme) -> Rgba {
     to_gpui(&theme.border_dim, Token::Foreground, theme)
@@ -316,7 +322,13 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     // roles mapped above: `secondary_foreground`, hover `accent` /
     // `accent_foreground`, press `button_active`; the tooltip `popover`,
     // `popover_foreground`, `border` and `muted_foreground`.
-    // The kit Select (the properties form's Type) reads only roles mapped
+    // The kit Switch (the sort dialog's "Folders first"): checked, the
+    // `primary` role above; off, its track; the thumb the page colour, so it
+    // reads on both.
+    kit.switch = muted(theme).into();
+    kit.switch_thumb = background(theme).into();
+    // The kit Select (the properties form's Type, the sort dialog's Sort by
+    // and Order) reads only roles mapped
     // above: its trigger `input` / `background` / `foreground` / `ring`, its
     // menu `popover` / `popover_foreground`, its rows `accent`, `list_hover`,
     // `list_active`, `selection` and `muted_foreground`.
@@ -550,6 +562,11 @@ mod tests {
             assert_eq!(kit.accent_foreground, hsla(foreground(&t)));
             assert_eq!(kit.tokens.popover.color, want);
             assert_eq!(kit.border, hsla(divider(&t)));
+            // The Switch (the sort dialog's "Folders first"), through its
+            // tokens: on is `primary`, off the track, and the thumb.
+            assert_eq!(kit.tokens.primary.color, hsla(focus_border(&t)));
+            assert_eq!(kit.tokens.switch.color, hsla(muted(&t)));
+            assert_eq!(kit.tokens.switch_thumb.color, hsla(background(&t)));
         });
     }
 
