@@ -21,6 +21,7 @@ use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::attachment::{format_mtime, human_size, type_label};
 use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -102,10 +103,7 @@ impl AttachmentView {
             ])
         };
 
-        let type_label = match &self.details.extension {
-            Some(ext) => ext.to_uppercase(),
-            None => "(no extension)".to_string(),
-        };
+        let type_label = type_label(self.details.extension.as_deref());
 
         vec![
             Line::from(vec![
@@ -239,41 +237,9 @@ impl Component for AttachmentView {
     }
 }
 
-/// Formats a byte count as a human-readable size (`2.3 MB`, `512 B`).
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    format!("{size:.1} {}", UNITS[unit])
-}
-
-/// Formats a Unix-second timestamp as a local-agnostic `YYYY-MM-DD HH:MM` (UTC).
-fn format_mtime(secs: u64) -> String {
-    match chrono::DateTime::from_timestamp(secs as i64, 0) {
-        Some(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
-        None => "unknown".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_size_scales_units() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(1024), "1.0 KB");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert_eq!(human_size(2_411_724), "2.3 MB");
-    }
 
     fn text_view(text: &str) -> AttachmentView {
         let details = AttachmentDetails {

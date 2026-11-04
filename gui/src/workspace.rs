@@ -7,7 +7,7 @@
 //! slots** (up to two, stacked), the drawers' widths and split ratios, and
 //! which region has the keyboard live in the logic [`PanelLayout`]; this
 //! view only renders it and keeps GPUI focus in step with it. A view
-//! without a GUI yet shows a placeholder in its slot.
+//! without a GUI yet (FIND, TAGS, CFG) shows a placeholder in its slot.
 //!
 //! **Arranging (M5b-3).** Each view keeps a placement (side and drawer
 //! slot) in the layout model, shown or hidden. The rail shows a view where
@@ -48,7 +48,7 @@
 //!
 //! **FILES (M5b-2 G3).** With a vault, the left drawer's FILES view is the
 //! [`files::FilesPane`]; the workspace keeps it in step with the app channel
-//! and does what its rows ask (open a note, hand over an attachment).
+//! and does what its rows ask (open a note, show an attachment).
 //!
 //! **Links (M5b-2 G4).** The `FollowLink` chord and the editor's
 //! double-click follow the link under the caret ([`follow`]).
@@ -59,6 +59,29 @@
 //! [`file_dialogs`]). An operation on the open note (or a folder holding it)
 //! flushes it first and is refused when that fails; afterwards the note is
 //! followed to its new place or, deleted or moved away, discarded unsaved.
+//!
+//! **LINKS and OUTLINE (M7a G1).** Two note-scoped views over one list
+//! component ([`drawer_list`]): the open note's backlinks, outgoing links
+//! and unlinked mentions ([`links`]), and its headings ([`outline`]). They
+//! work only while shown: a reveal or another open note refreshes them
+//! ([`Workspace::refresh_views`]), and OUTLINE follows each save.
+//!
+//! **Properties (M7a G2).** The open note's frontmatter properties in one
+//! dialog ([`properties`]): listed, added, edited, renamed and deleted
+//! through core. The note is flushed before the dialog opens (refused when
+//! that fails), a write holds the note like a file operation does, and the
+//! reload after a write is the window's (`NoteReloadFromDisk`), so it
+//! happens with the dialog gone too.
+//!
+//! **Attachments (M7a G3).** An attachment opened from FILES or a followed
+//! link shows in the editor Panel in place of the editor, read-only
+//! ([`attachment`]): the open note is flushed and let go first (refused when
+//! the flush fails), so while it shows there is no open note to save.
+//!
+//! **Finding and making notes (M6 G4).** The note finder (`OpenNote`, leader
+//! `f f`) and the link chooser are one picker ([`picker`]); the create dialog
+//! (a followed link or an open that names no note), the quick note and
+//! today's journal are in [`create`].
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -73,11 +96,11 @@ use gpui_kit::component::empty::{
 use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, Context, DragMoveEvent, Entity,
-    FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
-    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Rgba, Role, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, px, relative,
-    rems,
+    AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, ClipboardItem, Context,
+    DragMoveEvent, Entity, FocusHandle, Focusable, InputPreference, InteractiveElement,
+    IntoElement, KeyDownEvent, KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render,
+    Rgba, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity,
+    Window, div, px, relative, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
@@ -85,8 +108,9 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{
     FocusMove, LayoutError, Panel, PanelLayout, Region, Side, WidthLimits,
 };
-use kimun_notes::logic::message::{AppMessage, AppTx};
-use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::list::ListRow as _;
+use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
+use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::session::{NoteSession, SaveCompleted};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
@@ -304,6 +328,11 @@ pub(crate) struct Workspace {
     /// The FILES view, when the window has a vault.
     pub(crate) files: Option<Entity<FilesPane>>,
     _files_events: Option<Subscription>,
+    /// The LINKS and OUTLINE views, when the window has a vault, and the
+    /// subscriptions to their lists.
+    pub(crate) links: Option<Entity<links::LinksView>>,
+    pub(crate) outline: Option<Entity<outline::OutlineView>>,
+    _views_events: Vec<Subscription>,
     /// The link lookup under way (a newer follow replaces it).
     following: Option<Task<()>>,
     /// Hands URLs, images and attachments to the system's default program.
@@ -340,6 +369,36 @@ pub(crate) struct Workspace {
     /// Why the editor Panel shows no note: the open one was deleted or
     /// moved away. Cleared when a note opens.
     pub(crate) note_gone: Option<EmptyState>,
+    /// The note picker in the modal slot, while one is open ([`picker`]).
+    pub(crate) picker: Option<WeakEntity<picker::NotePicker>>,
+    /// The quick note in the modal slot, while it is open ([`create`]).
+    pub(crate) quick_note: Option<WeakEntity<create::QuickNoteDialog>>,
+    /// The progress of the create dialog's or the quick note's note.
+    note_status: Option<Entity<file_dialogs::OpStatus>>,
+    /// A note being made from a modal (`Create:`, the create dialog, the
+    /// quick note). One at a time; the modal waits for it.
+    note_task: Option<Task<()>>,
+    /// The properties dialog in the modal slot, while one is open
+    /// ([`properties`]).
+    pub(crate) properties: Option<WeakEntity<properties::PropertiesDialog>>,
+    /// The flush before the properties dialog opens on the open note.
+    properties_opening: Option<Task<()>>,
+    /// The property write running, for its note: it holds the note until
+    /// its result comes in on the app channel.
+    property_write: Option<(VaultPath, Task<()>)>,
+    /// The open note being reloaded from disk after a property write.
+    note_reload: Option<Task<()>>,
+    /// The attachment the editor Panel shows instead of the editor
+    /// ([`attachment`]), and its events.
+    pub(crate) attachment: Option<Entity<attachment::AttachmentView>>,
+    _attachment_events: Option<Subscription>,
+    /// The read of an attachment asked for (a newer request replaces it).
+    attachment_loading: Option<Task<()>>,
+    /// The flush of the open note before an attachment shows: it holds the
+    /// note like a file operation does.
+    attachment_flushing: Option<Task<()>>,
+    /// An attachment asked for while that flush ran: it opens next.
+    attachment_wanted: Option<VaultPath>,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -349,6 +408,10 @@ struct ChordLabels {
     empty_slot_hint: SharedString,
     /// The `Leader` chord (`Ctrl+Shift+B`), or a stand-in when unbound.
     leader: SharedString,
+    /// What the editor Panel says with no note open: how to find one.
+    no_note_hint: String,
+    /// The `FollowLink` chord: the attachment view's `Open externally`.
+    follow_link: Option<KeyInput>,
 }
 
 impl ChordLabels {
@@ -361,6 +424,11 @@ impl ChordLabels {
             )
             .into(),
             leader: leader::gateway_label(chord(ActionShortcuts::Leader)),
+            no_note_hint: match chord(ActionShortcuts::OpenNote) {
+                Some(finder) => format!("Press {finder} to find or create one."),
+                None => "Open one from FILES.".to_string(),
+            },
+            follow_link: keymap::active(cx).chord_for(&ActionShortcuts::FollowLink),
         }
     }
 }
@@ -398,6 +466,10 @@ impl Workspace {
         let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
         let keymap_watch = keymap::observe(cx, |this: &mut Self, cx| {
             this.chord_labels = ChordLabels::new(cx);
+            let chord = this.chord_labels.follow_link;
+            if let Some(view) = this.attachment.as_ref() {
+                view.update(cx, |view, cx| view.set_open_chord(chord, cx));
+            }
             cx.notify();
         });
         Self {
@@ -428,6 +500,9 @@ impl Workspace {
             first_open_pending: false,
             files: None,
             _files_events: None,
+            links: None,
+            outline: None,
+            _views_events: Vec::new(),
             following: None,
             opener: follow::system_opener(),
             _editor_watch: editor_watch,
@@ -444,6 +519,19 @@ impl Workspace {
             file_status: None,
             file_task: None,
             note_gone: None,
+            picker: None,
+            quick_note: None,
+            note_status: None,
+            note_task: None,
+            properties: None,
+            properties_opening: None,
+            property_write: None,
+            note_reload: None,
+            attachment: None,
+            _attachment_events: None,
+            attachment_loading: None,
+            attachment_flushing: None,
+            attachment_wanted: None,
         }
     }
 
@@ -458,10 +546,10 @@ impl Workspace {
         match event {
             EditorEvent::OpenPalette => self.open_palette(window, cx),
             // Right-click without a selection: the note menu, for the note
-            // the editor shows.
+            // the editor shows, with its properties first.
             EditorEvent::ContextMenu => {
                 if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
-                    self.open_file_ops_menu(note, window, cx);
+                    self.open_file_ops_menu(note, true, window, cx);
                 }
             }
         }
@@ -503,6 +591,8 @@ impl Workspace {
                 let settings = settings.read().unwrap_or_else(|e| e.into_inner());
                 self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
             }
+            self.start_links(vault.clone(), tx.clone(), window, cx);
+            self.start_outline(tx.clone(), window, cx);
             self.status.indexing = true;
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
@@ -549,6 +639,8 @@ impl Workspace {
             AppMessage::Redraw => {
                 self.editor.update(cx, |_, cx| cx.notify());
                 self.poll_files(cx);
+                self.poll_picker(cx);
+                self.poll_views(cx);
             }
             // Clipboard notices, the restore's "is gone", ... There is no
             // screen here that drops a flash, so a parked one shows now.
@@ -557,8 +649,13 @@ impl Workspace {
                 self.status.indexing = false;
                 match result {
                     // A note opened while the index caught up counted its
-                    // backlinks against the old one.
-                    Ok(_) => self.refresh_note_counts(),
+                    // backlinks against the old one; so did LINKS.
+                    Ok(_) => {
+                        self.refresh_note_counts();
+                        if let Some(links) = self.links.as_ref() {
+                            links.update(cx, |view, cx| view.invalidate(cx));
+                        }
+                    }
                     Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
                 }
             }
@@ -585,9 +682,18 @@ impl Workspace {
                 }
             }
             AppMessage::OpenAttachment(path) => self.open_attachment(&path, cx),
+            AppMessage::OpenAttachmentExternally => self.open_attachment_externally(cx),
+            // A request to show the properties dialog, not a result.
+            AppMessage::FileOp(FileOp::ShowProperties(path)) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_properties(path, window, cx)
+                });
+            }
             AppMessage::FileOp(op) => {
                 self.file_op_closes_modals(&op, cx);
                 self.files_file_op(&op, cx);
+                self.attachment_file_op(&op, cx);
+                self.views_file_op(&op, cx);
                 self.refresh_note_counts();
             }
             // The Footer's counts for the open note.
@@ -609,7 +715,7 @@ impl Workspace {
                 cx,
             ),
             // The editor's double-click on a link or a label.
-            AppMessage::FollowLink(target) => self.follow_link(target, cx),
+            AppMessage::FollowLink { target, kind } => self.follow_link(target, kind, cx),
             AppMessage::FollowLabel(name) => self.follow_label(&name, cx),
             // A leader leaf asked for from outside a key handler (the TUI's
             // palette and vim `:` send these): its route runs with the
@@ -625,13 +731,17 @@ impl Workspace {
                     workspace.perform_route(route, window, cx);
                 });
             }
-            // Results addressed to an open modal: none of the GUI's modals
-            // takes data yet, so every one is stale by definition.
-            AppMessage::OverlayData(_) => {}
+            // A property write changed a note on disk (sent by the write
+            // itself, so it arrives with the dialog closed too).
+            AppMessage::NoteReloadFromDisk(path) => self.reload_from_disk(path, cx),
+            // Results addressed to an open modal: the properties dialog's
+            // (path-guarded); every other one is stale.
+            AppMessage::OverlayData(data) => self.properties_data(data, cx),
             // Everything the GUI has no surface for yet.
             _ => {}
         }
         self.ensure_files_listing(cx);
+        self.refresh_views(cx);
         cx.notify();
     }
 
@@ -668,6 +778,91 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Persist the layout, and bring the views it shows (or stopped
+    /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
+    fn save_layout(&mut self, cx: &mut Context<Self>) {
+        self.store.save(&self.layout);
+        self.refresh_views(cx);
+    }
+
+    /// Keep LINKS and OUTLINE in step with the layout and the open note:
+    /// each reloads (LINKS) or re-reads its headings (OUTLINE) only while
+    /// shown, when revealed or when the open note changed. Cheap otherwise.
+    pub(crate) fn refresh_views(&mut self, cx: &mut Context<Self>) {
+        if let Some(links) = self.links.clone() {
+            let shown = self.is_shown(DrawerView::Links);
+            let note = self
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.clone())
+                .unwrap_or_else(VaultPath::empty);
+            links.update(cx, |view, cx| view.refresh(shown, &note, cx));
+        }
+        self.refresh_outline(cx);
+    }
+
+    /// Apply what LINKS' load delivered.
+    fn poll_views(&mut self, cx: &mut Context<Self>) {
+        if let Some(links) = self.links.as_ref() {
+            let list = links.read(cx).list.clone();
+            list.update(cx, |list, cx| list.poll(cx));
+        }
+    }
+
+    /// A file operation landed: LINKS' rows may name paths that moved.
+    fn views_file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
+        let landed = matches!(
+            op,
+            FileOp::Created(_) | FileOp::Deleted(_) | FileOp::Renamed { .. } | FileOp::Moved { .. }
+        );
+        if landed && let Some(links) = self.links.as_ref() {
+            links.update(cx, |view, cx| view.invalidate(cx));
+        }
+    }
+
+    /// The view in the focused drawer slot, if a slot has the keyboard.
+    fn focused_view(&self) -> Option<DrawerView> {
+        match self.layout.focused_region() {
+            Region::Slot { side, index } => self.slot_view(side, index),
+            _ => None,
+        }
+    }
+
+    /// Whether `opener` (the panel that had the keyboard) is a drawer whose
+    /// focused view is LINKS or OUTLINE: the lists a row can be copied from.
+    pub(crate) fn lists_have_keyboard(&self, opener: Panel) -> bool {
+        matches!(opener, Panel::Drawer(_))
+            && matches!(
+                self.focused_view(),
+                Some(DrawerView::Links | DrawerView::Outline)
+            )
+    }
+
+    /// `YankRow` in LINKS or OUTLINE: copy what the selected row stands for
+    /// (a note's path, a heading's text). Anywhere else the chord is not
+    /// the workspace's (the FILES filter copies its text).
+    fn yank_row(&mut self, cx: &mut Context<Self>) -> bool {
+        let target = match self.focused_view() {
+            Some(DrawerView::Links) => self.links.as_ref().map(|links| {
+                let list = links.read(cx).list.clone();
+                list.read(cx).selected_row().and_then(|r| r.yank_target())
+            }),
+            Some(DrawerView::Outline) => self.outline.as_ref().map(|outline| {
+                let list = outline.read(cx).list.clone();
+                list.read(cx).selected_row().and_then(|r| r.yank_target())
+            }),
+            _ => return false,
+        };
+        match target.flatten() {
+            Some(target) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(target.text));
+                self.flash(format!("{} copied", target.noun), cx);
+            }
+            None => self.flash("Nothing to copy", cx),
+        }
+        true
+    }
+
     /// Whether `view` is in a slot of a drawer that is shown: its rail cell
     /// reads as selected.
     fn is_shown(&self, view: DrawerView) -> bool {
@@ -691,12 +886,16 @@ impl Workspace {
     }
 
     /// Where the keyboard goes in `view`'s slot: FILES' filter, so typing
-    /// filters; the slot itself for the views without content yet.
+    /// filters; LINKS' and OUTLINE's lists; the slot itself for the views
+    /// without content yet.
     fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
-        match (view, self.files.as_ref()) {
-            (DrawerView::Files, Some(files)) => files.read(cx).focus_handle(cx),
-            _ => self.slot_focus(view).clone(),
-        }
+        let handle = match view {
+            DrawerView::Files => self.files.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Links => self.links.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Outline => self.outline.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            _ => None,
+        };
+        handle.unwrap_or_else(|| self.slot_focus(view).clone())
     }
 
     fn handle_for(&self, panel: Panel, cx: &App) -> FocusHandle {
@@ -711,7 +910,11 @@ impl Workspace {
                 Some(view) => self.view_handle(view, cx),
                 None => self.drawer_focus[side_ix(side)].clone(),
             },
-            Panel::Editor => self.editor.read(cx).focus_handle(cx),
+            // The attachment view while one shows, else the editor.
+            Panel::Editor => match self.attachment.as_ref() {
+                Some(view) => view.read(cx).focus_handle(cx),
+                None => self.editor.read(cx).focus_handle(cx),
+            },
         }
     }
 
@@ -764,7 +967,7 @@ impl Workspace {
             self.ensure_files_listing(cx);
         }
         self.apply_focus(window, cx);
-        self.store.save(&self.layout);
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -800,7 +1003,7 @@ impl Workspace {
             }
         }
         self.apply_focus(window, cx);
-        self.store.save(&self.layout);
+        self.save_layout(cx);
         cx.notify();
     }
 
@@ -840,7 +1043,7 @@ impl Workspace {
         self.layout.move_view(view, to);
         self.ensure_files_listing(cx);
         self.apply_focus(window, cx);
-        self.store.save(&self.layout);
+        self.save_layout(cx);
         true
     }
 
@@ -868,7 +1071,7 @@ impl Workspace {
             self.layout.fill_empty_slot(side, view);
             self.ensure_files_listing(cx);
             self.apply_focus(window, cx);
-            self.store.save(&self.layout);
+            self.save_layout(cx);
             return true;
         }
         let Some((view, (side, _))) = self
@@ -879,7 +1082,7 @@ impl Workspace {
         };
         if self.layout.set_view_slot(&view, if up { 0 } else { 1 }) {
             self.apply_focus(window, cx);
-            self.store.save(&self.layout);
+            self.save_layout(cx);
             return true;
         }
         self.layout.slots(side).len() > 1
@@ -930,7 +1133,7 @@ impl Workspace {
         }
         if self.layout.close_slot(side, index).is_ok() {
             self.apply_focus(window, cx);
-            self.store.save(&self.layout);
+            self.save_layout(cx);
         }
         true
     }
@@ -1005,7 +1208,7 @@ impl Workspace {
     fn end_resize(&mut self, cx: &mut Context<Self>) {
         self.press = (0.0, 0.0);
         if std::mem::take(&mut self.resizing) {
-            self.store.save(&self.layout);
+            self.save_layout(cx);
             cx.notify();
         }
     }
@@ -1014,6 +1217,11 @@ impl Workspace {
     /// open find bar) when it is the editor.
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.layout.focused() {
+            // The attachment view reads no vim keys.
+            Panel::Editor if self.attachment.is_some() => KeyCtx {
+                panel: Panel::Editor,
+                vim: false,
+            },
             Panel::Editor => self.editor.read(cx).key_ctx(),
             panel => KeyCtx { panel, vim: false },
         }
@@ -1129,8 +1337,13 @@ impl Workspace {
             ActionShortcuts::UnsplitDrawerSlot => return self.unsplit_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
+            ActionShortcuts::OpenNote => self.toggle_finder(window, cx),
+            ActionShortcuts::NewJournal => self.open_journal(window, cx),
+            ActionShortcuts::QuickNote => self.toggle_quick_note(window, cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
+            ActionShortcuts::YankRow => return self.yank_row(cx),
             // Nothing followable under the caret: the chord does nothing.
+            // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
                 self.follow_at_cursor(cx);
             }
@@ -1417,9 +1630,9 @@ impl Workspace {
                     .text_color(theme::foreground(&self.theme))
                     .child(shell_layout::view_name(view)),
             )
-            .map(|slot| match (view, self.files.as_ref()) {
-                (DrawerView::Files, Some(files)) => slot.child(files.clone()),
-                _ => slot.child(
+            .map(|slot| match self.view_content(view) {
+                Some(content) => slot.child(content),
+                None => slot.child(
                     div()
                         .px_3()
                         .text_sm()
@@ -1432,6 +1645,16 @@ impl Workspace {
                 slot.child(self.render_split_divider(side, cx))
             })
             .into_any_element()
+    }
+
+    /// What `view`'s slot shows, for the views built so far.
+    fn view_content(&self, view: DrawerView) -> Option<AnyElement> {
+        match view {
+            DrawerView::Files => self.files.clone().map(|v| v.into_any_element()),
+            DrawerView::Links => self.links.clone().map(|v| v.into_any_element()),
+            DrawerView::Outline => self.outline.clone().map(|v| v.into_any_element()),
+            _ => None,
+        }
     }
 
     /// The divider under the first of `side`'s two stacked slots: dragging
@@ -1516,10 +1739,7 @@ impl Workspace {
         } else if host.is_switching() {
             ("Opening the note…", "")
         } else {
-            (
-                "No note open",
-                "Start kimun-gui with a note's path to open it.",
-            )
+            ("No note open", self.chord_labels.no_note_hint.as_str())
         };
         Some(EmptyState {
             title: title.into(),
@@ -1528,16 +1748,29 @@ impl Workspace {
         })
     }
 
-    /// The editor Panel: the editor (or the empty state) over the Footer.
+    /// The editor Panel: the editor (or the attachment view, or the empty
+    /// state) over the Footer.
     fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let empty = self.empty.clone().or_else(|| self.note_empty_state());
-        let document = match &empty {
-            None => div()
+        let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
+        let empty = match attachment {
+            Some(_) => None,
+            None => self.empty.clone().or_else(|| self.note_empty_state()),
+        };
+        let editor_shown = empty.is_none() && attachment.is_none();
+        let document = match (&empty, attachment) {
+            (Some(empty), _) => self.render_empty(empty).into_any_element(),
+            (None, Some(view)) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(view)
+                .into_any_element(),
+            (None, None) => div()
                 .flex_1()
                 .min_h_0()
                 .child(self.editor.clone())
                 .into_any_element(),
-            Some(empty) => self.render_empty(empty).into_any_element(),
         };
         // The which-key docks over the bottom of the document, right above
         // the Footer, so showing it never reflows the note.
@@ -1565,8 +1798,14 @@ impl Workspace {
             .child(document)
             .child(status_row::render(
                 &self.status,
-                &self.doc_facts(empty.is_none(), cx),
+                &self.doc_facts(editor_shown, cx),
                 &self.theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.show_links_tab(LinksTab::Backlinks, window, cx)
+                }),
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_properties_for_open_note(window, cx)
+                }),
             ))
             .children(self.focus_bar(Region::Group(self.layout.active_group())))
     }
@@ -1702,16 +1941,25 @@ fn conflict_flash(details: &str) -> String {
     )
 }
 
+mod attachment;
+mod create;
+mod drawer_list;
 mod file_dialogs;
 mod file_ops;
 mod files;
 mod follow;
 mod leader;
+mod links;
 mod modal;
 mod note;
+mod outline;
 mod palette;
+mod picker;
+mod properties;
 mod route;
 
+#[cfg(test)]
+mod attachment_tests;
 #[cfg(test)]
 mod drawer_tests;
 #[cfg(test)]
@@ -1729,6 +1977,12 @@ mod note_tests;
 #[cfg(test)]
 mod palette_tests;
 #[cfg(test)]
+mod picker_tests;
+#[cfg(test)]
+mod properties_tests;
+#[cfg(test)]
 mod start_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod views_tests;

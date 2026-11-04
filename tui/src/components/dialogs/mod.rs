@@ -38,12 +38,7 @@ use crate::settings::themes::Theme;
 pub(crate) fn spawn_property_keys(vault: Arc<NoteVault>, tx: &AppTx) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        if let Ok(keys) = vault.property_keys().await {
-            tx.send(AppMessage::OverlayData(OverlayData::PropertyKeysLoaded(
-                keys,
-            )))
-            .ok();
-        }
+        crate::logic::properties::load_keys(&vault, &tx).await;
     });
 }
 

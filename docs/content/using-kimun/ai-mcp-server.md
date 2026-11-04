@@ -27,7 +27,7 @@ The MCP client starts and manages the `kimun mcp` process, so you don't need to 
 | `journal` | Append to today's (or a specific date's) journal entry |
 | `get_backlinks` | List notes that link to the given note |
 | `get_chunks` | Return note sections as structured content |
-| `get_outlinks` | List notes that the given note links to (outgoing wikilinks) |
+| `get_outlinks` | List notes that the given note links to (wikilinks and Markdown links, each resolved as [following it](@/using-kimun/search.md#how-links-point-at-notes) would: every note a shared name matches, and the path a missing note would get) |
 | `rename_note` | Rename a note within its current directory; backlinks in other notes are updated automatically |
 | `move_note` | Move a note to a new vault path; backlinks in other notes are updated automatically |
 | `quick_note` | Capture a thought into a timestamped note in the inbox directory |

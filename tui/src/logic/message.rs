@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use kimun_core::note::scan::LinkSpanKind;
 use kimun_core::{NoteVault, nfs::VaultPath};
 
 use crate::logic::nav::{DrawerView, HeadingTarget};
@@ -125,6 +126,7 @@ pub enum AppMessage {
     /// cursor (status line 2's `→ target · N backlinks` affordance).
     LinkTargetMeta {
         target: String,
+        kind: LinkSpanKind,
         count: usize,
     },
     /// Async-loaded backlink count for the note at `path` (status line 2).
@@ -161,8 +163,12 @@ pub enum AppMessage {
     /// Dismiss the active editor overlay (note browser, Saved Searches modal,
     /// or dialog). The single close path for everything owned by `OverlayHost`.
     CloseOverlay,
-    /// Follow the link under the editor cursor: note name/path or external URL.
-    FollowLink(String),
+    /// Follow the link under the editor cursor: its target as written (note
+    /// name/path, attachment, external URL) and its kind.
+    FollowLink {
+        target: String,
+        kind: LinkSpanKind,
+    },
     /// Open the search modal pre-filled with `#<name>` to browse notes by label.
     FollowLabel(String),
     /// Insert raw text at the editor's cursor (replacing any active selection).

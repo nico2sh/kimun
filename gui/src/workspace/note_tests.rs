@@ -259,16 +259,21 @@ fn nothing_is_written_while_an_open_is_pending(cx: &mut TestAppContext) {
     assert!(!started.dirty(cx));
 }
 
-/// A note that is not there is flashed, and the editor stays on the open
-/// note: its edits still save to its own path, never to the missing one.
+/// A note that is not there is offered for creation, and the editor stays
+/// on the open note: declined, its edits still save to its own path, never
+/// to the missing one.
 #[gpui_kit::test]
 fn a_missing_note_leaves_the_open_one_in_place(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
     send(&started, AppMessage::open(path("missing.md")), cx);
-    drive(&rt, cx, |cx| started.flash(cx).is_some());
-    assert_eq!(started.flash(cx).as_deref(), Some("missing.md not found"));
+    drive(&rt, cx, |cx| {
+        started.shown_modal(cx) == Some(super::modal::ModalKind::CreateNote)
+    });
+    started.press("escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
     assert_eq!(started.text(cx), "alpha");
     assert_eq!(started.note(cx), Some(path("a.md")));
     assert_eq!(started.session_path(cx), path("a.md"));

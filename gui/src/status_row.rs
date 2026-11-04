@@ -3,8 +3,9 @@
 //! doing (indexing), whether notes may be saved, and transient flash
 //! messages. G5 completed it with what the TUI's second status line shows
 //! of the document: the caret's line and column, the find bar's place among
-//! its matches, and the open note's backlink and property counts. Display
-//! only: clicking them is M6/M7's.
+//! its matches, and the open note's backlink and property counts. The
+//! backlink count is a button (M7a G1): it shows LINKS on its Backlinks tab;
+//! the property count too (M7a G2): it opens the properties dialog.
 //!
 //! **Narrow windows.** The path (and a flash) take only the room the
 //! pinned segments leave, so they shrink first, with an ellipsis; then the
@@ -26,10 +27,11 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, div, rems,
+    AnyElement, App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Role,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::find_bar::MatchPosition;
@@ -63,6 +65,9 @@ pub(crate) const SAVED: &str = "Saved";
 pub(crate) struct Status {
     /// The note in the editor, `None` before one opened.
     pub(crate) note: Option<VaultPath>,
+    /// The attachment the editor Panel shows instead (no note is open then):
+    /// its path is the breadcrumb, with no save state or counts.
+    pub(crate) attachment: Option<VaultPath>,
     /// The editor holds edits newer than the last save.
     pub(crate) dirty: bool,
     /// The vault's index is being brought up to date.
@@ -119,8 +124,15 @@ pub(crate) fn counted(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// The footer for `status` and `facts`.
-pub(crate) fn render(status: &Status, facts: &DocFacts, theme: &Theme) -> impl IntoElement {
+/// The footer for `status` and `facts`; a click on the backlink count runs
+/// `on_backlinks`, one on the property count `on_properties`.
+pub(crate) fn render(
+    status: &Status,
+    facts: &DocFacts,
+    theme: &Theme,
+    on_backlinks: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_properties: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let label = |id: &'static str, text: SharedString, spoken: SharedString| {
         div()
             .id(id)
@@ -145,9 +157,10 @@ pub(crate) fn render(status: &Status, facts: &DocFacts, theme: &Theme) -> impl I
     // The path, then the flash: both shrink (the flash first, it is cut
     // short with an ellipsis) rather than pushing the pinned labels out.
     let bar = StatusBar::new()
-        .when_some(status.note.as_ref(), |bar, note| {
-            bar.child(breadcrumb(note, theme))
-        })
+        .when_some(
+            status.note.as_ref().or(status.attachment.as_ref()),
+            |bar, path| bar.child(breadcrumb(path, theme)),
+        )
         .child(
             div()
                 .id(FLASH_ID)
@@ -174,10 +187,26 @@ pub(crate) fn render(status: &Status, facts: &DocFacts, theme: &Theme) -> impl I
             bar.right(fixed(MATCHES_ID, matches_label(find)))
         })
         .when_some(facts.backlinks.filter(|_| note_open), |bar, n| {
-            bar.right(count(BACKLINKS_ID, counted(n, "backlink", "backlinks")))
+            let hover = theme::foreground(theme);
+            bar.right(
+                count(BACKLINKS_ID, counted(n, "backlink", "backlinks"))
+                    .role(Role::Button)
+                    .cursor_pointer()
+                    .hover(move |style| style.text_color(hover))
+                    .tooltip(|window, cx| Tooltip::new("Show backlinks").build(window, cx))
+                    .on_click(on_backlinks),
+            )
         })
         .when_some(facts.properties.filter(|_| note_open), |bar, n| {
-            bar.right(count(PROPERTIES_ID, counted(n, "property", "properties")))
+            let hover = theme::foreground(theme);
+            bar.right(
+                count(PROPERTIES_ID, counted(n, "property", "properties"))
+                    .role(Role::Button)
+                    .cursor_pointer()
+                    .hover(move |style| style.text_color(hover))
+                    .tooltip(|window, cx| Tooltip::new("Edit properties").build(window, cx))
+                    .on_click(on_properties),
+            )
         })
         .when(note_open, |bar| bar.right(save_state(status.dirty, theme)))
         .when(status.read_only, |bar| {

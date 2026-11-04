@@ -17,8 +17,8 @@
 //! selected, or a double-click, activates it (the TUI's click-click rule).
 //!
 //! **Activation.** A folder (or `..`) is shown here; everything else is
-//! the workspace's to do ([`FilesEvent`]): open a note, hand an attachment
-//! to the system. `Create:` makes the note through core and opens it.
+//! the workspace's to do ([`FilesEvent`]): open a note, show an attachment
+//! in the editor Panel. `Create:` makes the note through core and opens it.
 //!
 //! The [`Workspace`] glue at the bottom keeps the view in step with the
 //! window's app channel: the listing's redraws, file operations, and the
@@ -36,10 +36,10 @@ use gpui_kit::component::input::{
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Render, Role, ScrollStrategy, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, div, rems,
-    uniform_list,
+    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, ParentElement, Render, Role, ScrollStrategy,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription,
+    UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -117,7 +117,7 @@ pub(crate) enum FilesEvent {
     /// A `Create:` row made this note; it opens when core has it: give the
     /// editor the keyboard.
     Creating(VaultPath),
-    /// Hand this attachment to the system (no attachment view until M7).
+    /// Show this attachment in the editor Panel and give it the keyboard.
     OpenAttachment(VaultPath),
     /// Escape with an empty filter: back to the editor.
     Dismiss,
@@ -187,10 +187,6 @@ impl FilesPane {
 
     pub(crate) fn current_dir(&self) -> &VaultPath {
         self.model.current_dir()
-    }
-
-    pub(crate) fn vault(&self) -> &Arc<NoteVault> {
-        self.model.vault()
     }
 
     /// The filter's text.
@@ -271,7 +267,8 @@ impl FilesPane {
 
     // ---- The open note ---------------------------------------------------------
 
-    /// The editor opened `note` (the marker follows it).
+    /// The editor opened `note`, or shows this attachment (the marker
+    /// follows it).
     pub(crate) fn set_open_note(&mut self, note: Option<VaultPath>, cx: &mut Context<Self>) {
         self.model.set_open_note(note);
         cx.notify();
@@ -466,52 +463,6 @@ impl FilesPane {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
-        let fg = theme::foreground(t);
-        let muted = theme::muted(t);
-        let (primary, secondary, glyph, text): (SharedString, Option<AnyElement>, _, _) = match row
-        {
-            FileListEntry::Up { .. } => ("..".into(), None, muted, muted),
-            FileListEntry::Directory { name, .. } => {
-                let c = theme::directory(t);
-                (name.clone().into(), None, c, c)
-            }
-            FileListEntry::Note {
-                title,
-                filename,
-                journal_date,
-                is_open,
-                ..
-            } => {
-                let glyph = if *is_open { theme::accent(t) } else { fg };
-                let line = div()
-                    .flex()
-                    .gap_1()
-                    .min_w_0()
-                    .text_xs()
-                    .child(ellipsis(filename.clone()).text_color(theme::secondary(t)))
-                    .when_some(journal_date.clone(), |line, date| {
-                        line.child(
-                            div()
-                                .flex_none()
-                                .whitespace_nowrap()
-                                .text_color(theme::journal_date(t))
-                                .child(date),
-                        )
-                    })
-                    .into_any_element();
-                (title.clone().into(), Some(line), glyph, fg)
-            }
-            FileListEntry::Attachment { filename, .. } => {
-                let c = theme::secondary(t);
-                (filename.clone().into(), None, c, c)
-            }
-            FileListEntry::CreateNote { filename, .. } => {
-                let c = theme::accent(t);
-                (format!("Create: {filename}").into(), None, c, c)
-            }
-        };
-        let is_open = matches!(row, FileListEntry::Note { is_open: true, .. });
         // Notes, folders and attachments have a context menu; `..` and
         // `Create:` are not entries.
         let entry = match row {
@@ -520,89 +471,13 @@ impl FilesPane {
             | FileListEntry::Attachment { .. } => Some(row.path().clone()),
             FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
         };
-        let hover = theme::hover_background(t);
-        let label = match row {
-            FileListEntry::Up { .. } => SharedString::from("Parent folder"),
-            FileListEntry::Note { is_open: true, .. } => format!("{primary}, open").into(),
-            _ => primary.clone(),
-        };
-        let row = div()
-            .id(row_id(row))
-            .test_support()
-            .role(Role::ListBoxOption)
-            .aria_label(label)
-            .aria_selected(selected)
-            .flex()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .h(rems(ROW_REMS))
-            .px_2()
-            .rounded_md()
-            .when(selected, |row| row.bg(theme::selected_background(t)))
-            .when(!selected, |row| row.hover(move |style| style.bg(hover)))
-            // The icon lane: every label starts on one edge.
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .justify_center()
-                    .w_5()
-                    .child(Icon::new(row_icon(row)).size_4().text_color(glyph)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .child(ellipsis(primary).text_color(text))
-                    .children(secondary),
-            )
-            // The open-note lane: a dot as well as the accent glyph, so the
-            // open note is not told by colour alone.
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .justify_center()
-                    .w_3()
-                    .when(is_open, |lane| {
-                        lane.child(
-                            Icon::new(IconName::Circle)
-                                .size_2()
-                                .text_color(theme::accent(t)),
-                        )
-                    }),
-            )
+        let row = entry_row(row_id(row), row, selected, &self.theme)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.click_row(pos, event, window, cx)
-            }));
+            }))
+            .test_support();
         match entry {
-            Some(path) => {
-                let pane = cx.entity().downgrade();
-                row.context_menu(move |menu, _, _| {
-                    let item = |kind: FileOpKind, label: &'static str| {
-                        let pane = pane.clone();
-                        let path = path.clone();
-                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                            let event = FilesEvent::FileOp(kind, path.clone());
-                            // After the menu has given the keyboard back to
-                            // FILES, so the dialog returns it there too.
-                            let pane = pane.clone();
-                            window.defer(cx, move |_, cx| {
-                                pane.update(cx, |_, cx| cx.emit(event)).ok();
-                            });
-                        })
-                    };
-                    menu.item(item(FileOpKind::Rename, "Rename…"))
-                        .item(item(FileOpKind::Move, "Move…"))
-                        .separator()
-                        .item(item(FileOpKind::Delete, "Delete…"))
-                })
-                .into_any_element()
-            }
+            Some(path) => with_file_menu(row, path, cx.entity().downgrade(), FilesEvent::FileOp),
             None => row.into_any_element(),
         }
     }
@@ -618,8 +493,175 @@ impl FilesPane {
     }
 }
 
+/// One listing row as FILES draws it, shared with the note pickers so a
+/// note, a folder or `Create:` looks the same wherever it is listed: the
+/// icon lane, the title (a note's filename and journal date under it), and
+/// the open-note lane. Every row has the same height ([`ROW_REMS`]): the
+/// lists over these rows are uniform. The caller adds the pointer handling
+/// and `test_support`.
+pub(super) fn entry_row(
+    id: SharedString,
+    row: &FileListEntry,
+    selected: bool,
+    t: &Theme,
+) -> Stateful<Div> {
+    let fg = theme::foreground(t);
+    let muted = theme::muted(t);
+    let (primary, secondary, glyph, text): (SharedString, Option<AnyElement>, _, _) = match row {
+        FileListEntry::Up { .. } => ("..".into(), None, muted, muted),
+        FileListEntry::Directory { name, .. } => {
+            let c = theme::directory(t);
+            (name.clone().into(), None, c, c)
+        }
+        FileListEntry::Note {
+            title,
+            filename,
+            journal_date,
+            is_open,
+            ..
+        } => {
+            let glyph = if *is_open { theme::accent(t) } else { fg };
+            let line = div()
+                .flex()
+                .gap_1()
+                .min_w_0()
+                .text_xs()
+                .child(ellipsis(filename.clone()).text_color(theme::secondary(t)))
+                .when_some(journal_date.clone(), |line, date| {
+                    line.child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_color(theme::journal_date(t))
+                            .child(date),
+                    )
+                })
+                .into_any_element();
+            (title.clone().into(), Some(line), glyph, fg)
+        }
+        FileListEntry::Attachment {
+            filename, is_open, ..
+        } => {
+            let c = theme::secondary(t);
+            let glyph = if *is_open { theme::accent(t) } else { c };
+            (filename.clone().into(), None, glyph, c)
+        }
+        FileListEntry::CreateNote { filename, .. } => {
+            let c = theme::accent(t);
+            (format!("Create: {filename}").into(), None, c, c)
+        }
+    };
+    let is_open = matches!(
+        row,
+        FileListEntry::Note { is_open: true, .. } | FileListEntry::Attachment { is_open: true, .. }
+    );
+    let label = match row {
+        FileListEntry::Up { .. } => SharedString::from("Parent folder"),
+        _ if is_open => format!("{primary}, open").into(),
+        _ => primary.clone(),
+    };
+    row_frame(id, label, selected, ROW_REMS, t)
+        .gap_2()
+        // The icon lane: every label starts on one edge.
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .w_5()
+                .child(Icon::new(row_icon(row)).size_4().text_color(glyph)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .child(ellipsis(primary).text_color(text))
+                .children(secondary),
+        )
+        // The open-note lane: a dot as well as the accent glyph, so the
+        // open note is not told by colour alone.
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .w_3()
+                .when(is_open, |lane| {
+                    lane.child(
+                        Icon::new(IconName::Circle)
+                            .size_2()
+                            .text_color(theme::accent(t)),
+                    )
+                }),
+        )
+}
+
+/// The frame every list row shares (FILES, the pickers, the drawer lists):
+/// one option of a list box, `height_rems` tall and the list's full width,
+/// its selection a fill of its own surface, a quieter fill under the
+/// pointer. The caller lays out its content inside.
+pub(super) fn row_frame(
+    id: SharedString,
+    label: SharedString,
+    selected: bool,
+    height_rems: f32,
+    t: &Theme,
+) -> Stateful<Div> {
+    let hover = theme::hover_background(t);
+    div()
+        .id(id)
+        .role(Role::ListBoxOption)
+        .aria_label(label)
+        .aria_selected(selected)
+        .flex()
+        .items_center()
+        .w_full()
+        .h(rems(height_rems))
+        .px_2()
+        .rounded_md()
+        .when(selected, |row| row.bg(theme::selected_background(t)))
+        .when(!selected, |row| row.hover(move |style| style.bg(hover)))
+}
+
+/// `row` with the FILES entry menu for `path`: Rename…, Move…, Delete….
+/// A pick emits `event(kind, path)` from `owner` once the menu has given
+/// the keyboard back, so the dialog it opens returns it there too.
+pub(super) fn with_file_menu<R, T, E>(
+    row: R,
+    path: VaultPath,
+    owner: WeakEntity<T>,
+    event: fn(FileOpKind, VaultPath) -> E,
+) -> AnyElement
+where
+    R: InteractiveElement + ParentElement + Styled + IntoElement + 'static,
+    T: EventEmitter<E>,
+    E: 'static,
+{
+    row.context_menu(move |menu, _, _| {
+        let item = |kind: FileOpKind, label: &'static str| {
+            let owner = owner.clone();
+            let path = path.clone();
+            PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                let event = event(kind, path.clone());
+                let owner = owner.clone();
+                window.defer(cx, move |_, cx| {
+                    owner.update(cx, |_, cx| cx.emit(event)).ok();
+                });
+            })
+        };
+        menu.item(item(FileOpKind::Rename, "Rename…"))
+            .item(item(FileOpKind::Move, "Move…"))
+            .separator()
+            .item(item(FileOpKind::Delete, "Delete…"))
+    })
+    .into_any_element()
+}
+
 /// One line of text that ends in an ellipsis when it does not fit.
-fn ellipsis(text: impl Into<SharedString>) -> gpui_kit::Div {
+pub(super) fn ellipsis(text: impl Into<SharedString>) -> Div {
     div()
         .min_w_0()
         .overflow_hidden()
@@ -750,24 +792,14 @@ impl Workspace {
                 self.open_note(path.clone(), cx);
             }
             FilesEvent::Creating(_) => self.focus_panel(Panel::Editor, window, cx),
-            FilesEvent::OpenAttachment(path) => self.open_attachment(path, cx),
+            FilesEvent::OpenAttachment(path) => {
+                self.focus_panel(Panel::Editor, window, cx);
+                self.open_attachment(path, cx);
+            }
             FilesEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
             FilesEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
-        }
-    }
-
-    /// Hand the attachment at `path` to the system's default program. There
-    /// is no attachment view in the window until M7.
-    pub(super) fn open_attachment(&mut self, path: &VaultPath, cx: &mut Context<Self>) {
-        let Some(files) = self.files.as_ref() else {
-            return;
-        };
-        let os_path = files.read(cx).vault().path_to_pathbuf(path);
-        match (self.opener)(os_path.as_os_str()) {
-            Ok(()) => self.flash(format!("Opening {path}…"), cx),
-            Err(e) => self.flash_error(format!("Couldn't open {path}: {e}"), cx),
         }
     }
 
@@ -838,7 +870,7 @@ impl Workspace {
     }
 
     /// The folder of the note in the editor, or the root.
-    fn open_note_dir(&self) -> VaultPath {
+    pub(super) fn open_note_dir(&self) -> VaultPath {
         self.notes
             .as_ref()
             .and_then(|h| h.note.as_ref())
@@ -866,7 +898,7 @@ impl Workspace {
             }
         }
         self.apply_focus(window, cx);
-        self.store.save(&self.layout);
+        self.save_layout(cx);
         cx.notify();
     }
 }

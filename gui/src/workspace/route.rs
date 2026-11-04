@@ -36,6 +36,8 @@ pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
 /// The command arranges the focused drawer view (or the rail's).
 pub(crate) const NEEDS_DRAWER_FOCUS: &str = "Needs a drawer focused";
+/// Copying a row needs LINKS or OUTLINE to have the keyboard.
+pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs Links or Outline focused";
 /// Resizing a drawer with none shown.
 pub(crate) const NO_DRAWER: &str = "No drawer shown";
 
@@ -83,7 +85,7 @@ impl Workspace {
         match route {
             LeaderRoute::Drawer(view) if shell_layout::is_on_rail(*view) => None,
             LeaderRoute::Drawer(_) => Some(NOT_YET),
-            // LINKS shows its placeholder, as the rail does.
+            // LINKS, on that tab.
             LeaderRoute::LinksTab(_) => None,
             LeaderRoute::NewNote if self.files.is_some() => None,
             LeaderRoute::NewNote => Some(NO_WORKSPACE),
@@ -110,15 +112,23 @@ impl Workspace {
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
-            // `+note` rename / move / delete of the open note (the route is
-            // `NoNoteOpen` when there is none).
+            // Leader `f f` and `n d`: the finder, today's journal.
+            LeaderRoute::Overlay(OverlayOpen::FileFinder) | LeaderRoute::OpenJournal
+                if has_vault =>
+            {
+                None
+            }
+            LeaderRoute::Overlay(OverlayOpen::FileFinder) | LeaderRoute::OpenJournal => {
+                Some(NO_WORKSPACE)
+            }
+            // `+note` rename / move / delete / properties of the open note
+            // (the route is `NoNoteOpen` when there is none).
             LeaderRoute::NoteDialog(
-                NoteDialog::Rename | NoteDialog::Move | NoteDialog::Delete,
+                NoteDialog::Rename | NoteDialog::Move | NoteDialog::Delete | NoteDialog::Properties,
                 _,
             ) if has_vault => None,
             LeaderRoute::Overlay(_)
             | LeaderRoute::FindWithQuery(_)
-            | LeaderRoute::OpenJournal
             | LeaderRoute::OpenPreferences
             | LeaderRoute::OpenOnboarding
             | LeaderRoute::NoteDialog(..)
@@ -152,7 +162,7 @@ impl Workspace {
             LeaderRoute::Drawer(view) if shell_layout::is_on_rail(view) => {
                 self.show_view(view, window, cx)
             }
-            LeaderRoute::LinksTab(_) => self.show_view(DrawerView::Links, window, cx),
+            LeaderRoute::LinksTab(tab) => self.show_links_tab(tab, window, cx),
             LeaderRoute::NewNote if self.files.is_some() => {
                 // The FILES filter doubles as the create field: typing a
                 // name offers `Create:`.
@@ -174,13 +184,14 @@ impl Workspace {
             LeaderRoute::Job(job) => self.run_leader_job(job, cx),
             LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::FileFinder) => self.open_finder(window, cx),
+            LeaderRoute::OpenJournal => self.open_journal(window, cx),
             LeaderRoute::NoteDialog(dialog, path) => {
                 let kind = match dialog {
                     NoteDialog::Rename => FileOpKind::Rename,
                     NoteDialog::Move => FileOpKind::Move,
                     NoteDialog::Delete => FileOpKind::Delete,
-                    // Blocked here (no properties dialog until M7).
-                    NoteDialog::Properties => return,
+                    NoteDialog::Properties => FileOpKind::Properties,
                 };
                 self.open_file_dialog(kind, path, window, cx);
             }
@@ -189,7 +200,6 @@ impl Workspace {
             | LeaderRoute::NewNote
             | LeaderRoute::Overlay(_)
             | LeaderRoute::FindWithQuery(_)
-            | LeaderRoute::OpenJournal
             | LeaderRoute::OpenPreferences
             | LeaderRoute::OpenOnboarding
             | LeaderRoute::GitStatus
@@ -203,7 +213,12 @@ impl Workspace {
     /// drawer's focused slot) and give it the keyboard. Unlike a rail click,
     /// a shown view stays shown: the leader opens, it never toggles.
     /// Persisted.
-    fn show_view(&mut self, view: DrawerView, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_view(
+        &mut self,
+        view: DrawerView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == view) {
             self.rail_cursor = i;
         }
@@ -211,7 +226,7 @@ impl Workspace {
         self.layout.focus_region(Region::Slot { side, index });
         self.ensure_files_listing(cx);
         self.apply_focus(window, cx);
-        self.store.save(&self.layout);
+        self.save_layout(cx);
     }
 
     /// `+window`: zen hides both drawers and gives the note the keyboard;
@@ -241,7 +256,7 @@ impl Workspace {
                 self.layout.set_drawer_width(side, width + delta, limits);
             }
         }
-        self.store.save(&self.layout);
+        self.save_layout(cx);
     }
 
     /// Spawn an asynchronous leaf (`leader_route::jobs`) on the window's

@@ -20,7 +20,8 @@ use super::ContentChunk;
 use crate::nfs::{VaultPath, PATH_SEPARATOR};
 
 use super::content_extractor::is_remote_url;
-use super::{LinkType as NoteLinkType, NoteHeading, NoteLink};
+use super::link_target::unique_wikilink;
+use super::{NoteHeading, NoteLink, NoteTarget};
 
 /// What kind of link a [`WalkLink`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -954,58 +955,87 @@ fn scanned_bytes(note: &str) -> usize {
 
 /// `note` with its links to `from` pointed at `to`, for a rename: the links
 /// the walk lists — the ones the index records — read as the index reads
-/// them, each rewritten in place, the rest of the note copied verbatim.
+/// them ([`NoteTarget`], from `at`, where the note was when it was indexed),
+/// each rewritten in place, the rest of the note copied verbatim.
+/// `namesakes` are the other notes of the vault named like `from` or `to`
+/// (the index facts the uniqueness rules need; `from` and `to` in it are
+/// ignored).
 ///
-/// - A wikilink or embed whose note is named like `from` gets `to`'s name;
-///   its padding, `#section`/`^block` and display text stay as written.
-/// - A markdown link (and a reference definition) whose destination, its
-///   `#section` cut, resolves to `from` — against `at`, where the note was
-///   when it was indexed; a bare name by name — gets `to` written the same
-///   way: a bare name as `to`'s name, a path in `from`'s folder with just
-///   its name changed, an absolute path as `to`, any other relative to where
-///   the note lives after the rename; its `#section` kept. Wrapped in `<…>`
-///   when it would not read back as a link otherwise.
+/// - A wikilink by name (`[[dup]]`, `[[work/dup]]`) that matches `from` and
+///   no namesake (it led to `from` alone) and no longer matches `to` gets
+///   the shortest suffix of `to` naming it alone, with at least as many
+///   components as written ([`unique_wikilink`]); within one folder just
+///   its last component changes. One that also matches a namesake is
+///   ambiguous and left alone (it still leads to the others), and one that
+///   still names `to` alone (a move keeping the name) needs no rewrite.
+/// - A wikilink by path (`[[/work/dup]]`, `[[../work/dup]]`) or a markdown
+///   link (and a reference definition) to `from` gets `to` written the same
+///   way: within one folder just its name changed, an absolute path as `to`,
+///   a relative one relative to where the note lives after the rename. A
+///   markdown destination is wrapped in `<…>` when it would not read back
+///   as a link otherwise.
+/// - In the moved note itself (`at` is `from`, a new folder), every other
+///   relative path link is rewritten relative to the new folder, so it
+///   keeps its target.
 ///
-/// Left alone: images (not note links), a destination not written as
-/// pulldown read it (escapes, entities), and anything that is no link in
-/// the walk — code, HTML, the frontmatter.
+/// Padding, `#section`/`^block` and display text stay as written. Left
+/// alone: images and attachments (not note links), a destination not
+/// written as pulldown read it (escapes, entities), and anything that is no
+/// link in the walk — code, HTML, the frontmatter.
 pub(in crate::note) fn retarget_links(
     note: &str,
     at: &VaultPath,
     from: &VaultPath,
     to: &VaultPath,
+    namesakes: &[VaultPath],
 ) -> String {
     let walked = walk(note);
-    let old_name = from.get_name();
+    let at = at.canonical();
     let from = from.canonical();
-    // A self-link is written from where the note now lives.
-    let home = if at.canonical() == from { to } else { at };
+    let to = to.canonical();
+    let others: Vec<VaultPath> = namesakes
+        .iter()
+        .map(VaultPath::canonical)
+        .filter(|other| *other != from && *other != to)
+        .collect();
+    // The moved note's own links: written from where it now lives.
+    let moving_itself = at == from;
+    let home = if moving_itself { &to } else { &at };
+    let same_folder = from.get_parent_path().0 == to.get_parent_path().0;
+    // A path link as written, its last component swapped for `name`.
+    let renamed_in_place = |written: &str, name: String| {
+        let folder = written.rfind(PATH_SEPARATOR).map_or(0, |at| at + 1);
+        format!("{}{name}", &written[..folder])
+    };
+    // How a path link written as `written` to `target` reads after the
+    // rename (`None`: unchanged), as a note path (extension kept).
+    let path_link = |written: &str, target: &NoteTarget| -> Option<VaultPath> {
+        let absolute = written.starts_with(PATH_SEPARATOR);
+        if target.matches(&from) {
+            Some(if absolute {
+                to.clone()
+            } else {
+                to.relative_link_from_note(home)
+            })
+        } else if moving_itself && !same_folder && !absolute {
+            Some(target.path().relative_link_from_note(&to))
+        } else {
+            None
+        }
+    };
     // A markdown destination written as `dest` (its bytes at `span` of
-    // `note`) that resolves to `from`: its edit. `spaced` — whether a bare
-    // destination with whitespace still reads as the link.
+    // `note`): its edit. `spaced` — whether a bare destination with
+    // whitespace still reads as the link.
     let retarget = |dest: &str, span: Range<usize>, spaced: bool| {
         if is_remote_url(dest) {
             return None;
         }
         let (written, fragment) = md_vault_path(dest)?;
-        let path = VaultPath::new(written).resolve_against_note(at);
-        let points_at_from = if path.is_note_file() {
-            path.get_name() == old_name
+        let target = NoteTarget::from_markdown(written, &at)?;
+        let new = if same_folder && target.matches(&from) {
+            renamed_in_place(written, to.get_name())
         } else {
-            path.canonical() == from
-        };
-        if !points_at_from {
-            return None;
-        }
-        let new = if VaultPath::new(written).is_note_file() {
-            to.get_name()
-        } else if from.get_parent_path().0 == to.canonical().get_parent_path().0 {
-            let folder = written.rfind(PATH_SEPARATOR).map_or(0, |at| at + 1);
-            format!("{}{}", &written[..folder], to.get_name())
-        } else if written.starts_with(PATH_SEPARATOR) {
-            to.canonical().to_string()
-        } else {
-            to.relative_link_from_note(home).to_string()
+            path_link(written, &target)?.to_string()
         };
         let wrapped = note[..span.start].ends_with('<');
         let unreadable = |c: char| c == '(' || c == ')' || !spaced && c.is_whitespace();
@@ -1015,14 +1045,48 @@ pub(in crate::note) fn retarget_links(
         let start = span.start + (written.as_ptr() as usize - dest.as_ptr() as usize);
         Some((start..start + written.len(), new))
     };
+    // A wikilink's note part as written: what it reads after the rename.
+    let rewiki = |written: &str| -> Option<String> {
+        let target = NoteTarget::from_wikilink(written, &at)?;
+        match &target {
+            NoteTarget::Name(suffix) => {
+                let leads_to_from_alone =
+                    target.matches(&from) && !others.iter().any(|other| target.matches(other));
+                if !leads_to_from_alone || target.matches(&to) {
+                    return None;
+                }
+                let parts = suffix.get_slices().len();
+                let unique = unique_wikilink(&to, parts, &others);
+                Some(
+                    if same_folder && unique == to.tail(parts).to_bare_string() {
+                        renamed_in_place(written, to.get_clean_name())
+                    } else {
+                        unique
+                    },
+                )
+            }
+            NoteTarget::Path(_) => {
+                if same_folder && target.matches(&from) {
+                    return Some(renamed_in_place(written, to.get_clean_name()));
+                }
+                let new = path_link(written, &target)?;
+                Some(if new.is_absolute() || new.is_dot_relative() {
+                    new.to_bare_string()
+                } else {
+                    // `./`: a bare name would read as a name, not a path.
+                    format!(".{PATH_SEPARATOR}{}", new.to_bare_string())
+                })
+            }
+        }
+    };
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
     for link in walked.listed_links() {
         match link.kind {
             WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
                 let (name, _) = link.wiki_note();
-                if VaultPath::note_path_from(name).get_name() != old_name {
+                let Some(new) = rewiki(name) else {
                     continue;
-                }
+                };
                 let opener = if link.kind == WalkLinkKind::WikiEmbed {
                     "![["
                 } else {
@@ -1030,7 +1094,7 @@ pub(in crate::note) fn retarget_links(
                 };
                 let lead = link.target.len() - link.target.trim_start_matches([' ', '\t']).len();
                 let start = link.range.start + opener.len() + lead;
-                edits.push((start..start + name.len(), to.get_clean_name()));
+                edits.push((start..start + name.len(), new));
             }
             WalkLinkKind::Inline | WalkLinkKind::Found => {
                 // The destination as written: the target after the label's `](`.
@@ -1092,10 +1156,14 @@ fn splice(note: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
 
 /// Where a markdown link destination points, as the rendered markdown
 /// writes it, plus the link it records: a URL, a note, or another vault
-/// path (relative destinations resolve against `ref_path`'s directory). A
-/// vault path's `#section` is cut for resolving (`split_link_fragment`, as
-/// the editor follows it) and written back after the resolved path. `None`
-/// for a destination that is neither a URL nor a valid vault path.
+/// path. A note is an exact path ([`NoteTarget::from_markdown`]: relative
+/// destinations, a bare `dup.md` included, resolve against `ref_path`'s
+/// directory; canonical); another vault path resolves against that
+/// directory the same way, unchanged in form. A vault path's `#section` is
+/// cut for resolving (`split_link_fragment`, as the editor follows it) and
+/// written back after the resolved path. `None` for a destination that is
+/// neither a URL nor a valid vault path. The recorded link's `raw_link` is
+/// `dest` as written.
 pub(in crate::note) fn resolve_md_link(
     dest: &str,
     label: &str,
@@ -1107,10 +1175,14 @@ pub(in crate::note) fn resolve_md_link(
     let Some((written, fragment)) = md_vault_path(dest) else {
         return (dest.to_string(), None);
     };
+    if let Some(target) = NoteTarget::from_markdown(dest, ref_path) {
+        let rendered = format!("{}{fragment}", target.path());
+        return (rendered, Some(NoteLink::note(target, label, dest)));
+    }
     let path = VaultPath::new(written).resolve_against_note(ref_path);
     (
         format!("{path}{fragment}"),
-        Some(NoteLink::vault_path(&path, label)),
+        Some(NoteLink::attachment(&path, label, dest)),
     )
 }
 
@@ -1260,25 +1332,30 @@ impl NoteWalk {
         self.listed_links().map(|l| l.target.clone()).collect()
     }
 
-    /// The links the index records, in document order: wikilinks to valid
-    /// vault paths, markdown links that resolve to a note, and hashtags.
+    /// The links the index records, in document order: wikilinks to notes
+    /// (by name, or by path when written from the root or the note's folder;
+    /// see [`NoteTarget::from_wikilink`] — a wikilink to an image or another
+    /// file, `![[pic.png]]`, `[[doc.pdf]]`, is no note link), markdown links
+    /// that resolve to a note (exact, canonical paths; see
+    /// [`NoteTarget::from_markdown`]), and hashtags.
     pub(in crate::note) fn index_links(&self, ref_path: &VaultPath) -> Vec<NoteLink> {
         let mut found: Vec<(usize, NoteLink)> = Vec::new();
         for link in self.listed_links() {
             match link.kind {
                 WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
-                    let path = VaultPath::note_path_from(link.wiki_note().0);
-                    found.push((link.range.start, NoteLink::note(&path, lf(&link.label))));
+                    if let Some(target) = NoteTarget::from_wikilink(&link.target, ref_path) {
+                        let note = NoteLink::note(target, lf(&link.label), &link.target);
+                        found.push((link.range.start, note));
+                    }
                 }
                 WalkLinkKind::Inline
                 | WalkLinkKind::Found
                 | WalkLinkKind::Reference
                 | WalkLinkKind::Autolink => {
                     // The index stores no link text; skip the allocation.
-                    if let (_, Some(note)) = resolve_md_link(&link.target, "", ref_path) {
-                        if matches!(note.ltype, NoteLinkType::Note(_)) {
-                            found.push((link.range.start, note));
-                        }
+                    if let Some(target) = NoteTarget::from_markdown(&link.target, ref_path) {
+                        let note = NoteLink::note(target, "", &link.target);
+                        found.push((link.range.start, note));
                     }
                 }
                 WalkLinkKind::Image => {}
@@ -1325,8 +1402,20 @@ impl NoteWalk {
                 }
                 WalkLinkKind::Wiki => {
                     let (target, fragment) = link.wiki_note();
-                    let path = VaultPath::note_path_from(target).resolve_against_note(ref_path);
-                    links.push(NoteLink::note(&path, lf(&link.label)));
+                    // A name renders as the name (no folder to resolve it
+                    // against: it matches in any folder); a path as the
+                    // canonical path. A wikilink to a non-note file is no
+                    // note link: rendered as before, not listed.
+                    let path = match NoteTarget::from_wikilink(&link.target, ref_path) {
+                        Some(note) => {
+                            let path = note.path().to_string();
+                            links.push(NoteLink::note(note, lf(&link.label), &link.target));
+                            path
+                        }
+                        None => VaultPath::note_path_from(target)
+                            .resolve_against_note(ref_path)
+                            .to_string(),
+                    };
                     let dest = markdown_destination(format!("{path}{}", url_fragment(fragment)));
                     if let Some(dest) = dest.filter(|_| !link.as_written) {
                         // An empty display part would render an invisible link.
@@ -1999,20 +2088,65 @@ mod tests {
     #[test]
     fn index_links_are_in_document_order() {
         let note = "#first [[a]] then [b](https://x.y) and [c](c.md) #last";
-        let got: Vec<String> = walk(note)
-            .index_links(&VaultPath::new("n.md"))
-            .into_iter()
-            .map(|l| l.raw_link)
-            .collect();
+        let links = walk(note).index_links(&VaultPath::new("n.md"));
         assert_eq!(
-            got,
+            targets(&links),
             [
                 "#first".to_string(),
                 VaultPath::note_path_from("a").to_string(),
-                VaultPath::new("c.md").to_string(),
+                VaultPath::new("/c.md").to_string(),
                 "#last".to_string(),
             ]
         );
+        // `raw_link` is the target as written.
+        assert_eq!(raw_links(&links), ["#first", "a", "c.md", "#last"]);
+    }
+
+    // Each written form is read as its `NoteTarget`: a wikilink by name (a
+    // path part is a suffix), from the root or the note's folder by path; a
+    // markdown link always by exact, canonical path — relative to the
+    // linking note's folder, a bare name included. Non-note embeds are no
+    // note links. `raw_link` keeps the target as written.
+    #[test]
+    fn index_links_carry_their_form() {
+        use crate::note::{LinkType, NoteTarget};
+        let name = |p: &str| NoteTarget::Name(VaultPath::new(p));
+        let path = |p: &str| NoteTarget::Path(VaultPath::new(p));
+        let note = "[[dup]] [[Dup#Goals]] ![[dup^b]] [[work/dup]] [[a/work/dup]] \
+                    [[/work/dup]] [[../work/dup]] [[WORK/DUP]] [x](dup.md) [x](../dup.md) \
+                    [x](../work/dup.md#s) [x](work/dup.md) [x](/work/dup.md) ![[pic.png]] \
+                    [[doc.pdf]] ![a](pic.png) [x](doc.pdf)";
+        let expected = [
+            (name("dup.md"), "dup"),
+            (name("dup.md"), "Dup#Goals"),
+            (name("dup.md"), "dup^b"),
+            (name("work/dup.md"), "work/dup"),
+            (name("a/work/dup.md"), "a/work/dup"),
+            (path("/work/dup.md"), "/work/dup"),
+            (path("/work/dup.md"), "../work/dup"),
+            (name("work/dup.md"), "WORK/DUP"),
+            (path("/journal/dup.md"), "dup.md"),
+            (path("/dup.md"), "../dup.md"),
+            (path("/work/dup.md"), "../work/dup.md#s"),
+            (path("/journal/work/dup.md"), "work/dup.md"),
+            (path("/work/dup.md"), "/work/dup.md"),
+        ];
+        // The same rows whether the note path is absolute or relative.
+        for at in ["/journal/today.md", "journal/today.md"] {
+            let got: Vec<(NoteTarget, String)> = walk(note)
+                .index_links(&VaultPath::new(at))
+                .into_iter()
+                .filter_map(|l| match l.ltype {
+                    LinkType::Note(t) => Some((t, l.raw_link)),
+                    _ => None,
+                })
+                .collect();
+            let want: Vec<(NoteTarget, String)> = expected
+                .iter()
+                .map(|(t, raw)| (t.clone(), raw.to_string()))
+                .collect();
+            assert_eq!(got, want, "{at}");
+        }
     }
 
     #[test]
@@ -2027,7 +2161,10 @@ mod tests {
                 "---\nrel: [[fm]]\n---\nsee [P]({p}) and [t](https://x.y) [#tag](#tag) `[[c]]` `[z](z.md)` ![e]({e})\n"
             )
         );
-        let got: Vec<(String, String)> = links.into_iter().map(|l| (l.raw_link, l.text)).collect();
+        let got: Vec<(String, String)> = targets(&links)
+            .into_iter()
+            .zip(links.into_iter().map(|l| l.text))
+            .collect();
         assert_eq!(
             got,
             [
@@ -2062,31 +2199,39 @@ mod tests {
         assert_eq!(links(&w), [(WalkLinkKind::Inline, "x.md", "see [[a]]")]);
         assert_eq!(text(&w), "see [[a]]");
         let (md, links) = w.render_markdown(note, &VaultPath::new("n.md"));
-        assert_eq!(md, note);
-        let raw: Vec<String> = links.into_iter().map(|l| l.raw_link).collect();
-        assert_eq!(raw, [VaultPath::new("x.md").to_string()]);
+        assert_eq!(md, "[see [[a]]](/x.md)");
+        assert_eq!(targets(&links), [VaultPath::new("/x.md").to_string()]);
+        assert_eq!(raw_links(&links), ["x.md"]);
     }
 
+    // A wikilink with a path part is a name suffix: it matches in any
+    // folder, so it renders as the suffix, never resolved against the
+    // linking note's folder; written from the root or the note's folder it
+    // is an exact path, rendered canonical.
     #[test]
-    fn a_wikilink_path_resolves_against_the_note_folder_as_the_editor_follows_it() {
-        let note = "[[schemas/event]] and [[event]]";
+    fn a_wikilink_path_is_a_name_suffix_not_resolved_against_the_note_folder() {
+        let note = "[[schemas/event]] and [[event]] and [[./sib]]";
+        let suffix = VaultPath::note_path_from("schemas/event");
         let bare = VaultPath::note_path_from("event");
-        // An absolute note path, as the vault passes it: exactly the editor's
-        // `resolve_link_in_note`.
-        let at = VaultPath::new("/folder/note.md");
-        let target = VaultPath::note_path_from("schemas/event").resolve_link_in_note(&at);
-        let (md, links) = walk(note).render_markdown(note, &at);
-        assert_eq!(md, format!("[schemas/event]({target}) and [event]({bare})"));
-        let raw: Vec<String> = links.into_iter().map(|l| l.raw_link).collect();
-        assert_eq!(raw, [target.to_string(), bare.to_string()]);
-        // A relative note path keeps today's relative form (the snapshot's
-        // `folder/note.md`): `folder/schemas/event.md`, no leading `/`.
-        let (md, _) = walk(note).render_markdown(note, &VaultPath::new("folder/note.md"));
-        let relative = VaultPath::new("folder/schemas/event.md");
-        assert_eq!(
-            md,
-            format!("[schemas/event]({relative}) and [event]({bare})")
-        );
+        for at in ["/folder/note.md", "folder/note.md"] {
+            let (md, links) = walk(note).render_markdown(note, &VaultPath::new(at));
+            assert_eq!(
+                md,
+                format!(
+                    "[schemas/event]({suffix}) and [event]({bare}) and [./sib](/folder/sib.md)"
+                ),
+                "{at}"
+            );
+            assert_eq!(
+                targets(&links),
+                [
+                    suffix.to_string(),
+                    bare.to_string(),
+                    "/folder/sib.md".to_string()
+                ]
+            );
+            assert_eq!(raw_links(&links), ["schemas/event", "event", "./sib"]);
+        }
     }
 
     #[test]
@@ -2099,12 +2244,14 @@ mod tests {
         }
         let (md, links) = walk("[x](<my note.md>)").render_markdown("[x](<my note.md>)", &at);
         assert_eq!(md, "[x](<my note.md>)");
-        assert_eq!(links[0].raw_link, VaultPath::new("my note.md").to_string());
+        assert_eq!(targets(&links), ["/dir/my note.md"]);
+        assert_eq!(links[0].raw_link, "my note.md");
         let note = "[t](sub/x.md)";
         let (md, links) = walk(note).render_markdown(note, &at);
         let resolved = VaultPath::new("/dir/sub/x.md");
         assert_eq!(md, format!("[t]({resolved})"));
-        assert_eq!(links[0].raw_link, resolved.to_string());
+        assert_eq!(targets(&links), [resolved.to_string()]);
+        assert_eq!(links[0].raw_link, "sub/x.md");
     }
 
     #[test]
@@ -2125,6 +2272,19 @@ mod tests {
 
     fn raw_links(links: &[NoteLink]) -> Vec<String> {
         links.iter().map(|l| l.raw_link.clone()).collect()
+    }
+
+    /// What each link points at: a note link's target (a name suffix or a
+    /// canonical path), an attachment's path, otherwise the link as written.
+    fn targets(links: &[NoteLink]) -> Vec<String> {
+        links
+            .iter()
+            .map(|l| match &l.ltype {
+                crate::note::LinkType::Note(t) => t.path().to_string(),
+                crate::note::LinkType::Attachment(p) => p.to_string(),
+                _ => l.raw_link.clone(),
+            })
+            .collect()
     }
 
     /// Asserts no view reads a link in `note`: the walk, the index, the
@@ -2176,7 +2336,7 @@ mod tests {
             assert!(
                 !listed
                     .iter()
-                    .any(|l| matches!(l.ltype, NoteLinkType::Hashtag)),
+                    .any(|l| matches!(l.ltype, crate::note::LinkType::Hashtag)),
                 "{note:?}: {listed:?}"
             );
         }
@@ -2213,7 +2373,7 @@ mod tests {
         let (_, index) =
             crate::note::content_extractor::get_chunks_and_links(&VaultPath::new("n.md"), note);
         assert_eq!(
-            raw_links(&index),
+            targets(&index),
             [
                 VaultPath::note_path_from("c").to_string(),
                 "#t2".to_string(),
@@ -2241,7 +2401,7 @@ mod tests {
         assert!(crate::note::extract_labels(note).is_empty());
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(md, note);
-        assert_eq!(raw_links(&listed), ["https://x.com/#frag"]);
+        assert_eq!(targets(&listed), ["https://x.com/#frag"]);
     }
 
     // Item 5.
@@ -2280,8 +2440,8 @@ mod tests {
         let note = "[a](b.md)#tag [[c]]#t2 #t3[[d]]";
         let at = VaultPath::new("/dir/n.md");
         let (md, listed) = walk(note).render_markdown(note, &at);
-        // A bare `b.md` is a note path at the root, as before.
-        let b = VaultPath::new("b.md");
+        // A bare markdown `b.md` is a path in the note's folder.
+        let b = VaultPath::new("/dir/b.md");
         let c = VaultPath::note_path_from("c");
         let d = VaultPath::note_path_from("d");
         assert_eq!(
@@ -2289,7 +2449,7 @@ mod tests {
             format!("[a]({b})[#tag](#tag) [c]({c})[#t2](#t2) [#t3](#t3)[d]({d})")
         );
         assert_eq!(
-            raw_links(&listed),
+            targets(&listed),
             [
                 b.to_string(),
                 c.to_string(),
@@ -2394,7 +2554,7 @@ mod tests {
         let (md, listed) = walk(note).render_markdown(note, &at);
         assert_eq!(md, format!("![sub/e]({e})"));
         assert!(listed.is_empty(), "{listed:?}");
-        assert_eq!(raw_links(&walk(note).index_links(&at)), [e.to_string()]);
+        assert_eq!(targets(&walk(note).index_links(&at)), [e.to_string()]);
     }
 
     // The frontmatter is read from the offsets the body
@@ -2452,7 +2612,7 @@ mod tests {
         );
         let (md, _) = w.render_markdown(note, &VaultPath::new("/dir/n.md"));
         let x = VaultPath::new("/dir/sub/x.md");
-        assert_eq!(md, format!("[a `]` b]({x}) and [](e.md)"));
+        assert_eq!(md, format!("[a `]` b]({x}) and [](/dir/e.md)"));
     }
 
     // The metadata carries the CLI's link targets from the
@@ -2519,10 +2679,10 @@ mod tests {
         ] {
             let path = VaultPath::note_path_from(target);
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [path.to_string()], "{note:?}");
             let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
             assert_eq!(md, format!("[{label}]({path}{fragment})"), "{note:?}");
-            assert_eq!(raw_links(&listed), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [path.to_string()], "{note:?}");
             assert_eq!(crate::note::note_link_targets(note), [written], "{note:?}");
         }
     }
@@ -2547,14 +2707,14 @@ mod tests {
     fn a_padded_or_escaped_inline_destination_is_rewritten() {
         let at = VaultPath::new("folder/note.md");
         for (note, label, resolved) in [
-            ("[u]( sub/c.md )", "u", "folder/sub/c.md"),
-            ("[v](sub/a&amp;b.md)", "v", "folder/sub/a&b.md"),
-            ("[w](sub/x.md\t)", "w", "folder/sub/x.md"),
+            ("[u]( sub/c.md )", "u", "/folder/sub/c.md"),
+            ("[v](sub/a&amp;b.md)", "v", "/folder/sub/a&b.md"),
+            ("[w](sub/x.md\t)", "w", "/folder/sub/x.md"),
         ] {
             let resolved = VaultPath::new(resolved);
             let (md, listed) = walk(note).render_markdown(note, &at);
             assert_eq!(md, format!("[{label}]({resolved})"), "{note:?}");
-            assert_eq!(raw_links(&listed), [resolved.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [resolved.to_string()], "{note:?}");
         }
     }
 
@@ -2564,7 +2724,7 @@ mod tests {
         // end the link early, so it is `<…>`-wrapped.
         let note = "[t](a\\(b.md)";
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("folder/note.md"));
-        assert_eq!(md, "[t](<a(b.md>)");
+        assert_eq!(md, "[t](</folder/a(b.md>)");
         assert_eq!(listed.len(), 1, "{listed:?}");
     }
 
@@ -2587,14 +2747,14 @@ mod tests {
         let root = VaultPath::new("n.md");
         assert_eq!(crate::note::note_link_targets("[t](a(b).md)"), ["a(b).md"]);
         let (_, listed) = walk("[t](a(b).md)").render_markdown("[t](a(b).md)", &root);
-        assert_eq!(raw_links(&listed), [VaultPath::new("a(b).md").to_string()]);
+        assert_eq!(targets(&listed), [VaultPath::new("/a(b).md").to_string()]);
 
         let note = "[[Note (draft)]]";
         let draft = VaultPath::note_path_from("Note (draft)");
         assert_eq!(draft.to_string(), "note (draft).md");
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("folder/note.md"));
         assert_eq!(md, format!("[Note (draft)](<{draft}>)"));
-        assert_eq!(raw_links(&listed), [draft.to_string()]);
+        assert_eq!(targets(&listed), [draft.to_string()]);
 
         // The editor's pattern reads `[[[tri]]` — its
         // target `[tri` is no vault path — as the previous extractor did: no link.
@@ -2607,8 +2767,8 @@ mod tests {
         let note = "[v](d\\_e.md)";
         assert_eq!(crate::note::note_link_targets(note), ["d_e.md"]);
         let (md, listed) = walk(note).render_markdown(note, &root);
-        assert_eq!(md, "[v](d_e.md)");
-        assert_eq!(raw_links(&listed), ["d_e.md"]);
+        assert_eq!(md, "[v](/d_e.md)");
+        assert_eq!(targets(&listed), ["/d_e.md"]);
     }
 
     // HTML is opaque: a link inside an inline tag — in an
@@ -2645,7 +2805,7 @@ mod tests {
                     <span style=\"color:red\">[[other]]</span> text\n";
         let at = VaultPath::new("n.md");
         let n = VaultPath::note_path_from("note");
-        let y = VaultPath::new("y.md");
+        let y = VaultPath::new("/y.md");
         let o = VaultPath::note_path_from("other");
         let w = walk(note);
         assert_eq!(
@@ -2658,9 +2818,9 @@ mod tests {
         );
         let expected = [n.to_string(), y.to_string(), o.to_string()];
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), expected);
+        assert_eq!(targets(&index), expected);
         let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-        assert_eq!(raw_links(&listed), expected);
+        assert_eq!(targets(&listed), expected);
         assert_eq!(
             md,
             format!(
@@ -2693,7 +2853,7 @@ mod tests {
         let tab = "[[\tt\t]]";
         let t = VaultPath::note_path_from("t");
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, tab);
-        assert_eq!(raw_links(&index), [t.to_string()]);
+        assert_eq!(targets(&index), [t.to_string()]);
     }
 
     // Rulings round, 3: the rendered destination is a valid markdown one.
@@ -2713,7 +2873,7 @@ mod tests {
         let plan = VaultPath::note_path_from("Plan");
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(md, format!("[g](<{plan}#My Goals>)"));
-        assert_eq!(raw_links(&listed), [plan.to_string()]);
+        assert_eq!(targets(&listed), [plan.to_string()]);
         // The renderer reads it back as one link to that destination.
         let dests: Vec<String> = Parser::new(&md)
             .filter_map(|e| match e {
@@ -2749,7 +2909,7 @@ mod tests {
         ] {
             let (md, listed) = walk(note).render_markdown(note, &at);
             assert_eq!(md, expected, "{note:?}");
-            assert_eq!(raw_links(&listed), [plan.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [plan.to_string()], "{note:?}");
             if md != note {
                 let (_, fragment) = split_link_fragment(note.trim_matches(['[', ']']));
                 let fragment = fragment.split('|').next().unwrap_or_default();
@@ -2794,8 +2954,8 @@ mod tests {
     fn an_inline_destination_with_parentheses_is_wrapped() {
         let note = "[t](a\\(b.md) [u](a&#32;b.md)";
         let (md, _) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
-        assert_eq!(md, "[t](<a(b.md>) [u](<a b.md>)");
-        assert_eq!(rendered_dests(&md), ["a(b.md", "a b.md"]);
+        assert_eq!(md, "[t](</a(b.md>) [u](</a b.md>)");
+        assert_eq!(rendered_dests(&md), ["/a(b.md", "/a b.md"]);
     }
 
     // An embed renders without its fragment.
@@ -2814,10 +2974,7 @@ mod tests {
             assert_eq!(md, expected, "{note:?}");
             assert!(listed.is_empty(), "{listed:?}");
         }
-        assert_eq!(
-            raw_links(&walk("![[e^b]]").index_links(&at)),
-            [e.to_string()]
-        );
+        assert_eq!(targets(&walk("![[e^b]]").index_links(&at)), [e.to_string()]);
     }
 
     // An empty or blank destination is no link anywhere.
@@ -2827,16 +2984,16 @@ mod tests {
         for note in ["[t]()", "[t]( )", "[t](<>)", "[[a#s|]] [[ |x]]"] {
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
             let (md, listed) = walk(note).render_markdown(note, &at);
-            let targets = crate::note::note_link_targets(note);
+            let written = crate::note::note_link_targets(note);
             if note.starts_with("[[") {
                 let a = VaultPath::note_path_from("a");
-                assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
-                assert_eq!(targets, ["a#s"], "{note:?}");
+                assert_eq!(targets(&index), [a.to_string()], "{note:?}");
+                assert_eq!(written, ["a#s"], "{note:?}");
                 assert!(md.ends_with(" [[ |x]]"), "{md:?}");
             } else {
                 assert!(index.is_empty(), "{note:?}: {index:?}");
                 assert!(listed.is_empty(), "{note:?}: {listed:?}");
-                assert!(targets.is_empty(), "{note:?}: {targets:?}");
+                assert!(written.is_empty(), "{note:?}: {written:?}");
                 assert_eq!(md, note);
             }
         }
@@ -2867,7 +3024,7 @@ mod tests {
             format!("- item {written} x\n"),
         ] {
             let (chunks, index) = crate::note::content_extractor::get_chunks_and_links(&at, &note);
-            assert_eq!(raw_links(&index), [david.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [david.to_string()], "{note:?}");
             // The text stays as written: a heading's, or its chunk's.
             let headings = walk(&note).headings(&note);
             assert!(
@@ -2876,7 +3033,7 @@ mod tests {
                 "{note:?}: {chunks:?} {headings:?}"
             );
             let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, &note);
-            assert_eq!(raw_links(&listed), [david.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [david.to_string()], "{note:?}");
             assert!(md.contains(&format!("[David H](<{david}>)")), "{md:?}");
             assert_eq!(rendered_dests(&md), [david.to_string()], "{md:?}");
             assert_eq!(
@@ -2912,7 +3069,7 @@ mod tests {
         let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(
             md,
-            "[t](x.md) and [u](<a b.md>) ![img](p q.png) [Dave #x](<d e.md>) [#y](#y)"
+            "[t](/x.md) and [u](</a b.md>) ![img](p q.png) [Dave #x](</d e.md>) [#y](#y)"
         );
     }
 
@@ -2988,10 +3145,10 @@ mod tests {
         ] {
             let (md, listed) = walk(note).render_markdown(note, &at);
             assert_eq!(md, expected, "{note:?}");
-            assert_eq!(raw_links(&listed), [a.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [a.to_string()], "{note:?}");
             assert_eq!(rendered_dests(&md), [a.to_string()], "{note:?}");
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [a.to_string()], "{note:?}");
         }
     }
 
@@ -3025,11 +3182,11 @@ mod tests {
             ("see [a `c`](d e.md) x", "d e.md"),
             ("see [a <b>x</b>](c d.md) x", "c d.md"),
         ] {
-            let path = VaultPath::new(dest);
+            let path = VaultPath::new(dest).absolute();
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [path.to_string()], "{note:?}");
             let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-            assert_eq!(raw_links(&listed), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [path.to_string()], "{note:?}");
             assert_eq!(rendered_dests(&md), [path.to_string()], "{note:?}: {md}");
             assert_eq!(crate::note::note_link_targets(note), [dest], "{note:?}");
         }
@@ -3043,11 +3200,11 @@ mod tests {
         assert_no_link_anywhere("a `x [y](a b.md) z` b\n");
         let note = "<b>[x](a b.md)</b>\n";
         let at = VaultPath::new("n.md");
-        let ab = VaultPath::new("a b.md");
+        let ab = VaultPath::new("/a b.md");
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [ab.to_string()]);
+        assert_eq!(targets(&index), [ab.to_string()]);
         let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-        assert_eq!(raw_links(&listed), [ab.to_string()]);
+        assert_eq!(targets(&listed), [ab.to_string()]);
         assert_eq!(md, format!("<b>[x](<{ab}>)</b>\n"));
         assert_eq!(crate::note::note_link_targets(note), ["a b.md"]);
     }
@@ -3085,8 +3242,9 @@ mod tests {
     fn a_found_link_never_repeats_or_reorders_a_parsed_one() {
         let at = VaultPath::new("n.md");
         let note_path = |t: &str| VaultPath::note_path_from(t).to_string();
-        let path = |t: &str| VaultPath::new(t).to_string();
-        for (note, targets, labels, listed) in [
+        // A bare markdown name is a path in the note's folder (the root).
+        let path = |t: &str| VaultPath::new(t).absolute().to_string();
+        for (note, written, labels, listed) in [
             (
                 "- [ ] **Call [Bob](bob.md)** today",
                 vec!["bob.md"],
@@ -3123,11 +3281,11 @@ mod tests {
             let w = walk(note);
             let got: Vec<&str> = w.links.iter().map(|l| l.label.as_str()).collect();
             assert_eq!(got, labels, "{note:?}");
-            assert_eq!(crate::note::note_link_targets(note), targets, "{note:?}");
+            assert_eq!(crate::note::note_link_targets(note), written, "{note:?}");
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), listed, "{note:?}");
+            assert_eq!(targets(&index), listed, "{note:?}");
             let (_, md_links) = crate::note::content_extractor::get_markdown_and_links(&at, note);
-            assert_eq!(raw_links(&md_links), listed, "{note:?}");
+            assert_eq!(targets(&md_links), listed, "{note:?}");
         }
     }
 
@@ -3209,7 +3367,7 @@ mod tests {
         assert_eq!(crate::note::note_tags(note), ["tag", "tag2"]);
         assert_eq!(crate::note::extract_labels(note), ["tag", "tag2"]);
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), ["#tag", "#tag2"]);
+        assert_eq!(targets(&index), ["#tag", "#tag2"]);
         let (md, _) = crate::note::content_extractor::get_markdown_and_links(&at, note);
         assert_eq!(md, "it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)");
     }
@@ -3410,7 +3568,7 @@ mod tests {
             );
             assert_eq!(w.link_targets(), ["a b.md"], "{note:?}");
             let (md, _) = w.render_markdown(note, &at);
-            assert!(md.contains("](<a b.md>)"), "{md:?}");
+            assert!(md.contains("](</a b.md>)"), "{md:?}");
         }
         for note in [
             "p [a]\n(b c.md) q",
@@ -3429,9 +3587,9 @@ mod tests {
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(
             md,
-            "[401 Guide]([https://x.y/a](https://x.y/a)) and [ok](b.md)"
+            "[401 Guide]([https://x.y/a](https://x.y/a)) and [ok](/b.md)"
         );
-        assert_eq!(raw_links(&listed), ["b.md"]);
+        assert_eq!(targets(&listed), ["/b.md"]);
     }
 
     // Wikilinks are Kimün's own (the editor's pattern over a plain
@@ -3497,7 +3655,7 @@ mod tests {
         let (md, _) = w.render_markdown(note, &VaultPath::new("n.md"));
         assert_eq!(
             md,
-            "See [x ![[a]]](y.md) and [![[pic.png|200]]](https://x.com) end"
+            "See [x ![[a]]](/y.md) and [![[pic.png|200]]](https://x.com) end"
         );
     }
 
@@ -3516,7 +3674,7 @@ mod tests {
         let note = "[b\r\nc](sub/a.md) and [[a|d\r\ne]]\r\n";
         let (md, listed) = walk(note).render_markdown(note, &VaultPath::new("n.md"));
         let a = VaultPath::note_path_from("a");
-        let sub = VaultPath::new("sub/a.md");
+        let sub = VaultPath::new("/sub/a.md");
         assert_eq!(md, format!("[b\r\nc]({sub}) and [d\r\ne]({a})\r\n"));
         let texts: Vec<&str> = listed.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, ["b\nc", "d\ne"]);
@@ -3778,9 +3936,9 @@ mod tests {
             assert_eq!(w.link_targets(), ["a"], "{note:?}");
             let (md, listed) = w.render_markdown(note, &at);
             assert!(md.contains(&format!("]({a})")), "{md:?}");
-            assert_eq!(raw_links(&listed), [a.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [a.to_string()], "{note:?}");
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [a.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [a.to_string()], "{note:?}");
             assert_editor_agreement(note);
         }
         assert_eq!(walk("[[a|x\ny [[b]]").link_targets(), ["b"]);
@@ -3809,9 +3967,9 @@ mod tests {
         let a = VaultPath::note_path_from("a");
         let (md, listed) = w.render_markdown(note, &at);
         assert_eq!(md, format!("x \\![a]({a}) y"));
-        assert_eq!(raw_links(&listed), [a.to_string()]);
+        assert_eq!(targets(&listed), [a.to_string()]);
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [a.to_string()]);
+        assert_eq!(targets(&index), [a.to_string()]);
         assert_eq!(crate::note::note_link_targets(note), ["a"]);
     }
 
@@ -3826,9 +3984,10 @@ mod tests {
             assert_eq!(w.link_targets(), ["x.md"], "{note:?}");
             let (md, listed) = w.render_markdown(note, &at);
             assert_eq!(md, note);
-            assert_eq!(raw_links(&listed), ["x.md"], "{note:?}");
+            // A bare markdown name is a path in the note's folder.
+            assert_eq!(targets(&listed), ["/x.md"], "{note:?}");
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), ["x.md"], "{note:?}");
+            assert_eq!(targets(&index), ["/x.md"], "{note:?}");
             assert!(crate::note::note_tags(note).is_empty(), "{note:?}");
             assert!(crate::note::extract_labels(note).is_empty(), "{note:?}");
             assert!(
@@ -3901,12 +4060,12 @@ mod tests {
         ] {
             let path = VaultPath::note_path_from(name);
             let (chunks, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&index), [path.to_string()], "{note:?}");
             assert_eq!(chunks[0].text, chunk, "{note:?}");
             let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
             let dest = markdown_destination(path.to_string()).unwrap();
             assert!(md.starts_with(&format!("See [{name}]({dest})")), "{md:?}");
-            assert_eq!(raw_links(&listed), [path.to_string()], "{note:?}");
+            assert_eq!(targets(&listed), [path.to_string()], "{note:?}");
             assert_eq!(crate::note::note_link_targets(note), [name], "{note:?}");
         }
     }
@@ -3919,7 +4078,7 @@ mod tests {
         let at = VaultPath::new("n.md");
         let note = "[see [[a]]](x.md)";
         let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(raw_links(&index), [VaultPath::new("x.md").to_string()]);
+        assert_eq!(targets(&index), [VaultPath::new("/x.md").to_string()]);
         let note = "[t]([[a]])";
         assert!(walk(note)
             .links
@@ -3939,19 +4098,16 @@ mod tests {
         let note = "# Team\n\t- [[Pep]] and [[Ann|A]] ![[pic.png]]\n\t- [x](y.md) #tag\n";
         let pep = VaultPath::note_path_from("Pep");
         let ann = VaultPath::note_path_from("Ann");
-        let pic = VaultPath::note_path_from("pic.png");
+        // `![[pic.png]]` names an image, no note: not a note link.
         let (chunks, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-        assert_eq!(
-            raw_links(&index),
-            [pep.to_string(), ann.to_string(), pic.to_string()]
-        );
+        assert_eq!(targets(&index), [pep.to_string(), ann.to_string()]);
         assert_eq!(
             chunks[0].text,
             "```\n- [[Pep]] and [[Ann|A]] ![[pic.png]]\n- [x](y.md) #tag\n```"
         );
         let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
         assert_eq!(md, note, "code is left as written");
-        assert_eq!(raw_links(&listed), [pep.to_string(), ann.to_string()]);
+        assert_eq!(targets(&listed), [pep.to_string(), ann.to_string()]);
         assert_eq!(
             crate::note::note_link_targets(note),
             ["Pep", "Ann", "pic.png"]
@@ -3980,14 +4136,14 @@ mod tests {
         for (note, path, rendered, written) in [
             (
                 "[x](plan.md#goals)",
-                "plan.md",
-                "[x](plan.md#goals)",
+                "/dir/plan.md",
+                "[x](/dir/plan.md#goals)",
                 "plan.md#goals",
             ),
             (
                 "[y](my note.md#sec)",
-                "my note.md",
-                "[y](<my note.md#sec>)",
+                "/dir/my note.md",
+                "[y](</dir/my note.md#sec>)",
                 "my note.md#sec",
             ),
             (
@@ -3999,17 +4155,17 @@ mod tests {
         ] {
             let path = VaultPath::new(path).to_string();
             let (_, index) = crate::note::content_extractor::get_chunks_and_links(&at, note);
-            assert_eq!(raw_links(&index), std::slice::from_ref(&path), "{note:?}");
+            assert_eq!(targets(&index), std::slice::from_ref(&path), "{note:?}");
             let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
             assert_eq!(md, rendered, "{note:?}");
-            assert_eq!(raw_links(&listed), [path], "{note:?}");
+            assert_eq!(targets(&listed), [path], "{note:?}");
             assert_eq!(crate::note::note_link_targets(note), [written], "{note:?}");
         }
         // A URL keeps its fragment as part of the URL.
         let note = "[u](https://x.y/a#b)";
         let (md, listed) = crate::note::content_extractor::get_markdown_and_links(&at, note);
         assert_eq!(md, note);
-        assert_eq!(raw_links(&listed), ["https://x.y/a#b"]);
+        assert_eq!(targets(&listed), ["https://x.y/a#b"]);
     }
 
     // A URL with parentheses is rendered
@@ -4021,7 +4177,7 @@ mod tests {
         let (md, listed) = walk(&note).render_markdown(&note, &VaultPath::new("n.md"));
         assert_eq!(md, format!("[Rust](<{url}>)"));
         assert_eq!(rendered_dests(&md), [url]);
-        assert_eq!(raw_links(&listed), [url]);
+        assert_eq!(targets(&listed), [url]);
     }
 
     // The CLI / `NoteMetadata.links` list, as

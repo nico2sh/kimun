@@ -1,5 +1,6 @@
 //! The **file-operation dialogs** (M6 G3): the note menu (`Rename…`,
-//! `Move…`, `Delete…`), the rename and move dialogs (kit `Dialog`), and the
+//! `Move…`, `Delete…`; from the editor's right-click also `Properties…`,
+//! M7a G2), the rename and move dialogs (kit `Dialog`), and the
 //! delete confirmation's body (kit `AlertDialog`). Each is a view the modal
 //! host opens in its one slot ([`super::modal`]); none of them touches the
 //! vault beyond reading it (the availability checks, the directory list).
@@ -61,6 +62,7 @@ pub(crate) fn menu_item_id(kind: FileOpKind) -> &'static str {
         FileOpKind::Rename => "file-ops-rename",
         FileOpKind::Move => "file-ops-move",
         FileOpKind::Delete => "file-ops-delete",
+        FileOpKind::Properties => "file-ops-properties",
     }
 }
 
@@ -70,16 +72,31 @@ pub(crate) enum FileOpKind {
     Rename,
     Move,
     Delete,
+    /// The note's properties dialog (the editor's menu only; not a file
+    /// operation, but the same menu offers it).
+    Properties,
 }
 
 impl FileOpKind {
-    /// The menu items, in order, with the key that picks each (the TUI
-    /// menu's R, M, D).
-    const MENU: [(FileOpKind, &'static str, char); 3] = [
+    /// Every menu item, in order, with the key that picks each (the TUI
+    /// menu's R, M, D; P for properties). The F2 menu shows them without
+    /// the first.
+    const MENU: [(FileOpKind, &'static str, char); 4] = [
+        (FileOpKind::Properties, "Properties…", 'p'),
         (FileOpKind::Rename, "Rename…", 'r'),
         (FileOpKind::Move, "Move…", 'm'),
         (FileOpKind::Delete, "Delete…", 'd'),
     ];
+
+    /// The items a menu shows: with `Properties…` (the editor's right-click)
+    /// or the file operations alone (F2, unchanged).
+    fn menu(with_properties: bool) -> &'static [(FileOpKind, &'static str, char)] {
+        if with_properties {
+            &Self::MENU
+        } else {
+            &Self::MENU[1..]
+        }
+    }
 }
 
 /// An operation's progress as its dialog shows it: running (the confirm is
@@ -92,7 +109,7 @@ pub(crate) struct OpStatus {
 }
 
 /// The error row under a dialog's fields, while there is one.
-fn error_row(status: &OpStatus, t: &Theme) -> Option<AnyElement> {
+pub(super) fn error_row(status: &OpStatus, t: &Theme) -> Option<AnyElement> {
     let error = status.error.clone()?;
     Some(
         div()
@@ -121,7 +138,7 @@ fn hint(state: ValidationState, invalid: Option<&str>, t: &Theme) -> Option<(Sha
 
 /// The dialog's `Cancel` and its result verb, the verb disabled unless
 /// `enabled`.
-fn footer(
+pub(super) fn footer(
     verb: &'static str,
     enabled: bool,
     busy: bool,
@@ -151,7 +168,7 @@ fn footer(
 }
 
 /// The path line over a dialog's fields: what is being renamed or moved.
-fn path_line(label: &'static str, target: &VaultPath, t: &Theme) -> impl IntoElement {
+pub(super) fn path_line(label: &'static str, target: &VaultPath, t: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -181,6 +198,8 @@ fn close(workspace: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
 /// item's letter, or Up/Down and Enter.
 pub(crate) struct FileOpsMenu {
     target: VaultPath,
+    /// The items shown ([`FileOpKind::menu`]).
+    items: &'static [(FileOpKind, &'static str, char)],
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
     selected: usize,
@@ -190,12 +209,14 @@ pub(crate) struct FileOpsMenu {
 impl FileOpsMenu {
     pub(crate) fn new(
         target: VaultPath,
+        with_properties: bool,
         workspace: WeakEntity<Workspace>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             target,
+            items: FileOpKind::menu(with_properties),
             workspace,
             focus: cx.focus_handle(),
             selected: 0,
@@ -215,7 +236,7 @@ impl FileOpsMenu {
 
     /// Run the selected item (Enter).
     pub(crate) fn choose_selected(&self, window: &mut Window, cx: &mut App) {
-        self.choose(FileOpKind::MENU[self.selected].0, window, cx);
+        self.choose(self.items[self.selected].0, window, cx);
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -227,11 +248,11 @@ impl FileOpsMenu {
         }
         match key {
             Key::Up => self.selected = self.selected.saturating_sub(1),
-            Key::Down => self.selected = (self.selected + 1).min(FileOpKind::MENU.len() - 1),
+            Key::Down => self.selected = (self.selected + 1).min(self.items.len() - 1),
             Key::Char(c) => {
                 let c = c.to_ascii_lowercase();
                 // Every other letter is swallowed: the menu is modal.
-                if let Some((kind, ..)) = FileOpKind::MENU.iter().find(|(.., k)| *k == c) {
+                if let Some((kind, ..)) = self.items.iter().find(|(.., k)| *k == c) {
                     cx.stop_propagation();
                     self.choose(*kind, window, cx);
                     return;
@@ -253,7 +274,8 @@ impl Focusable for FileOpsMenu {
 impl Render for FileOpsMenu {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme;
-        let rows = FileOpKind::MENU
+        let rows = self
+            .items
             .iter()
             .enumerate()
             .map(|(ix, (kind, label, key))| {
@@ -279,10 +301,12 @@ impl Render for FileOpsMenu {
                     .rounded_md()
                     .when(selected, |row| row.bg(theme::selected_background(t)))
                     .when(!selected, |row| row.hover(move |style| style.bg(hover)))
-                    // Delete stands apart from the harmless items.
-                    .when(kind == FileOpKind::Delete, |row| {
-                        row.mt_1().border_t_1().border_color(theme::divider(t))
-                    })
+                    // Delete stands apart from the harmless items, and the
+                    // file operations from the properties above them.
+                    .when(
+                        kind == FileOpKind::Delete || (kind == FileOpKind::Rename && ix > 0),
+                        |row| row.mt_1().border_t_1().border_color(theme::divider(t)),
+                    )
                     .child(div().flex_1().text_sm().text_color(text).child(*label))
                     .child(Kbd::new(input::keystroke(KeyInput::plain(Key::Char(
                         key.to_ascii_uppercase(),

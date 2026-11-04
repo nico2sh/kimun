@@ -18,7 +18,7 @@ use kimun_notes::settings::gui::GuiSettings;
 
 use super::modal::ModalKind;
 use super::palette::{Palette, PaletteRun};
-use super::route::{NEEDS_NOTE_FOCUS, NO_NOTE, NOT_YET};
+use super::route::{NEEDS_NOTE_FOCUS, NO_NOTE, NO_WORKSPACE};
 use super::start_tests::{drive, open_started, runtime, send, vault_start};
 use super::tests::{Shell, open_default, open_shell};
 use super::{LayoutStore, Workspace, rail_cell_id};
@@ -213,8 +213,11 @@ fn a_disabled_row_cannot_run(cx: &mut TestAppContext) {
             reason(LeaderAction::NoteSave),
         )
     });
-    // Journal is not built yet; there is no note session in this shell.
-    assert_eq!(blocked, (Some(NOT_YET), Some(NO_NOTE), None, Some(NO_NOTE)));
+    // There is no workspace (no note session) in this shell.
+    assert_eq!(
+        blocked,
+        (Some(NO_WORKSPACE), Some(NO_NOTE), None, Some(NO_NOTE))
+    );
     type_text(&shell, "daily", cx);
     assert_eq!(
         visible(&shell, cx).first().map(String::as_str),

@@ -8,6 +8,7 @@ pub mod input;
 pub mod layout;
 pub mod list;
 
+pub mod attachment;
 pub mod doc_meta;
 pub mod editor;
 pub mod file_ops;
@@ -15,6 +16,10 @@ pub mod files;
 pub mod follow;
 pub mod leader_route;
 pub mod pickers;
+pub mod preview;
+pub mod query;
+pub mod saved_search;
+pub mod views;
 
 pub mod message;
 pub mod nav;

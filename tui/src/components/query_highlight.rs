@@ -5,12 +5,14 @@
 //! Core's lexer ([`kimun_core::query_token_spans`]) owns tokenization; this
 //! module only assigns styles, plus two presentation-layer overlays the core
 //! grammar doesn't know: `{variable}` placeholders and the leading `?`
-//! saved-search sigil.
+//! saved-search sigil. The toolkit-free query helpers ([`emphasis_needles`],
+//! [`error_reason`]) live in [`crate::logic::query`] (re-exported here).
 
 use kimun_core::QueryTokenClass;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+pub use crate::logic::query::{emphasis_needles, error_reason};
 use crate::settings::themes::Theme;
 
 /// Style for a token class, mapped onto the real
@@ -105,38 +107,6 @@ fn push_with_variables(
     }
 }
 
-/// The lowercase emphasis needles a query implies: its plain text terms,
-/// labels in their in-body `#tag` form, and link targets — what a result's
-/// content actually matched on. Shared by the telescope preview and the
-/// editor's arrive-from-query emphasis.
-pub fn emphasis_needles(query: &str) -> Vec<String> {
-    let terms = kimun_core::SearchTerms::from_query_string(query);
-    let mut needles: Vec<String> = terms
-        .terms
-        .iter()
-        .map(|t| t.to_lowercase())
-        .chain(
-            terms
-                .labels
-                .iter()
-                .map(|l| format!("#{}", l.to_lowercase())),
-        )
-        .chain(terms.links.iter().map(|l| l.to_lowercase()))
-        .chain(terms.forward_links.iter().map(|l| l.to_lowercase()))
-        .filter(|t| !t.is_empty() && !t.contains('{'))
-        .collect();
-    needles.sort_unstable();
-    needles.dedup();
-    needles
-}
-
-/// The one-line reason for the query's parse problem, if any — surfaced in
-/// the FIND header. The lenient grammar's only real error is an unterminated
-/// quote.
-pub fn error_reason(query: &str) -> Option<&'static str> {
-    kimun_core::query_has_unterminated_quote(query).then_some("unterminated quote")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,11 +136,5 @@ mod tests {
         let theme = Theme::default();
         let line = highlight_line("?todo", &theme, Style::default());
         assert_eq!(texts(&line), vec!["?".to_string(), "todo".to_string()]);
-    }
-
-    #[test]
-    fn error_reason_only_for_unterminated() {
-        assert_eq!(error_reason(r#"a "open"#), Some("unterminated quote"));
-        assert_eq!(error_reason(r#"a "closed""#), None);
     }
 }

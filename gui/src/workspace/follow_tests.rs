@@ -1,7 +1,8 @@
 //! UI integration tests for following links (M5b-2 G4): a real `Workspace`
 //! on a real, indexed temp vault; the `FollowLink` chord and the editor's
 //! double-click, through the window. The system's default program is
-//! replaced by a recorder, so a URL or an image never leaves the test.
+//! replaced by a recorder, so a URL never leaves the test; an image or an
+//! attachment in the vault shows in the attachment view.
 //!
 //! Each test owns a current-thread tokio runtime and drives it between
 //! GPUI's `run_until_parked` (see `start_tests::drive`).
@@ -61,6 +62,12 @@ impl Started {
             window.pointer_up(at, MouseButton::Left, cx);
         })
         .unwrap();
+    }
+
+    /// Whether the attachment view shows the file at `p`.
+    fn shown_attachment_is(&self, p: &str, cx: &TestAppContext) -> bool {
+        cx.read(|cx| self.workspace.read(cx).shown_attachment(cx))
+            .is_some_and(|shown| shown.is_like(&path(p)))
     }
 
     /// Hand URLs and files to a recorder instead of the system.
@@ -130,7 +137,7 @@ fn the_chord_on_a_wikilink_opens_the_note(cx: &mut TestAppContext) {
     // An unsaved edit; the caret stays on the link's first bracket.
     cx.update_window(started.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
-    started.chord("ctrl-n", cx);
+    started.chord("ctrl-enter", cx);
     drive(&rt, cx, |cx| started.text(cx) == "Bravo");
     assert!(started.on("sub/bravo.md", cx));
     assert_eq!(
@@ -186,10 +193,56 @@ fn the_chord_off_a_link_does_nothing(cx: &mut TestAppContext) {
         "a.md",
         false,
     );
-    started.chord("ctrl-n", cx);
+    started.chord("ctrl-enter", cx);
     settle(&rt, cx);
     assert!(started.on("a.md", cx));
     assert_eq!(started.flash(cx), None);
+}
+
+/// A wikilink with a folder part is a name suffix, not a path under the
+/// following note's folder: `[[work/dup]]` from `journal/` opens
+/// `/work/dup`, the one note it ends.
+#[gpui_kit::test]
+fn a_suffix_wikilink_opens_its_note_from_another_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[
+            ("journal/a.md", "[[work/dup]]"),
+            ("dup.md", "Root"),
+            ("work/dup.md", "Work"),
+        ],
+        "journal/a.md",
+        false,
+    );
+    started.chord("ctrl-enter", cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Work");
+    assert!(started.on("work/dup.md", cx));
+}
+
+/// A bare markdown `[x](dup.md)` is the same-folder note, exactly: no
+/// chooser, though two other notes share the name.
+#[gpui_kit::test]
+fn a_bare_markdown_link_opens_the_same_folder_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[
+            ("journal/a.md", "[x](dup.md)"),
+            ("journal/dup.md", "Here"),
+            ("dup.md", "Root"),
+            ("work/dup.md", "Work"),
+        ],
+        "journal/a.md",
+        false,
+    );
+    started.chord("ctrl-enter", cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Here");
+    assert!(started.on("journal/dup.md", cx));
 }
 
 // ── the double-click ─────────────────────────────────────────────────────
@@ -241,48 +294,8 @@ fn a_single_click_on_a_link_only_places_the_caret(cx: &mut TestAppContext) {
 
 // ── outcomes ─────────────────────────────────────────────────────────────
 
-/// A link to no note flashes "not found" and creates nothing.
-#[gpui_kit::test]
-fn a_missing_target_flashes_and_creates_nothing(cx: &mut TestAppContext) {
-    let rt = runtime();
-    let _guard = rt.enter();
-    let (v, started) = started_on(cx, &rt, &[("a.md", "[[nobody]]")], "a.md", false);
-    started.chord("ctrl-n", cx);
-    drive(&rt, cx, |cx| started.flash(cx).is_some());
-    assert_eq!(started.flash(cx).as_deref(), Some("nobody not found"));
-    assert!(started.on("a.md", cx));
-    assert!(
-        rt.block_on(v.vault.get_note_text(&path("nobody.md")))
-            .is_err()
-    );
-}
-
-/// A name several notes share opens the first and says there were more.
-#[gpui_kit::test]
-fn an_ambiguous_target_opens_the_first_and_flashes(cx: &mut TestAppContext) {
-    let rt = runtime();
-    let _guard = rt.enter();
-    let (_v, started) = started_on(
-        cx,
-        &rt,
-        &[
-            ("a.md", "[[dup]]"),
-            ("dup.md", "Dup one"),
-            ("sub/dup.md", "Dup two"),
-        ],
-        "a.md",
-        false,
-    );
-    started.chord("ctrl-n", cx);
-    drive(&rt, cx, |cx| started.text(cx).starts_with("Dup"));
-    let opened = started.open_note(cx).unwrap();
-    assert!(
-        opened.is_like(&path("dup.md")) || opened.is_like(&path("sub/dup.md")),
-        "{opened}"
-    );
-    let flash = started.flash(cx).unwrap();
-    assert!(flash.starts_with("2 notes match dup"), "{flash}");
-}
+// A link to no note (the create dialog) and one several notes answer to
+// (the link chooser) are tested with the picker, in `picker_tests`.
 
 /// A URL goes to the system, never to the editor.
 #[gpui_kit::test]
@@ -292,7 +305,7 @@ fn a_url_opens_externally_not_in_the_editor(cx: &mut TestAppContext) {
     let text = "[site](https://example.com/x)";
     let (_v, started) = started_on(cx, &rt, &[("a.md", text)], "a.md", false);
     let opened = started.record_opens(cx);
-    started.chord("ctrl-n", cx);
+    started.chord("ctrl-enter", cx);
     drive(&rt, cx, |_| !opened.borrow().is_empty());
     assert_eq!(
         *opened.borrow(),
@@ -307,9 +320,10 @@ fn a_url_opens_externally_not_in_the_editor(cx: &mut TestAppContext) {
     );
 }
 
-/// An image goes to the system, resolved against the note's folder.
+/// An image shows in the attachment view, resolved against the note's
+/// folder; nothing goes to the system.
 #[gpui_kit::test]
-fn an_image_opens_externally_from_the_notes_folder(cx: &mut TestAppContext) {
+fn an_image_shows_from_the_notes_folder(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = started_on(
@@ -319,12 +333,45 @@ fn an_image_opens_externally_from_the_notes_folder(cx: &mut TestAppContext) {
         "sub/a.md",
         false,
     );
+    rt.block_on(
+        v.vault
+            .save_attachment(&path("sub/img/pic.png"), b"\x89PNG\x00"),
+    )
+    .unwrap();
     let opened = started.record_opens(cx);
-    started.chord("ctrl-n", cx);
-    drive(&rt, cx, |_| !opened.borrow().is_empty());
-    let want = v.vault.path_to_pathbuf(&path("sub/img/pic.png"));
-    assert_eq!(*opened.borrow(), vec![want.into_os_string()]);
-    assert!(started.on("sub/a.md", cx));
+    started.chord("ctrl-enter", cx);
+    drive(&rt, cx, |cx| {
+        started.shown_attachment_is("sub/img/pic.png", cx)
+    });
+    assert!(opened.borrow().is_empty());
+    assert_eq!(
+        started.open_note(cx),
+        None,
+        "no note is open while it shows"
+    );
+}
+
+/// A markdown link to an attachment shows it, resolved against the note's
+/// folder (its `#fragment` dropped); nothing goes to the system.
+#[gpui_kit::test]
+fn an_attachment_link_shows_the_attachment(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(
+        cx,
+        &rt,
+        &[("sub/a.md", "[doc](../files/doc.pdf#page=2)")],
+        "sub/a.md",
+        false,
+    );
+    rt.block_on(v.vault.save_attachment(&path("files/doc.pdf"), b"%PDF\x00"))
+        .unwrap();
+    let opened = started.record_opens(cx);
+    started.chord("ctrl-enter", cx);
+    drive(&rt, cx, |cx| {
+        started.shown_attachment_is("files/doc.pdf", cx)
+    });
+    assert!(opened.borrow().is_empty());
 }
 
 /// A label says its search arrives later; nothing opens.
@@ -334,7 +381,7 @@ fn a_label_flashes_that_it_arrives_later(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "#rust")], "a.md", false);
     let opened = started.record_opens(cx);
-    started.chord("ctrl-n", cx);
+    started.chord("ctrl-enter", cx);
     drive(&rt, cx, |cx| started.flash(cx).is_some());
     assert_eq!(
         started.flash(cx).as_deref(),

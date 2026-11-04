@@ -7,20 +7,25 @@
 //!
 //! - a note opens through the session (save before the switch; the FILES
 //!   marker follows), as any other open;
-//! - several notes of that name: the first opens, and the Footer says there
-//!   were more (the chooser is M6);
-//! - no note of that name: the Footer says so; nothing is created (the
-//!   create dialog is M6);
-//! - a URL or an image goes to the system's default program;
-//! - an attachment link and a label (`#tag`) say they arrive later.
+//! - several notes of that name: the link chooser lists every one of them,
+//!   and the one chosen opens ([`super::picker`], M6 G4);
+//! - no note of that name: the create dialog offers to make it, and the
+//!   note made opens ([`super::create`], M6 G4);
+//! - an image or a markdown link to an attachment (`[x](doc.pdf)`) inside
+//!   the vault shows it in the editor Panel ([`super::attachment`], M7a
+//!   G3); a URL (or a file outside the vault) goes to the system's default
+//!   program;
+//! - a label (`#tag`) says it arrives later.
 //!
 //! A newer follow replaces one still looking up.
 
 use std::ffi::OsStr;
+use std::path::Path;
 use std::rc::Rc;
 
 use gpui_kit::Context;
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::scan::LinkSpanKind;
 use kimun_notes::logic::editor::claim::FollowTarget;
 use kimun_notes::logic::follow::{FollowOutcome, resolve};
 use tokio::task::JoinError;
@@ -39,11 +44,16 @@ pub(crate) fn system_opener() -> Opener {
 
 impl Workspace {
     /// The `FollowLink` chord: follow what is under the caret. False when
-    /// nothing there is followable.
+    /// nothing there is followable. On the attachment view, open the
+    /// attachment externally (there is no caret).
     pub(crate) fn follow_at_cursor(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.attachment.is_some() {
+            self.open_attachment_externally(cx);
+            return true;
+        }
         let target = self.editor.read(cx).editor.follow_target_at_cursor();
         match target {
-            Some(FollowTarget::Link(target)) => self.follow_link(target, cx),
+            Some(FollowTarget::Link { target, kind }) => self.follow_link(target, kind, cx),
             Some(FollowTarget::Label(name)) => self.follow_label(&name, cx),
             None => return false,
         }
@@ -55,8 +65,14 @@ impl Workspace {
         self.flash(format!("#{name}: tag search arrives later"), cx);
     }
 
-    /// Follow the link `target`, from the open note.
-    pub(crate) fn follow_link(&mut self, target: String, cx: &mut Context<Self>) {
+    /// Follow the link `target` of `kind`, from the open note: a wikilink
+    /// names a note, a markdown link is a path (see [`resolve`]).
+    pub(crate) fn follow_link(
+        &mut self,
+        target: String,
+        kind: LinkSpanKind,
+        cx: &mut Context<Self>,
+    ) {
         let Some(host) = self.notes.as_ref() else {
             return;
         };
@@ -67,7 +83,7 @@ impl Workspace {
         let vault = host.session.vault().clone();
         let lookup = {
             let target = target.clone();
-            tokio::spawn(async move { resolve(&vault, &from, &target).await })
+            tokio::spawn(async move { resolve(&vault, &from, &target, kind).await })
         };
         self.following = Some(cx.spawn(async move |this, cx| {
             let outcome = lookup.await;
@@ -87,19 +103,21 @@ impl Workspace {
         let outcome = outcome.unwrap_or_else(|e| FollowOutcome::Error(e.to_string()));
         match outcome {
             FollowOutcome::External(url) => self.open_externally(target, url.as_ref(), cx),
-            FollowOutcome::OpenFile(file) => self.open_externally(target, file.as_os_str(), cx),
-            FollowOutcome::Note(path) => {
-                self.follow_to(path, cx);
-            }
-            FollowOutcome::Missing(_) => self.flash_error(format!("{target} not found"), cx),
+            FollowOutcome::OpenFile(file) => match self.vault_path_of(&file) {
+                Some(path) => self.open_attachment(&path, cx),
+                None => self.open_externally(target, file.as_os_str(), cx),
+            },
+            FollowOutcome::Note(path) => self.follow_to(path, cx),
+            FollowOutcome::Missing(path) => self.offer_create(path, cx),
             FollowOutcome::Ambiguous(hits) => {
-                let count = hits.len();
-                if let Some((first, _)) = hits.into_iter().next() {
-                    let path = first.path;
-                    if self.follow_to(path.clone(), cx) {
-                        self.flash(format!("{count} notes match {target}: opened {path}"), cx);
+                let target = target.to_string();
+                self.with_window(cx, move |workspace, window, cx| {
+                    if super::modal::dialog_open(window, cx) {
+                        workspace.flash_error(format!("{} notes match {target}", hits.len()), cx);
+                    } else {
+                        workspace.open_link_chooser(&target, hits, window, cx);
                     }
-                }
+                });
             }
             FollowOutcome::Error(e) => {
                 self.flash_error(format!("Couldn't follow {target}: {e}"), cx)
@@ -107,18 +125,21 @@ impl Workspace {
         }
     }
 
-    /// Open the note a link led to. An attachment says it arrives later.
-    /// Whether a note open was asked for.
-    fn follow_to(&mut self, path: VaultPath, cx: &mut Context<Self>) -> bool {
-        if !path.is_note() {
-            self.flash(
-                format!("{path}: opening attachments from a link arrives later"),
-                cx,
-            );
-            return false;
+    /// Open the note a link led to; a file that is no note shows in the
+    /// attachment view.
+    fn follow_to(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        if path.is_note() {
+            self.open_note(path, cx);
+        } else {
+            self.open_attachment(&path, cx);
         }
-        self.open_note(path, cx);
-        true
+    }
+
+    /// The vault path of `file`, an OS path a link resolved to; `None` when
+    /// it lies outside the vault.
+    fn vault_path_of(&self, file: &Path) -> Option<VaultPath> {
+        let host = self.notes.as_ref()?;
+        VaultPath::from_path(host.session.vault().workspace_path(), file).ok()
     }
 
     /// Hand `what` (a URL, a file) to the system's default program.

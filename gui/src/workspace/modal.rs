@@ -7,7 +7,8 @@
 //!
 //! - **One modal at a time.** Opening while one is open is refused; the
 //!   only exception is the modal's own chord, which toggles it closed (the
-//!   TUI's palette toggle).
+//!   TUI's palette toggle; the finder's and the quick note's too, unless
+//!   they are making a note).
 //! - **Close before running.** A command chosen in a modal runs with the
 //!   modal already gone, so it sees the window's own focus and layout.
 //! - **Nothing steals the keyboard from it.** [`Workspace::apply_focus`]
@@ -15,7 +16,10 @@
 //!   listing landing) reach the layout, and the kit restores the opener's
 //!   focus when the modal closes.
 //! - **File operations close it.** A note or folder created, renamed, moved
-//!   or deleted under an open modal leaves it showing stale data.
+//!   or deleted under an open modal leaves it showing stale data. A property
+//!   write under way still finishes, and the open note still reloads.
+//! - **One stacked confirmation.** The properties dialog's delete asks in a
+//!   kit `AlertDialog` over it; the slot stays the properties'.
 //! - **App-channel messages get a window.** The channel's dispatch has no
 //!   `Window`; [`Workspace::with_window`] runs a step with the one captured
 //!   when the workspace was made.
@@ -51,6 +55,17 @@ pub(crate) enum ModalKind {
     Move,
     /// The delete confirmation.
     Delete,
+    /// The note finder (`OpenNote`, leader `f f`).
+    Finder,
+    /// The link chooser: a followed link several notes answer to.
+    LinkChooser,
+    /// The create dialog: a note asked for is not there.
+    CreateNote,
+    /// The quick note.
+    QuickNote,
+    /// The open note's properties (with its delete confirmation stacked on
+    /// it while one asks).
+    Properties,
 }
 
 impl Workspace {
@@ -74,6 +89,10 @@ impl Workspace {
         }
         self.modal = None;
         self.file_dialog = None;
+        self.picker = None;
+        self.quick_note = None;
+        self.note_status = None;
+        self.properties = None;
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -112,6 +131,12 @@ impl Workspace {
                     window.close_all_dialogs(cx);
                 }
                 workspace.modal = None;
+                workspace.picker = None;
+                workspace.quick_note = None;
+                workspace.note_status = None;
+                // A property write in flight still lands: its reload is the
+                // window's own message, not the dialog's.
+                workspace.properties = None;
             });
         }
     }
@@ -135,6 +160,14 @@ impl Workspace {
         match (open, action) {
             (ModalKind::Palette, Some(ActionShortcuts::OpenCommandPalette)) => {
                 self.close_modal(window, cx);
+                true
+            }
+            (ModalKind::Finder, Some(ActionShortcuts::OpenNote)) => {
+                self.toggle_finder(window, cx);
+                true
+            }
+            (ModalKind::QuickNote, Some(ActionShortcuts::QuickNote)) => {
+                self.toggle_quick_note(window, cx);
                 true
             }
             _ => false,

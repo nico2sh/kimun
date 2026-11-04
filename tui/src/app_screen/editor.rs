@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::scan::LinkSpanKind;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -290,18 +291,18 @@ impl EditorScreen {
     /// Follows `target` from the open note: resolve it (`logic::follow`),
     /// then act — the OS handoff for a URL or an image, open a single match,
     /// offer to create a missing note, choose between several matches.
-    async fn follow_link(&mut self, target: String, tx: &AppTx) {
+    async fn follow_link(&mut self, target: String, kind: LinkSpanKind, tx: &AppTx) {
         use crate::logic::follow::{FollowOutcome, resolve};
-        match resolve(&self.vault, self.session.path(), &target).await {
+        match resolve(&self.vault, self.session.path(), &target, kind).await {
             // External URL — hand off to the OS browser/handler.
             FollowOutcome::External(url) => match open::that_detached(&url) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
                 Err(e) => self.footer.flash(format!("Cannot open URL: {e}"), tx),
             },
-            // Image — hand off to the OS default handler.
+            // Image or attachment — hand off to the OS default handler.
             FollowOutcome::OpenFile(os_path) => match open::that_detached(&os_path) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
-                Err(e) => self.footer.flash(format!("Cannot open image: {e}"), tx),
+                Err(e) => self.footer.flash(format!("Cannot open file: {e}"), tx),
             },
             FollowOutcome::Missing(path) => {
                 self.present_overlay(Box::new(ActiveDialog::create_note(
@@ -1576,8 +1577,8 @@ impl EditorScreen {
             AppMessage::FocusSidebar => {
                 self.focus_sidebar(tx);
             }
-            AppMessage::FollowLink(target) => {
-                self.follow_link(target, tx).await;
+            AppMessage::FollowLink { target, kind } => {
+                self.follow_link(target, kind, tx).await;
             }
             AppMessage::FollowLabel(name) => {
                 let initial = format!("#{name}");
@@ -1886,8 +1887,8 @@ impl EditorScreen {
             return false;
         };
         match editor.follow_target_at_cursor() {
-            Some(FollowTarget::Link(target)) => {
-                tx.send(AppMessage::FollowLink(target)).ok();
+            Some(FollowTarget::Link { target, kind }) => {
+                tx.send(AppMessage::FollowLink { target, kind }).ok();
                 true
             }
             Some(FollowTarget::Label(name)) => {
@@ -4630,11 +4631,14 @@ mod tests {
         let followed = crate::test_support::drain(&mut rx)
             .into_iter()
             .find_map(|ev| match ev {
-                AppMessage::FollowLink(target) => Some(target),
+                AppMessage::FollowLink { target, kind } => Some((target, kind)),
                 _ => None,
             })
             .expect("the double-click emitted no FollowLink");
-        assert_eq!(followed, "target note");
+        assert_eq!(
+            followed,
+            ("target note".to_string(), LinkSpanKind::WikiLink)
+        );
     }
 
     /// The first press only places the cursor. Following on a single click is
@@ -4656,7 +4660,7 @@ mod tests {
         assert!(
             !crate::test_support::drain(&mut rx)
                 .into_iter()
-                .any(|ev| matches!(ev, AppMessage::FollowLink(_))),
+                .any(|ev| matches!(ev, AppMessage::FollowLink { .. })),
             "one click is a cursor placement, not a navigation"
         );
         assert!(

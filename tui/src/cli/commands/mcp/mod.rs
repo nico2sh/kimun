@@ -25,6 +25,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::cli::json_output::JsonProperties;
+use crate::logic::views::outgoing_entries;
 
 // ---------------------------------------------------------------------------
 // Parameter structs
@@ -600,13 +601,13 @@ impl KimunHandler {
         )]))
     }
 
-    #[tool(description = "Return the list of notes that this note links to (outgoing wikilinks).")]
+    #[tool(
+        description = "Return the list of notes that this note links to (wikilinks and markdown links, each resolved: every note a shared wikilink name matches; a link to no note lists the path it would create)."
+    )]
     async fn get_outlinks(
         &self,
         Parameters(p): Parameters<OutlinksParams>,
     ) -> Result<CallToolResult, McpError> {
-        use kimun_core::note::{LinkType, NoteDetails};
-
         let vault_path = Self::resolve_path(&p.path);
 
         let md_note = match self.vault.get_markdown_and_links(&vault_path).await {
@@ -614,39 +615,27 @@ impl KimunHandler {
             Err(e) => return vault_err(e),
         };
 
-        let note_links: Vec<_> = md_note
-            .links
-            .into_iter()
-            .filter_map(|link| {
-                if let LinkType::Note(path) = link.ltype {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if note_links.is_empty() {
+        // Each link resolved by its form, like LINKS Outgoing: a wikilink
+        // name finds its note in any folder (every candidate when several
+        // share it), a markdown link is an exact path.
+        let entries = outgoing_entries(&self.vault, md_note.links).await;
+        if entries.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No outlinks found.",
             )]));
         }
 
-        let mut lines: Vec<String> = Vec::new();
-        for path in note_links {
-            let title = match self.vault.get_note_text(&path).await {
-                Ok(text) => {
-                    let t = NoteDetails::get_title_from_text(&text);
-                    if t.is_empty() {
-                        path.get_clean_name()
-                    } else {
-                        t
-                    }
-                }
-                Err(_) => path.get_clean_name(),
-            };
-            lines.push(format!("{} — {}", path, title));
-        }
+        let lines: Vec<String> = entries
+            .into_iter()
+            .map(|entry| {
+                let title = if entry.title.is_empty() {
+                    entry.path.get_clean_name()
+                } else {
+                    entry.title
+                };
+                format!("{} — {}", entry.path, title)
+            })
+            .collect();
 
         Ok(CallToolResult::success(vec![Content::text(
             lines.join("\n"),
@@ -1600,6 +1589,53 @@ mod tests {
             result_text(&result).contains("target"),
             "expected 'target' in outlinks: {}",
             result_text(&result)
+        );
+    }
+
+    /// Each outlink is resolved by its form: a name finds its note in any
+    /// folder (with its title), a shared name lists every candidate, a
+    /// markdown path is exact (a missing one is listed by its path).
+    #[tokio::test]
+    async fn test_get_outlinks_resolves_each_link_by_its_form() {
+        let (handler, _dir) = make_handler().await;
+        for (path, content) in [
+            ("work/target", "# Work Target\n\nbody"),
+            ("dup", "# Dup Root"),
+            ("work/dup", "# Dup Work"),
+            (
+                "journal/source",
+                "[[target]] [[dup]] [x](dup.md) [y](../work/dup.md)",
+            ),
+        ] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: path.to_string(),
+                    content: content.to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+        let result = handler
+            .get_outlinks(Parameters(OutlinksParams {
+                path: "journal/source".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "{}", result_text(&result));
+        let text = match &result.content[0].raw {
+            RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        let mut lines: Vec<String> = text.lines().map(String::from).collect();
+        lines.sort();
+        assert_eq!(
+            lines,
+            [
+                "/dup.md — Dup Root",
+                "/journal/dup.md — dup",
+                "/work/dup.md — Dup Work",
+                "/work/target.md — Work Target",
+            ]
         );
     }
 

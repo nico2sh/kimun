@@ -633,15 +633,27 @@ fn test_search_terms_query_links_long_form() {
 #[test]
 fn test_search_terms_query_links_path_qualified() {
     let (sql, params) = build_search_sql_query("<work/projects");
-    assert_eq!(params, vec!["work/projects.md".to_string()]);
-    // Path-qualified anchors to the full path (relative or absolute) via
-    // indexed equality on `destination`, not the bare-name column.
-    assert!(
-        sql.contains("destination = ?1 OR destination = ('/' || ?1)"),
-        "expected path-anchored equality: {}",
-        sql
+    // A suffix: pre-filtered on the indexed name, then compared slice-wise.
+    assert_eq!(
+        params,
+        vec!["projects.md".to_string(), "work/projects.md".to_string()]
     );
-    assert!(!sql.contains("dest_name"));
+    assert!(sql.contains("dest_name = ?1 AND"), "{sql}");
+    assert!(
+        sql.contains("substr(destination, -length(?2) - 1)"),
+        "{sql}"
+    );
+}
+
+#[test]
+fn test_search_terms_query_links_absolute() {
+    let (sql, params) = build_search_sql_query("</work/projects");
+    assert_eq!(
+        params,
+        vec!["projects.md".to_string(), "/work/projects.md".to_string()]
+    );
+    assert!(sql.contains("dest_name = ?1 AND"), "{sql}");
+    assert!(sql.contains("links.destination = ?2"), "{sql}");
 }
 
 #[test]
@@ -765,14 +777,18 @@ async fn multiple_filename_terms_are_anded() {
 #[tokio::test]
 async fn link_search_follows_rename() {
     let (_tmp, db) = open_temp().await;
-    db.apply(added(vec![note("/a.md", "see [[target]]")]))
-        .await
-        .unwrap();
-    // Rename the linked-to note; links (destination + dest_name) must follow.
+    db.apply(added(vec![
+        note("/target.md", "t"),
+        note("/a.md", "see [[target]]"),
+    ]))
+    .await
+    .unwrap();
+    // Rename the linked-to note: the rename rewrites the backlink victim's
+    // text and hands it over, so its name row follows from the new text.
     db.rename_note(
         &VaultPath::note_path_from("/target.md"),
         &VaultPath::note_path_from("/renamed.md"),
-        &[],
+        &[note("/a.md", "see [[renamed]]")],
     )
     .await
     .unwrap();
@@ -2562,4 +2578,309 @@ async fn prop_sort_places_date_text_among_dates() {
             "/word.md"
         ]
     );
+}
+
+// ---- Link forms (adr/0051): `links.form`, canonical path destinations, the
+// one predicate shared by backlinks and the link filters.
+
+/// The SQL predicate and `NoteTarget::matches` answer the same case table.
+#[tokio::test]
+async fn link_predicate_agrees_with_note_target() {
+    use crate::note::link_target::tests::{case_target, MATCH_CASES};
+    let (_tmp, db) = open_temp().await;
+    let sql = format!(
+        "SELECT COUNT(*) FROM (SELECT ?1 AS destination, ?2 AS form) l WHERE {}",
+        link_points_at_sql("l", "?3")
+    );
+    for (spec, note_path, expected) in MATCH_CASES {
+        let target = case_target(spec);
+        let note_path = VaultPath::new(note_path);
+        let hits: i64 = sqlx::query_scalar(&sql)
+            .bind(target.path().to_string())
+            .bind(link_form(&target))
+            .bind(note_path.canonical().to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(hits == 1, *expected, "SQL: {spec} vs {note_path}");
+        assert_eq!(
+            target.matches(&note_path),
+            *expected,
+            "Rust: {spec} vs {note_path}"
+        );
+    }
+    db.close().await;
+}
+
+#[tokio::test]
+async fn link_rows_carry_their_form_and_canonical_paths() {
+    let (_tmp, db) = open_temp().await;
+    // A relative note path, as `save_note` callers pass it: path rows are
+    // still canonical.
+    db.apply(added(vec![note(
+        "journal/today.md",
+        "[[dup]] [[work/dup]] [[/work/dup]] [[../work/dup]] [x](dup.md) [y](../dup.md) \
+         ![[pic.png]] [[doc.pdf]]",
+    )]))
+    .await
+    .unwrap();
+    let row = |d: &str, n: &str, f: &str| (d.to_string(), n.to_string(), f.to_string());
+    assert_eq!(
+        db.links_of(&VaultPath::new("/journal/today.md")).await,
+        [
+            row("/dup.md", "dup.md", "path"),
+            row("/journal/dup.md", "dup.md", "path"),
+            row("/work/dup.md", "dup.md", "path"),
+            row("/work/dup.md", "dup.md", "path"),
+            row("dup.md", "dup.md", "name"),
+            row("work/dup.md", "dup.md", "name"),
+        ]
+    );
+    db.close().await;
+}
+
+/// The plan's before/after table (§8): from `/journal/today.md`, with
+/// `/dup.md`, `/work/dup.md` and `/a/work/dup.md` in the vault — one source
+/// note per written link, so each row is asserted on its own.
+#[tokio::test]
+async fn backlinks_follow_the_link_forms() {
+    let (_tmp, db) = open_temp().await;
+    // (link, backlink of /dup.md?, of /work/dup.md?, of /a/work/dup.md?)
+    let table: &[(&str, bool, bool, bool)] = &[
+        ("[[dup]]", true, true, true),
+        ("[[Dup#Goals]]", true, true, true),
+        ("![[dup^b]]", true, true, true),
+        ("[[work/dup]]", false, true, true),
+        ("[[a/work/dup]]", false, false, true),
+        ("[[/work/dup]]", false, true, false),
+        ("[[../work/dup]]", false, true, false),
+        ("[[WORK/DUP]]", false, true, true),
+        ("[x](dup.md)", false, false, false),
+        ("[x](../dup.md)", true, false, false),
+        ("[x](../work/dup.md#s)", false, true, false),
+        ("[x](work/dup.md)", false, false, false),
+        ("[x](/work/dup.md)", false, true, false),
+        ("![[pic.png]]", false, false, false),
+        ("![a](pic.png)", false, false, false),
+    ];
+    let mut notes = vec![
+        note("/dup.md", "root"),
+        note("/work/dup.md", "work"),
+        note("/a/work/dup.md", "deep"),
+    ];
+    let source = |i: usize| format!("/journal/l{i:02}.md");
+    for (i, (link, ..)) in table.iter().enumerate() {
+        notes.push(note(&source(i), link));
+    }
+    db.apply(added(notes)).await.unwrap();
+    for (target, column) in [("/dup.md", 0), ("/work/dup.md", 1), ("/a/work/dup.md", 2)] {
+        let got = paths(&db.get_backlinks(&VaultPath::new(target)).await.unwrap());
+        for (i, (link, root, work, deep)) in table.iter().enumerate() {
+            let expected = [*root, *work, *deep][column];
+            assert_eq!(
+                got.contains(&source(i)),
+                expected,
+                "{link} backlink of {target}? got {got:?}"
+            );
+        }
+    }
+    db.close().await;
+}
+
+/// A fixture for the `<`/`>` link filters: four `dup` notes and one source
+/// note per link form.
+async fn link_filter_fixture() -> (tempfile::TempDir, NoteIndex) {
+    let (tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/dup.md", "root"),
+        note("/work/dup.md", "work"),
+        note("/a/work/dup.md", "deep"),
+        note("/notwork/dup.md", "notwork"),
+        note("/s/bare.md", "[[dup]]"),
+        note("/s/suffix.md", "[[work/dup]]"),
+        note("/s/deep.md", "[[a/work/dup]]"),
+        note("/s/abs.md", "[[/work/dup]]"),
+        note("/s/mdpath.md", "[x](../notwork/dup.md)"),
+        note("/s/dangling.md", "[[ghost/zzz]]"),
+        note("/s/none.md", "nothing"),
+    ]))
+    .await
+    .unwrap();
+    (tmp, db)
+}
+
+#[tokio::test]
+async fn backlink_filter_reads_the_target_as_a_root_wikilink() {
+    let (_tmp, db) = link_filter_fixture().await;
+    let search = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    let s = |v: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = v.iter().map(|p| format!("/s/{p}.md")).collect();
+        v.sort();
+        v
+    };
+    // Bare: every row named `dup.md`.
+    assert_eq!(
+        search("<dup").await,
+        s(&["abs", "bare", "deep", "mdpath", "suffix"])
+    );
+    // Suffix: rows that can point at the same note (either suffix ends the
+    // other; a path ending with it).
+    assert_eq!(
+        search("<work/dup").await,
+        s(&["abs", "bare", "deep", "suffix"])
+    );
+    assert_eq!(search("<a/work/dup").await, s(&["bare", "deep", "suffix"]));
+    // Absolute: rows that point at exactly that note.
+    assert_eq!(search("</work/dup").await, s(&["abs", "bare", "suffix"]));
+    // Wildcards: bare on the name, a path as a suffix of the destination.
+    assert_eq!(
+        search("<du*").await,
+        s(&["abs", "bare", "deep", "mdpath", "suffix"])
+    );
+    assert_eq!(search("<work/d*").await, s(&["abs", "deep", "suffix"]));
+    // A dangling link still matches textually.
+    assert_eq!(search("<ghost/zzz").await, s(&["dangling"]));
+    assert_eq!(search("<zzz").await, s(&["dangling"]));
+    // Exclusion.
+    let excluded = search("-<work/dup").await;
+    assert!(
+        excluded.contains(&"/s/mdpath.md".to_string()),
+        "{excluded:?}"
+    );
+    assert!(excluded.contains(&"/s/none.md".to_string()), "{excluded:?}");
+    assert!(
+        !excluded.contains(&"/s/suffix.md".to_string()),
+        "{excluded:?}"
+    );
+    assert!(
+        !excluded.contains(&"/s/bare.md".to_string()),
+        "{excluded:?}"
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn forward_link_filter_resolves_each_link_by_its_form() {
+    let (_tmp, db) = link_filter_fixture().await;
+    let search = |q: &'static str| {
+        let db = &db;
+        async move { paths(&db.search(q).await.unwrap()) }
+    };
+    let all = vec![
+        "/a/work/dup.md".to_string(),
+        "/dup.md".to_string(),
+        "/notwork/dup.md".to_string(),
+        "/work/dup.md".to_string(),
+    ];
+    // An ambiguous name link forwards to every candidate.
+    assert_eq!(search(">bare").await, all);
+    // The source by suffix; its suffix link to both `*/work/dup.md`.
+    assert_eq!(
+        search(">s/suffix").await,
+        ["/a/work/dup.md".to_string(), "/work/dup.md".to_string()]
+    );
+    assert_eq!(search(">/s/abs").await, ["/work/dup.md".to_string()]);
+    assert_eq!(search(">deep").await, ["/a/work/dup.md".to_string()]);
+    assert_eq!(search(">mdpath").await, ["/notwork/dup.md".to_string()]);
+    assert_eq!(search(">s/bar*").await, all);
+    // A suffix that is not a whole-slice tail matches no source.
+    assert!(search(">uffix").await.is_empty());
+    assert!(search(">dangling").await.is_empty());
+    db.close().await;
+}
+
+/// The rename SQL retargets path rows and leaves name rows alone: no
+/// mass rewrite of every row that shares the old name.
+#[tokio::test]
+async fn rename_retargets_path_rows_and_leaves_name_rows() {
+    let (_tmp, db) = open_temp().await;
+    db.apply(added(vec![
+        note("/dup.md", "root"),
+        note("/work/dup.md", "work"),
+        note("/p.md", "[x](work/dup.md)"),
+        note("/n.md", "[[dup]]"),
+        note("/o.md", "[[other/dup]]"),
+    ]))
+    .await
+    .unwrap();
+    db.rename_note(
+        &VaultPath::new("/work/dup.md"),
+        &VaultPath::new("/work/dup2.md"),
+        &[],
+    )
+    .await
+    .unwrap();
+    let row = |d: &str, n: &str, f: &str| vec![(d.to_string(), n.to_string(), f.to_string())];
+    assert_eq!(
+        db.links_of(&VaultPath::new("/p.md")).await,
+        row("/work/dup2.md", "dup2.md", "path")
+    );
+    assert_eq!(
+        db.links_of(&VaultPath::new("/n.md")).await,
+        row("dup.md", "dup.md", "name")
+    );
+    assert_eq!(
+        db.links_of(&VaultPath::new("/o.md")).await,
+        row("other/dup.md", "dup.md", "name")
+    );
+    // `[[dup]]` still points at the remaining `/dup.md`.
+    assert_eq!(
+        paths(&db.get_backlinks(&VaultPath::new("/dup.md")).await.unwrap()),
+        ["/n.md".to_string()]
+    );
+    db.close().await;
+}
+
+/// An 0.18 index (links without `form`) self-heals on open: the tables
+/// are rebuilt at 0.19 and the next sync refills them with forms.
+#[tokio::test]
+async fn an_0_18_index_self_heals_with_link_forms() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = file::IndexFile::at(crate::system::sys(tmp.path().join("kimun.sqlite")));
+    let db = NoteIndex::open(&file).await.unwrap();
+    // One connection: the schema change and the row it allows must be seen
+    // by the same connection.
+    let mut conn = db.pool().acquire().await.unwrap();
+    for sql in [
+        "UPDATE appData SET value = '0.18' WHERE name = 'version'",
+        "ALTER TABLE links DROP COLUMN form",
+        "INSERT INTO links (source, destination, dest_name) \
+         VALUES ('/a.md', 'work/dup.md', 'dup.md')",
+    ] {
+        sqlx::query(sql).execute(&mut *conn).await.unwrap();
+    }
+    drop(conn);
+    db.close().await;
+
+    let db = NoteIndex::open(&file).await.unwrap();
+    assert!(
+        !db.ready(),
+        "version mismatch must self-heal and await a resync"
+    );
+    let version: String = sqlx::query_scalar("SELECT value FROM appData WHERE name = 'version'")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(version, VERSION);
+    assert_eq!(VERSION, "0.19");
+    let stale: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(stale, 0, "the old rows are dropped");
+    db.apply(added(vec![note("/a.md", "[[work/dup]]")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.links_of(&VaultPath::new("/a.md")).await,
+        [(
+            "work/dup.md".to_string(),
+            "dup.md".to_string(),
+            "name".to_string()
+        )]
+    );
+    db.close().await;
 }
