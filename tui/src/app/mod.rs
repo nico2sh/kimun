@@ -27,7 +27,7 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::events::InputEvent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, FileOp, ScreenEvent, UpdateFlow};
+use crate::logic::message::{AppMessage, AppTx, FileOp, ScreenEvent, UpdateFlow};
 use crate::settings::{AppSettings, SharedSettings};
 use clap::Parser;
 use color_eyre::Result;
@@ -681,12 +681,10 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
             // route it like any other note via OpenPath so it works from every
             // screen — the current screen opens it inline or the loop switches
             // to the editor.
-            if let Some(vault) = app.vault.clone()
-                && let Ok((details, _, created)) = vault.journal_entry().await
-            {
-                // Notify the current screen's sidebar when freshly created, then
-                // open it — works from every screen via OpenPath.
-                tx.announce_and_open(details.path, created);
+            // Notify the current screen's sidebar when freshly created, then
+            // open it — works from every screen via OpenPath.
+            if let Some(vault) = app.vault.clone() {
+                crate::logic::file_ops::open_journal(&vault, tx).await;
             }
         }
         AppMessage::PreferencesSaved | AppMessage::OnboardingFinished => {

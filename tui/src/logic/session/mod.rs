@@ -774,6 +774,15 @@ impl NoteSession {
 
     // ---- Changes on disk ---------------------------------------------------
 
+    /// Whether a delete / move / rename of `from` touches what is open: `from`
+    /// is the open path itself (`is_like`) or a directory holding it. The GUI
+    /// flushes before such an op and retargets or discards after it (module
+    /// docs, hazards). The TUI keeps its `is_like`-only checks
+    /// ([`Self::begin_rename`], [`Self::begin_remove`]).
+    pub fn affects_open_note(&self, from: &VaultPath) -> bool {
+        from.is_like(&self.path) || from.is_ancestor_of(&self.path)
+    }
+
     /// A note was renamed `from` → `to`. When it is the open note, abort the
     /// background save still targeting the old path (it bakes the path in,
     /// and `save_note` writes unconditionally: it would recreate the old

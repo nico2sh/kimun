@@ -15,7 +15,8 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
-use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -85,17 +86,11 @@ impl RenameDialog {
         let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
-            let parent = path.get_parent_path().0;
-            let candidate = if path.is_note() {
-                parent.append(&VaultPath::note_path_from(&input))
-            } else {
-                parent.append(&VaultPath::new(&input))
-            };
-            let exists = vault.exists(&candidate).await;
-            // `true` means the name is *available* (does not exist yet).
+            let candidate = file_ops::rename_candidate(&path, &input);
+            let available = file_ops::availability(&vault, &candidate).await.is_free();
             tx_clone
                 .send(AppMessage::OverlayData(OverlayData::RenameValidation {
-                    available: !exists,
+                    available,
                 }))
                 .ok();
         });
@@ -124,34 +119,17 @@ impl RenameDialog {
             InputOutcome::Submit => {
                 if self.validation_state == ValidationState::Available {
                     let from = self.path.clone();
-                    let parent = from.get_parent_path().0;
-                    let new_name = self.input.value();
-                    let new_path = if from.is_note() {
-                        parent.append(&VaultPath::note_path_from(new_name))
-                    } else {
-                        parent.append(&VaultPath::new(new_name))
-                    };
+                    let new_path = file_ops::rename_candidate(&from, self.input.value());
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
                         // Core classifies the entry and routes to the right
                         // rename (note / directory / attachment).
-                        let result = vault.rename_entry(&from, &new_path).await;
-                        match result {
-                            Ok(()) => {
-                                tx2.send(AppMessage::FileOp(FileOp::Renamed {
-                                    from,
-                                    to: new_path,
-                                }))
-                                .ok();
-                            }
-                            Err(e) => {
-                                tx2.send(AppMessage::OverlayData(OverlayData::Error(
-                                    e.to_string(),
-                                )))
-                                .ok();
-                            }
-                        }
+                        let msg = match file_ops::rename(&vault, &from, &new_path).await {
+                            Ok(op) => AppMessage::FileOp(op),
+                            Err(e) => AppMessage::OverlayData(OverlayData::Error(e)),
+                        };
+                        tx2.send(msg).ok();
                     });
                 }
                 EventState::Consumed

@@ -14,12 +14,13 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::keys::leader::LeaderAction;
 use kimun_notes::logic::layout::{Panel, Region, Side};
 use kimun_notes::logic::leader_route::{
-    self, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
+    self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
 };
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::overlay_open::OverlayOpen;
 
 use super::Workspace;
+use super::file_dialogs::FileOpKind;
 use crate::shell_layout::{self, RAIL_VIEWS};
 
 /// Why a command cannot run here yet: no surface in the desktop app.
@@ -107,8 +108,14 @@ impl Workspace {
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex) => Some(NO_WORKSPACE),
             LeaderRoute::Soon(_) => Some(SOON),
-            // Leader `p`: the palette is the window's one modal so far.
+            // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
+            // `+note` rename / move / delete of the open note (the route is
+            // `NoNoteOpen` when there is none).
+            LeaderRoute::NoteDialog(
+                NoteDialog::Rename | NoteDialog::Move | NoteDialog::Delete,
+                _,
+            ) if has_vault => None,
             LeaderRoute::Overlay(_)
             | LeaderRoute::FindWithQuery(_)
             | LeaderRoute::OpenJournal
@@ -167,6 +174,16 @@ impl Workspace {
             LeaderRoute::Job(job) => self.run_leader_job(job, cx),
             LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
+            LeaderRoute::NoteDialog(dialog, path) => {
+                let kind = match dialog {
+                    NoteDialog::Rename => FileOpKind::Rename,
+                    NoteDialog::Move => FileOpKind::Move,
+                    NoteDialog::Delete => FileOpKind::Delete,
+                    // Blocked here (no properties dialog until M7).
+                    NoteDialog::Properties => return,
+                };
+                self.open_file_dialog(kind, path, window, cx);
+            }
             // Blocked here (see `route_block`).
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
@@ -175,7 +192,6 @@ impl Workspace {
             | LeaderRoute::OpenJournal
             | LeaderRoute::OpenPreferences
             | LeaderRoute::OpenOnboarding
-            | LeaderRoute::NoteDialog(..)
             | LeaderRoute::GitStatus
             | LeaderRoute::Ask(_)
             | LeaderRoute::Soon(_) => {}

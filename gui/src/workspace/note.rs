@@ -105,7 +105,7 @@ pub(crate) enum Closing {
 }
 
 /// Why a flush wrote nothing, for a flash; `None` when it did its job.
-fn flush_problem(outcome: &SaveOutcome) -> Option<String> {
+pub(super) fn flush_problem(outcome: &SaveOutcome) -> Option<String> {
     match outcome {
         SaveOutcome::Saved(_) | SaveOutcome::Clean => None,
         SaveOutcome::Failed(e) => Some(e.clone()),
@@ -127,7 +127,7 @@ impl Workspace {
         !self.status.read_only && self.notes.as_ref().is_some_and(|h| h.note.is_some())
     }
 
-    fn editor_dirty(&self, cx: &App) -> bool {
+    pub(super) fn editor_dirty(&self, cx: &App) -> bool {
         self.editor.read(cx).editor.is_dirty()
     }
 
@@ -157,13 +157,13 @@ impl Workspace {
 
     /// Keep the editor from taking input while an open is pending: the keys
     /// would be lost when the new note loads, so they are not taken at all.
-    fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
+    pub(super) fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
         self.editor
             .update(cx, |view, _| view.input_blocked = blocked);
     }
 
     /// Why the edits in the editor cannot be written, for a flash.
-    fn unsaveable(&self) -> String {
+    pub(super) fn unsaveable(&self) -> String {
         match self.notes.as_ref().and_then(|h| h.note.as_ref()) {
             Some(note) if self.status.read_only => {
                 format!("Read-only: your edits to {note} can't be saved.")
@@ -186,13 +186,15 @@ impl Workspace {
             return;
         };
         host.wanted = Some(path);
-        if !host.is_switching() {
+        // A file operation holds the open note (flushed, its tick stopped):
+        // the open waits for it to end ([`Self::file_op_ended`]).
+        if !host.is_switching() && self.file_task.is_none() {
             self.switch(cx);
         }
     }
 
     /// Start the switch to the wanted note: flush the open one first.
-    fn switch(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn switch(&mut self, cx: &mut Context<Self>) {
         let can_save = self.can_save();
         let dirty = self.editor_dirty(cx);
         let Some(host) = self.notes.as_mut() else {
@@ -231,7 +233,7 @@ impl Workspace {
     }
 
     /// Apply a finished flush to the session and the buffer.
-    fn apply_flush(
+    pub(super) fn apply_flush(
         &mut self,
         result: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
@@ -356,6 +358,7 @@ impl Workspace {
                 }
                 host.note = Some(path.clone());
                 host.meta.load_note_counts(&path, &tx);
+                self.note_gone = None;
                 self.status.note = Some(path.clone());
                 self.files_note_opened(&path, cx);
             }
@@ -392,7 +395,9 @@ impl Workspace {
 
     /// The periodic tick: write the open note in the background if dirty.
     pub(crate) fn autosave(&mut self, cx: &mut Context<Self>) {
-        if !self.can_save() {
+        // Never while a file operation holds the note: it was flushed, and the
+        // path the save would bake in may be renamed or deleted under it.
+        if !self.can_save() || self.file_task.is_some() {
             return;
         }
         let Some(tx) = self.tx.clone() else {
@@ -417,7 +422,7 @@ impl Workspace {
             self.flash_error(text, cx);
             return;
         }
-        if !self.editor_dirty(cx) {
+        if !self.editor_dirty(cx) || self.file_task.is_some() {
             return;
         }
         let Some(tx) = self.tx.clone() else {
@@ -588,7 +593,7 @@ impl Workspace {
         }
     }
 
-    fn restart_tick(&mut self) {
+    pub(super) fn restart_tick(&mut self) {
         if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
             host.session.restart_autosave(tx);
         }

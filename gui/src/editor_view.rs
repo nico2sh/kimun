@@ -99,6 +99,8 @@ enum AppCommand {
 pub enum EditorEvent {
     /// Vim `:` — open the command palette.
     OpenPalette,
+    /// A right-press with no selection — open the note menu.
+    ContextMenu,
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -291,8 +293,10 @@ impl EditorView {
                 EditorRequest::SearchPrev => self.editor.search_repeat(true),
                 // Vim `:` opens the command palette, which the window owns.
                 EditorRequest::OpenPalette => cx.emit(EditorEvent::OpenPalette),
-                // Right-click with no selection opens the note menu: M6.
-                EditorRequest::ContextMenu => {}
+                // Right-click with no selection opens the note menu, which
+                // the window owns. With a selection the editor copies it and
+                // asks for nothing.
+                EditorRequest::ContextMenu => cx.emit(EditorEvent::ContextMenu),
                 // Nothing (no popup) is anchored to the cursor to move yet.
                 EditorRequest::ViewportScrolled => {}
             }

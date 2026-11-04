@@ -47,22 +47,9 @@ pub(crate) fn spawn_property_keys(vault: Arc<NoteVault>, tx: &AppTx) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// ValidationState — shared by RenameDialog and MoveDialog
-// ---------------------------------------------------------------------------
-
-/// Tracks the current state of an async name / destination availability check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidationState {
-    /// No check has been triggered yet (initial state).
-    Idle,
-    /// A check is in progress.
-    Pending,
-    /// The name / destination is available (does not already exist).
-    Available,
-    /// The name / destination is already taken.
-    Taken,
-}
+// `ValidationState` — shared by RenameDialog and MoveDialog — lives in the
+// Logic layer so the GUI's dialogs show the same states.
+pub use crate::logic::file_ops::ValidationState;
 
 /// `Dialog` for a dialog whose `handle_key` / `handle_mouse` / `render(.., focused)`
 /// are the plain forwarders; `, error` also routes `set_error` to its `error` field.

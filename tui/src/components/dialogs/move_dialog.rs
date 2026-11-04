@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use nucleo::Utf32String;
-use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -18,7 +16,8 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
-use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -107,15 +106,9 @@ impl MoveDialog {
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
         let handle = tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                vault.get_directories(&VaultPath::root(), true)
-            })
-            .await;
-            if let Ok(Ok(dirs)) = result {
-                let mut paths: Vec<VaultPath> = std::iter::once(VaultPath::root())
-                    .chain(dirs.into_iter().map(|d| d.path))
-                    .collect();
-                paths.sort();
+            let result =
+                tokio::task::spawn_blocking(move || file_ops::list_directories(&vault)).await;
+            if let Ok(Ok(paths)) = result {
                 tx_clone
                     .send(AppMessage::OverlayData(OverlayData::MoveDirectoriesLoaded(
                         paths,
@@ -148,29 +141,15 @@ impl MoveDialog {
         }
 
         let query = self.search_query.value().to_string();
-        let items: Vec<String> = self.all_dirs.iter().map(|p| p.to_string()).collect();
+        let dirs = self.all_dirs.clone();
         let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
-            let matched_strs = tokio::task::spawn_blocking(move || {
-                let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
-                let pattern = Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart);
-                let mut matched: Vec<(u32, String)> = items
-                    .into_iter()
-                    .filter_map(|item| {
-                        let haystack = Utf32String::from(item.as_str());
-                        pattern
-                            .score(haystack.slice(..), &mut matcher)
-                            .map(|score| (score, item))
-                    })
-                    .collect();
-                matched.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-                matched.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
+            let paths =
+                tokio::task::spawn_blocking(move || file_ops::filter_directories(&dirs, &query))
+                    .await
+                    .unwrap_or_default();
 
-            let paths = matched_strs.iter().map(VaultPath::new).collect();
             tx_clone
                 .send(AppMessage::OverlayData(OverlayData::MoveFilterResults(
                     paths,
@@ -207,16 +186,11 @@ impl MoveDialog {
         let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
-            let filename = from.get_parent_path().1;
-            let candidate = if from.is_note() {
-                dest_dir.append(&VaultPath::note_path_from(&filename))
-            } else {
-                dest_dir.append(&VaultPath::new(&filename))
-            };
-            let exists = vault.exists(&candidate).await;
+            let candidate = file_ops::move_candidate(&from, &dest_dir);
+            let available = file_ops::availability(&vault, &candidate).await.is_free();
             tx_clone
                 .send(AppMessage::OverlayData(OverlayData::MoveDestValidation {
-                    available: !exists,
+                    available,
                 }))
                 .ok();
         });
@@ -298,32 +272,18 @@ impl MoveDialog {
                     && selected_idx < self.results().len()
                 {
                     let from = self.path.clone();
-                    let dest_dir = self.results()[selected_idx].clone();
-                    let filename = from.get_parent_path().1;
-                    let new_path = if from.is_note() {
-                        dest_dir.append(&VaultPath::note_path_from(&filename))
-                    } else {
-                        dest_dir.append(&VaultPath::new(&filename))
-                    };
+                    let new_path = file_ops::move_candidate(&from, &self.results()[selected_idx]);
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
                         // A move is a cross-directory rename; core classifies the
                         // entry and routes to the right rename (note / directory
                         // / attachment).
-                        let result = vault.rename_entry(&from, &new_path).await;
-                        match result {
-                            Ok(()) => {
-                                tx2.send(AppMessage::FileOp(FileOp::Moved { from, to: new_path }))
-                                    .ok();
-                            }
-                            Err(e) => {
-                                tx2.send(AppMessage::OverlayData(OverlayData::Error(
-                                    e.to_string(),
-                                )))
-                                .ok();
-                            }
-                        }
+                        let msg = match file_ops::move_entry(&vault, &from, &new_path).await {
+                            Ok(op) => AppMessage::FileOp(op),
+                            Err(e) => AppMessage::OverlayData(OverlayData::Error(e)),
+                        };
+                        tx2.send(msg).ok();
                     });
                 }
                 EventState::Consumed

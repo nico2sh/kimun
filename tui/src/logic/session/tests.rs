@@ -771,3 +771,23 @@ async fn the_run_futures_are_send_and_static() {
     let kind = classify_open(f.vault.clone(), VaultPath::new("n.md"));
     assert_send_static(&kind);
 }
+
+#[tokio::test]
+async fn affects_open_note_covers_the_note_and_every_directory_holding_it() {
+    let mut f = fixture("session-affects").await;
+    f.session.set_path(VaultPath::new("/Work/Projects/plan.md"));
+    let s = &f.session;
+    // The open note itself, relative or absolute, any case.
+    assert!(s.affects_open_note(&VaultPath::new("work/projects/plan.md")));
+    assert!(s.affects_open_note(&VaultPath::new("/WORK/Projects/Plan.md")));
+    // Every ancestor directory, the root included.
+    assert!(s.affects_open_note(&VaultPath::new("work/projects")));
+    assert!(s.affects_open_note(&VaultPath::new("/work")));
+    assert!(s.affects_open_note(&VaultPath::root()));
+    // Unrelated siblings, including name-prefix look-alikes.
+    assert!(!s.affects_open_note(&VaultPath::new("work/projects/other.md")));
+    assert!(!s.affects_open_note(&VaultPath::new("work/proj")));
+    assert!(!s.affects_open_note(&VaultPath::new("work/projects2")));
+    assert!(!s.affects_open_note(&VaultPath::new("work/projects/plan.md/x")));
+    assert!(!s.affects_open_note(&VaultPath::new("work/projects/plan")));
+}

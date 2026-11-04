@@ -10,9 +10,11 @@ pub mod list;
 
 pub mod doc_meta;
 pub mod editor;
+pub mod file_ops;
 pub mod files;
 pub mod follow;
 pub mod leader_route;
+pub mod pickers;
 
 pub mod message;
 pub mod nav;
