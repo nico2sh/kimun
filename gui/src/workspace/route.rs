@@ -113,14 +113,16 @@ impl Workspace {
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
             // Leader `f f` and `n d`: the finder, today's journal.
-            LeaderRoute::Overlay(OverlayOpen::FileFinder) | LeaderRoute::OpenJournal
+            // Leader `f f`, `f g` / `f r` and `n d`: the finder, the search
+            // browser, today's journal.
+            LeaderRoute::Overlay(OverlayOpen::FileFinder | OverlayOpen::SearchBrowser)
+            | LeaderRoute::OpenJournal
                 if has_vault =>
             {
                 None
             }
-            LeaderRoute::Overlay(OverlayOpen::FileFinder) | LeaderRoute::OpenJournal => {
-                Some(NO_WORKSPACE)
-            }
+            LeaderRoute::Overlay(OverlayOpen::FileFinder | OverlayOpen::SearchBrowser)
+            | LeaderRoute::OpenJournal => Some(NO_WORKSPACE),
             // `+note` rename / move / delete / properties of the open note
             // (the route is `NoNoteOpen` when there is none).
             LeaderRoute::NoteDialog(
@@ -185,6 +187,7 @@ impl Workspace {
             LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
             LeaderRoute::Overlay(OverlayOpen::FileFinder) => self.open_finder(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::SearchBrowser) => self.open_search(None, window, cx),
             LeaderRoute::OpenJournal => self.open_journal(window, cx),
             LeaderRoute::NoteDialog(dialog, path) => {
                 let kind = match dialog {

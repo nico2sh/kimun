@@ -18,7 +18,7 @@ pub use self::finder::{
 };
 pub use self::link_results::{LinkResultsProvider, filter_link_rows, link_rows};
 pub use self::open::{PickerOpen, picker_open};
-pub use self::search::resolving_search_source;
+pub use self::search::{resolving_search_source, resolving_search_source_with_create};
 pub use crate::logic::files::format_journal_date;
 
 #[cfg(test)]

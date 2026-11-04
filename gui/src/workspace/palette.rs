@@ -181,6 +181,7 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::AppQuit => Some(ActionShortcuts::Quit),
         LeaderAction::OpenDrawer(DrawerView::Files) => Some(ActionShortcuts::OpenFileBrowser),
         LeaderAction::FindFiles => Some(ActionShortcuts::OpenNote),
+        LeaderAction::FindGrep | LeaderAction::FindRecent => Some(ActionShortcuts::SearchNotes),
         LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
         _ => None,
     }

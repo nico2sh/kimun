@@ -138,6 +138,8 @@ fn default_tables() {
         vec![
             lw("ctrl+q", A::Quit),
             lw("ctrl+shift+q", A::Quit),
+            lw("ctrl+k", A::SearchNotes),
+            lw("ctrl+shift+k", A::SearchNotes),
             lw("ctrl+o", A::OpenNote),
             lw("ctrl+shift+o", A::OpenNote),
             lw("ctrl+j", A::NewJournal),
@@ -177,6 +179,7 @@ fn default_tables() {
         table(&Keymap::defaults(MacOs)),
         vec![
             lw("cmd+q", A::Quit),
+            lw("cmd+k", A::SearchNotes),
             lw("cmd+o", A::OpenNote),
             lw("cmd+j", A::NewJournal),
             lw("cmd+t", A::ToggleSidebar),
@@ -397,6 +400,25 @@ fn the_finder_journal_and_quick_note_chords_from_every_panel() {
     assert_eq!(lw.chord_for(&A::OpenNote), Some(chord("ctrl+o")));
     assert_eq!(lw.chord_for(&A::NewJournal), Some(chord("ctrl+j")));
     assert_eq!(lw.chord_for(&A::QuickNote), Some(chord("ctrl+shift+w")));
+}
+
+/// The search browser (Ctrl/Cmd+K, M7b G4) from every panel and under vim
+/// too: the vim engine reads no Ctrl+K. The bare Ctrl+K gets its Ctrl+Shift
+/// twin; macOS's Cmd+K has none.
+#[test]
+fn the_search_chord_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(lw.resolve(chord("ctrl+k"), at), Some(&A::SearchNotes));
+            assert_eq!(lw.resolve(chord("ctrl+shift+k"), at), Some(&A::SearchNotes));
+            assert_eq!(mac.resolve(chord("cmd+k"), at), Some(&A::SearchNotes));
+        }
+    }
+    assert_eq!(lw.chord_for(&A::SearchNotes), Some(chord("ctrl+k")));
+    assert_eq!(mac.chord_for(&A::SearchNotes), Some(chord("cmd+k")));
 }
 
 /// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim

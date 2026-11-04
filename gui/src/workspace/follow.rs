@@ -15,7 +15,8 @@
 //!   the vault shows it in the editor Panel ([`super::attachment`], M7a
 //!   G3); a URL (or a file outside the vault) goes to the system's default
 //!   program;
-//! - a label (`#tag`) says it arrives later.
+//! - a label (`#tag`) opens the search browser on that label
+//!   ([`super::search`], M7b G4).
 //!
 //! A newer follow replaces one still looking up.
 
@@ -60,9 +61,9 @@ impl Workspace {
         true
     }
 
-    /// A label (`#tag`): its query view is M7.
+    /// A label (`#tag`): the search browser on it.
     pub(crate) fn follow_label(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.flash(format!("#{name}: tag search arrives later"), cx);
+        self.search_label(name, cx);
     }
 
     /// Follow the link `target` of `kind`, from the open note: a wikilink

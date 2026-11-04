@@ -13,7 +13,9 @@
 //! keeps the old note open (its edits stay in the buffer) and says why. A
 //! note that is not there is offered for creation (the create dialog); one
 //! that would not read is flashed. Either way the editor stays on the note
-//! it had.
+//! it had. An open from a search (the search browser) carries the query's
+//! needles: once the note has loaded the editor emphasises them, until the
+//! first edit (the logic editor's rule).
 //!
 //! **Saving.** The periodic tick and the Save chord write in the background
 //! and report on the app channel; a failed write is flashed with core's
@@ -48,6 +50,11 @@ pub(crate) struct NoteHost {
     pub(crate) note: Option<VaultPath>,
     /// The note asked for, not yet being read.
     wanted: Option<VaultPath>,
+    /// The search needles the wanted note opens with (an open from a
+    /// search); replaced by every open.
+    wanted_emphasis: Option<Vec<String>>,
+    /// The needles of the note being read, applied once it has loaded.
+    reading_emphasis: Option<Vec<String>>,
     /// The switch under way (its flush, then its read). Dropped with the
     /// workspace; the tokio halves finish on their own.
     switching: Option<Task<()>>,
@@ -69,6 +76,8 @@ impl NoteHost {
             session,
             note: None,
             wanted: None,
+            wanted_emphasis: None,
+            reading_emphasis: None,
             switching: None,
             save_again: false,
             discard_expiry: None,
@@ -181,6 +190,17 @@ impl Workspace {
     /// it has loaded). A directory (the root, when the history is empty) or
     /// an attachment is not a note: nothing happens.
     pub(crate) fn open_note(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        self.open_note_with(path, None, cx);
+    }
+
+    /// [`Self::open_note`], the note's text then emphasising `emphasis` (the
+    /// search needles of the query it was found by) until the first edit.
+    pub(crate) fn open_note_with(
+        &mut self,
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+        cx: &mut Context<Self>,
+    ) {
         if !path.is_note() || matches!(self.closing, Closing::Requested | Closing::Flushing) {
             return;
         }
@@ -190,6 +210,7 @@ impl Workspace {
             return;
         };
         host.wanted = Some(path);
+        host.wanted_emphasis = emphasis;
         // A file operation or a property write holds the open note (flushed,
         // its tick stopped): the open waits for it to end
         // ([`Self::file_op_ended`]).
@@ -286,6 +307,7 @@ impl Workspace {
         host.switching = None;
         if let Some(problem) = outcome.as_ref().and_then(flush_problem) {
             host.wanted = None;
+            host.wanted_emphasis = None;
             let note = host.note.clone().unwrap_or_else(VaultPath::root);
             self.flash_error(
                 format!("Couldn't save {note}: {problem}. It stays open."),
@@ -296,6 +318,7 @@ impl Workspace {
         }
         if self.closing == Closing::Requested {
             host.wanted = None;
+            host.wanted_emphasis = None;
             self.close_flush(cx);
             return;
         }
@@ -309,6 +332,7 @@ impl Workspace {
         let Some(path) = host.wanted.take() else {
             return;
         };
+        host.reading_emphasis = host.wanted_emphasis.take();
         let read = host.session.begin_open(path);
         host.switching = Some(cx.spawn(async move |this, cx| {
             let read = tokio::spawn(read.run()).await;
@@ -333,6 +357,7 @@ impl Workspace {
             return;
         };
         host.switching = None;
+        let emphasis = host.reading_emphasis.take();
         let read = match read {
             Ok(read) => read,
             Err(e) => {
@@ -356,6 +381,10 @@ impl Workspace {
             if matches!(outcome, OpenOutcome::Opened(_)) {
                 // A composition in progress belonged to the old text.
                 view.preedit = None;
+                // After the load, so the new text's revision owns them.
+                if let Some(needles) = emphasis {
+                    view.editor.set_search_needles(needles);
+                }
             }
             cx.notify();
             outcome

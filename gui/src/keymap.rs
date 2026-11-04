@@ -207,9 +207,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // the editor keeps it. Where no list row is selected (the FILES
         // filter) the chord passes on and copies the field's text.
         A::YankRow => &["primary+c"],
+        // The search browser (M7b G4): the TUI's Ctrl+K. Everywhere; vim
+        // reads no Ctrl+K (it is not one of R, C, X, V), and it gets its
+        // twin.
+        A::SearchNotes => &["primary+k"],
         // Not in the GUI yet (M7 and later).
         A::OpenPreferences
-        | A::SearchNotes
         | A::OpenSortDialog
         | A::ToggleQueryPanel
         | A::OpenSavedSearches
