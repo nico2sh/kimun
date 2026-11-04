@@ -93,7 +93,8 @@ impl Scope {
             | ActionShortcuts::SplitDrawerSlot
             | ActionShortcuts::UnsplitDrawerSlot
             | ActionShortcuts::MoveViewUp
-            | ActionShortcuts::MoveViewDown => Scope::Shell,
+            | ActionShortcuts::MoveViewDown
+            | ActionShortcuts::YankRow => Scope::Shell,
             _ => Scope::Everywhere,
         }
     }
@@ -149,12 +150,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Show FILES on the open note's folder and focus it (the TUI's
         // Ctrl+E). Everywhere, as in the TUI.
         A::OpenFileBrowser => &["primary+e"],
-        // Follow the link under the caret (the TUI's Ctrl+N, and its kitty
-        // Ctrl+Enter, which a window always receives). Editor only. The vim
-        // engine reads neither Ctrl+N nor Ctrl+Enter; Ctrl+N still gets the
-        // Ctrl+Shift twin every bare Ctrl+letter gets. Never Shift+Enter: in
-        // the editor that is a plain newline.
-        A::FollowLink => &["primary+n", "primary+enter"],
+        // Follow the link under the caret: Ctrl+Enter (the TUI's kitty chord,
+        // which a window always receives). Editor only; the vim engine reads
+        // no Ctrl+Enter. The TUI's Ctrl+N is not a GUI default (a user can
+        // still bind it under `[gui.keys]`). Never Shift+Enter: in the editor
+        // that is a plain newline.
+        A::FollowLink => &["primary+enter"],
         // The right drawer's toggle: the left toggle plus Shift. It takes
         // the Ctrl+Shift+T that would be Ctrl+T's vim twin (no twin is made
         // for a chord another default holds); Ctrl+T needs none, as vim
@@ -191,14 +192,25 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The note menu (rename, move, delete) for the open note: the TUI's
         // F2. Everywhere, as the note is the window's.
         A::FileOperations => &["f2"],
-        // Not in the GUI yet (M6 and later).
+        // The note finder (M6 G4): the TUI's Ctrl+O, the desktop's "open".
+        // Everywhere; vim reads no Ctrl+O here, and it gets its twin.
+        A::OpenNote => &["primary+o"],
+        // Today's journal entry (M6 G4): the TUI's Ctrl+J. Everywhere; vim
+        // reads no Ctrl+J, and it gets its twin.
+        A::NewJournal => &["primary+j"],
+        // The quick note (M6 G4): the TUI's Ctrl+W plus Shift, because
+        // Cmd/Ctrl+W closes a tab or window on the desktop. Not a bare
+        // Ctrl+letter, so no twin; vim reads no Ctrl+Shift+W.
+        A::QuickNote => &["primary+shift+w"],
+        // Copy the selected drawer row (a note's path, a heading's text;
+        // M7a G1): the desktop's copy, only from the rail or a drawer, so
+        // the editor keeps it. Where no list row is selected (the FILES
+        // filter) the chord passes on and copies the field's text.
+        A::YankRow => &["primary+c"],
+        // Not in the GUI yet (M7 and later).
         A::OpenPreferences
         | A::SearchNotes
-        | A::OpenNote
-        | A::NewJournal
         | A::OpenSortDialog
-        | A::QuickNote
-        | A::YankRow
         | A::ToggleQueryPanel
         | A::OpenSavedSearches
         | A::SaveCurrentQuery

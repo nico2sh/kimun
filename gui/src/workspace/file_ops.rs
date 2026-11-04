@@ -118,16 +118,18 @@ impl Workspace {
     /// there is none.
     pub(crate) fn file_ops_chord(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.notes.as_ref().and_then(|h| h.note.clone()) {
-            Some(note) => self.open_file_ops_menu(note, window, cx),
+            Some(note) => self.open_file_ops_menu(note, false, window, cx),
             None => self.flash(NO_NOTE, cx),
         }
     }
 
-    /// Open the note menu for `target` in the modal slot. Refused while a
-    /// modal is open, and without a vault.
+    /// Open the note menu for `target` in the modal slot, with
+    /// `Properties…` first when `with_properties` (the editor's right-click).
+    /// Refused while a modal is open, and without a vault.
     pub(crate) fn open_file_ops_menu(
         &mut self,
         target: VaultPath,
+        with_properties: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -138,7 +140,7 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let title = name_of(&target);
-        let menu = cx.new(|cx| FileOpsMenu::new(target, workspace, theme, cx));
+        let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, theme, cx));
         let width = window.rem_size() * MENU_REMS;
         let first = Cell::new(true);
         self.modal = Some(ModalKind::FileOps);
@@ -188,6 +190,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if modal::dialog_open(window, cx) {
+            return;
+        }
+        // Not a file operation: the properties dialog has its own pipeline.
+        if kind == FileOpKind::Properties {
+            self.open_properties(target, window, cx);
             return;
         }
         let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
@@ -280,6 +287,8 @@ impl Workspace {
                         .child(body.clone())
                 });
             }
+            // Opened above.
+            FileOpKind::Properties => {}
         }
         cx.notify();
     }
@@ -315,6 +324,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.file_task.is_some() {
+            return;
+        }
+        // A property write (or the reload after it), or the flush before an
+        // attachment shows, holds the open note.
+        if self.note_held() {
+            let text = format!(
+                "Another change to the note is still being written. Nothing was {}.",
+                request.past()
+            );
+            self.set_file_status(false, Some(text), cx);
             return;
         }
         let dirty = self.editor_dirty(cx);
@@ -487,6 +506,7 @@ impl Workspace {
         self.file_dialog = None;
         self.file_status = None;
         self.files_file_op(&op, cx);
+        self.attachment_file_op(&op, cx);
         let open = self.notes.as_ref().and_then(|h| h.note.clone());
         let Some(open) = open.filter(|_| touched) else {
             self.refresh_note_counts();
@@ -571,6 +591,7 @@ impl Workspace {
                 self.status.note = Some(path.clone());
                 self.block_input(false, cx);
                 self.files_note_opened(&path, cx);
+                self.refresh_views(cx);
             }
             RenameOutcome::ReloadFailed { parent } => {
                 self.note_gone(
@@ -630,8 +651,10 @@ impl Workspace {
             }
             self.layout.focus_region(Region::Slot { side, index });
             self.apply_focus(window, cx);
-            self.store.save(&self.layout);
+            self.save_layout(cx);
         }
+        // LINKS and OUTLINE say "No note open".
+        self.refresh_views(cx);
         cx.notify();
     }
 
@@ -650,8 +673,14 @@ impl Workspace {
         }
     }
 
-    /// An operation ended: an open that waited for it goes now.
-    fn file_op_ended(&mut self, cx: &mut Context<Self>) {
+    /// An operation ended (a file operation, a property write, the reload
+    /// after it): an open that waited for it goes now, unless another one
+    /// still holds the note.
+    pub(super) fn file_op_ended(&mut self, cx: &mut Context<Self>) {
+        if self.note_held() {
+            cx.notify();
+            return;
+        }
         if let Some(host) = self.notes.as_ref()
             && host.is_open_wanted()
             && !host.is_switching()

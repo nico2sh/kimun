@@ -284,14 +284,38 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.primary = focus.into();
     kit.primary_foreground = background(theme).into();
     kit.ring = focus.into();
+    // A focused kit input gets a ring colour border; the kit's extra tinted ring around
+    // it reads as a doubled border. Keep the border only.
+    kit.focus_ring = false;
     kit.selection = selection_background(theme).into();
     kit.caret = caret(theme).into();
     kit.list_even = surface.into();
     kit.list_hover = hover.into();
     kit.list_active = selected_background(theme).into();
     kit.list_active_border = focus.into();
+    kit.secondary_hover = hover.into();
+    kit.secondary_active = selected_background(theme).into();
+    // Tabs (LINKS' segmented control): the bar sits on the panel, the segmented
+    // track is the soft background, the active segment the selected tint.
+    kit.tab_bar = surface.into();
+    kit.tab_bar_segmented = hover.into();
+    kit.tab_active = selected_background(theme).into();
+    kit.tab_foreground = muted(theme).into();
+    kit.tab_active_foreground = bright(theme).into();
     kit.danger = error(theme).into();
     kit.warning = unsaved(theme).into();
+    // The default Button (the attachment view's `Open externally`, the
+    // dialogs' Cancel): its fill, label, hover and press; its border is the
+    // `input` role above. Its fill is the panel surface, so on the editor's
+    // page it reads as a control, in a dialog as the dialog's own tone.
+    kit.button = surface.into();
+    kit.button_foreground = text.into();
+    kit.button_hover = hover.into();
+    kit.button_active = selected_background(theme).into();
+    // The kit Select (the properties form's Type) reads only roles mapped
+    // above: its trigger `input` / `background` / `foreground` / `ring`, its
+    // menu `popover` / `popover_foreground`, its rows `accent`, `list_hover`,
+    // `list_active`, `selection` and `muted_foreground`.
 }
 
 // ---- FILES rows --------------------------------------------------------------
@@ -482,6 +506,29 @@ mod tests {
             let kit = gpui_kit::component::Theme::global(cx);
             assert_eq!(kit.background, want);
             assert_eq!(kit.tokens.background.color, want);
+            // The tab bar follows too (it reads its own colours, not the page's).
+            assert_eq!(kit.tab_bar, want);
+            assert_eq!(kit.tokens.tab_bar.color, want);
+            assert_eq!(kit.tab_active_foreground, bright(&t).into());
+            // The Select (the properties form's Type): trigger, menu, rows.
+            let hsla = |c: Rgba| -> gpui_kit::Hsla { c.into() };
+            assert_eq!(kit.input, hsla(divider(&t)));
+            assert_eq!(kit.ring, hsla(focus_border(&t)));
+            assert_eq!(kit.popover, want);
+            assert_eq!(kit.popover_foreground, hsla(foreground(&t)));
+            assert_eq!(kit.accent, hsla(hover_background(&t)));
+            assert_eq!(kit.list_hover, hsla(hover_background(&t)));
+            assert_eq!(kit.list_active, hsla(selected_background(&t)));
+            assert_eq!(kit.selection, hsla(selection_background(&t)));
+            assert_eq!(kit.muted_foreground, hsla(muted(&t)));
+            // The default Button, through its tokens (what it paints with).
+            assert_eq!(kit.tokens.button.color, want);
+            assert_eq!(kit.button_foreground, hsla(foreground(&t)));
+            assert_eq!(kit.tokens.button_hover.color, hsla(hover_background(&t)));
+            assert_eq!(
+                kit.tokens.button_active.color,
+                hsla(selected_background(&t))
+            );
         });
     }
 

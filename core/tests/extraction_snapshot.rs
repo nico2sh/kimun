@@ -190,7 +190,7 @@ fn every_extractor_agrees_with_the_others() {
             links
                 .iter()
                 .filter_map(|l| match &l.ltype {
-                    LinkType::Note(p) => Some(p.to_string()),
+                    LinkType::Note(t) => Some(t.path().to_string()),
                     _ => None,
                 })
                 .collect()

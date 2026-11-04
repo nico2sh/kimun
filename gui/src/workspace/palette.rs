@@ -44,7 +44,7 @@ use kimun_notes::logic::palette::palette_rows;
 
 use super::Workspace;
 use super::modal::ModalKind;
-use super::route::{NEEDS_DRAWER_FOCUS, NEEDS_NOTE_FOCUS};
+use super::route::{NEEDS_DRAWER_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE};
 use crate::input;
 use crate::keymap;
 use crate::theme;
@@ -169,6 +169,8 @@ fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
         ("+text · find in note", A::FindInBuffer),
         ("+text · replace in note", A::ReplaceInBuffer),
         ("+links · follow link at caret", A::FollowLink),
+        ("+links · copy selected row", A::YankRow),
+        ("+note · quick note…", A::QuickNote),
     ]
 }
 
@@ -178,6 +180,8 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::NoteSave => Some(ActionShortcuts::SaveNote),
         LeaderAction::AppQuit => Some(ActionShortcuts::Quit),
         LeaderAction::OpenDrawer(DrawerView::Files) => Some(ActionShortcuts::OpenFileBrowser),
+        LeaderAction::FindFiles => Some(ActionShortcuts::OpenNote),
+        LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
         _ => None,
     }
 }
@@ -329,6 +333,8 @@ impl Workspace {
             A::SplitDrawerSlot | A::UnsplitDrawerSlot => {
                 (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_DRAWER_FOCUS)
             }
+            A::QuickNote => self.notes.is_none().then_some(NO_WORKSPACE),
+            A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
             _ => None,
         }
     }

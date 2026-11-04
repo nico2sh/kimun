@@ -700,6 +700,76 @@ impl VaultPath {
             && self.slices.len() < other.slices.len()
             && other.slices.starts_with(&self.slices)
     }
+
+    /// Whether `suffix`'s components are the tail of this path's, compared
+    /// slice by slice after [`flatten`]ing both — never as a string suffix, so
+    /// `work/dup.md` ends `/a/work/dup.md` but not `/notwork/dup.md`.
+    /// Components are lowercased on construction, so the comparison is
+    /// case-insensitive. An absolute `suffix` is anchored at the vault root:
+    /// it must be this whole path. An empty relative `suffix` ends every path.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let note = VaultPath::new("/a/work/dup.md");
+    /// assert!(note.ends_with(&VaultPath::new("work/dup.md")));
+    /// assert!(!VaultPath::new("/notwork/dup.md").ends_with(&VaultPath::new("work/dup.md")));
+    /// assert!(!note.ends_with(&VaultPath::new("/work/dup.md")));
+    /// ```
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    pub fn ends_with(&self, suffix: &VaultPath) -> bool {
+        let this = self.flatten();
+        let suffix = suffix.flatten();
+        if suffix.absolute {
+            this.slices == suffix.slices
+        } else {
+            this.slices.ends_with(&suffix.slices)
+        }
+    }
+
+    /// The last `n` components of this path, [`flatten`]ed, as a relative
+    /// path (all of them when it has fewer): the suffix a wikilink names a
+    /// note by.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let note = VaultPath::new("/a/work/dup.md");
+    /// assert_eq!(note.tail(2).to_string(), "work/dup.md");
+    /// assert_eq!(note.tail(9).to_string(), "a/work/dup.md");
+    /// ```
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    pub fn tail(&self, n: usize) -> VaultPath {
+        let slices = self.flatten().slices;
+        let skip = slices.len().saturating_sub(n);
+        VaultPath {
+            absolute: false,
+            slices: slices.into_iter().skip(skip).collect(),
+        }
+    }
+
+    /// Whether this path is written relative to where it appears: relative,
+    /// its first component `.` or `..` (`./dup.md`, `../x/dup.md`). Read
+    /// before [`flatten`]ing, which drops those components. Lets a link
+    /// reader tell a folder-relative path from a bare name without matching
+    /// on the separator.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert!(VaultPath::new("./dup.md").is_dot_relative());
+    /// assert!(VaultPath::new("../x/dup.md").is_dot_relative());
+    /// assert!(!VaultPath::new("work/dup.md").is_dot_relative());
+    /// assert!(!VaultPath::new("/work/dup.md").is_dot_relative());
+    /// ```
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    pub fn is_dot_relative(&self) -> bool {
+        !self.absolute
+            && matches!(
+                self.slices.first(),
+                Some(VaultPathSlice::Current | VaultPathSlice::Up)
+            )
+    }
 }
 
 impl Display for VaultPath {
@@ -1018,7 +1088,7 @@ mod tests {
     fn resolve_link_in_note_keeps_bare_name_for_name_lookup() {
         let note = VaultPath::new("/journal/2026-03-01.md");
         let target = VaultPath::note_path_from("anton.md");
-        // Bare name unchanged (relative, single slice) so open_or_search does a
+        // Bare name unchanged (relative, single slice) so a caller can do a
         // vault-wide name lookup rather than a directory-scoped path match.
         let resolved = target.resolve_link_in_note(&note);
         assert_eq!("anton.md", resolved.to_string());
@@ -1410,5 +1480,54 @@ mod tests {
         assert!(!VaultPath::new("a.md").is_ancestor_of(&VaultPath::new("a/n.md")));
         assert!(!VaultPath::new("a.md").is_ancestor_of(&VaultPath::new("a.md/n.md")));
         assert!(VaultPath::new("a").is_ancestor_of(&VaultPath::new("a/n.md")));
+    }
+
+    #[test]
+    fn ends_with_compares_whole_slices_from_the_tail() {
+        let p = VaultPath::new;
+        // Equal and tail.
+        assert!(p("/work/dup.md").ends_with(&p("work/dup.md")));
+        assert!(p("/a/work/dup.md").ends_with(&p("work/dup.md")));
+        assert!(p("/a/work/dup.md").ends_with(&p("dup.md")));
+        // Slice-wise, never a string suffix.
+        assert!(!p("/notwork/dup.md").ends_with(&p("work/dup.md")));
+        assert!(!p("/work/xdup.md").ends_with(&p("dup.md")));
+        // Longer than the path.
+        assert!(!p("/dup.md").ends_with(&p("work/dup.md")));
+        // Case-insensitive.
+        assert!(p("/Work/Dup.md").ends_with(&p("WORK/dup.md")));
+        // Relative path operand.
+        assert!(p("a/work/dup.md").ends_with(&p("work/dup.md")));
+    }
+
+    #[test]
+    fn ends_with_anchors_an_absolute_suffix_at_the_root() {
+        let p = VaultPath::new;
+        assert!(p("/work/dup.md").ends_with(&p("/work/dup.md")));
+        assert!(!p("/a/work/dup.md").ends_with(&p("/work/dup.md")));
+        // Root and empty.
+        assert!(VaultPath::root().ends_with(&VaultPath::root()));
+        assert!(p("/a.md").ends_with(&VaultPath::empty()));
+        assert!(!VaultPath::root().ends_with(&p("a.md")));
+    }
+
+    #[test]
+    fn ends_with_flattens_both_sides() {
+        let p = VaultPath::new;
+        assert!(p("/a/x/../work/dup.md").ends_with(&p("work/dup.md")));
+        assert!(p("/a/work/dup.md").ends_with(&p("work/./sub/../dup.md")));
+    }
+
+    #[test]
+    fn dot_relative_is_a_leading_current_or_parent() {
+        let p = VaultPath::new;
+        assert!(p("./dup.md").is_dot_relative());
+        assert!(p("../dup.md").is_dot_relative());
+        assert!(p("../../x/dup.md").is_dot_relative());
+        assert!(!p("dup.md").is_dot_relative());
+        assert!(!p("work/../dup.md").is_dot_relative());
+        assert!(!p("/../dup.md").is_dot_relative());
+        assert!(!VaultPath::empty().is_dot_relative());
+        assert!(!VaultPath::root().is_dot_relative());
     }
 }

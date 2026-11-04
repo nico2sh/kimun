@@ -20,6 +20,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::runtime::Runtime;
 
+use super::modal::ModalKind;
 use super::{EMPTY_STATE_ID, LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
@@ -60,6 +61,25 @@ impl Started {
 
     pub(super) fn indexing(&self, cx: &TestAppContext) -> bool {
         cx.read(|cx| self.workspace.read(cx).status.indexing)
+    }
+
+    /// The modal the window shows now (the kit's dialog layer agrees).
+    pub(super) fn shown_modal(&self, cx: &mut TestAppContext) -> Option<ModalKind> {
+        let workspace = self.workspace.clone();
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            workspace.update(cx, |w, cx| w.open_modal(window, cx))
+        })
+        .unwrap()
+    }
+
+    /// Let a closing dialog finish leaving: the kit gives the keyboard back
+    /// to its opener once its exit transition ends.
+    pub(super) fn settle_dialog(&self, cx: &mut TestAppContext) {
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
     }
 
     /// Whether the element `id` is in the last frame.
@@ -256,19 +276,20 @@ fn the_note_named_on_the_command_line_opens(cx: &mut TestAppContext) {
     assert_eq!(started.text(cx), "the argument's");
 }
 
+/// A note named on the command line that is not there: the create dialog
+/// offers it (M6 G4); nothing is made until it is confirmed.
 #[gpui_kit::test]
-fn a_missing_note_on_the_command_line_flashes_not_found(cx: &mut TestAppContext) {
+fn a_missing_note_on_the_command_line_offers_to_create_it(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let v = rt.block_on(test_vault(&[], &[]));
     let first = FirstNote::Note(VaultPath::new("missing.md"));
     let started = open_started(cx, vault_start(&v, first), v.settings.clone());
-    drive(&rt, cx, |cx| started.flash(cx).is_some());
-    let flash = started.flash(cx).unwrap();
-    assert!(
-        flash.contains("missing.md") && flash.contains("not found"),
-        "{flash}"
-    );
+    drive(&rt, cx, |cx| {
+        started.shown_modal(cx) == Some(ModalKind::CreateNote)
+    });
+    assert!(!rt.block_on(v.vault.exists(&VaultPath::new("missing.md"))));
+    started.settle_dialog(cx);
     assert_eq!(started.text(cx), "");
     assert!(started.shows(EMPTY_STATE_ID, cx));
     assert_eq!(started.placeholder(cx).as_deref(), Some("No note open"));

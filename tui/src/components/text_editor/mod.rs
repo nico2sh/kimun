@@ -1441,7 +1441,7 @@ impl Component for TextEditorComponent {
         // most relevant action.
         let mut hints: Vec<(String, String)> = Vec::new();
         match self.follow_target_at_cursor() {
-            Some(FollowTarget::Link(_)) => {
+            Some(FollowTarget::Link { .. }) => {
                 if let Some(k) = self
                     .key_bindings
                     .first_combo_for(&ActionShortcuts::FollowLink)

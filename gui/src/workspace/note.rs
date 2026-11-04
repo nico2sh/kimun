@@ -11,8 +11,9 @@
 //! read the new one and load it. An open asked for meanwhile replaces the
 //! wanted note and runs when the current switch ends. A flush that fails
 //! keeps the old note open (its edits stay in the buffer) and says why. A
-//! note that is not there, or would not read, is flashed and the editor
-//! stays on the note it had.
+//! note that is not there is offered for creation (the create dialog); one
+//! that would not read is flashed. Either way the editor stays on the note
+//! it had.
 //!
 //! **Saving.** The periodic tick and the Save chord write in the background
 //! and report on the app channel; a failed write is flashed with core's
@@ -176,19 +177,27 @@ impl Workspace {
     // ---- Opening -------------------------------------------------------------
 
     /// Open the note at `path` in the editor: save the open one, then read
-    /// and load this one. A directory (the root, when the history is empty)
-    /// or an attachment shows nothing until the FILES view (G3).
+    /// and load this one (the attachment view, if one shows, gives way once
+    /// it has loaded). A directory (the root, when the history is empty) or
+    /// an attachment is not a note: nothing happens.
     pub(crate) fn open_note(&mut self, path: VaultPath, cx: &mut Context<Self>) {
         if !path.is_note() || matches!(self.closing, Closing::Requested | Closing::Flushing) {
             return;
         }
+        // The newest request wins: an attachment still being read is dropped.
+        self.forget_attachment_request();
         let Some(host) = self.notes.as_mut() else {
             return;
         };
         host.wanted = Some(path);
-        // A file operation holds the open note (flushed, its tick stopped):
-        // the open waits for it to end ([`Self::file_op_ended`]).
-        if !host.is_switching() && self.file_task.is_none() {
+        // A file operation or a property write holds the open note (flushed,
+        // its tick stopped): the open waits for it to end
+        // ([`Self::file_op_ended`]).
+        let held = self.note_held();
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        if !host.is_switching() && !held {
             self.switch(cx);
         }
     }
@@ -361,13 +370,15 @@ impl Workspace {
                 self.note_gone = None;
                 self.status.note = Some(path.clone());
                 self.files_note_opened(&path, cx);
+                self.clear_attachment(cx);
             }
             // The editor still holds the note it had: point the session back
             // at it, so nothing is saved under the missing path.
+            // The create dialog offers to make it (the TUI's rule).
             OpenOutcome::NotFound(path) => {
                 host.session
                     .set_path(previous.unwrap_or_else(VaultPath::root));
-                self.flash_error(format!("{path} not found"), cx);
+                self.offer_create(path, cx);
             }
             OpenOutcome::ReadFailed { path, .. } => {
                 host.session
@@ -386,8 +397,10 @@ impl Workspace {
         } else if self.notes.as_ref().is_some_and(|h| h.wanted.is_some()) {
             self.switch(cx);
         }
-        // The first open settled (or failed): FILES may pick its folder.
+        // The first open settled (or failed): FILES may pick its folder;
+        // LINKS and OUTLINE follow the note while shown.
         self.ensure_files_listing(cx);
+        self.refresh_views(cx);
         cx.notify();
     }
 
@@ -397,7 +410,9 @@ impl Workspace {
     pub(crate) fn autosave(&mut self, cx: &mut Context<Self>) {
         // Never while a file operation holds the note: it was flushed, and the
         // path the save would bake in may be renamed or deleted under it.
-        if !self.can_save() || self.file_task.is_some() {
+        // Nor while a property write or its reload does: the buffer's
+        // frontmatter is about to be replaced by the disk's.
+        if !self.can_save() || self.note_held() {
             return;
         }
         let Some(tx) = self.tx.clone() else {
@@ -422,7 +437,7 @@ impl Workspace {
             self.flash_error(text, cx);
             return;
         }
-        if !self.editor_dirty(cx) || self.file_task.is_some() {
+        if !self.editor_dirty(cx) || self.note_held() {
             return;
         }
         let Some(tx) = self.tx.clone() else {
@@ -465,6 +480,10 @@ impl Workspace {
         if completion.wrote && matches!(self.closing, Closing::Discard(_)) {
             self.closing = Closing::Open;
         }
+        // OUTLINE follows the headings the open note was saved with.
+        if completion.wrote && completion.is_open_note && completion.error.is_none() {
+            self.outline_saved(cx);
+        }
         if let Some(error) = completion.error {
             self.flash_error(format!("Couldn't save {path}: {error}"), cx);
         } else if again {
@@ -475,7 +494,7 @@ impl Workspace {
     // ---- The Footer's counts ----------------------------------------------
 
     /// Re-read the open note's property count (it was saved).
-    fn refresh_note_properties(&mut self) {
+    pub(super) fn refresh_note_properties(&mut self) {
         if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref())
             && let Some(note) = host.note.clone()
         {

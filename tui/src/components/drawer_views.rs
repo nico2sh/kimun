@@ -1,18 +1,15 @@
 //! The drawer views: **TAGS**, **LINKS**, and **OUTLINE** — each a
 //! thin adapter (`ListPanelSpec` + a `RowSource`) of the shared
-//! [`QueryListPanel`] body, over core's vault API. Rebuilt on demand
+//! [`QueryListPanel`] body, over core's vault API. Rows, sources and the
+//! outline model live in `logic::views`; this module draws them. Rebuilt on demand
 //! (`refresh`) — the same engine-per-context pattern the sidebar uses per
 //! directory.
 
-use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use crate::logic::nav::{HeadingTarget, LinksTab};
-use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::LinkType;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -25,39 +22,19 @@ use crate::components::events::InputEvent;
 use crate::components::panel::panel_block;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
-use crate::components::search_list::{Emit, ListRow, RowSource, SearchRow, YankTarget};
+use crate::components::search_list::SearchRow;
 use crate::keys::key_combo::KeyCombo;
 use crate::logic::message::{AppMessage, AppTx, FileOp};
+use crate::logic::nav::{HeadingTarget, LinksTab};
+use crate::logic::views::{Changed, LinksSource, OutlineModel, TagSource};
+/// The rows moved to `logic::views`; re-exported so the old paths still work.
+pub use crate::logic::views::{LinkEntry, OutlineEntry, TagEntry};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
 // TAGS
 // ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct TagEntry {
-    pub label: String,
-    pub count: usize,
-}
-
-impl ListRow for TagEntry {
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.label)
-    }
-
-    fn yank_target(&self) -> Option<YankTarget> {
-        // With the `#` sigil, so the copied text is usable as-is in a note —
-        // unless the label can't be a hashtag (a frontmatter tag with spaces
-        // or dashes): then the label itself.
-        let text = if kimun_core::note::is_hashtag_label(&self.label) {
-            format!("#{}", self.label)
-        } else {
-            self.label.clone()
-        };
-        Some(YankTarget::new(text, "tag"))
-    }
-}
 
 impl SearchRow for TagEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
@@ -71,31 +48,6 @@ impl SearchRow for TagEntry {
 
     fn visual_height(&self) -> u16 {
         1
-    }
-}
-
-struct TagSource {
-    vault: Arc<NoteVault>,
-}
-
-#[async_trait]
-impl RowSource<TagEntry> for TagSource {
-    async fn load(&self, _query: &str, emit: Emit<TagEntry>) {
-        let mut rows: Vec<TagEntry> = self
-            .vault
-            .label_counts()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(label, count)| TagEntry { label, count })
-            .collect();
-        // Most-used first; ties alphabetical (counts come in alphabetical).
-        rows.sort_by_key(|r| std::cmp::Reverse(r.count));
-        emit.replace(rows);
-    }
-
-    fn reload_on_query(&self) -> bool {
-        false // load once; the local fuzzy filter narrows the set
     }
 }
 
@@ -131,12 +83,7 @@ impl TagsPanel {
 
     /// (Re)load the tag list. Called when the view is opened.
     pub fn refresh(&mut self, tx: &AppTx) {
-        self.body.set_source(
-            TagSource {
-                vault: self.vault.clone(),
-            },
-            tx,
-        );
+        self.body.set_source(TagSource::new(self.vault.clone()), tx);
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -156,35 +103,6 @@ impl TagsPanel {
 // LINKS
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-pub struct LinkEntry {
-    pub path: VaultPath,
-    pub title: String,
-    pub filename: String,
-}
-
-impl LinkEntry {
-    fn from_path(path: VaultPath) -> Self {
-        let title = path.get_clean_name();
-        let (_, filename) = path.get_parent_path();
-        Self {
-            path,
-            title,
-            filename,
-        }
-    }
-}
-
-impl ListRow for LinkEntry {
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.filename)
-    }
-
-    fn yank_target(&self) -> Option<YankTarget> {
-        Some(YankTarget::path(self.path.to_string()))
-    }
-}
-
 impl SearchRow for LinkEntry {
     fn to_list_item(&self, theme: &Theme, icons: &Icons, _selected: bool) -> ListItem<'static> {
         let title = if self.title.is_empty() {
@@ -199,101 +117,6 @@ impl SearchRow for LinkEntry {
 
     fn visual_height(&self) -> u16 {
         2
-    }
-}
-
-struct LinksSource {
-    vault: Arc<NoteVault>,
-    note: VaultPath,
-    tab: LinksTab,
-}
-
-#[async_trait]
-impl RowSource<LinkEntry> for LinksSource {
-    async fn load(&self, _query: &str, emit: Emit<LinkEntry>) {
-        if self.note.is_root_or_empty() {
-            emit.replace(Vec::new());
-            return;
-        }
-        let entries = match self.tab {
-            LinksTab::Backlinks => self
-                .vault
-                .get_backlinks(&self.note)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(entry, content)| {
-                    let (_, filename) = entry.path.get_parent_path();
-                    LinkEntry {
-                        path: entry.path,
-                        title: content.title,
-                        filename,
-                    }
-                })
-                .collect(),
-            LinksTab::Outgoing => {
-                let links = self
-                    .vault
-                    .get_markdown_and_links(&self.note)
-                    .await
-                    .map(|md| md.links)
-                    .unwrap_or_default();
-                let mut seen = HashSet::new();
-                links
-                    .into_iter()
-                    .filter_map(|link| match link.ltype {
-                        LinkType::Note(path) => seen
-                            .insert(path.clone())
-                            .then(|| LinkEntry::from_path(path)),
-                        _ => None,
-                    })
-                    .collect()
-            }
-            LinksTab::Unlinked => {
-                // Notes whose body mentions this note's name as plain text
-                // but does not link to it: text-search the clean name, then
-                // subtract the linking notes and the note itself.
-                let name = self.note.get_clean_name();
-                if name.is_empty() {
-                    emit.replace(Vec::new());
-                    return;
-                }
-                // Quote the name so multi-word names search as one literal
-                // phrase, not an AND of words. Fetch both sets concurrently.
-                let (backlinks, mentions) = tokio::join!(
-                    self.vault.get_backlinks(&self.note),
-                    self.vault.search_notes(kimun_core::quote_query_term(&name))
-                );
-                let linked: HashSet<VaultPath> = backlinks
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(entry, _)| entry.path)
-                    .collect();
-                mentions
-                    .unwrap_or_default()
-                    .into_iter()
-                    // `is_like`: `self.note` may be relative while `entry.path` is
-                    // index-absolute, so `==` would fail to exclude the
-                    // open note from its own unlinked-mentions list.
-                    .filter(|(entry, _)| {
-                        !entry.path.is_like(&self.note) && !linked.contains(&entry.path)
-                    })
-                    .map(|(entry, content)| {
-                        let (_, filename) = entry.path.get_parent_path();
-                        LinkEntry {
-                            path: entry.path,
-                            title: content.title,
-                            filename,
-                        }
-                    })
-                    .collect()
-            }
-        };
-        emit.replace(entries);
-    }
-
-    fn reload_on_query(&self) -> bool {
-        false
     }
 }
 
@@ -370,11 +193,7 @@ impl LinksPanel {
 
     fn refresh(&mut self, tx: &AppTx) {
         self.body.set_source(
-            LinksSource {
-                vault: self.vault.clone(),
-                note: self.note.clone(),
-                tab: self.tab,
-            },
+            LinksSource::new(self.vault.clone(), self.note.clone(), self.tab),
             tx,
         );
     }
@@ -482,73 +301,6 @@ impl LinksPanel {
 // OUTLINE
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct OutlineEntry {
-    /// 1-based nesting depth: how many headings enclose this one, plus one.
-    /// Not the markdown level — `## A` over `#### B` is depth 1 and 2.
-    pub depth: usize,
-    pub target: HeadingTarget,
-}
-
-impl OutlineEntry {
-    /// The OUTLINE rows of a note body, in document order.
-    fn all_of(text: &str) -> Vec<Self> {
-        let headings = kimun_core::note::note_headings(text);
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for heading in &headings {
-            *counts.entry(heading.text.as_str()).or_default() += 1;
-        }
-        // Depth counts the open ancestors with a lower level, as a breadcrumb
-        // does.
-        let mut open_levels: Vec<u8> = Vec::new();
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        headings
-            .iter()
-            .map(|heading| {
-                open_levels.retain(|lvl| *lvl < heading.level);
-                open_levels.push(heading.level);
-                let seen = seen.entry(heading.text.as_str()).or_default();
-                let occurrence = *seen;
-                *seen += 1;
-                OutlineEntry {
-                    depth: open_levels.len(),
-                    target: HeadingTarget {
-                        text: heading.text.clone(),
-                        occurrence,
-                        count: counts[heading.text.as_str()],
-                        line: heading.line,
-                    },
-                }
-            })
-            .collect()
-    }
-
-    pub fn heading(&self) -> &str {
-        &self.target.text
-    }
-
-    /// Everything the row shows or jumps by, but its line: a body edit that
-    /// only moves headings keeps the list (and its filter) as it is.
-    fn same_row(&self, other: &Self) -> bool {
-        fn key(e: &OutlineEntry) -> (usize, &str, usize, usize) {
-            (e.depth, &e.target.text, e.target.occurrence, e.target.count)
-        }
-        key(self) == key(other)
-    }
-}
-
-impl ListRow for OutlineEntry {
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.target.text)
-    }
-
-    fn yank_target(&self) -> Option<YankTarget> {
-        // The heading text alone — the row carries no note path, and the depth
-        // is presentation, not content.
-        Some(YankTarget::new(self.target.text.clone(), "heading"))
-    }
-}
-
 impl SearchRow for OutlineEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
         let indent = "  ".repeat(self.depth.saturating_sub(1));
@@ -584,19 +336,15 @@ impl ListPanelSpec for OutlineSpec {
 /// up to `autosave_interval_secs`; the jump itself always reads the live
 /// buffer.
 pub struct OutlinePanel {
-    note: VaultPath,
-    /// Buffer revision `entries` was computed at; `None` = unknown, re-parse.
-    revision: Option<NonZeroU64>,
-    entries: Vec<OutlineEntry>,
+    /// Which headings are listed and when they change (`logic::views`).
+    model: OutlineModel,
     body: QueryListPanel<OutlineSpec>,
 }
 
 impl OutlinePanel {
     pub fn new(icons: Icons, yank_combos: Vec<KeyCombo>) -> Self {
         Self {
-            note: VaultPath::empty(),
-            revision: None,
-            entries: Vec::new(),
+            model: OutlineModel::new(),
             body: QueryListPanel::new(icons, yank_combos),
         }
     }
@@ -605,7 +353,7 @@ impl OutlinePanel {
     /// needed) at `revision` (`None` when unknown, e.g. a buffer just
     /// replaced). Cheap to call often: an unchanged revision skips the parse,
     /// and unchanged headings keep the list — and so its filter and
-    /// selection — as they are.
+    /// selection — as they are. See [`OutlineModel::sync`].
     pub fn sync(
         &mut self,
         note: &VaultPath,
@@ -613,47 +361,14 @@ impl OutlinePanel {
         text: impl FnOnce() -> String,
         tx: &AppTx,
     ) {
-        let same_note = *note == self.note && self.body.is_loaded();
-        if same_note && revision.is_some() && revision == self.revision {
-            return;
+        if self.model.sync(note, revision, text) == Changed::Rebuilt {
+            self.body.set_rows(self.model.entries().to_vec(), tx);
         }
-        let entries = OutlineEntry::all_of(&text());
-        self.revision = revision;
-        let unchanged = same_note
-            && entries.len() == self.entries.len()
-            && entries
-                .iter()
-                .zip(&self.entries)
-                .all(|(a, b)| a.same_row(b));
-        // Kept current even when the list is not rebuilt: `resolve` reads
-        // lines from here, the listed rows' lines being hints only.
-        self.entries = entries;
-        if unchanged {
-            return;
-        }
-        self.note = note.clone();
-        self.body.set_rows(self.entries.clone(), tx);
     }
 
-    /// The buffer row `target` stands for, against the headings as last
-    /// synced — so sync first. The same `occurrence`-th heading when as many
-    /// headings read `target.text` as when the row was listed (lines may have
-    /// moved; occurrence order has not); otherwise one was added or removed,
-    /// and the one nearest `target.line` (the earlier on a tie). `None` when
-    /// no heading reads that text any more.
+    /// The buffer row `target` stands for; see [`OutlineModel::resolve`].
     pub fn resolve(&self, target: &HeadingTarget) -> Option<usize> {
-        let lines: Vec<usize> = self
-            .entries
-            .iter()
-            .filter(|e| e.target.text == target.text)
-            .map(|e| e.target.line)
-            .collect();
-        if lines.len() == target.count {
-            return lines.get(target.occurrence).copied();
-        }
-        lines
-            .into_iter()
-            .min_by_key(|line| (line.abs_diff(target.line), *line))
+        self.model.resolve(target)
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -680,6 +395,16 @@ impl OutlinePanel {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+/// The panel tests read the model's headings through the panel.
+#[cfg(test)]
+impl std::ops::Deref for OutlinePanel {
+    type Target = OutlineModel;
+
+    fn deref(&self) -> &OutlineModel {
+        &self.model
     }
 }
 

@@ -138,15 +138,20 @@ fn default_tables() {
         vec![
             lw("ctrl+q", A::Quit),
             lw("ctrl+shift+q", A::Quit),
+            lw("ctrl+o", A::OpenNote),
+            lw("ctrl+shift+o", A::OpenNote),
+            lw("ctrl+j", A::NewJournal),
+            lw("ctrl+shift+j", A::NewJournal),
             lw("ctrl+t", A::ToggleSidebar),
             lw("ctrl+e", A::OpenFileBrowser),
             lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
             lw("f(2)", A::FileOperations),
-            lw("ctrl+n", A::FollowLink),
-            lw("ctrl+shift+n", A::FollowLink),
             lw("ctrl+enter", A::FollowLink),
+            lw("ctrl+shift+w", A::QuickNote),
+            lw("ctrl+c", A::YankRow),
+            lw("ctrl+shift+c", A::YankRow),
             lw("ctrl+f", A::FindInBuffer),
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
@@ -172,13 +177,16 @@ fn default_tables() {
         table(&Keymap::defaults(MacOs)),
         vec![
             lw("cmd+q", A::Quit),
+            lw("cmd+o", A::OpenNote),
+            lw("cmd+j", A::NewJournal),
             lw("cmd+t", A::ToggleSidebar),
             lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
             lw("f(2)", A::FileOperations),
-            lw("cmd+n", A::FollowLink),
             lw("cmd+enter", A::FollowLink),
+            lw("cmd+shift+w", A::QuickNote),
+            lw("cmd+c", A::YankRow),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
             lw("cmd+shift+b", A::Leader),
@@ -249,13 +257,13 @@ fn open_file_browser_is_primary_e_from_every_panel() {
     );
 }
 
-/// Follow link (M5b-2 G4) is primary+N and primary+Enter in the editor,
-/// under vim too (the vim engine reads neither Ctrl+N nor Ctrl+Enter), and
-/// nothing elsewhere. Shift+Enter stays the editor's plain newline.
+/// Follow link is primary+Enter in the editor, under vim too (the vim engine
+/// reads no Ctrl+Enter), and nothing elsewhere. The TUI's Ctrl+N is not a
+/// GUI default. Shift+Enter stays the editor's plain newline.
 #[test]
-fn follow_link_is_primary_n_or_primary_enter_in_the_editor() {
+fn follow_link_is_primary_enter_in_the_editor() {
     let lw = Keymap::defaults(LinuxWindows);
-    for written in ["ctrl+n", "ctrl+shift+n", "ctrl+enter"] {
+    for written in ["ctrl+enter"] {
         for vim in [false, true] {
             assert_eq!(
                 lw.resolve(chord(written), ctx(Panel::Editor, vim)),
@@ -268,7 +276,7 @@ fn follow_link_is_primary_n_or_primary_enter_in_the_editor() {
         }
     }
     let mac = Keymap::defaults(MacOs);
-    for written in ["cmd+n", "cmd+enter"] {
+    for written in ["cmd+enter"] {
         for vim in [false, true] {
             assert_eq!(
                 mac.resolve(chord(written), ctx(Panel::Editor, vim)),
@@ -339,6 +347,56 @@ fn the_file_operations_chord_from_every_panel() {
         }
         assert_eq!(keymap.chord_for(&A::FileOperations), Some(chord("f2")));
     }
+}
+
+/// Copying the selected drawer row (M7a G1) is primary+C (and its Ctrl+Shift
+/// twin) from the rail and the drawers only: in the editor, vim or not, the
+/// chord stays the editor's copy.
+#[test]
+fn the_copy_row_chord_is_the_drawers_only() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            let want = (panel != Panel::Editor).then_some(&A::YankRow);
+            assert_eq!(lw.resolve(chord("ctrl+c"), at), want, "{panel:?}");
+            assert_eq!(lw.resolve(chord("ctrl+shift+c"), at), want, "{panel:?}");
+            assert_eq!(mac.resolve(chord("cmd+c"), at), want, "{panel:?}");
+        }
+    }
+    assert_eq!(lw.chord_for(&A::YankRow), Some(chord("ctrl+c")));
+}
+
+/// The finder (Ctrl/Cmd+O), today's journal (Ctrl/Cmd+J) and the quick
+/// note (Ctrl/Cmd+Shift+W) (M6 G4), from every panel and under vim too: the
+/// vim engine reads none of them. The two bare Ctrl+letters get their
+/// Ctrl+Shift twins; bare Ctrl+W stays unbound (a desktop "close").
+#[test]
+fn the_finder_journal_and_quick_note_chords_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            for (written, action) in [
+                ("ctrl+o", A::OpenNote),
+                ("ctrl+shift+o", A::OpenNote),
+                ("ctrl+j", A::NewJournal),
+                ("ctrl+shift+j", A::NewJournal),
+                ("ctrl+shift+w", A::QuickNote),
+            ] {
+                assert_eq!(lw.resolve(chord(written), at), Some(&action), "{written}");
+            }
+            assert_eq!(lw.resolve(chord("ctrl+w"), at), None);
+            assert_eq!(mac.resolve(chord("cmd+o"), at), Some(&A::OpenNote));
+            assert_eq!(mac.resolve(chord("cmd+j"), at), Some(&A::NewJournal));
+            assert_eq!(mac.resolve(chord("cmd+shift+w"), at), Some(&A::QuickNote));
+        }
+    }
+    assert_eq!(lw.chord_for(&A::OpenNote), Some(chord("ctrl+o")));
+    assert_eq!(lw.chord_for(&A::NewJournal), Some(chord("ctrl+j")));
+    assert_eq!(lw.chord_for(&A::QuickNote), Some(chord("ctrl+shift+w")));
 }
 
 /// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim
@@ -528,8 +586,8 @@ fn linux_windows_resolution_table() {
             ),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
-            ("ctrl+n", [follow.clone(), follow.clone(), None]),
-            ("ctrl+shift+n", [follow.clone(), follow.clone(), None]),
+            ("ctrl+n", [None, None, None]),
+            ("ctrl+shift+n", [None, None, None]),
             ("ctrl+enter", [follow.clone(), follow, None]),
             // Vim reads these: the app gives them up in the vim editor.
             ("ctrl+r", [None, None, None]),
@@ -587,7 +645,7 @@ fn macos_resolution_table() {
             ("cmd+alt+f", [replace.clone(), replace, None]),
             ("cmd+t", [toggle.clone(), toggle.clone(), toggle]),
             ("cmd+e", [files.clone(), files.clone(), files]),
-            ("cmd+n", [follow.clone(), follow.clone(), None]),
+            ("cmd+n", [None, None, None]),
             ("cmd+enter", [follow.clone(), follow, None]),
             ("cmd+alt+left", [left.clone(), left.clone(), left]),
             ("cmd+alt+right", [right.clone(), right.clone(), right]),

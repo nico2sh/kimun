@@ -13,7 +13,10 @@ use std::time::Duration;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
+use kimun_core::note::scan::LinkSpanKind;
+
 use crate::logic::editor::claim::FollowTarget;
+use crate::logic::follow::{self, FollowOutcome};
 use crate::logic::message::{AppMessage, AppTx};
 
 pub struct DocMeta {
@@ -31,9 +34,9 @@ pub struct DocMeta {
     /// once a minute instead of once per open, but a `git init` mid-session
     /// still gets picked up.
     git_unavailable_since: Option<std::time::Instant>,
-    /// Link-under-cursor affordance cache: `(target, backlink count once
-    /// loaded)`. Refreshed when the cursor enters a different link.
-    link_meta: Option<(String, Option<usize>)>,
+    /// Link-under-cursor affordance cache: `(target, kind, backlink count
+    /// once loaded)`. Refreshed when the cursor enters a different link.
+    link_meta: Option<(String, LinkSpanKind, Option<usize>)>,
 }
 
 impl DocMeta {
@@ -147,9 +150,11 @@ impl DocMeta {
 
     /// The `→ target · N backlinks` status segment for the link under the
     /// cursor, if any. Caches per target; the count loads async (one fetch
-    /// per target change, resolved exactly like follow-link so the count
-    /// keys the note that would actually open). `tx == None` (before the
-    /// screen's first on_enter) renders the target without a count.
+    /// per target change). The target is resolved exactly like a follow
+    /// (`logic::follow::resolve`), so the count is the backlinks of the note
+    /// that would actually open; a link several notes answer to, or none,
+    /// shows no count. `tx == None` (before the screen's first on_enter)
+    /// renders the target without a count.
     pub fn link_segment(
         &mut self,
         link: Option<&FollowTarget>,
@@ -157,35 +162,42 @@ impl DocMeta {
         tx: Option<&AppTx>,
     ) -> Option<String> {
         match link {
-            Some(FollowTarget::Link(target)) => {
-                if self.link_meta.as_ref().map(|(t, _)| t.as_str()) != Some(target.as_str()) {
-                    self.link_meta = Some((target.clone(), None));
+            Some(FollowTarget::Link { target, kind }) => {
+                let cached = self
+                    .link_meta
+                    .as_ref()
+                    .is_some_and(|(t, k, _)| t == target && k == kind);
+                if !cached {
+                    self.link_meta = Some((target.clone(), *kind, None));
                     if let Some(tx) = tx {
-                        // Resolve like follow_link does: strip a `#fragment`,
-                        // then resolve relative targets against this note.
-                        let target_clean = kimun_core::note::scan::split_link_fragment(target)
-                            .0
-                            .to_string();
                         let vault = self.vault.clone();
-                        let t2 = target.clone();
+                        let target = target.clone();
+                        let kind = *kind;
                         let note_path = current_note.clone();
                         let tx2 = tx.clone();
                         tokio::spawn(async move {
-                            let path = VaultPath::note_path_from(&target_clean)
-                                .resolve_link_in_note(&note_path);
+                            let FollowOutcome::Note(path) =
+                                follow::resolve(&vault, &note_path, &target, kind).await
+                            else {
+                                return;
+                            };
                             let count = vault
                                 .get_backlinks(&path)
                                 .await
                                 .map(|b| b.len())
                                 .unwrap_or_default();
-                            tx2.send(AppMessage::LinkTargetMeta { target: t2, count })
-                                .ok();
+                            tx2.send(AppMessage::LinkTargetMeta {
+                                target,
+                                kind,
+                                count,
+                            })
+                            .ok();
                         });
                     }
                 }
                 match &self.link_meta {
-                    Some((t, Some(n))) => Some(format!("→ {t} · {n} backlinks")),
-                    Some((t, None)) => Some(format!("→ {t}")),
+                    Some((t, _, Some(n))) => Some(format!("→ {t} · {n} backlinks")),
+                    Some((t, _, None)) => Some(format!("→ {t}")),
                     None => None,
                 }
             }
@@ -219,10 +231,15 @@ impl DocMeta {
                 }
                 None
             }
-            AppMessage::LinkTargetMeta { target, count } => {
+            AppMessage::LinkTargetMeta {
+                target,
+                kind,
+                count,
+            } => {
                 // Only land the count if the cursor is still on that link.
-                if let Some((cached, slot)) = &mut self.link_meta
+                if let Some((cached, cached_kind, slot)) = &mut self.link_meta
                     && *cached == target
+                    && *cached_kind == kind
                 {
                     *slot = Some(count);
                 }
@@ -312,7 +329,10 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         let (tx, _rx) = unbounded_channel();
-        let target = FollowTarget::Link("b".to_string());
+        let target = FollowTarget::Link {
+            target: "b".to_string(),
+            kind: LinkSpanKind::WikiLink,
+        };
         // Cursor enters the link: target cached, no count yet.
         let seg = dm.link_segment(Some(&target), &current, Some(&tx));
         assert_eq!(seg.as_deref(), Some("→ b"));
@@ -320,6 +340,7 @@ mod tests {
         dm.handle(
             AppMessage::LinkTargetMeta {
                 target: "other".into(),
+                kind: LinkSpanKind::WikiLink,
                 count: 9,
             },
             &current,
@@ -333,6 +354,21 @@ mod tests {
         dm.handle(
             AppMessage::LinkTargetMeta {
                 target: "b".into(),
+                kind: LinkSpanKind::Markdown,
+                count: 4,
+            },
+            &current,
+        );
+        assert_eq!(
+            dm.link_segment(Some(&target), &current, Some(&tx))
+                .as_deref(),
+            Some("→ b"),
+            "a count for another kind of link is ignored"
+        );
+        dm.handle(
+            AppMessage::LinkTargetMeta {
+                target: "b".into(),
+                kind: LinkSpanKind::WikiLink,
                 count: 2,
             },
             &current,
@@ -344,6 +380,56 @@ mod tests {
         );
         // Cursor leaves: cache cleared.
         assert_eq!(dm.link_segment(None, &current, Some(&tx)), None);
+    }
+
+    /// The count is the backlinks of the note the link resolves to, read
+    /// by its form: `[[work/dup]]` from another folder is `/work/dup` (a
+    /// suffix, not a path under the note's folder); a name several notes
+    /// share, or a link to no note, loads no count.
+    #[tokio::test]
+    async fn link_count_is_the_resolved_notes_backlinks() {
+        let vault = crate::test_support::temp_vault("doc-meta-link").await;
+        vault.validate_and_init().await.unwrap();
+        for (path, text) in [
+            ("dup", ""),
+            ("work/dup", ""),
+            ("journal/today", "[[work/dup]] [[dup]]"),
+            ("other", "[x](work/dup.md)"),
+        ] {
+            vault.save_note(&note(path), text).await.unwrap();
+        }
+        let mut dm = DocMeta::new(vault);
+        let today = note("journal/today");
+        let (tx, mut rx) = unbounded_channel();
+        let link = |target: &str, kind| FollowTarget::Link {
+            target: target.to_string(),
+            kind,
+        };
+
+        dm.link_segment(
+            Some(&link("work/dup", LinkSpanKind::WikiLink)),
+            &today,
+            Some(&tx),
+        );
+        let event = rx.recv().await.expect("a count");
+        assert!(
+            matches!(
+                &event,
+                AppMessage::LinkTargetMeta { target, kind: LinkSpanKind::WikiLink, count: 2 }
+                    if target == "work/dup"
+            ),
+            "{event:?}"
+        );
+
+        for (target, kind) in [
+            ("dup", LinkSpanKind::WikiLink),
+            ("work/dup.md", LinkSpanKind::Markdown),
+        ] {
+            dm.link_segment(Some(&link(target, kind)), &today, Some(&tx));
+        }
+        // Neither the ambiguous name nor the missing path sends a count.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

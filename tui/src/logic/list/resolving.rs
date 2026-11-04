@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{Emit, ListRow, RowSource};
-use crate::components::query_vars::{QueryContext, query_is_unresolvable, resolve_query};
+use crate::logic::query::{QueryContext, query_is_unresolvable, resolve_query};
 
 /// What to do when a template is purely note-dependent but no note is available
 /// to resolve it (the startup state, or a browser launched from the root).
@@ -80,12 +80,9 @@ impl<R: ListRow> RowSource<R> for ResolvingRowSource<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::search_list::{SearchList, SearchRow};
+    use crate::logic::list::{ListCore, ListSetup};
     use crate::logic::message::redraw_callback;
-    use crate::settings::icons::Icons;
-    use crate::settings::themes::Theme;
     use kimun_core::nfs::VaultPath;
-    use ratatui::widgets::ListItem;
     use std::sync::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -96,12 +93,6 @@ mod tests {
     impl ListRow for EchoRow {
         fn match_text(&self) -> Option<&str> {
             Some(&self.0)
-        }
-    }
-
-    impl SearchRow for EchoRow {
-        fn to_list_item(&self, _: &Theme, _: &Icons, _: bool) -> ListItem<'static> {
-            ListItem::new(self.0.clone())
         }
     }
 
@@ -127,9 +118,14 @@ mod tests {
         let inner = Arc::new(EchoSource { seen: seen.clone() });
         let source = ResolvingRowSource::new(inner, move || ctx.clone(), on);
         let (tx, _rx) = unbounded_channel();
-        let mut list = SearchList::builder(source, redraw_callback(tx))
-            .initial_query(initial)
-            .build();
+        let mut list = ListCore::new(
+            Arc::new(source),
+            redraw_callback(tx),
+            ListSetup {
+                query: initial.into(),
+                ..Default::default()
+            },
+        );
         list.poll_until_idle().await;
         let rows = list
             .visible_rows()

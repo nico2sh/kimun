@@ -97,6 +97,10 @@ pub enum FileListEntry {
     Attachment {
         path: VaultPath,
         filename: String,
+        /// `true` when this is the attachment the editor area shows (the
+        /// GUI's attachment view keeps the open-note marker on it). The TUI
+        /// clears the marker on an attachment, so it never sets this.
+        is_open: bool,
     },
     CreateNote {
         filename: String,
@@ -122,6 +126,7 @@ impl FileListEntry {
             ResultType::Attachment => Self::Attachment {
                 path: result.path,
                 filename,
+                is_open: false,
             },
         }
     }
@@ -564,14 +569,17 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
         self.stamp_open_marker();
     }
 
-    /// Re-apply `is_open` to the rows so exactly the open note's row is marked.
+    /// Re-apply `is_open` to the rows so exactly the open note's row is marked
+    /// (or the shown attachment's: the GUI passes one to [`Self::set_open_note`]).
     /// Idempotent: a full reload rebuilds rows without the flag, so this runs
     /// again after each load (see [`poll`](Self::poll)).
     fn stamp_open_marker(&mut self) {
         let open = self.open_note.clone();
         if let Some(core) = self.core_mut() {
             core.update_rows(|row| {
-                if let FileListEntry::Note { path, is_open, .. } = row {
+                if let FileListEntry::Note { path, is_open, .. }
+                | FileListEntry::Attachment { path, is_open, .. } = row
+                {
                     let want = open.as_ref().is_some_and(|o| path.is_like(o));
                     if *is_open != want {
                         *is_open = want;
@@ -791,6 +799,7 @@ mod tests {
             FileListEntry::Attachment {
                 path: VaultPath::new("pic.png"),
                 filename: "pic.png".into(),
+                is_open: false,
             },
             note("charlie"),
             FileListEntry::Up {
@@ -928,6 +937,7 @@ mod tests {
         let att = FileListEntry::Attachment {
             path: VaultPath::new("pic.png"),
             filename: "pic.png".into(),
+            is_open: false,
         };
         assert_eq!(
             att.activation(),
@@ -1052,6 +1062,50 @@ mod tests {
         assert_eq!(model.open_note(), Some(&VaultPath::note_path_from("alpha")));
 
         // Another directory is not refreshed.
+        let before = model.core().unwrap().is_loading();
+        model.refresh_if_showing(&VaultPath::new("sub"), &tx);
+        assert_eq!(model.core().unwrap().is_loading(), before);
+    }
+
+    /// The marker may sit on an attachment (the GUI's attachment view): its
+    /// row is marked, the notes are not, and a reload keeps it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_open_marker_may_mark_an_attachment() {
+        let (mut model, tx) = model().await;
+        let pic = VaultPath::new("pic.png").absolute();
+        model.vault().save_attachment(&pic, b"png").await.unwrap();
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        let marked = |m: &FilesModel| -> Vec<String> {
+            m.core()
+                .unwrap()
+                .rows()
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r,
+                        FileListEntry::Note { is_open: true, .. }
+                            | FileListEntry::Attachment { is_open: true, .. }
+                    )
+                })
+                .map(|r| r.path().to_string())
+                .collect()
+        };
+        model.set_open_note(Some(VaultPath::note_path_from("alpha")));
+        model.set_open_note(Some(pic.clone()));
+        assert_eq!(marked(&model), vec![pic.to_string()]);
+        model.refresh_if_showing(&VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        assert_eq!(marked(&model), vec![pic.to_string()], "after a reload");
+        model.set_open_note(None);
+        assert!(marked(&model).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn another_directory_is_not_refreshed() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
         let before = model.core().unwrap().is_loading();
         model.refresh_if_showing(&VaultPath::new("sub"), &tx);
         assert_eq!(model.core().unwrap().is_loading(), before);

@@ -100,11 +100,14 @@ lk:projects      → same (long form)
 <projects.md     → same (the .md extension is optional)
 ```
 
-Finds the notes that link to a given note, via `[[wikilink]]` or Markdown link. Matching rules:
+Finds the notes that link to a given note, via `[[wikilink]]` or Markdown link. The target is read the way a wikilink is (see [How links point at notes](#how-links-point-at-notes)):
 
 - **Whole note names:** `<projects` matches links to `projects` but not to `projects-archive`
-- **Case-insensitive:** matched by note name. A bare name matches a note in any folder; add a path to disambiguate (`<work/projects`). `*` wildcards work anywhere (`<proj*`)
-- **Only note links count:** attachments, images, and external URLs are ignored
+- **Case-insensitive, any folder:** a bare name matches links to a note of that name in any folder
+- **Folders narrow it from the end:** `<work/projects` matches links that can point at a note whose path ends with `work/projects`: `[[work/projects]]`, `[[a/work/projects]]`, a Markdown link to `/a/work/projects.md`, and also a bare `[[projects]]`, which may mean that note. It never matches `notwork/projects`
+- **A leading `/` is exact:** `</work/projects` matches only links to `/work/projects.md`
+- **Wildcards:** `*` works anywhere (`<proj*`, `<work/proj*`). A wildcard with a folder only matches links written with at least that much path
+- **Only note links count:** attachments, images, and external URLs are ignored. A link to a note that doesn't exist yet still matches by name
 
 ### `>` or `fwd:` — forward links
 
@@ -114,7 +117,38 @@ fwd:projects     → same (long form)
 >projects.md     → same (the .md extension is optional)
 ```
 
-The reverse of `<`: finds the notes that a given note links to. The matching rules are the same as for backlinks.
+The reverse of `<`: finds the notes that a given note links to. The note is named the same way as for backlinks (`>projects`, `>work/projects`, `>/work/projects`), and each of its links is resolved the way following it would be. A name that several notes share lists every one of them.
+
+## How links point at notes
+
+Kimün reads a link by how it is written. A **wikilink** names a note. A **Markdown link** is a path.
+
+| Written in `/journal/today.md` | Points at |
+|---|---|
+| `[[plan]]` | every note named `plan`, in any folder |
+| `[[work/plan]]` | the notes whose path ends with `work/plan`: `/work/plan.md`, `/a/work/plan.md`, never `/notwork/plan.md` |
+| `[[/work/plan]]` | exactly `/work/plan.md` |
+| `[[./plan]]`, `[[../work/plan]]` | exactly that path, from the note's folder (`/journal/plan.md`, `/work/plan.md`) |
+| `[text](plan.md)` | exactly `/journal/plan.md`, the note beside it |
+| `[text](../work/plan.md)` | exactly `/work/plan.md` |
+| `[text](/work/plan.md)` | exactly `/work/plan.md` |
+| `[text](files/report.pdf)` | not a note: the file opens with your default program |
+
+- Names and paths ignore case, and the `.md` extension is optional in wikilinks.
+- A `#section` or `^block` after the target never changes which note it points at.
+- **Several matches:** a wikilink name that several notes share is ambiguous. Following it lets you choose, and it counts as a backlink of each of them. Add folders (`[[work/plan]]`) to narrow it down.
+- **No match:** following the link offers to create the note. A wikilink name is created from the vault root (`[[work/new]]` makes `/work/new.md`), and a path exactly where it points.
+- `![[image.png]]` and `[[report.pdf]]` embed or name a file, not a note, so they are not note links.
+
+**Renaming and moving.** When you rename or move a note, Kimün rewrites the links that pointed at it:
+
+- A wikilink is rewritten only when that note was the only match. An ambiguous `[[plan]]` is left alone, since it still points at the other notes. A move that keeps the name needs no rewrite.
+- A rewritten wikilink keeps as many folders as you wrote, and gets more when the new name is shared (`[[plan]]` becomes `[[work/roadmap]]` if another `roadmap` exists).
+- Markdown links and `/`, `./`, `../` wikilinks are rewritten to the new path.
+- A moved note's own relative links (`[text](sibling.md)`, `[[../x/note]]`) are rewritten so they still reach the same notes.
+- Renaming or moving a **folder** does not rewrite links yet.
+
+> **Upgrading (kimun_core 0.7.0).** Earlier versions read a bare Markdown link like `[text](plan.md)` as a name, matched in any folder. It now means the `plan.md` beside the linking note, as in other Markdown tools. A link like that to a note in another folder now offers to create a new note: use a path (`[text](../work/plan.md)`) or a wikilink (`[[plan]]`) instead. `[[work/plan]]` now finds `/work/plan.md` from any folder, and counts as its backlink. The search index is rebuilt once, automatically, the first time you open each workspace after the upgrade. On a large vault this can take a little while.
 
 ## Labels
 

@@ -8,6 +8,8 @@ tags:
 ---
 # Garden Plan
 
+[[list]]
+
 ## Layout
 
 Three raised beds along the south fence (4x8 each):

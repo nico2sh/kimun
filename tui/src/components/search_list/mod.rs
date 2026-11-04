@@ -6,13 +6,12 @@
 #[cfg(test)]
 mod adapters;
 mod host;
-mod resolving;
 mod seams;
 
 pub use crate::logic::list::{
     Emit, Filter, ListCore, ListRow, Loaded, OrderFn, RowSource, StaticRowSource, YankTarget,
 };
-pub use resolving::{ResolvingRowSource, Unresolvable};
+pub use crate::logic::list::{ResolvingRowSource, Unresolvable};
 pub use seams::{SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions};
 
 use crate::components::autocomplete::{

@@ -2,17 +2,21 @@
 //! what following a link resolves to, which surface holds input, the clipboard
 //! image, and the small text predicates the paste and autocomplete paths use.
 
+use kimun_core::note::scan::LinkSpanKind;
+
 /// What following resolves to — the **follow target** under the cursor.
 ///
 /// Named for the action rather than the destination, because the destination is
-/// not known here: a `Link` is still the raw string as written in the note, and
-/// only `EditorScreen::follow_link` decides whether it names a vault note, an
-/// external URL, or an attachment. Wider than a **note link**, which is
-/// note→note only.
+/// not known here: a `Link` is still the raw string as written in the note,
+/// with its kind, and only the follow (`logic::follow::resolve`) decides
+/// whether it names a vault note, an external URL, or an attachment. Wider
+/// than a **note link**, which is note→note only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FollowTarget {
-    /// A wiki-link or markdown link, with the raw target string.
-    Link(String),
+    /// A wiki-link or markdown link (or image): the raw target string and
+    /// the link's kind, which decides how the target reads — a wikilink
+    /// names a note, a markdown link is a path.
+    Link { target: String, kind: LinkSpanKind },
     /// A hashtag label with the name **without** the leading `#`.
     Label(String),
 }
@@ -41,7 +45,10 @@ pub(crate) fn follow_target_in_line(line: &str, col: usize) -> Option<FollowTarg
         .into_iter()
         .find(|s| s.start <= col && col < s.end)
     {
-        return Some(FollowTarget::Link(span.target));
+        return Some(FollowTarget::Link {
+            target: span.target,
+            kind: span.kind,
+        });
     }
 
     // Fallback: check for a hashtag label (via the markdown parser).

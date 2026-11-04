@@ -155,13 +155,25 @@ _Avoid_: global replace, bulk replace, replace everything.
 ### Search
 
 **Note link**:
-A note→note reference inside a note's body — either a `[[wikilink]]` or a markdown link resolving to a vault note. Attachments, images, and external URLs are *not* note links. Only note links participate in the **link filter**.
+A note→note reference inside a note's body — either a **wikilink** or a **markdown link** resolving to a vault note. Attachments, images, and external URLs are *not* note links (nor is a wikilink naming a non-note file, `![[pic.png]]`). Only note links participate in the **link filter**. What it points at is read by its **link form**; a link several notes answer to is **ambiguous** and counts as a link to each of them.
+
+**Wikilink**:
+A `[[target]]` (or `![[target]]` embed) **note link** that names a note. A bare name (`[[plan]]`) means every note of that name, in any folder; a name with folder parts (`[[work/plan]]`) narrows it to the notes whose path ends with those parts (`/work/plan.md`, `/a/work/plan.md`, never `/notwork/plan.md`). Written from the root (`[[/work/plan]]`) or from the note's own folder (`[[./plan]]`, `[[../work/plan]]`), it is an exact path instead. A `#section` / `^block` never changes which note it names.
+_Avoid_: internal link, wiki link (two words).
+
+**Markdown link**:
+A `[text](destination)` **note link** whose destination is a path, never a name: relative to the linking note's folder (a bare `[x](plan.md)` is the `plan.md` beside it), or vault-absolute with a leading `/`. It never matches a note in another folder. A markdown link to a file that is no note is an attachment link, opened with the OS default program.
+_Avoid_: md link, path link (a wikilink can be a path too).
+
+**Link form**:
+How a **note link** points at a note: by *name* (a wikilink's name or name-with-folder-parts, matched against the end of every note's path) or by *path* (a markdown link, or a `/`, `./`, `../` wikilink, matched exactly). The bracket style only decides the form; everything downstream sees the form. Resolved when it is read — following, backlinks, the **link filter** — against the notes that exist then, so a link written before its note exists starts pointing at it once it is made. A name several notes share is **ambiguous**: following it offers a choice, and it is a backlink of each candidate. A link no note answers to is *missing*: following it offers to create the note (at the vault root plus the written folders for a name; at the exact path for a path).
+_Avoid_: link target (that is the **follow target**'s raw text), link type (the core enum that also covers attachments and URLs).
 
 **Link filter**:
 A search operator that selects notes by the note links between them, in one of two directions (the full operator alphabet is in the user docs). The arrow points **relative to the named note**:
 - **Backlinks** — `<X` / `lk:X` — notes whose body contains a note link **to** X (links pointing *into* X).
 - **Forward links** — `>X` / `fwd:X` — the notes that **X links to** (links pointing *out* of X).
-The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
+`X` is read as a **wikilink** typed at the vault root: a bare name matches by note name in any folder, a name with folder parts matches as a path ending, a leading `/` is an exact path (extension optional, case-insensitive, `*` wildcards). A link and `X` match when they can point at the same note, so `<work/plan` also finds the notes whose `[[plan]]` is ambiguous.
 _Avoid_: backlink search (names only one direction), `>`/`@` (the superseded chars).
 
 **Query variable**:
@@ -217,7 +229,7 @@ _Avoid_: yank text (loses the noun), copyable field, clipboard value (collides w
 The seam that supplies the query input's autocomplete with candidates (note names for `>`, tag labels for `#`), kept separate from the **row source** and from the vault so the autocomplete host is testable in isolation.
 
 **Query panel**:
-The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
+The FIND **drawer view**: a query input over the list of notes matching the active query, each row with the paragraph that matched, and a **Preview pane** for the selected row. One per window, so its query survives hiding and showing the view. A query naming the open note (`{note}`, a bare `<`) follows the open note. Any spelling of the backlinks query `<{note}` titles it "Backlinks"; any other query titles it with the query, or with the **saved-search breadcrumb**.
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 **Preview pane**:
@@ -239,7 +251,7 @@ What a fired leader leaf means — open an **Overlay**, reveal a **drawer view**
 _Avoid_: command (collides with **Vim command**), intent (the classifier's **Intent**), action (the leaf itself, `LeaderAction`), dispatch.
 
 **Follow target**:
-What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
+What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note, with its kind — wikilink, markdown link or image — which decides its **link form**) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
 _Avoid_: link target (silent about labels), note target (a link is often not a note at all).
 
 ### App shell

@@ -2335,9 +2335,33 @@ mod tests {
         place_cursor_at_col(&mut editor, 7);
         let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
+            matches!(result, Some(FollowTarget::Link { .. })),
             "expected Link variant, got {result:?}"
         );
+    }
+
+    /// The follow target carries the link's kind: it decides whether the
+    /// target names a note (wikilink) or is a path (markdown).
+    #[test]
+    fn follow_target_at_cursor_carries_the_link_kind() {
+        use kimun_core::note::scan::LinkSpanKind;
+        let mut editor = make_editor();
+        editor.set_text("[[a/dup]] [x](dup.md) ![i](p.png)".to_string());
+        for (col, target, kind) in [
+            (3, "a/dup", LinkSpanKind::WikiLink),
+            (12, "dup.md", LinkSpanKind::Markdown),
+            (24, "p.png", LinkSpanKind::Image),
+        ] {
+            place_cursor_at_col(&mut editor, col);
+            assert_eq!(
+                editor.follow_target_at_cursor(),
+                Some(FollowTarget::Link {
+                    target: target.to_string(),
+                    kind
+                }),
+                "col {col}"
+            );
+        }
     }
 
     // ── F5: follow_target_at_cursor prioritises Link over Label ────────────────────────
@@ -2356,7 +2380,7 @@ mod tests {
         place_cursor_at_col(&mut editor, cursor);
         let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
+            matches!(result, Some(FollowTarget::Link { .. })),
             "expected Link variant for markdown link fragment, got {result:?}"
         );
     }

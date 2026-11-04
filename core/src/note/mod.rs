@@ -1,4 +1,5 @@
 pub(crate) mod content_extractor;
+pub(crate) mod link_target;
 pub(crate) mod properties;
 mod walk;
 
@@ -6,6 +7,9 @@ pub use properties::{
     is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
     PropertyDateTime, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
 };
+
+pub(crate) use link_target::unique_wikilink;
+pub use link_target::{markdown_attachment, NoteTarget};
 
 use std::fmt::Display;
 
@@ -423,8 +427,11 @@ impl ContentChunk {
 /// Classification of a link found in a note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
-    /// A link to another note in the vault, by its resolved path.
-    Note(VaultPath),
+    /// A link to another note in the vault: the note it names
+    /// ([`NoteTarget::Name`], a wikilink) or its exact path
+    /// ([`NoteTarget::Path`], a markdown link). Ask [`NoteTarget::matches`]
+    /// whether it points at a given note.
+    Note(NoteTarget),
     /// A link to a non-note vault file (e.g. a PDF), by its resolved path.
     Attachment(VaultPath),
     /// Image link with its resolved path.
@@ -446,33 +453,34 @@ pub struct NoteLink {
     /// The link's display text (alt text for images, tag name for hashtags).
     pub text: String,
     /// The link target exactly as written in the note, without any cleanup:
-    /// it may contain invalid characters or uppercase letters (for note
-    /// links these are normalized only when converting to a [`VaultPath`]).
+    /// it may contain invalid characters or uppercase letters, a `#section`
+    /// or `^block` (for note links these are normalized only in the
+    /// [`NoteTarget`]).
     pub raw_link: String,
 }
 
 impl NoteLink {
-    /// Builds a vault link, classifying it as [`LinkType::Note`] when `path`
-    /// points at a note and [`LinkType::Attachment`] otherwise.
-    pub fn vault_path<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
-        let ltype = if path.is_note() {
-            LinkType::Note(path.to_owned())
-        } else {
-            LinkType::Attachment(path.to_owned())
-        };
+    /// Builds a [`LinkType::Note`] link to `target` with the given display
+    /// `text`; `raw_link` is the target as written in the note.
+    pub fn note<S: AsRef<str>, R: AsRef<str>>(target: NoteTarget, text: S, raw_link: R) -> Self {
         Self {
-            ltype,
+            ltype: LinkType::Note(target),
             text: text.as_ref().to_string(),
-            raw_link: path.to_string(),
+            raw_link: raw_link.as_ref().to_string(),
         }
     }
-    /// Builds a [`LinkType::Note`] link to `path` with the given display
-    /// `text`.
-    pub fn note<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
+    /// Builds a [`LinkType::Attachment`] link to the non-note vault file at
+    /// `path`, with the given display `text`; `raw_link` is the destination
+    /// as written in the note.
+    pub fn attachment<S: AsRef<str>, R: AsRef<str>>(
+        path: &VaultPath,
+        text: S,
+        raw_link: R,
+    ) -> Self {
         Self {
-            ltype: LinkType::Note(path.to_owned()),
+            ltype: LinkType::Attachment(path.to_owned()),
             text: text.as_ref().to_string(),
-            raw_link: path.to_string(),
+            raw_link: raw_link.as_ref().to_string(),
         }
     }
     /// Builds a [`LinkType::Url`] link to a remote `url` with the given

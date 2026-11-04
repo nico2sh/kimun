@@ -587,7 +587,7 @@ impl EditorView {
     /// (a link, a label). False when there is none.
     fn follow_at_caret(&self) -> bool {
         let message = match self.editor.follow_target_at_cursor() {
-            Some(FollowTarget::Link(target)) => AppMessage::FollowLink(target),
+            Some(FollowTarget::Link { target, kind }) => AppMessage::FollowLink { target, kind },
             Some(FollowTarget::Label(name)) => AppMessage::FollowLabel(name),
             None => return false,
         };

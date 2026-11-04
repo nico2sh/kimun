@@ -641,7 +641,6 @@ impl KimunHandler {
     ) -> Result<Vec<PromptMessage>, McpError> {
         use kimun_core::error::{FSError, VaultError};
         use kimun_core::nfs::VaultPath;
-        use kimun_core::note::LinkType;
         use std::collections::HashSet;
 
         let vault_path = VaultPath::note_path_from(&p.path);
@@ -663,7 +662,7 @@ impl KimunHandler {
 
         // Build exclusion set: outlinks + backlinks + source itself. Normalize
         // every path to the canonical (vault-absolute) form the index search
-        // returns — self and outlinks arrive relative, backlinks
+        // returns — self arrives relative, backlinks and outlinks
         // absolute, so a raw string mix would never match the candidates.
         let norm = |p: &VaultPath| p.flatten().absolute().to_string();
         let mut excluded: HashSet<String> = HashSet::new();
@@ -674,10 +673,10 @@ impl KimunHandler {
             .get_markdown_and_links(&vault_path)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        for link in md_note.links {
-            if let LinkType::Note(linked_path) = link.ltype {
-                excluded.insert(norm(&linked_path));
-            }
+        // Every note an outlink resolves to (each candidate of a name
+        // several notes share), as LINKS Outgoing lists them.
+        for entry in crate::logic::views::outgoing_entries(&self.vault, md_note.links).await {
+            excluded.insert(norm(&entry.path));
         }
 
         let backlinks = self
@@ -1338,6 +1337,45 @@ mod tests {
             !text.contains("=== /linked-note") && !text.contains("=== linked-note"),
             "linked-note should be excluded from candidates: {}",
             text
+        );
+    }
+
+    /// A wikilink name finds its note in any folder: a note linked as
+    /// `[[linked-note]]` but saved under `work/` is already linked too.
+    #[tokio::test]
+    async fn test_link_suggestions_excludes_a_linked_note_in_another_folder() {
+        let (handler, _dir) = make_handler().await;
+        for (path, content) in [
+            (
+                "journal/source",
+                "# Source\n\n## Rust Programming\n\nsee [[linked-note]]",
+            ),
+            (
+                "work/linked-note",
+                "# Linked Note\n\nRust Programming is great",
+            ),
+            ("candidate", "# Candidate\n\nRust Programming is fine"),
+        ] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: path.to_string(),
+                    content: content.to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+        let msgs = handler
+            .link_suggestions(Parameters(LinkSuggestionsParams {
+                path: "journal/source".to_string(),
+                max_results: Some(5),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(text.contains("=== /candidate"), "{text}");
+        assert!(
+            !text.contains("=== /work/linked-note"),
+            "the linked note is no candidate: {text}"
         );
     }
 
