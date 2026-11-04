@@ -11,7 +11,7 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::gui::{DEFAULT_DRAWER_WIDTH, GuiSettings};
 
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, saved, temp_config};
-use super::{LayoutStore, drawer_id, rail_cell_id, slot_id, split_divider_id};
+use super::{LayoutStore, drawer_id, empty_slot_id, rail_cell_id, slot_id, split_divider_id};
 
 const LEFT: &str = "drawer-left";
 const RIGHT: &str = "drawer-right";
@@ -62,10 +62,13 @@ pub(super) fn saved_shown(path: &std::path::Path, side: Side) -> Vec<DrawerView>
     crate::shell_layout::restore(&saved(path)).slot_views(side)
 }
 
-/// The right drawer's chord shows it right of the editor, holding the first
-/// view no drawer shows (it starts empty), focused; again hides it and
-/// gives the keyboard to the editor. Its divider drags from its leading
-/// edge. Each change is saved.
+/// The hint an empty drawer or slot shows with the default keymap.
+const HINT: &str =
+    "No view here. Move one with Alt+Shift+Right / Alt+Shift+Left, or pick one from the rail.";
+
+/// The right drawer's chord shows it right of the editor, empty (no view is
+/// placed there) with a hint, and the keyboard stays in the editor; again
+/// hides it. Its divider drags from its leading edge. Each change is saved.
 #[gpui_kit::test]
 fn the_right_drawer_toggles_and_resizes_beside_the_editor(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -86,11 +89,14 @@ fn the_right_drawer_toggles_and_resizes_beside_the_editor(cx: &mut TestAppContex
 
         window.press("ctrl-shift-t", cx);
         window.render_frame(cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Find]);
-        assert_eq!(shell.region(cx), slot(Side::Right, 0));
-        assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
-        assert_eq!(window.find(RIGHT).focused(), Some(true));
-        assert_eq!(window.find(RIGHT).label(), Some("Find"));
+        assert!(shell.views(Side::Right, cx).is_empty());
+        assert!(shell.shown(Side::Right, cx));
+        assert_eq!(shell.focused(cx), Panel::Editor);
+        assert_eq!(window.find(empty_slot_id(Side::Right)).label(), Some(HINT));
+        assert!(close(
+            window.find(empty_slot_id(Side::Right)).bounds().size.height,
+            HEIGHT
+        ));
         let editor = window.find("editor-panel").bounds();
         let right = window.find(RIGHT).bounds();
         assert!(close(right.left(), f32::from(editor.right())));
@@ -101,8 +107,11 @@ fn the_right_drawer_toggles_and_resizes_beside_the_editor(cx: &mut TestAppContex
             window.find(LEFT).bounds().size.width,
             DEFAULT_DRAWER_WIDTH as f32
         ));
-        assert_eq!(saved_placed(&path, Side::Right), ["find"]);
+        assert!(saved_placed(&path, Side::Right).is_empty());
         assert!(saved(&path).drawer_visible(Side::Right));
+        // Typing still goes to the note.
+        window.input("x", cx);
+        assert_eq!(shell.text(cx), "xabc");
 
         // Its divider is on its leading edge: dragging left widens it.
         let from = window.find(RIGHT_DIVIDER).bounds().center();
@@ -118,28 +127,73 @@ fn the_right_drawer_toggles_and_resizes_beside_the_editor(cx: &mut TestAppContex
         assert!(close(window.find(RIGHT).bounds().size.width, 372.));
         assert!(close(window.find("editor-panel").bounds().size.width, 320.));
 
-        // Hiding the focused right drawer gives the keyboard to the editor.
+        // Hidden again: the editor gets its width back.
         window.press("ctrl-shift-t", cx);
         window.render_frame(cx);
         assert!(window.try_find(RIGHT).is_none());
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert!(close(window.find("editor-panel").bounds().right(), 1000.));
         assert!(!saved(&path).drawer_visible(Side::Right));
-        window.input("d", cx);
-        assert_eq!(shell.text(cx), "dabc");
 
-        // Back, with the same view (no second one), from the editor.
+        // Back, still empty; a view moved in fills it and has the keyboard.
         window.press("ctrl-shift-t", cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Find]);
+        assert!(shell.views(Side::Right, cx).is_empty());
+        window.press("alt-left", cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Files]);
         assert_eq!(shell.region(cx), slot(Side::Right, 0));
+        assert!(window.try_find(empty_slot_id(Side::Right)).is_none());
+    })
+    .unwrap();
+
+    // Saved visible and empty, it reopens so.
+    let shell = open_shell(cx, 1000., &saved(&path), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Files]);
+    })
+    .unwrap();
+}
+
+/// A drawer toggled open empty shows the hint in its whole height, survives
+/// a reopen, and the move chords from a drawer's view fill it.
+#[gpui_kit::test]
+fn an_empty_drawer_reopens_empty(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-shift-t", cx);
+        assert!(saved(&path).drawer_visible(Side::Right));
+    })
+    .unwrap();
+    let shell = open_shell(cx, 1000., &saved(&path), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shell.shown(Side::Right, cx));
+        assert_eq!(window.find(empty_slot_id(Side::Right)).label(), Some(HINT));
+        assert_eq!(shell.focused(cx), Panel::Editor);
+        // Focus cycling skips it: nothing to focus there.
+        window.press("alt-right", cx);
+        assert_eq!(shell.focused(cx), Panel::Editor);
     })
     .unwrap();
 }
 
 /// The move chords carry the focused view to the other drawer — moved, never
 /// copied — and the keyboard goes with it; a drawer left empty hides, and
-/// the chord brings the view back. From the rail they move the cell's view.
-/// Every move is saved and restored.
+/// the chord brings the view back. From the rail the move is spatial: the
+/// rail is at the left edge, so Right moves the cursor's view into the left
+/// drawer and Left is not handled; the rail keeps the keyboard. Every move
+/// is saved and restored.
 #[gpui_kit::test]
 fn views_move_between_drawers_and_persist(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -194,21 +248,36 @@ fn views_move_between_drawers_and_persist(cx: &mut TestAppContext) {
         assert_eq!(saved_placed(&path, Side::Left), ["files"]);
         assert!(saved_placed(&path, Side::Right).is_empty());
 
-        // From the rail: the cell's view, placed or not; the rail keeps
-        // the keyboard.
+        // Files to the right again, for the rail moves below.
+        window.press("alt-shift-right", cx);
+        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Files]);
+
+        // From the rail: Right moves the cursor's view (placed nowhere)
+        // into the drawer beside the rail, the left one; the rail keeps the
+        // keyboard.
         window.click("rail", cx);
         for _ in 0..4 {
             window.press("down", cx);
         }
         window.press("alt-shift-right", cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Outline]);
-        assert!(shell.shown(Side::Right, cx));
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Outline]);
+        assert!(shell.shown(Side::Left, cx));
+        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Files]);
+        assert_eq!(shell.focused(cx), Panel::Rail);
+        assert_eq!(window.find("rail").focused(), Some(true));
+        // A view shown on the right comes over to the left too.
+        for _ in 0..4 {
+            window.press("up", cx);
+        }
+        window.press("alt-shift-right", cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+        assert!(!shell.shown(Side::Right, cx));
         assert_eq!(shell.focused(cx), Panel::Rail);
         // The editor keeps Alt+Shift+Arrow: no move from there.
         window.click("editor-panel", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
-        window.press("alt-shift-left", cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Outline]);
+        window.press("alt-shift-right", cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
     })
     .unwrap();
 
@@ -217,23 +286,225 @@ fn views_move_between_drawers_and_persist(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find(LEFT).label(), Some("Files"));
-        assert_eq!(window.find(RIGHT).label(), Some("Outline"));
+        assert!(window.try_find(RIGHT).is_none());
         assert_eq!(shell.focused(cx), Panel::Editor);
     })
     .unwrap();
 }
 
-/// The split chord stacks a second view under the focused drawer's (its
-/// next hidden view, else the first view no drawer shows) and focuses it; the slots share the height
-/// half and half. A third is refused, and says so. Unsplit merges the
-/// focused slot into the other (its views stay placed, sharing that slot);
-/// a drawer's only slot stays. Saved.
+/// From the rail, Alt+Shift+Left points at the window's edge: nothing is
+/// there, so the key is not handled and nothing moves or is saved.
+#[gpui_kit::test]
+fn the_rail_move_toward_the_edge_passes_on(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &gui("[gui]
+drawer_right = [\"outline\"]\ndrawer_right_visible = true\n"),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let ws = shell.workspace.clone();
+        window.click("rail", cx);
+        let key =
+            crate::keymap::parse_chord("alt+shift+left", crate::keymap::Platform::LinuxWindows)
+                .unwrap();
+        for cursor in [0, 4] {
+            ws.update(cx, |workspace, _| workspace.rail_cursor = cursor);
+            let handled = ws.update(cx, |workspace, cx| {
+                workspace.workspace_command(
+                    &ActionShortcuts::MoveViewToLeftDrawer,
+                    Some(key),
+                    window,
+                    cx,
+                )
+            });
+            assert!(!handled, "cursor {cursor}");
+            assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+            assert_eq!(shell.views(Side::Right, cx), [DrawerView::Outline]);
+            assert_eq!(shell.focused(cx), Panel::Rail);
+        }
+        assert!(!path.exists() || saved_placed(&path, Side::Right) == ["outline"]);
+    })
+    .unwrap();
+}
+
+/// The split chord opens an empty slot under the focused drawer's view, at
+/// half the height, with the hint; the keyboard stays on the view and
+/// nothing is saved. A second split is refused, and says so. Unsplit closes
+/// the empty slot; on two views it merges the focused slot into the other
+/// (its views stay placed, sharing that slot); a drawer's only slot stays.
 #[gpui_kit::test]
 fn a_drawer_splits_into_two_slots_and_back(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
         1000.,
+        &gui("[gui]\ndrawer_left = [\"files\", \"find\"]\n"),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Merge Find away first: one slot, Find hidden in it.
+        window.click(slot_id(DrawerView::Find), cx);
+        window.press("alt-shift-u", cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+        let before = std::fs::read_to_string(&path).unwrap();
+        // Not from the editor: the chord is the editor's there.
+        window.click("editor-panel", cx);
+        window.press("alt-shift-s", cx);
+        assert_eq!(shell.workspace.read(cx).layout.empty_slot(Side::Left), None);
+
+        window.press("alt-left", cx);
+        window.press("alt-shift-s", cx);
+        window.render_frame(cx);
+        // An empty slot below, not the hidden Find.
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+        assert_eq!(shell.region(cx), slot(Side::Left, 0));
+        assert_eq!(
+            window.find(slot_id(DrawerView::Files)).focused(),
+            Some(true)
+        );
+        let top = window.find(slot_id(DrawerView::Files)).bounds();
+        let bottom = window.find(empty_slot_id(Side::Left)).bounds();
+        assert_eq!(window.find(empty_slot_id(Side::Left)).label(), Some(HINT));
+        assert!(close(top.top(), 0.));
+        assert!(close(top.size.height, HEIGHT / 2.));
+        assert!(close(bottom.top(), f32::from(top.bottom())));
+        assert!(close(bottom.bottom(), HEIGHT));
+        assert!(window.try_find(split_divider_id(Side::Left)).is_some());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "session only"
+        );
+
+        // Full.
+        window.press("alt-shift-s", cx);
+        assert_eq!(
+            shell.flash(cx).as_deref(),
+            Some("This drawer already holds two views")
+        );
+
+        // Unsplit closes the empty slot.
+        window.press("alt-shift-u", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(empty_slot_id(Side::Left)).is_none());
+        assert!(window.try_find(split_divider_id(Side::Left)).is_none());
+        assert!(close(
+            window.find(slot_id(DrawerView::Files)).bounds().size.height,
+            HEIGHT
+        ));
+        assert_eq!(shell.region(cx), slot(Side::Left, 0));
+
+        // Two views: unsplit merges.
+        window.press("alt-shift-s", cx);
+        window.click("rail", cx);
+        window.press("down", cx);
+        window.press("alt-shift-down", cx);
+        assert_eq!(
+            shell.views(Side::Left, cx),
+            [DrawerView::Files, DrawerView::Find]
+        );
+        window.click(slot_id(DrawerView::Find), cx);
+        window.press("alt-shift-u", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+        assert_eq!(shell.region(cx), slot(Side::Left, 0));
+        assert_eq!(saved_shown(&path, Side::Left), [DrawerView::Files]);
+        let back = crate::shell_layout::restore(&saved(&path));
+        for view in [DrawerView::Files, DrawerView::Find] {
+            assert_eq!(back.placement(&view), Some((Side::Left, 0)), "{view:?}");
+        }
+
+        window.press("alt-shift-u", cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
+        assert!(shell.shown(Side::Left, cx));
+        assert_eq!(
+            shell.flash(cx).as_deref(),
+            Some("This drawer holds one view")
+        );
+    })
+    .unwrap();
+}
+
+/// The swap chords on a drawer's view move it into the drawer's empty
+/// slot, which takes the slot the view left; the keyboard stays on the
+/// view. A view moved from the other drawer takes the empty slot first.
+#[gpui_kit::test]
+fn views_move_into_an_empty_slot(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1200.,
+        &gui("[gui]\ndrawer_left = [\"files\"]\n\
+             drawer_right = [\"outline\"]\ndrawer_right_visible = true\n"),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-shift-s", cx);
+        // Up: already on top, nothing moves, but the key is handled.
+        window.press("alt-shift-up", cx);
+        assert_eq!(
+            shell.workspace.read(cx).layout.slots(Side::Left),
+            [Some(DrawerView::Files), None]
+        );
+        // Down: Files goes below, the empty slot moves up.
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            shell.workspace.read(cx).layout.slots(Side::Left),
+            [None, Some(DrawerView::Files)]
+        );
+        assert_eq!(
+            window.find(slot_id(DrawerView::Files)).focused(),
+            Some(true)
+        );
+        let empty = window.find(empty_slot_id(Side::Left)).bounds();
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        assert!(close(empty.top(), 0.));
+        assert!(close(files.top(), f32::from(empty.bottom())));
+        assert_eq!(saved_placed(&path, Side::Left), ["files"]);
+        assert_eq!(
+            crate::shell_layout::restore(&saved(&path)).placement(&DrawerView::Files),
+            Some((Side::Left, 1))
+        );
+
+        // Outline, from the right, lands in the empty top slot.
+        window.click(slot_id(DrawerView::Outline), cx);
+        window.press("alt-shift-left", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            shell.views(Side::Left, cx),
+            [DrawerView::Outline, DrawerView::Files]
+        );
+        assert_eq!(shell.region(cx), slot(Side::Left, 0));
+        assert!(window.try_find(empty_slot_id(Side::Left)).is_none());
+        assert!(!shell.shown(Side::Right, cx));
+    })
+    .unwrap();
+}
+
+/// With the rail cursor on a view no drawer shows, the up/down chords put
+/// it into the empty slot (the left drawer's first), the rail keeping the
+/// keyboard. A rail click never fills it: the clicked view takes the shown
+/// slot. Without an empty slot the chords pass on.
+#[gpui_kit::test]
+fn the_rail_cursor_moves_a_view_into_the_empty_slot(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1200.,
         &GuiSettings::default(),
         "",
         false,
@@ -241,75 +512,55 @@ fn a_drawer_splits_into_two_slots_and_back(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        // Not from the editor: the chord is the editor's there.
-        window.press("alt-shift-s", cx);
-        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
-
         window.press("alt-left", cx);
         window.press("alt-shift-s", cx);
-        window.render_frame(cx);
-        assert_eq!(
-            shell.views(Side::Left, cx),
-            [DrawerView::Files, DrawerView::Find]
-        );
-        assert_eq!(shell.region(cx), slot(Side::Left, 1));
-        assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
-        assert_eq!(
-            window.find(slot_id(DrawerView::Files)).focused(),
-            Some(false)
-        );
-        assert_eq!(window.find(LEFT).label(), Some("Files, Find"));
-        let top = window.find(slot_id(DrawerView::Files)).bounds();
-        let bottom = window.find(slot_id(DrawerView::Find)).bounds();
-        assert!(close(top.top(), 0.));
-        assert!(close(top.size.height, HEIGHT / 2.));
-        assert!(close(bottom.top(), f32::from(top.bottom())));
-        assert!(close(bottom.bottom(), HEIGHT));
-        assert!(window.try_find(split_divider_id(Side::Left)).is_some());
-        assert_eq!(saved_placed(&path, Side::Left), ["files", "find"]);
-
-        // Full.
-        window.press("alt-shift-s", cx);
-        assert_eq!(shell.views(Side::Left, cx).len(), 2);
-        assert_eq!(
-            shell.flash(cx).as_deref(),
-            Some("This drawer already holds two views")
-        );
-
-        // A rail click puts another view in the focused slot.
+        // A rail click on Tags: it replaces Files, the empty slot stays.
         window.click(rail_cell_id(DrawerView::Tags), cx);
         assert_eq!(
-            shell.views(Side::Left, cx),
-            [DrawerView::Files, DrawerView::Tags]
+            shell.workspace.read(cx).layout.slots(Side::Left),
+            [Some(DrawerView::Tags), None]
         );
-        assert_eq!(shell.region(cx), slot(Side::Left, 1));
-
-        window.press("alt-shift-u", cx);
+        // The cursor on Links: Alt+Shift+Down moves it into the empty slot.
+        window.click("rail", cx);
+        ws_cursor(&shell, cx, DrawerView::Links);
+        window.press("alt-shift-down", cx);
         window.render_frame(cx);
-        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
-        assert_eq!(shell.region(cx), slot(Side::Left, 0));
         assert_eq!(
-            window.find(slot_id(DrawerView::Files)).focused(),
-            Some(true)
+            shell.views(Side::Left, cx),
+            [DrawerView::Tags, DrawerView::Links]
         );
-        assert!(close(
-            window.find(slot_id(DrawerView::Files)).bounds().size.height,
-            HEIGHT
-        ));
-        assert!(window.try_find(split_divider_id(Side::Left)).is_none());
-        assert_eq!(saved_shown(&path, Side::Left), [DrawerView::Files]);
-        // Find and Tags stay placed, hidden, merged into Files' top slot.
-        assert_eq!(saved_placed(&path, Side::Left), ["files", "find", "tags"]);
-        let back = crate::shell_layout::restore(&saved(&path));
-        for view in [DrawerView::Files, DrawerView::Find, DrawerView::Tags] {
-            assert_eq!(back.placement(&view), Some((Side::Left, 0)), "{view:?}");
-        }
-
-        window.press("alt-shift-u", cx);
-        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
-        assert!(shell.shown(Side::Left, cx));
+        assert_eq!(shell.focused(cx), Panel::Rail);
+        assert_eq!(window.find("rail").focused(), Some(true));
+        assert_eq!(
+            saved_shown(&path, Side::Left),
+            [DrawerView::Tags, DrawerView::Links]
+        );
+        // No empty slot left: a hidden view's chord passes on.
+        ws_cursor(&shell, cx, DrawerView::Outline);
+        let key = crate::keymap::parse_chord("alt+shift+up", crate::keymap::Platform::LinuxWindows)
+            .unwrap();
+        let ws = shell.workspace.clone();
+        let handled = ws.update(cx, |workspace, cx| {
+            workspace.workspace_command(&ActionShortcuts::MoveViewUp, Some(key), window, cx)
+        });
+        assert!(!handled);
+        assert_eq!(
+            shell.views(Side::Left, cx),
+            [DrawerView::Tags, DrawerView::Links]
+        );
     })
     .unwrap();
+}
+
+/// Point the rail's cursor at `view`.
+fn ws_cursor(shell: &Shell, cx: &mut gpui_kit::App, view: DrawerView) {
+    let i = crate::shell_layout::RAIL_VIEWS
+        .iter()
+        .position(|v| *v == view)
+        .unwrap();
+    shell
+        .workspace
+        .update(cx, |workspace, _| workspace.rail_cursor = i);
 }
 
 /// The divider between two slots drags the split, clamped so each slot
@@ -916,21 +1167,26 @@ fn views_sharing_a_slot_position_take_turns(cx: &mut TestAppContext) {
             [DrawerView::Files, DrawerView::Find]
         );
 
-        // Right: hide Tags; the split fills the free bottom position with
-        // Tags again; unsplit merges it into Outline's slot; its cell then
-        // swaps it in for Outline.
+        // Right: hide Tags (Outline fills the drawer, no empty slot); the
+        // split opens the free bottom position empty, not with Tags; Tags'
+        // cell then never fills it: Tags takes Outline's shown slot.
         window.click(rail_cell_id(DrawerView::Tags), cx);
         assert_eq!(shell.views(Side::Right, cx), [DrawerView::Outline]);
+        assert_eq!(
+            shell.workspace.read(cx).layout.empty_slot(Side::Right),
+            None
+        );
         assert_eq!(shell.region(cx), slot(Side::Right, 0));
         window.press("alt-shift-s", cx);
         assert_eq!(
-            shell.views(Side::Right, cx),
-            [DrawerView::Outline, DrawerView::Tags]
+            shell.workspace.read(cx).layout.slots(Side::Right),
+            [Some(DrawerView::Outline), None]
         );
-        window.press("alt-shift-u", cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Outline]);
         window.click(rail_cell_id(DrawerView::Tags), cx);
-        assert_eq!(shell.views(Side::Right, cx), [DrawerView::Tags]);
+        assert_eq!(
+            shell.workspace.read(cx).layout.slots(Side::Right),
+            [Some(DrawerView::Tags), None]
+        );
         assert_eq!(shell.region(cx), slot(Side::Right, 0));
     })
     .unwrap();
@@ -1109,9 +1365,9 @@ fn moving_fits_the_target_drawer(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Split, then Unsplit, then the rail cell of the merged view: it replaces
-/// the shown view, never re-splits. Unsplit then Split returns to the same
-/// split at the drawer's ratio.
+/// Unsplit, then the rail cell of the merged view: it replaces the shown
+/// view, never re-splits. Unsplit then Split opens an empty slot at the
+/// drawer's ratio, not the merged view.
 #[gpui_kit::test]
 fn unsplit_merges_and_split_brings_the_pair_back(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -1127,11 +1383,17 @@ fn unsplit_merges_and_split_brings_the_pair_back(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("alt-left", cx);
         window.press("alt-shift-s", cx);
+        window.click("rail", cx);
+        ws_cursor(&shell, cx, DrawerView::Find);
+        window.press("alt-shift-down", cx);
         assert_eq!(
             shell.views(Side::Left, cx),
             [DrawerView::Files, DrawerView::Find]
         );
+        window.click(slot_id(DrawerView::Files), cx);
         window.press("alt-shift-u", cx);
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Find]);
+        window.click(rail_cell_id(DrawerView::Files), cx);
         assert_eq!(shell.views(Side::Left, cx), [DrawerView::Files]);
         window.click(rail_cell_id(DrawerView::Find), cx);
         window.render_frame(cx);
@@ -1143,7 +1405,7 @@ fn unsplit_merges_and_split_brings_the_pair_back(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // Unsplit, then Split: the same pair, the same order, the same ratio.
+    // Unsplit, then Split: an empty slot at the same ratio.
     let shell = open_shell(
         cx,
         1000.,
@@ -1154,20 +1416,17 @@ fn unsplit_merges_and_split_brings_the_pair_back(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        // Close the top slot: Files merges below. The split picks the
-        // merged view, not the first view shown nowhere (Tags).
+        // Close the top slot: Files merges below. The split opens the
+        // free top position empty.
         window.click(slot_id(DrawerView::Files), cx);
         window.press("alt-shift-u", cx);
         assert_eq!(shell.views(Side::Left, cx), [DrawerView::Find]);
         window.press("alt-shift-s", cx);
         window.render_frame(cx);
-        assert_eq!(
-            shell.views(Side::Left, cx),
-            [DrawerView::Files, DrawerView::Find]
-        );
+        assert_eq!(shell.views(Side::Left, cx), [DrawerView::Find]);
         assert_eq!(shell.region(cx), slot(Side::Left, 0));
-        let files = window.find(slot_id(DrawerView::Files)).bounds();
-        assert!(close(files.size.height, HEIGHT * 0.3));
+        let empty = window.find(empty_slot_id(Side::Left)).bounds();
+        assert!(close(empty.size.height, HEIGHT * 0.3));
     })
     .unwrap();
 }

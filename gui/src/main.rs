@@ -138,9 +138,15 @@ fn main() {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            // The kit's inputs (the FILES filter) draw their caret from the kit theme,
-            // which is not kimün's: give them the editor's caret colour.
-            gpui_kit::component::Theme::global_mut(cx).caret = theme::caret(&theme).into();
+            // The kit's components (the palette dialog, the FILES filter) read the
+            // kit theme, which is not kimün's: hand them kimün's colours. The
+            // dialog's fade is dropped: a palette should appear and go at once.
+            // `update`, not `global_mut`: it carries the colours over to the kit's
+            // per-component tokens too (the dialog surface reads those).
+            gpui_kit::component::Theme::update(cx, |kit| {
+                theme::apply_to_kit(&theme, kit);
+                kit.motion.duration_normal = std::time::Duration::ZERO;
+            });
             editor_view::init(cx);
             keymap::init(cx, keymap);
             let options = WindowOptions {

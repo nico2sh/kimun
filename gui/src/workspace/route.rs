@@ -1,12 +1,13 @@
 //! The GUI's performer of a **Leader route** (`logic::leader_route`): what a
 //! leader leaf does in this window, and whether it can do it yet. The route
-//! is decided in logic, once for every door onto a leaf (the command palette
-//! now, the leader sequence in G2); this file only maps each route onto the
+//! is decided in logic, once for every door onto a leaf (the command
+//! palette, the leader sequence); this file only maps each route onto the
 //! window's surfaces — the same methods the chords and the rail use.
 //!
 //! A route the window has no surface for yet is **blocked** with a reason
 //! ([`Workspace::route_block`]); the palette shows such rows disabled, saying
-//! why, and [`Workspace::perform_route`] never runs them.
+//! why, the leader flashes the reason, and [`Workspace::perform_route`] never
+//! runs them.
 
 use gpui_kit::{App, ClipboardItem, Context, Window};
 use kimun_core::nfs::VaultPath;
@@ -16,6 +17,7 @@ use kimun_notes::logic::leader_route::{
     self, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
 };
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::overlay_open::OverlayOpen;
 
 use super::Workspace;
 use crate::shell_layout::{self, RAIL_VIEWS};
@@ -105,6 +107,8 @@ impl Workspace {
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex) => Some(NO_WORKSPACE),
             LeaderRoute::Soon(_) => Some(SOON),
+            // Leader `p`: the palette is the window's one modal so far.
+            LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
             LeaderRoute::Overlay(_)
             | LeaderRoute::FindWithQuery(_)
             | LeaderRoute::OpenJournal
@@ -162,6 +166,7 @@ impl Workspace {
             LeaderRoute::Layout(step) => self.layout_step(step, window, cx),
             LeaderRoute::Job(job) => self.run_leader_job(job, cx),
             LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
+            LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
             // Blocked here (see `route_block`).
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote

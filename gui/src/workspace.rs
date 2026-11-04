@@ -63,6 +63,7 @@ use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_han
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -73,11 +74,11 @@ use gpui_kit::{
     rems,
 };
 use kimun_core::nfs::VaultPath;
-use kimun_notes::keys::leader::{self, LeaderNode};
+use kimun_notes::keys::leader::LeaderNode;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{
-    FocusMove, LayoutError, MAX_DRAWER_SLOTS, Panel, PanelLayout, Region, Side, WidthLimits,
+    FocusMove, LayoutError, Panel, PanelLayout, Region, Side, WidthLimits,
 };
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::nav::DrawerView;
@@ -89,7 +90,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
 use crate::keymap::{self, KeyCtx};
-use crate::shell_layout::{self, RAIL_REMS, RAIL_VIEWS};
+use crate::shell_layout::{self, RAIL_REMS, RAIL_SIDE, RAIL_VIEWS};
 use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
 use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
@@ -97,6 +98,7 @@ use crate::theme;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
+use leader::LeaderState;
 use modal::ModalKind;
 pub(crate) use note::Closing;
 use note::NoteHost;
@@ -209,6 +211,15 @@ pub(crate) fn split_divider_id(side: Side) -> &'static str {
     }
 }
 
+/// The element id of `side`'s placeholder: its empty slot, or the whole
+/// drawer while it shows no view (`drawer-left-empty`).
+pub(crate) fn empty_slot_id(side: Side) -> &'static str {
+    match side {
+        Side::Left => "drawer-left-empty",
+        Side::Right => "drawer-right-empty",
+    }
+}
+
 /// The element id of the slot showing `view` (`slot-files`, ...): a view
 /// is shown in at most one slot, so its id names the slot.
 pub(crate) fn slot_id(view: DrawerView) -> SharedString {
@@ -308,6 +319,8 @@ pub(crate) struct Workspace {
     settings: Option<SharedSettings>,
     /// The editor's requests that need the window (vim `:`).
     _editor_events: Subscription,
+    /// The pending leader sequence and its which-key popup ([`leader`]).
+    pub(crate) leader: LeaderState,
 }
 
 impl Workspace {
@@ -378,6 +391,7 @@ impl Workspace {
             palette: None,
             settings: None,
             _editor_events: editor_events,
+            leader: LeaderState::default(),
         }
     }
 
@@ -402,7 +416,7 @@ impl Workspace {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .leader_tree(),
-            None => leader::leader_tree(),
+            None => kimun_notes::keys::leader::leader_tree(),
         }
     }
 
@@ -612,24 +626,6 @@ impl Workspace {
         self.layout.slot_views(side).get(index).copied()
     }
 
-    /// The first view the rail offers that is shown nowhere (placed
-    /// nowhere, or hidden in a drawer): what fills a drawer's free slot when
-    /// the drawer has no hidden view of its own.
-    fn first_unshown(&self) -> Option<DrawerView> {
-        RAIL_VIEWS
-            .into_iter()
-            .find(|v| self.layout.view_location(v).is_none())
-    }
-
-    /// What a split or an empty drawer being shown fills its slot with: the
-    /// view the drawer's last unsplit merged away (this session only), else
-    /// the drawer's next hidden view, else the first view shown nowhere.
-    fn next_for(&self, side: Side) -> Option<DrawerView> {
-        self.layout
-            .next_hidden(side)
-            .or_else(|| self.first_unshown())
-    }
-
     /// `view`'s slot handle.
     fn slot_focus(&self, view: DrawerView) -> &FocusHandle {
         self.view_focus
@@ -691,9 +687,10 @@ impl Workspace {
 
     /// Show `side`'s drawer (and focus it, as the TUI does), or hide it and
     /// give its width to the editor. The drawer comes back with the views it
-    /// showed; one showing nothing (its views moved away or hidden) comes
-    /// back with its next hidden view, else the first view shown nowhere.
-    /// Persisted.
+    /// showed; one showing nothing comes back with its top hidden view, and
+    /// one with no placed view at all opens **empty** (a hint in place of a
+    /// view; the keyboard stays where it was, there is nothing to focus).
+    /// Persisted, visible like any drawer.
     ///
     /// Hiding the focused drawer gives the keyboard back to the document,
     /// not to the rail the model falls back to (the TUI keeps that).
@@ -706,13 +703,9 @@ impl Workspace {
                 self.layout.focus(Panel::Editor);
             }
         } else {
-            if self.layout.slot_views(side).is_empty()
-                && let Some(view) = self.next_for(side)
-            {
-                self.layout.move_view(view, side);
+            if self.layout.open_drawer(side) {
+                self.layout.focus(drawer);
             }
-            self.layout.show(drawer);
-            self.layout.focus(drawer);
             self.ensure_files_listing(cx);
         }
         self.apply_focus(window, cx);
@@ -766,15 +759,28 @@ impl Workspace {
         }
     }
 
-    /// `MoveViewTo…Drawer`: move the focused view (or the rail cursor's) to
-    /// the drawer on `to` and show it; the keyboard follows a focused view.
-    /// It fits the target: a split one keeps the view's slot position, an
-    /// unsplit or empty one takes it into its single slot, replacing the
-    /// view shown there — never a new split. The model moves, it never
-    /// duplicates. Persisted.
+    /// `MoveViewTo…Drawer`: move the focused view to the drawer on `to` and
+    /// show it; the keyboard follows it. It fits the target: one with an
+    /// empty slot takes it there, a split one keeps the view's slot
+    /// position, an unsplit or empty one takes it into its single slot,
+    /// replacing the view shown there — never a new split. The model moves,
+    /// it never duplicates. Persisted.
+    ///
+    /// From the rail the move is spatial: the rail sits at the window's
+    /// edge ([`RAIL_SIDE`]), so the chord away from that edge moves and
+    /// shows the cursor's view in the drawer beside the rail, and the chord
+    /// toward the edge is not handled ([`shell_layout::rail_move_target`]).
+    /// The rail keeps the keyboard.
     fn move_view(&mut self, to: Side, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(view) = self.arranged_view() else {
             return false;
+        };
+        let to = match self.layout.focused_region() {
+            Region::Rail => match shell_layout::rail_move_target(to) {
+                Some(side) => side,
+                None => return false,
+            },
+            _ => to,
         };
         self.layout.move_view(view, to);
         self.ensure_files_listing(cx);
@@ -785,16 +791,31 @@ impl Workspace {
 
     /// `MoveViewUp` / `MoveViewDown`: in a split drawer, put the focused
     /// view (or the rail cursor's) at the top (`up`) or bottom slot
-    /// position, trading places with the view shown there; a focused view
-    /// keeps the keyboard. Already there: handled, nothing moves. In an
-    /// unsplit drawer, and for a view placed nowhere, nothing changes and
-    /// the key is not handled, so it passes on. Persisted.
+    /// position, trading places with the view shown there, or moving into
+    /// the drawer's empty slot (which takes the slot it left); a focused
+    /// view keeps the keyboard. Already there: handled, nothing moves. With
+    /// the rail cursor on a view no visible drawer shows, it goes into an
+    /// empty slot (the drawer beside the rail first), the rail keeping the
+    /// keyboard. In an unsplit drawer, and for a view placed nowhere with
+    /// no empty slot to go to, nothing changes and the key is not handled,
+    /// so it passes on. Persisted.
     fn move_view_vertically(
         &mut self,
         up: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.layout.focused_region() == Region::Rail
+            && let Some(view) = self.arranged_view()
+            && !self.is_shown(view)
+            && let Some(side) = self.empty_slot_side()
+        {
+            self.layout.fill_empty_slot(side, view);
+            self.ensure_files_listing(cx);
+            self.apply_focus(window, cx);
+            self.store.save(&self.layout);
+            return true;
+        }
         let Some((view, (side, _))) = self
             .arranged_view()
             .and_then(|view| self.layout.placement(&view).map(|p| (view, p)))
@@ -806,33 +827,32 @@ impl Workspace {
             self.store.save(&self.layout);
             return true;
         }
-        self.layout.slot_views(side).len() > 1
+        self.layout.slots(side).len() > 1
     }
 
-    /// `SplitDrawerSlot`: show a view in the focused drawer's free slot
-    /// position — the view its last unsplit merged away, else its next
-    /// hidden view, else the first view shown nowhere ([`Self::next_for`])
-    /// — and focus it (a rail click then puts another view there). Unsplit
-    /// then split returns to the same split, at the drawer's ratio. A full
-    /// drawer says so. Persisted.
+    /// The visible drawer with an empty slot a rail move fills: the one
+    /// beside the rail first.
+    fn empty_slot_side(&self) -> Option<Side> {
+        let other = match RAIL_SIDE {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        };
+        [RAIL_SIDE, other].into_iter().find(|side| {
+            self.layout.is_visible(Panel::Drawer(*side)) && self.layout.empty_slot(*side).is_some()
+        })
+    }
+
+    /// `SplitDrawerSlot`: open an **empty slot** at the focused drawer's
+    /// free slot position, at the drawer's ratio; the keyboard stays on the
+    /// view. A view gets there only by a move (Move Up/Down, a move from
+    /// the other drawer, or the rail cursor's Move Up/Down). Session only:
+    /// nothing is saved. A full drawer says so.
     fn split_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Panel::Drawer(side) = self.layout.focused() else {
             return false;
         };
-        if self.layout.slot_views(side).len() >= MAX_DRAWER_SLOTS {
-            self.flash("This drawer already holds two views", cx);
-            return true;
-        }
-        let Some(view) = self.next_for(side) else {
-            return true;
-        };
-        match self.layout.split_slot(side, view) {
-            Ok(index) => {
-                self.layout.focus_region(Region::Slot { side, index });
-                self.ensure_files_listing(cx);
-                self.apply_focus(window, cx);
-                self.store.save(&self.layout);
-            }
+        match self.layout.split_empty(side) {
+            Ok(_) => self.apply_focus(window, cx),
             Err(LayoutError::SlotCap) => self.flash("This drawer already holds two views", cx),
             Err(_) => {}
         }
@@ -842,12 +862,17 @@ impl Workspace {
     /// `UnsplitDrawerSlot`: close the focused slot, merging every view
     /// placed there into the other slot (the closed view hidden), so the
     /// drawer stays unsplit with the other view focused, and showing any of
-    /// its views later replaces the shown one. A drawer's only slot stays
-    /// (the toggle hides a drawer). Persisted.
+    /// its views later replaces the shown one. A drawer with an empty slot
+    /// just closes it. A drawer's only slot stays (the toggle hides a
+    /// drawer). Persisted.
     fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Region::Slot { side, index } = self.layout.focused_region() else {
             return false;
         };
+        if self.layout.close_empty_slot(side) {
+            self.apply_focus(window, cx);
+            return true;
+        }
         if self.layout.slot_views(side).len() < 2 {
             self.flash("This drawer holds one view", cx);
             return true;
@@ -957,11 +982,23 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let dialog = modal::dialog_open(window, cx);
+        // A pending leader sequence owns every key, in every panel, ahead of
+        // the editor's text input; a vim Normal Space arms one. Never under
+        // a modal: one cannot open while a sequence is pending, and nothing
+        // arms a sequence over one.
+        if dialog {
+            self.cancel_leader(cx);
+        } else if self.intercept_leader_key(event, window, cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if event.input_preference == InputPreference::CharacterInput {
             return;
         }
         // A modal owns every key but its own chord (the palette's toggle).
-        if modal::dialog_open(window, cx) {
+        if dialog {
             if self.intercept_modal_key(event, window, cx) {
                 cx.stop_propagation();
                 cx.notify();
@@ -1017,6 +1054,13 @@ impl Workspace {
     ) -> bool {
         match action {
             ActionShortcuts::OpenCommandPalette => self.toggle_palette(window, cx),
+            // The leader gateway; again while pending, it cancels (the
+            // interceptor sees that press first).
+            ActionShortcuts::Leader if self.leader.is_pending() => self.cancel_leader(cx),
+            ActionShortcuts::Leader => {
+                let gateway = self.leader_chord_label(cx);
+                self.start_leader(gateway, window, cx);
+            }
             ActionShortcuts::Quit => self.request_close(window, cx),
             ActionShortcuts::ToggleSidebar => self.toggle_drawer(Side::Left, window, cx),
             ActionShortcuts::ToggleRightDrawer => self.toggle_drawer(Side::Right, window, cx),
@@ -1207,23 +1251,31 @@ impl Workspace {
     /// (the first at the persisted share when there are two), and the width
     /// divider on the edge it shares with the editor.
     fn render_drawer(&self, side: Side, width: f64, cx: &mut Context<Self>) -> impl IntoElement {
-        let views = self.layout.slot_views(side);
-        let split = (views.len() > 1)
+        let shown = self.layout.slots(side);
+        let split = (shown.len() > 1)
             .then(|| self.layout.split_ratio(side))
             .flatten();
-        let label = views
+        let label = shown
             .iter()
+            .flatten()
             .map(|v| shell_layout::view_name(*v))
             .collect::<Vec<_>>()
             .join(", ");
-        let slots: Vec<AnyElement> = views
-            .iter()
-            .enumerate()
-            .map(|(index, view)| {
-                let share = if index == 0 { split } else { None };
-                self.render_slot(side, index, *view, share, cx)
-            })
-            .collect();
+        let mut index = 0;
+        let mut slots: Vec<AnyElement> = Vec::new();
+        for (row, view) in shown.iter().enumerate() {
+            let share = if row == 0 { split } else { None };
+            slots.push(match view {
+                Some(view) => {
+                    index += 1;
+                    self.render_slot(side, index - 1, *view, share, cx)
+                }
+                None => self.render_empty_slot(side, share, cx),
+            });
+        }
+        if shown.is_empty() {
+            slots.push(self.render_empty_slot(side, None, cx));
+        }
         let edge = match side {
             Side::Left => HandleEdge::Trailing,
             Side::Right => HandleEdge::Leading,
@@ -1323,26 +1375,84 @@ impl Workspace {
             })
             .children(self.focus_bar(region))
             .when(share.is_some(), |slot| {
-                slot.child(
-                    resize_handle::<SlotResize, DragGhost>(split_divider_id(side), Axis::Vertical)
-                        .inside(HandleEdge::Trailing)
-                        .with_appearance(hairline(
-                            Axis::Vertical,
-                            theme::divider(&self.theme),
-                            theme::focus_border(&self.theme),
-                        ))
-                        .on_drag(SlotResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                                this.grab_split(side, f64::from(event.position.y))
-                            }),
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.end_resize(cx)),
-                        ),
-                )
+                slot.child(self.render_split_divider(side, cx))
+            })
+            .into_any_element()
+    }
+
+    /// The divider under the first of `side`'s two stacked slots: dragging
+    /// it moves the split.
+    fn render_split_divider(&self, side: Side, cx: &mut Context<Self>) -> impl IntoElement {
+        resize_handle::<SlotResize, DragGhost>(split_divider_id(side), Axis::Vertical)
+            .inside(HandleEdge::Trailing)
+            .with_appearance(hairline(
+                Axis::Vertical,
+                theme::divider(&self.theme),
+                theme::focus_border(&self.theme),
+            ))
+            .on_drag(SlotResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    this.grab_split(side, f64::from(event.position.y))
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_resize(cx)),
+            )
+    }
+
+    /// What an empty drawer and an empty slot say: how to get a view there,
+    /// with the move chords the keymap binds.
+    pub(crate) fn empty_slot_hint(&self, cx: &App) -> String {
+        let keymap = keymap::active(cx);
+        let chord = |action: ActionShortcuts| {
+            keymap
+                .chord_for(&action)
+                .map(|key| Kbd::format(&input::keystroke(key)))
+        };
+        shell_layout::empty_slot_hint(
+            chord(ActionShortcuts::MoveViewToRightDrawer).as_deref(),
+            chord(ActionShortcuts::MoveViewToLeftDrawer).as_deref(),
+        )
+    }
+
+    /// `side`'s placeholder: its empty slot (`share` as for a slot), or the
+    /// whole drawer while it shows no view. A quiet hint, not a target: a
+    /// view gets here only by a move.
+    fn render_empty_slot(
+        &self,
+        side: Side,
+        share: Option<f64>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hint = SharedString::from(self.empty_slot_hint(cx));
+        div()
+            .id(empty_slot_id(side))
+            .test_support()
+            .role(Role::Group)
+            .aria_label(hint.clone())
+            .relative()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .min_h_0()
+            .px_4()
+            .map(|slot| match share {
+                Some(share) => slot.flex_none().h(relative(share as f32)),
+                None => slot.flex_1(),
+            })
+            .child(
+                div()
+                    .text_sm()
+                    .text_center()
+                    .text_color(theme::muted(&self.theme))
+                    .child(hint),
+            )
+            .when(share.is_some(), |slot| {
+                slot.child(self.render_split_divider(side, cx))
             })
             .into_any_element()
     }
@@ -1386,6 +1496,16 @@ impl Workspace {
                 .into_any_element(),
             Some(empty) => self.render_empty(empty).into_any_element(),
         };
+        // The which-key docks over the bottom of the document, right above
+        // the Footer, so showing it never reflows the note.
+        let document = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(document)
+            .children(self.render_which_key(cx));
         div()
             .id("editor-panel")
             .test_support()
@@ -1485,9 +1605,9 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let limits = Self::limits(window);
         let drawer = |side: Side| {
-            (self.layout.is_visible(Panel::Drawer(side))
-                && self.layout.focused_slot(side).is_some())
-            .then(|| shell_layout::shown_width(&self.layout, side, limits))
+            self.layout
+                .is_visible(Panel::Drawer(side))
+                .then(|| shell_layout::shown_width(&self.layout, side, limits))
         };
         let (left, right) = (drawer(Side::Left), drawer(Side::Right));
         div()
@@ -1541,6 +1661,7 @@ fn conflict_flash(details: &str) -> String {
 
 mod files;
 mod follow;
+mod leader;
 mod modal;
 mod note;
 mod palette;
@@ -1554,6 +1675,8 @@ mod files_tests;
 mod follow_tests;
 #[cfg(test)]
 mod footer_tests;
+#[cfg(test)]
+mod leader_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]

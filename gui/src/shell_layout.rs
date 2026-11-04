@@ -29,6 +29,33 @@ pub const RAIL_VIEWS: [DrawerView; 6] = [
     DrawerView::Config,
 ];
 
+/// The side of the window the rail sits on. Moves from the rail are
+/// spatial ([`rail_move_target`]): they mirror if the rail ever moves.
+pub const RAIL_SIDE: Side = Side::Left;
+
+/// The drawer a `MoveViewTo…Drawer` chord pressed on the rail moves the
+/// cursor's view to: the one toward `to`, which is the drawer beside the
+/// rail (the rail is at the window's edge, so the nearest drawer that
+/// way). `None` toward the window's edge: nothing is there.
+pub fn rail_move_target(to: Side) -> Option<Side> {
+    (to != RAIL_SIDE).then_some(RAIL_SIDE)
+}
+
+/// The hint an empty drawer or an empty slot shows: how a view gets there.
+/// `right` and `left` are the move chords as the keymap binds them (`None`
+/// when unbound, and then left out).
+pub fn empty_slot_hint(right: Option<&str>, left: Option<&str>) -> String {
+    let chords: Vec<&str> = [right, left].into_iter().flatten().collect();
+    if chords.is_empty() {
+        "No view here. Pick one from the rail.".to_string()
+    } else {
+        format!(
+            "No view here. Move one with {}, or pick one from the rail.",
+            chords.join(" / ")
+        )
+    }
+}
+
 /// Whether the rail offers `view`.
 pub fn is_on_rail(view: DrawerView) -> bool {
     RAIL_VIEWS.contains(&view)
@@ -97,7 +124,10 @@ fn ours(id: &str) -> Option<DrawerView> {
 
 /// The layout the `[gui]` table describes: each view placed at its side and
 /// slot, shown or hidden, each drawer at its persisted width and split
-/// ratio, shown or hidden; the editor has the focus.
+/// ratio, shown or hidden; the editor has the focus. With `[gui.views]` a
+/// drawer saved visible stays visible even when it shows nothing (it was
+/// toggled open empty, [`PanelLayout::open_drawer`]); empty slots are
+/// session-only and never come back.
 ///
 /// Lenient, never fatal: unknown ids and views the rail does not offer are
 /// skipped, a second view shown at one slot stays hidden, and a table that
@@ -109,6 +139,7 @@ fn ours(id: &str) -> Option<DrawerView> {
 /// ([`restore_legacy`]).
 pub fn restore(gui: &GuiSettings) -> PanelLayout<DrawerView> {
     let mut layout = PanelLayout::empty(gui.drawer_width(Side::Left));
+    let entries = gui.view_entries().is_some();
     match gui.view_entries() {
         Some(entries) => {
             let mut placed: Vec<(DrawerView, ViewEntry)> = entries
@@ -136,7 +167,11 @@ pub fn restore(gui: &GuiSettings) -> PanelLayout<DrawerView> {
     for side in SIDES {
         layout.set_drawer_width(side, gui.drawer_width(side), UNCLAMPED);
         if gui.drawer_visible(side) {
-            layout.show(Panel::Drawer(side));
+            if entries {
+                layout.open_drawer(side);
+            } else {
+                layout.show(Panel::Drawer(side));
+            }
         }
     }
     layout.focus(Panel::Editor);
@@ -775,6 +810,59 @@ broken = "left"
         assert_eq!(
             restore(&settings).slot_views(Side::Left),
             layout.slot_views(Side::Left)
+        );
+    }
+
+    #[test]
+    fn an_empty_drawer_toggled_open_round_trips_visible() {
+        let mut settings = gui("");
+        let mut layout = restore(&settings);
+        assert!(!layout.open_drawer(Side::Right));
+        record(&layout, &mut settings);
+        assert!(settings.drawer_visible(Side::Right));
+        let back = restore(&settings);
+        assert!(back.is_visible(Panel::Drawer(Side::Right)));
+        assert!(back.slots(Side::Right).is_empty());
+        assert_eq!(back.focused(), Panel::Editor);
+    }
+
+    #[test]
+    fn the_empty_slot_is_never_saved() {
+        let mut settings = gui("");
+        let mut layout = restore(&settings);
+        record(&layout, &mut settings);
+        let before = settings.clone();
+        layout.split_empty(Side::Left).unwrap();
+        let mut with_marker = before.clone();
+        record(&layout, &mut with_marker);
+        // Only the split ratio the empty slot exposes may be written.
+        assert_eq!(entries(&with_marker), entries(&before));
+        let back = restore(&with_marker);
+        assert_eq!(back.empty_slot(Side::Left), None);
+        assert_eq!(back.slots(Side::Left), [Some(DrawerView::Files)]);
+    }
+
+    #[test]
+    fn rail_moves_are_spatial() {
+        assert_eq!(RAIL_SIDE, Side::Left);
+        assert_eq!(rail_move_target(Side::Right), Some(Side::Left));
+        assert_eq!(rail_move_target(Side::Left), None);
+    }
+
+    #[test]
+    fn the_empty_slot_hint_names_the_bound_chords() {
+        assert_eq!(
+            empty_slot_hint(Some("Alt+Shift+Right"), Some("Alt+Shift+Left")),
+            "No view here. Move one with Alt+Shift+Right / Alt+Shift+Left, \
+             or pick one from the rail."
+        );
+        assert_eq!(
+            empty_slot_hint(None, Some("Alt+Shift+Left")),
+            "No view here. Move one with Alt+Shift+Left, or pick one from the rail."
+        );
+        assert_eq!(
+            empty_slot_hint(None, None),
+            "No view here. Pick one from the rail."
         );
     }
 

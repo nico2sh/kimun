@@ -549,11 +549,16 @@ fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
     started.press_key("alt-shift-left", cx);
     assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
 
-    // From the rail, the cursor's view.
+    // From the rail the move is spatial: Alt+Shift+Right brings the
+    // cursor's view (FILES, moved right first) to the drawer beside the
+    // rail; Alt+Shift+Left points at the window's edge and moves nothing.
+    started.press_key("alt-shift-right", cx);
+    assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
     cx.update_window(started.handle, |_, window, cx| window.click("rail", cx))
         .unwrap();
     started.press_key("alt-shift-right", cx);
-    assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
+    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
+    assert!(started.views(Side::Right, cx).is_empty());
     started.press_key("alt-shift-left", cx);
     assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
     assert_eq!(started.focused(cx), Panel::Rail);
@@ -568,11 +573,19 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "top.md");
     focus_files(&started, cx);
+    // Split opens an empty slot below; the rail cursor's Find goes there.
     started.press_key("alt-shift-s", cx);
+    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
+    cx.update_window(started.handle, |_, window, cx| window.click("rail", cx))
+        .unwrap();
+    started.press_key("down", cx);
+    started.press_key("alt-shift-down", cx);
     assert_eq!(
         started.views(Side::Left, cx),
         [DrawerView::Files, DrawerView::Find]
     );
+    started.press_key("alt-right", cx);
+    started.press_key("alt-down", cx);
     assert_eq!(
         started.region(cx),
         Region::Slot {
@@ -620,18 +633,17 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     assert_eq!(started.query(cx), "");
 
     // Moved to the empty right drawer (its top slot) and split there,
-    // from the filter: the new view fills the free bottom position.
+    // from the filter: FILES moves down into the empty slot.
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
     started.press_key("alt-shift-s", cx);
-    assert_eq!(started.views(Side::Right, cx)[0], DrawerView::Files);
-    started.press_key("alt-up", cx);
     assert!(started.filter_focused(cx));
     started.press_key("alt-shift-down", cx);
+    let slots = cx.read(|cx| started.workspace.read(cx).layout.slots(Side::Right));
     assert_eq!(
-        started.views(Side::Right, cx)[1],
-        DrawerView::Files,
-        "swapped from the filter in the right drawer"
+        slots,
+        [None, Some(DrawerView::Files)],
+        "moved from the filter in the right drawer"
     );
     assert!(started.filter_focused(cx));
 }

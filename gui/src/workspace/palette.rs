@@ -9,7 +9,9 @@
 //! rows (`+window · toggle right drawer`, moving and splitting drawer views,
 //! directional focus, find and replace, following a link) follow them. A
 //! row the window cannot run is shown disabled with the reason in its
-//! trailing slot; a runnable one shows its chord there, when it has one.
+//! trailing slot; a runnable one shows there its leader sequence (a leaf,
+//! from the gateway that works where the keyboard was: `Space` in vim
+//! Normal, the `Leader` chord elsewhere) and its chord, when it has one.
 //! Availability is decided when the palette opens, against the panel that
 //! had the keyboard then (the opener).
 //!
@@ -23,13 +25,14 @@
 
 use std::cell::Cell;
 
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, WeakEntity, Window, div,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Rgba,
+    SharedString, Styled as _, WeakEntity, Window, div,
 };
 use kimun_notes::keys::leader::LeaderAction;
 use kimun_notes::logic::actions::ActionShortcuts;
@@ -44,6 +47,7 @@ use super::modal::ModalKind;
 use super::route::{NEEDS_DRAWER_FOCUS, NEEDS_NOTE_FOCUS};
 use crate::input;
 use crate::keymap;
+use crate::theme;
 
 /// The palette's width, in rems.
 const WIDTH_REMS: f32 = 36.;
@@ -64,6 +68,11 @@ pub(crate) struct PaletteEntry {
     run: PaletteRun,
     /// The chord that runs the same thing, for the trailing slot.
     hint: Option<KeyInput>,
+    /// A leaf's leader sequence from the active gateway (`Space n w`), for
+    /// the trailing slot.
+    sequence: Option<SharedString>,
+    /// The sequence's colour (quiet: the chord's key caps lead).
+    quiet: Rgba,
     /// Why the row cannot run now; `None` when it can.
     blocked: Option<&'static str>,
 }
@@ -90,15 +99,23 @@ impl PaletteEntry {
         self.blocked
     }
 
-    /// The kit row: the label, then the reason it is disabled or its chord.
+    #[cfg(test)]
+    pub(crate) fn sequence(&self) -> Option<&str> {
+        self.sequence.as_deref()
+    }
+
+    /// The kit row: the label, then the reason it is disabled, or its leader
+    /// sequence and its chord.
     fn item(&self) -> CommandItem {
         let label = self.label.clone();
         let blocked = self.blocked;
         let hint = self.hint;
+        let sequence = self.sequence.clone();
+        let quiet = self.quiet;
         CommandItem::new()
             .label(self.label.clone())
             .disabled(blocked.is_some())
-            .child(move |_, _| {
+            .child(move |_, cx| {
                 div()
                     .flex()
                     .flex_row()
@@ -107,10 +124,22 @@ impl PaletteEntry {
                     .min_w_0()
                     .gap_2()
                     .child(div().flex_1().min_w_0().truncate().child(label.clone()))
-                    .map(|row| match (blocked, hint) {
-                        (Some(reason), _) => row.child(div().flex_none().text_xs().child(reason)),
-                        (None, Some(chord)) => row.child(Kbd::new(input::keystroke(chord))),
-                        (None, None) => row,
+                    .map(|row| match blocked {
+                        Some(reason) => row.child(div().flex_none().text_xs().child(reason)),
+                        None => row
+                            .when_some(sequence.clone(), |row, keys| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(quiet)
+                                        .child(keys),
+                                )
+                            })
+                            .when_some(hint, |row, chord| {
+                                row.child(Kbd::new(input::keystroke(chord)))
+                            }),
                     })
             })
     }
@@ -255,11 +284,15 @@ impl Workspace {
     pub(crate) fn palette_entries(&self, opener: Panel, cx: &App) -> Vec<PaletteEntry> {
         let keymap = keymap::active(cx);
         let tree = self.leader_tree();
-        let leaves = palette_rows(&tree, "").into_iter().map(|row| {
+        let gateway = self.active_gateway(opener, cx);
+        let quiet = theme::muted(&self.theme);
+        let leaves = palette_rows(&tree, &gateway).into_iter().map(|row| {
             let route = self.route_of(row.action);
             PaletteEntry {
                 label: row.label.into(),
                 hint: leaf_chord(row.action).and_then(|a| keymap.chord_for(&a)),
+                sequence: Some(row.keys.into()),
+                quiet,
                 blocked: self.route_block(&route, opener, cx),
                 run: PaletteRun::Leaf(row.action),
             }
@@ -269,6 +302,8 @@ impl Workspace {
             .map(|(label, action)| PaletteEntry {
                 label: label.into(),
                 hint: keymap.chord_for(&action),
+                sequence: None,
+                quiet,
                 blocked: self.chord_block(&action, opener, cx),
                 run: PaletteRun::Chord(action),
             });
@@ -314,6 +349,8 @@ impl Workspace {
         if super::modal::dialog_open(window, cx) {
             return;
         }
+        // A modal takes every key: no sequence survives under it.
+        self.cancel_leader(cx);
         let entries = self.palette_entries(self.layout.focused(), cx);
         let workspace = cx.entity().downgrade();
         let palette = cx.new(|cx| Palette::new(entries, workspace, window, cx));

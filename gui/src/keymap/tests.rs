@@ -150,6 +150,7 @@ fn default_tables() {
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
             lw("ctrl+shift+h", A::ReplaceInBuffer),
+            lw("ctrl+shift+b", A::Leader),
             lw("ctrl+shift+p", A::OpenCommandPalette),
             lw("alt+left", A::FocusRegion(Dir::Left)),
             lw("alt+right", A::FocusRegion(Dir::Right)),
@@ -178,6 +179,7 @@ fn default_tables() {
             lw("cmd+enter", A::FollowLink),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
+            lw("cmd+shift+b", A::Leader),
             lw("cmd+shift+p", A::OpenCommandPalette),
             lw("cmd+alt+left", A::FocusRegion(Dir::Left)),
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
@@ -318,7 +320,26 @@ fn palette_and_quit_chords_from_every_panel() {
         Some(chord("ctrl+q")),
         "the default, not the twin"
     );
-    assert_eq!(lw.chord_for(&A::Leader), None);
+}
+
+/// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim
+/// too; bare Ctrl+B stays unbound (desktop "Bold"), and the gateway has no
+/// twin of its own.
+#[test]
+fn the_leader_chord_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(lw.resolve(chord("ctrl+shift+b"), at), Some(&A::Leader));
+            assert_eq!(lw.resolve(chord("ctrl+b"), at), None);
+            assert_eq!(mac.resolve(chord("cmd+shift+b"), at), Some(&A::Leader));
+            assert_eq!(mac.resolve(chord("cmd+b"), at), None);
+        }
+    }
+    assert_eq!(lw.chord_for(&A::Leader), Some(chord("ctrl+shift+b")));
+    assert_eq!(mac.chord_for(&A::Leader), Some(chord("cmd+shift+b")));
 }
 
 /// A vim twin yields to another action's default: Ctrl+Shift+T is the

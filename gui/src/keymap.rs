@@ -179,6 +179,11 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The command palette (M6): VS Code's chord. Primary+P stays free for
         // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
         A::OpenCommandPalette => &["primary+shift+p"],
+        // The leader gateway (M6): the TUI's Ctrl+B plus Shift, because
+        // Cmd/Ctrl+B is "Bold" in desktop editors. Not a bare Ctrl+letter, so
+        // no twin; vim reads no Ctrl+Shift+B. Under vim the editor's Normal
+        // mode also arms it with a bare Space (the workspace's, not a chord).
+        A::Leader => &["primary+shift+b"],
         // Close the window through its close guard (the open note is flushed
         // first). Cmd+Q is the platform's quit on macOS; vim reads no Ctrl+Q.
         A::Quit => &["primary+q"],
@@ -195,8 +200,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         | A::OpenSavedSearches
         | A::SaveCurrentQuery
         | A::OpenAsk
-        | A::SwitchWorkspace
-        | A::Leader => return None,
+        | A::SwitchWorkspace => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
     })
