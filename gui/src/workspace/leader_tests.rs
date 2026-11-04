@@ -54,7 +54,7 @@ fn which_key(shell: &Shell, cx: &TestAppContext) -> Option<(String, usize)> {
             .read(cx)
             .leader
             .which_key()
-            .map(|m| (m.pressed().to_string(), m.rows().len()))
+            .map(|m| (m.pressed().to_string(), m.row_count()))
     })
 }
 

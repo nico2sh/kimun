@@ -71,8 +71,6 @@ pub(crate) struct PaletteEntry {
     /// A leaf's leader sequence from the active gateway (`Space n w`), for
     /// the trailing slot.
     sequence: Option<SharedString>,
-    /// The sequence's colour (quiet: the chord's key caps lead).
-    quiet: Rgba,
     /// Why the row cannot run now; `None` when it can.
     blocked: Option<&'static str>,
 }
@@ -105,13 +103,12 @@ impl PaletteEntry {
     }
 
     /// The kit row: the label, then the reason it is disabled, or its leader
-    /// sequence and its chord.
-    fn item(&self) -> CommandItem {
+    /// sequence (in `quiet`: the chord's key caps lead) and its chord.
+    fn item(&self, quiet: Rgba) -> CommandItem {
         let label = self.label.clone();
         let blocked = self.blocked;
         let hint = self.hint;
         let sequence = self.sequence.clone();
-        let quiet = self.quiet;
         CommandItem::new()
             .label(self.label.clone())
             .disabled(blocked.is_some())
@@ -193,11 +190,14 @@ pub(crate) struct Palette {
     /// Indices into `entries` matching the query, best first.
     visible: Vec<usize>,
     workspace: WeakEntity<Workspace>,
+    /// The leader sequences' colour, one for every row.
+    quiet: Rgba,
 }
 
 impl Palette {
     fn new(
         entries: Vec<PaletteEntry>,
+        quiet: Rgba,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -208,6 +208,7 @@ impl Palette {
             entries,
             visible,
             workspace,
+            quiet,
         }
     }
 
@@ -252,11 +253,12 @@ impl Render for Palette {
         let this = cx.entity().downgrade();
         let confirm = this.clone();
         let workspace = self.workspace.clone();
+        let quiet = self.quiet;
         Command::new(&self.state)
             .bordered(false)
             .filterable(false)
             .placeholder("Type a command")
-            .items(self.visible().map(PaletteEntry::item))
+            .items(self.visible().map(|entry| entry.item(quiet)))
             .on_query(move |query, _, cx| {
                 this.update(cx, |palette, cx| palette.on_query(query, cx))
                     .ok();
@@ -283,27 +285,25 @@ impl Workspace {
     /// against `opener`, the panel that has the keyboard.
     pub(crate) fn palette_entries(&self, opener: Panel, cx: &App) -> Vec<PaletteEntry> {
         let keymap = keymap::active(cx);
-        let tree = self.leader_tree();
         let gateway = self.active_gateway(opener, cx);
-        let quiet = theme::muted(&self.theme);
-        let leaves = palette_rows(&tree, &gateway).into_iter().map(|row| {
-            let route = self.route_of(row.action);
-            PaletteEntry {
-                label: row.label.into(),
-                hint: leaf_chord(row.action).and_then(|a| keymap.chord_for(&a)),
-                sequence: Some(row.keys.into()),
-                quiet,
-                blocked: self.route_block(&route, opener, cx),
-                run: PaletteRun::Leaf(row.action),
-            }
-        });
+        let leaves = palette_rows(self.leader.tree(), &gateway)
+            .into_iter()
+            .map(|row| {
+                let route = self.route_of(row.action);
+                PaletteEntry {
+                    label: row.label.into(),
+                    hint: leaf_chord(row.action).and_then(|a| keymap.chord_for(&a)),
+                    sequence: Some(row.keys.into()),
+                    blocked: self.route_block(&route, opener, cx),
+                    run: PaletteRun::Leaf(row.action),
+                }
+            });
         let chords = chord_rows()
             .into_iter()
             .map(|(label, action)| PaletteEntry {
                 label: label.into(),
                 hint: keymap.chord_for(&action),
                 sequence: None,
-                quiet,
                 blocked: self.chord_block(&action, opener, cx),
                 run: PaletteRun::Chord(action),
             });
@@ -353,7 +353,8 @@ impl Workspace {
         self.cancel_leader(cx);
         let entries = self.palette_entries(self.layout.focused(), cx);
         let workspace = cx.entity().downgrade();
-        let palette = cx.new(|cx| Palette::new(entries, workspace, window, cx));
+        let quiet = theme::muted(&self.theme);
+        let palette = cx.new(|cx| Palette::new(entries, quiet, workspace, window, cx));
         let width = window.rem_size() * WIDTH_REMS;
         // The builder re-runs whenever the dialog layer rebuilds: focus the
         // query only on the first run of this opening.

@@ -156,6 +156,58 @@ fn the_right_drawer_toggles_and_resizes_beside_the_editor(cx: &mut TestAppContex
     .unwrap();
 }
 
+/// The hint is built from the keymap once, not per frame, and rebuilt when
+/// the keymap is replaced: with the move chords unbound it stops naming them,
+/// and the leader gateway's label follows too.
+#[gpui_kit::test]
+fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
+    use crate::keymap::{self, Keymap, Platform};
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.press("ctrl-shift-t", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find(empty_slot_id(Side::Right)).label(), Some(HINT));
+        assert_eq!(
+            shell.workspace.read(cx).leader_chord_label().as_ref(),
+            "Ctrl+Shift+B"
+        );
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let overrides = [
+            ("MoveViewToRightDrawer", vec![]),
+            ("MoveViewToLeftDrawer", vec![]),
+            ("Leader", vec![]),
+        ]
+        .into_iter()
+        .map(|(name, chords)| (name.to_string(), chords))
+        .collect();
+        let (unbound, errors) = Keymap::load(Platform::LinuxWindows, &overrides);
+        assert!(errors.is_empty(), "{errors:?}");
+        keymap::init(cx, unbound);
+    });
+    cx.run_until_parked();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(empty_slot_id(Side::Right)).label(),
+            Some("No view here. Pick one from the rail.")
+        );
+        assert_eq!(
+            shell.workspace.read(cx).leader_chord_label().as_ref(),
+            "Leader"
+        );
+    })
+    .unwrap();
+}
+
 /// A drawer toggled open empty shows the hint in its whole height, survives
 /// a reopen, and the move chords from a drawer's view fill it.
 #[gpui_kit::test]

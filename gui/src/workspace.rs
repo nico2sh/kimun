@@ -63,7 +63,6 @@ use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_han
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -74,7 +73,6 @@ use gpui_kit::{
     rems,
 };
 use kimun_core::nfs::VaultPath;
-use kimun_notes::keys::leader::LeaderNode;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{
@@ -321,6 +319,33 @@ pub(crate) struct Workspace {
     _editor_events: Subscription,
     /// The pending leader sequence and its which-key popup ([`leader`]).
     pub(crate) leader: LeaderState,
+    /// The active keymap's chords as the window shows them, rebuilt when
+    /// the keymap is replaced, never per frame.
+    chord_labels: ChordLabels,
+    _keymap_watch: Subscription,
+}
+
+/// The labels the window derives from the active keymap's chords.
+struct ChordLabels {
+    /// What an empty drawer and an empty slot say
+    /// ([`shell_layout::empty_slot_hint`]).
+    empty_slot_hint: SharedString,
+    /// The `Leader` chord (`Ctrl+Shift+B`), or a stand-in when unbound.
+    leader: SharedString,
+}
+
+impl ChordLabels {
+    fn new(cx: &App) -> Self {
+        let chord = |action: ActionShortcuts| keymap::chord_label(cx, &action);
+        Self {
+            empty_slot_hint: shell_layout::empty_slot_hint(
+                chord(ActionShortcuts::MoveViewToRightDrawer).as_deref(),
+                chord(ActionShortcuts::MoveViewToLeftDrawer).as_deref(),
+            )
+            .into(),
+            leader: leader::gateway_label(chord(ActionShortcuts::Leader)),
+        }
+    }
 }
 
 impl Workspace {
@@ -354,6 +379,10 @@ impl Workspace {
             .ok();
         });
         let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
+        let keymap_watch = keymap::observe(cx, |this: &mut Self, cx| {
+            this.chord_labels = ChordLabels::new(cx);
+            cx.notify();
+        });
         Self {
             layout,
             editor,
@@ -392,6 +421,8 @@ impl Workspace {
             settings: None,
             _editor_events: editor_events,
             leader: LeaderState::default(),
+            chord_labels: ChordLabels::new(cx),
+            _keymap_watch: keymap_watch,
         }
     }
 
@@ -405,18 +436,6 @@ impl Workspace {
     ) {
         match event {
             EditorEvent::OpenPalette => self.open_palette(window, cx),
-        }
-    }
-
-    /// The configured leader tree (`[leader]` overrides applied), the one
-    /// the palette lists; the default tree before [`Self::start`].
-    pub(crate) fn leader_tree(&self) -> LeaderNode {
-        match self.settings.as_ref() {
-            Some(settings) => settings
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .leader_tree(),
-            None => kimun_notes::keys::leader::leader_tree(),
         }
     }
 
@@ -437,6 +456,14 @@ impl Workspace {
         self.listen(rx, cx);
         self.tx = Some(tx.clone());
         self.settings = Some(settings.clone());
+        // The configured leader tree, built once here: the engine keeps it
+        // for every sequence and the palette lists it. Whatever replaces or
+        // reloads the settings later must call `LeaderState::set_tree` again.
+        let tree = settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .leader_tree();
+        self.leader.set_tree(tree);
         self.empty = startup::empty_state(&start);
         if let Start::Vault(VaultStart { vault, name, first }) = start {
             self.notes = Some(NoteHost::new(NoteSession::new(
@@ -833,11 +860,7 @@ impl Workspace {
     /// The visible drawer with an empty slot a rail move fills: the one
     /// beside the rail first.
     fn empty_slot_side(&self) -> Option<Side> {
-        let other = match RAIL_SIDE {
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
-        };
-        [RAIL_SIDE, other].into_iter().find(|side| {
+        [RAIL_SIDE, RAIL_SIDE.opposite()].into_iter().find(|side| {
             self.layout.is_visible(Panel::Drawer(*side)) && self.layout.empty_slot(*side).is_some()
         })
     }
@@ -982,23 +1005,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dialog = modal::dialog_open(window, cx);
         // A pending leader sequence owns every key, in every panel, ahead of
         // the editor's text input; a vim Normal Space arms one. Never under
         // a modal: one cannot open while a sequence is pending, and nothing
-        // arms a sequence over one.
-        if dialog {
-            self.cancel_leader(cx);
-        } else if self.intercept_leader_key(event, window, cx) {
-            cx.stop_propagation();
-            cx.notify();
-            return;
+        // arms a sequence over one. Any other key skips this (and the
+        // modal check) cheaply.
+        if self.leader_wants(event) {
+            if modal::dialog_open(window, cx) {
+                self.cancel_leader(cx);
+            } else if self.intercept_leader_key(event, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
         }
         if event.input_preference == InputPreference::CharacterInput {
             return;
         }
         // A modal owns every key but its own chord (the palette's toggle).
-        if dialog {
+        if modal::dialog_open(window, cx) {
             if self.intercept_modal_key(event, window, cx) {
                 cx.stop_propagation();
                 cx.notify();
@@ -1054,11 +1079,11 @@ impl Workspace {
     ) -> bool {
         match action {
             ActionShortcuts::OpenCommandPalette => self.toggle_palette(window, cx),
-            // The leader gateway; again while pending, it cancels (the
-            // interceptor sees that press first).
-            ActionShortcuts::Leader if self.leader.is_pending() => self.cancel_leader(cx),
+            // The leader gateway. Never seen here while a sequence is
+            // pending: the interceptor takes every key then, and the gateway
+            // again cancels there ([`Self::intercept_leader_key`]).
             ActionShortcuts::Leader => {
-                let gateway = self.leader_chord_label(cx);
+                let gateway = self.leader_chord_label();
                 self.start_leader(gateway, window, cx);
             }
             ActionShortcuts::Quit => self.request_close(window, cx),
@@ -1403,31 +1428,17 @@ impl Workspace {
             )
     }
 
-    /// What an empty drawer and an empty slot say: how to get a view there,
-    /// with the move chords the keymap binds.
-    pub(crate) fn empty_slot_hint(&self, cx: &App) -> String {
-        let keymap = keymap::active(cx);
-        let chord = |action: ActionShortcuts| {
-            keymap
-                .chord_for(&action)
-                .map(|key| Kbd::format(&input::keystroke(key)))
-        };
-        shell_layout::empty_slot_hint(
-            chord(ActionShortcuts::MoveViewToRightDrawer).as_deref(),
-            chord(ActionShortcuts::MoveViewToLeftDrawer).as_deref(),
-        )
-    }
-
     /// `side`'s placeholder: its empty slot (`share` as for a slot), or the
     /// whole drawer while it shows no view. A quiet hint, not a target: a
-    /// view gets here only by a move.
+    /// view gets here only by a move; the hint names the move chords the
+    /// keymap binds ([`ChordLabels`]).
     fn render_empty_slot(
         &self,
         side: Side,
         share: Option<f64>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let hint = SharedString::from(self.empty_slot_hint(cx));
+        let hint = self.chord_labels.empty_slot_hint.clone();
         div()
             .id(empty_slot_id(side))
             .test_support()

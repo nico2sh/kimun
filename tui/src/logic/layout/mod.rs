@@ -56,6 +56,16 @@ pub enum Side {
     Right,
 }
 
+impl Side {
+    /// The other side of the editor.
+    pub fn opposite(self) -> Side {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        }
+    }
+}
+
 /// A persistent panel in the layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {

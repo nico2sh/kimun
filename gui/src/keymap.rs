@@ -25,7 +25,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
-use gpui_kit::{App, Global};
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::{App, Context, Global, Subscription};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Dir, Panel};
@@ -528,6 +529,23 @@ pub fn active(cx: &App) -> Rc<Keymap> {
     cx.try_global::<ActiveKeymap>()
         .map(|active| active.0.clone())
         .expect("keymap::init must run before any view resolves a key")
+}
+
+/// The chord the active keymap binds `action` to, written the platform's
+/// way (`Ctrl+Shift+B`, `⌘⇧B`), for a hint. `None` when unbound.
+pub(crate) fn chord_label(cx: &App, action: &ActionShortcuts) -> Option<String> {
+    active(cx)
+        .chord_for(action)
+        .map(|key| Kbd::format(&crate::input::keystroke(key)))
+}
+
+/// Call `f` on `view` whenever [`init`] replaces the active keymap, so a
+/// view can rebuild what it derived from the chords.
+pub(crate) fn observe<T: 'static>(
+    cx: &mut Context<T>,
+    mut f: impl FnMut(&mut T, &mut Context<T>) + 'static,
+) -> Subscription {
+    cx.observe_global::<ActiveKeymap>(move |view, cx| f(view, cx))
 }
 
 #[cfg(test)]
