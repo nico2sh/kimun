@@ -82,12 +82,16 @@ pub enum ActionShortcuts {
     /// Save the open note now (the leader's `w` in the TUI, which binds no
     /// chord to it).
     SaveNote,
+    /// Swap the focused drawer view with the slot above it in a split drawer.
+    MoveViewUp,
+    /// Swap the focused drawer view with the slot below it in a split drawer.
+    MoveViewDown,
 }
 
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 46] = [
+    pub const ALL: [ActionShortcuts; 48] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -134,6 +138,8 @@ impl ActionShortcuts {
         ActionShortcuts::UnsplitDrawerSlot,
         ActionShortcuts::ToggleRightDrawer,
         ActionShortcuts::SaveNote,
+        ActionShortcuts::MoveViewUp,
+        ActionShortcuts::MoveViewDown,
     ];
 
     /// The layout direction a `FocusRegion` action moves focus in.
@@ -182,6 +188,8 @@ impl Display for ActionShortcuts {
             ActionShortcuts::UnsplitDrawerSlot => "UnsplitDrawerSlot".to_string(),
             ActionShortcuts::ToggleRightDrawer => "ToggleRightDrawer".to_string(),
             ActionShortcuts::SaveNote => "SaveNote".to_string(),
+            ActionShortcuts::MoveViewUp => "MoveViewUp".to_string(),
+            ActionShortcuts::MoveViewDown => "MoveViewDown".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -233,6 +241,8 @@ impl TryFrom<String> for ActionShortcuts {
             "UnsplitDrawerSlot" => ActionShortcuts::UnsplitDrawerSlot,
             "ToggleRightDrawer" => ActionShortcuts::ToggleRightDrawer,
             "SaveNote" => ActionShortcuts::SaveNote,
+            "MoveViewUp" => ActionShortcuts::MoveViewUp,
+            "MoveViewDown" => ActionShortcuts::MoveViewDown,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -294,9 +304,11 @@ mod tests {
             ActionShortcuts::UnsplitDrawerSlot => 28,
             ActionShortcuts::ToggleRightDrawer => 29,
             ActionShortcuts::SaveNote => 30,
+            ActionShortcuts::MoveViewUp => 31,
+            ActionShortcuts::MoveViewDown => 32,
         }
     }
-    const VARIANTS: usize = 31;
+    const VARIANTS: usize = 33;
 
     #[test]
     fn all_lists_every_variant() {
@@ -338,6 +350,8 @@ mod tests {
             ActionShortcuts::SplitDrawerSlot,
             ActionShortcuts::UnsplitDrawerSlot,
             ActionShortcuts::ToggleRightDrawer,
+            ActionShortcuts::MoveViewUp,
+            ActionShortcuts::MoveViewDown,
         ]
         .iter()
         .map(ToString::to_string)
@@ -354,6 +368,8 @@ mod tests {
                 "SplitDrawerSlot",
                 "UnsplitDrawerSlot",
                 "ToggleRightDrawer",
+                "MoveViewUp",
+                "MoveViewDown",
             ]
         );
     }
@@ -366,9 +382,22 @@ mod tests {
             ActionShortcuts::try_from("SaveNote".to_string()),
             Ok(ActionShortcuts::SaveNote)
         );
+    }
+
+    /// The slot-swap actions keep their on-disk names (GUI keymaps write
+    /// them) and come last, so the serialized keymap's order is unchanged.
+    #[test]
+    fn move_view_up_down_names() {
+        for (action, name) in [
+            (ActionShortcuts::MoveViewUp, "MoveViewUp"),
+            (ActionShortcuts::MoveViewDown, "MoveViewDown"),
+        ] {
+            assert_eq!(action.to_string(), name);
+            assert_eq!(ActionShortcuts::try_from(name.to_string()), Ok(action));
+        }
         assert_eq!(
             ActionShortcuts::ALL.last(),
-            Some(&ActionShortcuts::SaveNote)
+            Some(&ActionShortcuts::MoveViewDown)
         );
     }
 

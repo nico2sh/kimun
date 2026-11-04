@@ -12,12 +12,16 @@ pub mod doc_meta;
 pub mod editor;
 pub mod files;
 pub mod follow;
+pub mod leader_route;
 
 pub mod message;
 pub mod nav;
+pub mod overlay_open;
+pub mod palette;
 pub mod properties;
 pub mod session;
 pub mod sort;
 pub mod startup;
 pub mod text_action;
 pub mod text_match;
+pub mod which_key;

@@ -136,8 +136,9 @@ fn default_tables() {
     assert_eq!(
         table(&Keymap::defaults(LinuxWindows)),
         vec![
+            lw("ctrl+q", A::Quit),
+            lw("ctrl+shift+q", A::Quit),
             lw("ctrl+t", A::ToggleSidebar),
-            lw("ctrl+shift+t", A::ToggleSidebar),
             lw("ctrl+e", A::OpenFileBrowser),
             lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
@@ -149,17 +150,26 @@ fn default_tables() {
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
             lw("ctrl+shift+h", A::ReplaceInBuffer),
+            lw("ctrl+shift+p", A::OpenCommandPalette),
             lw("alt+left", A::FocusRegion(Dir::Left)),
             lw("alt+right", A::FocusRegion(Dir::Right)),
             lw("alt+up", A::FocusRegion(Dir::Up)),
             lw("alt+down", A::FocusRegion(Dir::Down)),
+            lw("alt+shift+left", A::MoveViewToLeftDrawer),
+            lw("alt+shift+right", A::MoveViewToRightDrawer),
+            lw("alt+shift+s", A::SplitDrawerSlot),
+            lw("alt+shift+u", A::UnsplitDrawerSlot),
+            lw("ctrl+shift+t", A::ToggleRightDrawer),
             lw("ctrl+s", A::SaveNote),
             lw("ctrl+shift+s", A::SaveNote),
+            lw("alt+shift+up", A::MoveViewUp),
+            lw("alt+shift+down", A::MoveViewDown),
         ]
     );
     assert_eq!(
         table(&Keymap::defaults(MacOs)),
         vec![
+            lw("cmd+q", A::Quit),
             lw("cmd+t", A::ToggleSidebar),
             lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
@@ -168,11 +178,19 @@ fn default_tables() {
             lw("cmd+enter", A::FollowLink),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
+            lw("cmd+shift+p", A::OpenCommandPalette),
             lw("cmd+alt+left", A::FocusRegion(Dir::Left)),
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
             lw("cmd+alt+up", A::FocusRegion(Dir::Up)),
             lw("cmd+alt+down", A::FocusRegion(Dir::Down)),
+            lw("cmd+alt+shift+left", A::MoveViewToLeftDrawer),
+            lw("cmd+alt+shift+right", A::MoveViewToRightDrawer),
+            lw("cmd+alt+shift+s", A::SplitDrawerSlot),
+            lw("cmd+alt+shift+u", A::UnsplitDrawerSlot),
+            lw("cmd+shift+t", A::ToggleRightDrawer),
             lw("cmd+s", A::SaveNote),
+            lw("cmd+alt+shift+up", A::MoveViewUp),
+            lw("cmd+alt+shift+down", A::MoveViewDown),
         ]
     );
 }
@@ -264,6 +282,76 @@ fn follow_link_is_primary_n_or_primary_enter_in_the_editor() {
             );
         }
     }
+}
+
+/// The command palette (M6) is primary+Shift+P and quitting primary+Q, from
+/// every panel and under vim too: the vim engine reads neither. Bare Ctrl+P
+/// stays unbound (a GUI quick-open convention), and the palette's chord has
+/// no twin of its own (it is not a bare Ctrl+letter); Quit's is Ctrl+Shift+Q.
+#[test]
+fn palette_and_quit_chords_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(
+                lw.resolve(chord("ctrl+shift+p"), at),
+                Some(&A::OpenCommandPalette)
+            );
+            assert_eq!(lw.resolve(chord("ctrl+q"), at), Some(&A::Quit));
+            assert_eq!(lw.resolve(chord("ctrl+shift+q"), at), Some(&A::Quit));
+            assert_eq!(lw.resolve(chord("ctrl+p"), at), None);
+            assert_eq!(
+                mac.resolve(chord("cmd+shift+p"), at),
+                Some(&A::OpenCommandPalette)
+            );
+            assert_eq!(mac.resolve(chord("cmd+q"), at), Some(&A::Quit));
+        }
+    }
+    assert_eq!(
+        lw.chord_for(&A::OpenCommandPalette),
+        Some(chord("ctrl+shift+p"))
+    );
+    assert_eq!(
+        lw.chord_for(&A::Quit),
+        Some(chord("ctrl+q")),
+        "the default, not the twin"
+    );
+    assert_eq!(lw.chord_for(&A::Leader), None);
+}
+
+/// A vim twin yields to another action's default: Ctrl+Shift+T is the
+/// right drawer's toggle, not Ctrl+T's twin. With the right toggle rebound,
+/// Ctrl+T gets its twin back.
+#[test]
+fn a_vim_twin_yields_to_another_default() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let twins: Vec<_> = lw
+        .bindings
+        .iter()
+        .filter(|b| b.chord == chord("ctrl+shift+t"))
+        .map(|b| b.action.clone())
+        .collect();
+    assert_eq!(twins, vec![A::ToggleRightDrawer]);
+    // Ctrl+T itself is still the left toggle in the vim editor.
+    assert_eq!(
+        lw.resolve(chord("ctrl+t"), ctx(Panel::Editor, true)),
+        Some(&A::ToggleSidebar)
+    );
+    let (keymap, errors) = Keymap::load(
+        LinuxWindows,
+        &overrides(&[("ToggleRightDrawer", &["primary+alt+b"])]),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        keymap.resolve(chord("ctrl+shift+t"), ctx(Panel::Editor, true)),
+        Some(&A::ToggleSidebar)
+    );
+    assert_eq!(
+        keymap.resolve(chord("ctrl+alt+b"), ctx(Panel::Rail, false)),
+        Some(&A::ToggleRightDrawer)
+    );
 }
 
 #[test]
@@ -377,6 +465,13 @@ fn linux_windows_resolution_table() {
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
+    let to_left = Some(A::MoveViewToLeftDrawer);
+    let to_right = Some(A::MoveViewToRightDrawer);
+    let split = Some(A::SplitDrawerSlot);
+    let unsplit = Some(A::UnsplitDrawerSlot);
+    let right_drawer = Some(A::ToggleRightDrawer);
+    let view_up = Some(A::MoveViewUp);
+    let view_down = Some(A::MoveViewDown);
     resolution(
         LinuxWindows,
         &[
@@ -385,8 +480,12 @@ fn linux_windows_resolution_table() {
             ("ctrl+shift+f", [find.clone(), find, None]),
             ("ctrl+h", [replace.clone(), replace.clone(), None]),
             ("ctrl+shift+h", [replace.clone(), replace, None]),
-            ("ctrl+t", [toggle.clone(), toggle.clone(), toggle.clone()]),
-            ("ctrl+shift+t", [toggle.clone(), toggle.clone(), toggle]),
+            // Ctrl+T has no vim twin: Ctrl+Shift+T is the right drawer's.
+            ("ctrl+t", [toggle.clone(), toggle.clone(), toggle]),
+            (
+                "ctrl+shift+t",
+                [right_drawer.clone(), right_drawer.clone(), right_drawer],
+            ),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
             ("ctrl+n", [follow.clone(), follow.clone(), None]),
@@ -400,6 +499,16 @@ fn linux_windows_resolution_table() {
             ("alt+down", [down.clone(), down.clone(), down]),
             ("ctrl+tab", [next.clone(), next.clone(), next]),
             ("ctrl+shift+tab", [prev.clone(), prev.clone(), prev]),
+            // Arranging views: the rail's and the drawers', never the
+            // editor's (it keeps Alt+Shift+Arrow).
+            ("alt+shift+left", [None, None, to_left]),
+            ("alt+shift+right", [None, None, to_right]),
+            ("alt+shift+up", [None, None, view_up]),
+            ("alt+shift+down", [None, None, view_down]),
+            ("alt+shift+s", [None, None, split]),
+            ("alt+shift+u", [None, None, unsplit]),
+            // The old right-drawer chord is free again.
+            ("ctrl+alt+b", [None, None, None]),
             // Not bound here: they reach the editor (or nothing).
             ("cmd+f", [None, None, None]),
             ("cmd+alt+left", [None, None, None]),
@@ -423,6 +532,13 @@ fn macos_resolution_table() {
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
+    let to_left = Some(A::MoveViewToLeftDrawer);
+    let to_right = Some(A::MoveViewToRightDrawer);
+    let split = Some(A::SplitDrawerSlot);
+    let unsplit = Some(A::UnsplitDrawerSlot);
+    let right_drawer = Some(A::ToggleRightDrawer);
+    let view_up = Some(A::MoveViewUp);
+    let view_down = Some(A::MoveViewDown);
     resolution(
         MacOs,
         &[
@@ -439,6 +555,19 @@ fn macos_resolution_table() {
             ("cmd+alt+down", [down.clone(), down.clone(), down]),
             ("ctrl+tab", [next.clone(), next.clone(), next]),
             ("ctrl+shift+tab", [prev.clone(), prev.clone(), prev]),
+            ("cmd+alt+shift+left", [None, None, to_left]),
+            ("cmd+alt+shift+right", [None, None, to_right]),
+            ("cmd+alt+shift+up", [None, None, view_up]),
+            ("cmd+alt+shift+down", [None, None, view_down]),
+            ("cmd+alt+shift+s", [None, None, split]),
+            ("cmd+alt+shift+u", [None, None, unsplit]),
+            (
+                "cmd+shift+t",
+                [right_drawer.clone(), right_drawer.clone(), right_drawer],
+            ),
+            ("cmd+alt+b", [None, None, None]),
+            // Option+Shift+Arrow is word selection on macOS: not ours.
+            ("alt+shift+left", [None, None, None]),
             // Ctrl is literal and free on macOS: the editor's (and vim's).
             ("ctrl+f", [None, None, None]),
             ("ctrl+h", [None, None, None]),

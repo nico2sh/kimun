@@ -526,6 +526,15 @@ impl Workspace {
         }));
     }
 
+    /// Close the window as its close button does (the Quit chord, the
+    /// palette's quit): through [`Self::should_close`], so the open note is
+    /// flushed first and the flush closes the window once written.
+    pub(crate) fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.should_close(cx) {
+            window.remove_window();
+        }
+    }
+
     /// Whether the window may close now. With edits to write it starts the
     /// close flush and says no; the flush closes the window when done.
     pub(crate) fn should_close(&mut self, cx: &mut Context<Self>) -> bool {

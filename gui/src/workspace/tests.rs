@@ -19,47 +19,47 @@ use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
 use crate::shell_layout;
 
-const HEIGHT: f32 = 480.;
+pub(super) const HEIGHT: f32 = 480.;
 const DRAWER: &str = "drawer-left";
 const DIVIDER: &str = "drawer-left-divider";
 
-struct Shell {
-    handle: AnyWindowHandle,
-    workspace: Entity<Workspace>,
+pub(super) struct Shell {
+    pub(super) handle: AnyWindowHandle,
+    pub(super) workspace: Entity<Workspace>,
 }
 
 impl Shell {
-    fn editor(&self, cx: &gpui_kit::App) -> Entity<EditorView> {
+    pub(super) fn editor(&self, cx: &gpui_kit::App) -> Entity<EditorView> {
         self.workspace.read(cx).editor.clone()
     }
 
-    fn text(&self, cx: &gpui_kit::App) -> String {
+    pub(super) fn text(&self, cx: &gpui_kit::App) -> String {
         self.editor(cx).read(cx).editor.get_text()
     }
 
-    fn focused(&self, cx: &gpui_kit::App) -> Panel {
+    pub(super) fn focused(&self, cx: &gpui_kit::App) -> Panel {
         self.workspace.read(cx).layout.focused()
     }
 
-    fn drawer_shown(&self, cx: &gpui_kit::App) -> bool {
+    pub(super) fn drawer_shown(&self, cx: &gpui_kit::App) -> bool {
         self.workspace
             .read(cx)
             .layout
             .is_visible(Panel::Drawer(Side::Left))
     }
 
-    fn drawer_view(&self, cx: &gpui_kit::App) -> DrawerView {
+    pub(super) fn drawer_view(&self, cx: &gpui_kit::App) -> DrawerView {
         self.workspace.read(cx).layout.slot_views(Side::Left)[0]
     }
 }
 
-fn gui(toml: &str) -> GuiSettings {
+pub(super) fn gui(toml: &str) -> GuiSettings {
     toml::from_str::<AppSettings>(toml).unwrap().gui
 }
 
 /// A shell `width` px wide, its layout read from `gui`, persisting to
 /// `store`, the editor (plain unless `vim`) showing `text`.
-fn open_shell(
+pub(super) fn open_shell(
     cx: &mut TestAppContext,
     width: f32,
     gui: &GuiSettings,
@@ -88,8 +88,9 @@ fn open_shell(
                 |window, cx| {
                     let editor =
                         cx.new(|cx| EditorView::new(Some(text), Theme::default(), vim, cx));
-                    let workspace =
-                        cx.new(|cx| Workspace::new(editor, Theme::default(), layout, store, cx));
+                    let workspace = cx.new(|cx| {
+                        Workspace::new(editor, Theme::default(), layout, store, window, cx)
+                    });
                     workspace.update(cx, |w, cx| w.apply_focus(window, cx));
                     workspace
                 },
@@ -99,7 +100,7 @@ fn open_shell(
     Shell { handle, workspace }
 }
 
-fn open_default(cx: &mut TestAppContext, text: &str) -> Shell {
+pub(super) fn open_default(cx: &mut TestAppContext, text: &str) -> Shell {
     open_shell(
         cx,
         1000.,
@@ -111,19 +112,19 @@ fn open_default(cx: &mut TestAppContext, text: &str) -> Shell {
 }
 
 /// A config path in a fresh temp dir (kept alive by the returned guard).
-fn temp_config() -> (tempfile::TempDir, PathBuf) {
+pub(super) fn temp_config() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.toml");
     (dir, path)
 }
 
 /// The `[gui]` table as the file now holds it.
-fn saved(path: &Path) -> GuiSettings {
+pub(super) fn saved(path: &Path) -> GuiSettings {
     let body = std::fs::read_to_string(path).expect("the layout was saved");
     toml::from_str::<AppSettings>(&body).unwrap().gui
 }
 
-fn close(a: Pixels, b: f32) -> bool {
+pub(super) fn close(a: Pixels, b: f32) -> bool {
     (f32::from(a) - b).abs() < 0.5
 }
 
@@ -338,7 +339,10 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
             Some(false)
         );
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        assert_eq!(saved(&path).drawer_views(Side::Left), ["tags"]);
+        assert_eq!(
+            super::drawer_tests::saved_shown(&path, Side::Left),
+            [DrawerView::Tags]
+        );
 
         // The pinned settings cell, at the bottom of the rail.
         let config = window.find(rail_cell_id(DrawerView::Config)).bounds();
@@ -352,7 +356,10 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
         assert!(window.try_find(DRAWER).is_none());
         assert_eq!(shell.focused(cx), Panel::Rail);
         assert!(!saved(&path).drawer_visible(Side::Left));
-        assert_eq!(saved(&path).drawer_views(Side::Left), ["config"]);
+        assert_eq!(
+            super::drawer_tests::saved_shown(&path, Side::Left),
+            [DrawerView::Config]
+        );
     })
     .unwrap();
 }

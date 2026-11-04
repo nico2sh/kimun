@@ -15,7 +15,9 @@
 //! chords the vim engine reads (R, C, X, V) are vim's on Linux and Windows,
 //! whatever the keymap says. Other Ctrl+letters stay the app's, vim or not
 //! (Ctrl+S saves, Ctrl+E opens FILES). Every default bound to a bare
-//! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads.
+//! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads, unless
+//! another default already holds that Ctrl+Shift chord (Ctrl+Shift+T is the
+//! right drawer's toggle, so Ctrl+T has no twin; vim reads no Ctrl+T).
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
 
@@ -72,6 +74,10 @@ enum Scope {
     Everywhere,
     /// Only while the editor is focused (the find bar is the editor's).
     Editor,
+    /// Only while the rail or a drawer is focused: arranging drawer views,
+    /// which acts on the focused slot (or the rail's cell). The editor keeps
+    /// these chords for itself.
+    Shell,
 }
 
 impl Scope {
@@ -81,6 +87,12 @@ impl Scope {
             | ActionShortcuts::ReplaceInBuffer
             | ActionShortcuts::FollowLink
             | ActionShortcuts::Text(_) => Scope::Editor,
+            ActionShortcuts::MoveViewToLeftDrawer
+            | ActionShortcuts::MoveViewToRightDrawer
+            | ActionShortcuts::SplitDrawerSlot
+            | ActionShortcuts::UnsplitDrawerSlot
+            | ActionShortcuts::MoveViewUp
+            | ActionShortcuts::MoveViewDown => Scope::Shell,
             _ => Scope::Everywhere,
         }
     }
@@ -93,6 +105,7 @@ impl Scope {
         match self {
             Scope::Everywhere => true,
             Scope::Editor => panel == Panel::Editor,
+            Scope::Shell => panel != Panel::Editor,
         }
     }
 }
@@ -141,9 +154,36 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Ctrl+Shift twin every bare Ctrl+letter gets. Never Shift+Enter: in
         // the editor that is a plain newline.
         A::FollowLink => &["primary+n", "primary+enter"],
-        // Not in the GUI yet (M5b-2, M5b-3, M6).
-        A::Quit
-        | A::OpenPreferences
+        // The right drawer's toggle: the left toggle plus Shift. It takes
+        // the Ctrl+Shift+T that would be Ctrl+T's vim twin (no twin is made
+        // for a chord another default holds); Ctrl+T needs none, as vim
+        // reads no Ctrl+T.
+        A::ToggleRightDrawer => &["primary+shift+t"],
+        // Arranging drawer views, only from the rail or a drawer: the
+        // directional-focus chord plus Shift carries the focused view.
+        // Left/Right move it to that drawer, Up/Down swap it with the slot
+        // above or below. Splitting and unsplitting are the same modifiers
+        // with S and U.
+        A::MoveViewToLeftDrawer if mac => &["cmd+alt+shift+left"],
+        A::MoveViewToLeftDrawer => &["alt+shift+left"],
+        A::MoveViewToRightDrawer if mac => &["cmd+alt+shift+right"],
+        A::MoveViewToRightDrawer => &["alt+shift+right"],
+        A::MoveViewUp if mac => &["cmd+alt+shift+up"],
+        A::MoveViewUp => &["alt+shift+up"],
+        A::MoveViewDown if mac => &["cmd+alt+shift+down"],
+        A::MoveViewDown => &["alt+shift+down"],
+        A::SplitDrawerSlot if mac => &["cmd+alt+shift+s"],
+        A::SplitDrawerSlot => &["alt+shift+s"],
+        A::UnsplitDrawerSlot if mac => &["cmd+alt+shift+u"],
+        A::UnsplitDrawerSlot => &["alt+shift+u"],
+        // The command palette (M6): VS Code's chord. Primary+P stays free for
+        // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
+        A::OpenCommandPalette => &["primary+shift+p"],
+        // Close the window through its close guard (the open note is flushed
+        // first). Cmd+Q is the platform's quit on macOS; vim reads no Ctrl+Q.
+        A::Quit => &["primary+q"],
+        // Not in the GUI yet (M6 and later).
+        A::OpenPreferences
         | A::SearchNotes
         | A::OpenNote
         | A::NewJournal
@@ -156,13 +196,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         | A::SaveCurrentQuery
         | A::OpenAsk
         | A::SwitchWorkspace
-        | A::Leader
-        | A::OpenCommandPalette
-        | A::MoveViewToLeftDrawer
-        | A::MoveViewToRightDrawer
-        | A::SplitDrawerSlot
-        | A::UnsplitDrawerSlot
-        | A::ToggleRightDrawer => return None,
+        | A::Leader => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
     })
@@ -349,24 +383,40 @@ impl Keymap {
             platform,
             bindings: Vec::new(),
         };
-        for action in ActionShortcuts::ALL {
-            if overridden.contains_key(&action) {
-                continue;
-            }
-            for written in default_chords(&action, platform).unwrap_or_default() {
-                let chord = parse_chord(written, platform)
-                    .unwrap_or_else(|e| panic!("default chord {written:?}: {e}"));
-                keymap.bind(&action, written, chord, &mut errors);
-                // The vim rule's twin: Ctrl+Shift for a bare Ctrl+letter.
-                if platform == Platform::LinuxWindows && is_bare_ctrl_letter(chord) {
-                    let twin = KeyInput::new(
-                        chord.key,
-                        Mods {
-                            shift: true,
-                            ..chord.mods
-                        },
-                    );
-                    keymap.bind(&action, written, twin, &mut errors);
+        // Every default chord in effect (overridden actions' are gone), so a
+        // vim twin can yield to a default that holds it.
+        let defaults: Vec<(ActionShortcuts, &str, KeyInput)> = ActionShortcuts::ALL
+            .into_iter()
+            .filter(|action| !overridden.contains_key(action))
+            .flat_map(|action| {
+                default_chords(&action, platform)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(move |written| {
+                        let chord = parse_chord(written, platform)
+                            .unwrap_or_else(|e| panic!("default chord {written:?}: {e}"));
+                        (action.clone(), *written, chord)
+                    })
+            })
+            .collect();
+        for (action, written, chord) in &defaults {
+            keymap.bind(action, written, *chord, &mut errors);
+            // The vim rule's twin: Ctrl+Shift for a bare Ctrl+letter, unless
+            // another action's default holds that chord.
+            if platform == Platform::LinuxWindows && is_bare_ctrl_letter(*chord) {
+                let twin = KeyInput::new(
+                    chord.key,
+                    Mods {
+                        shift: true,
+                        ..chord.mods
+                    },
+                );
+                let scope = Scope::of(action);
+                let taken = defaults.iter().any(|(other, _, c)| {
+                    *c == twin && other != action && Scope::of(other).overlaps(scope)
+                });
+                if !taken {
+                    keymap.bind(action, written, twin, &mut errors);
                 }
             }
         }
@@ -413,6 +463,15 @@ impl Keymap {
             chord,
             action: action.clone(),
         });
+    }
+
+    /// The chord `action` is bound to first (its written default, before any
+    /// vim twin), for a hint next to the command. `None` when unbound.
+    pub fn chord_for(&self, action: &ActionShortcuts) -> Option<KeyInput> {
+        self.bindings
+            .iter()
+            .find(|b| b.action == *action)
+            .map(|b| b.chord)
     }
 
     /// The action `chord` triggers in `ctx`, if any. `None` also when the vim

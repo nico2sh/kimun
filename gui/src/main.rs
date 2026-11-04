@@ -158,7 +158,7 @@ fn main() {
                     cx.new(|cx| EditorView::on_channel(theme.clone(), vim, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace =
-                        Workspace::new(editor, theme, layout, LayoutStore::UserConfig, cx);
+                        Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);
                     workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });

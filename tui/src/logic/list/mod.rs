@@ -8,7 +8,7 @@ mod core;
 mod load;
 mod seams;
 
-pub use self::core::{ListCore, ListHolder, ListSetup, Polled};
+pub use self::core::{ListCore, ListHolder, ListSetup, Polled, fuzzy_rank};
 pub use self::seams::{
     Emit, Filter, ListRow, Loaded, OrderFn, RankFn, RowSource, StaticRowSource, YankTarget,
 };

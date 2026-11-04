@@ -156,38 +156,8 @@ pub enum EditorIntent {
     Panel { fallback: PanelFallback },
 }
 
-/// Every overlay the editor screen can open, as a construction recipe the
-/// executor's one `build_overlay` match turns into the live overlay. Distinct
-/// from `OverlayKind` (the *presentation* kind): two recipes share
-/// `OverlayKind::NoteBrowser` (search browser vs file finder), so the kind
-/// alone cannot pick the opener.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OverlayOpen {
-    SearchBrowser,
-    FileFinder,
-    SavedSearches,
-    CommandPalette,
-    WorkspaceSwitcher,
-    ThemePicker,
-    /// The flat key-bindings help (F1).
-    Help,
-    /// The search query syntax reference (F1 over the Find panel).
-    QueryHelp,
-    /// The full leader-tree cheatsheet (leader `?`).
-    Cheatsheet,
-    SortQuery,
-    SortSidebar,
-    /// The sort dialog stacked over the open sortable note browser (Ctrl+K
-    /// search browser or Ctrl+O file finder) — the one
-    /// recipe that opens over an overlay instead of being refused by it.
-    SortBrowser,
-    /// The query syntax reference stacked over the open Ctrl+K browser —
-    /// the other recipe that opens over an overlay.
-    QueryHelpOverBrowser,
-    QuickNote,
-    /// The pinned-notes dialog (leader `f p`).
-    PinnedNotes,
-}
+/// The overlay recipes live in the Logic layer; re-exported at their old path.
+pub use crate::logic::overlay_open::OverlayOpen;
 
 /// Fallback applied when the focused panel does not consume the event.
 #[derive(Debug, Clone, Copy, PartialEq)]

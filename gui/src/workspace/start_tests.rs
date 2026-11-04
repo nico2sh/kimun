@@ -126,8 +126,14 @@ pub(super) fn open_started_with(
                 let editor =
                     cx.new(|cx| EditorView::on_channel(Theme::default(), vim, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
-                    let mut workspace =
-                        Workspace::new(editor, Theme::default(), layout, LayoutStore::Off, cx);
+                    let mut workspace = Workspace::new(
+                        editor,
+                        Theme::default(),
+                        layout,
+                        LayoutStore::Off,
+                        window,
+                        cx,
+                    );
                     workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });

@@ -1,5 +1,17 @@
 //! The `[gui]` table of the shared `config.toml` (ADR-0049 §6, ADR-0050 §5):
-//! the GUI's drawer placement, sizes and key overrides.
+//! the GUI's drawer placements, sizes and key overrides.
+//!
+//! Each placed view has its own entry, `[gui.views.<view-id>]`, with its
+//! `side` (`"left"` or `"right"`), its drawer `slot` (an index, 0 the top)
+//! and whether it is `shown`; a view never placed has none. Each drawer's
+//! geometry stays in flat keys: `drawer_<side>_width`, `drawer_<side>_visible`
+//! and `drawer_<side>_split` (one ratio per drawer).
+//!
+//! Earlier builds wrote per-drawer lists instead — `drawer_<side>` (every
+//! view placed there, top position first), `drawer_<side>_bottom` and
+//! `drawer_<side>_shown` — and before that `drawer_<side>_hidden` and
+//! `drawer_right_home`. They are still read, as legacy input, when the file
+//! has no `[gui.views]`, and dropped on the next GUI save.
 //!
 //! The TUI never reads it, but every config save goes through
 //! [`AppSettings`](super::AppSettings), so the table is kept as the raw TOML it
@@ -14,7 +26,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use toml::{Table, Value};
 
-use crate::logic::layout::Side;
+use crate::logic::layout::{MAX_DRAWER_SLOTS, Side};
 
 /// A drawer's width when the config does not give one, in the GUI's logical
 /// pixels. Clamping to the window is the layout model's job (`WidthLimits`).
@@ -26,6 +38,63 @@ pub const DEFAULT_SPLIT_RATIO: f64 = 0.5;
 pub const DEFAULT_LEFT_VIEWS: [&str; 1] = ["files"];
 
 const KEYS: &str = "keys";
+const VIEWS: &str = "views";
+
+/// One view's placement as `[gui.views.<view-id>]` records it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewEntry {
+    /// The drawer it is placed in.
+    pub side: Side,
+    /// Its drawer slot, an index from the top (0).
+    pub slot: usize,
+    /// Whether it is shown in that slot.
+    pub shown: bool,
+}
+
+/// The `side` value of a view entry.
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Left => "left",
+        Side::Right => "right",
+    }
+}
+
+/// A view entry read leniently: `None` unless it is a table with a `side` of
+/// `"left"` or `"right"` and a `slot` that is a non-negative integer. A slot
+/// past the last is the last; `shown` is true only when it is `true`.
+fn view_entry(value: &Value) -> Option<ViewEntry> {
+    let Value::Table(entry) = value else {
+        return None;
+    };
+    let side = match entry.get("side").and_then(Value::as_str).map(str::trim) {
+        Some("left") => Side::Left,
+        Some("right") => Side::Right,
+        _ => return None,
+    };
+    let slot = match entry.get("slot") {
+        Some(Value::Integer(i)) if *i >= 0 => {
+            usize::try_from(*i).map_or(MAX_DRAWER_SLOTS - 1, |i| i.min(MAX_DRAWER_SLOTS - 1))
+        }
+        _ => return None,
+    };
+    let shown = matches!(entry.get("shown"), Some(Value::Boolean(true)));
+    Some(ViewEntry { side, slot, shown })
+}
+
+/// A view hidden from a split drawer, as builds before placements recorded
+/// it in `drawer_<side>_hidden`: `{ view = "files", with = "find", slot = 0,
+/// split = 0.3 }`. Read only, to load such a file into placements.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LegacyHiddenSlot {
+    /// The hidden view's id.
+    pub view: String,
+    /// The id of the view that stayed in the drawer.
+    pub with: String,
+    /// The hidden view's slot: 0 (above `with`) or 1 (below).
+    pub slot: usize,
+    /// The drawer's first-slot share when the view was hidden.
+    pub split: f64,
+}
 
 /// The `[gui]` table. Missing means the defaults, which are today's layout:
 /// the file browser in a visible left drawer, the right drawer hidden and
@@ -49,6 +118,21 @@ fn key(side: Side, field: &str) -> String {
     }
 }
 
+/// The non-empty string ids of a TOML list, trimmed, first occurrence
+/// kept; `None` when `value` is missing or not a list.
+fn id_list(value: Option<&Value>) -> Option<Vec<String>> {
+    let Some(Value::Array(items)) = value else {
+        return None;
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for id in items.iter().filter_map(Value::as_str).map(str::trim) {
+        if !id.is_empty() && !ids.iter().any(|v| v == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Some(ids)
+}
+
 /// A TOML number as `f64`, if it is one and finite.
 fn finite(value: &Value) -> Option<f64> {
     let n = match value {
@@ -65,12 +149,62 @@ impl GuiSettings {
         self.table.is_empty()
     }
 
-    /// The view ids in `side`'s drawer, top slot first.
+    /// `[gui.views]`: each view id with its placement, in id order. `None`
+    /// when the table is missing or not a table — a file from before view
+    /// entries, whose placements are in the legacy lists. Ids are trimmed;
+    /// an empty id, a repeated one (after trimming) and an entry
+    /// [`ViewEntry`] cannot read are skipped. Deciding which ids are views,
+    /// and settling two shown at one slot, is the GUI's.
+    pub fn view_entries(&self) -> Option<Vec<(String, ViewEntry)>> {
+        let Some(Value::Table(views)) = self.table.get(VIEWS) else {
+            return None;
+        };
+        let mut out: Vec<(String, ViewEntry)> = Vec::new();
+        for (id, value) in views {
+            let id = id.trim();
+            if id.is_empty() || out.iter().any(|(seen, _)| seen == id) {
+                continue;
+            }
+            if let Some(entry) = view_entry(value) {
+                out.push((id.to_string(), entry));
+            }
+        }
+        Some(out)
+    }
+
+    /// Rewrite `[gui.views]` as `entries`, plus the entries already there
+    /// whose id `keep` accepts and `entries` does not name, kept exactly as
+    /// written (a newer build's views survive). Every other entry goes.
+    pub fn set_view_entries(
+        &mut self,
+        entries: &[(String, ViewEntry)],
+        keep: impl Fn(&str) -> bool,
+    ) {
+        let mut views = Table::new();
+        if let Some(Value::Table(old)) = self.table.get(VIEWS) {
+            for (id, value) in old {
+                if keep(id) && !entries.iter().any(|(name, _)| name == id) {
+                    views.insert(id.clone(), value.clone());
+                }
+            }
+        }
+        for (id, entry) in entries {
+            let mut table = Table::new();
+            table.insert("side".into(), Value::String(side_name(entry.side).into()));
+            table.insert("slot".into(), Value::Integer(entry.slot as i64));
+            table.insert("shown".into(), Value::Boolean(entry.shown));
+            views.insert(id.clone(), Value::Table(table));
+        }
+        self.table.insert(VIEWS.into(), Value::Table(views));
+    }
+
+    /// Legacy: the ids of the views placed in `side`'s drawer, shown or
+    /// hidden, top position first, from the `drawer_<side>` list.
     ///
     /// Missing or not a list: the default (`["files"]` left, nothing right).
     /// Entries that are not non-empty strings are skipped, and a view listed
-    /// twice keeps its first place — a view lives in one slot of one drawer,
-    /// so the right drawer also drops any id the left one already holds.
+    /// twice keeps its first place — a view is placed in one drawer, so the
+    /// right drawer also drops any id the left one already holds.
     pub fn drawer_views(&self, side: Side) -> Vec<String> {
         let mut views = self.listed_views(side);
         if side == Side::Right {
@@ -81,28 +215,10 @@ impl GuiSettings {
     }
 
     fn listed_views(&self, side: Side) -> Vec<String> {
-        let Some(Value::Array(items)) = self.table.get(&key(side, "")) else {
-            return match side {
-                Side::Left => DEFAULT_LEFT_VIEWS.iter().map(|v| v.to_string()).collect(),
-                Side::Right => Vec::new(),
-            };
-        };
-        let mut views: Vec<String> = Vec::new();
-        for item in items {
-            if let Value::String(id) = item {
-                let id = id.trim();
-                if !id.is_empty() && !views.iter().any(|v| v == id) {
-                    views.push(id.to_string());
-                }
-            }
-        }
-        views
-    }
-
-    /// Replaces `side`'s view list.
-    pub fn set_drawer_views(&mut self, side: Side, views: &[String]) {
-        let list = views.iter().cloned().map(Value::String).collect();
-        self.table.insert(key(side, ""), Value::Array(list));
+        id_list(self.table.get(&key(side, ""))).unwrap_or_else(|| match side {
+            Side::Left => DEFAULT_LEFT_VIEWS.iter().map(|v| v.to_string()).collect(),
+            Side::Right => Vec::new(),
+        })
     }
 
     /// `side`'s drawer width in logical pixels: a positive finite number, or
@@ -155,6 +271,72 @@ impl GuiSettings {
         if ratio.is_finite() && ratio > 0.0 && ratio < 1.0 {
             self.table.insert(key(side, "split"), Value::Float(ratio));
         }
+    }
+
+    /// Legacy `drawer_<side>_bottom`: the ids placed at the bottom slot
+    /// position, as written. `None` when missing or not a list (every view
+    /// but the first then reads as the bottom).
+    pub fn drawer_bottom(&self, side: Side) -> Option<Vec<String>> {
+        id_list(self.table.get(&key(side, "bottom")))
+    }
+
+    /// Legacy `drawer_<side>_shown`: the ids of the shown views, as written.
+    /// `None` when missing or not a list (the first view listed at each
+    /// slot position then reads as shown).
+    pub fn drawer_shown(&self, side: Side) -> Option<Vec<String>> {
+        id_list(self.table.get(&key(side, "shown")))
+    }
+
+    /// The view an earlier build recorded hiding from `side`'s split drawer
+    /// (`drawer_<side>_hidden`), if well formed: two non-empty distinct ids,
+    /// a slot of 0 or 1 and a split strictly between 0 and 1
+    /// ([`DEFAULT_SPLIT_RATIO`] when missing). Anything else reads as
+    /// `None`.
+    pub fn legacy_hidden_slot(&self, side: Side) -> Option<LegacyHiddenSlot> {
+        let Some(Value::Table(entry)) = self.table.get(&key(side, "hidden")) else {
+            return None;
+        };
+        let id = |field: &str| {
+            entry
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        };
+        let (view, with) = (id("view")?, id("with")?);
+        let slot = match entry.get("slot") {
+            Some(Value::Integer(i @ 0..=1)) => *i as usize,
+            _ => return None,
+        };
+        let split = match entry.get("split") {
+            None => DEFAULT_SPLIT_RATIO,
+            Some(value) => finite(value).filter(|r| *r > 0.0 && *r < 1.0)?,
+        };
+        (view != with).then_some(LegacyHiddenSlot {
+            view,
+            with,
+            slot,
+            split,
+        })
+    }
+
+    /// `drawer_right_home`, as an earlier build wrote it: the ids of views
+    /// in no slot that opened on the right. Missing or not a list: none.
+    pub fn legacy_right_home_views(&self) -> Vec<String> {
+        id_list(self.table.get(&key(Side::Right, "home"))).unwrap_or_default()
+    }
+
+    /// Drop the keys of earlier builds that `[gui.views]` replaces: the
+    /// lists `drawer_<side>`, `drawer_<side>_bottom` and `drawer_<side>_shown`,
+    /// and `drawer_<side>_hidden` and `drawer_right_home`.
+    pub fn remove_legacy_keys(&mut self) {
+        for side in [Side::Left, Side::Right] {
+            for field in ["", "bottom", "shown", "hidden"] {
+                self.table.remove(&key(side, field));
+            }
+        }
+        self.table.remove(&key(Side::Right, "home"));
     }
 
     /// The `[gui.keys]` overrides: action name → chords, as written. A single
@@ -277,8 +459,15 @@ ReplaceInBuffer = []
     fn setters_round_trip_through_the_file_format() {
         let mut settings = AppSettings::default();
         let g = &mut settings.gui;
-        g.set_drawer_views(Side::Left, &["files".into()]);
-        g.set_drawer_views(Side::Right, &["backlinks".into(), "find".into()]);
+        let entry = |side, slot, shown| ViewEntry { side, slot, shown };
+        g.set_view_entries(
+            &[
+                ("files".into(), entry(Side::Left, 0, true)),
+                ("backlinks".into(), entry(Side::Right, 0, false)),
+                ("find".into(), entry(Side::Right, 1, true)),
+            ],
+            |_| false,
+        );
         g.set_drawer_width(Side::Left, 287.4);
         g.set_drawer_visible(Side::Left, false);
         g.set_split_ratio(Side::Right, 0.25);
@@ -291,7 +480,15 @@ ReplaceInBuffer = []
         let back: AppSettings = toml::from_str(&written).unwrap();
         assert_eq!(back.gui, settings.gui);
         let g = &back.gui;
-        assert_eq!(g.drawer_views(Side::Right), ["backlinks", "find"]);
+        assert_eq!(
+            g.view_entries().unwrap(),
+            [
+                ("backlinks".to_string(), entry(Side::Right, 0, false)),
+                ("files".to_string(), entry(Side::Left, 0, true)),
+                ("find".to_string(), entry(Side::Right, 1, true)),
+            ]
+        );
+        assert!(written.contains("[gui.views.find]"), "{written}");
         assert_eq!(g.drawer_width(Side::Left), 287.0, "whole pixels");
         assert_eq!(g.drawer_width(Side::Right), DEFAULT_DRAWER_WIDTH);
         assert!(!g.drawer_visible(Side::Left));
@@ -330,6 +527,149 @@ ToggleSidebar = ["primary+t", 3]
     }
 
     #[test]
+    fn legacy_placement_lists_are_read_and_garbage_reads_as_none() {
+        let g = gui(r#"
+[gui]
+drawer_left_bottom = ["find"]
+drawer_left_shown = ["files", "find"]
+drawer_right_shown = []
+"#);
+        assert_eq!(g.drawer_bottom(Side::Left).unwrap(), ["find"]);
+        assert_eq!(g.drawer_shown(Side::Left).unwrap(), ["files", "find"]);
+        assert_eq!(g.drawer_shown(Side::Right).unwrap(), [] as [&str; 0]);
+        assert_eq!(g.drawer_bottom(Side::Right), None);
+        assert_eq!(g.view_entries(), None, "no [gui.views]: legacy input");
+
+        let g = gui(r#"
+[gui]
+drawer_left_bottom = "find"
+drawer_left_shown = ["tags", 3, "", "tags", " files "]
+"#);
+        assert_eq!(g.drawer_bottom(Side::Left), None);
+        assert_eq!(g.drawer_shown(Side::Left).unwrap(), ["tags", "files"]);
+    }
+
+    #[test]
+    fn view_entries_are_read_leniently() {
+        let entry = |side, slot, shown| ViewEntry { side, slot, shown };
+        let g = gui(r#"
+[gui.views]
+files = { side = "left", slot = 0, shown = true }
+find = { side = "right", slot = 1 }
+tags = { side = "left", slot = 9, shown = true }
+links = { side = "up", slot = 0, shown = true }
+outline = { side = "left", slot = -1, shown = true }
+config = { side = "left", slot = "top", shown = true }
+cfg = "left"
+" find " = { side = "left", slot = 0, shown = true }
+"" = { side = "left", slot = 0, shown = true }
+newer = { side = "right", slot = 0, shown = "yes", extra = 1 }
+"#);
+        assert_eq!(
+            g.view_entries().unwrap(),
+            [
+                // " find " sorts first, trimmed; the later "find" repeats it.
+                ("find".to_string(), entry(Side::Left, 0, true)),
+                ("files".to_string(), entry(Side::Left, 0, true)),
+                ("newer".to_string(), entry(Side::Right, 0, false)),
+                // Past the last slot: the last.
+                (
+                    "tags".to_string(),
+                    entry(Side::Left, MAX_DRAWER_SLOTS - 1, true)
+                ),
+            ]
+        );
+        // `views` not a table: no entries (the legacy lists are read).
+        assert_eq!(gui("[gui]\nviews = 3\n").view_entries(), None);
+        // An empty table: none placed, legacy lists ignored.
+        assert_eq!(
+            gui("[gui]\ndrawer_left = [\"find\"]\n[gui.views]\n").view_entries(),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn set_view_entries_keeps_only_what_keep_accepts() {
+        let mut g = gui(r#"
+[gui.views]
+files = { side = "left", slot = 0, shown = true }
+tags = { side = "right", slot = 0, shown = true }
+newer = { side = "right", slot = 1, shown = true, extra = [1, 2] }
+"#);
+        g.set_view_entries(
+            &[(
+                "files".into(),
+                ViewEntry {
+                    side: Side::Right,
+                    slot: 1,
+                    shown: false,
+                },
+            )],
+            |id| id == "newer" || id == "files",
+        );
+        let written: Table = toml::from_str(&toml::to_string(&g).unwrap()).unwrap();
+        let expected: Table = toml::from_str(
+            r#"
+[views]
+files = { side = "right", slot = 1, shown = false }
+newer = { side = "right", slot = 1, shown = true, extra = [1, 2] }
+"#,
+        )
+        .unwrap();
+        assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn legacy_keys_are_read_and_removed() {
+        let mut g = gui(r#"
+[gui]
+drawer_left = ["find"]
+drawer_left_bottom = []
+drawer_left_shown = ["find"]
+drawer_right = ["outline"]
+drawer_right_bottom = []
+drawer_right_shown = []
+drawer_left_width = 300
+drawer_left_visible = true
+drawer_left_split = 0.4
+drawer_left_hidden = { view = "files", with = "find", slot = 1 }
+drawer_right_hidden = { view = "tags", with = "outline", slot = 0, split = 0.3 }
+drawer_right_home = ["tags", 3, "", "tags", "links"]
+kept = 1
+"#);
+        let left = g.legacy_hidden_slot(Side::Left).unwrap();
+        assert_eq!((left.view.as_str(), left.with.as_str()), ("files", "find"));
+        assert_eq!((left.slot, left.split), (1, DEFAULT_SPLIT_RATIO));
+        assert_eq!(g.legacy_hidden_slot(Side::Right).unwrap().split, 0.3);
+        assert_eq!(g.legacy_right_home_views(), ["tags", "links"]);
+        g.remove_legacy_keys();
+        assert_eq!(g.legacy_hidden_slot(Side::Left), None);
+        assert!(g.legacy_right_home_views().is_empty());
+        // The lists go too; the drawers' geometry stays.
+        let written: Table = toml::from_str(&toml::to_string(&g).unwrap()).unwrap();
+        let expected: Table = toml::from_str(
+            "drawer_left_width = 300\ndrawer_left_visible = true\n\
+             drawer_left_split = 0.4\nkept = 1\n",
+        )
+        .unwrap();
+        assert_eq!(written, expected);
+
+        for bad in [
+            "drawer_left_hidden = \"files\"",
+            "drawer_left_hidden = { view = \"files\", with = \"files\", slot = 0 }",
+            "drawer_left_hidden = { view = \"files\", slot = 0 }",
+            "drawer_left_hidden = { view = \"files\", with = \"find\", slot = 2 }",
+            "drawer_left_hidden = { view = \"files\", with = \"find\", slot = \"top\" }",
+            "drawer_left_hidden = { view = \"files\", with = \"find\", slot = 0, split = 7 }",
+            "drawer_left_hidden = { view = 1, with = \"find\", slot = 0 }",
+        ] {
+            let g = gui(&format!("[gui]\n{bad}\ndrawer_right_home = \"tags\"\n"));
+            assert_eq!(g.legacy_hidden_slot(Side::Left), None, "{bad}");
+            assert!(g.legacy_right_home_views().is_empty());
+        }
+    }
+
+    #[test]
     fn a_gui_value_that_is_not_a_table_does_not_fail_the_config() {
         let s: AppSettings = toml::from_str("theme = \"Nord\"\ngui = 5\n").unwrap();
         assert_eq!(s.theme, "Nord");
@@ -346,10 +686,31 @@ ToggleSidebar = ["primary+t", 3]
         let current = crate::settings::config_migration::CURRENT_CONFIG_VERSION;
         let gui_part = r#"
 [gui]
-drawer_left = ["files"]
+drawer_left = ["files", "tags", "find"]
+drawer_left_bottom = ["find"]
+drawer_left_shown = ["files"]
 drawer_left_width = 312.0
 drawer_right_visible = false
+drawer_right_shown = []
+drawer_left_hidden = { view = "find", with = "files", slot = 1, split = 0.3 }
+drawer_right_home = ["tags"]
 from_a_newer_gui = { anything = [1, 2] }
+
+[gui.views.files]
+side = "left"
+slot = 0
+shown = true
+
+[gui.views.find]
+side = "right"
+slot = 1
+shown = false
+
+[gui.views.from_a_newer_gui]
+side = "right"
+slot = 2
+shown = true
+extra = "kept"
 
 [gui.keys]
 FindInBuffer = ["primary+shift+f"]
