@@ -178,6 +178,12 @@ pub fn error(theme: &Theme) -> Rgba {
     to_gpui(&theme.red, Token::Foreground, theme)
 }
 
+/// A check that passed (a free name in the rename and move dialogs): the
+/// TUI dialogs' `green`.
+pub fn available(theme: &Theme) -> Rgba {
+    to_gpui(&theme.green, Token::Foreground, theme)
+}
+
 /// A note with unsaved edits (the Footer's save-state dot): the TUI
 /// footer's `● modified` colour.
 pub fn unsaved(theme: &Theme) -> Rgba {

@@ -680,6 +680,26 @@ impl VaultPath {
     pub fn is_like(&self, other: &VaultPath) -> bool {
         self.slices.eq(&other.slices)
     }
+
+    /// Returns `true` when `other` lies strictly inside this path: this path's
+    /// components are a proper prefix of `other`'s. Like [`is_like`], it compares
+    /// components only (absolute vs relative is ignored; components are already
+    /// lowercased, so it is case-insensitive). A path is not its own ancestor, a
+    /// note is never an ancestor, and the root is the ancestor of every other path.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert!(VaultPath::new("a").is_ancestor_of(&VaultPath::new("/a/b/c.md")));
+    /// assert!(!VaultPath::new("a/b").is_ancestor_of(&VaultPath::new("a/bc/d.md")));
+    /// assert!(!VaultPath::new("a").is_ancestor_of(&VaultPath::new("a")));
+    /// ```
+    ///
+    /// [`is_like`]: VaultPath::is_like
+    pub fn is_ancestor_of(&self, other: &VaultPath) -> bool {
+        !self.is_note()
+            && self.slices.len() < other.slices.len()
+            && other.slices.starts_with(&self.slices)
+    }
 }
 
 impl Display for VaultPath {
@@ -1339,5 +1359,56 @@ mod tests {
         let b = VaultPath::new("/projects/note.md");
         assert_eq!(a, b);
         assert_eq!(a.to_string(), "/projects/note.md");
+    }
+
+    // --- is_ancestor_of ---
+
+    #[test]
+    fn root_is_ancestor_of_every_other_path() {
+        let root = VaultPath::root();
+        assert!(root.is_ancestor_of(&VaultPath::new("a")));
+        assert!(root.is_ancestor_of(&VaultPath::new("a/b/c.md")));
+        assert!(!root.is_ancestor_of(&VaultPath::root()));
+        assert!(!root.is_ancestor_of(&VaultPath::empty()));
+    }
+
+    #[test]
+    fn directory_is_ancestor_of_its_descendants_at_any_depth() {
+        let dir = VaultPath::new("a");
+        assert!(dir.is_ancestor_of(&VaultPath::new("a/n.md")));
+        assert!(dir.is_ancestor_of(&VaultPath::new("a/b/c/d.md")));
+        assert!(dir.is_ancestor_of(&VaultPath::new("a/b")));
+    }
+
+    #[test]
+    fn a_path_is_not_its_own_ancestor() {
+        assert!(!VaultPath::new("a/b").is_ancestor_of(&VaultPath::new("a/b")));
+        assert!(!VaultPath::new("a/n.md").is_ancestor_of(&VaultPath::new("a/n.md")));
+    }
+
+    #[test]
+    fn a_sibling_sharing_a_name_prefix_is_not_a_descendant() {
+        assert!(!VaultPath::new("a/b").is_ancestor_of(&VaultPath::new("a/bc")));
+        assert!(!VaultPath::new("a/b").is_ancestor_of(&VaultPath::new("a/bc/n.md")));
+        assert!(!VaultPath::new("a/b").is_ancestor_of(&VaultPath::new("a/c/b/n.md")));
+    }
+
+    #[test]
+    fn a_descendant_is_not_an_ancestor() {
+        assert!(!VaultPath::new("a/b/c").is_ancestor_of(&VaultPath::new("a")));
+    }
+
+    #[test]
+    fn ancestor_ignores_absolute_and_case() {
+        assert!(VaultPath::new("/Projects").is_ancestor_of(&VaultPath::new("projects/n.md")));
+        assert!(VaultPath::new("projects").is_ancestor_of(&VaultPath::new("/PROJECTS/Sub/N.md")));
+    }
+
+    #[test]
+    fn a_note_is_never_an_ancestor() {
+        // `a.md` names a note, not the directory `a`.
+        assert!(!VaultPath::new("a.md").is_ancestor_of(&VaultPath::new("a/n.md")));
+        assert!(!VaultPath::new("a.md").is_ancestor_of(&VaultPath::new("a.md/n.md")));
+        assert!(VaultPath::new("a").is_ancestor_of(&VaultPath::new("a/n.md")));
     }
 }

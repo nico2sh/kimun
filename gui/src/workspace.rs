@@ -52,6 +52,13 @@
 //!
 //! **Links (M5b-2 G4).** The `FollowLink` chord and the editor's
 //! double-click follow the link under the caret ([`follow`]).
+//!
+//! **File operations (M6 G3).** Rename, move and delete, from the note menu
+//! (F2, the editor's right-click without a selection), a FILES row's context
+//! menu, or the leader and the palette ([`file_ops`], dialogs in
+//! [`file_dialogs`]). An operation on the open note (or a folder holding it)
+//! flushes it first and is refused when that fails; afterwards the note is
+//! followed to its new place or, deleted or moved away, discarded unsaved.
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -323,6 +330,16 @@ pub(crate) struct Workspace {
     /// the keymap is replaced, never per frame.
     chord_labels: ChordLabels,
     _keymap_watch: Subscription,
+    /// The file dialog in the modal slot, while one is open (tests read
+    /// it), and the progress of its operation ([`file_ops`]).
+    pub(crate) file_dialog: Option<file_ops::FileDialogView>,
+    file_status: Option<Entity<file_dialogs::OpStatus>>,
+    /// The file operation running (its flush, the core call, the reload of
+    /// a followed note). One at a time.
+    file_task: Option<Task<()>>,
+    /// Why the editor Panel shows no note: the open one was deleted or
+    /// moved away. Cleared when a note opens.
+    pub(crate) note_gone: Option<EmptyState>,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -423,6 +440,10 @@ impl Workspace {
             leader: LeaderState::default(),
             chord_labels: ChordLabels::new(cx),
             _keymap_watch: keymap_watch,
+            file_dialog: None,
+            file_status: None,
+            file_task: None,
+            note_gone: None,
         }
     }
 
@@ -436,6 +457,13 @@ impl Workspace {
     ) {
         match event {
             EditorEvent::OpenPalette => self.open_palette(window, cx),
+            // Right-click without a selection: the note menu, for the note
+            // the editor shows.
+            EditorEvent::ContextMenu => {
+                if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
+                    self.open_file_ops_menu(note, window, cx);
+                }
+            }
         }
     }
 
@@ -1100,6 +1128,7 @@ impl Workspace {
             ActionShortcuts::SplitDrawerSlot => return self.split_drawer(window, cx),
             ActionShortcuts::UnsplitDrawerSlot => return self.unsplit_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
+            ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
             // Nothing followable under the caret: the chord does nothing.
             ActionShortcuts::FollowLink => {
@@ -1476,6 +1505,9 @@ impl Workspace {
         if host.note.is_some() {
             return None;
         }
+        if let Some(gone) = self.note_gone.clone() {
+            return Some(gone);
+        }
         let (title, detail) = if self.restore_pending {
             (
                 "Opening your last note…",
@@ -1670,6 +1702,8 @@ fn conflict_flash(details: &str) -> String {
     )
 }
 
+mod file_dialogs;
+mod file_ops;
 mod files;
 mod follow;
 mod leader;
@@ -1680,6 +1714,8 @@ mod route;
 
 #[cfg(test)]
 mod drawer_tests;
+#[cfg(test)]
+mod file_ops_tests;
 #[cfg(test)]
 mod files_tests;
 #[cfg(test)]

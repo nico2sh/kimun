@@ -33,6 +33,7 @@ use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::input::{
     Enter, Escape, Input, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MoveUp,
 };
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -51,6 +52,7 @@ use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
+use super::file_dialogs::FileOpKind;
 use crate::shell_layout::RAIL_VIEWS;
 use crate::theme;
 
@@ -119,6 +121,8 @@ pub(crate) enum FilesEvent {
     OpenAttachment(VaultPath),
     /// Escape with an empty filter: back to the editor.
     Dismiss,
+    /// A row's context menu asked to rename, move or delete its entry.
+    FileOp(FileOpKind, VaultPath),
 }
 
 /// The FILES view. See the module docs.
@@ -284,8 +288,13 @@ impl FilesPane {
     /// TUI's row effects; dialogs and the open note are M6's).
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         match op {
-            FileOp::Created(path) | FileOp::Deleted(path) | FileOp::Moved { from: path, .. } => {
+            FileOp::Created(path) | FileOp::Deleted(path) => {
                 self.refresh_if_showing(&path.get_parent_path().0, cx);
+            }
+            // Gone from one folder, arrived in another: either may be shown.
+            FileOp::Moved { from, to } => {
+                self.refresh_if_showing(&from.get_parent_path().0, cx);
+                self.refresh_if_showing(&to.get_parent_path().0, cx);
             }
             FileOp::Renamed { from, to } if from.is_note() => {
                 self.model.rename_note_row(from, to);
@@ -503,13 +512,21 @@ impl FilesPane {
             }
         };
         let is_open = matches!(row, FileListEntry::Note { is_open: true, .. });
+        // Notes, folders and attachments have a context menu; `..` and
+        // `Create:` are not entries.
+        let entry = match row {
+            FileListEntry::Directory { .. }
+            | FileListEntry::Note { .. }
+            | FileListEntry::Attachment { .. } => Some(row.path().clone()),
+            FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
+        };
         let hover = theme::hover_background(t);
         let label = match row {
             FileListEntry::Up { .. } => SharedString::from("Parent folder"),
             FileListEntry::Note { is_open: true, .. } => format!("{primary}, open").into(),
             _ => primary.clone(),
         };
-        div()
+        let row = div()
             .id(row_id(row))
             .test_support()
             .role(Role::ListBoxOption)
@@ -561,8 +578,33 @@ impl FilesPane {
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.click_row(pos, event, window, cx)
-            }))
-            .into_any_element()
+            }));
+        match entry {
+            Some(path) => {
+                let pane = cx.entity().downgrade();
+                row.context_menu(move |menu, _, _| {
+                    let item = |kind: FileOpKind, label: &'static str| {
+                        let pane = pane.clone();
+                        let path = path.clone();
+                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            let event = FilesEvent::FileOp(kind, path.clone());
+                            // After the menu has given the keyboard back to
+                            // FILES, so the dialog returns it there too.
+                            let pane = pane.clone();
+                            window.defer(cx, move |_, cx| {
+                                pane.update(cx, |_, cx| cx.emit(event)).ok();
+                            });
+                        })
+                    };
+                    menu.item(item(FileOpKind::Rename, "Rename…"))
+                        .item(item(FileOpKind::Move, "Move…"))
+                        .separator()
+                        .item(item(FileOpKind::Delete, "Delete…"))
+                })
+                .into_any_element()
+            }
+            None => row.into_any_element(),
+        }
     }
 
     /// What the list area says when it has no row to show.
@@ -710,6 +752,9 @@ impl Workspace {
             FilesEvent::Creating(_) => self.focus_panel(Panel::Editor, window, cx),
             FilesEvent::OpenAttachment(path) => self.open_attachment(path, cx),
             FilesEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            FilesEvent::FileOp(kind, path) => {
+                self.open_file_dialog(*kind, path.clone(), window, cx)
+            }
         }
     }
 

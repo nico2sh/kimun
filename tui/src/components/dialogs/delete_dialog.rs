@@ -12,7 +12,8 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct DeleteConfirmDialog {
@@ -47,19 +48,11 @@ impl DeleteConfirmDialog {
                 tokio::spawn(async move {
                     // Core classifies the entry and routes to the right delete
                     // (note / directory / attachment).
-                    let result = vault.delete_entry(&path).await;
-                    match result {
-                        Ok(()) => {
-                            tx_clone
-                                .send(AppMessage::FileOp(FileOp::Deleted(path)))
-                                .ok();
-                        }
-                        Err(e) => {
-                            tx_clone
-                                .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
-                                .ok();
-                        }
-                    }
+                    let msg = match file_ops::delete(&vault, &path).await {
+                        Ok(op) => AppMessage::FileOp(op),
+                        Err(e) => AppMessage::OverlayData(OverlayData::Error(e)),
+                    };
+                    tx_clone.send(msg).ok();
                 });
                 EventState::Consumed
             }

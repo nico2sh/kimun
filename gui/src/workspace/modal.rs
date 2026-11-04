@@ -43,6 +43,14 @@ pub(crate) fn dialog_open(window: &mut Window, cx: &mut gpui_kit::App) -> bool {
 pub(crate) enum ModalKind {
     /// The command palette.
     Palette,
+    /// The note menu (rename, move, delete).
+    FileOps,
+    /// The rename dialog.
+    Rename,
+    /// The move dialog.
+    Move,
+    /// The delete confirmation.
+    Delete,
 }
 
 impl Workspace {
@@ -65,6 +73,7 @@ impl Workspace {
             window.close_dialog(cx);
         }
         self.modal = None;
+        self.file_dialog = None;
     }
 
     /// Run `step` with the window, once the current update is done. For

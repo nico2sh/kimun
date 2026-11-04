@@ -143,6 +143,7 @@ fn default_tables() {
             lw("ctrl+shift+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("f(2)", A::FileOperations),
             lw("ctrl+n", A::FollowLink),
             lw("ctrl+shift+n", A::FollowLink),
             lw("ctrl+enter", A::FollowLink),
@@ -175,6 +176,7 @@ fn default_tables() {
             lw("cmd+e", A::OpenFileBrowser),
             lw("ctrl+tab", A::FocusEditor),
             lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("f(2)", A::FileOperations),
             lw("cmd+n", A::FollowLink),
             lw("cmd+enter", A::FollowLink),
             lw("cmd+f", A::FindInBuffer),
@@ -320,6 +322,23 @@ fn palette_and_quit_chords_from_every_panel() {
         Some(chord("ctrl+q")),
         "the default, not the twin"
     );
+}
+
+/// The note menu (M6 G3) is the TUI's F2, from every panel and under vim
+/// (the vim engine reads no F-keys), on both platforms.
+#[test]
+fn the_file_operations_chord_from_every_panel() {
+    for keymap in [Keymap::defaults(LinuxWindows), Keymap::defaults(MacOs)] {
+        for panel in PANELS {
+            for vim in [false, true] {
+                assert_eq!(
+                    keymap.resolve(chord("f2"), ctx(panel, vim)),
+                    Some(&A::FileOperations)
+                );
+            }
+        }
+        assert_eq!(keymap.chord_for(&A::FileOperations), Some(chord("f2")));
+    }
 }
 
 /// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim

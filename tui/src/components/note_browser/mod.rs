@@ -24,7 +24,9 @@ use crate::components::sortable::{
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, OverlayData, redraw_callback};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData, redraw_callback};
+use crate::logic::pickers::{PickerOpen, picker_open};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::icons::Icons;
@@ -356,27 +358,27 @@ impl NoteBrowserModal {
         let Some(entry) = self.list.selected_row() else {
             return;
         };
-        if let FileListEntry::CreateNote { path, .. } = entry {
-            let path = path.clone();
-            let vault = Arc::clone(&self.vault);
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                match vault.load_or_create_note(&path, None).await {
-                    Ok((_, created)) => tx.announce_and_open(path, created),
-                    Err(e) => {
-                        tx.send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
-                            .ok();
+        match picker_open(entry) {
+            PickerOpen::Create(path) => {
+                let vault = Arc::clone(&self.vault);
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    match file_ops::create_note(&vault, &path, None).await {
+                        Ok(outcome) => outcome.announce_and_open(&tx),
+                        Err(e) => {
+                            tx.send(AppMessage::OverlayData(OverlayData::Error(e))).ok();
+                        }
                     }
-                }
-            });
-            return;
+                });
+            }
+            PickerOpen::Open(path) => {
+                tx.send(AppMessage::OpenPath {
+                    path,
+                    emphasis: self.emphasis(),
+                })
+                .ok();
+            }
         }
-        let path = entry.path().clone();
-        tx.send(AppMessage::OpenPath {
-            path,
-            emphasis: self.emphasis(),
-        })
-        .ok();
     }
 
     fn is_sortable(&self) -> bool {

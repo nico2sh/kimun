@@ -188,13 +188,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Close the window through its close guard (the open note is flushed
         // first). Cmd+Q is the platform's quit on macOS; vim reads no Ctrl+Q.
         A::Quit => &["primary+q"],
+        // The note menu (rename, move, delete) for the open note: the TUI's
+        // F2. Everywhere, as the note is the window's.
+        A::FileOperations => &["f2"],
         // Not in the GUI yet (M6 and later).
         A::OpenPreferences
         | A::SearchNotes
         | A::OpenNote
         | A::NewJournal
         | A::OpenSortDialog
-        | A::FileOperations
         | A::QuickNote
         | A::YankRow
         | A::ToggleQueryPanel
