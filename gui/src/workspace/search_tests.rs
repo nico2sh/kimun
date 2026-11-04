@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext as _, Entity, TestAppContext};
+use gpui_kit::{AppContext as _, Bounds, Entity, Pixels, TestAppContext, px, size};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::message::AppMessage;
@@ -16,9 +16,10 @@ use tokio::runtime::Runtime;
 
 use super::modal::ModalKind;
 use super::picker::{HELP_BUTTON_ID, NotePicker, PICKER_ERROR_ID, PICKER_INPUT_ID, QUERY_ERROR_ID};
+use super::picker::{PICKER_ID, search_body_rems};
 use super::search::{
-    PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_TRUNCATED_ID, QUERY_HELP_ID, SearchPreview, cap_text,
-    preview_text,
+    PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_ID, PREVIEW_ROW_ID, PREVIEW_TRUNCATED_ID,
+    QUERY_HELP_ID, SearchPreview, cap_text, preview_text,
 };
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
@@ -390,6 +391,7 @@ fn preview_lines_are_capped_and_matched() {
         path("x.md"),
         "title\na Big\tdeal big".into(),
         &["big".into()],
+        80,
     );
     assert_eq!(
         shown.lines_and_hits(),
@@ -422,6 +424,319 @@ fn a_huge_note_is_cut_and_says_so(cx: &mut TestAppContext) {
     settle_preview(&started, &rt, cx);
     assert!(previewed(&started, cx).is_some_and(|p| p.is_like(&path("huge.md"))));
     assert!(started.shows(PREVIEW_TRUNCATED_ID, cx));
+}
+
+/// A match that runs across a row edge is marked on both rows; every
+/// other match stays whole; the first match's row is found.
+#[test]
+fn preview_rows_wrap_and_keep_their_marks() {
+    let shown = preview_text(
+        path("x.md"),
+        "intro\nxx needle needle and needle".into(),
+        &["needle needle".into(), "and".into()],
+        10,
+    );
+    assert_eq!(
+        shown.lines_and_hits(),
+        vec![
+            ("intro".to_string(), vec![]),
+            ("xx needle ".to_string(), vec!["needle ".to_string()]),
+            (
+                "needle and ".to_string(),
+                vec!["needle".to_string(), "and".to_string()]
+            ),
+            ("needle".to_string(), vec![]),
+        ]
+    );
+    assert_eq!(shown.summary(), (2, Some(1), false));
+    // Wider: one row per line, the first match on line 1.
+    let wide = preview_text(
+        path("x.md"),
+        "intro\nxx needle".into(),
+        &["needle".into()],
+        80,
+    );
+    assert_eq!(wide.summary(), (1, Some(1), false));
+}
+
+/// The body takes the window's height minus the dialog's chrome, within
+/// its bounds.
+#[test]
+fn the_browser_body_follows_the_window_height() {
+    assert_eq!(search_body_rems(40.), 28.);
+    assert_eq!(search_body_rems(10.), 6., "a floor in a tiny window");
+    assert_eq!(search_body_rems(200.), 44., "a cap on a huge screen");
+}
+
+/// Draw a frame (layout runs, the preview measures its width).
+fn frame(s: &Started, cx: &mut TestAppContext) {
+    cx.update_window(s.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// The bounds of the element `id` in a fresh frame, and the window's size.
+fn bounds_of(
+    s: &Started,
+    id: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) -> (Bounds<Pixels>, gpui_kit::Size<Pixels>) {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        (window.find(id).bounds(), window.viewport_size())
+    })
+    .unwrap()
+}
+
+fn resize(s: &Started, width: f32, height: f32, cx: &mut TestAppContext) {
+    cx.simulate_window_resize(s.handle, size(px(width), px(height)));
+    frame(s, cx);
+}
+
+/// Let the preview land and wrap to the pane's measured width.
+fn settle_wrapped(s: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+    let view = preview(s, cx);
+    drive(rt, cx, |cx| {
+        cx.update_window(s.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let preview = view.read(cx);
+            let (_, wrapped, measured) = preview.wrap_state();
+            !preview.is_pending() && measured > 0 && wrapped == Some(measured)
+        })
+    });
+}
+
+/// The search browser fits a small window (preview under the results)
+/// and grows with a tall one.
+#[gpui_kit::test]
+fn the_browser_fits_a_small_window_and_grows_in_a_tall_one(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, &[], "a.md");
+    resize(&started, 640., 420., cx);
+    press(&started, "ctrl-k", cx);
+    started.settle_dialog(cx);
+    let (picker, window) = bounds_of(&started, PICKER_ID, cx);
+    let (pane, _) = bounds_of(&started, PREVIEW_ID, cx);
+    for b in [picker, pane] {
+        assert!(
+            b.top() >= px(0.) && b.bottom() <= window.height && b.right() <= window.width,
+            "{b:?} in {window:?}"
+        );
+    }
+    assert!(pane.size.height > px(48.), "the preview has room: {pane:?}");
+    assert!(pane.top() > picker.top() + px(48.), "under the results");
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+
+    resize(&started, 1400., 1000., cx);
+    press(&started, "ctrl-k", cx);
+    started.settle_dialog(cx);
+    let (picker, window) = bounds_of(&started, PICKER_ID, cx);
+    let (pane, _) = bounds_of(&started, PREVIEW_ID, cx);
+    assert!(picker.bottom() <= window.height, "{picker:?} in {window:?}");
+    // Beside the results, most of the window tall (it was 20 rems).
+    assert!(pane.size.height > px(600.), "{pane:?}");
+    assert!(
+        (pane.top() - picker.top()).abs() < px(64.),
+        "beside the results"
+    );
+}
+
+/// A line longer than the pane wraps to it: every row fits the measured
+/// columns, nothing is lost, the match at the far end is marked and
+/// scrolled into view.
+#[gpui_kit::test]
+fn a_long_line_wraps_and_its_tail_shows(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let long = format!("start {}tailend", "word ".repeat(300));
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[
+            ("a.md", "alpha"),
+            ("long.md", &format!("first line\n{long}\nlast")),
+        ],
+        &[],
+        "a.md",
+    );
+    resize(&started, 1400., 900., cx);
+    press(&started, "ctrl-k", cx);
+    search(&started, &rt, "tailend", cx);
+    settle_wrapped(&started, &rt, cx);
+    assert!(previewed(&started, cx).is_some_and(|p| p.is_like(&path("long.md"))));
+    let view = preview(&started, cx);
+    let (first_hit, _, columns) = cx.read(|cx| view.read(cx).wrap_state());
+    let rows = cx.read(|cx| view.read(cx).shown_lines());
+
+    // The columns are the pane's width in monospace cells.
+    let (pane, _) = bounds_of(&started, PREVIEW_ID, cx);
+    let cell = cx.update(|cx| {
+        use gpui_kit::component::ActiveTheme as _;
+        let kit = cx.theme();
+        let (family, size) = (kit.mono_font_family.clone(), kit.mono_font_size);
+        crate::grid::CellMetrics::from_text_system(
+            cx.text_system(),
+            &gpui_kit::font(family),
+            size,
+            size,
+        )
+        .width()
+    });
+    let used = columns as f32 * cell;
+    assert!(
+        used <= f32::from(pane.size.width) && used > f32::from(pane.size.width) * 0.8,
+        "{columns} columns of {cell}px in {pane:?}"
+    );
+
+    // Wrapped: several rows, each within the columns, together the line.
+    let wrapped: Vec<&(String, Vec<String>)> = rows[1..rows.len() - 1].iter().collect();
+    assert!(wrapped.len() > 5, "{} rows", wrapped.len());
+    assert!(
+        wrapped
+            .iter()
+            .all(|(text, _)| text.trim_end().chars().count() <= columns)
+    );
+    let joined: String = wrapped.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(joined, long);
+    assert_eq!(rows[0].0, "first line");
+    assert_eq!(rows.last().unwrap().0, "last");
+
+    // The tail's row is the first match's, marked and in view.
+    let tail = rows.len() - 2;
+    assert_eq!(first_hit, Some(tail));
+    assert_eq!(rows[tail].1, vec!["tailend".to_string()]);
+    let (row, _) = bounds_of(&started, (PREVIEW_ROW_ID, tail), cx);
+    assert!(
+        row.top() >= pane.top() && row.bottom() <= pane.bottom(),
+        "{row:?} in {pane:?}"
+    );
+}
+
+/// Every match on a wrapped line stays marked, however the line wraps.
+#[gpui_kit::test]
+fn highlights_survive_wrapping(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let long = "some filler then needle ".repeat(40);
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("n.md", &long)], &[], "a.md");
+    resize(&started, 1400., 900., cx);
+    press(&started, "ctrl-k", cx);
+    search(&started, &rt, "needle", cx);
+    settle_wrapped(&started, &rt, cx);
+    let view = preview(&started, cx);
+    let rows = cx.read(|cx| view.read(cx).shown_lines());
+    assert!(rows.len() > 1, "wrapped: {rows:?}");
+    let marks: Vec<String> = rows.into_iter().flat_map(|(_, hits)| hits).collect();
+    assert_eq!(marks, vec!["needle".to_string(); 40]);
+}
+
+/// A narrower pane (the preview moves under the results) wraps the note
+/// again to its width without reading it again; the match stays in view.
+#[gpui_kit::test]
+fn a_narrower_pane_rewraps_without_a_read(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let long = format!("{}needle", "lorem ipsum ".repeat(120));
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("n.md", &long)], &[], "a.md");
+    resize(&started, 1400., 900., cx);
+    press(&started, "ctrl-k", cx);
+    search(&started, &rt, "needle", cx);
+    settle_wrapped(&started, &rt, cx);
+    let view = preview(&started, cx);
+    let reads = cx.read(|cx| view.read(cx).reads);
+    let (_, wide, _) = cx.read(|cx| view.read(cx).wrap_state());
+    let wide_rows = cx.read(|cx| view.read(cx).shown_lines()).len();
+
+    resize(&started, 560., 900., cx);
+    settle_wrapped(&started, &rt, cx);
+    let (first_hit, narrow, measured) = cx.read(|cx| view.read(cx).wrap_state());
+    assert!(narrow < wide, "{narrow:?} vs {wide:?}");
+    assert_eq!(narrow, Some(measured));
+    let rows = cx.read(|cx| view.read(cx).shown_lines());
+    assert!(rows.len() > wide_rows, "{} vs {wide_rows}", rows.len());
+    assert_eq!(cx.read(|cx| view.read(cx).reads), reads, "no read again");
+    assert_eq!(rows.concat_text(), long);
+
+    let hit = first_hit.expect("a match");
+    assert_eq!(rows[hit].1, vec!["needle".to_string()]);
+    let (pane, _) = bounds_of(&started, PREVIEW_ID, cx);
+    let (row, _) = bounds_of(&started, (PREVIEW_ROW_ID, hit), cx);
+    assert!(
+        row.top() >= pane.top() && row.bottom() <= pane.bottom(),
+        "{row:?} in {pane:?}"
+    );
+}
+
+/// The first preview row drawn (the top of what the reader sees).
+fn top_row(s: &Started, rows: usize, cx: &mut TestAppContext) -> usize {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        (0..rows)
+            .find(|&ix| window.try_find((PREVIEW_ROW_ID, ix)).is_some())
+            .expect("a row is drawn")
+    })
+    .unwrap()
+}
+
+/// After the reader scrolls, a re-wrap keeps the line at the top in place
+/// instead of jumping back to the match.
+#[gpui_kit::test]
+fn a_rewrap_keeps_the_readers_place(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let text: String = (0..150)
+        .map(|i| format!("line {i:03} {}\n", "pad ".repeat(20)))
+        .collect();
+    let text = format!("needle\n{text}");
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("n.md", &text)], &[], "a.md");
+    resize(&started, 1400., 900., cx);
+    press(&started, "ctrl-k", cx);
+    search(&started, &rt, "needle", cx);
+    settle_wrapped(&started, &rt, cx);
+    let view = preview(&started, cx);
+    let wide = cx.read(|cx| view.read(cx).shown_lines());
+    let (_, wide_columns, _) = cx.read(|cx| view.read(cx).wrap_state());
+    assert_eq!(top_row(&started, wide.len(), cx), 0, "the match, on top");
+
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let delta = gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-1200.)));
+        window.scroll(PREVIEW_ID, delta, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let top = top_row(&started, wide.len(), cx);
+    assert!(top > 10, "scrolled: {top}");
+    let line = cx.read(|cx| view.read(cx).row_lines())[top];
+    assert!(line > 5, "a line well below the match: {line}");
+
+    resize(&started, 560., 900., cx);
+    settle_wrapped(&started, &rt, cx);
+    let narrow = cx.read(|cx| view.read(cx).shown_lines());
+    let (_, narrow_columns, _) = cx.read(|cx| view.read(cx).wrap_state());
+    assert!(narrow_columns < wide_columns, "re-wrapped");
+    let top = top_row(&started, narrow.len(), cx);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).row_lines())[top],
+        line,
+        "the same note line leads the pane"
+    );
+}
+
+trait ConcatText {
+    fn concat_text(&self) -> String;
+}
+
+impl ConcatText for Vec<(String, Vec<String>)> {
+    fn concat_text(&self) -> String {
+        self.iter().map(|(text, _)| text.as_str()).collect()
+    }
 }
 
 // ── opening a result ─────────────────────────────────────────────────────

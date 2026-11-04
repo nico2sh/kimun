@@ -16,8 +16,9 @@ use kimun_notes::logic::layout::{Panel, Region, Side};
 use kimun_notes::logic::leader_route::{
     self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
 };
-use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::overlay_open::OverlayOpen;
+use kimun_notes::logic::query::is_default_query;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
@@ -36,8 +37,9 @@ pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
 /// The command arranges the focused drawer view (or the rail's).
 pub(crate) const NEEDS_DRAWER_FOCUS: &str = "Needs a drawer focused";
-/// Copying a row needs LINKS or OUTLINE to have the keyboard.
-pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs Links or Outline focused";
+/// Copying a row needs a drawer list (LINKS, OUTLINE, FIND, TAGS) to have
+/// the keyboard.
+pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a drawer list focused";
 /// Resizing a drawer with none shown.
 pub(crate) const NO_DRAWER: &str = "No drawer shown";
 
@@ -123,6 +125,10 @@ impl Workspace {
             }
             LeaderRoute::Overlay(OverlayOpen::FileFinder | OverlayOpen::SearchBrowser)
             | LeaderRoute::OpenJournal => Some(NO_WORKSPACE),
+            // Leader `f b`: the open note's backlinks (LINKS' Backlinks tab); any other
+            // query opens FIND on it.
+            LeaderRoute::FindWithQuery(_) if has_vault => None,
+            LeaderRoute::FindWithQuery(_) => Some(NO_WORKSPACE),
             // `+note` rename / move / delete / properties of the open note
             // (the route is `NoNoteOpen` when there is none).
             LeaderRoute::NoteDialog(
@@ -130,7 +136,6 @@ impl Workspace {
                 _,
             ) if has_vault => None,
             LeaderRoute::Overlay(_)
-            | LeaderRoute::FindWithQuery(_)
             | LeaderRoute::OpenPreferences
             | LeaderRoute::OpenOnboarding
             | LeaderRoute::NoteDialog(..)
@@ -188,6 +193,12 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
             LeaderRoute::Overlay(OverlayOpen::FileFinder) => self.open_finder(window, cx),
             LeaderRoute::Overlay(OverlayOpen::SearchBrowser) => self.open_search(None, window, cx),
+            // Leader `f b` is the open note's backlinks, which LINKS owns (its
+            // Backlinks tab): show that, not FIND on a query.
+            LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {
+                self.show_links_tab(LinksTab::Backlinks, window, cx)
+            }
+            LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, window, cx),
             LeaderRoute::OpenJournal => self.open_journal(window, cx),
             LeaderRoute::NoteDialog(dialog, path) => {
                 let kind = match dialog {
@@ -202,7 +213,6 @@ impl Workspace {
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
             | LeaderRoute::Overlay(_)
-            | LeaderRoute::FindWithQuery(_)
             | LeaderRoute::OpenPreferences
             | LeaderRoute::OpenOnboarding
             | LeaderRoute::GitStatus

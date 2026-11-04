@@ -36,6 +36,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
     Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp, Position,
 };
+use gpui_kit::component::window_paddings;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
@@ -81,10 +82,24 @@ const SEARCH_WIDTH_REMS: f32 = 64.;
 const SEARCH_NARROW_REMS: f32 = 52.;
 /// The results' width beside the preview, in rems.
 const SEARCH_LIST_REMS: f32 = 24.;
-/// The preview's height under the results (narrow window), in rems.
-const SEARCH_PREVIEW_REMS: f32 = 14.;
-/// The results' height over the preview (narrow window), in rems.
-const SEARCH_STACKED_LIST_REMS: f32 = 12.;
+/// What the search browser's window keeps clear of its body (results and
+/// preview), in rems: the dialog's margins and padding (4), the query row
+/// and its gap (2.5), room for both error rows (3.5) and slack.
+const SEARCH_CHROME_REMS: f32 = 12.;
+/// The search browser's body height bounds, in rems: never squashed below
+/// a few rows, never taller than reading needs on a big screen.
+const SEARCH_MIN_BODY_REMS: f32 = 6.;
+const SEARCH_MAX_BODY_REMS: f32 = 44.;
+/// The results' share of the body when the preview is under them (narrow
+/// window).
+const SEARCH_STACKED_LIST_SHARE: f32 = 0.4;
+
+/// The search browser's body height, in rems, in a window whose usable
+/// height is `window_rems`: all of it but the dialog's chrome, within
+/// [`SEARCH_MIN_BODY_REMS`]..=[`SEARCH_MAX_BODY_REMS`].
+pub(crate) fn search_body_rems(window_rems: f32) -> f32 {
+    (window_rems - SEARCH_CHROME_REMS).clamp(SEARCH_MIN_BODY_REMS, SEARCH_MAX_BODY_REMS)
+}
 
 /// A picker row's element id: its path (or the one `Create:` row), never
 /// its position.
@@ -443,7 +458,13 @@ impl Render for NotePicker {
                     .preview
                     .clone()
                     .cached(StyleRefinement::default().size_full());
-                let narrow = window.viewport_size().width < window.rem_size() * SEARCH_NARROW_REMS;
+                let rem = window.rem_size();
+                let narrow = window.viewport_size().width < rem * SEARCH_NARROW_REMS;
+                // Most of the window's height (inside any client-side frame),
+                // so the dialog grows with the window and fits a small one.
+                let frame = window_paddings(window);
+                let usable = window.viewport_size().height - frame.top - frame.bottom;
+                let height = rem * search_body_rems(usable / rem);
                 let pane = div()
                     .min_w_0()
                     .min_h_0()
@@ -457,14 +478,15 @@ impl Render for NotePicker {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(rows.h(rems(SEARCH_STACKED_LIST_REMS)))
-                        .child(pane.h(rems(SEARCH_PREVIEW_REMS)))
+                        .h(height)
+                        .child(rows.h(height * SEARCH_STACKED_LIST_SHARE).flex_none())
+                        .child(pane.flex_1())
                 } else {
                     div()
                         .flex()
                         .items_stretch()
                         .gap_2()
-                        .h(rems(LIST_REMS))
+                        .h(height)
                         .child(rows.w(rems(SEARCH_LIST_REMS)).flex_none())
                         .child(pane.flex_1())
                 };

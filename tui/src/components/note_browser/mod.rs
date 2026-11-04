@@ -6,7 +6,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
@@ -726,7 +726,10 @@ impl Overlay for NoteBrowserModal {
                 &needles,
                 theme,
                 modal_style,
-            )),
+            ))
+            // Long lines wrap inside the pane (indentation kept) rather than
+            // being cut at its edge.
+            .wrap(Wrap { trim: false }),
             preview_inner,
         );
 
@@ -1132,6 +1135,22 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AppMessage::CloseOverlay)),
             "the hidden [Esc] chip did not fire"
+        );
+    }
+
+    /// A long line in the preview wraps inside the pane instead of being
+    /// cut at its edge: the end of the line is on screen.
+    #[tokio::test]
+    async fn a_long_preview_line_wraps_inside_the_pane() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (mut modal, _tx) = search_modal(BrowserScope::Query, "").await;
+        modal.preview_text = format!("{}TAILMARK", "word ".repeat(60));
+        let theme = crate::settings::themes::Theme::default();
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| modal.render(f, f.area(), &theme)).unwrap();
+        assert!(
+            crate::test_support::find_text(t.backend().buffer(), "TAILMARK").is_some(),
+            "the end of the long line is wrapped into view"
         );
     }
 

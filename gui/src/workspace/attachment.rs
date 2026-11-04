@@ -127,6 +127,11 @@ impl Lines {
     }
 }
 
+/// `line` with its tabs widened to spaces.
+pub(crate) fn expand_tabs(line: &str) -> String {
+    line.replace('\t', TAB)
+}
+
 /// `line` as the preview draws it: tabs widened to spaces, cut after
 /// [`LINE_CHARS`] characters with an ellipsis.
 pub(crate) fn display_line(line: &str) -> SharedString {
@@ -134,7 +139,7 @@ pub(crate) fn display_line(line: &str) -> SharedString {
         Some((at, _)) => (&line[..at], true),
         None => (line, false),
     };
-    let mut out = shown.replace('\t', TAB);
+    let mut out = expand_tabs(shown);
     if cut {
         out.push('\u{2026}');
     }

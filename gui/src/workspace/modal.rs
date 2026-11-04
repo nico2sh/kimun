@@ -21,7 +21,7 @@
 //! - **Two stacked dialogs.** The properties dialog's delete asks in a
 //!   kit `AlertDialog` over it, and the search browser shows the query
 //!   syntax over itself; the slot stays the one underneath, and closing it
-//!   closes both.
+//!   closes both. Asked for from FIND, the query syntax is the one modal.
 //! - **App-channel messages get a window.** The channel's dispatch has no
 //!   `Window`; [`Workspace::with_window`] runs a step with the one captured
 //!   when the workspace was made.
@@ -79,6 +79,8 @@ pub(crate) enum ModalKind {
     /// The search browser (`SearchNotes`, leader `f g` / `f r`), with its
     /// query syntax stacked on it while shown.
     Search,
+    /// The query syntax on its own (FIND's F1 and `Syntax` button).
+    QueryHelp,
 }
 
 impl Workspace {

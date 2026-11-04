@@ -7,7 +7,7 @@
 //! slots** (up to two, stacked), the drawers' widths and split ratios, and
 //! which region has the keyboard live in the logic [`PanelLayout`]; this
 //! view only renders it and keeps GPUI focus in step with it. A view
-//! without a GUI yet (FIND, TAGS, CFG) shows a placeholder in its slot.
+//! without a GUI yet (CFG) shows a placeholder in its slot.
 //!
 //! **Arranging (M5b-3).** Each view keeps a placement (side and drawer
 //! slot) in the layout model, shown or hidden. The rail shows a view where
@@ -87,6 +87,11 @@
 //! `f r`, a followed `#tag`) is that picker over the vault's query search,
 //! with a preview of the selected note ([`search`]); a note opened from it
 //! shows the query's matches until the first edit.
+//!
+//! **FIND and TAGS (M7b G5).** Two more drawer views over the same list
+//! component: FIND runs a query over the vault with a preview of the
+//! selected result ([`find`]); TAGS lists the workspace's labels and runs
+//! one in FIND ([`tags`]). Like LINKS they work only while shown.
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -337,6 +342,9 @@ pub(crate) struct Workspace {
     /// subscriptions to their lists.
     pub(crate) links: Option<Entity<links::LinksView>>,
     pub(crate) outline: Option<Entity<outline::OutlineView>>,
+    /// The FIND and TAGS views, when the window has a vault.
+    pub(crate) find: Option<Entity<find::FindView>>,
+    pub(crate) tags: Option<Entity<tags::TagsView>>,
     _views_events: Vec<Subscription>,
     /// The link lookup under way (a newer follow replaces it).
     following: Option<Task<()>>,
@@ -512,6 +520,8 @@ impl Workspace {
             _files_events: None,
             links: None,
             outline: None,
+            find: None,
+            tags: None,
             _views_events: Vec::new(),
             following: None,
             opener: follow::system_opener(),
@@ -605,6 +615,8 @@ impl Workspace {
             }
             self.start_links(vault.clone(), tx.clone(), window, cx);
             self.start_outline(tx.clone(), window, cx);
+            self.start_find(vault.clone(), tx.clone(), window, cx);
+            self.start_tags(vault.clone(), tx.clone(), window, cx);
             self.status.indexing = true;
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
@@ -664,9 +676,7 @@ impl Workspace {
                     // backlinks against the old one; so did LINKS.
                     Ok(_) => {
                         self.refresh_note_counts();
-                        if let Some(links) = self.links.as_ref() {
-                            links.update(cx, |view, cx| view.invalidate(cx));
-                        }
+                        self.invalidate_views(cx);
                     }
                     Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
                 }
@@ -730,6 +740,15 @@ impl Workspace {
             // The editor's double-click on a link or a label.
             AppMessage::FollowLink { target, kind } => self.follow_link(target, kind, cx),
             AppMessage::FollowLabel(name) => self.follow_label(&name, cx),
+            // A tag's query, in FIND (TAGS runs it directly; this is the
+            // channel's door, never under a modal).
+            AppMessage::RunTagQuery(label) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    if !modal::dialog_open(window, cx) {
+                        workspace.run_tag_query(&label, window, cx);
+                    }
+                });
+            }
             // A leader leaf asked for from outside a key handler (the TUI's
             // palette and vim `:` send these): its route runs with the
             // window. Never under a modal — a modal closes before it runs
@@ -798,9 +817,10 @@ impl Workspace {
         self.refresh_views(cx);
     }
 
-    /// Keep LINKS and OUTLINE in step with the layout and the open note:
-    /// each reloads (LINKS) or re-reads its headings (OUTLINE) only while
-    /// shown, when revealed or when the open note changed. Cheap otherwise.
+    /// Keep the drawer views in step with the layout and the open note:
+    /// each reloads (LINKS, FIND, TAGS) or re-reads its headings (OUTLINE)
+    /// only while shown, when revealed or when what it lists for changed.
+    /// Cheap otherwise.
     pub(crate) fn refresh_views(&mut self, cx: &mut Context<Self>) {
         if let Some(links) = self.links.clone() {
             let shown = self.is_shown(DrawerView::Links);
@@ -812,24 +832,48 @@ impl Workspace {
             links.update(cx, |view, cx| view.refresh(shown, &note, cx));
         }
         self.refresh_outline(cx);
+        self.refresh_find(cx);
+        self.refresh_tags(cx);
     }
 
-    /// Apply what LINKS' load delivered.
+    /// Apply what the views' loads delivered.
     fn poll_views(&mut self, cx: &mut Context<Self>) {
         if let Some(links) = self.links.as_ref() {
             let list = links.read(cx).list.clone();
             list.update(cx, |list, cx| list.poll(cx));
         }
+        if let Some(find) = self.find.as_ref() {
+            let list = find.read(cx).list.clone();
+            list.update(cx, |list, cx| list.poll(cx));
+        }
+        if let Some(tags) = self.tags.as_ref() {
+            let list = tags.read(cx).list.clone();
+            list.update(cx, |list, cx| list.poll(cx));
+        }
     }
 
-    /// A file operation landed: LINKS' rows may name paths that moved.
+    /// The vault changed under the views' rows (a file operation landed,
+    /// the index caught up): they reload, now if shown, else when revealed.
+    fn invalidate_views(&mut self, cx: &mut Context<Self>) {
+        if let Some(links) = self.links.as_ref() {
+            links.update(cx, |view, cx| view.invalidate(cx));
+        }
+        if let Some(find) = self.find.as_ref() {
+            find.update(cx, |view, cx| view.invalidate(cx));
+        }
+        if let Some(tags) = self.tags.as_ref() {
+            tags.update(cx, |view, cx| view.invalidate(cx));
+        }
+    }
+
+    /// A file operation landed: the views' rows may name paths that moved.
     fn views_file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         let landed = matches!(
             op,
             FileOp::Created(_) | FileOp::Deleted(_) | FileOp::Renamed { .. } | FileOp::Moved { .. }
         );
-        if landed && let Some(links) = self.links.as_ref() {
-            links.update(cx, |view, cx| view.invalidate(cx));
+        if landed {
+            self.invalidate_views(cx);
         }
     }
 
@@ -842,19 +886,21 @@ impl Workspace {
     }
 
     /// Whether `opener` (the panel that had the keyboard) is a drawer whose
-    /// focused view is LINKS or OUTLINE: the lists a row can be copied from.
+    /// focused view lists rows a row can be copied from: LINKS, OUTLINE,
+    /// FIND or TAGS.
     pub(crate) fn lists_have_keyboard(&self, opener: Panel) -> bool {
         matches!(opener, Panel::Drawer(_))
             && matches!(
                 self.focused_view(),
-                Some(DrawerView::Links | DrawerView::Outline)
+                Some(DrawerView::Links | DrawerView::Outline | DrawerView::Find | DrawerView::Tags)
             )
     }
 
-    /// `YankRow` in LINKS or OUTLINE: copy what the selected row stands for
-    /// (a note's path, a heading's text). Anywhere else the chord is not
-    /// the workspace's (the FILES filter copies its text).
-    fn yank_row(&mut self, cx: &mut Context<Self>) -> bool {
+    /// `YankRow` in a drawer list: copy what the selected row stands for (a
+    /// note's path, a heading's text, a tag). A text field with the
+    /// keyboard keeps the chord as its own copy (the FILES and TAGS
+    /// filters, FIND's query) unless the palette ran it (`chord` false).
+    fn yank_row(&mut self, chord: bool, window: &Window, cx: &mut Context<Self>) -> bool {
         let target = match self.focused_view() {
             Some(DrawerView::Links) => self.links.as_ref().map(|links| {
                 let list = links.read(cx).list.clone();
@@ -864,6 +910,18 @@ impl Workspace {
                 let list = outline.read(cx).list.clone();
                 list.read(cx).selected_row().and_then(|r| r.yank_target())
             }),
+            Some(DrawerView::Find) if !(chord && self.find_field_focused(window, cx)) => {
+                self.find.as_ref().map(|find| {
+                    let list = find.read(cx).list.clone();
+                    list.read(cx).selected_row().and_then(|r| r.yank_target())
+                })
+            }
+            Some(DrawerView::Tags) if !chord || self.tags_list_focused(window, cx) => {
+                self.tags.as_ref().map(|tags| {
+                    let list = tags.read(cx).list.clone();
+                    list.read(cx).selected_row().and_then(|r| r.yank_target())
+                })
+            }
             _ => return false,
         };
         match target.flatten() {
@@ -898,14 +956,16 @@ impl Workspace {
             .expect("every drawer view has a slot handle")
     }
 
-    /// Where the keyboard goes in `view`'s slot: FILES' filter, so typing
-    /// filters; LINKS' and OUTLINE's lists; the slot itself for the views
-    /// without content yet.
+    /// Where the keyboard goes in `view`'s slot: FILES' and TAGS' filters,
+    /// so typing filters; FIND's query field; LINKS' and OUTLINE's lists;
+    /// the slot itself for the views without content yet.
     fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
         let handle = match view {
             DrawerView::Files => self.files.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Links => self.links.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Outline => self.outline.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Find => self.find.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Tags => self.tags.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             _ => None,
         };
         handle.unwrap_or_else(|| self.slot_focus(view).clone())
@@ -1355,7 +1415,7 @@ impl Workspace {
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
             ActionShortcuts::QuickNote => self.toggle_quick_note(window, cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
-            ActionShortcuts::YankRow => return self.yank_row(cx),
+            ActionShortcuts::YankRow => return self.yank_row(key.is_some(), window, cx),
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
@@ -1667,6 +1727,8 @@ impl Workspace {
             DrawerView::Files => self.files.clone().map(|v| v.into_any_element()),
             DrawerView::Links => self.links.clone().map(|v| v.into_any_element()),
             DrawerView::Outline => self.outline.clone().map(|v| v.into_any_element()),
+            DrawerView::Find => self.find.clone().map(|v| v.into_any_element()),
+            DrawerView::Tags => self.tags.clone().map(|v| v.into_any_element()),
             _ => None,
         }
     }
@@ -1961,6 +2023,7 @@ mod drawer_list;
 mod file_dialogs;
 mod file_ops;
 mod files;
+mod find;
 mod follow;
 mod leader;
 mod links;
@@ -1972,6 +2035,7 @@ mod picker;
 mod properties;
 mod route;
 mod search;
+mod tags;
 
 #[cfg(test)]
 mod attachment_tests;
@@ -1981,6 +2045,8 @@ mod drawer_tests;
 mod file_ops_tests;
 #[cfg(test)]
 mod files_tests;
+#[cfg(test)]
+mod find_tests;
 #[cfg(test)]
 mod follow_tests;
 #[cfg(test)]
