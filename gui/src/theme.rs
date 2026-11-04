@@ -312,6 +312,10 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.button_foreground = text.into();
     kit.button_hover = hover.into();
     kit.button_active = selected_background(theme).into();
+    // The ghost Button (the search browser's `?`) and its tooltip read only
+    // roles mapped above: `secondary_foreground`, hover `accent` /
+    // `accent_foreground`, press `button_active`; the tooltip `popover`,
+    // `popover_foreground`, `border` and `muted_foreground`.
     // The kit Select (the properties form's Type) reads only roles mapped
     // above: its trigger `input` / `background` / `foreground` / `ring`, its
     // menu `popover` / `popover_foreground`, its rows `accent`, `list_hover`,
@@ -333,6 +337,12 @@ pub fn directory(theme: &Theme) -> Rgba {
 /// A journal entry's date line: the TUI's journal-date colour.
 pub fn journal_date(theme: &Theme) -> Rgba {
     to_gpui(&theme.color_journal_date, Token::Foreground, theme)
+}
+
+/// A query's match in the search browser's preview: the colour the editor
+/// gives the same needles once the note opens (the TUI's search match).
+pub fn search_match(theme: &Theme) -> Rgba {
+    to_gpui(&theme.color_search_match, Token::Foreground, theme)
 }
 
 // ---- Edit surface: Role -> style --------------------------------------------
@@ -529,6 +539,12 @@ mod tests {
                 kit.tokens.button_active.color,
                 hsla(selected_background(&t))
             );
+            // The ghost Button and its tooltip (the search browser's `?`).
+            assert_eq!(kit.secondary_foreground, hsla(foreground(&t)));
+            assert_eq!(kit.tokens.accent.color, hsla(hover_background(&t)));
+            assert_eq!(kit.accent_foreground, hsla(foreground(&t)));
+            assert_eq!(kit.tokens.popover.color, want);
+            assert_eq!(kit.border, hsla(divider(&t)));
         });
     }
 

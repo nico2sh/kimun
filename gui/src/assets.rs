@@ -21,7 +21,8 @@ gpui_kit::assets::icon_assets!(
         FileText,
         Paperclip,
         Plus,
-        Circle
+        Circle,
+        CircleQuestionMark
     ]
 );
 

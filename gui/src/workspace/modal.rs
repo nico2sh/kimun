@@ -18,8 +18,10 @@
 //! - **File operations close it.** A note or folder created, renamed, moved
 //!   or deleted under an open modal leaves it showing stale data. A property
 //!   write under way still finishes, and the open note still reloads.
-//! - **One stacked confirmation.** The properties dialog's delete asks in a
-//!   kit `AlertDialog` over it; the slot stays the properties'.
+//! - **Two stacked dialogs.** The properties dialog's delete asks in a
+//!   kit `AlertDialog` over it, and the search browser shows the query
+//!   syntax over itself; the slot stays the one underneath, and closing it
+//!   closes both.
 //! - **App-channel messages get a window.** The channel's dispatch has no
 //!   `Window`; [`Workspace::with_window`] runs a step with the one captured
 //!   when the workspace was made.
@@ -32,8 +34,16 @@ use gpui_kit::{Context, KeystrokeEvent, Window};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::message::FileOp;
 
+use kimun_notes::logic::input::{Key, KeyInput, Mods};
+
 use super::Workspace;
 use crate::input;
+
+/// The search browser's query-syntax key.
+const QUERY_HELP_KEY: KeyInput = KeyInput {
+    key: Key::F(1),
+    mods: Mods::NONE,
+};
 use crate::keymap;
 
 /// Whether a kit dialog holds the keyboard. `false` while the window is
@@ -66,6 +76,9 @@ pub(crate) enum ModalKind {
     /// The open note's properties (with its delete confirmation stacked on
     /// it while one asks).
     Properties,
+    /// The search browser (`SearchNotes`, leader `f g` / `f r`), with its
+    /// query syntax stacked on it while shown.
+    Search,
 }
 
 impl Workspace {
@@ -85,8 +98,14 @@ impl Workspace {
     /// Close the open modal; the kit gives the keyboard back to its opener.
     pub(crate) fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if dialog_open(window, cx) {
-            window.close_dialog(cx);
+            if self.query_help {
+                // The browser and its help over it.
+                window.close_all_dialogs(cx);
+            } else {
+                window.close_dialog(cx);
+            }
         }
+        self.query_help = false;
         self.modal = None;
         self.file_dialog = None;
         self.picker = None;
@@ -131,6 +150,7 @@ impl Workspace {
                     window.close_all_dialogs(cx);
                 }
                 workspace.modal = None;
+                workspace.query_help = false;
                 workspace.picker = None;
                 workspace.quick_note = None;
                 workspace.note_status = None;
@@ -168,6 +188,15 @@ impl Workspace {
             }
             (ModalKind::QuickNote, Some(ActionShortcuts::QuickNote)) => {
                 self.toggle_quick_note(window, cx);
+                true
+            }
+            (ModalKind::Search, Some(ActionShortcuts::SearchNotes)) => {
+                self.toggle_search(window, cx);
+                true
+            }
+            // F1 in the browser: its query syntax (once).
+            (ModalKind::Search, None) if key == QUERY_HELP_KEY => {
+                self.open_query_help(window, cx);
                 true
             }
             _ => false,

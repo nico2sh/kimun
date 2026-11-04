@@ -374,19 +374,19 @@ fn an_attachment_link_shows_the_attachment(cx: &mut TestAppContext) {
     assert!(opened.borrow().is_empty());
 }
 
-/// A label says its search arrives later; nothing opens.
+/// A label opens the search browser on it (M7b G4); nothing opens, nothing
+/// goes to the system.
 #[gpui_kit::test]
-fn a_label_flashes_that_it_arrives_later(cx: &mut TestAppContext) {
+fn a_label_opens_the_search_browser_on_it(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "#rust")], "a.md", false);
     let opened = started.record_opens(cx);
     started.chord("ctrl-enter", cx);
-    drive(&rt, cx, |cx| started.flash(cx).is_some());
-    assert_eq!(
-        started.flash(cx).as_deref(),
-        Some("#rust: tag search arrives later")
-    );
+    drive(&rt, cx, |cx| {
+        started.shown_modal(cx) == Some(super::modal::ModalKind::Search)
+    });
+    assert_eq!(started.flash(cx), None);
     assert!(opened.borrow().is_empty());
     assert!(started.on("a.md", cx));
 }

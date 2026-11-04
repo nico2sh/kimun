@@ -1232,6 +1232,7 @@ impl Workspace {
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
             || self.attachment_flushing.is_some()
+            || self.search_flush.is_some()
     }
 
     /// The Footer's property count and the like: the dialog for the open

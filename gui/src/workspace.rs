@@ -82,6 +82,11 @@
 //! `f f`) and the link chooser are one picker ([`picker`]); the create dialog
 //! (a followed link or an open that names no note), the quick note and
 //! today's journal are in [`create`].
+//!
+//! **Searching (M7b G4).** The search browser (`SearchNotes`, leader `f g` /
+//! `f r`, a followed `#tag`) is that picker over the vault's query search,
+//! with a preview of the selected note ([`search`]); a note opened from it
+//! shows the query's matches until the first edit.
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -381,6 +386,11 @@ pub(crate) struct Workspace {
     /// The properties dialog in the modal slot, while one is open
     /// ([`properties`]).
     pub(crate) properties: Option<WeakEntity<properties::PropertiesDialog>>,
+    /// The search browser's query syntax is shown over it ([`search`]).
+    pub(crate) query_help: bool,
+    /// The write of the open note before a search result opens: the
+    /// browser waits for it, and it holds the note like a file operation.
+    search_flush: Option<Task<()>>,
     /// The flush before the properties dialog opens on the open note.
     properties_opening: Option<Task<()>>,
     /// The property write running, for its note: it holds the note until
@@ -524,6 +534,8 @@ impl Workspace {
             note_status: None,
             note_task: None,
             properties: None,
+            query_help: false,
+            search_flush: None,
             properties_opening: None,
             property_write: None,
             note_reload: None,
@@ -668,13 +680,14 @@ impl Workspace {
                 }
                 self.flash_error(conflict_flash(&details), cx);
             }
-            AppMessage::OpenPath { path, .. } => {
+            AppMessage::OpenPath { path, emphasis } => {
                 // The restore's landing (or anything after it): no longer
                 // "opening your last note".
                 self.restore_pending = false;
                 self.first_open_pending = false;
                 if path.is_note() {
-                    self.open_note(path, cx);
+                    // A search result arrives with its query's needles.
+                    self.open_note_with(path, emphasis, cx);
                 } else {
                     // A folder (the root, for an empty history): FILES
                     // shows it, as the TUI's sidebar does.
@@ -1338,6 +1351,7 @@ impl Workspace {
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenNote => self.toggle_finder(window, cx),
+            ActionShortcuts::SearchNotes => self.toggle_search(window, cx),
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
             ActionShortcuts::QuickNote => self.toggle_quick_note(window, cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
@@ -1957,6 +1971,7 @@ mod palette;
 mod picker;
 mod properties;
 mod route;
+mod search;
 
 #[cfg(test)]
 mod attachment_tests;
@@ -1980,6 +1995,8 @@ mod palette_tests;
 mod picker_tests;
 #[cfg(test)]
 mod properties_tests;
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod start_tests;
 #[cfg(test)]
