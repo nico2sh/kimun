@@ -38,7 +38,7 @@ pub const RAIL_SIDE: Side = Side::Left;
 /// rail (the rail is at the window's edge, so the nearest drawer that
 /// way). `None` toward the window's edge: nothing is there.
 pub fn rail_move_target(to: Side) -> Option<Side> {
-    (to != RAIL_SIDE).then_some(RAIL_SIDE)
+    (to == RAIL_SIDE.opposite()).then_some(RAIL_SIDE)
 }
 
 /// The hint an empty drawer or an empty slot shows: how a view gets there.
@@ -139,8 +139,9 @@ fn ours(id: &str) -> Option<DrawerView> {
 /// ([`restore_legacy`]).
 pub fn restore(gui: &GuiSettings) -> PanelLayout<DrawerView> {
     let mut layout = PanelLayout::empty(gui.drawer_width(Side::Left));
-    let entries = gui.view_entries().is_some();
-    match gui.view_entries() {
+    let view_entries = gui.view_entries();
+    let has_view_entries = view_entries.is_some();
+    match view_entries {
         Some(entries) => {
             let mut placed: Vec<(DrawerView, ViewEntry)> = entries
                 .iter()
@@ -167,7 +168,7 @@ pub fn restore(gui: &GuiSettings) -> PanelLayout<DrawerView> {
     for side in SIDES {
         layout.set_drawer_width(side, gui.drawer_width(side), UNCLAMPED);
         if gui.drawer_visible(side) {
-            if entries {
+            if has_view_entries {
                 layout.open_drawer(side);
             } else {
                 layout.show(Panel::Drawer(side));

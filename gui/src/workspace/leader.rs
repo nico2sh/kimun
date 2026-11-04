@@ -35,17 +35,17 @@ use std::time::Duration;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, KeystrokeEvent,
     ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
     Window, div, rems,
 };
-use kimun_notes::keys::leader::{DisplayChild, LeaderAction, LeaderEngine, LeaderOutcome};
+use kimun_notes::keys::leader::{LeaderAction, LeaderEngine, LeaderNode, LeaderOutcome};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::which_key::{CONTROLS, WhichKey};
+use kimun_notes::settings::themes::Theme;
 
 use super::{Workspace, modal};
 use crate::input;
@@ -65,14 +65,69 @@ const UNBOUND_GATEWAY: &str = "Leader";
 /// The vim Normal-mode gateway's label.
 pub(crate) const SPACE_GATEWAY: &str = "Space";
 
+/// The `Leader` chord's label (`Ctrl+Shift+B`) from the keymap's, or a
+/// stand-in when the chord is unbound.
+pub(crate) fn gateway_label(chord: Option<String>) -> SharedString {
+    chord
+        .map(SharedString::from)
+        .unwrap_or_else(|| SharedString::new_static(UNBOUND_GATEWAY))
+}
+
+/// The which-key popup's text, built once as it reveals (from the logic's
+/// [`WhichKey`]) and kept until the sequence moves: a frame only reads it.
+pub(crate) struct WhichKeyView {
+    pressed: SharedString,
+    caption: SharedString,
+    rows: Vec<WhichKeyRow>,
+}
+
+/// One `key → target` cell of the which-key.
+struct WhichKeyRow {
+    keys: SharedString,
+    label: SharedString,
+    is_group: bool,
+}
+
+impl WhichKeyView {
+    fn new(model: WhichKey) -> Self {
+        Self {
+            pressed: model.pressed().to_string().into(),
+            caption: model.caption().to_string().into(),
+            rows: model
+                .rows()
+                .iter()
+                .map(|row| WhichKeyRow {
+                    keys: row.keys.clone().into(),
+                    label: row.label.clone().into(),
+                    is_group: row.is_group,
+                })
+                .collect(),
+        }
+    }
+
+    /// The gateway and the keys pressed since (`Ctrl+Shift+B f`).
+    #[cfg(test)]
+    pub(crate) fn pressed(&self) -> &str {
+        &self.pressed
+    }
+
+    /// How many `key → target` rows the group shows.
+    #[cfg(test)]
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+}
+
 /// A pending sequence and its which-key popup.
 pub(crate) struct LeaderState {
+    /// Walks the configured tree; kept across sequences, its tree replaced
+    /// only when the settings are ([`Self::set_tree`]).
     engine: LeaderEngine,
     /// The gateway that armed the sequence, at the head of the pressed keys.
     gateway: SharedString,
-    /// The which-key popup shows (the sequence has not moved for the
-    /// timeout).
-    revealed: bool,
+    /// The which-key popup's text while it shows (the sequence has not
+    /// moved for the timeout); `None` while hidden.
+    shown: Option<WhichKeyView>,
     /// Reveals the popup when it fires; replaced on every step, dropped
     /// (cancelled) when the sequence ends.
     reveal: Option<Task<()>>,
@@ -83,7 +138,7 @@ impl Default for LeaderState {
         Self {
             engine: LeaderEngine::new(),
             gateway: SharedString::default(),
-            revealed: false,
+            shown: None,
             reveal: None,
         }
     }
@@ -96,20 +151,42 @@ impl LeaderState {
     }
 
     /// The which-key popup shows.
+    #[cfg(test)]
     pub(crate) fn revealed(&self) -> bool {
-        self.revealed && self.is_pending()
+        self.shown.is_some() && self.is_pending()
     }
 
-    /// The popup's model while it shows.
-    pub(crate) fn which_key(&self) -> Option<WhichKey> {
-        self.revealed()
-            .then(|| WhichKey::new(&self.engine, &self.gateway))
+    /// The popup's text while it shows.
+    pub(crate) fn which_key(&self) -> Option<&WhichKeyView> {
+        self.shown.as_ref().filter(|_| self.is_pending())
+    }
+
+    /// The configured leader tree (`[leader]` overrides applied), the one
+    /// sequences walk and the palette lists; the default tree until
+    /// [`Self::set_tree`].
+    pub(crate) fn tree(&self) -> &LeaderNode {
+        self.engine.tree()
+    }
+
+    /// Walk `tree` from now on (the settings' tree). Ends a pending
+    /// sequence: its path may not exist in the new tree.
+    pub(crate) fn set_tree(&mut self, tree: LeaderNode) {
+        self.end();
+        self.engine = LeaderEngine::with_tree(tree);
+    }
+
+    /// Show the popup for where the sequence is now.
+    fn show(&mut self) {
+        self.shown = Some(WhichKeyView::new(WhichKey::new(
+            &self.engine,
+            &self.gateway,
+        )));
     }
 
     /// End the sequence without firing; the popup goes with it.
     fn end(&mut self) {
         self.engine.cancel();
-        self.revealed = false;
+        self.shown = None;
         self.reveal = None;
     }
 }
@@ -123,21 +200,18 @@ fn is_primary_chord(key: KeyInput) -> bool {
 
 impl Workspace {
     /// The `Leader` chord's label (`Ctrl+Shift+B`), the gateway the palette's
-    /// hints and the which-key header name.
-    pub(crate) fn leader_chord_label(&self, cx: &gpui_kit::App) -> String {
-        keymap::active(cx)
-            .chord_for(&ActionShortcuts::Leader)
-            .map(|key| Kbd::format(&input::keystroke(key)))
-            .unwrap_or_else(|| UNBOUND_GATEWAY.to_string())
+    /// hints and the which-key header name. Cached with the keymap.
+    pub(crate) fn leader_chord_label(&self) -> SharedString {
+        self.chord_labels.leader.clone()
     }
 
     /// The gateway that arms a sequence where the keyboard is now: Space in
     /// the vim editor's Normal mode, the chord everywhere else.
-    pub(crate) fn active_gateway(&self, opener: Panel, cx: &gpui_kit::App) -> String {
+    pub(crate) fn active_gateway(&self, opener: Panel, cx: &gpui_kit::App) -> SharedString {
         if opener == Panel::Editor && self.space_leads(cx) {
-            SPACE_GATEWAY.to_string()
+            SharedString::new_static(SPACE_GATEWAY)
         } else {
-            self.leader_chord_label(cx)
+            self.leader_chord_label()
         }
     }
 
@@ -168,8 +242,9 @@ impl Workspace {
             .unwrap_or(DEFAULT_TIMEOUT)
     }
 
-    /// Arm a sequence over the configured tree, `gateway` heading its
-    /// pressed keys. Refused while a dialog is open.
+    /// Arm a sequence over the configured tree (kept on the engine since
+    /// the settings were read, [`LeaderState::set_tree`]), `gateway`
+    /// heading its pressed keys. Refused while a dialog is open.
     pub(crate) fn start_leader(
         &mut self,
         gateway: impl Into<SharedString>,
@@ -179,7 +254,6 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        self.leader.engine = LeaderEngine::with_tree(self.leader_tree());
         self.leader.engine.start();
         self.leader.gateway = gateway.into();
         self.restart_reveal(cx);
@@ -197,13 +271,13 @@ impl Workspace {
     /// The sequence moved (or just started): hide the which-key and wait
     /// for the next hesitation.
     fn restart_reveal(&mut self, cx: &mut Context<Self>) {
-        self.leader.revealed = false;
+        self.leader.shown = None;
         let timeout = self.leader_timeout();
         self.leader.reveal = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(timeout).await;
             this.update(cx, |workspace, cx| {
                 if workspace.leader.is_pending() {
-                    workspace.leader.revealed = true;
+                    workspace.leader.show();
                     cx.notify();
                 }
             })
@@ -216,12 +290,19 @@ impl Workspace {
     /// Space arming one in vim Normal. True when the key was taken; false
     /// leaves it to the rest of the dispatch (a chord that cancelled the
     /// sequence, every key while nothing is pending).
+    ///
+    /// The gateway chord pressed again while a sequence is pending cancels
+    /// it here (a toggle), and is taken: `workspace_command` never sees the
+    /// `Leader` chord while a sequence is pending.
     pub(crate) fn intercept_leader_key(
         &mut self,
         event: &KeystrokeEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if !self.leader_wants(event) {
+            return false;
+        }
         let character_input = event.input_preference == gpui_kit::InputPreference::CharacterInput;
         let key = input::keystroke_input(&event.keystroke, character_input);
         if !self.leader.is_pending() {
@@ -271,6 +352,13 @@ impl Workspace {
         true
     }
 
+    /// Whether the leader could take this key: a sequence is pending (it
+    /// takes every key), or it may be the bare Space that arms one. Cheap,
+    /// so every other key skips building a [`KeyInput`] and the modal check.
+    pub(crate) fn leader_wants(&self, event: &KeystrokeEvent) -> bool {
+        self.leader.is_pending() || could_be_space(&event.keystroke)
+    }
+
     /// A leaf fired: run its route where the keyboard is, or say why it
     /// cannot run here.
     fn fire_leader(&mut self, action: LeaderAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,7 +373,7 @@ impl Workspace {
     /// document area (above the Footer), while it shows.
     pub(crate) fn render_which_key(&self, cx: &gpui_kit::App) -> Option<AnyElement> {
         let model = self.leader.which_key()?;
-        let mono = cx.theme().mono_font_family.clone();
+        let mono = &cx.theme().mono_font_family;
         let t = &self.theme;
         let header = div()
             .flex()
@@ -298,7 +386,7 @@ impl Workspace {
                     .font_family(mono.clone())
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::key_cap(t))
-                    .child(SharedString::from(model.pressed().to_string())),
+                    .child(model.pressed.clone()),
             )
             .child(
                 div()
@@ -306,7 +394,7 @@ impl Workspace {
                     .min_w_0()
                     .truncate()
                     .text_color(theme::secondary(t))
-                    .child(SharedString::from(model.caption().to_string())),
+                    .child(model.caption.clone()),
             )
             .child(
                 div()
@@ -315,16 +403,13 @@ impl Workspace {
                     .text_color(theme::muted(t))
                     .child(CONTROLS),
             );
-        let rows = model
-            .rows()
-            .iter()
-            .map(|row| self.which_key_row(row, &mono));
+        let rows = model.rows.iter().map(|row| which_key_row(row, mono, t));
         Some(
             div()
                 .id(WHICH_KEY_ID)
                 .test_support()
                 .role(Role::Group)
-                .aria_label(SharedString::from(model.pressed().to_string()))
+                .aria_label(model.pressed.clone())
                 .absolute()
                 .bottom_0()
                 .left_0()
@@ -343,40 +428,93 @@ impl Workspace {
                 .into_any_element(),
         )
     }
+}
 
-    /// One `key → target` cell; a group's target in the group colour.
-    fn which_key_row(&self, row: &DisplayChild, mono: &SharedString) -> AnyElement {
-        let t = &self.theme;
-        let target = if row.is_group {
-            theme::key_group(t)
-        } else {
-            theme::foreground(t)
+/// Whether `ks` may be a bare Space: its key, or the text it types. A
+/// superset of what [`input::keystroke_input`] turns into a plain Space.
+fn could_be_space(ks: &gpui_kit::Keystroke) -> bool {
+    ks.key == "space" || ks.key == " " || ks.key_char.as_deref() == Some(" ")
+}
+
+/// One `key → target` cell; a group's target in the group colour.
+fn which_key_row(row: &WhichKeyRow, mono: &SharedString, t: &Theme) -> AnyElement {
+    let target = if row.is_group {
+        theme::key_group(t)
+    } else {
+        theme::foreground(t)
+    };
+    div()
+        .flex()
+        .flex_row()
+        .flex_none()
+        .w(rems(13.))
+        .gap_2()
+        .pr_2()
+        .child(
+            div()
+                .flex_none()
+                .min_w(rems(1.5))
+                .font_family(mono.clone())
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::key_cap(t))
+                .child(row.keys.clone()),
+        )
+        .child(div().flex_none().text_color(theme::muted(t)).child("→"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(target)
+                .child(row.label.clone()),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{Keystroke, Modifiers};
+    use kimun_notes::logic::input::{Key, KeyInput};
+
+    use super::could_be_space;
+    use crate::input;
+
+    fn ks(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.to_string(),
+            key_char: key_char.map(str::to_string),
+        }
+    }
+
+    /// The prefilter never drops a key `keystroke_input` reads as a plain
+    /// Space, and lets ordinary keys skip the leader.
+    #[test]
+    fn could_be_space_covers_every_plain_space() {
+        let space = Some(KeyInput::plain(Key::Char(' ')));
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
         };
-        div()
-            .flex()
-            .flex_row()
-            .flex_none()
-            .w(rems(13.))
-            .gap_2()
-            .pr_2()
-            .child(
-                div()
-                    .flex_none()
-                    .min_w(rems(1.5))
-                    .font_family(mono.clone())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::key_cap(t))
-                    .child(SharedString::from(row.keys.clone())),
-            )
-            .child(div().flex_none().text_color(theme::muted(t)).child("→"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(target)
-                    .child(SharedString::from(row.label.clone())),
-            )
-            .into_any_element()
+        let cases = [
+            ks("space", None, none),
+            ks("space", Some(" "), none),
+            ks(" ", Some(" "), none),
+            ks("a", Some("a"), none),
+            ks("a", Some("A"), shift),
+            ks("enter", None, none),
+            ks("b", None, Modifiers::control()),
+        ];
+        for keystroke in &cases {
+            for character_input in [false, true] {
+                if input::keystroke_input(keystroke, character_input) == space {
+                    assert!(could_be_space(keystroke), "{keystroke:?} dropped");
+                }
+            }
+        }
+        assert!(could_be_space(&cases[0]));
+        assert!(!could_be_space(&cases[3]));
+        assert!(!could_be_space(&cases[5]));
     }
 }

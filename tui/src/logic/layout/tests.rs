@@ -12,6 +12,15 @@ fn slot(side: Side, index: usize) -> Region {
     Region::Slot { side, index }
 }
 
+#[test]
+fn opposite_swaps_the_sides() {
+    assert_eq!(Side::Left.opposite(), Side::Right);
+    assert_eq!(Side::Right.opposite(), Side::Left);
+    for side in [Side::Left, Side::Right] {
+        assert_eq!(side.opposite().opposite(), side);
+    }
+}
+
 // ── Moved from `PanelOrder` (tui/src/app_screen/panel_set.rs) ──────────────
 
 #[test]
