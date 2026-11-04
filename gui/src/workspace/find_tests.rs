@@ -295,7 +295,7 @@ fn backlinks_follow_the_open_note(cx: &mut TestAppContext) {
     let before = runs(&started, cx);
     let view = find(&started, cx);
     cx.update_window(started.handle, |_, window, cx| {
-        view.update(cx, |v, cx| v.apply_query("#go".into(), window, cx))
+        view.update(cx, |v, cx| v.apply_query("#go".into(), None, window, cx))
     })
     .unwrap();
     assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);

@@ -92,6 +92,18 @@
 //! component: FIND runs a query over the vault with a preview of the
 //! selected result ([`find`]); TAGS lists the workspace's labels and runs
 //! one in FIND ([`tags`]). Like LINKS they work only while shown.
+//!
+//! **Saved searches (M7b G6).** The Saved Searches (`OpenSavedSearches`,
+//! leader `f s`) list the workspace's saved searches in the picker and run
+//! one in FIND, named after it; the save-search dialog (`SaveCurrentQuery`
+//! in FIND or the search browser, FIND's `Save…`) names FIND's or the
+//! browser's query ([`saved_searches`]). Core keeps them, off the UI
+//! thread.
+//!
+//! **Sorting (M7b G7).** The sort dialog (`OpenSortDialog` from the rail or
+//! a drawer, inside the search browser, the palette, each list's sort chip)
+//! re-sorts FILES in place, or rewrites FIND's or the browser's query order
+//! ([`sort`]). Changes apply live; nothing is saved.
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -396,6 +408,16 @@ pub(crate) struct Workspace {
     pub(crate) properties: Option<WeakEntity<properties::PropertiesDialog>>,
     /// The search browser's query syntax is shown over it ([`search`]).
     pub(crate) query_help: bool,
+    /// The Saved Searches in the modal slot, while open
+    /// ([`saved_searches`]).
+    pub(crate) saved_searches:
+        Option<WeakEntity<picker::NotePicker<kimun_notes::logic::saved_search::SearchItem>>>,
+    /// The save-search dialog in the modal slot, while open.
+    pub(crate) save_search: Option<saved_searches::SaveSearchOpen>,
+    /// The save running: the dialog waits for it.
+    save_task: Option<Task<()>>,
+    /// The sort dialog, while open ([`sort`]).
+    pub(crate) sort: Option<sort::SortOpen>,
     /// The write of the open note before a search result opens: the
     /// browser waits for it, and it holds the note like a file operation.
     search_flush: Option<Task<()>>,
@@ -545,6 +567,10 @@ impl Workspace {
             note_task: None,
             properties: None,
             query_help: false,
+            saved_searches: None,
+            sort: None,
+            save_search: None,
+            save_task: None,
             search_flush: None,
             properties_opening: None,
             property_write: None,
@@ -747,6 +773,13 @@ impl Workspace {
                     if !modal::dialog_open(window, cx) {
                         workspace.run_tag_query(&label, window, cx);
                     }
+                });
+            }
+            // The sort dialog asked for on the channel: the same door as the
+            // chord (refused under another modal; the browser's stacks).
+            AppMessage::OpenSortDialog(target) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_sort(target, window, cx);
                 });
             }
             // A leader leaf asked for from outside a key handler (the TUI's
@@ -1412,6 +1445,15 @@ impl Workspace {
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenNote => self.toggle_finder(window, cx),
             ActionShortcuts::SearchNotes => self.toggle_search(window, cx),
+            ActionShortcuts::OpenSavedSearches => self.toggle_saved_searches(window, cx),
+            // FIND's query (field or results); elsewhere the chord goes on.
+            ActionShortcuts::SaveCurrentQuery => match self.focused_view() {
+                Some(DrawerView::Find) => self.save_find_query(window, cx),
+                _ => return false,
+            },
+            // The focused list (FILES, FIND); the palette's row sorts FILES
+            // when no view is focused. Elsewhere the chord goes on.
+            ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
             ActionShortcuts::QuickNote => self.toggle_quick_note(window, cx),
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
@@ -2025,6 +2067,7 @@ mod file_ops;
 mod files;
 mod find;
 mod follow;
+mod key_suggestions;
 mod leader;
 mod links;
 mod modal;
@@ -2034,7 +2077,9 @@ mod palette;
 mod picker;
 mod properties;
 mod route;
+mod saved_searches;
 mod search;
+mod sort;
 mod tags;
 
 #[cfg(test)]
@@ -2062,7 +2107,11 @@ mod picker_tests;
 #[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
+mod saved_searches_tests;
+#[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod sort_tests;
 #[cfg(test)]
 mod start_tests;
 #[cfg(test)]

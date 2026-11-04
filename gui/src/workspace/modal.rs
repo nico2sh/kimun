@@ -18,10 +18,13 @@
 //! - **File operations close it.** A note or folder created, renamed, moved
 //!   or deleted under an open modal leaves it showing stale data. A property
 //!   write under way still finishes, and the open note still reloads.
-//! - **Two stacked dialogs.** The properties dialog's delete asks in a
-//!   kit `AlertDialog` over it, and the search browser shows the query
-//!   syntax over itself; the slot stays the one underneath, and closing it
-//!   closes both. Asked for from FIND, the query syntax is the one modal.
+//! - **Two stacked dialogs.** The properties dialog's and the saved
+//!   searches' deletes ask in a kit `AlertDialog` over them, and the search
+//!   browser shows the query syntax or its sort dialog over itself; the slot
+//!   stays the one underneath, and closing it closes both. Asked for from
+//!   FIND, the query syntax is the one modal. Saving the search browser's
+//!   query is not a stacking case: the browser gives way to the save dialog
+//!   and comes back on its query when that closes.
 //! - **App-channel messages get a window.** The channel's dispatch has no
 //!   `Window`; [`Workspace::with_window`] runs a step with the one captured
 //!   when the workspace was made.
@@ -81,6 +84,15 @@ pub(crate) enum ModalKind {
     Search,
     /// The query syntax on its own (FIND's F1 and `Syntax` button).
     QueryHelp,
+    /// The saved searches (`OpenSavedSearches`, leader `f s`), with its
+    /// delete confirmation stacked on it while one asks.
+    SavedSearches,
+    /// The save-search dialog (`SaveCurrentQuery` in FIND or the search
+    /// browser, FIND's `Save…`).
+    SaveSearch,
+    /// The sort dialog over FILES or FIND (`OpenSortDialog`, a sort chip).
+    /// Over the search browser it is stacked and the slot stays `Search`.
+    Sort,
 }
 
 impl Workspace {
@@ -100,8 +112,12 @@ impl Workspace {
     /// Close the open modal; the kit gives the keyboard back to its opener.
     pub(crate) fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if dialog_open(window, cx) {
-            if self.query_help {
-                // The browser and its help over it.
+            if self.query_help
+                || self.sort_stacked()
+                || self.modal == Some(ModalKind::SavedSearches)
+            {
+                // The browser and its help or sort over it; the saved
+                // searches and a delete confirmation over them.
                 window.close_all_dialogs(cx);
             } else {
                 window.close_dialog(cx);
@@ -114,6 +130,9 @@ impl Workspace {
         self.quick_note = None;
         self.note_status = None;
         self.properties = None;
+        self.saved_searches = None;
+        self.save_search = None;
+        self.sort = None;
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -156,6 +175,9 @@ impl Workspace {
                 workspace.picker = None;
                 workspace.quick_note = None;
                 workspace.note_status = None;
+                workspace.saved_searches = None;
+                workspace.save_search = None;
+                workspace.sort = None;
                 // A property write in flight still lands: its reload is the
                 // window's own message, not the dialog's.
                 workspace.properties = None;
@@ -178,7 +200,32 @@ impl Workspace {
         let Some(key) = input::key_input(&event.keystroke) else {
             return false;
         };
-        let action = keymap::active(cx).resolve(key, self.key_ctx(cx)).cloned();
+        let keymap = keymap::active(cx);
+        // The sort chord closes the sort dialog, whatever opened it; over the
+        // browser every other key is the dialog's.
+        if self.sort.is_some() && keymap.is_bound(key, &ActionShortcuts::OpenSortDialog) {
+            self.dismiss_sort(window, cx);
+            return true;
+        }
+        if self.sort_stacked() {
+            return false;
+        }
+        // The browser's sort: stacked over it, whatever panel opened it
+        // (the chord is scoped to the drawers otherwise).
+        if open == ModalKind::Search
+            && !self.query_help
+            && keymap.is_bound(key, &ActionShortcuts::OpenSortDialog)
+        {
+            self.open_sort(kimun_notes::logic::message::SortTarget::Browser, window, cx);
+            return true;
+        }
+        // The browser's query is saved from the browser whatever panel
+        // opened it (the chord is scoped to the drawers otherwise).
+        if open == ModalKind::Search && keymap.is_bound(key, &ActionShortcuts::SaveCurrentQuery) {
+            self.save_browser_query(window, cx);
+            return true;
+        }
+        let action = keymap.resolve(key, self.key_ctx(cx)).cloned();
         match (open, action) {
             (ModalKind::Palette, Some(ActionShortcuts::OpenCommandPalette)) => {
                 self.close_modal(window, cx);
@@ -194,6 +241,10 @@ impl Workspace {
             }
             (ModalKind::Search, Some(ActionShortcuts::SearchNotes)) => {
                 self.toggle_search(window, cx);
+                true
+            }
+            (ModalKind::SavedSearches, Some(ActionShortcuts::OpenSavedSearches)) => {
+                self.toggle_saved_searches(window, cx);
                 true
             }
             // F1 in the browser: its query syntax (once).

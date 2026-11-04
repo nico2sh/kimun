@@ -15,6 +15,8 @@
 //!
 //! **Pointer.** A click selects a row; a second click on the row a click
 //! selected, or a double-click, activates it (the TUI's click-click rule).
+//! The sort chip beside the breadcrumb opens the sort dialog
+//! ([`super::sort`]).
 //!
 //! **Activation.** A folder (or `..`) is shown here; everything else is
 //! the workspace's to do ([`FilesEvent`]): open a note, show an attachment
@@ -45,14 +47,17 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
 use kimun_notes::logic::layout::{Panel, Region};
+use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::Saved;
+use kimun_notes::logic::sort::SortState;
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
+use super::sort::{chip_label, sort_chip};
 use crate::shell_layout::RAIL_VIEWS;
 use crate::theme;
 
@@ -61,6 +66,7 @@ pub(crate) const FILES_ID: &str = "files";
 pub(crate) const FILTER_ID: &str = "files-filter";
 pub(crate) const LIST_ID: &str = "files-list";
 pub(crate) const CRUMBS_ID: &str = "files-breadcrumb";
+pub(crate) const FILES_SORT_ID: &str = "files-sort";
 
 /// A row's height, in rems: two lines of small text and their gap. Every
 /// row has it (the list is virtualised over uniform rows); a folder's one
@@ -123,6 +129,8 @@ pub(crate) enum FilesEvent {
     Dismiss,
     /// A row's context menu asked to rename, move or delete its entry.
     FileOp(FileOpKind, VaultPath),
+    /// The sort chip: open the sort dialog on FILES.
+    Sort,
 }
 
 /// The FILES view. See the module docs.
@@ -263,6 +271,23 @@ impl FilesPane {
         self.filter
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.set_query(String::new(), cx);
+    }
+
+    // ---- The sort -----------------------------------------------------------------
+
+    /// What the sort dialog opens on: the listing's field, order and
+    /// grouping.
+    pub(crate) fn sort_state(&self) -> SortState {
+        self.model.sort_state()
+    }
+
+    /// A sort dialog pick: the rows re-sort in place (a property sort once
+    /// its values land, read off the UI thread; see
+    /// `FilesModel::apply_sort_state`).
+    pub(crate) fn apply_sort(&mut self, state: &SortState, cx: &mut Context<Self>) {
+        self.model.apply_sort_state(state, &self.tx);
+        self.reveal_selection();
+        cx.notify();
     }
 
     // ---- The open note ---------------------------------------------------------
@@ -431,18 +456,30 @@ impl FilesPane {
                 ))
             }
         });
+        let (field, order) = self.model.current_sort();
+        let chip = sort_chip(FILES_SORT_ID, chip_label(&field, order), &self.theme)
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FilesEvent::Sort)))
+            .test_support();
         div()
-            .id(CRUMBS_ID)
-            .test_support()
-            .role(Role::Navigation)
-            .aria_label("Folder")
             .flex()
             .flex_none()
-            .min_w_0()
-            .overflow_hidden()
+            .items_center()
+            .gap_2()
             .px_3()
             .pb_1()
-            .child(Breadcrumb::new().text_color(muted).children(items))
+            .child(
+                div()
+                    .id(CRUMBS_ID)
+                    .test_support()
+                    .role(Role::Navigation)
+                    .aria_label("Folder")
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(Breadcrumb::new().text_color(muted).children(items)),
+            )
+            .child(chip)
     }
 
     fn render_filter(&self) -> impl IntoElement {
@@ -800,6 +837,7 @@ impl Workspace {
             FilesEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
+            FilesEvent::Sort => self.open_sort(SortTarget::Sidebar, window, cx),
         }
     }
 

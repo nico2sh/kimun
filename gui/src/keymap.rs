@@ -94,7 +94,9 @@ impl Scope {
             | ActionShortcuts::UnsplitDrawerSlot
             | ActionShortcuts::MoveViewUp
             | ActionShortcuts::MoveViewDown
-            | ActionShortcuts::YankRow => Scope::Shell,
+            | ActionShortcuts::YankRow
+            | ActionShortcuts::SaveCurrentQuery
+            | ActionShortcuts::OpenSortDialog => Scope::Shell,
             _ => Scope::Everywhere,
         }
     }
@@ -211,14 +213,20 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // reads no Ctrl+K (it is not one of R, C, X, V), and it gets its
         // twin.
         A::SearchNotes => &["primary+k"],
+        // The saved searches (M7b G6): the TUI's F3. Everywhere.
+        A::OpenSavedSearches => &["f3"],
+        // Save the query (M7b G6): the TUI's Ctrl+D, only from the rail or
+        // a drawer (FIND), so the editor keeps it whatever it means there
+        // (vim's half-page down); the search browser takes it too while it
+        // is the open modal (the workspace checks [`Keymap::is_bound`]).
+        A::SaveCurrentQuery => &["primary+d"],
+        // The sort dialog (M7b G7): the TUI's Ctrl+R, only from the rail or
+        // a drawer (FILES, FIND), never the editor, where Ctrl+R is vim's
+        // redo; the search browser takes it too while it is the open modal
+        // (the workspace checks [`Keymap::is_bound`]).
+        A::OpenSortDialog => &["primary+r"],
         // Not in the GUI yet (M7 and later).
-        A::OpenPreferences
-        | A::OpenSortDialog
-        | A::ToggleQueryPanel
-        | A::OpenSavedSearches
-        | A::SaveCurrentQuery
-        | A::OpenAsk
-        | A::SwitchWorkspace => return None,
+        A::OpenPreferences | A::ToggleQueryPanel | A::OpenAsk | A::SwitchWorkspace => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
     })
@@ -494,6 +502,14 @@ impl Keymap {
             .iter()
             .find(|b| b.action == *action)
             .map(|b| b.chord)
+    }
+
+    /// Whether `chord` is one of `action`'s, wherever it is live: for a
+    /// modal that takes a scoped chord whatever panel opened it.
+    pub fn is_bound(&self, chord: KeyInput, action: &ActionShortcuts) -> bool {
+        self.bindings
+            .iter()
+            .any(|b| b.chord == chord && b.action == *action)
     }
 
     /// The action `chord` triggers in `ctx`, if any. `None` also when the vim

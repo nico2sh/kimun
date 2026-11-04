@@ -540,11 +540,12 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     /// Apply what arrived since the last call: streamed rows, property sort
     /// values, then re-stamp the open-note marker (a reload rebuilds rows
     /// without it). Call it each frame, or on every redraw. Returns what the
-    /// listing's poll did.
+    /// listing's poll did; `changed` also when property values landed and
+    /// re-sorted the rows.
     pub fn poll(&mut self) -> Polled {
-        let polled = self.list.as_mut().map(|l| l.poll()).unwrap_or_default();
+        let mut polled = self.list.as_mut().map(|l| l.poll()).unwrap_or_default();
         if let Some((key, values)) = self.property_sort.poll() {
-            self.on_property_sort_values(&key, values);
+            polled.changed |= self.on_property_sort_values(&key, values);
         }
         self.stamp_open_marker();
         polled

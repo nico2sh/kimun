@@ -9,7 +9,14 @@
 //!   (`LinkResultsProvider`);
 //! - the **search browser** (`SearchNotes` chord, leader `f g` / `f r`, a
 //!   followed `#tag`): the vault's query search, with a preview column
-//!   ([`super::search`], M7b G4).
+//!   ([`super::search`], M7b G4) and a sort chip ([`super::sort`], M7b G7);
+//! - the **saved searches** (`OpenSavedSearches` chord, leader `f s`): the
+//!   workspace's saved searches under the virtual Backlinks entry, run in
+//!   FIND ([`super::saved_searches`], M7b G6).
+//!
+//! The picker is generic over its row ([`PickerRow`]): notes for the first
+//! three doors, saved searches for the last; the input, keys, list and
+//! dialog are one.
 //!
 //! **State.** The rows, their order, the `Create:` row and the selection are
 //! the logic [`ListCore`]'s, as in FILES; the sources load and rank off the
@@ -31,16 +38,16 @@ use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
-    Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp, Position,
+    Delete, Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp, Position,
 };
 use gpui_kit::component::window_paddings;
+use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, ScrollStrategy, SharedString,
+    AnyElement, AppContext as _, ClickEvent, Context, Div, Entity, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, Role, ScrollStrategy, SharedString, Stateful,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
     UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
 };
@@ -49,12 +56,14 @@ use kimun_core::note::NoteContentData;
 use kimun_notes::logic::file_ops;
 use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::list::{ListCore, ListSetup, RowSource};
+use kimun_notes::logic::list::{Filter, ListCore, ListRow, ListSetup, RowSource};
+use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::redraw_callback;
 use kimun_notes::logic::pickers::{
     FileFinderProvider, LinkResultsProvider, PickerOpen, picker_open,
 };
 use kimun_notes::logic::query::{QueryContext, emphasis_needles, error_reason, resolve_query};
+use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_sort};
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
@@ -62,6 +71,7 @@ use super::files::entry_row;
 use super::modal::{self, ModalKind};
 use super::route::NO_WORKSPACE;
 use super::search::SearchPreview;
+use super::sort::{chip_label, sort_chip};
 use crate::theme;
 
 /// Element ids, for tests.
@@ -71,6 +81,8 @@ pub(crate) const PICKER_LIST_ID: &str = "note-picker-list";
 pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
+pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
+pub(crate) const BROWSER_SORT_ID: &str = "note-picker-sort";
 
 /// The picker's width, in rems.
 const WIDTH_REMS: f32 = 36.;
@@ -119,6 +131,75 @@ pub(crate) enum PickerKind {
     Links,
     /// The vault's query search, with a preview (the search browser).
     Search,
+    /// The workspace's saved searches (rows: [`SearchItem`](kimun_notes::logic::saved_search::SearchItem)).
+    SavedSearches,
+}
+
+/// A row the picker lists: its identity, how it is drawn, and what
+/// choosing it does.
+pub(crate) trait PickerRow: ListRow + Clone + 'static {
+    /// The row's element id: from what it stands for, never its position.
+    fn element_id(&self) -> SharedString;
+    /// The row as the list draws it (the picker adds the pointer handling).
+    fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div>;
+    /// How typing narrows the rows the source loaded: the source's own
+    /// order (its load runs the query) unless a row type ranks locally.
+    fn filter() -> Filter<Self> {
+        Filter::SourceOrder
+    }
+    /// The note the search browser's preview shows for the row.
+    fn preview_path(&self) -> Option<VaultPath> {
+        None
+    }
+    /// The name Delete removes the row by (a saved search; never its
+    /// virtual Backlinks entry), if it can go.
+    fn deletable_name(&self) -> Option<&str> {
+        None
+    }
+    /// Enter (or a double-click) on the row, opened by `kind`; `emphasis`
+    /// is the query's needles (search browser). True when the picker must
+    /// wait (busy) for what started.
+    fn choose(
+        &self,
+        kind: PickerKind,
+        emphasis: Option<Vec<String>>,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> bool;
+}
+
+impl PickerRow for FileListEntry {
+    fn element_id(&self) -> SharedString {
+        picker_row_id(self)
+    }
+
+    fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
+        entry_row(self.element_id(), self, selected, t)
+    }
+
+    fn preview_path(&self) -> Option<VaultPath> {
+        match self {
+            FileListEntry::Note { path, .. } => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    fn choose(
+        &self,
+        kind: PickerKind,
+        emphasis: Option<Vec<String>>,
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> bool {
+        match (kind, picker_open(self)) {
+            (PickerKind::Search, PickerOpen::Open(path)) => {
+                workspace.search_open(path, emphasis, window, cx)
+            }
+            (_, open) => workspace.picker_chose(open, window, cx),
+        }
+    }
 }
 
 /// What the search browser adds to the picker: the preview column and what
@@ -129,9 +210,9 @@ pub(crate) struct SearchParts {
 }
 
 /// The picker's view. See the module docs.
-pub(crate) struct NotePicker {
+pub(crate) struct NotePicker<R: PickerRow = FileListEntry> {
     kind: PickerKind,
-    core: ListCore<FileListEntry>,
+    core: ListCore<R>,
     pub(crate) input: Entity<InputState>,
     scroll: UniformListScrollHandle,
     workspace: WeakEntity<Workspace>,
@@ -147,11 +228,11 @@ pub(crate) struct NotePicker {
     _input_events: Subscription,
 }
 
-impl NotePicker {
+impl<R: PickerRow> NotePicker<R> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         kind: PickerKind,
-        source: Arc<dyn RowSource<FileListEntry>>,
+        source: Arc<dyn RowSource<R>>,
         query: String,
         search: Option<SearchParts>,
         redraw: kimun_notes::logic::message::Notifier,
@@ -164,6 +245,7 @@ impl NotePicker {
             PickerKind::Finder => "Find a note, or name a new one",
             PickerKind::Links => "Filter the matches",
             PickerKind::Search => "Search notes: words, #tag, <note, prop:key=value",
+            PickerKind::SavedSearches => "Filter by name or number",
         };
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -179,6 +261,7 @@ impl NotePicker {
         let needles = Self::needles_of(search.as_ref(), &query);
         let setup = ListSetup {
             query,
+            filter: R::filter(),
             ..ListSetup::default()
         };
         Self {
@@ -223,10 +306,7 @@ impl NotePicker {
         let Some(search) = self.search.as_ref() else {
             return;
         };
-        let path = match self.core.selected_row() {
-            Some(FileListEntry::Note { path, .. }) => Some(path.clone()),
-            _ => None,
-        };
+        let path = self.core.selected_row().and_then(R::preview_path);
         let needles = self.needles.clone();
         search
             .preview
@@ -235,7 +315,7 @@ impl NotePicker {
 
     /// The rows shown, top first (tests).
     #[cfg(test)]
-    pub(crate) fn rows(&self) -> Vec<FileListEntry> {
+    pub(crate) fn rows(&self) -> Vec<R> {
         self.core.visible_rows().into_iter().cloned().collect()
     }
 
@@ -253,7 +333,7 @@ impl NotePicker {
 
     /// The row Enter would choose (tests).
     #[cfg(test)]
-    pub(crate) fn selected(&self) -> Option<FileListEntry> {
+    pub(crate) fn selected(&self) -> Option<R> {
         self.core.selected_row().cloned()
     }
 
@@ -279,15 +359,92 @@ impl NotePicker {
                 }
                 self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             }
+            self.seed_saved_search();
             self.sync_preview(cx);
             cx.notify();
         }
+    }
+
+    /// The saved searches' quick select (the TUI modal's ranking, made one
+    /// step): a filter puts the best match — the search numbered as typed,
+    /// else the first name that holds it — under Enter; an empty filter
+    /// the Backlinks entry on top.
+    fn seed_saved_search(&mut self) {
+        if self.kind != PickerKind::SavedSearches {
+            return;
+        }
+        let leading = usize::from(self.core.leading().is_some());
+        let pos = if self.core.query().trim().is_empty() || self.core.match_count() == 0 {
+            0
+        } else {
+            leading
+        };
+        if self.core.visible_len() > pos {
+            self.core.move_selection(Some(pos));
+        }
+    }
+
+    /// A sort dialog pick (search browser): the query's order directive
+    /// becomes `field` / `order` and the rows load again. On the empty
+    /// query the recent notes take that order. A property sort with no key
+    /// changes nothing.
+    pub(crate) fn apply_sort(
+        &mut self,
+        field: &SortField,
+        order: SortOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self.core.query().to_string();
+        let Some(sorted) = query_with_sort(&query, field, order) else {
+            return;
+        };
+        if sorted == query {
+            return;
+        }
+        // `set_value` reports no change: the query runs here.
+        self.input
+            .update(cx, |input, cx| input.set_value(sorted.clone(), window, cx));
+        self.set_query(sorted, cx);
+    }
+
+    /// The search browser's sort chip: the query's order, or "Unsorted" on
+    /// the recent notes.
+    fn render_sort_chip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<R> {
+        let query = self.core.query();
+        let label = if query.trim().is_empty() {
+            SharedString::from("Unsorted")
+        } else {
+            let (field, order) = order_of_query(query);
+            chip_label(&field, order)
+        };
+        sort_chip(BROWSER_SORT_ID, label, &self.theme)
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                // After this update: the dialog reads the browser's query.
+                let workspace = this.workspace.clone();
+                window.defer(cx, move |window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace.open_sort(SortTarget::Browser, window, cx)
+                        })
+                        .ok();
+                });
+            }))
+            .test_support()
+    }
+
+    /// Load the rows again (a saved search was deleted).
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        self.core.reload();
+        cx.notify();
     }
 
     fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         self.error = None;
         self.needles = Self::needles_of(self.search.as_ref(), &query);
         self.core.set_query(query);
+        self.seed_saved_search();
         self.reveal_selection();
         self.sync_preview(cx);
         cx.notify();
@@ -326,18 +483,15 @@ impl NotePicker {
         if self.busy {
             return;
         }
-        let Some(open) = self.core.selected_row().map(picker_open) else {
+        let Some(row) = self.core.selected_row().cloned() else {
             return;
         };
         let emphasis = (!self.needles.is_empty()).then(|| self.needles.to_vec());
         let kind = self.kind;
         let creating = self
             .workspace
-            .update(cx, |workspace, cx| match (kind, open) {
-                (PickerKind::Search, PickerOpen::Open(path)) => {
-                    workspace.search_open(path, emphasis, window, cx)
-                }
-                (_, open) => workspace.picker_chose(open, window, cx),
+            .update(cx, |workspace, cx| {
+                row.choose(kind, emphasis, workspace, window, cx)
             })
             .unwrap_or(false);
         if creating {
@@ -361,6 +515,58 @@ impl NotePicker {
         }
     }
 
+    /// Delete (the key or the button): ask before the selected row goes.
+    fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(name) = self
+            .core
+            .selected_row()
+            .and_then(|row| row.deletable_name())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.ask_delete_saved_search(name, window, cx)
+            })
+            .ok();
+    }
+
+    /// The saved searches' footer: what Enter does, and `Delete…` for the
+    /// selected search (disabled on the Backlinks entry, which is not one).
+    fn render_saved_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let deletable = self
+            .core
+            .selected_row()
+            .is_some_and(|row| row.deletable_name().is_some());
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .text_color(theme::muted(&self.theme))
+            .child(div().flex_1().min_w_0().child("Enter runs it in FIND"))
+            .child(
+                Button::new(PICKER_DELETE_ID)
+                    .ghost()
+                    .xsmall()
+                    .label("Delete…")
+                    .tooltip(if deletable {
+                        "Delete the selected search (Delete)"
+                    } else {
+                        "The Backlinks entry is built in"
+                    })
+                    .disabled(!deletable)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.delete_selected(window, cx)
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_note(&self, text: &'static str) -> AnyElement {
         div()
             .px_3()
@@ -372,7 +578,7 @@ impl NotePicker {
     }
 }
 
-impl Render for NotePicker {
+impl<R: PickerRow> Render for NotePicker<R> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme;
         let count = self.core.visible_len();
@@ -386,8 +592,8 @@ impl Render for NotePicker {
                     range
                         .filter_map(|pos| {
                             let row = this.core.visible_row(pos)?;
-                            let id = picker_row_id(row);
-                            let element = entry_row(id, row, selected == Some(pos), &this.theme)
+                            let element = row
+                                .render_row(selected == Some(pos), &this.theme)
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         this.click_row(pos, event, window, cx)
@@ -412,18 +618,20 @@ impl Render for NotePicker {
                 PickerKind::Search if self.core.query().trim().is_empty() => {
                     self.render_note("No recent notes. Type to search.")
                 }
+                PickerKind::SavedSearches => self.render_note("No saved search matches"),
                 _ => self.render_note("No notes match"),
             }
         };
-        let label = match self.kind {
-            PickerKind::Finder => "Find a note, or name a new one",
-            PickerKind::Links => "Filter the matching notes",
-            PickerKind::Search => "Search notes",
+        let (label, rows_label) = match self.kind {
+            PickerKind::Finder => ("Find a note, or name a new one", "Notes"),
+            PickerKind::Links => ("Filter the matching notes", "Notes"),
+            PickerKind::Search => ("Search notes", "Notes"),
+            PickerKind::SavedSearches => ("Filter the saved searches", "Saved searches"),
         };
         let rows = div()
             .id("note-picker-rows")
             .role(Role::ListBox)
-            .aria_label("Notes")
+            .aria_label(rows_label)
             .child(list);
         let input = Input::new(&self.input)
             .id(PICKER_INPUT_ID)
@@ -439,6 +647,7 @@ impl Render for NotePicker {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(input))
+                    .child(self.render_sort_chip(cx))
                     .child(
                         Button::new(HELP_BUTTON_ID)
                             .ghost()
@@ -497,6 +706,7 @@ impl Render for NotePicker {
             PickerKind::Search => error_reason(self.core.query()),
             _ => None,
         };
+        let footer = (self.kind == PickerKind::SavedSearches).then(|| self.render_saved_footer(cx));
         div()
             .id(PICKER_ID)
             .test_support()
@@ -525,8 +735,17 @@ impl Render for NotePicker {
                 }
                 cx.stop_propagation();
             }))
+            // Delete: the selected saved search (the TUI modal's key; the
+            // filter gives up its forward delete there, as in the TUI).
+            .when(self.kind == PickerKind::SavedSearches, |picker| {
+                picker.capture_action(cx.listener(|this, _: &Delete, window, cx| {
+                    this.delete_selected(window, cx);
+                    cx.stop_propagation();
+                }))
+            })
             .child(input_row)
             .child(body)
+            .children(footer)
             .when_some(query_error, |picker, reason| {
                 let text = query_problem(reason);
                 picker.child(
@@ -602,7 +821,7 @@ impl Workspace {
             return;
         };
         let source = Arc::new(FileFinderProvider::new(vault, self.open_note_dir()));
-        self.open_picker(
+        self.open_note_picker(
             PickerKind::Finder,
             source,
             None,
@@ -627,7 +846,7 @@ impl Workspace {
         }
         let title = format!("{} notes match \"{target}\"", results.len());
         let source = Arc::new(LinkResultsProvider::from_results(results));
-        self.open_picker(
+        self.open_note_picker(
             PickerKind::Links,
             source,
             Some(title),
@@ -653,7 +872,7 @@ impl Workspace {
             preview,
             context: QueryContext::with_note(open),
         };
-        self.open_picker(
+        self.open_note_picker(
             PickerKind::Search,
             source,
             None,
@@ -664,8 +883,10 @@ impl Workspace {
         );
     }
 
+    /// A note picker (finder, link chooser, search browser) in the modal
+    /// slot.
     #[allow(clippy::too_many_arguments)]
-    fn open_picker(
+    fn open_note_picker(
         &mut self,
         kind: PickerKind,
         source: Arc<dyn RowSource<FileListEntry>>,
@@ -675,9 +896,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tx) = self.tx.clone() else {
-            return;
-        };
+        if let Some(picker) = self.open_picker(kind, source, title, search, query, window, cx) {
+            self.picker = Some(picker.downgrade());
+        }
+    }
+
+    /// Open the picker `kind` over `source` in the modal slot, its query
+    /// field focused on `query`. The caller keeps the returned view.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_picker<R: PickerRow>(
+        &mut self,
+        kind: PickerKind,
+        source: Arc<dyn RowSource<R>>,
+        title: Option<String>,
+        search: Option<SearchParts>,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<NotePicker<R>>> {
+        let tx = self.tx.clone()?;
         // A modal takes every key: no sequence survives under it.
         self.cancel_leader(cx);
         let workspace = cx.entity().downgrade();
@@ -705,9 +942,10 @@ impl Workspace {
             PickerKind::Finder => ModalKind::Finder,
             PickerKind::Links => ModalKind::LinkChooser,
             PickerKind::Search => ModalKind::Search,
+            PickerKind::SavedSearches => ModalKind::SavedSearches,
         });
-        self.picker = Some(picker.downgrade());
         let busy = picker.downgrade();
+        let opened = picker.clone();
         let on_cancel = move |_: &ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
             !busy.upgrade().is_some_and(|p| p.read(cx).is_busy())
         };
@@ -728,11 +966,15 @@ impl Workspace {
                 .child(picker.clone())
         });
         cx.notify();
+        Some(opened)
     }
 
     /// The picker's rows have news (the app channel's redraw).
     pub(super) fn poll_picker(&mut self, cx: &mut Context<Self>) {
         if let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) {
+            picker.update(cx, |picker, cx| picker.poll(cx));
+        }
+        if let Some(picker) = self.saved_searches.as_ref().and_then(|p| p.upgrade()) {
             picker.update(cx, |picker, cx| picker.poll(cx));
         }
     }
