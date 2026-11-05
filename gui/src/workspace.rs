@@ -104,6 +104,11 @@
 //! a drawer, inside the search browser, the palette, each list's sort chip)
 //! re-sorts FILES in place, or rewrites FIND's or the browser's query order
 //! ([`sort`]). Changes apply live; nothing is saved.
+//!
+//! **Pinned notes (M7b G8).** The pinned-notes dialog (leader `f p`, the
+//! palette) lists the vault's pins by number: a digit opens one, and pins
+//! are raised, lowered and unpinned in place, each change written through
+//! core as it is made ([`pinned`]).
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -418,6 +423,8 @@ pub(crate) struct Workspace {
     save_task: Option<Task<()>>,
     /// The sort dialog, while open ([`sort`]).
     pub(crate) sort: Option<sort::SortOpen>,
+    /// The pinned-notes dialog, while open ([`pinned`]).
+    pub(crate) pinned: Option<pinned::PinnedOpen>,
     /// The write of the open note before a search result opens: the
     /// browser waits for it, and it holds the note like a file operation.
     search_flush: Option<Task<()>>,
@@ -569,6 +576,7 @@ impl Workspace {
             query_help: false,
             saved_searches: None,
             sort: None,
+            pinned: None,
             save_search: None,
             save_task: None,
             search_flush: None,
@@ -2075,6 +2083,7 @@ mod note;
 mod outline;
 mod palette;
 mod picker;
+mod pinned;
 mod properties;
 mod route;
 mod saved_searches;
@@ -2104,6 +2113,8 @@ mod note_tests;
 mod palette_tests;
 #[cfg(test)]
 mod picker_tests;
+#[cfg(test)]
+mod pinned_tests;
 #[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
