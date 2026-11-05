@@ -55,18 +55,9 @@ fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'stati
 const CELL_ROWS: u16 = 3;
 
 /// Which feature-gated rail items are currently visible — a server-status
-/// snapshot passed into `ActivityRail::new`/`PanelSet::rebuild_rail`. Named
-/// fields instead of two positional bools so a caller can't silently swap
-/// SEM and ASK.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RailCaps {
-    /// SEM appears when the server is reachable for search (an embedder is
-    /// configured) — `RagStatus::search_available`, mirroring how `ask` tracks
-    /// `RagStatus::llm_available`.
-    pub semantic: bool,
-    /// ASK appears when the server can answer questions (an LLM configured).
-    pub ask: bool,
-}
+/// snapshot passed into `ActivityRail::new`/`PanelSet::rebuild_rail`. The
+/// logic's [`Caps`](crate::logic::rag_caps::Caps), built from a `RagStatus`.
+pub use crate::logic::rag_caps::Caps as RailCaps;
 
 pub struct ActivityRail {
     /// The visible items, in presentation order: [`ITEMS`] minus the views

@@ -23,11 +23,11 @@ pub mod sync;
 
 use async_trait::async_trait;
 use dto::{
-    AnswerResult, DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest,
-    JobAccepted, JobStatus, QueryRequest, WireDoc,
+    DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest, JobAccepted,
+    JobStatus, QueryRequest, WireDoc,
 };
 
-pub use dto::{ChunkResult, WireSection};
+pub use dto::{AnswerResult, ChunkResult, WireSection};
 pub use observer::{DirtyOp, DirtySet, RagObserver};
 pub use reconcile::{ReconcilePlan, diff as reconcile_diff};
 
@@ -82,6 +82,27 @@ impl RagTransport for RagClient {
     async fn server_hashes(&self) -> Result<HashMap<String, String>, RagError> {
         RagClient::server_hashes(self).await
     }
+}
+
+/// The query half of the server API — semantic `search` and `ask` — behind a
+/// trait so a test (in this crate or another, such as the GUI) can stand in for
+/// the server. A [`RagClient`] built with [`RagClient::with_transport`] answers
+/// those two calls from the stub instead of over HTTP; every other call on such
+/// a client fails (it has no base URL).
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait QueryTransport: Send + Sync {
+    async fn search(
+        &self,
+        query: &str,
+        context_size: Option<ContextSize>,
+    ) -> Result<Vec<ChunkResult>, RagError>;
+    async fn ask(
+        &self,
+        query: &str,
+        history: &[(String, String)],
+        context_size: Option<ContextSize>,
+    ) -> Result<AnswerResult, RagError>;
 }
 
 /// The single place a note's content hash is turned into its wire/reconcile
@@ -149,6 +170,9 @@ pub struct RagClient {
     base_url: String,
     token: Option<String>,
     vault_id: String,
+    /// A stand-in for the server's query endpoints (`search`, `ask`); `None`
+    /// for every real client. See [`RagClient::with_transport`].
+    stub: Option<std::sync::Arc<dyn QueryTransport>>,
 }
 
 impl RagClient {
@@ -165,6 +189,22 @@ impl RagClient {
             base_url,
             token,
             vault_id: vault_id.into(),
+            stub: None,
+        }
+    }
+
+    /// A client whose `search` and `ask` are answered by `transport` instead of
+    /// a server — for tests of the Ask and semantic-search surfaces, in this
+    /// crate or another (`cfg(test)` items are not visible across crates). It
+    /// has no base URL, so any other call (health, push, delete, hashes) fails
+    /// with an HTTP error.
+    pub fn with_transport(transport: std::sync::Arc<dyn QueryTransport>) -> Self {
+        Self {
+            http: shared_http(),
+            base_url: String::new(),
+            token: None,
+            vault_id: String::new(),
+            stub: Some(transport),
         }
     }
 
@@ -247,6 +287,9 @@ impl RagClient {
         query: &str,
         context_size: Option<ContextSize>,
     ) -> Result<Vec<ChunkResult>, RagError> {
+        if let Some(stub) = &self.stub {
+            return stub.search(query, context_size).await;
+        }
         let body = QueryRequest {
             vault_id: self.vault_id.clone(),
             query: query.to_string(),
@@ -272,6 +315,9 @@ impl RagClient {
         history: &[(String, String)],
         context_size: Option<ContextSize>,
     ) -> Result<AnswerResult, RagError> {
+        if let Some(stub) = &self.stub {
+            return stub.ask(query, history, context_size).await;
+        }
         let body = QueryRequest {
             vault_id: self.vault_id.clone(),
             query: query.to_string(),

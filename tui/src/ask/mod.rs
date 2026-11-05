@@ -1,4 +1,5 @@
 pub mod citations;
+pub mod jobs;
 pub mod locate;
 pub mod save;
 

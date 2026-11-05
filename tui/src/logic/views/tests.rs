@@ -435,3 +435,112 @@ fn outline_yank_is_the_heading_text() {
     assert_eq!((yank.text.as_str(), yank.noun), ("Sub", "heading"));
     assert_eq!(entries[1].match_text(), Some("Sub"));
 }
+
+// ---- SEM --------------------------------------------------------------------
+
+mod semantic {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::logic::files::FileListEntry;
+    use crate::server_client::{
+        AnswerResult, ChunkResult, ContextSize, QueryTransport, RagClient, RagError,
+    };
+
+    fn chunk(name: &str, title: &str) -> ChunkResult {
+        ChunkResult {
+            path: note(name).to_string(),
+            title: title.to_string(),
+            date: None,
+            content: String::new(),
+            hash: String::new(),
+            similarity_score: 0.5,
+            ordinal: 0,
+        }
+    }
+
+    /// Answers every search with `hits` (or fails), recording the queries.
+    struct Stub {
+        hits: Option<Vec<ChunkResult>>,
+        queries: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl QueryTransport for Stub {
+        async fn search(
+            &self,
+            query: &str,
+            _context_size: Option<ContextSize>,
+        ) -> Result<Vec<ChunkResult>, RagError> {
+            self.queries.lock().unwrap().push(query.to_string());
+            self.hits
+                .clone()
+                .ok_or_else(|| RagError::Protocol("down".into()))
+        }
+        async fn ask(
+            &self,
+            _query: &str,
+            _history: &[(String, String)],
+            _context_size: Option<ContextSize>,
+        ) -> Result<AnswerResult, RagError> {
+            Err(RagError::Protocol("not asked".into()))
+        }
+    }
+
+    async fn source(hits: Option<Vec<ChunkResult>>) -> (SemanticSource, Arc<Stub>) {
+        let stub = Arc::new(Stub {
+            hits,
+            queries: Mutex::new(Vec::new()),
+        });
+        let vault = crate::test_support::temp_vault("views-sem").await;
+        let client = Arc::new(RagClient::with_transport(stub.clone()));
+        (SemanticSource::with_client(vault, client), stub)
+    }
+
+    async fn load_query(source: &SemanticSource, query: &str) -> Vec<FileListEntry> {
+        let (emit, rx) = Emit::capture();
+        source.load(query, emit).await;
+        match rx.try_recv().expect("one event") {
+            (_, Loaded::Replace(rows)) => rows,
+            _ => panic!("expected a Replace"),
+        }
+    }
+
+    fn row(entry: &FileListEntry) -> (String, String) {
+        match entry {
+            FileListEntry::Note { path, title, .. } => (path.get_clean_name(), title.clone()),
+            _ => panic!("expected a note row"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_are_one_per_note_in_server_order() {
+        let (source, stub) = source(Some(vec![
+            chunk("b", "B › Intro"),
+            chunk("a", ""),
+            chunk("b", "B › Later"),
+        ]))
+        .await;
+        let rows = load_query(&source, "cats").await;
+        let rows: Vec<_> = rows.iter().map(row).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("b".to_string(), "B › Intro".to_string()),
+                ("a".to_string(), "<no title>".to_string()),
+            ]
+        );
+        assert_eq!(stub.queries.lock().unwrap().as_slice(), &["cats"]);
+    }
+
+    #[tokio::test]
+    async fn a_blank_query_skips_the_server_and_an_error_yields_no_rows() {
+        let (source, stub) = source(None).await;
+        assert!(load_query(&source, "  ").await.is_empty());
+        assert!(stub.queries.lock().unwrap().is_empty());
+        assert!(load_query(&source, "cats").await.is_empty());
+        assert_eq!(stub.queries.lock().unwrap().len(), 1);
+    }
+}

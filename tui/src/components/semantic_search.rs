@@ -1,14 +1,11 @@
-//! Semantic search surface (P4): a server-backed [`RowSource`] that queries the
-//! RAG server for similar chunks and lists the matching notes. Lives behind a
-//! drawer view; only usable when a server is configured and reachable.
+//! Semantic search surface (P4): the drawer view over the logic's server-backed
+//! [`SemanticSource`], which queries the RAG server for similar chunks and
+//! lists the matching notes. Only usable when a server is configured and
+//! reachable. This file keeps the panel (render + keys).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::server_client::ChunkResult;
-use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -16,84 +13,16 @@ use ratatui::layout::Rect;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::file_list::FileListEntry;
-use crate::components::note_browser::format_journal_date;
 use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
-use crate::components::search_list::{Emit, RowSource};
 use crate::logic::message::{AppMessage, AppTx, FileOp};
-use crate::rag::rag_client;
+pub use crate::logic::views::SemanticSource;
+#[cfg(test)]
+use crate::logic::views::chunks_to_entries;
+#[cfg(test)]
+use crate::server_client::ChunkResult;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-
-/// One note row per unique note among the server's chunk results, in result
-/// order (best first), deduplicated by canonical path.
-fn chunks_to_entries(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<FileListEntry> {
-    let mut seen: HashSet<VaultPath> = HashSet::new();
-    let mut out = Vec::new();
-    for chunk in chunks {
-        let path = VaultPath::new(&chunk.path);
-        // Dedup by canonical identity; keep the first (highest-ranked) chunk.
-        if !seen.insert(path.flatten().absolute()) {
-            continue;
-        }
-        let filename = path.get_parent_path().1;
-        // The chunk title is the matched section's breadcrumb — informative for
-        // "which part matched".
-        let title = if chunk.title.trim().is_empty() {
-            "<no title>".to_string()
-        } else {
-            chunk.title
-        };
-        let journal_date = vault.journal_date(&path).map(format_journal_date);
-        out.push(FileListEntry::Note {
-            path,
-            title,
-            filename,
-            journal_date,
-            is_open: false,
-        });
-    }
-    out
-}
-
-/// Server-backed semantic search source.
-pub struct SemanticSource {
-    vault: Arc<NoteVault>,
-    settings: SharedSettings,
-}
-
-impl SemanticSource {
-    pub fn new(vault: Arc<NoteVault>, settings: SharedSettings) -> Self {
-        Self { vault, settings }
-    }
-}
-
-#[async_trait]
-impl RowSource<FileListEntry> for SemanticSource {
-    async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
-        if query.trim().is_empty() {
-            emit.replace(Vec::new());
-            return;
-        }
-        // Debounce: the load engine aborts this task on the next keystroke, so a
-        // short leading delay coalesces rapid typing into a single server request
-        // (each query is one HTTP POST + a vault-id read).
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let entries = match rag_client(&self.settings, &self.vault).await {
-            Some(client) => match client.search(query, None).await {
-                Ok(chunks) => chunks_to_entries(chunks, &self.vault),
-                // Offline / server error → no rows (the surface shows empty; the
-                // status indicator tells the user the server is unreachable).
-                Err(e) => {
-                    log::debug!("semantic search failed: {e}");
-                    Vec::new()
-                }
-            },
-            None => Vec::new(),
-        };
-        emit.replace(entries);
-    }
-}
 
 /// Spec for the semantic drawer view: a query input over server-ranked note
 /// results; Enter/click opens the note, right-click opens the file-ops menu.

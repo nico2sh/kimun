@@ -47,6 +47,7 @@ use crate::logic::message::{
     UpdateFlow,
 };
 use crate::logic::nav::DrawerView;
+use crate::logic::rag_caps::{self, Caps};
 use crate::logic::session::{
     NoteSession, OpenKind, OpenOutcome, ReloadOutcome, RemovedOutcome, RenameOutcome,
     SaveCompleted, SaveOutcome,
@@ -1331,31 +1332,23 @@ impl EditorScreen {
     async fn handle_owned_message(&mut self, msg: AppMessage, tx: &AppTx) {
         match msg {
             AppMessage::RagStatus(status) => {
-                let ask_was = self.rag_status.llm_available();
-                let sem_was = self.rag_status.search_available();
+                let was = Caps::from_status(self.rag_status);
                 self.rag_status = status;
                 // Both rail entries are live-status-driven: ASK on whether the
                 // server can answer questions, SEM on whether it can search.
                 // Rebuild the rail when either flips (an active view
                 // stays put when its capability drops — only the rail entry
                 // goes). The Ask client only needs refreshing on the ASK flip.
-                let ask_now = status.llm_available();
-                let sem_now = status.search_available();
-                if ask_was != ask_now || sem_was != sem_now {
+                let now = Caps::from_status(status);
+                let flip = Caps::changed(was, now);
+                if flip.any() {
                     let (kb, icons) = {
                         let s = self.settings.read().unwrap();
                         (s.key_bindings.clone(), s.icons())
                     };
-                    self.panels.rebuild_rail(
-                        kb,
-                        icons,
-                        crate::components::activity_rail::RailCaps {
-                            semantic: sem_now,
-                            ask: ask_now,
-                        },
-                    );
+                    self.panels.rebuild_rail(kb, icons, now);
                 }
-                if ask_was != ask_now {
+                if flip.ask {
                     self.ask
                         .refresh_capability(&mut self.panels, self.rag_status)
                         .await;
@@ -1455,22 +1448,18 @@ impl EditorScreen {
                 // The rail hides SEM unless the server is reachable for search,
                 // but the leader path (`drawer.semantic`) can still request it —
                 // gate here so every route gets the same answer.
-                if view == DrawerView::Semantic && !self.rag_status.search_available() {
-                    let msg = if crate::rag::rag_configured(&self.settings) {
-                        "Semantic search needs a reachable server with an embedder"
-                    } else {
-                        "Set kimun_server_url in config to use semantic search"
-                    };
+                let unavailable = match view {
+                    DrawerView::Semantic => rag_caps::semantic_unavailable_message(
+                        self.rag_status,
+                        crate::rag::rag_configured(&self.settings),
+                    ),
+                    // ASK needs an LLM-configured server (the rail hides its
+                    // entry otherwise); gate every route the same way.
+                    DrawerView::Ask => rag_caps::ask_unavailable_message(self.rag_status),
+                    _ => None,
+                };
+                if let Some(msg) = unavailable {
                     tx.send(AppMessage::FlashMessage(msg.into())).ok();
-                }
-                // ASK needs an LLM-configured server (the rail hides its entry
-                // otherwise); gate every route the same way.
-                else if view == DrawerView::Ask && !self.rag_status.llm_available() {
-                    tx.send(AppMessage::FlashMessage(
-                        "Ask needs an LLM-configured server; this one is semantic-search only"
-                            .into(),
-                    ))
-                    .ok();
                 }
                 // Selecting the already-active view toggles the drawer closed
                 // (clicking the active rail item toggles it).
@@ -1855,11 +1844,8 @@ impl EditorScreen {
             return;
         }
         if !self.panels.is_showing_ask() {
-            if !self.rag_status.llm_available() {
-                tx.send(AppMessage::FlashMessage(
-                    "Ask needs an LLM-configured server; this one is semantic-search only".into(),
-                ))
-                .ok();
+            if let Some(msg) = rag_caps::ask_unavailable_message(self.rag_status) {
+                tx.send(AppMessage::FlashMessage(msg.into())).ok();
                 return;
             }
             self.open_drawer_view(DrawerView::Ask, tx);
