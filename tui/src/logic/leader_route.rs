@@ -285,27 +285,25 @@ pub mod jobs {
 
     /// Leader digit `n`: open pinned note `n` (1-based). A slot with no pin,
     /// or a pin whose note is missing on disk, flashes instead.
+    /// The rules are the pinned-notes dialog's ([`crate::logic::pinned`]).
     pub async fn jump_to_pinned(vault: Arc<NoteVault>, n: u8, tx: AppTx) {
-        let pins = match vault.list_pinned_notes().await {
-            Ok(pins) => pins,
+        let rows = match crate::logic::pinned::load(&vault).await {
+            Ok(rows) => rows,
             Err(e) => {
-                flash(&tx, format!("could not read pinned notes: {e}"));
+                flash(&tx, e);
                 return;
             }
         };
-        let Some(path) = pins.get(usize::from(n).saturating_sub(1)).cloned() else {
-            flash(&tx, format!("no pinned note {n}"));
-            return;
-        };
-        if !vault.exists(&path).await {
-            flash(&tx, format!("pinned note not found: {path}"));
-            return;
+        match crate::logic::pinned::open_target(&rows, usize::from(n).saturating_sub(1)) {
+            Ok(path) => {
+                tx.send(AppMessage::OpenPath {
+                    path,
+                    emphasis: None,
+                })
+                .ok();
+            }
+            Err(e) => flash(&tx, e),
         }
-        tx.send(AppMessage::OpenPath {
-            path,
-            emphasis: None,
-        })
-        .ok();
     }
 
     /// Leader `v r`: a fast reindex — the same pipeline the Settings screen

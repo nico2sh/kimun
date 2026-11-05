@@ -93,6 +93,8 @@ pub(crate) enum ModalKind {
     /// The sort dialog over FILES or FIND (`OpenSortDialog`, a sort chip).
     /// Over the search browser it is stacked and the slot stays `Search`.
     Sort,
+    /// The pinned notes (leader `f p`, the palette).
+    PinnedNotes,
 }
 
 impl Workspace {
@@ -133,6 +135,7 @@ impl Workspace {
         self.saved_searches = None;
         self.save_search = None;
         self.sort = None;
+        self.forget_pinned_notes();
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -178,6 +181,7 @@ impl Workspace {
                 workspace.saved_searches = None;
                 workspace.save_search = None;
                 workspace.sort = None;
+                workspace.forget_pinned_notes();
                 // A property write in flight still lands: its reload is the
                 // window's own message, not the dialog's.
                 workspace.properties = None;

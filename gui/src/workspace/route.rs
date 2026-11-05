@@ -117,10 +117,14 @@ impl Workspace {
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
-            // Leader `f f`, `f g` / `f r`, `f s` and `n d`: the finder, the
-            // search browser, the saved searches, today's journal.
+            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n d`: the
+            // finder, the search browser, the saved searches, the pinned
+            // notes, today's journal.
             LeaderRoute::Overlay(
-                OverlayOpen::FileFinder | OverlayOpen::SearchBrowser | OverlayOpen::SavedSearches,
+                OverlayOpen::FileFinder
+                | OverlayOpen::SearchBrowser
+                | OverlayOpen::SavedSearches
+                | OverlayOpen::PinnedNotes,
             )
             | LeaderRoute::OpenJournal
                 if has_vault =>
@@ -128,7 +132,10 @@ impl Workspace {
                 None
             }
             LeaderRoute::Overlay(
-                OverlayOpen::FileFinder | OverlayOpen::SearchBrowser | OverlayOpen::SavedSearches,
+                OverlayOpen::FileFinder
+                | OverlayOpen::SearchBrowser
+                | OverlayOpen::SavedSearches
+                | OverlayOpen::PinnedNotes,
             )
             | LeaderRoute::OpenJournal => Some(NO_WORKSPACE),
             // Leader `f b`: the open note's backlinks (LINKS' Backlinks tab); any other
@@ -202,6 +209,7 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::SavedSearches) => {
                 self.open_saved_searches(window, cx)
             }
+            LeaderRoute::Overlay(OverlayOpen::PinnedNotes) => self.open_pinned_notes(window, cx),
             // Leader `f b` is the open note's backlinks, which LINKS owns (its
             // Backlinks tab): show that, not FIND on a query.
             LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {
