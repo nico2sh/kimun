@@ -26,7 +26,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::ask::{AskSource, Thread, Turn, TurnStatus, citations, save};
+#[cfg(test)]
+use crate::ask::AskSource;
+use crate::ask::{Thread, Turn, TurnStatus, citations, save};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
@@ -499,11 +501,11 @@ impl ThreadPanel {
         Self::spawn_ask(tx, &client, question, history, id);
     }
 
-    /// Spawn the async ask job for `turn_id`: call the RAG client with the
-    /// question and history, map the answer + freshly retrieved sources, and
-    /// deliver an `AskData::AnswerReady` on completion. Shared verbatim by
-    /// `submit` and `regenerate_selected` — both re-retrieve, so both take the
-    /// fresh sources from the response.
+    /// Spawn the ask job ([`crate::ask::jobs::ask`]) for `turn_id`: it calls
+    /// the RAG client with the question and history and delivers an
+    /// `AskData::AnswerReady` on completion. Shared verbatim by `submit` and
+    /// `regenerate_selected` — both re-retrieve, so both take the fresh
+    /// sources from the response.
     fn spawn_ask(
         tx: &AppTx,
         client: &Arc<RagClient>,
@@ -511,25 +513,13 @@ impl ThreadPanel {
         history: Vec<(String, String)>,
         turn_id: u64,
     ) {
-        let (tx, client) = (tx.clone(), client.clone());
-        tokio::spawn(async move {
-            let result = client
-                .ask(&question, &history, None)
-                .await
-                .map(|a| {
-                    // Normalize the wire ordinal ONCE here (position → 1-based
-                    // fallback for an older server); downstream sees real ordinals.
-                    let sources = a
-                        .sources
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, c)| AskSource::from_chunk(i, c))
-                        .collect();
-                    (a.answer, sources)
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppMessage::Ask(AskData::AnswerReady { turn_id, result }));
-        });
+        tokio::spawn(crate::ask::jobs::ask(
+            client.clone(),
+            question,
+            history,
+            turn_id,
+            tx.clone(),
+        ));
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
@@ -539,8 +529,7 @@ impl ThreadPanel {
         let Some(turn) = self.thread.selected() else {
             return;
         };
-        let text = citations::strip(&turn.answer);
-        crate::logic::clipboard::yank(text, "answer copied", tx);
+        crate::logic::clipboard::yank(save::copy_text(turn), "answer copied", tx);
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as

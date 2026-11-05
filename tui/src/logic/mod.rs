@@ -3,6 +3,7 @@
 //! tree names `ratatui`, `crossterm`, `egui`, `eframe` or `gpui`. See ADR-0049.
 
 pub mod actions;
+pub mod ask_flow;
 pub mod clipboard;
 pub mod input;
 pub mod layout;
@@ -25,7 +26,9 @@ pub mod message;
 pub mod nav;
 pub mod overlay_open;
 pub mod palette;
+pub mod pinned;
 pub mod properties;
+pub mod rag_caps;
 pub mod session;
 pub mod sort;
 pub mod startup;
