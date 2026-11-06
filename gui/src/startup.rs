@@ -26,8 +26,8 @@ pub(crate) const APP_NAME: &str = "kimün";
 
 /// What the window starts on.
 pub(crate) enum Start {
-    /// No workspace is configured: the editor area says how to set one up
-    /// (onboarding is M8).
+    /// No workspace is configured: the setup assistant opens over the
+    /// window (`workspace::onboarding`) to make one.
     NoWorkspace,
     /// The configured workspace would not open; the text says why.
     OpenFailed(String),
@@ -100,7 +100,7 @@ pub(crate) fn empty_state(start: &Start) -> Option<EmptyState> {
     match start {
         Start::NoWorkspace => Some(EmptyState {
             title: "No workspace configured".into(),
-            detail: "Run kimun in a terminal to set one up.".into(),
+            detail: "The setup assistant makes one.".into(),
             failed: false,
         }),
         Start::OpenFailed(reason) => Some(EmptyState {

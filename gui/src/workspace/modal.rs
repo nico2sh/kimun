@@ -32,8 +32,11 @@
 //! The *open* modal is the kit's to say (`has_active_dialog`): a modal the
 //! kit closed on its own (Escape, a backdrop click) is closed here too.
 
+use std::cell::Cell;
+
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::{Context, KeystrokeEvent, Window};
+use gpui_kit::component::dialog::Dialog;
+use gpui_kit::{App, Context, Entity, Focusable, KeystrokeEvent, Window};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::message::FileOp;
 
@@ -53,6 +56,15 @@ use crate::keymap;
 /// still being built (no `Root` yet), where the kit's own query would panic.
 pub(crate) fn dialog_open(window: &mut Window, cx: &mut gpui_kit::App) -> bool {
     window.root::<gpui_kit::base::Root>().flatten().is_some() && window.has_active_dialog(cx)
+}
+
+/// A [`Workspace::show_modal`] `focus`: the keyboard to `view`'s own focus
+/// handle (a dialog whose keys are its own, not a field's).
+pub(crate) fn focus_view<V: Focusable>(view: Entity<V>) -> impl FnOnce(&mut Window, &mut App) {
+    move |window, cx| {
+        let handle = view.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
 }
 
 /// Which modal the window's one slot holds.
@@ -97,6 +109,40 @@ pub(crate) enum ModalKind {
     PinnedNotes,
 }
 
+/// Where [`Workspace::show_modal`] puts a dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Slot {
+    /// In the window's one slot, as this modal.
+    Own(ModalKind),
+    /// Over the open modal (the browser's query syntax or sort), which
+    /// keeps the slot.
+    Stacked,
+}
+
+impl ModalKind {
+    /// The chord that toggles this modal: it opens it when nothing is open
+    /// and closes it when it is the open modal ([`Workspace::toggle_modal`]).
+    /// `None` for a modal without one.
+    pub(crate) fn chord(self) -> Option<ActionShortcuts> {
+        match self {
+            Self::Palette => Some(ActionShortcuts::OpenCommandPalette),
+            Self::Finder => Some(ActionShortcuts::OpenNote),
+            Self::QuickNote => Some(ActionShortcuts::QuickNote),
+            Self::Search => Some(ActionShortcuts::SearchNotes),
+            Self::SavedSearches => Some(ActionShortcuts::OpenSavedSearches),
+            _ => None,
+        }
+    }
+
+    /// Whether another dialog can sit over this one in the kit's stack (the
+    /// browser's query syntax or sort; a delete confirmation over the saved
+    /// searches or the properties). Closing such a modal closes the whole
+    /// stack; any other modal is alone in it.
+    pub(crate) fn stacks(self) -> bool {
+        matches!(self, Self::Search | Self::SavedSearches | Self::Properties)
+    }
+}
+
 impl Workspace {
     /// The modal that is open now, if any.
     pub(crate) fn open_modal(
@@ -111,26 +157,106 @@ impl Workspace {
         }
     }
 
+    /// Open a kit dialog in `slot`, `width_rems` wide and without the kit's
+    /// close button (`build` may put it back). A modal takes every key, so a pending leader
+    /// sequence ends. `focus` runs on the dialog's first build only (the
+    /// builder re-runs whenever the dialog layer rebuilds); `build` adds the
+    /// rest — the title, `on_ok` / `on_cancel` / `on_close`, the content.
+    /// The caller checks first that nothing else is open and records its
+    /// own view.
+    pub(crate) fn show_modal(
+        &mut self,
+        slot: Slot,
+        width_rems: f32,
+        focus: impl FnOnce(&mut Window, &mut App) + 'static,
+        build: impl Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_leader(cx);
+        if let Slot::Own(kind) = slot {
+            self.modal = Some(kind);
+        }
+        let width = window.rem_size() * width_rems;
+        let focus = Cell::new(Some(focus));
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if let Some(focus) = focus.take() {
+                focus(window, cx);
+            }
+            build(dialog.w(width).close_button(false), window, cx)
+        });
+        cx.notify();
+    }
+
+    /// `kind`'s [chord](ModalKind::chord): close `kind` when it is the open
+    /// modal, open it with `open` when nothing is open, and do nothing under
+    /// another modal.
+    pub(crate) fn toggle_modal(
+        &mut self,
+        kind: ModalKind,
+        open: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.open_modal(window, cx) {
+            Some(shown) if shown == kind => self.close_by_chord(kind, window, cx),
+            None if !dialog_open(window, cx) => open(self, window, cx),
+            _ => {}
+        }
+    }
+
+    /// The open modal `kind`'s chord again: close it — unless it is making
+    /// a note (the finder's or the browser's `Create:`, the quick note's
+    /// save), which it waits for.
+    fn close_by_chord(&mut self, kind: ModalKind, window: &mut Window, cx: &mut Context<Self>) {
+        let making_a_note = match kind {
+            ModalKind::Finder | ModalKind::Search => self.picker_busy(cx),
+            ModalKind::QuickNote => self.note_task.is_some(),
+            _ => false,
+        };
+        if !making_a_note {
+            self.close_modal(window, cx);
+        }
+    }
+
     /// Close the open modal; the kit gives the keyboard back to its opener.
+    /// A modal that [stacks](ModalKind::stacks) closes with whatever is over
+    /// it.
     pub(crate) fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if dialog_open(window, cx) {
-            if self.query_help
-                || self.sort_stacked()
-                || self.modal == Some(ModalKind::SavedSearches)
-            {
-                // The browser and its help or sort over it; the saved
-                // searches and a delete confirmation over them.
+            if self.modal.is_some_and(ModalKind::stacks) {
                 window.close_all_dialogs(cx);
             } else {
                 window.close_dialog(cx);
             }
         }
-        self.query_help = false;
+        self.reset_modal_state();
+    }
+
+    /// Forget every modal's state: the slot, what is stacked over it, and
+    /// each modal's `…Open` handle (a read still under way for one is
+    /// dropped when it lands). The one list of them — every way a modal
+    /// goes ([`Self::close_modal`], [`Self::file_op_closes_modals`], a file
+    /// dialog's operation finishing) clears it here; each caller closes the
+    /// kit's dialogs itself. Kept: the file and note operations' progress
+    /// (`file_status`, the running tasks) — they belong to the operation,
+    /// which outlives its dialog and clears them when it ends. The note
+    /// dialogs' `note_status` does go: a note task landing after its dialog
+    /// was closed this way flashes its failure instead, and closes nothing
+    /// (`create.rs`, `is_note_dialog_up`).
+    pub(crate) fn reset_modal_state(&mut self) {
         self.modal = None;
-        self.file_dialog = None;
+        self.query_help = false;
+        self.palette = None;
+        #[cfg(test)]
+        {
+            self.file_dialog = None;
+        }
         self.picker = None;
         self.quick_note = None;
         self.note_status = None;
+        // A property write in flight still lands: its reload is the window's
+        // own message, not the dialog's.
         self.properties = None;
         self.saved_searches = None;
         self.save_search = None;
@@ -173,18 +299,7 @@ impl Workspace {
                 if dialog_open(window, cx) {
                     window.close_all_dialogs(cx);
                 }
-                workspace.modal = None;
-                workspace.query_help = false;
-                workspace.picker = None;
-                workspace.quick_note = None;
-                workspace.note_status = None;
-                workspace.saved_searches = None;
-                workspace.save_search = None;
-                workspace.sort = None;
-                workspace.forget_pinned_notes();
-                // A property write in flight still lands: its reload is the
-                // window's own message, not the dialog's.
-                workspace.properties = None;
+                workspace.reset_modal_state();
             });
         }
     }
@@ -231,24 +346,9 @@ impl Workspace {
         }
         let action = keymap.resolve(key, self.key_ctx(cx)).cloned();
         match (open, action) {
-            (ModalKind::Palette, Some(ActionShortcuts::OpenCommandPalette)) => {
-                self.close_modal(window, cx);
-                true
-            }
-            (ModalKind::Finder, Some(ActionShortcuts::OpenNote)) => {
-                self.toggle_finder(window, cx);
-                true
-            }
-            (ModalKind::QuickNote, Some(ActionShortcuts::QuickNote)) => {
-                self.toggle_quick_note(window, cx);
-                true
-            }
-            (ModalKind::Search, Some(ActionShortcuts::SearchNotes)) => {
-                self.toggle_search(window, cx);
-                true
-            }
-            (ModalKind::SavedSearches, Some(ActionShortcuts::OpenSavedSearches)) => {
-                self.toggle_saved_searches(window, cx);
+            // The open modal's own chord closes it.
+            (open, Some(action)) if open.chord().as_ref() == Some(&action) => {
+                self.close_by_chord(open, window, cx);
                 true
             }
             // F1 in the browser: its query syntax (once).

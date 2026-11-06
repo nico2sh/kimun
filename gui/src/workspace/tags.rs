@@ -9,7 +9,7 @@
 //! **Keys.** The filter has the keyboard: Up/Down move the selection, Enter
 //! runs the selected tag's query in FIND (quoted, as the TUI's
 //! `RunTagQuery`), Escape clears the filter, then gives the keyboard back to
-//! the editor. A double-click on a row runs it too.
+//! the editor. A click on a row runs it too.
 //!
 //! **When it loads.** Only while shown: on each reveal (labels change as
 //! notes are written), and after a file operation landed or the index
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
@@ -29,14 +29,15 @@ use gpui_kit::{
 use kimun_core::NoteVault;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListSetup};
-use kimun_notes::logic::message::{AppTx, redraw_callback};
+use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::views::{TagEntry, TagSource};
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
-use super::files::{ellipsis, row_frame};
+use super::files::{ellipsis, lane_row};
+use super::query_field::query_field;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -72,25 +73,28 @@ impl DrawerRow for TagEntry {
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let label = SharedString::from(self.label.clone());
         let name = SharedString::from(format!("{}, {}", self.label, notes(self.count)));
-        row_frame(self.element_id(), name, selected, ROW_REMS, t)
-            .gap_2()
-            .text_sm()
-            .child(
-                div().flex().flex_none().justify_center().w_5().child(
-                    Icon::new(IconName::Tag)
-                        .size_3p5()
-                        .text_color(theme::tag(t)),
-                ),
-            )
-            .child(ellipsis(label).flex_1().text_color(theme::foreground(t)))
-            .child(
-                div()
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .text_color(theme::muted(t))
-                    .child(self.count.to_string()),
-            )
+        let icon = Icon::new(IconName::Tag)
+            .size_3p5()
+            .text_color(theme::tag(t));
+        lane_row(
+            self.element_id(),
+            name,
+            selected,
+            ROW_REMS,
+            Some(icon.into_any_element()),
+            [ellipsis(label)
+                .text_color(theme::foreground(t))
+                .into_any_element()],
+            t,
+        )
+        .child(
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child(self.count.to_string()),
+        )
     }
 }
 
@@ -230,16 +234,7 @@ impl Render for TagsView {
                 }
                 cx.stop_propagation();
             }))
-            .child(
-                div().flex_none().px_2().pb_1().child(
-                    Input::new(&self.filter)
-                        .id(TAGS_FILTER_ID)
-                        .aria_label("Filter tags")
-                        .bg(theme::background(t))
-                        .border_color(theme::divider(t))
-                        .text_color(theme::foreground(t)),
-                ),
-            )
+            .child(query_field(&self.filter, TAGS_FILTER_ID, "Filter tags", t))
             .child(self.list.clone())
     }
 }
@@ -257,9 +252,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let theme = self.theme.clone();
-        let list_theme = theme.clone();
-        let list =
-            cx.new(|cx| DrawerList::new(TAGS_LIST_ID, "Tags", redraw_callback(tx), list_theme, cx));
+        let list = DrawerList::spawn(TAGS_LIST_ID, "Tags", tx, &theme, cx);
         let view = cx.new(|cx| TagsView::new(vault, list.clone(), theme, window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_tags_list_event));
@@ -277,6 +270,7 @@ impl Workspace {
     ) {
         match event {
             DrawerListEvent::Activate(row) => self.run_tag_query(&row.label, window, cx),
+            DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
             // Tags are not vault entries: no menu.
             DrawerListEvent::FileOp(..) => {}

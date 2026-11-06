@@ -4,8 +4,24 @@
 //! family (Lucide) throughout; only the listed SVGs are embedded.
 
 use std::borrow::Cow;
+use std::sync::{Arc, LazyLock};
 
-use gpui_kit::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Image, ImageFormat, Result, SharedString};
+
+/// The app logo, a colour PNG embedded in the binary (no theme tinting).
+/// Built once; `img()` decodes it through GPUI's asset cache on the
+/// background executor, never on the UI thread.
+static LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        include_bytes!("../../assets/logo.png").to_vec(),
+    ))
+});
+
+/// The app logo, for `img()`.
+pub(crate) fn logo() -> Arc<Image> {
+    LOGO.clone()
+}
 
 gpui_kit::assets::icon_assets!(
     RailIcons,

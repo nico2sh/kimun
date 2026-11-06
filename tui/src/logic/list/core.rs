@@ -355,8 +355,7 @@ impl<R: ListRow> ListCore<R> {
     /// Index into `rows` of the selected row, if the selection is on a real
     /// (non-leading) row.
     fn selected_row_index(&self) -> Option<usize> {
-        let pos = self.selected?.checked_sub(self.leading_offset())?;
-        self.display.get(pos).copied()
+        self.row_index_at(self.selected?)
     }
 
     /// Move the selection back onto the row at `rows[row]` after the display
@@ -378,9 +377,11 @@ impl<R: ListRow> ListCore<R> {
     /// The selection is carried the same way every other recompute carries it:
     /// a chosen row stays chosen wherever it lands, a seed keeps the top slot.
     ///
-    /// This is the one seam that touches rows outside the [`RowSource`]; every
-    /// other change rebuilds from the source. Structural changes (add/remove)
-    /// must still reload; a reorder is [`set_order`](Self::set_order).
+    /// With [`replace_rows`](Self::replace_rows),
+    /// [`swap_visible`](Self::swap_visible) and
+    /// [`remove_visible`](Self::remove_visible), the seams that touch rows
+    /// outside the [`RowSource`]; every other change rebuilds from the source.
+    /// A reorder by a field is [`set_order`](Self::set_order).
     /// The list stays ignorant of the row type; callers layer the
     /// path-matched operations on top.
     pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
@@ -396,6 +397,54 @@ impl<R: ListRow> ListCore<R> {
             self.reselect(keep);
         }
         changed
+    }
+
+    /// Apply a row set read outside the loader (a list that runs its own
+    /// read, the GUI's pinned notes), here and now: as a one-shot `Replace`
+    /// landing — the display recomputed, the selection kept at its position
+    /// (clamped), or seeded on the first row when there was none. A load
+    /// under way is not stopped.
+    pub fn replace_rows(&mut self, rows: Vec<R>) {
+        self.rows = rows;
+        self.recompute_and_seed();
+    }
+
+    /// Swap the rows at visible positions `a` and `b`: a reorder the caller
+    /// is writing through, shown before it lands. A selection on either row
+    /// follows it. Only a source-ordered list keeps the swap — an `order_by`
+    /// or a filter puts the rows back where it says. False (nothing done)
+    /// when either position is not a real row (past the end, the leading
+    /// row).
+    pub fn swap_visible(&mut self, a: usize, b: usize) -> bool {
+        let (Some(ia), Some(ib)) = (self.row_index_at(a), self.row_index_at(b)) else {
+            return false;
+        };
+        let follow = self.selected_row_index().map(|i| match i {
+            i if i == ia => ib,
+            i if i == ib => ia,
+            i => i,
+        });
+        self.rows.swap(ia, ib);
+        self.recompute_display();
+        self.reselect(follow);
+        true
+    }
+
+    /// Remove the row at visible position `pos` and return it: a delete the
+    /// caller is writing through, shown before it lands. The selection keeps
+    /// its position, clamped to the rows left. `None` (nothing done) when
+    /// `pos` is not a real row.
+    pub fn remove_visible(&mut self, pos: usize) -> Option<R> {
+        let index = self.row_index_at(pos)?;
+        let row = self.rows.remove(index);
+        self.recompute_display();
+        Some(row)
+    }
+
+    /// Index into `rows` of the real (non-leading) row at visible `pos`.
+    fn row_index_at(&self, pos: usize) -> Option<usize> {
+        let pos = pos.checked_sub(self.leading_offset())?;
+        self.display.get(pos).copied()
     }
 
     /// Select the visible row at `pos` (clamped to the visible range); clears
@@ -578,6 +627,77 @@ mod tests {
             core.visible_rows(),
             vec![&Row::Item("create"), &Row::Item("zeta")]
         );
+    }
+
+    fn items(names: &[&'static str]) -> Vec<Row> {
+        names.iter().map(|&n| Row::Item(n)).collect()
+    }
+
+    fn listed(core: &ListCore<Row>) -> Vec<&Row> {
+        core.visible_rows()
+    }
+
+    #[test]
+    fn replaced_rows_keep_the_selection_where_it_was_clamped() {
+        let mut core = ListCore::with_rows(
+            Arc::new(StaticRowSource),
+            noop(),
+            ListSetup::default(),
+            items(&["a", "b", "c"]),
+        );
+        core.select(2);
+        core.replace_rows(items(&["x", "y", "z"]));
+        assert_eq!(core.selected_row(), Some(&Row::Item("z")), "same position");
+        core.replace_rows(items(&["x"]));
+        assert_eq!(core.selected(), Some(0), "clamped");
+        core.replace_rows(Vec::new());
+        assert_eq!(core.selected(), None);
+        core.replace_rows(items(&["p", "q"]));
+        assert_eq!(core.selected(), Some(0), "seeded again");
+    }
+
+    #[test]
+    fn a_swap_moves_the_selected_row_and_the_cursor_follows() {
+        let mut core = ListCore::with_rows(
+            Arc::new(StaticRowSource),
+            noop(),
+            ListSetup::default(),
+            items(&["a", "b", "c"]),
+        );
+        core.select(1);
+        assert!(core.swap_visible(1, 2));
+        assert_eq!(
+            listed(&core),
+            items(&["a", "c", "b"]).iter().collect::<Vec<_>>()
+        );
+        assert_eq!(core.selected_row(), Some(&Row::Item("b")));
+        assert_eq!(core.selected(), Some(2));
+        // A swap the selection is not on leaves it in place.
+        assert!(core.swap_visible(0, 1));
+        assert_eq!(core.selected_row(), Some(&Row::Item("b")));
+        // Off the end: nothing.
+        assert!(!core.swap_visible(2, 3));
+        assert_eq!(
+            listed(&core),
+            items(&["c", "a", "b"]).iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_removed_row_goes_and_the_cursor_clamps() {
+        let mut core = ListCore::with_rows(
+            Arc::new(StaticRowSource),
+            noop(),
+            ListSetup::default(),
+            items(&["a", "b"]),
+        );
+        core.select(1);
+        assert_eq!(core.remove_visible(1), Some(Row::Item("b")));
+        assert_eq!(core.selected_row(), Some(&Row::Item("a")), "clamped");
+        assert_eq!(core.remove_visible(3), None);
+        assert_eq!(core.remove_visible(0), Some(Row::Item("a")));
+        assert_eq!(core.selected(), None);
+        assert_eq!(core.visible_len(), 0);
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@
 //! keystroke or per frame, and never while hidden; an unchanged buffer
 //! revision skips the parse.
 //!
-//! **Jumping.** Enter or a double-click syncs, resolves the heading against
+//! **Jumping.** Enter or a click syncs, resolves the heading against
 //! the buffer, puts the caret on its row and gives the editor the keyboard;
 //! a heading no longer in the note is flashed.
 
@@ -26,7 +26,7 @@ use gpui_kit::{
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::message::{AppTx, redraw_callback};
+use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::nav::{DrawerView, HeadingTarget};
 use kimun_notes::logic::views::{Changed, OutlineEntry, OutlineModel};
 use kimun_notes::settings::themes::Theme;
@@ -168,8 +168,7 @@ impl Workspace {
     /// Make the OUTLINE view (nothing is read until it is shown).
     pub(super) fn start_outline(&mut self, tx: AppTx, window: &mut Window, cx: &mut Context<Self>) {
         let theme = self.theme.clone();
-        let list = cx
-            .new(|cx| DrawerList::new(OUTLINE_LIST_ID, "Outline", redraw_callback(tx), theme, cx));
+        let list = DrawerList::spawn(OUTLINE_LIST_ID, "Outline", tx, &theme, cx);
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_outline_event));
         self.outline = Some(cx.new(|_| OutlineView::new(list)));
@@ -240,6 +239,7 @@ impl Workspace {
     ) {
         match event {
             DrawerListEvent::Activate(row) => self.jump_to_heading(&row.target, window, cx),
+            DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
             // OUTLINE rows have no menu.
             DrawerListEvent::FileOp(..) => {}

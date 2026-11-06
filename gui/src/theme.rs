@@ -308,8 +308,13 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.tab_active = selected_background(theme).into();
     kit.tab_foreground = muted(theme).into();
     kit.tab_active_foreground = bright(theme).into();
+    // The notification toasts (the flashes, N1): their icon takes the kind's
+    // colour, the card the `popover` surface with the `border` hairline, the
+    // message the `foreground`, its close button the ghost Button's roles.
     kit.danger = error(theme).into();
-    kit.warning = unsaved(theme).into();
+    kit.warning = caution(theme).into();
+    kit.info = accent(theme).into();
+    kit.success = available(theme).into();
     // The default Button (the attachment view's `Open externally`, the
     // dialogs' Cancel): its fill, label, hover and press; its border is the
     // `input` role above. Its fill is the panel surface, so on the editor's
@@ -332,6 +337,26 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     // above: its trigger `input` / `background` / `foreground` / `ring`, its
     // menu `popover` / `popover_foreground`, its rows `accent`, `list_hover`,
     // `list_active`, `selection` and `muted_foreground`.
+    // The primary Button (the file dialogs' commit, the setup assistant's
+    // Next and Finish) and the danger Button (the assistant's Quit and
+    // Discard): kimün's focus and error colours, the label on the page
+    // colour, hover and press a step toward the page.
+    let page = background(theme);
+    let (hovered, pressed) = (0.15, 0.3);
+    kit.button_primary = focus.into();
+    kit.button_primary_foreground = page.into();
+    kit.button_primary_hover = mix_rgba(focus, page, hovered).into();
+    kit.button_primary_active = mix_rgba(focus, page, pressed).into();
+    let danger = error(theme);
+    kit.button_danger = danger.into();
+    kit.button_danger_foreground = page.into();
+    kit.button_danger_hover = mix_rgba(danger, page, hovered).into();
+    kit.button_danger_active = mix_rgba(danger, page, pressed).into();
+    // The kit Radio (the setup assistant's Nerd Fonts, Editor backend and
+    // Updates choices) reads only roles mapped above: checked `primary` with
+    // its mark `primary_foreground`, unchecked `input` (border and fill), the
+    // label `foreground`, a disabled label `muted_foreground`, and the focus
+    // `ring`.
 }
 
 // ---- FILES rows --------------------------------------------------------------
@@ -567,7 +592,74 @@ mod tests {
             assert_eq!(kit.tokens.primary.color, hsla(focus_border(&t)));
             assert_eq!(kit.tokens.switch.color, hsla(muted(&t)));
             assert_eq!(kit.tokens.switch_thumb.color, hsla(background(&t)));
+            // The notification toasts: the kinds' icons, the card's surface
+            // and hairline (the card reads `tokens.popover`), the message.
+            assert_eq!(kit.info, hsla(accent(&t)));
+            assert_eq!(kit.success, hsla(available(&t)));
+            assert_eq!(kit.warning, hsla(caution(&t)));
+            assert_eq!(kit.danger, hsla(error(&t)));
+            assert_eq!(kit.tokens.popover.color, want);
+            assert_eq!(kit.border, hsla(divider(&t)));
+            assert_eq!(kit.foreground, hsla(foreground(&t)));
+            // The primary and danger Buttons (the setup assistant's Next /
+            // Finish, Quit / Discard), through their tokens.
+            assert_eq!(kit.tokens.button_primary.color, hsla(focus_border(&t)));
+            assert_eq!(kit.button_primary_foreground, hsla(background(&t)));
+            assert_ne!(
+                kit.tokens.button_primary_hover.color,
+                hsla(focus_border(&t))
+            );
+            assert_eq!(kit.tokens.button_danger.color, hsla(error(&t)));
+            assert_eq!(kit.button_danger_foreground, hsla(background(&t)));
+            // The Radio (the assistant's small choices): checked, unchecked,
+            // its mark and a disabled label.
+            assert_eq!(kit.tokens.primary.color, hsla(focus_border(&t)));
+            assert_eq!(kit.primary_foreground, hsla(background(&t)));
+            assert_eq!(kit.input, hsla(divider(&t)));
+            assert_eq!(kit.muted_foreground, hsla(muted(&t)));
         });
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(c: Rgba) -> f32 {
+        let lin = |v: f32| {
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
+
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// Every built-in theme, light and dark, keeps a toast readable on its
+    /// card (the panel surface). The message is the drawers' own text on the
+    /// same surface: at least 3:1 on all of them (the lowest, Solarized
+    /// Light, is 3.6). The kinds' icons are the theme's own palette, as the
+    /// editor and the TUI use it, and only repeat what the message says;
+    /// some light themes keep them faint (Kanagawa Lotus' yellow is 1.8), so
+    /// the floor here is that they show at all.
+    #[test]
+    fn toasts_read_on_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let card = panel_background(&t);
+            let text = contrast(foreground(&t), card);
+            assert!(text >= 3.0, "{}: message {text:.2}", t.name);
+            for (role, c) in [
+                ("info", accent(&t)),
+                ("success", available(&t)),
+                ("warning", caution(&t)),
+                ("error", error(&t)),
+            ] {
+                let ratio = contrast(c, card);
+                assert!(ratio >= 1.5, "{}: {role} icon {ratio:.2}", t.name);
+            }
+        }
     }
 
     fn theme(bg: ThemeColor, fg: ThemeColor, sel: ThemeColor) -> Theme {

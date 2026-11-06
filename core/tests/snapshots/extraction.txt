@@ -462,6 +462,19 @@ processed: false
 Look into Zettelkasten method for organizing the distributed systems notes — atomic notes linked together might work better than long documents [#systems](#systems) [#idea](#idea)
 
 
+=== ../example/personal/inbox/2026-11-04t11-28-07.md
+-- title "This is a quick thought"
+-- headings
+-- chunks
+[] "This is a quick thought"
+-- index chunks
+[] "This is a quick thought"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+This is a quick thought
+
 === ../example/personal/journal/2026-04-07.md
 -- title "2026-04-07"
 -- headings
@@ -768,17 +781,48 @@ date: 2026-07-17
 
 
 
+=== ../example/personal/journal/2026-11-04.md
+-- title "2026-11-04"
+-- headings
+1 0 "2026-11-04"
+-- chunks
+[2026-11-04] "New note, journal entry actually"
+-- index chunks
+[2026-11-04] "New note, journal entry actually"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+# 2026-11-04
+
+New note, journal entry actually
+
+
+=== ../example/personal/list.md
+-- title "This is another list file"
+-- headings
+-- chunks
+[] "This is another list file"
+-- index chunks
+[] "This is another list file"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+This is another list file
+
 === ../example/personal/projects/garden-plan.md
 -- title "Garden Plan"
 -- headings
 1 8 "Garden Plan"
-2 10 "Layout"
-3 14 "Bed 1 — Tomatoes & Herbs"
-3 20 "Bed 2 — Greens"
-3 26 "Bed 3 — Root Vegetables"
-2 32 "Watering Schedule"
-2 38 "Notes"
+2 12 "Layout"
+3 16 "Bed 1 — Tomatoes & Herbs"
+3 22 "Bed 2 — Greens"
+3 28 "Bed 3 — Root Vegetables"
+2 34 "Watering Schedule"
+2 40 "Notes"
 -- chunks
+[Garden Plan] "list"
 [Garden PlanLayout] "Three raised beds along the south fence (4x8 each):"
 [Garden PlanLayoutBed 1 — Tomatoes & Herbs] "* Roma tomatoes (center)\n* Cherry tomatoes (east end)\n* Basil (companion, between tomatoes)\n* Rosemary (west end)"
 [Garden PlanLayoutBed 2 — Greens] "* Lettuce (mixed varieties)\n* Spinach\n* Kale\n* Arugula"
@@ -787,6 +831,7 @@ date: 2026-07-17
 [Garden PlanNotes] "See companion-planting for plant pairings.\nBed layout sketch: garden-layout.txt\nLabels: idea"
 [FrontMatter] "type: project\nstatus: active\npriority: 2\nstarted: 2026-04-08\ntags:\n  - garden"
 -- index chunks
+[Garden Plan] "list"
 [Garden PlanLayout] "Three raised beds along the south fence (4x8 each):"
 [Garden PlanLayoutBed 1 — Tomatoes & Herbs] "* Roma tomatoes (center)\n* Cherry tomatoes (east end)\n* Basil (companion, between tomatoes)\n* Rosemary (west end)"
 [Garden PlanLayoutBed 2 — Greens] "* Lettuce (mixed varieties)\n* Spinach\n* Kale\n* Arugula"
@@ -797,8 +842,10 @@ date: 2026-07-17
 -- index links (sorted)
 Hashtag "#idea" "idea"
 Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
 -- tags ["garden", "idea"]
 -- markdown links
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
 Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
 Attachment(VaultPath { absolute: false, slices: [PathSlice("assets"), PathSlice("garden-layout.txt")] }) "../assets/garden-layout.txt" "garden-layout.txt"
 Hashtag "#idea" "idea"
@@ -812,6 +859,8 @@ tags:
   - garden
 ---
 # Garden Plan
+
+[list](list.md)
 
 ## Layout
 

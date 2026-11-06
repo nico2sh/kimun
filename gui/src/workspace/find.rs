@@ -28,7 +28,8 @@
 //! shrinks it, Space cycles it; in Full, Up/Down scroll the preview.
 //! Desktop keys only, as LINKS and OUTLINE (decision 13).
 //!
-//! **Pointer.** A click selects, a double-click opens; the preview button
+//! **Pointer.** A click opens a row, as Enter does (the pointing hand over
+//! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the preview button
 //! cycles the preview; `Save…` saves the query (as the `SaveCurrentQuery`
 //! chord does here); the `Syntax` button shows the query syntax; the sort
 //! chip opens the sort dialog, which rewrites the query's order directive
@@ -49,7 +50,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown};
+use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::component::{Disableable as _, Icon};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -64,8 +65,8 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{ListSetup, ResolvingRowSource, RowSource, Unresolvable};
+use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::message::SortTarget;
-use kimun_notes::logic::message::{AppTx, redraw_callback};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::logic::query::{
@@ -77,8 +78,9 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
-use super::files::{ellipsis, row_frame};
+use super::files::{display_title, ellipsis, lane_row};
 use super::picker::query_problem;
+use super::query_field::{self, query_field};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
 use crate::input;
@@ -132,13 +134,7 @@ impl DrawerRow for QueryHit {
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let entry = &self.entry;
-        // An untitled note shows its filename (the TUI's rule).
-        let title = if entry.title.trim().is_empty() {
-            &entry.filename
-        } else {
-            &entry.title
-        };
-        let title = SharedString::from(title.clone());
+        let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
         // One line of context: the paragraph's lines run together.
         let context: SharedString = entry
             .context
@@ -146,30 +142,30 @@ impl DrawerRow for QueryHit {
             .collect::<Vec<_>>()
             .join(" ")
             .into();
-        row_frame(self.element_id(), title.clone(), selected, ROW_REMS, t)
-            .gap_2()
-            .child(
-                div().flex().flex_none().justify_center().w_5().child(
-                    Icon::new(IconName::FileText)
-                        .size_4()
-                        .text_color(theme::foreground(t)),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .child(ellipsis(title).text_color(theme::foreground(t)))
-                    .child(
-                        ellipsis(entry.filename.clone())
-                            .text_xs()
-                            .text_color(theme::secondary(t)),
-                    )
-                    .child(ellipsis(context).text_xs().text_color(theme::muted(t))),
-            )
+        let icon = Icon::new(IconName::FileText)
+            .size_4()
+            .text_color(theme::foreground(t));
+        lane_row(
+            self.element_id(),
+            title.clone(),
+            selected,
+            ROW_REMS,
+            Some(icon.into_any_element()),
+            [
+                ellipsis(title)
+                    .text_color(theme::foreground(t))
+                    .into_any_element(),
+                ellipsis(entry.filename.clone())
+                    .text_xs()
+                    .text_color(theme::secondary(t))
+                    .into_any_element(),
+                ellipsis(context)
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .into_any_element(),
+            ],
+            t,
+        )
     }
 
     fn menu_target(&self) -> Option<VaultPath> {
@@ -447,12 +443,11 @@ impl FindView {
     }
 
     fn focus_list(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.list.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
+        query_field::focus_list(&self.list, window, cx);
     }
 
     fn list_focused(&self, window: &Window, cx: &App) -> bool {
-        self.list.read(cx).focus_handle(cx).is_focused(window)
+        query_field::list_focused(&self.list, window, cx)
     }
 
     /// Bring the rows up to the layout and `note` (the open note, empty for
@@ -595,9 +590,8 @@ impl FindView {
                     .update(cx, |preview, cx| preview.scroll_rows(rows, cx));
                 true
             }
-            Key::Up if self.list.read(cx).selected().is_none_or(|pos| pos == 0) => {
-                let handle = self.input.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
+            Key::Up if query_field::at_top(&self.list, cx) => {
+                query_field::focus_input(&self.input, window, cx);
                 true
             }
             _ => false,
@@ -808,16 +802,7 @@ impl Render for FindView {
                 cx.emit(FindEvent::Dismiss);
                 cx.stop_propagation();
             }))
-            .child(
-                div().flex_none().px_2().pb_1().child(
-                    Input::new(&self.input)
-                        .id(FIND_INPUT_ID)
-                        .aria_label("Query")
-                        .bg(theme::background(&t))
-                        .border_color(theme::divider(&t))
-                        .text_color(theme::foreground(&t)),
-                ),
-            )
+            .child(query_field(&self.input, FIND_INPUT_ID, "Query", &t))
             .child(self.render_bar(&query, cx))
             .when_some(error, |view, error| {
                 view.child(
@@ -867,10 +852,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let theme = self.theme.clone();
-        let list_theme = theme.clone();
-        let list = cx.new(|cx| {
-            DrawerList::new(FIND_LIST_ID, "Results", redraw_callback(tx), list_theme, cx)
-        });
+        let list = DrawerList::spawn(FIND_LIST_ID, "Results", tx, &theme, cx);
         let view = cx.new(|cx| FindView::new(vault, list.clone(), theme, window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_find_list_event));
@@ -899,6 +881,7 @@ impl Workspace {
             DrawerListEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
+            DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
         }
     }

@@ -28,8 +28,9 @@
 //! the window open with a flash saying so; closing again discards them.
 
 use std::num::NonZeroU64;
+use std::time::Duration;
 
-use gpui_kit::{App, AppContext, Context, Task, Window};
+use gpui_kit::{App, AppContext, Context, SharedString, Task, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::doc_meta::DocMeta;
 use kimun_notes::logic::message::AppMessage;
@@ -39,7 +40,14 @@ use kimun_notes::logic::session::{
 use tokio::task::JoinError;
 
 use super::Workspace;
-use crate::status_row::FLASH_DURATION;
+
+/// How long the "close again to discard" warning holds: a close within it
+/// (and before any new edit) discards the unsaved edits. Its own clock, not
+/// the toast's: the kit's toast can be paused by hovering, closed early or
+/// never shown (no toast layer), and none of that may move this window. The
+/// same five seconds as the kit's toast autohide, so the two usually end
+/// together.
+pub(crate) const DISCARD_WINDOW: Duration = Duration::from_secs(5);
 
 /// The note session and the switch in progress. `Some` on the workspace only
 /// when a vault is open.
@@ -130,6 +138,26 @@ fn rewritable(outcome: Option<&SaveOutcome>) -> bool {
     matches!(outcome, Some(SaveOutcome::Saved(_) | SaveOutcome::Clean))
 }
 
+/// The panel the open note is left for ([`Workspace::leave_note`]): each
+/// holds its flush in its own slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LeavingFor {
+    Attachment,
+    Ask,
+}
+
+/// How leaving the open note went ([`Workspace::leave_note`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NoteLeft {
+    /// Nothing had to be written: the panel may show now.
+    Now,
+    /// The flush wrote everything: the panel may show.
+    Flushed,
+    /// The note stays (the flush failed, or a note was asked for
+    /// meanwhile); its tick is back.
+    Stays,
+}
+
 impl Workspace {
     /// Whether the open note may be written now: a note is open and the
     /// vault is not read-only.
@@ -146,13 +174,13 @@ impl Workspace {
     }
 
     /// The user was just told the edits cannot be saved: the next close
-    /// discards them, if it comes before any new edit and while the warning
-    /// is up.
+    /// discards them, if it comes before any new edit and within
+    /// [`DISCARD_WINDOW`].
     fn arm_discard(&mut self, cx: &mut Context<Self>) {
         let revision = self.editor_revision(cx);
         self.closing = Closing::Discard(revision);
         let expiry = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FLASH_DURATION).await;
+            cx.background_executor().timer(DISCARD_WINDOW).await;
             this.update(cx, |workspace, _| {
                 if workspace.closing == Closing::Discard(revision) {
                     workspace.closing = Closing::Open;
@@ -399,6 +427,9 @@ impl Workspace {
                 self.note_gone = None;
                 self.status.note = Some(path.clone());
                 self.files_note_opened(&path, cx);
+                // The note takes the editor Panel back from the Thread or
+                // an attachment (the Thread's conversation is kept).
+                self.hide_ask(cx);
                 self.clear_attachment(cx);
             }
             // The editor still holds the note it had: point the session back
@@ -431,6 +462,126 @@ impl Workspace {
         self.ensure_files_listing(cx);
         self.refresh_views(cx);
         cx.notify();
+    }
+
+    // ---- Leaving the note for another panel -------------------------------
+
+    /// Leave the open note for a panel that is not a note (an attachment,
+    /// the Thread), then `then`: flushed first, the tick stopped and the
+    /// editor taking no input while it runs, and refused when the note
+    /// cannot be let go — a change still being written, a note still
+    /// opening, edits that can't be saved, the window closing — or the
+    /// flush fails. A refusal flashes why, naming `name` (what was not
+    /// opened), and the note stays with its edits, its tick and the
+    /// keyboard. `then` runs at once ([`NoteLeft::Now`]) when there is
+    /// nothing to write, else when the flush ends, followed by any open
+    /// that waited for it. `panel` says which task slot holds the flush.
+    /// `then` lets the note go itself ([`Self::release_note`]).
+    pub(super) fn leave_note(
+        &mut self,
+        panel: LeavingFor,
+        name: SharedString,
+        then: impl FnOnce(&mut Self, NoteLeft, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let can_save = self.can_save();
+        if let Some(block) = self.flush_block(cx) {
+            self.flash_error(format!("Couldn't open {name}: {}.", block.reason()), cx);
+            return;
+        }
+        if self.notes.as_ref().is_none() {
+            return;
+        }
+        if !can_save {
+            then(self, NoteLeft::Now, window, cx);
+            return;
+        }
+        // No tick from here: the flush is the last write of the note.
+        let Some(flush) = self.begin_note_flush(cx) else {
+            let text = format!("Couldn't open {name}: another save is still running.");
+            self.flash_error(text, cx);
+            return;
+        };
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let flushed = tokio::spawn(flush.run()).await;
+            this.update_in(cx, |workspace, window, cx| {
+                workspace.note_left(panel, name, then, flushed, window, cx)
+            })
+            .ok();
+        });
+        *self.leaving_slot(panel) = Some(task);
+        cx.notify();
+    }
+
+    /// The flush [`Self::leave_note`] started ended: `then` hears whether
+    /// everything is written ([`NoteLeft::Flushed`]) or the note stays (the
+    /// flush failed, flashed; or a note was asked for meanwhile, which
+    /// opens instead), its tick back.
+    fn note_left(
+        &mut self,
+        panel: LeavingFor,
+        name: SharedString,
+        then: impl FnOnce(&mut Self, NoteLeft, &mut Window, &mut Context<Self>),
+        flushed: Result<FlushResult, JoinError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        *self.leaving_slot(panel) = None;
+        let outcome = self.apply_flush(flushed, cx);
+        let problem = self.flush_failure(&outcome, cx);
+        self.block_input(false, cx);
+        let note_wanted = self.notes.as_ref().is_some_and(|h| h.is_open_wanted());
+        if let Some(problem) = problem {
+            let note = self
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.clone())
+                .unwrap_or_else(VaultPath::root);
+            self.restart_tick_unless_read_only();
+            self.flash_error(
+                format!("Couldn't save {note}: {problem}. {name} was not opened."),
+                cx,
+            );
+            then(self, NoteLeft::Stays, window, cx);
+        } else if note_wanted {
+            // A note was asked for meanwhile: it opens instead.
+            self.restart_tick_unless_read_only();
+            then(self, NoteLeft::Stays, window, cx);
+        } else {
+            then(self, NoteLeft::Flushed, window, cx);
+        }
+        // An open that waited for the flush goes now.
+        self.file_op_ended(cx);
+    }
+
+    /// The task slot holding the flush of a leave for `panel`.
+    fn leaving_slot(&mut self, panel: LeavingFor) -> &mut Option<Task<()>> {
+        match panel {
+            LeavingFor::Attachment => &mut self.attachment_flushing,
+            LeavingFor::Ask => &mut self.ask_flushing,
+        }
+    }
+
+    /// Let the open note (already flushed) go: no session path, no tick, an
+    /// empty clean buffer, so nothing can save while another panel shows;
+    /// the status line names no note.
+    pub(super) fn release_note(&mut self, cx: &mut Context<Self>) {
+        if let Some(host) = self.notes.as_mut() {
+            host.session.stop_autosave();
+            host.session.abort_autosave();
+            host.session.set_path(VaultPath::root());
+            host.note = None;
+        }
+        self.editor.update(cx, |view, cx| {
+            view.editor.set_text(String::new());
+            view.editor.mark_saved(String::new());
+            view.preedit = None;
+            view.input_blocked = false;
+            cx.notify();
+        });
+        self.status.note = None;
+        self.note_gone = None;
     }
 
     // ---- Saving --------------------------------------------------------------
@@ -644,6 +795,12 @@ impl Workspace {
     pub(super) fn restart_tick(&mut self) {
         if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
             host.session.restart_autosave(tx);
+        }
+    }
+
+    pub(super) fn restart_tick_unless_read_only(&mut self) {
+        if !self.status.read_only {
+            self.restart_tick();
         }
     }
 

@@ -1,27 +1,32 @@
 //! The **Footer** docked under the editor Panel (M5b-2): the open note's
 //! path as a breadcrumb, whether it has unsaved edits, what the vault is
-//! doing (indexing), whether notes may be saved, and transient flash
-//! messages. G5 completed it with what the TUI's second status line shows
+//! doing (indexing), and whether notes may be saved. G5 completed it with what the TUI's second status line shows
 //! of the document: the caret's line and column, the find bar's place among
 //! its matches, and the open note's backlink and property counts. The
 //! backlink count is a button (M7a G1): it shows LINKS on its Backlinks tab;
 //! the property count too (M7a G2): it opens the properties dialog.
 //!
-//! **Narrow windows.** The path (and a flash) take only the room the
-//! pinned segments leave, so they shrink first, with an ellipsis; then the
-//! note's counts; the caret, the matches and the save, read-only and
-//! indexing states keep their width.
+//! **Narrow windows.** The path takes only the room the pinned segments
+//! leave, so it shrinks first, with an ellipsis; of the pinned segments the
+//! kimün server's state is cut first, then the note's counts; the caret,
+//! the matches and the save, read-only and indexing states keep their
+//! width.
+//!
+//! **The kimün server** (M7c G9): its state in the TUI's words ("rag:
+//! online", "rag: offline", …), muted, at the right end; nothing when no
+//! server is configured.
+//!
+//! **Flashes** are not drawn here: the
+//! [`Workspace`](crate::workspace::Workspace) shows them as the kit's
+//! toasts, in the window's bottom-right corner (N1).
 //!
 //! The vim mode is not repeated here: the editor's own mode line, the row
 //! right above the Footer, shows it with the pending command.
 //!
 //! The state is plain data owned by the
-//! [`Workspace`](crate::workspace::Workspace), which also owns the flash's
-//! expiry, plus the [`DocFacts`] it reads off the editor and the note
+//! [`Workspace`](crate::workspace::Workspace), plus the [`DocFacts`] it reads off the editor and the note
 //! session each frame; [`render`] draws both with the kit's `StatusBar` in
 //! kimün's theme.
-
-use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
@@ -39,22 +44,21 @@ use kimun_notes::settings::themes::Theme;
 
 use crate::theme;
 
-/// How long a flash stays up. Longer than the TUI's two seconds: a window
-/// is read from further away than a terminal's last line, and the messages
-/// here name paths.
-pub(crate) const FLASH_DURATION: Duration = Duration::from_secs(4);
-
 /// Element ids, for tests.
 pub(crate) const ROW_ID: &str = "status-row";
 pub(crate) const PATH_ID: &str = "status-path";
 pub(crate) const SAVE_ID: &str = "status-save";
-pub(crate) const FLASH_ID: &str = "status-flash";
 pub(crate) const INDEXING_ID: &str = "status-indexing";
 pub(crate) const READ_ONLY_ID: &str = "status-read-only";
 pub(crate) const CARET_ID: &str = "status-caret";
 pub(crate) const MATCHES_ID: &str = "status-matches";
 pub(crate) const BACKLINKS_ID: &str = "status-backlinks";
 pub(crate) const PROPERTIES_ID: &str = "status-properties";
+pub(crate) const RAG_ID: &str = "status-rag";
+
+/// How much faster than the other shrinking segments the server's state
+/// gives up its room in a narrow window: by far the most, so it goes first.
+const RAG_SHRINK: f32 = 100.;
 
 /// The save state's two labels.
 pub(crate) const UNSAVED: &str = "Unsaved";
@@ -75,11 +79,10 @@ pub(crate) struct Status {
     /// Notes must not be written (the vault has names that differ only by
     /// case; until M8/M9 give that a screen). Saves honour it.
     pub(crate) read_only: bool,
-    /// The transient message on show, if any.
-    pub(crate) flash: Option<SharedString>,
-    /// The flash reports a problem (a failed save, a refused open): drawn in
-    /// the error colour, and not replaced by a plain notice while it shows.
-    pub(crate) flash_error: bool,
+    /// The kimün server's state as the TUI's footer words it
+    /// (`RagStatus::label`: "rag: online", …); `None` with no server
+    /// configured.
+    pub(crate) rag: Option<&'static str>,
 }
 
 /// What the footer reads off the editor and the open note each frame: each
@@ -154,31 +157,12 @@ pub(crate) fn render(
             .text_ellipsis()
     };
     let note_open = status.note.is_some();
-    // The path, then the flash: both shrink (the flash first, it is cut
-    // short with an ellipsis) rather than pushing the pinned labels out.
+    // The path shrinks (cut short with an ellipsis) rather than pushing the
+    // pinned labels out.
     let bar = StatusBar::new()
         .when_some(
             status.note.as_ref().or(status.attachment.as_ref()),
             |bar, path| bar.child(breadcrumb(path, theme)),
-        )
-        .child(
-            div()
-                .id(FLASH_ID)
-                .test_support()
-                .role(Role::Status)
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .text_color(if status.flash_error {
-                    theme::error(theme)
-                } else {
-                    theme::foreground(theme)
-                })
-                .when_some(status.flash.clone(), |flash, text| {
-                    flash.aria_label(text.clone()).child(text)
-                }),
         )
         .when_some(facts.caret, |bar, caret| {
             bar.right(fixed(CARET_ID, caret_label(caret)))
@@ -218,6 +202,17 @@ pub(crate) fn render(
         })
         .when(status.indexing, |bar| {
             bar.right(label(INDEXING_ID, "Indexing…".into(), "Indexing…".into()).flex_none())
+        })
+        // The server's state gives up its room first of all: it shrinks
+        // far faster than the counts, with an ellipsis.
+        .when_some(status.rag, |bar, rag| {
+            bar.right(
+                label(RAG_ID, rag.into(), rag.into())
+                    .min_w_0()
+                    .flex_shrink(RAG_SHRINK)
+                    .overflow_hidden()
+                    .text_ellipsis(),
+            )
         })
         .bg(theme::panel_background(theme))
         .border_color(theme::divider(theme))

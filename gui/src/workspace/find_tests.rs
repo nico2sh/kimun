@@ -429,9 +429,9 @@ fn enter_opens_with_emphasis(cx: &mut TestAppContext) {
     );
 }
 
-/// A double-click on a row opens it.
+/// A click on a row opens it, as Enter does (C1).
 #[gpui_kit::test]
-fn a_double_click_opens_a_row(cx: &mut TestAppContext) {
+fn a_click_opens_a_row(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
@@ -446,11 +446,7 @@ fn a_double_click_opens_a_row(cx: &mut TestAppContext) {
             .map(|r| find_row_id(&r.entry.path))
             .unwrap()
     });
-    cx.update_window(started.handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.double_click(row, cx)
-    })
-    .unwrap();
+    click(&started, row, cx);
     drive(&rt, cx, |cx| on(&started, "epsilon.md", cx));
 }
 
@@ -591,6 +587,8 @@ fn f1_shows_the_query_syntax(cx: &mut TestAppContext) {
     press(&started, "f1", cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::QueryHelp));
     assert!(started.shows(super::search::QUERY_HELP_ID, cx));
+    // Help to read: it keeps the kit's close button (no other dialog does).
+    assert!(started.shows("close", cx));
     press(&started, "escape", cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
@@ -627,18 +625,35 @@ fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     assert_eq!(query(&started, cx), "#\"solo tag\"");
     assert_eq!(find_names(&started, &rt, cx), ["delta", "gamma"]);
 
-    // A double-click on a row runs it too; Escape clears, then leaves.
+    // A click on a row runs it too (C1); Escape clears, then leaves.
     leader(&started, "ft", cx);
     press(&started, "escape", cx);
     assert_eq!(tag_rows(&started, &rt, cx).len(), 3, "the filter cleared");
+    click(&started, tag_row_id("go"), cx);
+    assert_eq!(query(&started, cx), "#go");
+    assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
+}
+
+/// A double-click on a tag runs it once: its second press lands on FIND,
+/// which took TAGS' place, and must not open the result under it.
+#[gpui_kit::test]
+fn a_double_click_on_a_tag_runs_it_and_opens_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    leader(&started, "ft", cx);
+    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.double_click(tag_row_id("go"), cx)
+        window.double_click(tag_row_id("rust"), cx)
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(query(&started, cx), "#go");
-    assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
+    assert!(shown(&started, DrawerView::Find, cx));
+    assert_eq!(query(&started, cx), "#rust");
+    find_names(&started, &rt, cx);
+    drive(&rt, cx, |_| true);
+    assert!(on(&started, "alpha.md", cx), "no result opened");
 }
 
 /// The channel's `RunTagQuery` runs the label in FIND too.

@@ -3,7 +3,7 @@
 //! TUI's own engine and key feed), and a fired leaf runs its **Leader
 //! route** through the same performer the command palette uses
 //! ([`Workspace::perform_route`]). A route the window cannot run yet is
-//! refused with its reason in the Footer, as the palette shows it on a
+//! refused with its reason in a flash (a toast), as the palette shows it on a
 //! disabled row.
 //!
 //! **Gateways.** The `Leader` chord (primary+Shift+B) from any panel, and

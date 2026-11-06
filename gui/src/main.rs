@@ -24,6 +24,7 @@ mod row_paint;
 mod shell_layout;
 mod startup;
 mod status_row;
+mod tasks;
 #[cfg(test)]
 mod test_vault;
 mod theme;
@@ -85,7 +86,7 @@ fn load_theme(settings: &AppSettings) -> Theme {
 /// `editor_backend` setting (default plain). The GUI has no nvim backend
 /// (ADR-0049 §5), so `nvim` gets what the TUI falls back to when nvim cannot
 /// start: the plain editor.
-fn uses_vim(backend: EditorBackendSetting) -> bool {
+pub(crate) fn uses_vim(backend: EditorBackendSetting) -> bool {
     match backend {
         EditorBackendSetting::Vim => true,
         EditorBackendSetting::Plain | EditorBackendSetting::Nvim => false,

@@ -40,7 +40,8 @@
 //! channel: the editor reports on it, background jobs (indexing, the
 //! restore, the note session's saves and autosave ticks) send their
 //! completions on it, and [`Workspace::on_app_message`] dispatches them on
-//! the main thread.
+//! the main thread. The vault can change at runtime (M8b, [`reopen`]):
+//! each vault entry gets a channel of its own.
 //!
 //! **The open note (M5b-2 G2).** Opening, saving and the flush before the
 //! window closes are the note session's, hosted in [`note`]; the Footer
@@ -105,14 +106,36 @@
 //! re-sorts FILES in place, or rewrites FIND's or the browser's query order
 //! ([`sort`]). Changes apply live; nothing is saved.
 //!
+//! **The kimün server and SEM (M7c G9).** With a server configured, the
+//! window runs the TUI's background sync and follows the status it reports
+//! ([`server`]): the rail offers SEM while the server can search, and the
+//! Footer says how the server is. SEM is the semantic search view
+//! ([`semantic`]).
+//!
+//! **Ask (M7c G10a).** The Thread, the Ask workspace's conversation, takes
+//! the editor Panel in place of the editor (leader `a a` / F6, `+ask`),
+//! leaving the open note as the attachment view does; a note opening or an
+//! attachment shown takes it down, its conversation kept ([`ask`]). It
+//! shows with the drawer view ASK (M7c G10b), the selected turn's Sources
+//! and the Source reader ([`ask_sources`]); the rail offers ASK while the
+//! server can answer, and ASK is never persisted.
+//!
+//! **The setup assistant (M8c).** With no workspace configured, and from
+//! the leader / palette (`guided setup`), the window shows the setup
+//! assistant in place of its Panels ([`onboarding`]): the rail, the drawers
+//! and the editor are not drawn and the workspace's chords do nothing until
+//! it is finished or left. Its theme choice restyles the window live.
+//!
 //! **Pinned notes (M7b G8).** The pinned-notes dialog (leader `f p`, the
 //! palette) lists the vault's pins by number: a digit opens one, and pins
 //! are raised, lowered and unpinned in place, each change written through
 //! core as it is made ([`pinned`]).
 
+use std::collections::VecDeque;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::ResizeHandleRenderer;
@@ -120,25 +143,31 @@ use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_han
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::{Icon, tooltip::Tooltip};
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::{Icon, WindowExt as _, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, ClipboardItem, Context,
+    Anchor, AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, ClipboardItem, Context,
     DragMoveEvent, Entity, FocusHandle, Focusable, InputPreference, InteractiveElement,
     IntoElement, KeyDownEvent, KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render,
     Rgba, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity,
     Window, div, px, relative, rems,
 };
+use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{
     FocusMove, LayoutError, Panel, PanelLayout, Region, Side, WidthLimits,
 };
+use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
 use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
+use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::{NoteSession, SaveCompleted};
+use kimun_notes::rag::RagStatus;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -146,10 +175,11 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
 use crate::keymap::{self, KeyCtx};
-use crate::shell_layout::{self, RAIL_REMS, RAIL_SIDE, RAIL_VIEWS};
+use crate::shell_layout::{self, RAIL_REMS, RAIL_SIDE};
 use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
 use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
+use kimun_notes::logic::task_slot::TaskSlot;
 
 use files::FilesPane;
 #[cfg(test)]
@@ -163,7 +193,8 @@ pub(crate) use palette::Palette;
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
 
-/// Where the layout is persisted.
+/// Where the layout, and the settings the window changes, are persisted.
+#[derive(Clone)]
 pub(crate) enum LayoutStore {
     /// Nowhere (tests that are not about persistence).
     #[cfg(test)]
@@ -194,6 +225,25 @@ impl LayoutStore {
             tracing::warn!("could not save the [gui] layout: {e}");
             eprintln!("kimun-gui: could not save the [gui] layout: {e}");
         }
+    }
+
+    /// Write `settings` to the store as the TUI saves its preferences, the
+    /// `[gui]` table on disk kept (`AppSettings::save_to_disk`); a config
+    /// that exists but does not parse is left alone and reported. Blocking:
+    /// run it off the UI thread ([`Workspace::persist_settings`]).
+    fn save_settings(&self, settings: &AppSettings) -> Result<(), String> {
+        let result = match self {
+            #[cfg(test)]
+            LayoutStore::Off => return Ok(()),
+            LayoutStore::UserConfig => settings.save_to_disk_if_parsable(),
+            #[cfg(test)]
+            LayoutStore::File(path) => {
+                let mut settings = settings.clone();
+                settings.config_file = Some(path.clone());
+                settings.save_to_disk_if_parsable()
+            }
+        };
+        result.map_err(|e| e.to_string())
     }
 }
 
@@ -319,7 +369,8 @@ pub(crate) struct Workspace {
     /// Each drawer view's slot handle, the keyboard target of a slot whose
     /// view has no focusable content of its own (all but FILES).
     view_focus: Vec<(DrawerView, FocusHandle)>,
-    /// The rail cell the keyboard is on (an index into [`RAIL_VIEWS`]).
+    /// The rail cell the keyboard is on (an index into
+    /// [`Self::rail_views`]).
     rail_cursor: usize,
     /// A divider drag is in progress (persisted when it ends).
     resizing: bool,
@@ -340,8 +391,15 @@ pub(crate) struct Workspace {
     /// background jobs report on, and the task draining its receiver.
     tx: Option<AppTx>,
     _messages: Option<Task<()>>,
-    /// Takes the flash down when it expires; replaced by a newer flash.
-    flash_expiry: Option<Task<()>>,
+    /// Every flash shown, in order, with whether it was an error: what the
+    /// tests read (the kit's toasts keep their message and kind private).
+    #[cfg(test)]
+    pub(crate) flashes: Vec<(SharedString, bool)>,
+    /// The keys (texts) of the flash toasts pushed, oldest first, at most
+    /// [`MAX_FLASH_TOASTS`]: the ones that may still be up. A toast the kit
+    /// hid on its own stays listed until it ages out of here; removing it
+    /// again is a no-op.
+    toasts: VecDeque<SharedString>,
     /// Where closing the window stands.
     pub(crate) closing: Closing,
     /// The window, for closing it once the close flush has written.
@@ -362,7 +420,15 @@ pub(crate) struct Workspace {
     /// The FIND and TAGS views, when the window has a vault.
     pub(crate) find: Option<Entity<find::FindView>>,
     pub(crate) tags: Option<Entity<tags::TagsView>>,
+    /// The SEM view, when the window has a vault ([`semantic`]).
+    pub(crate) semantic: Option<Entity<semantic::SemanticView>>,
     _views_events: Vec<Subscription>,
+    /// What the kimün server last reported (`Disabled`: none configured,
+    /// or no report yet), and what it can do then ([`server`]).
+    rag_status: RagStatus,
+    rag_caps: Caps,
+    /// The server sync, while one runs: at most one.
+    rag_sync: TaskSlot,
     /// The link lookup under way (a newer follow replaces it).
     following: Option<Task<()>>,
     /// Hands URLs, images and attachments to the system's default program.
@@ -378,8 +444,9 @@ pub(crate) struct Workspace {
     pub(crate) modal: Option<ModalKind>,
     /// The command palette's view while it is open (tests read its rows).
     pub(crate) palette: Option<WeakEntity<Palette>>,
-    /// The settings the window started on (the leader tree): `None` before
-    /// [`Self::start`] and in the tests that never call it.
+    /// The shared settings (the leader tree, the vault to open, what
+    /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
+    /// that never call it.
     settings: Option<SharedSettings>,
     /// The editor's requests that need the window (vim `:`).
     _editor_events: Subscription,
@@ -389,9 +456,11 @@ pub(crate) struct Workspace {
     /// the keymap is replaced, never per frame.
     chord_labels: ChordLabels,
     _keymap_watch: Subscription,
-    /// The file dialog in the modal slot, while one is open (tests read
-    /// it), and the progress of its operation ([`file_ops`]).
+    /// The file dialog in the modal slot, while one is open: tests read
+    /// it (like `SaveSearchOpen.dialog`), nothing else does.
+    #[cfg(test)]
     pub(crate) file_dialog: Option<file_ops::FileDialogView>,
+    /// The progress of the file dialog's operation ([`file_ops`]).
     file_status: Option<Entity<file_dialogs::OpStatus>>,
     /// The file operation running (its flush, the core call, the reload of
     /// a followed note). One at a time.
@@ -446,6 +515,34 @@ pub(crate) struct Workspace {
     attachment_flushing: Option<Task<()>>,
     /// An attachment asked for while that flush ran: it opens next.
     attachment_wanted: Option<VaultPath>,
+    /// The Thread (Ask), when the window has a vault ([`ask`]), and its
+    /// events. It lives as long as the window, shown or not.
+    pub(crate) ask: Option<Entity<ask::AskView>>,
+    _ask_events: Option<Subscription>,
+    /// The Sources view (the drawer view ASK), with the Thread.
+    pub(crate) ask_sources: Option<Entity<ask_sources::SourcesView>>,
+    /// Whether the Thread holds the editor Panel: the one record of it.
+    ask_flow: AskFlow,
+    /// The flush of the open note before the Thread shows: it holds the
+    /// note like a file operation does.
+    ask_flushing: Option<Task<()>>,
+    /// The Thread's client being built (a newer status replaces it).
+    ask_client_task: Option<Task<()>>,
+    /// The free path for a saved answer being found.
+    ask_saving: Option<Task<()>>,
+    /// The client the Thread gets whenever the status says the server can
+    /// answer (tests: a stub transport), instead of the configured one.
+    #[cfg(test)]
+    pub(crate) ask_test_client: Option<Arc<kimun_notes::server_client::RagClient>>,
+    /// The vault change under way ([`reopen`]): the open note's flush, then
+    /// the new vault being opened. It holds the note like a file operation.
+    reopening: Option<Task<()>>,
+    /// Another vault change was asked for while one ran: the vault is
+    /// opened again from the settings as they are then.
+    reopen_again: bool,
+    /// The setup assistant, while it has the window ([`onboarding`]).
+    pub(crate) onboarding: Option<Entity<onboarding::OnboardingView>>,
+    _onboarding_events: Option<Subscription>,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -492,7 +589,11 @@ impl Workspace {
         let rail_cursor = layout
             .slot_views(Side::Left)
             .first()
-            .and_then(|v| RAIL_VIEWS.iter().position(|r| r == v))
+            .and_then(|v| {
+                shell_layout::rail_views(Caps::default())
+                    .iter()
+                    .position(|r| r == v)
+            })
             .unwrap_or(0);
         // Every edit notifies the editor; the Footer only redraws when the
         // dirty state flips.
@@ -538,7 +639,9 @@ impl Workspace {
             notes: None,
             tx: None,
             _messages: None,
-            flash_expiry: None,
+            #[cfg(test)]
+            flashes: Vec::new(),
+            toasts: VecDeque::new(),
             closing: Closing::Open,
             // Captured now: an app-channel message (no `Window` of its own)
             // may need it to open or close a modal ([`Self::with_window`]).
@@ -551,7 +654,11 @@ impl Workspace {
             outline: None,
             find: None,
             tags: None,
+            semantic: None,
             _views_events: Vec::new(),
+            rag_status: RagStatus::Disabled,
+            rag_caps: Caps::default(),
+            rag_sync: TaskSlot::default(),
             following: None,
             opener: follow::system_opener(),
             _editor_watch: editor_watch,
@@ -564,6 +671,7 @@ impl Workspace {
             leader: LeaderState::default(),
             chord_labels: ChordLabels::new(cx),
             _keymap_watch: keymap_watch,
+            #[cfg(test)]
             file_dialog: None,
             file_status: None,
             file_task: None,
@@ -588,6 +696,19 @@ impl Workspace {
             attachment_loading: None,
             attachment_flushing: None,
             attachment_wanted: None,
+            ask: None,
+            _ask_events: None,
+            ask_sources: None,
+            ask_flow: AskFlow::new(),
+            ask_flushing: None,
+            ask_client_task: None,
+            ask_saving: None,
+            #[cfg(test)]
+            ask_test_client: None,
+            reopening: None,
+            reopen_again: false,
+            onboarding: None,
+            _onboarding_events: None,
         }
     }
 
@@ -612,10 +733,8 @@ impl Workspace {
     }
 
     /// Put the window on `start` (see [`startup`]): drain the window's app
-    /// channel (`rx`; `tx` is its sender, the editor's too), then show the
-    /// empty state, or index the vault in the background and land on the
-    /// first note (FILES lists its folder). Must run with a tokio runtime
-    /// entered.
+    /// channel (`rx`; `tx` is its sender, the editor's too), then enter the
+    /// vault ([`Self::enter`]). Must run with a tokio runtime entered.
     pub(crate) fn start(
         &mut self,
         start: Start,
@@ -625,18 +744,52 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.settings = Some(settings);
+        self.set_channel(tx, rx, cx);
+        self.enter(start, window, cx);
+    }
+
+    /// Make `tx` / `rx` the window's app channel: the workspace drains `rx`
+    /// (the listener of any channel before goes, and with it every message
+    /// still queued on it) and the editor reports on `tx`.
+    fn set_channel(
+        &mut self,
+        tx: AppTx,
+        rx: UnboundedReceiver<AppMessage>,
+        cx: &mut Context<Self>,
+    ) {
         self.listen(rx, cx);
-        self.tx = Some(tx.clone());
-        self.settings = Some(settings.clone());
-        // The configured leader tree, built once here: the engine keeps it
-        // for every sequence and the palette lists it. Whatever replaces or
-        // reloads the settings later must call `LeaderState::set_tree` again.
+        self.editor
+            .update(cx, |view, _| view.set_channel(tx.clone()));
+        self.tx = Some(tx);
+    }
+
+    /// Enter what `start` says, on the settings and channel [`Self::start`]
+    /// set up: show the empty state, or index the vault in the background
+    /// and land on the first note (FILES lists its folder). The window title
+    /// names the workspace. Safe to call again once the vault before has
+    /// been left ([`reopen`]). Must run with a tokio runtime entered.
+    fn enter(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(settings), Some(tx)) = (self.settings.clone(), self.tx.clone()) else {
+            return;
+        };
+        // The configured leader tree: the engine keeps it for every sequence
+        // and the palette lists it. Built again on every entry, so a reopen
+        // after the preferences changed picks up their bindings.
         let tree = settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .leader_tree();
         self.leader.set_tree(tree);
+        window.set_window_title(&startup::window_title(&start));
         self.empty = startup::empty_state(&start);
+        // No workspace: the setup assistant makes one. A vault entered
+        // leaves nothing for one still up to set up.
+        match start {
+            Start::NoWorkspace => self.open_onboarding(window, cx),
+            Start::Vault(_) => self.drop_onboarding(),
+            Start::OpenFailed(_) => {}
+        }
         if let Start::Vault(VaultStart { vault, name, first }) = start {
             self.notes = Some(NoteHost::new(NoteSession::new(
                 vault.clone(),
@@ -651,6 +804,10 @@ impl Workspace {
             self.start_outline(tx.clone(), window, cx);
             self.start_find(vault.clone(), tx.clone(), window, cx);
             self.start_tags(vault.clone(), tx.clone(), window, cx);
+            self.start_semantic(vault.clone(), settings.clone(), tx.clone(), window, cx);
+            self.start_ask(tx.clone(), window, cx);
+            self.start_ask_sources(vault.clone(), tx.clone(), window, cx);
+            self.start_rag_sync(vault.clone(), &settings, tx.clone());
             self.status.indexing = true;
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
@@ -740,6 +897,11 @@ impl Workspace {
             }
             AppMessage::OpenAttachment(path) => self.open_attachment(&path, cx),
             AppMessage::OpenAttachmentExternally => self.open_attachment_externally(cx),
+            // Save as note's request (the TUI's Thread sends it): the create
+            // dialog on a free path, holding the answer.
+            AppMessage::FileOp(FileOp::ShowCreateWithContent { path, content }) => {
+                self.offer_saved_answer(path, content, cx)
+            }
             // A request to show the properties dialog, not a result.
             AppMessage::FileOp(FileOp::ShowProperties(path)) => {
                 self.with_window(cx, move |workspace, window, cx| {
@@ -800,6 +962,10 @@ impl Workspace {
                         tracing::warn!("ExecuteLeaderAction({action:?}) dropped: a modal is open");
                         return;
                     }
+                    if workspace.onboarding_open() {
+                        tracing::warn!("ExecuteLeaderAction({action:?}) dropped: the setup runs");
+                        return;
+                    }
                     let route = workspace.route_of(action);
                     workspace.perform_route(route, window, cx);
                 });
@@ -810,6 +976,16 @@ impl Workspace {
             // Results addressed to an open modal: the properties dialog's
             // (path-guarded); every other one is stale.
             AppMessage::OverlayData(data) => self.properties_data(data, cx),
+            // The server sync's report ([`server`]).
+            AppMessage::RagStatus(status) => self.on_rag_status(status, cx),
+            // An answer for the Thread ([`ask`]).
+            AppMessage::Ask(data) => self.ask_data(data, cx),
+            // The server's update notice: M10's update surfaces.
+            AppMessage::ServerUpdate(_) => {}
+            // The configured workspace may have changed (the TUI rebuilds
+            // the vault on these): enter it again ([`reopen`]).
+            AppMessage::OnboardingFinished | AppMessage::PreferencesSaved => self.reopen(cx),
+            AppMessage::WorkspaceSwitched(name) => self.switch_workspace(name, cx),
             // Everything the GUI has no surface for yet.
             _ => {}
         }
@@ -818,42 +994,79 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show the notice `text` in the Footer for
-    /// [`status_row::FLASH_DURATION`], replacing a notice on show. An error
-    /// on show keeps its time: the notice is dropped.
-    pub(crate) fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        if self.status.flash.is_some() && self.status.flash_error {
-            return;
+    /// The open workspace's vault; `None` before one opens.
+    pub(crate) fn vault(&self) -> Option<Arc<NoteVault>> {
+        self.notes.as_ref().map(|h| h.session.vault().clone())
+    }
+
+    /// [`Self::vault`], or, without a workspace, the flash that says so
+    /// ([`route::NO_WORKSPACE`]).
+    pub(crate) fn vault_or_flash(&mut self, cx: &mut Context<Self>) -> Option<Arc<NoteVault>> {
+        let vault = self.vault();
+        if vault.is_none() {
+            self.flash(route::NO_WORKSPACE, cx);
         }
+        vault
+    }
+
+    /// Show the notice `text` as an info toast in the window's bottom-right
+    /// corner ([`flash_toast`]); it hides itself after the kit's autohide
+    /// (five seconds, paused while the pointer is over the stack).
+    pub(crate) fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.show_flash(text.into(), false, cx);
     }
 
-    /// Show the problem `text` in the Footer, in the error colour, for
-    /// [`status_row::FLASH_DURATION`], replacing any flash on show.
+    /// Show the problem `text` as an error toast, like [`Self::flash`]. A
+    /// later notice no longer displaces it: toasts stack.
     pub(crate) fn flash_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.show_flash(text.into(), true, cx);
     }
 
+    /// Push the toast once the current update is done: callers hold only
+    /// the workspace's `Context` (app-channel messages, tasks), and the
+    /// kit's notification layer is the window's (its `Root`). A flash with
+    /// no window or no `Root` to show it in is logged and dropped. At most
+    /// [`MAX_FLASH_TOASTS`] are up: a new one past that takes the oldest's
+    /// place.
     fn show_flash(&mut self, text: SharedString, error: bool, cx: &mut Context<Self>) {
-        self.status.flash = Some(text);
-        self.status.flash_error = error;
-        self.flash_expiry = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(status_row::FLASH_DURATION)
-                .await;
-            this.update(cx, |workspace, cx| {
-                workspace.status.flash = None;
-                workspace.status.flash_error = false;
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
+        #[cfg(test)]
+        self.flashes.push((text.clone(), error));
+        let Some(handle) = self.window else {
+            tracing::warn!("flash dropped, no window: {text}");
+            return;
+        };
+        let evicted = track_toast(&mut self.toasts, &text);
+        cx.defer(move |cx| {
+            let shown = handle.update(cx, |_, window, cx| {
+                if matches!(window.root::<gpui_kit::base::Root>(), Some(Some(_))) {
+                    if let Some(oldest) = evicted {
+                        window.remove_notification1::<FlashId>(oldest, cx);
+                    }
+                    window.push_notification(flash_toast(text.clone(), error), cx);
+                    true
+                } else {
+                    false
+                }
+            });
+            if !matches!(shown, Ok(true)) {
+                tracing::warn!("flash dropped, the window has no toast layer: {text}");
+            }
+        });
+    }
+
+    /// The newest flash and whether it was an error (tests).
+    #[cfg(test)]
+    pub(crate) fn last_flash(&self) -> Option<(&str, bool)> {
+        self.flashes
+            .last()
+            .map(|(text, error)| (text.as_ref(), *error))
     }
 
     /// Persist the layout, and bring the views it shows (or stopped
     /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
+    /// A change that took ASK out of every slot takes the Thread down.
     fn save_layout(&mut self, cx: &mut Context<Self>) {
+        self.leave_ask_if_drawer_moved_on(cx);
         self.store.save(&self.layout);
         self.refresh_views(cx);
     }
@@ -875,6 +1088,7 @@ impl Workspace {
         self.refresh_outline(cx);
         self.refresh_find(cx);
         self.refresh_tags(cx);
+        self.refresh_semantic(cx);
     }
 
     /// Apply what the views' loads delivered.
@@ -889,6 +1103,10 @@ impl Workspace {
         }
         if let Some(tags) = self.tags.as_ref() {
             let list = tags.read(cx).list.clone();
+            list.update(cx, |list, cx| list.poll(cx));
+        }
+        if let Some(semantic) = self.semantic.as_ref() {
+            let list = semantic.read(cx).list.clone();
             list.update(cx, |list, cx| list.poll(cx));
         }
     }
@@ -928,12 +1146,18 @@ impl Workspace {
 
     /// Whether `opener` (the panel that had the keyboard) is a drawer whose
     /// focused view lists rows a row can be copied from: LINKS, OUTLINE,
-    /// FIND or TAGS.
+    /// FIND, TAGS or the Sources view.
     pub(crate) fn lists_have_keyboard(&self, opener: Panel) -> bool {
         matches!(opener, Panel::Drawer(_))
             && matches!(
                 self.focused_view(),
-                Some(DrawerView::Links | DrawerView::Outline | DrawerView::Find | DrawerView::Tags)
+                Some(
+                    DrawerView::Links
+                        | DrawerView::Outline
+                        | DrawerView::Find
+                        | DrawerView::Tags
+                        | DrawerView::Ask
+                )
             )
     }
 
@@ -960,6 +1184,13 @@ impl Workspace {
             Some(DrawerView::Tags) if !chord || self.tags_list_focused(window, cx) => {
                 self.tags.as_ref().map(|tags| {
                     let list = tags.read(cx).list.clone();
+                    list.read(cx).selected_row().and_then(|r| r.yank_target())
+                })
+            }
+            // The Sources view: the source's path (the TUI's yank).
+            Some(DrawerView::Ask) if !(chord && self.sources_filter_focused(window, cx)) => {
+                self.ask_sources.as_ref().map(|sources| {
+                    let list = sources.read(cx).list.clone();
                     list.read(cx).selected_row().and_then(|r| r.yank_target())
                 })
             }
@@ -1007,6 +1238,11 @@ impl Workspace {
             DrawerView::Outline => self.outline.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Find => self.find.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Tags => self.tags.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Semantic => self.semantic.as_ref().map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Ask => self
+                .ask_sources
+                .as_ref()
+                .map(|v| v.read(cx).focus_handle(cx)),
             _ => None,
         };
         handle.unwrap_or_else(|| self.slot_focus(view).clone())
@@ -1024,10 +1260,12 @@ impl Workspace {
                 Some(view) => self.view_handle(view, cx),
                 None => self.drawer_focus[side_ix(side)].clone(),
             },
-            // The attachment view while one shows, else the editor.
-            Panel::Editor => match self.attachment.as_ref() {
-                Some(view) => view.read(cx).focus_handle(cx),
-                None => self.editor.read(cx).focus_handle(cx),
+            // The Thread or the attachment view while one shows, else the
+            // editor.
+            Panel::Editor => match (self.ask.as_ref(), self.attachment.as_ref()) {
+                (Some(ask), _) if self.ask_shown() => ask.read(cx).focus_handle(cx),
+                (_, Some(view)) => view.read(cx).focus_handle(cx),
+                _ => self.editor.read(cx).focus_handle(cx),
             },
         }
     }
@@ -1037,6 +1275,12 @@ impl Workspace {
     /// opener when it closes ([`modal`]).
     pub(crate) fn apply_focus(&self, window: &mut Window, cx: &mut App) {
         if modal::dialog_open(window, cx) {
+            return;
+        }
+        // The setup assistant has the window: the keyboard is its.
+        if let Some(view) = self.onboarding.as_ref() {
+            let handle = view.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
             return;
         }
         let handle = self.handle_for(self.layout.focused(), cx);
@@ -1098,9 +1342,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == view) {
-            self.rail_cursor = i;
+        // ASK shows with the Thread: entering it is the Thread's door.
+        if view == DrawerView::Ask && !self.is_shown(view) {
+            self.open_ask_drawer(window, cx);
+            return;
         }
+        self.place_rail_cursor(Some(view));
         match self.layout.view_location(&view) {
             Some(_) if self.is_shown(view) => {
                 if let Some(side) = self.layout.hide_view(&view)
@@ -1126,7 +1373,7 @@ impl Workspace {
     fn arranged_view(&self) -> Option<DrawerView> {
         match self.layout.focused_region() {
             Region::Slot { side, index } => self.slot_view(side, index),
-            Region::Rail => RAIL_VIEWS.get(self.rail_cursor).copied(),
+            Region::Rail => self.rail_cursor_view(),
             Region::Group(_) => None,
         }
     }
@@ -1331,8 +1578,8 @@ impl Workspace {
     /// open find bar) when it is the editor.
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.layout.focused() {
-            // The attachment view reads no vim keys.
-            Panel::Editor if self.attachment.is_some() => KeyCtx {
+            // The Thread and the attachment view read no vim keys.
+            Panel::Editor if self.attachment.is_some() || self.ask_shown() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
             },
@@ -1355,6 +1602,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The setup assistant has every key; no shell chord runs under it.
+        if self.onboarding.is_some() {
+            return;
+        }
         // A pending leader sequence owns every key, in every panel, ahead of
         // the editor's text input; a vim Normal Space arms one. Never under
         // a modal: one cannot open while a sequence is pending, and nothing
@@ -1428,7 +1679,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
-            ActionShortcuts::OpenCommandPalette => self.toggle_palette(window, cx),
+            ActionShortcuts::OpenCommandPalette => {
+                self.toggle_modal(ModalKind::Palette, Self::open_palette, window, cx)
+            }
             // The leader gateway. Never seen here while a sequence is
             // pending: the interceptor takes every key then, and the gateway
             // again cancels there ([`Self::intercept_leader_key`]).
@@ -1451,9 +1704,21 @@ impl Workspace {
             ActionShortcuts::UnsplitDrawerSlot => return self.unsplit_drawer(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
-            ActionShortcuts::OpenNote => self.toggle_finder(window, cx),
-            ActionShortcuts::SearchNotes => self.toggle_search(window, cx),
-            ActionShortcuts::OpenSavedSearches => self.toggle_saved_searches(window, cx),
+            ActionShortcuts::OpenNote => {
+                self.toggle_modal(ModalKind::Finder, Self::open_finder, window, cx)
+            }
+            ActionShortcuts::SearchNotes => self.toggle_modal(
+                ModalKind::Search,
+                |workspace, window, cx| workspace.open_search(None, window, cx),
+                window,
+                cx,
+            ),
+            ActionShortcuts::OpenSavedSearches => self.toggle_modal(
+                ModalKind::SavedSearches,
+                Self::open_saved_searches,
+                window,
+                cx,
+            ),
             // FIND's query (field or results); elsewhere the chord goes on.
             ActionShortcuts::SaveCurrentQuery => match self.focused_view() {
                 Some(DrawerView::Find) => self.save_find_query(window, cx),
@@ -1463,9 +1728,13 @@ impl Workspace {
             // when no view is focused. Elsewhere the chord goes on.
             ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
-            ActionShortcuts::QuickNote => self.toggle_quick_note(window, cx),
+            ActionShortcuts::QuickNote => {
+                self.toggle_modal(ModalKind::QuickNote, Self::open_quick_note, window, cx)
+            }
             ActionShortcuts::OpenFileBrowser => self.open_file_browser(window, cx),
             ActionShortcuts::YankRow => return self.yank_row(key.is_some(), window, cx),
+            // The Thread, the composer focused (leader `a a`).
+            ActionShortcuts::OpenAsk => self.ask_step(AskStep::Focus, window, cx),
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
@@ -1505,6 +1774,27 @@ impl Workspace {
         true
     }
 
+    /// The views the rail offers now: SEM only while the server can
+    /// search ([`shell_layout::rail_views`]).
+    pub(crate) fn rail_views(&self) -> &'static [DrawerView] {
+        shell_layout::rail_views(self.rag_caps)
+    }
+
+    /// The view under the rail's keyboard cursor.
+    pub(crate) fn rail_cursor_view(&self) -> Option<DrawerView> {
+        self.rail_views().get(self.rail_cursor).copied()
+    }
+
+    /// Put the rail's cursor on `view` when the rail offers it; otherwise
+    /// keep its position, clamped to the rail (a cell that went away).
+    pub(crate) fn place_rail_cursor(&mut self, view: Option<DrawerView>) {
+        let views = self.rail_views();
+        match view.and_then(|view| views.iter().position(|v| *v == view)) {
+            Some(i) => self.rail_cursor = i,
+            None => self.rail_cursor = self.rail_cursor.min(views.len() - 1),
+        }
+    }
+
     /// The rail's own keys: Up/Down move between cells, Enter or Space
     /// activates one (as a click does).
     fn rail_key(&mut self, key: KeyInput, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -1513,9 +1803,11 @@ impl Workspace {
         }
         match key.key {
             Key::Up => self.rail_cursor = self.rail_cursor.saturating_sub(1),
-            Key::Down => self.rail_cursor = (self.rail_cursor + 1).min(RAIL_VIEWS.len() - 1),
+            Key::Down => self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1),
             Key::Enter | Key::Char(' ') => {
-                self.activate_rail_view(RAIL_VIEWS[self.rail_cursor], window, cx);
+                if let Some(view) = self.rail_cursor_view() {
+                    self.activate_rail_view(view, window, cx);
+                }
             }
             _ => return false,
         }
@@ -1540,7 +1832,8 @@ impl Workspace {
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&self.theme);
         let focused = self.layout.focused() == Panel::Rail;
-        let (top, pinned) = RAIL_VIEWS.split_at(RAIL_VIEWS.len() - 1);
+        let views = self.rail_views();
+        let (top, pinned) = views.split_at(views.len() - 1);
         let cell = |i: usize, view: DrawerView, cx: &mut Context<Self>| {
             self.render_rail_cell(
                 view,
@@ -1554,7 +1847,7 @@ impl Workspace {
             .enumerate()
             .map(|(i, v)| cell(i, *v, cx))
             .collect();
-        let pinned = cell(RAIL_VIEWS.len() - 1, pinned[0], cx);
+        let pinned = cell(views.len() - 1, pinned[0], cx);
         div()
             .id("rail")
             .test_support()
@@ -1752,7 +2045,7 @@ impl Workspace {
                     .text_sm()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .text_color(theme::foreground(&self.theme))
-                    .child(shell_layout::view_name(view)),
+                    .child(shell_layout::slot_title(view)),
             )
             .map(|slot| match self.view_content(view) {
                 Some(content) => slot.child(content),
@@ -1779,6 +2072,8 @@ impl Workspace {
             DrawerView::Outline => self.outline.clone().map(|v| v.into_any_element()),
             DrawerView::Find => self.find.clone().map(|v| v.into_any_element()),
             DrawerView::Tags => self.tags.clone().map(|v| v.into_any_element()),
+            DrawerView::Semantic => self.semantic.clone().map(|v| v.into_any_element()),
+            DrawerView::Ask => self.ask_sources.clone().map(|v| v.into_any_element()),
             _ => None,
         }
     }
@@ -1877,22 +2172,36 @@ impl Workspace {
     /// The editor Panel: the editor (or the attachment view, or the empty
     /// state) over the Footer.
     fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
-        let empty = match attachment {
-            Some(_) => None,
-            None => self.empty.clone().or_else(|| self.note_empty_state()),
+        let ask = self
+            .ask
+            .clone()
+            .filter(|_| self.ask_shown() && self.empty.is_none());
+        let attachment = self
+            .attachment
+            .clone()
+            .filter(|_| self.empty.is_none() && ask.is_none());
+        let empty = match (&ask, &attachment) {
+            (None, None) => self.empty.clone().or_else(|| self.note_empty_state()),
+            _ => None,
         };
-        let editor_shown = empty.is_none() && attachment.is_none();
-        let document = match (&empty, attachment) {
-            (Some(empty), _) => self.render_empty(empty).into_any_element(),
-            (None, Some(view)) => div()
+        let editor_shown = empty.is_none() && attachment.is_none() && ask.is_none();
+        let document = match (&empty, ask, attachment) {
+            (Some(empty), _, _) => self.render_empty(empty).into_any_element(),
+            (None, Some(view), _) => div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
                 .child(view)
                 .into_any_element(),
-            (None, None) => div()
+            (None, None, Some(view)) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(view)
+                .into_any_element(),
+            (None, None, None) => div()
                 .flex_1()
                 .min_h_0()
                 .child(self.editor.clone())
@@ -2005,12 +2314,27 @@ impl Workspace {
 
 impl Focusable for Workspace {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.handle_for(self.layout.focused(), cx)
+        match self.onboarding.as_ref() {
+            Some(view) => view.read(cx).focus_handle(cx),
+            None => self.handle_for(self.layout.focused(), cx),
+        }
     }
 }
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The setup assistant takes the whole body: no Panel is drawn, and
+        // the workspace's key handler is not attached, so its chords are
+        // inert.
+        if let Some(view) = self.onboarding.clone() {
+            return div()
+                .id("workspace")
+                .flex()
+                .size_full()
+                .bg(theme::background(&self.theme))
+                .child(view)
+                .into_any_element();
+        }
         let limits = Self::limits(window);
         let drawer = |side: Side| {
             self.layout
@@ -2045,7 +2369,69 @@ impl Render for Workspace {
             .when_some(right, |row, width| {
                 row.child(self.render_drawer(Side::Right, width, cx))
             })
+            .into_any_element()
     }
+}
+
+/// How many flash toasts may be up at once. Different texts stack (a
+/// repeat replaces its own), so a burst of distinct messages — an autosave
+/// failing on every tick with a changing reason, under a hovered stack that
+/// pauses every countdown — would otherwise pile up without end.
+pub(crate) const MAX_FLASH_TOASTS: usize = 4;
+
+/// The element id of a flash toast's message: its accessible label.
+pub(crate) const FLASH_MESSAGE_ID: &str = "flash-message";
+
+/// Record the flash toast keyed `text` as the newest in `toasts` (a repeat
+/// moves to the back: the kit replaces its toast). Returns the oldest key
+/// once there are more than [`MAX_FLASH_TOASTS`]: that toast must go.
+fn track_toast(toasts: &mut VecDeque<SharedString>, text: &SharedString) -> Option<SharedString> {
+    toasts.retain(|key| key != text);
+    toasts.push_back(text.clone());
+    if toasts.len() > MAX_FLASH_TOASTS {
+        toasts.pop_front()
+    } else {
+        None
+    }
+}
+
+/// The kit notification id type of the flashes: keyed by the message, so a
+/// repeated flash replaces its toast instead of stacking a second one.
+struct FlashId;
+
+/// The kit's toast kind for a flash: an error, or else plain information.
+fn toast_kind(error: bool) -> NotificationType {
+    if error {
+        NotificationType::Error
+    } else {
+        NotificationType::Info
+    }
+}
+
+/// The toast for the flash `text`: its kind's icon, the message, in the
+/// bottom-right corner (away from the editor's caret and the dialogs,
+/// which sit high and centred), hiding itself after the kit's autohide.
+///
+/// The kit's toast is an accessibility `Alert`, but its `message` is a bare
+/// text child with no node of its own, so the alert would be announced
+/// without its words. The message is drawn here instead, as the kit draws
+/// it (`text_sm` in the toast's column), named by its text.
+fn flash_toast(text: SharedString, error: bool) -> Notification {
+    let message = text.clone();
+    Notification::new()
+        .content(move |_, _, _| {
+            div()
+                .id(FLASH_MESSAGE_ID)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(message.clone())
+                .text_sm()
+                .child(message.clone())
+                .into_any_element()
+        })
+        .with_type(toast_kind(error))
+        .id1::<FlashId>(text)
+        .placement(Anchor::BottomRight)
 }
 
 /// The flash for a case conflict: one line, the count; the full list went to
@@ -2067,6 +2453,8 @@ fn conflict_flash(details: &str) -> String {
     )
 }
 
+mod ask;
+mod ask_sources;
 mod attachment;
 mod create;
 mod drawer_list;
@@ -2080,17 +2468,27 @@ mod leader;
 mod links;
 mod modal;
 mod note;
+mod note_flush;
+mod onboarding;
 mod outline;
 mod palette;
 mod picker;
 mod pinned;
 mod properties;
+mod query_field;
+mod reopen;
 mod route;
 mod saved_searches;
 mod search;
+mod semantic;
+mod server;
 mod sort;
 mod tags;
 
+#[cfg(test)]
+mod ask_sources_tests;
+#[cfg(test)]
+mod ask_tests;
 #[cfg(test)]
 mod attachment_tests;
 #[cfg(test)]
@@ -2110,6 +2508,8 @@ mod leader_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]
+mod onboarding_tests;
+#[cfg(test)]
 mod palette_tests;
 #[cfg(test)]
 mod picker_tests;
@@ -2118,9 +2518,13 @@ mod pinned_tests;
 #[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
+mod reopen_tests;
+#[cfg(test)]
 mod saved_searches_tests;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod semantic_tests;
 #[cfg(test)]
 mod sort_tests;
 #[cfg(test)]

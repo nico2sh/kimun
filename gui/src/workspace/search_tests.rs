@@ -16,7 +16,7 @@ use tokio::runtime::Runtime;
 
 use super::modal::ModalKind;
 use super::picker::{HELP_BUTTON_ID, NotePicker, PICKER_ERROR_ID, PICKER_INPUT_ID, QUERY_ERROR_ID};
-use super::picker::{PICKER_ID, search_body_rems};
+use super::picker::{PICKER_ID, picker_row_id, search_body_rems};
 use super::search::{
     PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_ID, PREVIEW_ROW_ID, PREVIEW_TRUNCATED_ID,
     QUERY_HELP_ID, SearchPreview, cap_text, preview_text,
@@ -198,6 +198,66 @@ const NOTES: &[(&str, &str)] = &[
     ("c.md", "charlie links [[a]]"),
     ("d.md", "delta"),
 ];
+
+// ── the pointer (C1) ─────────────────────────────────────────────────────
+
+/// The browser row for note `p`, as the list draws it.
+fn row_id_of(s: &Started, p: &str, cx: &TestAppContext) -> gpui_kit::SharedString {
+    let view = picker(s, cx);
+    cx.read(|cx| {
+        view.read(cx)
+            .rows()
+            .iter()
+            .find(|row| {
+                !matches!(row, FileListEntry::CreateNote { .. }) && row.path().is_like(&path(p))
+            })
+            .map(picker_row_id)
+            .unwrap_or_else(|| panic!("no row {p}"))
+    })
+}
+
+/// The browser's selection drives its preview: a click only selects (the
+/// preview follows, nothing opens); a right click opens nothing; a
+/// double-click opens the row it hits, selected before or not.
+#[gpui_kit::test]
+fn a_click_selects_and_a_double_click_opens(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, &["d.md", "c.md"], "a.md");
+    press(&started, "ctrl-k", cx);
+    rows(&started, &rt, cx);
+    let c = row_id_of(&started, "c.md", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(c.clone(), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(selected_path(&started, cx).is_some_and(|p| p.is_like(&path("c.md"))));
+    settle_preview(&started, &rt, cx);
+    assert!(previewed(&started, cx).is_some_and(|p| p.is_like(&path("c.md"))));
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    assert!(on(&started, "a.md", cx), "a click opens nothing");
+
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(c, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    assert!(on(&started, "a.md", cx), "a right click opens nothing");
+
+    let d = row_id_of(&started, "d.md", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click(d, cx)
+    })
+    .unwrap();
+    drive(&rt, cx, |cx| on(&started, "d.md", cx));
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+}
 
 // ── opening, rows, searching ─────────────────────────────────────────────
 
@@ -856,6 +916,7 @@ fn f1_shows_the_syntax_over_the_browser(cx: &mut TestAppContext) {
     press(&started, "f1", cx);
     assert!(query_help(&started, cx));
     assert!(started.shows(QUERY_HELP_ID, cx));
+    assert!(started.shows("close", cx), "the kit's close button");
     press(&started, "f1", cx);
     press(&started, "escape", cx);
     started.settle_dialog(cx);

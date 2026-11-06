@@ -278,19 +278,26 @@ impl ScrollAccumulator {
     }
 }
 
+/// One wheel/trackpad event -> the whole rows of `row_height` it completes,
+/// positive for up (GPUI: positive y moves content down, i.e. scrolls *up*).
+/// A line delta counts as one row per line. Zero for horizontal, zero, or
+/// not-yet-a-row travel; a new gesture or a change of direction drops the
+/// carried remainder ([`ScrollAccumulator::feed`]).
+pub fn wheel_rows(e: &ScrollEvent, row_height: Pixels, acc: &mut ScrollAccumulator) -> i32 {
+    let dy = f32::from(e.delta.pixel_delta(row_height).y);
+    let new_gesture = e.touch_phase == TouchPhase::Started;
+    acc.feed(dy, f32::from(row_height), new_gesture)
+}
+
 /// One wheel/trackpad event -> the `ScrollUp`/`ScrollDown` steps it completes,
-/// one per row (GPUI: positive y moves content down, i.e. scrolls *up*). Empty
-/// for horizontal, zero, or not-yet-a-row travel. Line deltas count as
-/// `cells.height()` pixels per line.
+/// one per row ([`wheel_rows`] with `cells.height()` rows).
 pub fn pointer_scroll(
     e: &ScrollEvent,
     origin: Point<Pixels>,
     cells: &CellMetrics,
     acc: &mut ScrollAccumulator,
 ) -> Vec<PointerInput> {
-    let dy = f32::from(e.delta.pixel_delta(px(cells.height())).y);
-    let new_gesture = e.touch_phase == TouchPhase::Started;
-    let rows = acc.feed(dy, cells.height(), new_gesture);
+    let rows = wheel_rows(e, px(cells.height()), acc);
     let kind = if rows > 0 {
         PointerKind::ScrollUp
     } else {
@@ -741,6 +748,8 @@ mod tests {
         let mut acc = ScrollAccumulator::default();
         let h = scroll(ScrollDelta::Pixels(point(px(9.0), px(0.0))));
         assert!(steps(&h, &mut acc).is_empty());
+        let h = scroll(ScrollDelta::Lines(point(1.0, 0.0)));
+        assert_eq!(wheel_rows(&h, px(20.0), &mut acc), 0);
         assert_eq!(acc.feed(f32::NAN, 20.0, false), 0);
     }
 

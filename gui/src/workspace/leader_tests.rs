@@ -71,10 +71,8 @@ fn flash(shell: &Shell, cx: &TestAppContext) -> Option<String> {
         shell
             .workspace
             .read(cx)
-            .status
-            .flash
-            .as_ref()
-            .map(|f| f.to_string())
+            .last_flash()
+            .map(|(text, _)| text.to_string())
     })
 }
 

@@ -24,7 +24,8 @@
 //! for `Create:` or no selection. The preview is a cached view: typing or
 //! moving the selection does not rebuild it until its own state changes.
 //!
-//! **Opening.** Enter (or a double-click) on a note opens it with the
+//! **Opening.** Enter (or a double-click: a click only selects, the
+//! preview follows) on a note opens it with the
 //! query's needles emphasised in the editor (cleared by the first edit).
 //! With unsaved edits in the open note the browser stays up while they are
 //! written; a write that fails keeps the browser open and says why (the
@@ -36,6 +37,14 @@
 //! stacked modal. Escape closes it and the browser has the keyboard again.
 //!
 //! The browser only reads; every write (the flush, `Create:`) is core's.
+//!
+//! **The Source reader** (M7c G10b) is this preview with a [`Mark::Section`]
+//! instead of needles: the note a source came from, the lines of its
+//! retrieved section (`ask::locate::section_range`, resolved on tokio once
+//! the note is read) in the accent colour, scrolled to the top of the pane.
+//! Another section of the note already shown is laid out again from the text
+//! it read; another note says `loading…` until it lands, `failed to load
+//! note` if it cannot be read (the TUI's words).
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -43,7 +52,6 @@ use std::time::Duration;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, FontWeight, HighlightStyle, InteractiveElement as _,
@@ -53,7 +61,7 @@ use gpui_kit::{
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_notes::logic::layout::Panel;
+use kimun_notes::ask::locate;
 use kimun_notes::logic::preview::{split_ranges, wrap_ranges};
 use kimun_notes::logic::query::SYNTAX;
 use kimun_notes::logic::session::FlushResult;
@@ -64,9 +72,8 @@ use tokio::task::JoinError;
 use super::Workspace;
 use super::attachment::expand_tabs;
 use super::files::ellipsis;
-use super::modal::{self, ModalKind};
+use super::modal::{self, ModalKind, Slot};
 use super::note::{Closing, flush_problem};
-use super::route::NO_WORKSPACE;
 use crate::grid::CellMetrics;
 use crate::theme;
 
@@ -88,6 +95,29 @@ const LINE_REMS: f32 = 1.375;
 /// The columns a note is wrapped to before the pane has been measured (the
 /// first frame); the measured width re-wraps it.
 const FALLBACK_COLUMNS: usize = 80;
+/// What the Source reader says while its note is read, and when it cannot
+/// be (the TUI's words).
+pub(crate) const READER_LOADING: &str = "loading…";
+pub(crate) const READER_FAILED: &str = "failed to load note";
+
+/// What a preview marks in its note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Mark {
+    /// Every match of these needles (the search browser, FIND).
+    Needles(Arc<[String]>),
+    /// One source's retrieved section (the Source reader).
+    Section(SectionMark),
+}
+
+/// A source's section, as `ask::locate::section_range` finds it in the
+/// note: the source's ordinal (its identity within the note), its innermost
+/// heading and its chunk text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectionMark {
+    pub(crate) ordinal: usize,
+    pub(crate) heading: Arc<str>,
+    pub(crate) chunk: Arc<str>,
+}
 
 // ---- What a preview load delivers --------------------------------------------
 
@@ -161,6 +191,12 @@ pub(crate) struct PreviewText {
     first_match: Option<(usize, usize)>,
     /// The note was longer than [`PREVIEW_BYTES`].
     truncated: bool,
+    /// The reader's: the section's byte range in the (capped) text, when
+    /// it resolved, and that text, kept so another section of this note is
+    /// laid out without reading it again. `None` for needles.
+    #[cfg(test)]
+    section: Option<Range<usize>>,
+    source: Option<Arc<str>>,
 }
 
 #[cfg(test)]
@@ -186,6 +222,11 @@ impl PreviewText {
     pub(crate) fn columns(&self) -> usize {
         self.wrapped.columns
     }
+
+    /// The reader's resolved section, as a byte range of the note.
+    pub(crate) fn section(&self) -> Option<Range<usize>> {
+        self.section.clone()
+    }
 }
 
 /// `text` cut to at most `max` bytes on a character boundary, and whether
@@ -205,24 +246,65 @@ pub(crate) fn cap_text(mut text: String, max: usize) -> (String, bool) {
 /// Lay out `text` (the note at `path`) for the preview: capped, split into
 /// lines (tabs widened), each matched against `needles`, wrapped to
 /// `columns`. Pure; runs on tokio.
+#[cfg(test)]
 pub(crate) fn preview_text(
     path: VaultPath,
     text: String,
     needles: &[String],
     columns: usize,
 ) -> PreviewText {
+    marked_text(path, text, &Mark::Needles(needles.into()), columns)
+}
+
+/// Lay out `text` for the preview with any [`Mark`]: capped, split into
+/// lines, the needles or the reader's section (resolved in the capped
+/// text) marked, wrapped to `columns`. Pure; runs on tokio.
+pub(crate) fn marked_text(
+    path: VaultPath,
+    text: String,
+    mark: &Mark,
+    columns: usize,
+) -> PreviewText {
     let (text, truncated) = cap_text(text, PREVIEW_BYTES);
+    lay_out(path, text.into(), mark, truncated, columns)
+}
+
+/// `text` split into lines (tabs widened) with `mark`'s hits, wrapped to
+/// `columns`. A section marks each line it overlaps whole (the TUI's
+/// range highlight); its first line is the one scrolled to. Pure.
+fn lay_out(
+    path: VaultPath,
+    text: Arc<str>,
+    mark: &Mark,
+    truncated: bool,
+    columns: usize,
+) -> PreviewText {
+    let (needles, section): (&[String], _) = match mark {
+        Mark::Needles(needles) => (needles, None),
+        Mark::Section(s) => (&[], locate::section_range(&text, &s.heading, &s.chunk)),
+    };
     let mut matches = 0;
     let mut first_match = None;
+    let mut offset = 0;
+    // `str::lines` with each line's byte span.
     let lines: Arc<[NoteLine]> = text
-        .lines()
+        .split_inclusive('\n')
         .enumerate()
-        .map(|(i, line)| {
+        .map(|(i, raw)| {
+            let line = match raw.strip_suffix('\n') {
+                Some(line) => line.strip_suffix('\r').unwrap_or(line),
+                None => raw,
+            };
+            let span = offset..offset + line.len();
+            offset += raw.len();
             let text = expand_tabs(line);
-            let hits = if needles.is_empty() {
-                Vec::new()
-            } else {
-                match_ranges(&text, needles)
+            let hits = match &section {
+                Some(range) if span.start < range.end && range.start < span.end => {
+                    vec![(0, text.len())]
+                }
+                Some(_) => Vec::new(),
+                None if needles.is_empty() => Vec::new(),
+                None => match_ranges(&text, needles),
             };
             if let Some(&(start, _)) = hits.first() {
                 matches += hits.len();
@@ -232,6 +314,7 @@ pub(crate) fn preview_text(
         })
         .collect();
     let wrapped = wrap_lines(&lines, columns, first_match);
+    let reader = matches!(mark, Mark::Section(_));
     PreviewText {
         name: path.get_parent_path().1.into(),
         path,
@@ -240,6 +323,9 @@ pub(crate) fn preview_text(
         matches,
         first_match,
         truncated,
+        #[cfg(test)]
+        section,
+        source: reader.then_some(text),
     }
 }
 
@@ -247,14 +333,24 @@ pub(crate) fn preview_text(
 async fn load_preview(
     vault: Arc<NoteVault>,
     path: VaultPath,
-    needles: Arc<[String]>,
+    mark: Mark,
     columns: usize,
 ) -> Result<PreviewText, String> {
     let text = vault
         .get_note_text(&path)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(preview_text(path, text, &needles, columns))
+    Ok(marked_text(path, text, &mark, columns))
+}
+
+/// Where a note that landed is scrolled to: the first match centred, the
+/// reader's section at the top of the pane.
+fn anchor_strategy(text: &PreviewText) -> ScrollStrategy {
+    if text.source.is_some() {
+        ScrollStrategy::Top
+    } else {
+        ScrollStrategy::Center
+    }
 }
 
 /// Aborts a tokio task when dropped: a superseded preview read stops with
@@ -269,8 +365,8 @@ impl<T> Drop for AbortOnDrop<T> {
 
 // ---- The preview -------------------------------------------------------------
 
-/// What the preview should show: a note and the needles to mark in it.
-type Wanted = (VaultPath, Arc<[String]>);
+/// What the preview should show: a note and what to mark in it.
+type Wanted = (VaultPath, Mark);
 
 /// The search browser's preview column. See the module docs.
 pub(crate) struct SearchPreview {
@@ -434,19 +530,59 @@ impl SearchPreview {
         needles: Arc<[String]>,
         cx: &mut Context<Self>,
     ) {
-        let wanted = path.map(|p| (p, needles));
+        self.show_marked(path, Mark::Needles(needles), cx);
+    }
+
+    /// [`Self::show`] with any [`Mark`] (the Source reader's section). For a
+    /// section of the note already shown, its text is laid out again on
+    /// tokio without reading it; a section of another note clears the pane
+    /// (`loading…`) until that note lands.
+    pub(crate) fn show_marked(
+        &mut self,
+        path: Option<VaultPath>,
+        mark: Mark,
+        cx: &mut Context<Self>,
+    ) {
+        let wanted = path.map(|p| (p, mark));
         if wanted == self.wanted {
             return;
         }
         self.wanted = wanted.clone();
         self.error = None;
-        let Some((path, needles)) = wanted else {
+        let Some((path, mark)) = wanted else {
             self.load = None;
             self.rewrap = None;
             self.shown = None;
             cx.notify();
             return;
         };
+        if let Mark::Section(_) = &mark {
+            let cached = self
+                .shown
+                .as_ref()
+                .filter(|shown| shown.path == path)
+                .and_then(|shown| Some((shown.source.clone()?, shown.truncated)));
+            if let Some((text, truncated)) = cached {
+                let columns = self.wrap_columns();
+                self.load = Some(cx.spawn(async move |this, cx| {
+                    let job = {
+                        let (path, mark) = (path.clone(), mark.clone());
+                        tokio::spawn(
+                            async move { Ok(lay_out(path, text, &mark, truncated, columns)) },
+                        )
+                    };
+                    let mut job = AbortOnDrop(job);
+                    let laid_out = (&mut job.0).await;
+                    this.update(cx, |preview, cx| preview.loaded((path, mark), laid_out, cx))
+                        .ok();
+                }));
+                cx.notify();
+                return;
+            }
+            // Another note: none of the old one stays up.
+            self.shown = None;
+            self.rewrap = None;
+        }
         let vault = self.vault.clone();
         self.load = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
@@ -459,16 +595,35 @@ impl SearchPreview {
             let mut read = AbortOnDrop(tokio::spawn(load_preview(
                 vault,
                 path.clone(),
-                needles.clone(),
+                mark.clone(),
                 columns,
             )));
             let loaded = (&mut read.0).await;
-            this.update(cx, |preview, cx| {
-                preview.loaded((path, needles), loaded, cx)
-            })
-            .ok();
+            this.update(cx, |preview, cx| preview.loaded((path, mark), loaded, cx))
+                .ok();
         }));
         cx.notify();
+    }
+
+    /// Whether the preview marks a source's section (the Source reader).
+    fn is_reader(&self) -> bool {
+        matches!(self.wanted, Some((_, Mark::Section(_))))
+    }
+
+    /// The reader's resolved section in the note shown, if any (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_section(&self) -> Option<Range<usize>> {
+        self.shown.as_ref().and_then(PreviewText::section)
+    }
+
+    /// What the pane says instead of a note, if anything (tests).
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<String> {
+        match (&self.shown, &self.error) {
+            (_, Some(error)) => Some(error.to_string()),
+            (None, None) if self.is_reader() => Some(READER_LOADING.to_string()),
+            _ => None,
+        }
     }
 
     /// A read finished: show it if it is still the wanted note's.
@@ -485,7 +640,7 @@ impl SearchPreview {
         match loaded.map_err(|e| e.to_string()).and_then(|r| r) {
             Ok(text) => {
                 let to = text.wrapped.first_hit.unwrap_or(0);
-                self.scroll.scroll_to_item(to, ScrollStrategy::Center);
+                self.scroll.scroll_to_item(to, anchor_strategy(&text));
                 self.scrolled = false;
                 self.shown = Some(text);
                 // The pane changed width during the read.
@@ -494,7 +649,10 @@ impl SearchPreview {
             Err(e) => {
                 self.shown = None;
                 self.rewrap = None;
-                self.error = Some(format!("Couldn't read {}: {e}", wanted.0).into());
+                self.error = Some(match wanted.1 {
+                    Mark::Section(_) => READER_FAILED.into(),
+                    Mark::Needles(_) => format!("Couldn't read {}: {e}", wanted.0).into(),
+                });
             }
         }
         cx.notify();
@@ -578,7 +736,7 @@ impl SearchPreview {
         }
         if !self.scrolled {
             return Some(match shown.first_match {
-                Some((line, at)) => (line, at, ScrollStrategy::Center),
+                Some((line, at)) => (line, at, anchor_strategy(shown)),
                 None => (0, 0, ScrollStrategy::Top),
             });
         }
@@ -597,11 +755,10 @@ impl SearchPreview {
         let t = &self.theme;
         let (name, count): (SharedString, Option<SharedString>) = match &self.shown {
             Some(shown) => {
-                let count = (!self.wanted.as_ref().is_some_and(|w| w.1.is_empty())).then(|| {
-                    match shown.matches {
-                        1 => "1 match".into(),
-                        n => format!("{n} matches").into(),
-                    }
+                let needles = matches!(&self.wanted, Some((_, Mark::Needles(n))) if !n.is_empty());
+                let count = needles.then(|| match shown.matches {
+                    1 => "1 match".into(),
+                    n => format!("{n} matches").into(),
                 });
                 (shown.name.clone(), count)
             }
@@ -680,10 +837,19 @@ impl Render for SearchPreview {
                 .child(error.clone())
                 .into_any_element(),
             (Some(shown), None) => {
-                let mark = HighlightStyle {
-                    color: Some(theme::search_match(t).into()),
-                    font_weight: Some(FontWeight::BOLD),
-                    ..Default::default()
+                // The reader's section in the accent colour (the TUI's
+                // range highlight); needles in the match colour.
+                let mark = if shown.source.is_some() {
+                    HighlightStyle {
+                        color: Some(theme::accent(t).into()),
+                        ..Default::default()
+                    }
+                } else {
+                    HighlightStyle {
+                        color: Some(theme::search_match(t).into()),
+                        font_weight: Some(FontWeight::BOLD),
+                        ..Default::default()
+                    }
                 };
                 let row_id = self.ids.1;
                 uniform_list(
@@ -722,6 +888,13 @@ impl Render for SearchPreview {
                 .size_full()
                 .into_any_element()
             }
+            (None, None) if self.is_reader() => div()
+                .px_3()
+                .py_2()
+                .text_sm()
+                .text_color(theme::muted(t))
+                .child(READER_LOADING)
+                .into_any_element(),
             (None, None) => div().into_any_element(),
         };
         // Another note's text while the selected one is read: dimmed. The
@@ -826,20 +999,6 @@ fn query_help_body(t: &Theme) -> AnyElement {
 const HELP_REMS: f32 = 30.;
 
 impl Workspace {
-    /// The `SearchNotes` chord: open the search browser, or close it when it
-    /// is the open modal (its help too). Refused under another modal.
-    pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::Search) => {
-                if !self.picker_busy(cx) {
-                    self.close_modal(window, cx);
-                }
-            }
-            None if !modal::dialog_open(window, cx) => self.open_search(None, window, cx),
-            _ => {}
-        }
-    }
-
     /// Open the search browser on `query` (empty: the recent notes).
     /// Refused while a modal is open; says so without a workspace.
     pub(crate) fn open_search(
@@ -851,8 +1010,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
         let open = self.notes.as_ref().and_then(|h| h.note.clone());
@@ -889,31 +1047,36 @@ impl Workspace {
     /// `F1` or the browser's `?` button: the query syntax over the browser.
     /// From FIND (no modal open), the query syntax alone, as the modal.
     pub(crate) fn open_query_help(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::Search) if !self.query_help => self.query_help = true,
-            None if !modal::dialog_open(window, cx) => {
-                // A modal takes every key: no sequence survives under it.
-                self.cancel_leader(cx);
-                self.modal = Some(ModalKind::QueryHelp);
+        let slot = match self.open_modal(window, cx) {
+            Some(ModalKind::Search) if !self.query_help => {
+                self.query_help = true;
+                Slot::Stacked
             }
+            None if !modal::dialog_open(window, cx) => Slot::Own(ModalKind::QueryHelp),
             _ => return,
-        }
+        };
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
-        let width = window.rem_size() * HELP_REMS;
-        window.open_dialog(cx, move |dialog, _, _| {
-            let workspace = workspace.clone();
-            dialog
-                .title("Query syntax")
-                .w(width)
-                .child(query_help_body(&theme))
-                .on_close(move |_, _, cx| {
-                    workspace
-                        .update(cx, |workspace, _| workspace.query_help = false)
-                        .ok();
-                })
-        });
-        cx.notify();
+        self.show_modal(
+            slot,
+            HELP_REMS,
+            |_, _| {},
+            move |dialog, _, _| {
+                let workspace = workspace.clone();
+                dialog
+                    .title("Query syntax")
+                    // Help to read, nothing to confirm: the kit's close button stays.
+                    .close_button(true)
+                    .child(query_help_body(&theme))
+                    .on_close(move |_, _, cx| {
+                        workspace
+                            .update(cx, |workspace, _| workspace.query_help = false)
+                            .ok();
+                    })
+            },
+            window,
+            cx,
+        );
     }
 
     /// Enter on a note in the search browser: open it with `emphasis`. With
@@ -927,6 +1090,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The browser's source lists notes only (logic `SearchNotesProvider`:
+        // indexed notes and the recents; its `Create:` row is the picker's,
+        // never this). So `open_chosen` below always takes the note branch,
+        // which focuses the editor; a folder would show FILES unfocused.
+        debug_assert!(path.is_note(), "the search browser lists notes only");
         let quiet = self.search_flush.is_some()
             || self.note_held()
             || self.closing != Closing::Open
@@ -938,33 +1106,15 @@ impl Workspace {
             // Nothing to write first (or an open already under way, which
             // writes it): the open note's switch does the rest.
             self.close_modal(window, cx);
-            self.focus_panel(Panel::Editor, window, cx);
-            if path.is_note() {
-                self.open_note_with(path, emphasis, cx);
-            } else {
-                self.files_show_dir(path, cx);
-            }
+            self.open_chosen(path, emphasis, window, cx);
             return false;
         }
-        let Some(host) = self.notes.as_mut() else {
+        // No tick from here: the flush is the only write.
+        let Some(flush) = self.begin_note_flush(cx) else {
+            self.close_modal(window, cx);
+            self.open_chosen(path, emphasis, window, cx);
             return false;
         };
-        // No tick from here: the flush is the only write.
-        host.session.stop_autosave();
-        let flush = match host
-            .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
-        {
-            Ok(flush) => flush,
-            Err(_) => {
-                self.restart_tick();
-                self.close_modal(window, cx);
-                self.focus_panel(Panel::Editor, window, cx);
-                self.open_note_with(path, emphasis, cx);
-                return false;
-            }
-        };
-        self.block_input(true, cx);
         self.search_flush = Some(cx.spawn_in(window, async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
             this.update_in(cx, |workspace, window, cx| {
@@ -987,7 +1137,7 @@ impl Workspace {
     ) {
         self.search_flush = None;
         let outcome = self.apply_flush(flushed, cx);
-        self.restart_tick();
+        self.restart_tick_unless_read_only();
         self.block_input(false, cx);
         let picker = self.picker.as_ref().and_then(|p| p.upgrade());
         match flush_problem(&outcome) {
@@ -1009,8 +1159,7 @@ impl Workspace {
                 if self.open_modal(window, cx) == Some(ModalKind::Search) {
                     self.close_modal(window, cx);
                 }
-                self.focus_panel(Panel::Editor, window, cx);
-                self.open_note_with(path, emphasis, cx);
+                self.open_chosen(path, emphasis, window, cx);
             }
         }
         self.file_op_ended(cx);

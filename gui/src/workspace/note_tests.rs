@@ -13,9 +13,9 @@ use kimun_notes::logic::message::AppMessage;
 use tokio::runtime::Runtime;
 
 use super::Closing;
+use super::note::DISCARD_WINDOW;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
-use crate::status_row::FLASH_DURATION;
 use crate::status_row::{PATH_ID, SAVE_ID};
 use crate::test_vault::{TestVault, test_vault};
 
@@ -359,7 +359,12 @@ impl Started {
     }
 
     fn flash_is_error(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).status.flash_error)
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .last_flash()
+                .is_some_and(|(_, error)| error)
+        })
     }
 
     fn switching(&self, cx: &TestAppContext) -> bool {
@@ -487,7 +492,7 @@ fn discarding_expires_on_new_edits_and_with_time(cx: &mut TestAppContext) {
     });
 
     cx.executor()
-        .advance_clock(FLASH_DURATION + std::time::Duration::from_millis(1));
+        .advance_clock(DISCARD_WINDOW + std::time::Duration::from_millis(1));
     cx.run_until_parked();
     assert_eq!(started.closing(cx), Closing::Open);
     assert!(
@@ -497,6 +502,38 @@ fn discarding_expires_on_new_edits_and_with_time(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         matches!(started.closing(cx), Closing::Discard(_))
     });
+}
+
+/// The "close again discards" window keeps its own clock: closing its
+/// warning toast early (its X, or a toast layer that dropped it) neither
+/// ends nor extends it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_discard_window_does_not_follow_the_toast(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    let locked = Unwritable::new(&v, "a.md");
+    started.type_text("X", cx);
+    assert!(!started.close(cx));
+    drive(&rt, cx, |cx| {
+        matches!(started.closing(cx), Closing::Discard(_))
+    });
+    cx.update_window(started.handle, |_, window, cx| {
+        window.clear_notifications(cx)
+    })
+    .unwrap();
+    cx.executor()
+        .advance_clock(DISCARD_WINDOW - std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert!(
+        matches!(started.closing(cx), Closing::Discard(_)),
+        "the toast went, the window holds"
+    );
+    assert!(started.close(cx), "inside the window: the edits go");
+    drop(locked);
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha"));
 }
 
 /// M1: a read that never comes back (its task cancelled) gives up the
@@ -528,9 +565,10 @@ fn a_lost_read_lets_saves_and_the_close_resume(cx: &mut TestAppContext) {
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
 }
 
-/// L8: an error flash keeps its time; a plain notice does not replace it.
+/// L8, as toasts (N1): a later notice no longer displaces an error flash;
+/// both show, each its own toast, the error with its error kind.
 #[gpui_kit::test]
-fn an_error_flash_is_not_replaced_by_a_notice(cx: &mut TestAppContext) {
+fn an_error_flash_stays_beside_a_later_notice(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
@@ -544,16 +582,22 @@ fn an_error_flash_is_not_replaced_by_a_notice(cx: &mut TestAppContext) {
         },
         cx,
     );
-    send(&started, AppMessage::FlashMessage("copied".into()), cx);
     assert_eq!(
         started.flash(cx).as_deref(),
         Some("Couldn't save a.md: disk full")
     );
     assert!(started.flash_is_error(cx));
-    cx.executor()
-        .advance_clock(FLASH_DURATION + std::time::Duration::from_millis(1));
-    cx.run_until_parked();
     send(&started, AppMessage::FlashMessage("copied".into()), cx);
+    cx.run_until_parked();
     assert_eq!(started.flash(cx).as_deref(), Some("copied"));
     assert!(!started.flash_is_error(cx));
+    let flashes = cx.read(|cx| started.workspace.read(cx).flashes.clone());
+    assert_eq!(
+        flashes,
+        [
+            ("Couldn't save a.md: disk full".into(), true),
+            ("copied".into(), false)
+        ]
+    );
+    assert_eq!(started.toasts(cx), 2, "the error toast was not displaced");
 }

@@ -28,15 +28,14 @@
 //! - **Stale results are dropped.** Loads and write results reach the open
 //!   properties dialog only, and only for its own note.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
-use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
+use gpui_kit::component::{Disableable as _, IndexPath};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
@@ -57,9 +56,9 @@ use kimun_notes::settings::themes::Theme;
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::file_dialogs::confirm_delete;
 use super::key_suggestions::KeySuggestions;
-use super::modal::{self, ModalKind};
-use super::note::{Closing, flush_problem};
+use super::modal::{self, ModalKind, Slot};
 use super::route::{NO_NOTE, NO_WORKSPACE};
 use crate::input;
 use crate::theme;
@@ -375,24 +374,22 @@ impl PropertiesDialog {
         };
         self.list_error = None;
         let view = cx.entity().downgrade();
-        let title = format!("Delete \"{key}\"?");
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let view = view.clone();
-            let key = key.clone();
-            alert
-                .confirm()
-                .title(title.clone())
-                .description("It is removed from the note's frontmatter.")
-                .ok_text("Delete")
-                .ok_variant(ButtonVariant::Danger)
-                .cancel_text("Cancel")
-                .on_ok(move |_, window, cx| {
+        confirm_delete(
+            window,
+            cx,
+            format!("Delete \"{key}\"?"),
+            "It is removed from the note's frontmatter.",
+            move |alert| {
+                let view = view.clone();
+                let key = key.clone();
+                alert.on_ok(move |_, window, cx| {
                     let key = key.clone();
                     view.update(cx, |dialog, cx| dialog.confirm_delete(key, window, cx))
                         .ok();
                     true
                 })
-        });
+            },
+        );
         cx.notify();
     }
 
@@ -1176,7 +1173,8 @@ impl Render for PropertiesDialog {
 impl Workspace {
     /// Whether something holds the open note so nothing else may write it:
     /// a file operation, a property write, the reload after one, or the
-    /// flush before the properties dialog opens. The tick, the Save chord,
+    /// flush before the properties dialog opens, a vault change
+    /// ([`reopen`](super::reopen)). The tick, the Save chord,
     /// opening another note and file operations wait while it does.
     pub(crate) fn note_held(&self) -> bool {
         self.file_task.is_some()
@@ -1184,7 +1182,9 @@ impl Workspace {
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
             || self.attachment_flushing.is_some()
+            || self.ask_flushing.is_some()
             || self.search_flush.is_some()
+            || self.reopen_running()
     }
 
     /// The Footer's property count and the like: the dialog for the open
@@ -1222,10 +1222,7 @@ impl Workspace {
             "Read-only: this vault has names that differ only by case, so nothing is written."
                 .to_string()
         });
-        let dirty = self.editor_dirty(cx);
-        let closing = self.closing != Closing::Open;
-        let busy = self.note_held();
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.notes.as_ref() else {
             return;
         };
         let touches = host.note.as_ref().is_some_and(|note| note.is_like(&path));
@@ -1233,19 +1230,8 @@ impl Workspace {
             self.show_properties(path, locked, window, cx);
             return;
         }
-        let refusal = if closing {
-            Some("the window is closing")
-        } else if busy {
-            Some("another change to the note is still being written")
-        } else if host.is_switching() || host.is_open_wanted() {
-            Some("the note is still opening")
-        } else if read_only && dirty {
-            Some("the vault is read-only")
-        } else {
-            None
-        };
-        if let Some(why) = refusal {
-            tracing::warn!("properties of {path} not opened: {why}");
+        if let Some(block) = self.flush_block(cx) {
+            tracing::warn!("properties of {path} not opened: {}", block.reason());
             self.flash_error(REFUSED, cx);
             return;
         }
@@ -1257,20 +1243,11 @@ impl Workspace {
         }
         // No tick from here: the flush is the only write until the dialog
         // is up (or refused).
-        host.session.stop_autosave();
-        let flush = match host
-            .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
-        {
-            Ok(flush) => flush,
-            Err(_) => {
-                tracing::warn!("properties of {path} not opened: a flush is outstanding");
-                self.restart_tick();
-                self.flash_error(REFUSED, cx);
-                return;
-            }
+        let Some(flush) = self.begin_note_flush(cx) else {
+            tracing::warn!("properties of {path} not opened: a flush is outstanding");
+            self.flash_error(REFUSED, cx);
+            return;
         };
-        self.block_input(true, cx);
         self.properties_opening = Some(cx.spawn_in(window, async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
             this.update_in(cx, |workspace, window, cx| {
@@ -1293,11 +1270,8 @@ impl Workspace {
     ) {
         self.properties_opening = None;
         let outcome = self.apply_flush(flushed, cx);
-        let problem = flush_problem(&outcome).or_else(|| {
-            self.editor_dirty(cx)
-                .then(|| "the editor still has unsaved edits".to_string())
-        });
-        self.restart_tick();
+        let problem = self.flush_failure(&outcome, cx);
+        self.restart_tick_unless_read_only();
         self.block_input(false, cx);
         if let Some(problem) = problem {
             tracing::warn!("properties of {path} not opened: {problem}");
@@ -1322,43 +1296,37 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let (Some(vault), Some(tx)) = (
-            self.notes.as_ref().map(|h| h.session.vault().clone()),
-            self.tx.clone(),
-        ) else {
+        let (Some(vault), Some(tx)) = (self.vault(), self.tx.clone()) else {
             return;
         };
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let view =
             cx.new(|cx| PropertiesDialog::new(path, vault, tx, workspace, theme, locked, cx));
-        let width = window.rem_size() * DIALOG_REMS;
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::Properties);
         self.properties = Some(view.downgrade());
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let handle = view.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
-            }
-            let (confirm, cancel) = (view.clone(), view.clone());
-            dialog
-                .title(view.read(cx).title())
-                .w(width)
-                .close_button(false)
-                // Enter: edit the selected row, or save the form.
-                .on_ok(move |_, window, cx| {
-                    confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
-                    false
-                })
-                // Escape and the backdrop: back one layer; close from the
-                // list; nothing while a write runs.
-                .on_cancel(move |_, window, cx| {
-                    cancel.update(cx, |dialog, cx| dialog.escape(window, cx))
-                })
-                .child(view.clone())
-        });
-        cx.notify();
+        self.show_modal(
+            Slot::Own(ModalKind::Properties),
+            DIALOG_REMS,
+            modal::focus_view(view.clone()),
+            move |dialog, _, cx| {
+                let (confirm, cancel) = (view.clone(), view.clone());
+                dialog
+                    .title(view.read(cx).title())
+                    // Enter: edit the selected row, or save the form.
+                    .on_ok(move |_, window, cx| {
+                        confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
+                        false
+                    })
+                    // Escape and the backdrop: back one layer; close from
+                    // the list; nothing while a write runs.
+                    .on_cancel(move |_, window, cx| {
+                        cancel.update(cx, |dialog, cx| dialog.escape(window, cx))
+                    })
+                    .child(view.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// The dialog's Close: close it, unless a write runs.

@@ -4,7 +4,7 @@
 //!
 //! **Rows** are the logic's (`logic::views::link_entries`, loaded off the
 //! UI thread); each is a note, drawn as FILES draws one (title over
-//! filename), with the FILES entry menu. Enter or a double-click opens it
+//! filename), with the FILES entry menu. Enter or a click opens it
 //! through the note session (the open note is saved first).
 //!
 //! **Tabs.** A segmented control over the list; `b`, `o` and `u`, or Left
@@ -39,7 +39,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
-use super::files::{ellipsis, row_frame};
+use super::files::{NOTE_ROW_REMS, display_title, ellipsis, lane_row};
 use crate::input;
 use crate::theme;
 
@@ -47,9 +47,6 @@ use crate::theme;
 pub(crate) const LINKS_ID: &str = "links";
 pub(crate) const LINKS_LIST_ID: &str = "links-list";
 pub(crate) const LINKS_TABS_ID: &str = "links-tabs";
-
-/// A row's height, in rems: FILES' two-line row.
-const ROW_REMS: f32 = 2.75;
 
 /// The element id of the row for `path`.
 pub(crate) fn link_row_id(path: &VaultPath) -> SharedString {
@@ -83,36 +80,27 @@ impl DrawerRow for LinkEntry {
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
-        // An untitled note shows its filename (the TUI's rule).
-        let title = if self.title.trim().is_empty() {
-            &self.filename
-        } else {
-            &self.title
-        };
-        let title = SharedString::from(title.clone());
-        row_frame(self.element_id(), title.clone(), selected, ROW_REMS, t)
-            .gap_2()
-            .child(
-                div().flex().flex_none().justify_center().w_5().child(
-                    Icon::new(IconName::FileText)
-                        .size_4()
-                        .text_color(theme::foreground(t)),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .child(ellipsis(title).text_color(theme::foreground(t)))
-                    .child(
-                        ellipsis(self.filename.clone())
-                            .text_xs()
-                            .text_color(theme::secondary(t)),
-                    ),
-            )
+        let title = SharedString::from(display_title(&self.title, &self.filename).to_string());
+        let icon = Icon::new(IconName::FileText)
+            .size_4()
+            .text_color(theme::foreground(t));
+        lane_row(
+            self.element_id(),
+            title.clone(),
+            selected,
+            NOTE_ROW_REMS,
+            Some(icon.into_any_element()),
+            [
+                ellipsis(title)
+                    .text_color(theme::foreground(t))
+                    .into_any_element(),
+                ellipsis(self.path.to_string())
+                    .text_xs()
+                    .text_color(theme::secondary(t))
+                    .into_any_element(),
+            ],
+            t,
+        )
     }
 
     fn menu_target(&self) -> Option<VaultPath> {
@@ -324,6 +312,7 @@ impl Workspace {
             DrawerListEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
+            DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
         }
     }

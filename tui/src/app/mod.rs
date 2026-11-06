@@ -189,7 +189,7 @@ pub struct App {
 
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
-    pub rag_sync_task: Option<tokio::task::JoinHandle<()>>,
+    pub rag_sync_task: crate::logic::task_slot::TaskSlot,
 
     /// Latest RAG status from the background task, held app-globally so a
     /// freshly-opened editor can be seeded immediately (like `update`) instead
@@ -223,7 +223,7 @@ impl App {
             screen_generation: 0,
             update: None,
             parked_flashes: Vec::new(),
-            rag_sync_task: None,
+            rag_sync_task: Default::default(),
             rag_status: crate::rag::RagStatus::Disabled,
             server_update: None,
         }
@@ -234,12 +234,14 @@ impl App {
 /// task and spawns a fresh one bound to the current `app.vault`. A no-op sync
 /// (no server configured, or no vault) leaves the task `None`.
 fn respawn_rag(app: &mut App, tx: &crate::logic::message::AppTx) {
-    if let Some(handle) = app.rag_sync_task.take() {
-        handle.abort();
-    }
-    if let Some(vault) = app.vault.clone() {
-        app.rag_sync_task = crate::rag::spawn_rag_sync(vault, &app.settings, tx.clone());
-    }
+    // Stop the old loop before the new one starts: two for one vault would
+    // replace each other's index observer.
+    app.rag_sync_task.stop();
+    let task = app
+        .vault
+        .clone()
+        .and_then(|vault| crate::rag::spawn_rag_sync(vault, &app.settings, tx.clone()));
+    app.rag_sync_task.replace(task);
 }
 
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {

@@ -5,11 +5,12 @@
 //! so it never resizes as pins come and go.
 //!
 //! - **Opening a pin.** A digit 1–9 opens that row at once; Up/Down (and
-//!   `j`/`k`) move the selection and Enter opens it; a click selects a row
-//!   and a click on the selected row opens it. The dialog closes first, then
+//!   `j`/`k`) move the selection and Enter opens it; a click opens a row
+//!   (the pointing hand over it). The dialog closes first, then
 //!   the note opens the way every other open does (the open note is saved
 //!   before the switch). A pin whose note is missing on disk is drawn dimmed
 //!   with "(missing)" and refuses to open with a flash; the dialog stays.
+//!   A click on it only selects it (no hand: it cannot open).
 //! - **Managing pins.** Alt+Up / Alt+Down (and `K` / `J`, the TUI's keys)
 //!   raise or lower the selected pin; Delete (and `d`) unpins it. Every
 //!   change is written as it is made — there is no commit or cancel: the
@@ -34,24 +35,25 @@ use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _};
+use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, ScrollDelta, ScrollEvent,
-    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div, rems,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, ScrollEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, PINNED_NOTES_CAP};
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
+use kimun_notes::logic::list::{ListCore, ListSetup, StaticRowSource};
 use kimun_notes::logic::message::PinnedRow;
 use kimun_notes::logic::pinned::{self, Outcome};
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::files::{ellipsis, row_frame};
-use super::modal::{self, ModalKind};
-use super::route::NO_WORKSPACE;
+use super::files::{ClickPolicy, ClickRows, NOTE_ROW_REMS, ellipsis, lane_row, with_click_cursor};
+use super::modal::{self, ModalKind, Slot};
 use crate::input;
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -71,13 +73,11 @@ pub(crate) fn pinned_row_id(path: &VaultPath) -> SharedString {
     format!("pinned-row:{path}").into()
 }
 
-/// A row's height, in rems: the name over its path (FILES' note rows).
-const ROW_REMS: f32 = 2.75;
 /// The dialog's width, in rems.
 const DIALOG_REMS: f32 = 32.;
 /// How far a precise (trackpad) scroll goes before the selection moves one
 /// row, in rems.
-const WHEEL_STEP_REMS: f32 = 1.5;
+pub(crate) const WHEEL_STEP_REMS: f32 = 1.5;
 
 /// The dialog while it is open, as the workspace holds it.
 pub(crate) struct PinnedOpen {
@@ -99,9 +99,9 @@ impl PinnedOpen {
 /// The pinned-notes dialog's view.
 pub(crate) struct PinnedNotesDialog {
     vault: Arc<NoteVault>,
-    rows: Vec<PinnedRow>,
-    /// Always `< rows.len()` unless the list is empty.
-    selected: usize,
+    /// The pins and the selection: the shared list engine, its rows put in
+    /// by this dialog's own reads and edits (no loader of its own).
+    list: ListCore<PinnedRow>,
     /// `false` until the first read lands: before it the body is blank, not
     /// "no pinned notes".
     loaded: bool,
@@ -111,8 +111,8 @@ pub(crate) struct PinnedNotesDialog {
     /// The latest read asked for; an older one landing is dropped.
     generation: u64,
     closed: Rc<Cell<bool>>,
-    /// A precise scroll not yet worth a row.
-    wheel: f32,
+    /// Wheel travel not yet worth a row.
+    wheel: input::ScrollAccumulator,
     focus: FocusHandle,
     workspace: WeakEntity<Workspace>,
     theme: Theme,
@@ -128,29 +128,31 @@ impl PinnedNotesDialog {
     ) -> Self {
         Self {
             vault,
-            rows: Vec::new(),
-            selected: 0,
+            list: ListCore::with_rows(
+                Arc::new(StaticRowSource),
+                Arc::new(|| {}),
+                ListSetup::default(),
+                Vec::new(),
+            ),
             loaded: false,
             pending: false,
             generation: 0,
             closed,
-            wheel: 0.,
+            wheel: input::ScrollAccumulator::default(),
             focus: cx.focus_handle(),
             workspace,
             theme,
         }
     }
 
-    /// The rows shown (tests).
-    #[cfg(test)]
+    /// The rows shown, in pin order.
     pub(crate) fn rows(&self) -> &[PinnedRow] {
-        &self.rows
+        self.list.rows()
     }
 
-    /// The selected row's index (tests).
-    #[cfg(test)]
+    /// The selected row's index (`0` on an empty list).
     pub(crate) fn selected(&self) -> usize {
-        self.selected
+        self.list.selected().unwrap_or(0)
     }
 
     /// Whether the first read has landed (tests).
@@ -172,7 +174,7 @@ impl PinnedNotesDialog {
         let vault = self.vault.clone();
         let reading = tokio::spawn(async move { pinned::load(&vault).await });
         cx.spawn(async move |this, cx| {
-            let rows = reading.await.unwrap_or_else(|e| Err(e.to_string()));
+            let rows = tasks::joined(reading).await;
             this.update(cx, |dialog, cx| dialog.landed(generation, rows, cx))
                 .ok();
         })
@@ -229,10 +231,7 @@ impl PinnedNotesDialog {
         self.loaded = true;
         self.pending = false;
         match rows {
-            Ok(rows) => {
-                self.rows = rows;
-                self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-            }
+            Ok(rows) => self.list.replace_rows(rows),
             Err(error) => {
                 self.workspace
                     .update(cx, |workspace, cx| workspace.flash_error(error, cx))
@@ -245,12 +244,12 @@ impl PinnedNotesDialog {
     /// Open row `index` (0-based): the dialog closes and the note opens, or
     /// a flash says why not (no such pin, its note missing) and it stays.
     fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let target = pinned::open_target(&self.rows, index);
+        let target = pinned::open_target(self.rows(), index);
         self.workspace
             .update(cx, |workspace, cx| match target {
                 Ok(path) => {
                     workspace.close_modal(window, cx);
-                    workspace.open_chosen(path, window, cx);
+                    workspace.open_chosen(path, None, window, cx);
                 }
                 Err(flash) => workspace.flash(flash, cx),
             })
@@ -259,16 +258,16 @@ impl PinnedNotesDialog {
 
     /// Enter, the `Open` button.
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_index(self.selected, window, cx);
+        self.open_index(self.selected(), window, cx);
     }
 
-    /// Move the selection by `delta` rows, within the list.
-    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.rows.is_empty() {
-            return;
+    /// Move the selection one row down (`true`) or up, within the list.
+    fn step(&mut self, down: bool, cx: &mut Context<Self>) {
+        if down {
+            self.list.select_next();
+        } else {
+            self.list.select_prev();
         }
-        let last = self.rows.len() - 1;
-        self.selected = self.selected.saturating_add_signed(delta).min(last);
         cx.notify();
     }
 
@@ -278,12 +277,12 @@ impl PinnedNotesDialog {
         if self.pending {
             return;
         }
-        let Some((from, to)) = pinned::swap_selection(self.rows.len(), self.selected, delta) else {
+        let Some((from, to)) = pinned::swap_selection(self.rows().len(), self.selected(), delta)
+        else {
             return;
         };
-        self.rows.swap(from, to);
-        self.selected = to;
-        let path = self.rows[to].path.clone();
+        self.list.swap_visible(from, to);
+        let path = self.rows()[to].path.clone();
         let vault = self.vault.clone();
         self.persist(
             async move { pinned::move_by(&vault, &path, delta).await },
@@ -295,11 +294,12 @@ impl PinnedNotesDialog {
     /// Unpin the selected pin: its row goes at once (the cursor clamped);
     /// core writes it. Ignored while a write runs.
     fn unpin_selected(&mut self, cx: &mut Context<Self>) {
-        if self.pending || self.selected >= self.rows.len() {
+        if self.pending {
             return;
         }
-        let path = self.rows.remove(self.selected).path;
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        let Some(PinnedRow { path, .. }) = self.list.remove_visible(self.selected()) else {
+            return;
+        };
         let vault = self.vault.clone();
         self.persist(async move { pinned::unpin(&vault, &path).await }, cx);
         cx.notify();
@@ -330,8 +330,8 @@ impl PinnedNotesDialog {
             (Key::Char(c @ '1'..='9'), _) if !mods.shift => {
                 self.open_index(usize::from(c as u8 - b'1'), window, cx)
             }
-            (Key::Up | Key::Char('k'), _) => self.step(-1, cx),
-            (Key::Down | Key::Char('j'), _) => self.step(1, cx),
+            (Key::Up | Key::Char('k'), _) => self.step(false, cx),
+            (Key::Down | Key::Char('j'), _) => self.step(true, cx),
             (Key::Char('K'), _) => self.move_selected(-1, cx),
             (Key::Char('J'), _) => self.move_selected(1, cx),
             (Key::Delete | Key::Char('d'), _) => self.unpin_selected(cx),
@@ -343,41 +343,17 @@ impl PinnedNotesDialog {
     }
 
     /// The wheel moves the selection: a notched wheel a row per notch, a
-    /// trackpad a row per [`WHEEL_STEP_REMS`].
+    /// trackpad a row per [`WHEEL_STEP_REMS`] (the shared
+    /// [`input::wheel_rows`], at most one row per event). Horizontal travel
+    /// moves nothing.
     fn on_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let dy = match event.delta {
-            ScrollDelta::Lines(lines) => {
-                self.wheel = 0.;
-                lines.y.signum()
-            }
-            ScrollDelta::Pixels(delta) => {
-                self.wheel += f32::from(delta.y);
-                let step = f32::from(window.rem_size()) * WHEEL_STEP_REMS;
-                if self.wheel.abs() < step {
-                    return;
-                }
-                let dy = self.wheel.signum();
-                self.wheel = 0.;
-                dy
-            }
-        };
-        // Scrolling down (content up) is a negative delta.
-        if dy < 0. {
-            self.step(1, cx);
-        } else if dy > 0. {
-            self.step(-1, cx);
+        let step = window.rem_size() * WHEEL_STEP_REMS;
+        // Positive is up (content down): the selection moves the other way.
+        match input::wheel_rows(event, step, &mut self.wheel).signum() {
+            0 => return,
+            up => self.step(up < 0, cx),
         }
         cx.stop_propagation();
-    }
-
-    /// A click on row `index`: select it, or open it when it is selected.
-    fn click_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index == self.selected {
-            self.open_index(index, window, cx);
-        } else {
-            self.selected = index;
-            cx.notify();
-        }
     }
 
     fn render_row(
@@ -398,63 +374,50 @@ impl PinnedNotesDialog {
         } else {
             format!("{} {name}", index + 1).into()
         };
-        row_frame(
+        let number = div()
+            .text_xs()
+            .text_color(theme::muted(t))
+            .child((index + 1).to_string());
+        let name_line = div()
+            .flex()
+            .gap_2()
+            .min_w_0()
+            .child(ellipsis(name).text_color(name_color))
+            .children(row.missing.then(|| {
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .child("(missing)")
+            }));
+        let frame = lane_row(
             pinned_row_id(&row.path),
             label,
-            index == self.selected,
-            ROW_REMS,
+            index == self.selected(),
+            NOTE_ROW_REMS,
+            Some(number.into_any_element()),
+            [
+                name_line.into_any_element(),
+                ellipsis(row.path.to_string())
+                    .text_xs()
+                    .text_color(path_color)
+                    .into_any_element(),
+            ],
             t,
-        )
-        .test_support()
-        .gap_2()
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .justify_center()
-                .w_5()
-                .text_xs()
-                .text_color(theme::muted(t))
-                .child((index + 1).to_string()),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .text_sm()
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .min_w_0()
-                        .child(ellipsis(name).text_color(name_color))
-                        .children(row.missing.then(|| {
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(theme::muted(t))
-                                .child("(missing)")
-                        })),
-                )
-                .child(
-                    ellipsis(row.path.to_string())
-                        .text_xs()
-                        .text_color(path_color),
-                ),
-        )
-        .on_click(
-            cx.listener(move |this, _: &ClickEvent, window, cx| this.click_row(index, window, cx)),
-        )
+        );
+        with_click_cursor(frame, ClickPolicy::Open, !row.missing)
+            .test_support()
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                ClickPolicy::Open.apply(event, this, index, window, cx)
+            }))
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.rows.get(self.selected);
+        let selected = self.list.selected_row();
         let can_open = selected.is_some_and(|row| !row.missing);
         let can_edit = selected.is_some() && !self.pending;
-        let can_raise = can_edit && self.selected > 0;
-        let can_lower = can_edit && self.selected + 1 < self.rows.len();
+        let can_raise = can_edit && self.selected() > 0;
+        let can_lower = can_edit && self.selected() + 1 < self.rows().len();
         let button = |id: &'static str, label: &'static str, tip: &'static str, enabled: bool| {
             Button::new(id)
                 .ghost()
@@ -514,6 +477,25 @@ impl PinnedNotesDialog {
     }
 }
 
+/// A click selects the row and opens it ([`ClickPolicy::Open`]). A pin
+/// whose note is missing is only selected: the click is inert (Enter still
+/// says why it cannot open).
+impl ClickRows for PinnedNotesDialog {
+    fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.list.select(index);
+        cx.notify();
+    }
+
+    fn activate_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.list.selected() else {
+            return;
+        };
+        if self.rows().get(index).is_some_and(|row| !row.missing) {
+            self.open_index(index, window, cx);
+        }
+    }
+}
+
 impl Focusable for PinnedNotesDialog {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -530,8 +512,8 @@ impl Render for PinnedNotesDialog {
             .flex()
             .flex_col()
             .gap_0p5()
-            .h(rems(ROW_REMS * PINNED_NOTES_CAP as f32));
-        let body = if self.loaded && self.rows.is_empty() {
+            .h(rems(NOTE_ROW_REMS * PINNED_NOTES_CAP as f32));
+        let body = if self.loaded && self.rows().is_empty() {
             body.child(
                 div()
                     .id(PINNED_EMPTY_ID)
@@ -544,7 +526,7 @@ impl Render for PinnedNotesDialog {
             )
         } else {
             let rows = self
-                .rows
+                .rows()
                 .iter()
                 .enumerate()
                 .map(|(index, row)| self.render_row(index, row, cx).into_any_element())
@@ -580,12 +562,9 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
-        // A modal takes every key: no sequence survives under it.
-        self.cancel_leader(cx);
         let closed = Rc::new(Cell::new(false));
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
@@ -594,43 +573,40 @@ impl Workspace {
             dialog.reload(cx);
             dialog
         });
-        let width = window.rem_size() * DIALOG_REMS;
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::PinnedNotes);
         self.pinned = Some(PinnedOpen {
             #[cfg(test)]
             dialog: view.downgrade(),
             closed,
         });
         let workspace = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let handle = view.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
-            }
-            let opener = view.downgrade();
-            let cancel = workspace.clone();
-            dialog
-                .title("Pinned notes")
-                .w(width)
-                .close_button(false)
-                // Enter opens the selected pin; the dialog closes itself
-                // only when the note opens.
-                .on_ok(move |_, window, cx| {
-                    opener
-                        .update(cx, |dialog, cx| dialog.open_selected(window, cx))
-                        .ok();
-                    false
-                })
-                .on_cancel(move |_, window, cx| {
-                    cancel
-                        .update(cx, |workspace, cx| workspace.close_modal(window, cx))
-                        .ok();
-                    false
-                })
-                .child(view.clone())
-        });
-        cx.notify();
+        self.show_modal(
+            Slot::Own(ModalKind::PinnedNotes),
+            DIALOG_REMS,
+            modal::focus_view(view.clone()),
+            move |dialog, _, _| {
+                let opener = view.downgrade();
+                let cancel = workspace.clone();
+                dialog
+                    .title("Pinned notes")
+                    // Enter opens the selected pin; the dialog closes itself
+                    // only when the note opens.
+                    .on_ok(move |_, window, cx| {
+                        opener
+                            .update(cx, |dialog, cx| dialog.open_selected(window, cx))
+                            .ok();
+                        false
+                    })
+                    .on_cancel(move |_, window, cx| {
+                        cancel
+                            .update(cx, |workspace, cx| workspace.close_modal(window, cx))
+                            .ok();
+                        false
+                    })
+                    .child(view.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// The dialog is going: a read still under way is dropped when it

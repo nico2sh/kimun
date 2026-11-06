@@ -354,29 +354,37 @@ fn the_create_row_makes_and_opens_the_note(cx: &mut TestAppContext) {
 
 // ── the pointer ──────────────────────────────────────────────────────────
 
-/// A click selects; a second click on the row a click selected opens it.
+/// A click opens a note at once, as Enter does (C1: no click-click).
 #[gpui_kit::test]
-fn a_click_selects_and_a_second_click_opens(cx: &mut TestAppContext) {
+fn a_click_opens_a_note(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    assert_eq!(started.text(cx), "Alpha");
     started.click_row("b.md", cx);
     assert_eq!(started.selected(cx).as_deref(), Some("b.md"));
-    assert_eq!(
-        started.focused(cx),
-        Panel::Drawer(Side::Left),
-        "the click focused FILES"
-    );
-    drive(&rt, cx, |_| true);
-    assert_eq!(started.text(cx), "Alpha", "one click opens nothing");
-    started.click_row("b.md", cx);
     drive(&rt, cx, |cx| started.text(cx) == "Bravo");
     assert_eq!(started.focused(cx), Panel::Editor);
 }
 
-/// A double-click on a folder shows it (once: not two levels).
+/// A click on a folder shows it.
 #[gpui_kit::test]
-fn a_double_click_opens_a_folder(cx: &mut TestAppContext) {
+fn a_click_opens_a_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    assert_eq!(started.rows(cx), vec!["sub/", "top.md"]);
+    started.click_row("sub/", cx);
+    assert!(started.dir(cx).is_like(&path("sub")));
+    drive(&rt, cx, |cx| started.listed(cx));
+    assert_eq!(started.rows(cx), vec!["..", "a.md", "b.md", "deeper/"]);
+}
+
+/// A double-click on a folder shows it once: its second press lands on a
+/// row of the folder it entered, which it must not open (not two levels,
+/// no note).
+#[gpui_kit::test]
+fn a_double_click_opens_a_folder_once(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "top.md");
@@ -385,6 +393,80 @@ fn a_double_click_opens_a_folder(cx: &mut TestAppContext) {
     assert!(started.dir(cx).is_like(&path("sub")));
     drive(&rt, cx, |cx| started.listed(cx));
     assert_eq!(started.rows(cx), vec!["..", "a.md", "b.md", "deeper/"]);
+    assert!(started.dir(cx).is_like(&path("sub")), "one level");
+    assert!(started.open_in_editor(cx).unwrap().is_like(&path("top.md")));
+}
+
+/// A right click is the entry menu's: it never opens the row.
+#[gpui_kit::test]
+fn a_right_click_never_opens_a_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    let id = started.row("sub/", cx);
+    cx.update_window(started.handle, |_, window, cx| window.right_click(id, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(started.dir(cx).is_root_or_empty(), "the folder stays shut");
+    started.press_key("escape", cx);
+    cx.run_until_parked();
+    assert!(started.dir(cx).is_root_or_empty());
+}
+
+/// The pointer says what a click does: the pointing hand over a row that
+/// opens on a click, the default arrow over one that only selects or
+/// cannot open now. (The kit's test window cannot read the cursor shown,
+/// so the policy's mapping is what is checked.)
+#[test]
+fn the_click_policy_names_the_pointer() {
+    use super::files::ClickPolicy;
+    use gpui_kit::CursorStyle;
+    assert_eq!(
+        ClickPolicy::Open.cursor(true),
+        Some(CursorStyle::PointingHand)
+    );
+    assert_eq!(ClickPolicy::Open.cursor(false), None);
+    assert_eq!(ClickPolicy::Select.cursor(true), None);
+    assert_eq!(ClickPolicy::Select.cursor(false), None);
+    assert_eq!(ClickPolicy::default(), ClickPolicy::Open);
+}
+
+/// What one click does under each policy: `Open` acts on a double-click's
+/// first press only, `Select` opens on its second; a right click is never
+/// a row click.
+#[test]
+fn the_click_policy_reads_each_press() {
+    use super::files::{ClickPolicy, RowClick};
+    use gpui_kit::{ClickEvent, MouseButton, MouseClickEvent, MouseDownEvent, MouseUpEvent};
+    let press = |button: MouseButton, click_count: usize| {
+        ClickEvent::Mouse(MouseClickEvent {
+            down: MouseDownEvent {
+                button,
+                click_count,
+                ..MouseDownEvent::default()
+            },
+            up: MouseUpEvent {
+                button,
+                click_count,
+                ..MouseUpEvent::default()
+            },
+        })
+    };
+    let left = MouseButton::Left;
+    let open = ClickPolicy::Open;
+    let select = ClickPolicy::Select;
+    assert_eq!(open.click(&press(left, 1)), RowClick::Activate);
+    assert_eq!(open.click(&press(left, 2)), RowClick::Ignore);
+    assert_eq!(open.click(&press(left, 3)), RowClick::Ignore);
+    assert_eq!(select.click(&press(left, 1)), RowClick::Select);
+    assert_eq!(select.click(&press(left, 2)), RowClick::Activate);
+    assert_eq!(select.click(&press(left, 3)), RowClick::Select);
+    for policy in [open, select] {
+        assert_eq!(
+            policy.click(&press(MouseButton::Right, 1)),
+            RowClick::Ignore
+        );
+    }
 }
 
 // ── the app channel ──────────────────────────────────────────────────────

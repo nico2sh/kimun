@@ -21,7 +21,9 @@ use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::AlertDialog;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -877,6 +879,31 @@ impl Render for MoveDialog {
 }
 
 // ---- Delete -------------------------------------------------------------------
+
+/// Ask before a delete, in a kit `AlertDialog` over whatever is open: the
+/// title (`Delete "name"?`), what goes (`description`), a danger `Delete`
+/// and `Cancel`. `confirmed` adds the rest — always `on_ok` (its return
+/// value says whether the kit closes the alert), and an `on_cancel` or a
+/// body when the delete reports into the alert.
+pub(crate) fn confirm_delete(
+    window: &mut Window,
+    cx: &mut App,
+    title: String,
+    description: &'static str,
+    confirmed: impl Fn(AlertDialog) -> AlertDialog + 'static,
+) {
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        confirmed(
+            alert
+                .confirm()
+                .title(title.clone())
+                .description(description)
+                .ok_text("Delete")
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text("Cancel"),
+        )
+    });
+}
 
 /// What the delete confirmation shows under its title and description: the
 /// error of a delete that failed. The title, the consequence and the

@@ -103,7 +103,7 @@ async fn the_window_is_titled_after_the_workspace() {
 async fn only_a_missing_vault_gets_an_empty_state() {
     let none = empty_state(&Start::NoWorkspace).unwrap();
     assert_eq!(none.title, "No workspace configured");
-    assert!(none.detail.contains("kimun"), "{}", none.detail);
+    assert!(none.detail.contains("setup"), "{}", none.detail);
     assert!(!none.failed);
 
     let failed = empty_state(&Start::OpenFailed("/notes: locked".into())).unwrap();
