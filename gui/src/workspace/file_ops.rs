@@ -32,13 +32,8 @@
 //! another note wait for it. A failure stays in the dialog; success closes
 //! it. The history follows renames, moves and deletes, as the TUI's does.
 
-use std::cell::Cell;
-
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::button::ButtonVariant;
-use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Focusable as _, ParentElement as _, Window,
-};
+use gpui_kit::{App, AppContext as _, ClickEvent, Context, ParentElement as _, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops::{self, relocated};
 use kimun_notes::logic::layout::Region;
@@ -49,13 +44,13 @@ use tokio::task::JoinError;
 
 use super::Workspace;
 use super::file_dialogs::{
-    DeleteBody, FileOpKind, FileOpsMenu, MoveDialog, OpStatus, RenameDialog,
+    DeleteBody, FileOpKind, FileOpsMenu, MoveDialog, OpStatus, RenameDialog, confirm_delete,
 };
-use super::modal::{self, ModalKind};
-use super::note::{Closing, flush_problem};
+use super::modal::{self, ModalKind, Slot};
+use super::note_flush::FlushBlock;
 use super::route::NO_NOTE;
-use crate::shell_layout::RAIL_VIEWS;
 use crate::startup::EmptyState;
+use crate::tasks;
 
 /// The note menu's width, in rems.
 const MENU_REMS: f32 = 18.;
@@ -100,7 +95,7 @@ impl FileOpRequest {
 
 /// The open file dialog's view (tests read it through these).
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) enum FileDialogView {
     Menu,
     Rename(gpui_kit::WeakEntity<RenameDialog>),
@@ -136,34 +131,34 @@ impl Workspace {
         if modal::dialog_open(window, cx) || self.notes.is_none() {
             return;
         }
-        self.cancel_leader(cx);
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let title = name_of(&target);
         let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, theme, cx));
-        let width = window.rem_size() * MENU_REMS;
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::FileOps);
-        self.file_dialog = Some(FileDialogView::Menu);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let handle = menu.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
-            }
-            let chooser = menu.clone();
-            dialog
-                .title(title.clone())
-                .w(width)
-                .close_button(false)
-                // Enter picks the selected item; the item's dialog replaces
-                // this one, so the kit must not close anything itself.
-                .on_ok(move |_, window, cx| {
-                    chooser.update(cx, |menu, cx| menu.choose_selected(window, cx));
-                    false
-                })
-                .child(menu.clone())
-        });
-        cx.notify();
+        #[cfg(test)]
+        {
+            self.file_dialog = Some(FileDialogView::Menu);
+        }
+        self.show_modal(
+            Slot::Own(ModalKind::FileOps),
+            MENU_REMS,
+            modal::focus_view(menu.clone()),
+            move |dialog, _, _| {
+                let chooser = menu.clone();
+                dialog
+                    .title(title.clone())
+                    // Enter picks the selected item; the item's dialog
+                    // replaces this one, so the kit must not close anything
+                    // itself.
+                    .on_ok(move |_, window, cx| {
+                        chooser.update(cx, |menu, cx| menu.choose_selected(window, cx));
+                        false
+                    })
+                    .child(menu.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// An item of the note menu was picked: the menu gives way to its
@@ -176,7 +171,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.close_modal(window, cx);
-        self.file_dialog = None;
         self.open_file_dialog(kind, target, window, cx);
     }
 
@@ -197,7 +191,7 @@ impl Workspace {
             self.open_properties(target, window, cx);
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
+        let Some(vault) = self.vault() else {
             return;
         };
         self.cancel_leader(cx);
@@ -205,87 +199,95 @@ impl Workspace {
         self.file_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
-        let width = window.rem_size() * DIALOG_REMS;
         // Escape, the Cancel button and the backdrop leave, unless an
         // operation runs (it would finish with nothing to report into).
         let running = status.clone();
         let on_cancel = move |_: &ClickEvent, _: &mut Window, cx: &mut App| !running.read(cx).busy;
-        let first = Cell::new(true);
         match kind {
             FileOpKind::Rename => {
                 let view = cx.new(|cx| {
                     RenameDialog::new(target, vault, status, workspace, theme, window, cx)
                 });
-                self.modal = Some(ModalKind::Rename);
-                self.file_dialog = Some(FileDialogView::Rename(view.downgrade()));
-                window.open_dialog(cx, move |dialog, window, cx| {
-                    if first.replace(false) {
-                        let input = view.read(cx).input.clone();
-                        input.update(cx, |input, cx| input.focus(window, cx));
-                    }
-                    let confirm = view.clone();
-                    dialog
-                        .title("Rename")
-                        .w(width)
-                        .close_button(false)
-                        .on_ok(move |_, window, cx| {
-                            confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
-                            false
-                        })
-                        .on_cancel(on_cancel.clone())
-                        .child(view.clone())
-                });
+                #[cfg(test)]
+                {
+                    self.file_dialog = Some(FileDialogView::Rename(view.downgrade()));
+                }
+                let input = view.read(cx).input.clone();
+                self.show_modal(
+                    Slot::Own(ModalKind::Rename),
+                    DIALOG_REMS,
+                    move |window, cx| input.update(cx, |input, cx| input.focus(window, cx)),
+                    move |dialog, _, _| {
+                        let confirm = view.clone();
+                        dialog
+                            .title("Rename")
+                            .on_ok(move |_, window, cx| {
+                                confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
+                                false
+                            })
+                            .on_cancel(on_cancel.clone())
+                            .child(view.clone())
+                    },
+                    window,
+                    cx,
+                );
             }
             FileOpKind::Move => {
                 let view = cx
                     .new(|cx| MoveDialog::new(target, vault, status, workspace, theme, window, cx));
-                self.modal = Some(ModalKind::Move);
-                self.file_dialog = Some(FileDialogView::Move(view.downgrade()));
-                window.open_dialog(cx, move |dialog, window, cx| {
-                    if first.replace(false) {
-                        let filter = view.read(cx).filter.clone();
-                        filter.update(cx, |filter, cx| filter.focus(window, cx));
-                    }
-                    let confirm = view.clone();
-                    dialog
-                        .title("Move")
-                        .w(width)
-                        .close_button(false)
-                        .on_ok(move |_, window, cx| {
-                            confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
-                            false
-                        })
-                        .on_cancel(on_cancel.clone())
-                        .child(view.clone())
-                });
+                #[cfg(test)]
+                {
+                    self.file_dialog = Some(FileDialogView::Move(view.downgrade()));
+                }
+                let filter = view.read(cx).filter.clone();
+                self.show_modal(
+                    Slot::Own(ModalKind::Move),
+                    DIALOG_REMS,
+                    move |window, cx| filter.update(cx, |filter, cx| filter.focus(window, cx)),
+                    move |dialog, _, _| {
+                        let confirm = view.clone();
+                        dialog
+                            .title("Move")
+                            .on_ok(move |_, window, cx| {
+                                confirm.update(cx, |dialog, cx| dialog.confirm(window, cx));
+                                false
+                            })
+                            .on_cancel(on_cancel.clone())
+                            .child(view.clone())
+                    },
+                    window,
+                    cx,
+                );
             }
             FileOpKind::Delete => {
                 let body = cx.new(|cx| DeleteBody::new(status, theme, cx));
-                let title = format!("Delete \"{}\"?", name_of(&target));
                 self.modal = Some(ModalKind::Delete);
-                self.file_dialog = Some(FileDialogView::Delete);
-                window.open_alert_dialog(cx, move |alert, _, _| {
-                    let workspace = workspace.clone();
-                    let target = target.clone();
-                    alert
-                        .confirm()
-                        .title(title.clone())
-                        .description("This cannot be undone.")
-                        .ok_text("Delete")
-                        .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("Cancel")
-                        .on_ok(move |_, window, cx| {
-                            let request = FileOpRequest::Delete(target.clone());
-                            workspace
-                                .update(cx, |workspace, cx| {
-                                    workspace.request_file_op(request, window, cx)
-                                })
-                                .ok();
-                            false
-                        })
-                        .on_cancel(on_cancel.clone())
-                        .child(body.clone())
-                });
+                #[cfg(test)]
+                {
+                    self.file_dialog = Some(FileDialogView::Delete);
+                }
+                confirm_delete(
+                    window,
+                    cx,
+                    format!("Delete \"{}\"?", name_of(&target)),
+                    "This cannot be undone.",
+                    move |alert| {
+                        let workspace = workspace.clone();
+                        let target = target.clone();
+                        alert
+                            .on_ok(move |_, window, cx| {
+                                let request = FileOpRequest::Delete(target.clone());
+                                workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.request_file_op(request, window, cx)
+                                    })
+                                    .ok();
+                                false
+                            })
+                            .on_cancel(on_cancel.clone())
+                            .child(body.clone())
+                    },
+                );
             }
             // Opened above.
             FileOpKind::Properties => {}
@@ -299,7 +301,6 @@ impl Workspace {
             return;
         }
         self.close_modal(window, cx);
-        self.file_dialog = None;
         self.file_status = None;
     }
 
@@ -326,50 +327,43 @@ impl Workspace {
         if self.file_task.is_some() {
             return;
         }
-        // A property write (or the reload after it), or the flush before an
-        // attachment shows, holds the open note.
+        // Another operation holds the open note (a property write or the
+        // reload after it, a flush, a vault change): even an operation that
+        // leaves the note alone waits.
+        let held = format!(
+            "Another operation on the note is still running. Nothing was {}.",
+            request.past()
+        );
         if self.note_held() {
-            let text = format!(
-                "Another change to the note is still being written. Nothing was {}.",
-                request.past()
-            );
-            self.set_file_status(false, Some(text), cx);
+            self.set_file_status(false, Some(held), cx);
             return;
         }
-        let dirty = self.editor_dirty(cx);
-        let can_save = self.can_save();
-        let unsaveable = self.unsaveable();
-        let closing = self.closing != Closing::Open;
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.notes.as_ref() else {
             return;
         };
         let vault = host.session.vault().clone();
         let touches = host.note.is_some() && host.session.affects_open_note(request.from());
         let mut flush = None;
         if touches {
-            let refusal = if host.is_switching() || host.is_open_wanted() {
-                Some("The note is still opening. Try again in a moment.".to_string())
-            } else if closing {
-                Some("The window is closing.".to_string())
-            } else if dirty && !can_save {
-                Some(format!("{unsaveable} Nothing was {}.", request.past()))
-            } else {
-                None
-            };
+            let refusal = self.flush_block(cx).map(|block| match block {
+                FlushBlock::Opening => "The note is still opening. Try again in a moment.".into(),
+                FlushBlock::Closing => "The window is closing.".to_string(),
+                // Checked above; kept so the match is whole.
+                FlushBlock::Held => held,
+                FlushBlock::Unsaveable => {
+                    format!("{} Nothing was {}.", self.unsaveable(), request.past())
+                }
+            });
             if let Some(refusal) = refusal {
                 self.set_file_status(false, Some(refusal), cx);
                 return;
             }
             // No tick from here on: the next write would bake in a path the
             // operation is about to rename or delete.
-            host.session.stop_autosave();
-            match host
-                .session
-                .prepare_flush(Some(&self.editor.read(cx).editor))
-            {
-                Ok(request) => flush = Some(request),
-                Err(_) => {
-                    self.resume_note();
+            match self.begin_note_flush(cx) {
+                Some(request) => flush = Some(request),
+                None => {
+                    // The tick is back already (`begin_note_flush`).
                     let text = format!(
                         "Another save is still running. Nothing was {}.",
                         request.past()
@@ -378,7 +372,6 @@ impl Workspace {
                     return;
                 }
             }
-            self.block_input(true, cx);
         }
         self.set_file_status(true, None, cx);
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -395,9 +388,7 @@ impl Workspace {
                 }
             }
             let run = request.clone();
-            let result = tokio::spawn(async move { run.run(&vault).await })
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()));
+            let result = tasks::joined(tokio::spawn(async move { run.run(&vault).await })).await;
             let read = this
                 .update_in(cx, |workspace, window, cx| {
                     workspace.file_op_finished(result, touches, window, cx)
@@ -426,12 +417,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let outcome = self.apply_flush(flushed, cx);
-        let problem = flush_problem(&outcome).or_else(|| {
-            // Nothing can type while the flush runs; should the buffer still
-            // hold unwritten text, it is not run over either.
-            self.editor_dirty(cx)
-                .then(|| "the editor still has unsaved edits".to_string())
-        });
+        let problem = self.flush_failure(&outcome, cx);
         let Some(problem) = problem else {
             return true;
         };
@@ -460,7 +446,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if touched {
-            self.resume_note();
+            self.restart_tick_unless_read_only();
             self.block_input(false, cx);
         }
         self.file_task = None;
@@ -470,14 +456,6 @@ impl Workspace {
             self.flash_error(error, cx);
         }
         self.file_op_ended(cx);
-    }
-
-    /// The tick runs again over the open note (not in a read-only vault,
-    /// where it never runs).
-    fn resume_note(&mut self) {
-        if !self.status.read_only {
-            self.restart_tick();
-        }
     }
 
     /// Core ran the operation. On success the dialog closes, the history
@@ -502,8 +480,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             window.close_all_dialogs(cx);
         }
-        self.modal = None;
-        self.file_dialog = None;
+        self.reset_modal_state();
         self.file_status = None;
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
@@ -646,9 +623,7 @@ impl Workspace {
                 pane.enter_dir(dir, window, cx);
             });
             let (side, index) = self.layout.open_view(DrawerView::Files);
-            if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == DrawerView::Files) {
-                self.rail_cursor = i;
-            }
+            self.place_rail_cursor(Some(DrawerView::Files));
             self.layout.focus_region(Region::Slot { side, index });
             self.apply_focus(window, cx);
             self.save_layout(cx);

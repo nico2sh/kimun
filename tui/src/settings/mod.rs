@@ -645,6 +645,25 @@ impl AppSettings {
         }
     }
 
+    /// [`Self::save_to_disk`], refusing to replace a config file that exists
+    /// but does not parse. For a frontend that loaded the config read-only
+    /// (the GUI): what it could not read the user may still fix by hand, so
+    /// it is never overwritten (nor renamed to `.corrupt`) on its behalf. A
+    /// missing file is written.
+    pub fn save_to_disk_if_parsable(&self) -> Result<(), SettingsError> {
+        let path = self.get_config_file_path()?;
+        if path.exists() {
+            let body = std::fs::read_to_string(&path)?;
+            if let Err(e) = toml::from_str::<AppSettings>(&body) {
+                return Err(SettingsError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} does not parse ({e}); not overwritten", path.display()),
+                )));
+            }
+        }
+        self.save_to_disk()
+    }
+
     /// The `[gui]` table of the config at `path`, when it exists and parses.
     fn gui_on_disk(path: &std::path::Path) -> Option<gui::GuiSettings> {
         #[derive(serde::Deserialize)]
@@ -1925,6 +1944,50 @@ created = "2026-01-01T00:00:00Z"
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
         assert_eq!(std::fs::read_dir(&config_dir).unwrap().count(), 1);
+    }
+
+    /// The GUI's settings write: a config it could not read stays as it is.
+    #[test]
+    fn save_to_disk_if_parsable_leaves_a_corrupt_config_alone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_dir = dir.path().canonicalize().unwrap();
+        let path = config_dir.join("config.toml");
+        let body = "not = valid toml [[[";
+        std::fs::write(&path, body).unwrap();
+        let settings = AppSettings {
+            config_file: Some(path.clone()),
+            ..AppSettings::default()
+        };
+
+        assert!(settings.save_to_disk_if_parsable().is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        assert_eq!(std::fs::read_dir(&config_dir).unwrap().count(), 1);
+    }
+
+    /// A readable config is saved as `save_to_disk` saves it: this copy's
+    /// settings, the `[gui]` table on disk kept.
+    #[test]
+    fn save_to_disk_if_parsable_saves_and_keeps_the_gui_on_disk() {
+        use crate::logic::layout::Side;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("config.toml");
+        let current = config_migration::CURRENT_CONFIG_VERSION;
+        std::fs::write(
+            &path,
+            format!("config_version = {current}\ntheme = \"Nord\"\n"),
+        )
+        .unwrap();
+        let mut copy = AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 321.0))
+            .unwrap();
+        copy.set_theme("Gruvbox Dark".into());
+
+        copy.save_to_disk_if_parsable().unwrap();
+
+        let back = AppSettings::load_read_only_from(path).unwrap();
+        assert_eq!(back.theme, "Gruvbox Dark");
+        assert_eq!(back.gui.drawer_width(Side::Left), 321.0);
     }
 
     #[test]

@@ -36,10 +36,8 @@ impl Shell {
     fn flash(&self, cx: &gpui_kit::App) -> Option<String> {
         self.workspace
             .read(cx)
-            .status
-            .flash
-            .as_ref()
-            .map(|f| f.to_string())
+            .last_flash()
+            .map(|(text, _)| text.to_string())
     }
 }
 
@@ -606,13 +604,13 @@ fn the_rail_cursor_moves_a_view_into_the_empty_slot(cx: &mut TestAppContext) {
 
 /// Point the rail's cursor at `view`.
 fn ws_cursor(shell: &Shell, cx: &mut gpui_kit::App, view: DrawerView) {
-    let i = crate::shell_layout::RAIL_VIEWS
-        .iter()
-        .position(|v| *v == view)
-        .unwrap();
-    shell
-        .workspace
-        .update(cx, |workspace, _| workspace.rail_cursor = i);
+    shell.workspace.update(cx, |workspace, _| {
+        assert!(
+            workspace.rail_views().contains(&view),
+            "{view:?} is on the rail"
+        );
+        workspace.place_rail_cursor(Some(view));
+    });
 }
 
 /// The divider between two slots drags the split, clamped so each slot

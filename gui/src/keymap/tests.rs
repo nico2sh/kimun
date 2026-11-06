@@ -159,6 +159,7 @@ fn default_tables() {
             lw("f(3)", A::OpenSavedSearches),
             lw("ctrl+d", A::SaveCurrentQuery),
             lw("ctrl+shift+d", A::SaveCurrentQuery),
+            lw("f(6)", A::OpenAsk),
             lw("ctrl+f", A::FindInBuffer),
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
@@ -198,6 +199,7 @@ fn default_tables() {
             lw("cmd+c", A::YankRow),
             lw("f(3)", A::OpenSavedSearches),
             lw("cmd+d", A::SaveCurrentQuery),
+            lw("f(6)", A::OpenAsk),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
             lw("cmd+shift+b", A::Leader),
@@ -455,6 +457,30 @@ fn the_saved_search_chords() {
     assert!(!lw.is_bound(chord("ctrl+k"), &A::SaveCurrentQuery));
     assert_eq!(lw.chord_for(&A::SaveCurrentQuery), Some(chord("ctrl+d")));
     assert_eq!(lw.chord_for(&A::OpenSavedSearches), Some(chord("f3")));
+}
+
+/// The Ask Thread (F6, M7c G10a) from every panel, vim or not, on both
+/// platforms: the TUI's default `ActionShortcuts` chord. It is no longer
+/// among the actions shipped unbound.
+#[test]
+fn open_ask_is_f6_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(lw.resolve(chord("f6"), at), Some(&A::OpenAsk), "{panel:?}");
+            assert_eq!(mac.resolve(chord("f6"), at), Some(&A::OpenAsk), "{panel:?}");
+        }
+    }
+    assert_eq!(lw.chord_for(&A::OpenAsk), Some(chord("f6")));
+    assert_eq!(mac.chord_for(&A::OpenAsk), Some(chord("f6")));
+    for p in PLATFORMS {
+        assert!(
+            default_chords(&A::OpenAsk, p).is_some(),
+            "{p:?}: OpenAsk is bound, not marked unbound"
+        );
+    }
 }
 
 /// The leader gateway (M6 G2) is primary+Shift+B from every panel, under vim

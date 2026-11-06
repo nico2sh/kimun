@@ -211,3 +211,32 @@ fn no_note_open_shows_no_document_segments(cx: &mut TestAppContext) {
         assert_eq!(started.segment(id, cx), None, "{id}");
     }
 }
+
+// ── narrow windows ───────────────────────────────────────────────────────
+
+/// With the flash gone from the Footer (N1), a narrow window still cuts
+/// the path short first: the save state keeps its room inside the window
+/// and the path ends before it.
+#[gpui_kit::test]
+fn a_narrow_window_shrinks_the_path_not_the_save_state(cx: &mut TestAppContext) {
+    use crate::status_row::{PATH_ID, ROW_ID, SAVE_ID};
+    let rt = runtime();
+    let _guard = rt.enter();
+    const WIDTH: f32 = 640.;
+    let note = "a-long-folder-name/another-long-folder/a-rather-long-note-name.md";
+    let (_v, started) = started_on(cx, &rt, &[(note, "body")], note);
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(WIDTH), gpui_kit::px(480.)),
+    );
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.viewport_size().width, gpui_kit::px(WIDTH));
+        let row = window.find(ROW_ID).bounds();
+        let path = window.find(PATH_ID).bounds();
+        let save = window.find(SAVE_ID).bounds();
+        assert!(save.right() <= row.right(), "{save:?} in {row:?}");
+        assert!(path.right() <= save.left(), "{path:?} before {save:?}");
+    })
+    .unwrap();
+}

@@ -28,12 +28,16 @@
 //! Escape closes the picker and gives the keyboard back to its opener. The
 //! finder's own chord closes it too (the modal host's toggle).
 //!
+//! **Pointer** ([`ClickPolicy`]). A click chooses a row as Enter does,
+//! under the pointing hand — except in the search browser, whose selection
+//! drives the preview: there a click selects and a double-click opens the
+//! row it hits. While a `Create:` runs no row can be chosen (no hand).
+//!
 //! **Choosing** is the logic's rule (`picker_open`): a note opens through the
 //! note session (the open note is saved first), and `Create:` makes the note
 //! through core before opening it. A create that fails keeps the picker open
 //! and says why; the next keystroke clears it.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
@@ -43,7 +47,7 @@ use gpui_kit::component::input::{
     Delete, Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp, Position,
 };
 use gpui_kit::component::window_paddings;
-use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _};
+use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClickEvent, Context, Div, Entity, InteractiveElement as _,
@@ -67,11 +71,11 @@ use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::files::entry_row;
-use super::modal::{self, ModalKind};
-use super::route::NO_WORKSPACE;
+use super::files::{ClickPolicy, ClickRows, entry_row, with_click_cursor};
+use super::modal::{self, ModalKind, Slot};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -156,7 +160,8 @@ pub(crate) trait PickerRow: ListRow + Clone + 'static {
     fn deletable_name(&self) -> Option<&str> {
         None
     }
-    /// Enter (or a double-click) on the row, opened by `kind`; `emphasis`
+    /// Enter (or a click, by the picker's click policy) on the row, opened
+    /// by `kind`; `emphasis`
     /// is the query's needles (search browser). True when the picker must
     /// wait (busy) for what started.
     fn choose(
@@ -175,7 +180,7 @@ impl PickerRow for FileListEntry {
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
-        entry_row(self.element_id(), self, selected, t)
+        entry_row(self.element_id(), self, selected, true, t)
     }
 
     fn preview_path(&self) -> Option<VaultPath> {
@@ -478,7 +483,8 @@ impl<R: PickerRow> NotePicker<R> {
         self.busy
     }
 
-    /// Enter (or a double-click): choose the selected row.
+    /// Enter (or a click on a row, by the picker's policy): choose the
+    /// selected row.
     fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -499,19 +505,13 @@ impl<R: PickerRow> NotePicker<R> {
         }
     }
 
-    fn click_row(
-        &mut self,
-        pos: usize,
-        event: &ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.click_count() >= 2 && self.core.selected() == Some(pos) {
-            self.choose(window, cx);
-        } else {
-            self.core.select(pos);
-            self.sync_preview(cx);
-            cx.notify();
+    /// What a click on a row does here: the search browser's selection
+    /// drives its preview, so a click selects and a double-click opens;
+    /// every other picker chooses on a click.
+    fn click_policy(&self) -> ClickPolicy {
+        match self.kind {
+            PickerKind::Search => ClickPolicy::Select,
+            PickerKind::Finder | PickerKind::Links | PickerKind::SavedSearches => ClickPolicy::Open,
         }
     }
 
@@ -578,11 +578,29 @@ impl<R: PickerRow> NotePicker<R> {
     }
 }
 
+/// A click on a row selects it (the preview follows), then chooses it as
+/// Enter does (which waits while a `Create:` runs), under the picker's
+/// policy.
+impl<R: PickerRow> ClickRows for NotePicker<R> {
+    fn select_row(&mut self, pos: usize, cx: &mut Context<Self>) {
+        self.core.select(pos);
+        self.sync_preview(cx);
+        cx.notify();
+    }
+
+    fn activate_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose(window, cx);
+    }
+}
+
 impl<R: PickerRow> Render for NotePicker<R> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme;
         let count = self.core.visible_len();
         let selected = self.core.selected();
+        let policy = self.click_policy();
+        // Nothing can be chosen while a `Create:` runs: no pointing hand.
+        let enabled = !self.busy;
         let list = if count > 0 {
             uniform_list(
                 PICKER_LIST_ID,
@@ -592,14 +610,15 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     range
                         .filter_map(|pos| {
                             let row = this.core.visible_row(pos)?;
-                            let element = row
-                                .render_row(selected == Some(pos), &this.theme)
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
-                                        this.click_row(pos, event, window, cx)
-                                    },
-                                ))
-                                .test_support();
+                            let element = with_click_cursor(
+                                row.render_row(selected == Some(pos), &this.theme),
+                                policy,
+                                enabled,
+                            )
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.click_policy().apply(event, this, pos, window, cx)
+                            }))
+                            .test_support();
                             Some(element.into_any_element())
                         })
                         .collect::<Vec<_>>()
@@ -787,20 +806,6 @@ pub(crate) fn query_problem(reason: &str) -> SharedString {
 // ---- The workspace's side ----------------------------------------------------
 
 impl Workspace {
-    /// The `OpenNote` chord: open the finder, or close it when it is the
-    /// open modal. Refused while another modal is open.
-    pub(crate) fn toggle_finder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::Finder) => {
-                if !self.picker_busy(cx) {
-                    self.close_modal(window, cx);
-                }
-            }
-            None if !modal::dialog_open(window, cx) => self.open_finder(window, cx),
-            _ => {}
-        }
-    }
-
     /// Whether the picker's `Create:` is running.
     pub(crate) fn picker_busy(&self, cx: &gpui_kit::App) -> bool {
         self.picker
@@ -816,8 +821,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
         let source = Arc::new(FileFinderProvider::new(vault, self.open_note_dir()));
@@ -915,8 +919,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<NotePicker<R>>> {
         let tx = self.tx.clone()?;
-        // A modal takes every key: no sequence survives under it.
-        self.cancel_leader(cx);
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let picker = cx.new(|cx| {
@@ -932,40 +934,41 @@ impl Workspace {
                 cx,
             )
         });
-        let width = window.rem_size()
-            * match kind {
-                PickerKind::Search => SEARCH_WIDTH_REMS,
-                _ => WIDTH_REMS,
-            };
-        let first = Cell::new(true);
-        self.modal = Some(match kind {
+        let width_rems = match kind {
+            PickerKind::Search => SEARCH_WIDTH_REMS,
+            _ => WIDTH_REMS,
+        };
+        let modal = match kind {
             PickerKind::Finder => ModalKind::Finder,
             PickerKind::Links => ModalKind::LinkChooser,
             PickerKind::Search => ModalKind::Search,
             PickerKind::SavedSearches => ModalKind::SavedSearches,
-        });
+        };
         let busy = picker.downgrade();
-        let opened = picker.clone();
         let on_cancel = move |_: &ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
             !busy.upgrade().is_some_and(|p| p.read(cx).is_busy())
         };
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                // Focused with the caret after any query it opened on (a
-                // followed label), so typing narrows it.
-                let input = picker.read(cx).input.clone();
+        let input = picker.read(cx).input.clone();
+        let opened = picker.clone();
+        self.show_modal(
+            Slot::Own(modal),
+            width_rems,
+            // Focused with the caret after any query it opened on (a
+            // followed label), so typing narrows it.
+            move |window, cx| {
                 input.update(cx, |input, cx| {
                     input.set_cursor_position(Position::new(0, u32::MAX), window, cx)
-                });
-            }
-            dialog
-                .close_button(false)
-                .w(width)
-                .when_some(title.clone(), |dialog, title| dialog.title(title))
-                .on_cancel(on_cancel.clone())
-                .child(picker.clone())
-        });
-        cx.notify();
+                })
+            },
+            move |dialog, _, _| {
+                dialog
+                    .when_some(title.clone(), |dialog, title| dialog.title(title))
+                    .on_cancel(on_cancel.clone())
+                    .child(picker.clone())
+            },
+            window,
+            cx,
+        );
         Some(opened)
     }
 
@@ -991,7 +994,7 @@ impl Workspace {
         match open {
             PickerOpen::Open(path) => {
                 self.close_modal(window, cx);
-                self.open_chosen(path, window, cx);
+                self.open_chosen(path, None, window, cx);
                 false
             }
             PickerOpen::Create(path) => self.picker_create(path, window, cx),
@@ -1001,15 +1004,19 @@ impl Workspace {
     /// Open `path`, chosen in a modal that has closed: a note opens in the
     /// editor, which takes the keyboard; anything else is shown in FILES, as
     /// the app channel's `OpenPath` does (the pickers list only notes).
+    ///
+    /// `emphasis`: the search needles a search result opens with
+    /// ([`Self::open_note_with`]); `None` from every other modal.
     pub(crate) fn open_chosen(
         &mut self,
         path: VaultPath,
+        emphasis: Option<Vec<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if path.is_note() {
             self.focus_panel(Panel::Editor, window, cx);
-            self.open_note(path, cx);
+            self.open_note_with(path, emphasis, cx);
         } else {
             self.files_show_dir(path, cx);
         }
@@ -1025,10 +1032,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (Some(picker), Some(vault)) = (
-            self.picker.as_ref().and_then(|p| p.upgrade()),
-            self.notes.as_ref().map(|h| h.session.vault().clone()),
-        ) else {
+        let (Some(picker), Some(vault)) =
+            (self.picker.as_ref().and_then(|p| p.upgrade()), self.vault())
+        else {
             return false;
         };
         if self.note_task.is_some() {
@@ -1036,7 +1042,7 @@ impl Workspace {
         }
         let made = tokio::spawn(async move { file_ops::create_note(&vault, &path, None).await });
         self.note_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let made = made.await.unwrap_or_else(|e| Err(e.to_string()));
+            let made = tasks::joined(made).await;
             this.update_in(cx, |workspace, window, cx| {
                 workspace.note_task = None;
                 match made {

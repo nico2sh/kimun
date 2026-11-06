@@ -8,7 +8,7 @@
 //!   top, then the saved searches, the first nine numbered. Typing filters
 //!   by name and by number (the TUI's ranking: an exact number first), and
 //!   the best match is the one Enter runs, so `2` Enter runs search 2.
-//!   Enter (or a double-click) runs it in FIND, which is named after it.
+//!   Enter (or a click) runs it in FIND, which is named after it.
 //!   Delete (the key or `Delete…`) asks first in a kit `AlertDialog` over
 //!   the list; the Backlinks entry is not a saved search and cannot go.
 //! - **Save search** (`SaveCurrentQuery` in FIND and in the search browser,
@@ -31,14 +31,12 @@
 //! the list core's load task, the rest in `tokio::spawn`); the UI thread
 //! only applies their results. Nothing here touches a file.
 
-use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::{
     AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Rgba, Role, SharedString, Stateful,
@@ -51,11 +49,12 @@ use kimun_notes::logic::saved_search::{
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::file_dialogs::{OpStatus, error_row, footer};
-use super::files::{ellipsis, row_frame};
-use super::modal::{self, ModalKind};
+use super::file_dialogs::{OpStatus, confirm_delete, error_row, footer};
+use super::files::{NOTE_ROW_REMS, ellipsis, lane_row};
+use super::modal::{self, ModalKind, Slot};
 use super::picker::{PickerKind, PickerRow};
 use super::route::NO_WORKSPACE;
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -69,8 +68,6 @@ pub(crate) fn saved_row_id(name: &str) -> SharedString {
     format!("saved-search-row:{name}").into()
 }
 
-/// A row's height, in rems: the name over its query (FILES' note rows).
-const ROW_REMS: f32 = 2.75;
 /// The save dialog's width, in rems.
 const DIALOG_REMS: f32 = 30.;
 
@@ -117,30 +114,21 @@ impl PickerRow for SearchItem {
         } else {
             theme::foreground(t)
         };
-        row_frame(self.element_id(), name.clone(), selected, ROW_REMS, t)
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .justify_center()
-                    .w_5()
-                    .children(lane),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .child(ellipsis(name).text_color(name_color))
-                    .child(
-                        ellipsis(self.query.clone())
-                            .text_xs()
-                            .text_color(theme::secondary(t)),
-                    ),
-            )
+        lane_row(
+            self.element_id(),
+            name.clone(),
+            selected,
+            NOTE_ROW_REMS,
+            lane,
+            [
+                ellipsis(name).text_color(name_color).into_any_element(),
+                ellipsis(self.query.clone())
+                    .text_xs()
+                    .text_color(theme::secondary(t))
+                    .into_any_element(),
+            ],
+            t,
+        )
     }
 
     fn filter() -> Filter<Self> {
@@ -443,17 +431,6 @@ impl Render for SaveSearchDialog {
 // ---- The workspace's side ----------------------------------------------------------
 
 impl Workspace {
-    /// The `OpenSavedSearches` chord: open the Saved Searches, or close them
-    /// (and a delete confirmation over them) when they are the open modal.
-    /// Refused while another modal is open.
-    pub(crate) fn toggle_saved_searches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::SavedSearches) => self.close_modal(window, cx),
-            None if !modal::dialog_open(window, cx) => self.open_saved_searches(window, cx),
-            _ => {}
-        }
-    }
-
     /// Open the Saved Searches, the filter focused; the searches load off
     /// the UI thread. Refused while a modal is open; says so without a
     /// workspace.
@@ -461,8 +438,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
         // Deletes run on their own (their errors are shown), never through
@@ -504,18 +480,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let workspace = cx.entity().downgrade();
-        let title = format!("Delete \"{name}\"?");
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let workspace = workspace.clone();
-            let name = name.clone();
-            alert
-                .confirm()
-                .title(title.clone())
-                .description("Only the saved search goes; no note is changed.")
-                .ok_text("Delete")
-                .ok_variant(ButtonVariant::Danger)
-                .cancel_text("Cancel")
-                .on_ok(move |_, window, cx| {
+        confirm_delete(
+            window,
+            cx,
+            format!("Delete \"{name}\"?"),
+            "Only the saved search goes; no note is changed.",
+            move |alert| {
+                let workspace = workspace.clone();
+                let name = name.clone();
+                alert.on_ok(move |_, window, cx| {
                     let name = name.clone();
                     workspace
                         .update(cx, |workspace, cx| {
@@ -524,26 +497,29 @@ impl Workspace {
                         .ok();
                     true
                 })
-        });
+            },
+        );
         cx.notify();
     }
 
     /// The delete was confirmed: core removes `name` (off the UI thread),
     /// then the list loads again; a failure shows in the list.
     fn delete_saved_search(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
+        let Some(vault) = self.vault() else {
             return;
         };
         let deleting = {
             let name = name.clone();
+            let vault = vault.clone();
             tokio::spawn(async move { vault.delete_saved_search(&name).await })
         };
         cx.spawn_in(window, async move |this, cx| {
-            let deleted = match deleting.await {
-                Ok(result) => result.map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
+            let deleted = tasks::joined(deleting).await;
             this.update_in(cx, |workspace, _, cx| {
+                // Another vault was entered meanwhile: nothing here to tell.
+                if !workspace.is_vault(&vault) {
+                    return;
+                }
                 let Some(picker) = workspace.saved_searches.as_ref().and_then(|p| p.upgrade())
                 else {
                     if let Err(error) = &deleted {
@@ -610,16 +586,13 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
         if query.trim().is_empty() {
             self.flash("No query to save", cx);
             return;
         }
-        // A modal takes every key: no sequence survives under it.
-        self.cancel_leader(cx);
         let status = cx.new(|_| OpStatus::default());
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
@@ -647,48 +620,48 @@ impl Workspace {
         });
         let loading = view.downgrade();
         cx.spawn(async move |_, cx| {
-            let names = names.await.unwrap_or_else(|e| Err(e.to_string()));
+            let names = tasks::joined(names).await;
             loading
                 .update(cx, |dialog, cx| dialog.names_loaded(names, cx))
                 .ok();
         })
         .detach();
-        let width = window.rem_size() * DIALOG_REMS;
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::SaveSearch);
         self.save_search = Some(SaveSearchOpen {
             #[cfg(test)]
             dialog: view.downgrade(),
             status,
             browser_query: browser_query.then(|| query_back.clone()),
         });
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                // The offered name selected: typing replaces it.
-                let input = view.read(cx).input.clone();
+        let input = view.read(cx).input.clone();
+        self.show_modal(
+            Slot::Own(ModalKind::SaveSearch),
+            DIALOG_REMS,
+            // The offered name selected: typing replaces it.
+            move |window, cx| {
                 input.update(cx, |input, cx| {
                     input.focus(window, cx);
                     input.select_all(window, cx);
-                });
-            }
-            let cancel = workspace.clone();
-            dialog
-                .title("Save search")
-                .w(width)
-                .close_button(false)
-                // Escape, the backdrop: the workspace closes it (and brings
-                // the browser back), unless a save runs.
-                .on_cancel(move |_, window, cx| {
-                    cancel
-                        .update(cx, |workspace, cx| {
-                            workspace.dismiss_save_search(window, cx)
-                        })
-                        .ok();
-                    false
                 })
-                .child(view.clone())
-        });
-        cx.notify();
+            },
+            move |dialog, _, _| {
+                let cancel = workspace.clone();
+                dialog
+                    .title("Save search")
+                    // Escape, the backdrop: the workspace closes it (and
+                    // brings the browser back), unless a save runs.
+                    .on_cancel(move |_, window, cx| {
+                        cancel
+                            .update(cx, |workspace, cx| {
+                                workspace.dismiss_save_search(window, cx)
+                            })
+                            .ok();
+                        false
+                    })
+                    .child(view.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// Save (Enter, the confirm): core writes it in the background; the
@@ -699,7 +672,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
+        let Some(vault) = self.vault() else {
             return;
         };
         if self.save_task.is_some() {
@@ -711,10 +684,7 @@ impl Workspace {
             tokio::spawn(async move { vault.save_search(&name, &query).await })
         };
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let saved = match saving.await {
-                Ok(result) => result.map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
+            let saved = tasks::joined(saving).await;
             this.update_in(cx, |workspace, window, cx| {
                 workspace.search_saved(name, query, source, saved, window, cx)
             })

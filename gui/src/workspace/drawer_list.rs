@@ -1,5 +1,5 @@
 //! The **drawer list** (M7a G1): the one list component behind the
-//! drawer views — LINKS, OUTLINE, TAGS and FIND.
+//! drawer views — LINKS, OUTLINE, TAGS, FIND, SEM and the Sources view.
 //! A view hands it rows (a [`RowSource`] loaded off the UI thread, or rows it
 //! already has) and says what to show when there are none; the list draws
 //! them and turns keys and clicks into selection and [`DrawerListEvent`]s.
@@ -19,26 +19,47 @@
 //! the selected row, Escape gives the keyboard back to the editor. Every
 //! other key bubbles on to the view around the list.
 //!
-//! **Pointer.** A click selects a row; a double-click activates it. A row
-//! that stands for a vault entry has the FILES entry menu.
+//! **Pointer.** The list's [`ClickPolicy`]: `Open` (every list but one) — a
+//! click selects the row and activates it, as Enter does, under the
+//! pointing hand; `Select` (the Sources view) — a click selects, a
+//! double-click opens the row's note ([`DrawerListEvent::Verb`] with
+//! [`OPEN_NOTE`]). A
+//! right click never activates: a row that stands for a vault entry has
+//! the FILES entry menu there.
+//!
+//! **Row actions.** A row may offer one small labelled action
+//! ([`DrawerRow::hover_action`]) that its owner switches on for the whole
+//! list ([`DrawerList::set_row_actions_enabled`], off by default; only the
+//! Sources view does, while its reader is Collapsed). Switched on, the
+//! action overlays the row's right end on the row's hovered background,
+//! taking no width from the row, drawn only while the pointer is over the
+//! row (GPUI group hover). A click on
+//! it selects the row and emits [`DrawerListEvent::Verb`] with the action's
+//! verb, and never
+//! reaches the row's own click: no second select, and the press after it
+//! is not taken for a double-click on the row. It is a pointer shortcut
+//! only; the command it names keeps its key.
 
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
-    ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
     UniformListScrollHandle, Window, div, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::logic::list::{ListCore, ListRow, ListSetup, RowSource, StaticRowSource};
-use kimun_notes::logic::message::Notifier;
+use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
 use super::file_dialogs::FileOpKind;
-use super::files::with_file_menu;
+use super::files::{ClickPolicy, ClickRows, RowClick, with_click_cursor, with_file_menu};
 use crate::input;
 use crate::theme;
 
@@ -57,15 +78,101 @@ pub(crate) trait DrawerRow: ListRow {
     fn menu_target(&self) -> Option<VaultPath> {
         None
     }
+
+    /// The extra items of the row's context menu, for a row that has no
+    /// FILES entry menu (an Ask source offers [`MenuItem::open_note`]). Each
+    /// reaches the owner as a [`DrawerListEvent::Verb`].
+    fn menu_items(&self) -> Vec<MenuItem> {
+        Vec::new()
+    }
+
+    /// The action the row shows under the pointer while its list has row
+    /// actions on ([`DrawerList::set_row_actions_enabled`]). None by
+    /// default.
+    fn hover_action(&self) -> Option<RowAction> {
+        None
+    }
+}
+
+/// The group name a row with an action carries, for the action's hover.
+const ROW_GROUP: &str = "drawer-row";
+
+/// A row-level command the owner answers to: the one name a context-menu
+/// item, a hover action or a double-click carries in
+/// [`DrawerListEvent::Verb`]. A new row command is a new verb, not a new
+/// event variant.
+pub(crate) type VerbId = &'static str;
+
+/// Open the row's note in the editor: the menu's `Open note`, and what a
+/// double-click does under [`ClickPolicy::Select`].
+pub(crate) const OPEN_NOTE: VerbId = "open-note";
+
+/// An extra item of a row's context menu ([`DrawerRow::menu_items`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MenuItem {
+    label: &'static str,
+    verb: VerbId,
+}
+
+impl MenuItem {
+    pub(crate) const fn new(label: &'static str, verb: VerbId) -> Self {
+        Self { label, verb }
+    }
+
+    /// `Open note` ([`OPEN_NOTE`]).
+    pub(crate) const fn open_note() -> Self {
+        Self::new("Open note", OPEN_NOTE)
+    }
+}
+
+/// A row's hover action ([`DrawerRow::hover_action`]): the verb it sends,
+/// its element id (from the row's domain key), its label, an optional key
+/// hint and its tooltip.
+#[derive(Debug, Clone)]
+pub(crate) struct RowAction {
+    verb: VerbId,
+    id: SharedString,
+    label: SharedString,
+    key_hint: Option<SharedString>,
+    tooltip: SharedString,
+}
+
+impl RowAction {
+    pub(crate) fn new(
+        verb: VerbId,
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        tooltip: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            verb,
+            id: id.into(),
+            label: label.into(),
+            key_hint: None,
+            tooltip: tooltip.into(),
+        }
+    }
+
+    /// Show `key` beside the label, in the muted colour.
+    pub(crate) fn with_key_hint(mut self, key: impl Into<SharedString>) -> Self {
+        self.key_hint = Some(key.into());
+        self
+    }
 }
 
 /// What a drawer list asks of its owner.
 #[derive(Debug, Clone)]
 pub(crate) enum DrawerListEvent<R> {
-    /// Enter, or a double-click: do what the row stands for.
+    /// Enter, or a click under [`ClickPolicy::Open`]: do what the row
+    /// stands for.
     Activate(R),
     /// A row's context menu asked to rename, move or delete its entry.
     FileOp(FileOpKind, VaultPath),
+    /// A row command: a context-menu item ([`DrawerRow::menu_items`]), a
+    /// click on the row's hover action ([`DrawerRow::hover_action`]; the row
+    /// is selected already) or a double-click under [`ClickPolicy::Select`]
+    /// ([`OPEN_NOTE`]).
+    Verb(R, VerbId),
     /// Escape: back to the editor.
     Dismiss,
 }
@@ -84,6 +191,15 @@ pub(crate) struct DrawerList<R: DrawerRow> {
     label: &'static str,
     /// What the list says when it shows no row.
     empty: SharedString,
+    /// What it says while its first rows are on their way.
+    loading: SharedString,
+    /// What a click on a row does.
+    click: ClickPolicy,
+    /// Whether rows show their hover action.
+    row_actions: bool,
+    /// A row action was the last press: the next row click is not the
+    /// second half of a double-click.
+    after_action: bool,
 }
 
 impl<R: DrawerRow> EventEmitter<DrawerListEvent<R>> for DrawerList<R> {}
@@ -105,6 +221,73 @@ impl<R: DrawerRow> DrawerList<R> {
             id,
             label,
             empty: SharedString::default(),
+            loading: "Loading…".into(),
+            click: ClickPolicy::Open,
+            row_actions: false,
+            after_action: false,
+        }
+    }
+
+    /// A new list as an entity of `cx`'s view, on the app channel `tx`,
+    /// drawn in `theme`.
+    pub(crate) fn spawn<W: 'static>(
+        id: &'static str,
+        label: &'static str,
+        tx: AppTx,
+        theme: &Theme,
+        cx: &mut Context<W>,
+    ) -> Entity<Self> {
+        Self::spawn_with(id, label, tx, theme, cx, |list| list)
+    }
+
+    /// [`Self::spawn`], the list set up by `configure` first (its click
+    /// policy, its loading text).
+    pub(crate) fn spawn_with<W: 'static>(
+        id: &'static str,
+        label: &'static str,
+        tx: AppTx,
+        theme: &Theme,
+        cx: &mut Context<W>,
+        configure: impl FnOnce(Self) -> Self,
+    ) -> Entity<Self> {
+        let theme = theme.clone();
+        cx.new(|cx| configure(Self::new(id, label, redraw_callback(tx), theme, cx)))
+    }
+
+    /// Show (`true`) or hide every row's hover action from now on.
+    pub(crate) fn set_row_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.row_actions != enabled {
+            self.row_actions = enabled;
+            cx.notify();
+        }
+    }
+
+    /// Whether rows show their hover action.
+    #[cfg(test)]
+    pub(crate) fn row_actions_enabled(&self) -> bool {
+        self.row_actions
+    }
+
+    /// Take clicks under `policy` instead of [`ClickPolicy::Open`].
+    pub(crate) fn with_click_policy(mut self, policy: ClickPolicy) -> Self {
+        self.click = policy;
+        self
+    }
+
+    /// Say `text` instead of "Loading…" while rows are on their way (a
+    /// server search says "Searching…").
+    pub(crate) fn with_loading_text(mut self, text: impl Into<SharedString>) -> Self {
+        self.loading = text.into();
+        self
+    }
+
+    /// Say `text` when the list shows no row, from now on (until the next
+    /// load names its own).
+    pub(crate) fn set_empty(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let text = text.into();
+        if self.empty != text {
+            self.empty = text;
+            cx.notify();
         }
     }
 
@@ -166,10 +349,22 @@ impl<R: DrawerRow> DrawerList<R> {
         empty: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
+        self.set_rows_with(rows, ListSetup::default(), empty, cx);
+    }
+
+    /// [`Self::set_rows`] with the list's own setup: a local filter over
+    /// the rows (the Sources view's).
+    pub(crate) fn set_rows_with(
+        &mut self,
+        rows: Vec<R>,
+        setup: ListSetup<R>,
+        empty: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         self.core = Some(ListCore::with_rows(
             Arc::new(StaticRowSource),
             self.redraw.clone(),
-            ListSetup::default(),
+            setup,
             rows,
         ));
         self.restart(empty, cx);
@@ -241,6 +436,22 @@ impl<R: DrawerRow> DrawerList<R> {
         self.core.as_ref().and_then(ListCore::selected_row)
     }
 
+    /// Every row listed, a local filter's misses included, in their order.
+    pub(crate) fn all_rows(&self) -> &[R] {
+        self.core.as_ref().map_or(&[], ListCore::rows)
+    }
+
+    /// The position among the rows shown of the first one `pick` takes.
+    pub(crate) fn position(&self, pick: impl Fn(&R) -> bool) -> Option<usize> {
+        let core = self.core.as_ref()?;
+        (0..core.visible_len()).find(|&pos| core.visible_row(pos).is_some_and(&pick))
+    }
+
+    /// Select the row shown at `pos` and keep it in view.
+    pub(crate) fn select_at(&mut self, pos: usize, cx: &mut Context<Self>) {
+        self.select(|core| core.select(pos), cx);
+    }
+
     // ---- Selection and activation --------------------------------------------
 
     /// Move the selection one row down (`true`) or up, as the arrows do
@@ -270,13 +481,95 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
-    /// A left click on the row at visible position `pos`: select it, and
-    /// activate it on a double-click.
-    fn click_row(&mut self, pos: usize, event: &ClickEvent, cx: &mut Context<Self>) {
-        self.select(|core| core.select(pos), cx);
-        if event.click_count() >= 2 {
-            self.activate(cx);
+    /// A click on the row at visible position `pos`, under the list's
+    /// policy ([`ClickRows`]): select it, then activate it (`Open`) or open
+    /// its note (`Select`, a double-click).
+    fn click_row(
+        &mut self,
+        pos: usize,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let after_action = std::mem::take(&mut self.after_action);
+        let mut click = self.click.click(event);
+        // The press before was the row action's (it went away under the
+        // pointer): this one is a click of its own, not a double-click.
+        if click != RowClick::Ignore && after_action && event.click_count() > 1 {
+            click = RowClick::Select;
         }
+        click.run(self, pos, window, cx);
+    }
+
+    /// A click on the hover action of the row at visible position `pos`:
+    /// select it, then hand it to the owner.
+    fn click_action(&mut self, pos: usize, verb: VerbId, cx: &mut Context<Self>) {
+        self.after_action = true;
+        self.select(|core| core.select(pos), cx);
+        if let Some(row) = self.selected_row().cloned() {
+            cx.emit(DrawerListEvent::Verb(row, verb));
+        }
+    }
+
+    /// The hover action `action` of the row at `pos`: quiet text at rest,
+    /// shown only while the pointer is over its row ([`ROW_GROUP`]).
+    fn render_action(
+        &self,
+        pos: usize,
+        selected: bool,
+        action: RowAction,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = &self.theme;
+        let hover = theme::foreground(t);
+        let tooltip = action.tooltip;
+        let verb = action.verb;
+        // It sits over the row's right end, on the row's own hovered
+        // background, so it covers what is there rather than narrowing the
+        // row for everyone; it is drawn only while the pointer is over the row.
+        let cover = if selected {
+            theme::selected_background(t)
+        } else {
+            theme::hover_background(t)
+        };
+        div()
+            .id(action.id)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .items_center()
+            .pl_2()
+            .pr_2()
+            .rounded_md()
+            .bg(cover)
+            .test_support()
+            .role(Role::Button)
+            .aria_label(action.label.clone())
+            .flex()
+            .flex_none()
+            .gap_1()
+            .whitespace_nowrap()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(theme::secondary(t))
+            .hover(move |style| style.text_color(hover))
+            .opacity(0.)
+            .group_hover(ROW_GROUP, |style| style.opacity(1.))
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                // Never the row's click as well; a press that ends a
+                // double-click on it acted already with its first.
+                cx.stop_propagation();
+                if event.standard_click() && event.click_count() == 1 {
+                    this.click_action(pos, verb, cx);
+                }
+            }))
+            .child(action.label)
+            .when_some(action.key_hint, |button, key| {
+                button.child(div().text_color(theme::muted(t)).child(key))
+            })
+            .into_any_element()
     }
 
     /// The list's own keys (module docs). True when the key was one.
@@ -312,11 +605,16 @@ impl<R: DrawerRow> DrawerList<R> {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let element = row
-            .render_row(selected, &self.theme)
-            .on_click(
-                cx.listener(move |this, event: &ClickEvent, _, cx| this.click_row(pos, event, cx)),
-            )
+        let action = self.row_actions.then(|| row.hover_action()).flatten();
+        let mut element = row.render_row(selected, &self.theme);
+        if let Some(action) = action {
+            let action = self.render_action(pos, selected, action, cx);
+            element = element.group(ROW_GROUP).relative().child(action);
+        }
+        let element = with_click_cursor(element, self.click, true)
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.click_row(pos, event, window, cx)
+            }))
             .test_support();
         match row.menu_target() {
             Some(path) => with_file_menu(
@@ -325,7 +623,51 @@ impl<R: DrawerRow> DrawerList<R> {
                 cx.entity().downgrade(),
                 DrawerListEvent::FileOp,
             ),
-            None => element.into_any_element(),
+            None => {
+                let items = row.menu_items();
+                if items.is_empty() {
+                    return element.into_any_element();
+                }
+                let owner = cx.entity().downgrade();
+                let row = row.clone();
+                element
+                    .context_menu(move |mut menu, _, _| {
+                        for item in &items {
+                            let (owner, row, verb) = (owner.clone(), row.clone(), item.verb);
+                            menu = menu.item(PopupMenuItem::new(item.label).on_click(
+                                move |_, window, cx| {
+                                    let (owner, row) = (owner.clone(), row.clone());
+                                    window.defer(cx, move |_, cx| {
+                                        owner
+                                            .update(cx, |_, cx| {
+                                                cx.emit(DrawerListEvent::Verb(row, verb))
+                                            })
+                                            .ok();
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+}
+
+impl<R: DrawerRow> ClickRows for DrawerList<R> {
+    fn select_row(&mut self, pos: usize, cx: &mut Context<Self>) {
+        self.select(|core| core.select(pos), cx);
+    }
+
+    fn activate_row(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        match self.click {
+            ClickPolicy::Open => self.activate(cx),
+            ClickPolicy::Select => {
+                if let Some(row) = self.selected_row().cloned() {
+                    cx.emit(DrawerListEvent::Verb(row, OPEN_NOTE));
+                }
+            }
         }
     }
 }
@@ -360,7 +702,7 @@ impl<R: DrawerRow> Render for DrawerList<R> {
             .into_any_element()
         } else {
             let text = if loading {
-                SharedString::from("Loading…")
+                self.loading.clone()
             } else {
                 self.empty.clone()
             };

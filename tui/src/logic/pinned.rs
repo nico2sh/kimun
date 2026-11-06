@@ -8,7 +8,12 @@
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
+use super::list::ListRow;
 use super::message::PinnedRow;
+
+/// A pin is a list row (the GUI's dialog keeps its rows and selection in a
+/// [`ListCore`](super::list::ListCore)): never filtered, nothing to yank.
+impl ListRow for PinnedRow {}
 
 /// Read the pins, in the user's order, each with whether its note is on
 /// disk (a pin is kept, and shown as missing, when it is not). `Err` carries

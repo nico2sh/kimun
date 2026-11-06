@@ -248,6 +248,31 @@ impl EditorView {
         Self::build(None, theme, vim, tx, None, cx)
     }
 
+    /// Report on `tx` from now on: the window's app channel was replaced
+    /// (another vault entered). The background jobs' wake-up moves with it,
+    /// so a job finishing for the old channel's buffer wakes no one.
+    pub(crate) fn set_channel(&mut self, tx: AppTx) {
+        self.editor.session_mut().notifier = Some(redraw_callback(tx.clone()));
+        self.tx = tx;
+    }
+
+    /// Run the vim engine (`vim`) or the plain editor from now on: a fresh,
+    /// empty [`Editor`] of that kind, on the same channel. For a vault
+    /// change, whose note was already let go; vim's registers go with the
+    /// old engine. Nothing changes when the editor already is that kind.
+    pub(crate) fn set_vim(&mut self, vim: bool, cx: &mut Context<Self>) {
+        if self.editor.is_vim() == vim {
+            return;
+        }
+        let mut editor = Editor::new(vim);
+        editor.session_mut().notifier = Some(redraw_callback(self.tx.clone()));
+        self.editor = editor;
+        self.preedit = None;
+        self.painted = None;
+        self.row_cache = ShapedRows::default();
+        cx.notify();
+    }
+
     fn build(
         text: Option<String>,
         theme: Theme,

@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, Entity, Focusable as _, TestAppContext};
+use gpui_kit::{AppContext as _, Entity, Focusable as _, ScrollDelta, TestAppContext, point, px};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::keys::leader::LeaderAction;
 use kimun_notes::logic::layout::Panel;
@@ -17,8 +17,8 @@ use tokio::runtime::Runtime;
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::pinned::{
-    EMPTY_TEXT, PINNED_EMPTY_ID, PINNED_LOWER_ID, PINNED_OPEN_ID, PINNED_RAISE_ID,
-    PinnedNotesDialog, pinned_row_id,
+    EMPTY_TEXT, PINNED_EMPTY_ID, PINNED_ID, PINNED_LOWER_ID, PINNED_OPEN_ID, PINNED_RAISE_ID,
+    PinnedNotesDialog, WHEEL_STEP_REMS, pinned_row_id,
 };
 use super::route::NO_WORKSPACE;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -222,22 +222,38 @@ fn a_digit_opens_that_note_and_closes(cx: &mut TestAppContext) {
     assert!(editor_focused(&started, cx));
 }
 
-/// A click selects a row; a click on the selected row opens it.
+/// A click opens a row at once (C1): the dialog closes, the note opens.
 #[gpui_kit::test]
-fn a_click_selects_and_a_second_click_opens(cx: &mut TestAppContext) {
+fn a_click_opens_a_row(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_with(cx, &rt, &["alpha.md", "gamma.md"]);
     open_pins(&started, cx);
     let listed = rows(&started, &rt, cx);
     let gamma = pinned_row_id(&listed[1].0);
-    click(&started, gamma.clone(), cx);
-    assert_eq!(selected(&started, cx), 1);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::PinnedNotes));
     click(&started, gamma, cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
     drive(&rt, cx, |cx| started.text(cx) == NOTES[2].1);
+}
+
+/// A click on a missing pin is inert: it selects the row, opens nothing,
+/// flashes nothing, and the dialog stays.
+#[gpui_kit::test]
+fn a_click_on_a_missing_pin_only_selects_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_with(cx, &rt, &["beta.md", "gamma.md"]);
+    std::fs::remove_file(v.workspace.as_path().join("gamma.md")).unwrap();
+    open_pins(&started, cx);
+    let listed = rows(&started, &rt, cx);
+    assert!(listed[1].1, "gamma is missing");
+    let before = started.flash(cx);
+    click(&started, pinned_row_id(&listed[1].0), cx);
+    assert_eq!(selected(&started, cx), 1);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::PinnedNotes));
+    assert_eq!(started.flash(cx), before, "no flash");
+    assert_eq!(started.text(cx), NOTES[0].1, "alpha stays open");
 }
 
 /// A pin whose note is gone from disk is kept and flagged; neither its
@@ -265,6 +281,67 @@ fn a_missing_pin_is_flagged_and_refuses_to_open(cx: &mut TestAppContext) {
     assert_eq!(started.shown_modal(cx), Some(ModalKind::PinnedNotes));
     assert_eq!(started.text(cx), NOTES[0].1, "alpha stays open");
     assert_eq!(stored(&rt, &v), ["beta", "gamma"], "the pin is kept");
+}
+
+/// The wheel over the list moves the selection, at most a row per event.
+fn wheel(s: &Started, delta: ScrollDelta, cx: &mut TestAppContext) {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.scroll(PINNED_ID, delta, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// A notch moves the selection one row; a horizontal wheel (Shift+wheel on
+/// Linux) moves nothing; a trackpad reversing direction does not carry the
+/// travel it made the other way.
+#[gpui_kit::test]
+fn the_wheel_moves_the_selection_vertically_only(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, &["alpha.md", "beta.md", "gamma.md"]);
+    open_pins(&started, cx);
+    rows(&started, &rt, cx);
+    // Positive y moves content down: scrolling up.
+    wheel(&started, ScrollDelta::Lines(point(0., -3.)), cx);
+    assert_eq!(selected(&started, cx), 1, "a notch is one row");
+    wheel(&started, ScrollDelta::Lines(point(1., 0.)), cx);
+    assert_eq!(
+        selected(&started, cx),
+        1,
+        "a horizontal wheel moves nothing"
+    );
+    wheel(&started, ScrollDelta::Pixels(point(px(3.), px(0.))), cx);
+    assert_eq!(selected(&started, cx), 1);
+
+    let step = cx
+        .update_window(started.handle, |_, window, _| {
+            f32::from(window.rem_size()) * WHEEL_STEP_REMS
+        })
+        .unwrap();
+    // Most of a row up, then the trackpad turns: a row's travel down is a
+    // row down, not eaten by the travel up.
+    wheel(
+        &started,
+        ScrollDelta::Pixels(point(px(0.), px(step * 0.8))),
+        cx,
+    );
+    assert_eq!(selected(&started, cx), 1);
+    wheel(
+        &started,
+        ScrollDelta::Pixels(point(px(0.), px(-step * 0.2))),
+        cx,
+    );
+    wheel(
+        &started,
+        ScrollDelta::Pixels(point(px(0.), px(-step * 0.8))),
+        cx,
+    );
+    assert_eq!(
+        selected(&started, cx),
+        2,
+        "the reversal dropped the travel up"
+    );
 }
 
 // ── Managing ─────────────────────────────────────────────────────────────

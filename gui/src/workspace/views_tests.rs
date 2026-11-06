@@ -6,6 +6,8 @@
 //! and drives it between GPUI's `run_until_parked` (`start_tests::drive`).
 #![cfg(test)]
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
@@ -17,7 +19,7 @@ use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::views::{LinkEntry, OutlineEntry};
 use tokio::runtime::Runtime;
 
-use super::drawer_list::DrawerList;
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow as _};
 use super::file_dialogs::FileOpKind;
 use super::file_ops::FileOpRequest;
 use super::links::{LINKS_ID, LinksView, NO_NOTE_TEXT, link_row_id};
@@ -285,9 +287,9 @@ fn enter_opens_the_row_saving_the_open_note_first(cx: &mut TestAppContext) {
     assert!(editor_focused(&started, cx));
 }
 
-/// A double-click opens a row too.
+/// A click opens a row, as Enter does (C1).
 #[gpui_kit::test]
-fn a_double_click_opens_a_row(cx: &mut TestAppContext) {
+fn a_click_opens_a_row(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
@@ -303,12 +305,103 @@ fn a_double_click_opens_a_row(cx: &mut TestAppContext) {
             .map(|r| link_row_id(&r.path))
             .unwrap_or(id)
     });
+    click(&started, row, cx);
+    drive(&rt, cx, |cx| on(&started, "epsilon.md", cx));
+}
+
+/// The element id of the LINKS row for note `p`.
+fn links_row(s: &Started, p: &str, cx: &TestAppContext) -> SharedString {
+    let list = links_list(s, cx);
+    cx.read(|cx| {
+        list.read(cx)
+            .rows()
+            .into_iter()
+            .find(|r| r.path.is_like(&path(p)))
+            .map(|r| link_row_id(&r.path))
+            .unwrap_or_else(|| panic!("no row {p}"))
+    })
+}
+
+/// A double-click opens a row once: its second press is not a second
+/// activation (the note opened, the list stays as it was).
+#[gpui_kit::test]
+fn a_double_click_opens_a_row_once(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
+    leader(&started, "lb", cx);
+    link_rows(&started, &rt, cx);
+    let list = links_list(&started, cx);
+    let opened = Rc::new(Cell::new(0));
+    let count = opened.clone();
+    let _counting = cx.update(|cx| {
+        cx.subscribe(&list, move |_, event: &DrawerListEvent<LinkEntry>, _| {
+            if matches!(event, DrawerListEvent::Activate(_)) {
+                count.set(count.get() + 1);
+            }
+        })
+    });
+    let row = links_row(&started, "epsilon.md", cx);
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
         window.double_click(row, cx)
     })
     .unwrap();
     drive(&rt, cx, |cx| on(&started, "epsilon.md", cx));
+    assert_eq!(opened.get(), 1, "one activation");
+}
+
+/// Row actions are the Sources view's alone: LINKS never switches them on
+/// and its rows offer none, so even switched on its rows stay as they are
+/// and a click still opens the row.
+#[gpui_kit::test]
+fn links_rows_offer_no_row_action(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
+    leader(&started, "lb", cx);
+    link_rows(&started, &rt, cx);
+    let list = links_list(&started, cx);
+    let (enabled, offered) = cx.read(|cx| {
+        let list = list.read(cx);
+        let offered = list
+            .rows()
+            .iter()
+            .filter(|r| r.hover_action().is_some())
+            .count();
+        (list.row_actions_enabled(), offered)
+    });
+    assert!(!enabled, "off by default");
+    assert_eq!(offered, 0);
+    list.update(cx, |list, cx| list.set_row_actions_enabled(true, cx));
+    let row = links_row(&started, "epsilon.md", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(row.clone(), cx);
+        window.click(row, cx)
+    })
+    .unwrap();
+    drive(&rt, cx, |cx| on(&started, "epsilon.md", cx));
+}
+
+/// A right click is the entry menu's: it opens nothing.
+#[gpui_kit::test]
+fn a_right_click_opens_no_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
+    leader(&started, "lb", cx);
+    link_rows(&started, &rt, cx);
+    let row = links_row(&started, "epsilon.md", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(row, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    press(&started, "escape", cx);
+    drive(&rt, cx, |_| true);
+    assert!(on(&started, "alpha.md", cx), "alpha stays open");
 }
 
 /// LINKS follows the open note: another note opened, the note renamed (it
@@ -516,7 +609,7 @@ fn outline_lists_nested_headings_and_enter_jumps(cx: &mut TestAppContext) {
     assert_eq!(caret(&started, cx).0, 4, "on `#### Deep`");
     assert!(editor_focused(&started, cx));
 
-    // End, then a click on a row and Enter.
+    // End and Enter; then a click on a row jumps at once (C1).
     leader(&started, "ol", cx);
     press(&started, "end", cx);
     press(&started, "enter", cx);
@@ -527,8 +620,11 @@ fn outline_lists_nested_headings_and_enter_jumps(cx: &mut TestAppContext) {
         heading_row_id(&outline_entry(&started, "Second", cx)),
         cx,
     );
-    press(&started, "enter", cx);
     assert_eq!(caret(&started, cx).0, 6, "on `## Second`");
+    assert!(
+        editor_focused(&started, cx),
+        "the click gave the editor the keyboard"
+    );
 }
 
 fn outline_entry(

@@ -516,6 +516,14 @@ mod semantic {
     }
 
     #[tokio::test]
+    async fn a_nested_heading_title_shows_no_control_separator() {
+        let raw = format!("Coffee{}Beans", kimun_core::note::BREADCRUMB_SEP);
+        let (source, _) = source(Some(vec![chunk("a", &raw)])).await;
+        let rows = load_query(&source, "q").await;
+        assert_eq!(row(&rows[0]).1, "Coffee \u{203a} Beans");
+    }
+
+    #[tokio::test]
     async fn rows_are_one_per_note_in_server_order() {
         let (source, stub) = source(Some(vec![
             chunk("b", "B › Intro"),

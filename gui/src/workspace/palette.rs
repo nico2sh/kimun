@@ -19,16 +19,18 @@
 //! own filter (a substring match) is off, and the palette hands `Command`
 //! only the matching rows, best first.
 //!
+//! **Pointer.** A click runs a row ([`ClickPolicy::Open`], the kit's
+//! click), under the pointing hand; a disabled row is inert and keeps the
+//! arrow.
+//!
 //! **Keys.** Up/Down, Enter and Escape are the kit's: Escape clears a typed
 //! query first, then closes. The palette chord closes it too (a toggle).
 //! Closing gives the keyboard back to the opener.
 
-use std::cell::Cell;
-
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
+use gpui_kit::component::{Disableable as _, IndexPath};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Rgba,
@@ -43,7 +45,8 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::palette::palette_rows;
 
 use super::Workspace;
-use super::modal::ModalKind;
+use super::files::ClickPolicy;
+use super::modal::{ModalKind, Slot};
 use super::route::{
     NEEDS_DRAWER_FOCUS, NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE,
 };
@@ -111,6 +114,10 @@ impl PaletteEntry {
         let blocked = self.blocked;
         let hint = self.hint;
         let sequence = self.sequence.clone();
+        // A click runs a runnable row (the kit's); the pointing hand says
+        // so, a disabled row keeps the arrow. The kit's row sets the
+        // default arrow itself, so the hand is on the content it lays out.
+        let cursor = ClickPolicy::Open.cursor(blocked.is_none());
         CommandItem::new()
             .label(self.label.clone())
             .disabled(blocked.is_some())
@@ -122,6 +129,7 @@ impl PaletteEntry {
                     .flex_1()
                     .min_w_0()
                     .gap_2()
+                    .when_some(cursor, |row, cursor| row.cursor(cursor))
                     .child(div().flex_1().min_w_0().truncate().child(label.clone()))
                     .map(|row| match blocked {
                         Some(reason) => row.child(div().flex_none().text_xs().child(reason)),
@@ -189,6 +197,7 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::FindGrep | LeaderAction::FindRecent => Some(ActionShortcuts::SearchNotes),
         LeaderAction::FindSaved => Some(ActionShortcuts::OpenSavedSearches),
         LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
+        LeaderAction::AskFocus => Some(ActionShortcuts::OpenAsk),
         _ => None,
     }
 }
@@ -349,46 +358,26 @@ impl Workspace {
         }
     }
 
-    /// The palette chord: open the palette, or close it when it is the open
-    /// modal. Refused while another modal is open.
-    pub(crate) fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::Palette) => self.close_modal(window, cx),
-            None if !super::modal::dialog_open(window, cx) => self.open_palette(window, cx),
-            _ => {}
-        }
-    }
-
     /// Open the palette over the window, its query field focused. Refused
     /// while a modal is open (one modal at a time).
     pub(crate) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if super::modal::dialog_open(window, cx) {
             return;
         }
-        // A modal takes every key: no sequence survives under it.
-        self.cancel_leader(cx);
         let entries = self.palette_entries(self.layout.focused(), cx);
         let workspace = cx.entity().downgrade();
         let quiet = theme::muted(&self.theme);
         let palette = cx.new(|cx| Palette::new(entries, quiet, workspace, window, cx));
-        let width = window.rem_size() * WIDTH_REMS;
-        // The builder re-runs whenever the dialog layer rebuilds: focus the
-        // query only on the first run of this opening.
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::Palette);
         self.palette = Some(palette.downgrade());
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let state = palette.read(cx).state.clone();
-                state.update(cx, |state, cx| state.focus(window, cx));
-            }
-            dialog
-                .close_button(false)
-                .p_0()
-                .w(width)
-                .child(palette.clone())
-        });
-        cx.notify();
+        let state = palette.read(cx).state.clone();
+        self.show_modal(
+            Slot::Own(ModalKind::Palette),
+            WIDTH_REMS,
+            move |window, cx| state.update(cx, |state, cx| state.focus(window, cx)),
+            move |dialog, _, _| dialog.p_0().child(palette.clone()),
+            window,
+            cx,
+        );
     }
 
     /// A palette row was chosen: close the palette (its opener gets the

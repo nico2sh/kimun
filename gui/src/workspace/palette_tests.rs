@@ -231,6 +231,60 @@ fn a_disabled_row_cannot_run(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// A click on a disabled row is inert (C1): the palette stays.
+#[gpui_kit::test]
+fn a_click_on_a_disabled_row_is_inert(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "hello");
+    open_palette(&shell, cx);
+    // No workspace in this shell: the daily note is disabled.
+    type_text(&shell, "daily", cx);
+    assert_eq!(
+        visible(&shell, cx).first().map(String::as_str),
+        Some("+note · daily")
+    );
+    let click_first = |cx: &mut TestAppContext| {
+        cx.update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(IndexPath::new(0), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    click_first(cx);
+    assert!(dialog_open(&shell, cx), "a disabled row does not run");
+}
+
+/// A click on a runnable row runs it at once: the right drawer's toggle.
+#[gpui_kit::test]
+fn a_click_runs_a_runnable_row(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "hello");
+    let right = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            shell
+                .workspace
+                .read(cx)
+                .layout
+                .is_visible(Panel::Drawer(Side::Right))
+        })
+    };
+    assert!(!right(cx));
+    open_palette(&shell, cx);
+    type_text(&shell, "toggle right drawer", cx);
+    assert_eq!(
+        visible(&shell, cx).first().map(String::as_str),
+        Some("+window · toggle right drawer")
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(IndexPath::new(0), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    settle(&shell, cx);
+    assert!(!dialog_open(&shell, cx));
+    assert!(right(cx));
+}
+
 /// A text action needs the note to have had the keyboard: from the rail its
 /// row is disabled, from the editor it formats the selection.
 #[gpui_kit::test]
@@ -473,7 +527,7 @@ fn a_file_op_closes_the_palette(cx: &mut TestAppContext) {
 }
 
 /// "yank note path" copies the open note's path to the clipboard and says
-/// so in the Footer.
+/// so in a flash.
 #[gpui_kit::test]
 fn the_yank_row_copies_the_note_path(cx: &mut TestAppContext) {
     let rt = runtime();

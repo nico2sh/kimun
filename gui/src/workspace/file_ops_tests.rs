@@ -14,6 +14,7 @@ use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops::ValidationState;
 use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::message::{AppMessage, FileOp};
 use tokio::runtime::Runtime;
 
 use super::file_dialogs::{
@@ -328,6 +329,27 @@ fn a_taken_name_cannot_be_confirmed(cx: &mut TestAppContext) {
     assert!(started.dialog_open(cx));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha"));
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+}
+
+/// A file operation landing from elsewhere closes an open file dialog and
+/// forgets it, as it does every other modal (R1: the reset is one list).
+#[gpui_kit::test]
+fn a_file_op_landing_forgets_the_file_dialog(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    started.open_op_dialog(FileOpKind::Rename, "a.md", cx);
+    assert!(cx.read(|cx| started.workspace.read(cx).file_dialog.is_some()));
+    started.workspace.update(cx, |w, cx| {
+        w.on_app_message(AppMessage::FileOp(FileOp::Created(path("b.md"))), cx)
+    });
+    started.settle_dialog(cx);
+    assert!(!started.dialog_open(cx));
+    assert_eq!(started.shown_modal(cx), None);
+    assert!(
+        cx.read(|cx| started.workspace.read(cx).file_dialog.is_none()),
+        "no stale file dialog"
+    );
 }
 
 /// Core refusing the operation (the name was taken after the check): the

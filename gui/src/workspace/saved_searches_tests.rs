@@ -25,7 +25,9 @@ use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::picker::{NotePicker, PICKER_DELETE_ID, PICKER_INPUT_ID};
 use super::route::NEEDS_FIND_FOCUS;
-use super::saved_searches::{BACKLINKS_ROW_ID, SAVE_SEARCH_INPUT_ID, SaveSearchDialog};
+use super::saved_searches::{
+    BACKLINKS_ROW_ID, SAVE_SEARCH_INPUT_ID, SaveSearchDialog, saved_row_id,
+};
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -297,6 +299,34 @@ fn a_number_or_a_name_selects_the_search(cx: &mut TestAppContext) {
     press(&started, "escape", cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
+}
+
+/// A click on a saved search runs it in FIND at once, as Enter does (C1);
+/// a right click runs nothing.
+#[gpui_kit::test]
+fn a_click_runs_a_saved_search(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, &[("rusty", "#rust"), ("go", "#go")]);
+    press(&started, "f3", cx);
+    rows(&started, &rt, cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(saved_row_id("go"), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::SavedSearches));
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(saved_row_id("go"), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert_eq!(find_query(&started, cx), "#go");
+    assert_eq!(find_title(&started, cx), "go");
 }
 
 /// Enter runs the search in FIND, which is named after it; an edit marks

@@ -571,10 +571,7 @@ fn the_chord_is_inert_in_the_editor_and_works_from_the_rail(cx: &mut TestAppCont
     assert!(!sort_open(&started, cx));
 
     on_workspace(&started, cx, |w, window, cx| {
-        w.rail_cursor = crate::shell_layout::RAIL_VIEWS
-            .iter()
-            .position(|v| *v == DrawerView::Files)
-            .unwrap();
+        w.place_rail_cursor(Some(DrawerView::Files));
         w.layout.focus(Panel::Rail);
         w.apply_focus(window, cx);
     });

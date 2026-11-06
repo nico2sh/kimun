@@ -17,17 +17,13 @@
 //! A failure stays in the dialog, which stays open; while a note is being
 //! made its buttons wait and Escape does nothing.
 
-use std::cell::Cell;
-use std::sync::Arc;
-
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::{
     AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div,
 };
-use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops;
 use kimun_notes::logic::layout::Panel;
@@ -36,8 +32,9 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::{CANCEL_ID, CONFIRM_ID, OpStatus, error_row, footer, path_line};
-use super::modal::{self, ModalKind};
+use super::modal::{self, ModalKind, Slot};
 use super::route::NO_WORKSPACE;
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -55,6 +52,8 @@ const DIALOG_REMS: f32 = 30.;
 /// failed, and `Cancel` / `Create`. The title is the dialog's.
 pub(crate) struct CreateNoteBody {
     path: VaultPath,
+    /// What the note starts with (a saved Ask answer); `None`: empty.
+    content: Option<String>,
     workspace: WeakEntity<Workspace>,
     status: Entity<OpStatus>,
     theme: Theme,
@@ -64,6 +63,7 @@ pub(crate) struct CreateNoteBody {
 impl CreateNoteBody {
     fn new(
         path: VaultPath,
+        content: Option<String>,
         workspace: WeakEntity<Workspace>,
         status: Entity<OpStatus>,
         theme: Theme,
@@ -72,6 +72,7 @@ impl CreateNoteBody {
         let watch = cx.observe(&status, |_, _, cx| cx.notify());
         Self {
             path,
+            content,
             workspace,
             status,
             theme,
@@ -86,6 +87,7 @@ impl Render for CreateNoteBody {
         let busy = status.busy;
         let confirm = self.workspace.clone();
         let path = self.path.clone();
+        let content = self.content.clone();
         let cancel = self.workspace.clone();
         div()
             .id(CREATE_ID)
@@ -100,9 +102,10 @@ impl Render for CreateNoteBody {
                 busy,
                 move |_, window, cx| {
                     let path = path.clone();
+                    let content = content.clone();
                     confirm
                         .update(cx, |workspace, cx| {
-                            workspace.create_confirmed(path, window, cx)
+                            workspace.create_confirmed(path, content, window, cx)
                         })
                         .ok();
                 },
@@ -267,34 +270,49 @@ fn name_of(path: &VaultPath) -> String {
 }
 
 impl Workspace {
-    fn vault(&self) -> Option<Arc<NoteVault>> {
-        self.notes.as_ref().map(|h| h.session.vault().clone())
-    }
-
     /// Offer to create the note at `path`, which is not there (a followed
     /// link, an open). With a modal already open it only says so.
     pub(crate) fn offer_create(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        self.offer_create_with(path, None, cx);
+    }
+
+    /// [`Self::offer_create`], the note to start with `content` (a saved
+    /// Ask answer; `None`: empty). With a modal already open it only says so,
+    /// by what was offered: a missing note, or an answer left unsaved.
+    pub(crate) fn offer_create_with(
+        &mut self,
+        path: VaultPath,
+        content: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.with_window(cx, move |workspace, window, cx| {
             if modal::dialog_open(window, cx) {
-                workspace.flash_error(format!("{path} not found"), cx);
+                // A saved answer is not "not found": say what to do.
+                let why = if content.is_some() {
+                    "Couldn't save the answer: close the open dialog and save again.".to_string()
+                } else {
+                    format!("{path} not found")
+                };
+                workspace.flash_error(why, cx);
             } else {
-                workspace.open_create_dialog(path, window, cx);
+                workspace.open_create_dialog(path, content, window, cx);
             }
         });
     }
 
-    /// Open the create dialog for `path`. Refused while a modal is open,
-    /// and without a workspace.
+    /// Open the create dialog for `path`, the note to hold `content` once
+    /// made (`None`: empty). Refused while a modal is open, and without a
+    /// workspace.
     pub(crate) fn open_create_dialog(
         &mut self,
         path: VaultPath,
+        content: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if modal::dialog_open(window, cx) || self.notes.is_none() {
             return;
         }
-        self.cancel_leader(cx);
         let status = cx.new(|_| OpStatus::default());
         self.note_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
@@ -302,40 +320,48 @@ impl Workspace {
         let title = format!("Create \"{}\"?", name_of(&path));
         let body = {
             let path = path.clone();
+            let content = content.clone();
             let status = status.clone();
-            cx.new(|cx| CreateNoteBody::new(path, workspace.clone(), status, theme, cx))
+            cx.new(|cx| CreateNoteBody::new(path, content, workspace.clone(), status, theme, cx))
         };
-        let width = window.rem_size() * DIALOG_REMS;
-        self.modal = Some(ModalKind::CreateNote);
-        window.open_dialog(cx, move |dialog, _, _| {
-            let confirm = workspace.clone();
-            let path = path.clone();
-            let running = status.clone();
-            dialog
-                .title(title.clone())
-                .w(width)
-                .close_button(false)
-                // Enter: the dialog's own confirm.
-                .on_ok(move |_, window, cx| {
-                    let path = path.clone();
-                    confirm
-                        .update(cx, |workspace, cx| {
-                            workspace.create_confirmed(path, window, cx)
-                        })
-                        .ok();
-                    false
-                })
-                .on_cancel(move |_, _, cx| !running.read(cx).busy)
-                .child(body.clone())
-        });
-        cx.notify();
+        self.show_modal(
+            Slot::Own(ModalKind::CreateNote),
+            DIALOG_REMS,
+            |_, _| {},
+            move |dialog, _, _| {
+                let confirm = workspace.clone();
+                let path = path.clone();
+                let content = content.clone();
+                let running = status.clone();
+                dialog
+                    .title(title.clone())
+                    // Enter: the dialog's own confirm.
+                    .on_ok(move |_, window, cx| {
+                        let path = path.clone();
+                        let content = content.clone();
+                        confirm
+                            .update(cx, |workspace, cx| {
+                                workspace.create_confirmed(path, content, window, cx)
+                            })
+                            .ok();
+                        false
+                    })
+                    .on_cancel(move |_, _, cx| !running.read(cx).busy)
+                    .child(body.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// `Create` in the create dialog: core makes the note (or finds one
-    /// already there), then it opens; a failure stays in the dialog.
+    /// already there; with `content` it always makes a fresh one, a taken
+    /// name getting a suffix), then it opens; a failure stays in the
+    /// dialog.
     pub(crate) fn create_confirmed(
         &mut self,
         path: VaultPath,
+        content: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -346,34 +372,25 @@ impl Workspace {
             return;
         }
         self.set_note_status(true, None, cx);
-        let made = tokio::spawn(async move { file_ops::create_note(&vault, &path, None).await });
+        let mine = self.note_status.clone();
+        let made = tokio::spawn(async move { file_ops::create_note(&vault, &path, content).await });
         self.note_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let made = made.await.unwrap_or_else(|e| Err(e.to_string()));
+            let made = tasks::joined(made).await;
             this.update_in(cx, |workspace, window, cx| {
                 workspace.note_task = None;
                 match made {
                     Ok(outcome) => {
-                        workspace.close_modal(window, cx);
+                        workspace.close_note_dialog(&mine, window, cx);
                         workspace.focus_panel(Panel::Editor, window, cx);
                         if let Some(tx) = workspace.tx.as_ref() {
                             outcome.announce_and_open(tx);
                         }
                     }
-                    Err(error) => workspace.set_note_status(false, Some(error), cx),
+                    Err(error) => workspace.note_failed(&mine, error, cx),
                 }
             })
             .ok();
         }));
-    }
-
-    /// The `QuickNote` chord: open the quick note, or close it when it is
-    /// the open modal. Refused while another modal is open.
-    pub(crate) fn toggle_quick_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open_modal(window, cx) {
-            Some(ModalKind::QuickNote) => self.dismiss_note_dialog(window, cx),
-            None if !modal::dialog_open(window, cx) => self.open_quick_note(window, cx),
-            _ => {}
-        }
     }
 
     /// Open the quick note, its line focused. Refused while a modal is
@@ -386,30 +403,27 @@ impl Workspace {
             self.flash(NO_WORKSPACE, cx);
             return;
         }
-        self.cancel_leader(cx);
         let status = cx.new(|_| OpStatus::default());
         self.note_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let view = cx.new(|cx| QuickNoteDialog::new(workspace, status.clone(), theme, window, cx));
-        let width = window.rem_size() * DIALOG_REMS;
-        let first = Cell::new(true);
-        self.modal = Some(ModalKind::QuickNote);
         self.quick_note = Some(view.downgrade());
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let input = view.read(cx).input.clone();
-                input.update(cx, |input, cx| input.focus(window, cx));
-            }
-            let running = status.clone();
-            dialog
-                .title("Quick note")
-                .w(width)
-                .close_button(false)
-                .on_cancel(move |_, _, cx| !running.read(cx).busy)
-                .child(view.clone())
-        });
-        cx.notify();
+        let input = view.read(cx).input.clone();
+        self.show_modal(
+            Slot::Own(ModalKind::QuickNote),
+            DIALOG_REMS,
+            move |window, cx| input.update(cx, |input, cx| input.focus(window, cx)),
+            move |dialog, _, _| {
+                let running = status.clone();
+                dialog
+                    .title("Quick note")
+                    .on_cancel(move |_, _, cx| !running.read(cx).busy)
+                    .child(view.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// Save `text` as a quick note; then close, or open it (`open`). A
@@ -428,26 +442,27 @@ impl Workspace {
             return;
         }
         self.set_note_status(true, None, cx);
+        let mine = self.note_status.clone();
         let made = tokio::spawn(async move { file_ops::quick_note(&vault, &text).await });
         self.note_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let made = made.await.unwrap_or_else(|e| Err(e.to_string()));
+            let made = tasks::joined(made).await;
             this.update_in(cx, |workspace, window, cx| {
                 workspace.note_task = None;
                 match made {
                     Ok(path) => {
-                        workspace.close_modal(window, cx);
+                        workspace.close_note_dialog(&mine, window, cx);
                         if let Some(tx) = workspace.tx.as_ref() {
                             // Always a fresh note: FILES lists it.
                             tx.send(AppMessage::FileOp(FileOp::Created(path.clone())))
                                 .ok();
                         }
                         if open {
-                            workspace.open_chosen(path, window, cx);
+                            workspace.open_chosen(path, None, window, cx);
                         } else {
                             workspace.flash(format!("Saved {}", name_of(&path)), cx);
                         }
                     }
-                    Err(error) => workspace.set_note_status(false, Some(error), cx),
+                    Err(error) => workspace.note_failed(&mine, error, cx),
                 }
             })
             .ok();
@@ -461,10 +476,15 @@ impl Workspace {
             self.flash(NO_WORKSPACE, cx);
             return;
         };
-        let made = tokio::spawn(async move { file_ops::journal(&vault).await });
+        let made = {
+            let vault = vault.clone();
+            tokio::spawn(async move { file_ops::journal(&vault).await })
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let made = made.await.unwrap_or_else(|e| Err(e.to_string()));
+            let made = tasks::joined(made).await;
             this.update_in(cx, |workspace, window, cx| match made {
+                // Another vault was entered meanwhile: not its journal.
+                _ if !workspace.is_vault(&vault) => {}
                 Ok(outcome) => {
                     workspace.focus_panel(Panel::Editor, window, cx);
                     if let Some(tx) = workspace.tx.as_ref() {
@@ -487,6 +507,43 @@ impl Workspace {
             return;
         }
         self.close_modal(window, cx);
+    }
+
+    /// Whether the dialog whose status is `mine` (the create dialog or the
+    /// quick note that started the note task) is still the one up. A file
+    /// operation landing meanwhile closes every modal and forgets its
+    /// status ([`Self::reset_modal_state`]); by the time the task lands the
+    /// slot may hold another modal, or a new note dialog.
+    fn is_note_dialog_up(&self, mine: &Option<Entity<OpStatus>>) -> bool {
+        mine.is_some() && self.note_status == *mine
+    }
+
+    /// The note task from the dialog `mine` made its note: close that
+    /// dialog — not whatever modal took its place.
+    fn close_note_dialog(
+        &mut self,
+        mine: &Option<Entity<OpStatus>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_note_dialog_up(mine) {
+            self.close_modal(window, cx);
+        }
+    }
+
+    /// The note task from the dialog `mine` failed: the dialog says why,
+    /// or, when it is gone, a flash does.
+    fn note_failed(
+        &mut self,
+        mine: &Option<Entity<OpStatus>>,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_note_dialog_up(mine) {
+            self.set_note_status(false, Some(error), cx);
+        } else {
+            self.flash_error(error, cx);
+        }
     }
 
     fn set_note_status(&self, busy: bool, error: Option<String>, cx: &mut Context<Self>) {

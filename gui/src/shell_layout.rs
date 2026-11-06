@@ -6,6 +6,7 @@
 
 use kimun_notes::logic::layout::{Panel, PanelLayout, Side, WidthLimits};
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::settings::gui::{GuiSettings, ViewEntry};
 
 /// The rail's width, in rems: one icon cell plus its inset.
@@ -16,18 +17,28 @@ pub const DRAWER_MIN_REMS: f32 = 10.0;
 /// The width the editor always keeps, in rems: a readable line of text.
 pub const EDITOR_MIN_REMS: f32 = 20.0;
 
-/// The views the rail offers, top to bottom; the last (settings) is pinned
-/// to the bottom, as in the TUI. SEM and ASK need a kimün server the GUI
-/// does not talk to yet, so it leaves them out, as the TUI rail does
-/// without one.
-pub const RAIL_VIEWS: [DrawerView; 6] = [
-    DrawerView::Files,
-    DrawerView::Find,
-    DrawerView::Tags,
-    DrawerView::Links,
-    DrawerView::Outline,
-    DrawerView::Config,
-];
+/// The views the rail offers when the kimün server can do `caps`, top to
+/// bottom, in the TUI rail's order; the last (settings) is pinned to the
+/// bottom, as in the TUI. SEM is offered only while the server can search
+/// (`caps.semantic`), ASK (the Sources view beside the Thread) only while it
+/// can answer (`caps.ask`); the rail is rebuilt from this list whenever a
+/// capability flips. A view shown in a drawer stays there when its cell
+/// goes.
+pub fn rail_views(caps: Caps) -> &'static [DrawerView] {
+    use DrawerView::*;
+    // One fixed list per capability combination: the rail is read on every
+    // frame and every rail key, and never needs to own its views.
+    const BOTH: &[DrawerView] = &[Files, Find, Semantic, Ask, Tags, Links, Outline, Config];
+    const SEMANTIC: &[DrawerView] = &[Files, Find, Semantic, Tags, Links, Outline, Config];
+    const ASK: &[DrawerView] = &[Files, Find, Ask, Tags, Links, Outline, Config];
+    const NEITHER: &[DrawerView] = &[Files, Find, Tags, Links, Outline, Config];
+    match (caps.semantic, caps.ask) {
+        (true, true) => BOTH,
+        (true, false) => SEMANTIC,
+        (false, true) => ASK,
+        (false, false) => NEITHER,
+    }
+}
 
 /// The side of the window the rail sits on. Moves from the rail are
 /// spatial ([`rail_move_target`]): they mirror if the rail ever moves.
@@ -56,9 +67,27 @@ pub fn empty_slot_hint(right: Option<&str>, left: Option<&str>) -> String {
     }
 }
 
-/// Whether the rail offers `view`.
-pub fn is_on_rail(view: DrawerView) -> bool {
-    RAIL_VIEWS.contains(&view)
+/// Whether the window restores and records `view`'s placement: every view
+/// the rail can offer, whether or not its cell shows right now, except ASK.
+/// A SEM view placed in a drawer is kept (and persisted) while the server is
+/// off. ASK is never persisted (the TUI's rule): it shows only beside a
+/// Thread, and a layout restored onto it would open with no conversation.
+pub fn hosts(view: DrawerView) -> bool {
+    view != DrawerView::Ask
+        && rail_views(Caps {
+            semantic: true,
+            ask: true,
+        })
+        .contains(&view)
+}
+
+/// A drawer slot's title over `view`: its name, except the ASK view, which
+/// is the Thread's Sources (the TUI's title).
+pub fn slot_title(view: DrawerView) -> &'static str {
+    match view {
+        DrawerView::Ask => "Sources",
+        view => view_name(view),
+    }
 }
 
 /// What the interface calls `view`: the drawer's title and the rail cell's
@@ -116,10 +145,10 @@ fn placements(gui: &GuiSettings, side: Side, list: &[String]) -> Vec<(usize, boo
         .collect()
 }
 
-/// A rail view's id, as `[gui]` names it; `None` for unknown ids and views
-/// the rail does not offer.
+/// A hosted view's id, as `[gui]` names it; `None` for unknown ids and
+/// views the window cannot host ([`hosts`]).
 fn ours(id: &str) -> Option<DrawerView> {
-    DrawerView::from_id(id.trim()).filter(|v| is_on_rail(*v))
+    DrawerView::from_id(id.trim()).filter(|v| hosts(*v))
 }
 
 /// The layout the `[gui]` table describes: each view placed at its side and
@@ -129,7 +158,7 @@ fn ours(id: &str) -> Option<DrawerView> {
 /// toggled open empty, [`PanelLayout::open_drawer`]); empty slots are
 /// session-only and never come back.
 ///
-/// Lenient, never fatal: unknown ids and views the rail does not offer are
+/// Lenient, never fatal: unknown ids and views the window does not host are
 /// skipped, a second view shown at one slot stays hidden, and a table that
 /// places nothing at all gives the default (FILES on the left). Ratios are
 /// clamped by the model. Within a slot the shown view comes first, then the
@@ -238,8 +267,12 @@ fn restore_legacy(gui: &GuiSettings, layout: &mut PanelLayout<DrawerView>) {
 /// Write both drawers into `gui`: one `[gui.views]` entry per placed view
 /// (side, slot, shown), and each drawer's width, visibility and split
 /// ratio. Entries this shell does not own (unknown ids, a newer version's,
-/// views the rail does not offer) are kept as written, so a newer layout
+/// views the window does not host) are kept as written, so a newer layout
 /// survives a round trip here; a rail view placed nowhere has no entry.
+///
+/// ASK is never written ([`hosts`]): the slot it shows in is written as
+/// showing the first other view placed there, so the drawer comes back
+/// with that view rather than empty.
 ///
 /// A file still in the legacy shape is migrated: its unknown ids become
 /// entries at the side, slot and shown state the lists gave them, and the
@@ -248,9 +281,23 @@ fn restore_legacy(gui: &GuiSettings, layout: &mut PanelLayout<DrawerView>) {
 pub fn record(layout: &PanelLayout<DrawerView>, gui: &mut GuiSettings) {
     let mut entries: Vec<(String, ViewEntry)> = Vec::new();
     for side in SIDES {
+        // The slot position ASK covers in this drawer, until a view there
+        // is written as shown in its place.
+        let mut covered = layout
+            .view_location(&DrawerView::Ask)
+            .filter(|(s, _)| *s == side)
+            .and_then(|_| layout.placement(&DrawerView::Ask))
+            .map(|(_, slot)| slot);
         for view in layout.placed_views(side) {
+            if !hosts(view) {
+                continue;
+            }
             if let Some((_, slot)) = layout.placement(&view) {
-                let shown = layout.view_location(&view).is_some();
+                let mut shown = layout.view_location(&view).is_some();
+                if covered == Some(slot) {
+                    shown = true;
+                    covered = None;
+                }
                 entries.push((view.id().to_string(), ViewEntry { side, slot, shown }));
             }
         }
@@ -895,5 +942,86 @@ broken = "left"
         // Too narrow for both floors: the drawer keeps its minimum.
         assert_eq!(shown_width(&layout, Side::Left, limits(300.0, 16.0)), 160.0);
         assert_eq!(layout.drawer_width(Side::Left), 600.0);
+    }
+
+    fn caps(semantic: bool, ask: bool) -> Caps {
+        Caps { semantic, ask }
+    }
+
+    #[test]
+    fn the_rail_offers_sem_and_ask_only_while_the_server_can() {
+        use DrawerView::*;
+        let without = [Files, Find, Tags, Links, Outline, Config];
+        assert_eq!(rail_views(caps(false, false)), without);
+        assert_eq!(
+            rail_views(caps(false, true)),
+            [Files, Find, Ask, Tags, Links, Outline, Config]
+        );
+        let with = [Files, Find, Semantic, Tags, Links, Outline, Config];
+        assert_eq!(rail_views(caps(true, false)), with);
+        // The TUI's ITEMS order: ASK right after SEM.
+        assert_eq!(
+            rail_views(caps(true, true)),
+            [Files, Find, Semantic, Ask, Tags, Links, Outline, Config]
+        );
+        // Settings stays pinned last either way.
+        assert_eq!(rail_views(caps(true, true)).last(), Some(&Config));
+        // SEM is hosted with its cell gone; ASK is never restored nor
+        // recorded.
+        assert!(hosts(Semantic));
+        assert!(!hosts(Ask));
+        assert_eq!(slot_title(Ask), "Sources");
+        assert_eq!(slot_title(Files), view_name(Files));
+    }
+
+    /// A drawer showing ASK is written as showing the view ASK covers, and
+    /// no `ask` entry is written; the restored layout has no ASK.
+    #[test]
+    fn a_layout_showing_ask_is_recorded_without_it() {
+        let mut settings = gui("[gui]\n");
+        let mut layout = restore(&settings);
+        assert_eq!(layout.slot_views(Side::Left), [DrawerView::Files]);
+        layout.open_view(DrawerView::Ask);
+        assert_eq!(layout.slot_views(Side::Left), [DrawerView::Ask]);
+        record(&layout, &mut settings);
+        assert_eq!(entries(&settings), [e("files", Side::Left, 0, true)]);
+        let back = restore(&settings);
+        assert_eq!(back.slot_views(Side::Left), [DrawerView::Files]);
+        assert_eq!(back.placement(&DrawerView::Ask), None);
+        // A persisted `ask` entry (another build's) is not restored.
+        let foreign = gui(r#"
+[gui.views]
+files = { side = "left", slot = 0, shown = false }
+ask = { side = "left", slot = 0, shown = true }
+"#);
+        let back = restore(&foreign);
+        assert_eq!(back.placement(&DrawerView::Ask), None);
+    }
+
+    /// A SEM view placed by a session with the server on is restored and
+    /// written back as it was, whatever the server does now (the layout
+    /// knows nothing of the server).
+    #[test]
+    fn a_placed_semantic_view_round_trips_with_the_server_off() {
+        let mut settings = gui(r#"
+[gui]
+drawer_right_visible = true
+[gui.views]
+files = { side = "left", slot = 0, shown = true }
+semantic = { side = "right", slot = 0, shown = true }
+"#);
+        let layout = restore(&settings);
+        assert_eq!(layout.slot_views(Side::Right), [DrawerView::Semantic]);
+        assert!(layout.is_visible(Panel::Drawer(Side::Right)));
+        record(&layout, &mut settings);
+        assert_eq!(
+            entries(&settings),
+            [
+                e("files", Side::Left, 0, true),
+                e("semantic", Side::Right, 0, true),
+            ]
+        );
+        let back = restore(&settings);
+        assert_eq!(back.slot_views(Side::Right), [DrawerView::Semantic]);
     }
 }

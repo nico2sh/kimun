@@ -13,9 +13,9 @@
 //! Escape clears the filter, then gives the keyboard back to the editor.
 //! These are the filter's own actions, caught on their way to it.
 //!
-//! **Pointer.** A click selects a row; a second click on the row a click
-//! selected, or a double-click, activates it (the TUI's click-click rule).
-//! The sort chip beside the breadcrumb opens the sort dialog
+//! **Pointer.** A click selects a row and activates it, as Enter does
+//! ([`ClickPolicy::Open`]: the pointing hand over every row); a right
+//! click shows an entry's menu. The sort chip beside the breadcrumb opens the sort dialog
 //! ([`super::sort`]).
 //!
 //! **Activation.** A folder (or `..`) is shown here; everything else is
@@ -33,14 +33,14 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::input::{
-    Enter, Escape, Input, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MoveUp,
+    Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MoveUp,
 };
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ParentElement, Render, Role, ScrollStrategy,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription,
+    AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Role,
+    ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription,
     UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
 };
 use kimun_core::NoteVault;
@@ -57,8 +57,8 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
+use super::query_field::query_field;
 use super::sort::{chip_label, sort_chip};
-use crate::shell_layout::RAIL_VIEWS;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -68,10 +68,13 @@ pub(crate) const LIST_ID: &str = "files-list";
 pub(crate) const CRUMBS_ID: &str = "files-breadcrumb";
 pub(crate) const FILES_SORT_ID: &str = "files-sort";
 
-/// A row's height, in rems: two lines of small text and their gap. Every
-/// row has it (the list is virtualised over uniform rows); a folder's one
-/// line sits centred in it.
-const ROW_REMS: f32 = 2.75;
+/// A note row's height, in rems: two lines of small text and their gap
+/// (a title over its filename). Every FILES row has it (the list is
+/// virtualised over uniform rows; a folder's one line sits centred in it),
+/// and so do the other lists of notes over [`lane_row`]: the pickers,
+/// LINKS, the saved searches, the pinned notes, the Sources view (a
+/// source's heading over its path).
+pub(super) const NOTE_ROW_REMS: f32 = 2.75;
 
 /// The most breadcrumb parts shown: deeper, the root, an ellipsis and the
 /// last two folders.
@@ -142,11 +145,6 @@ pub(crate) struct FilesPane {
     theme: Theme,
     /// The workspace's name: the breadcrumb's root.
     root_name: SharedString,
-    /// Visible position of the last left click, for the click-click rule.
-    last_click: Option<usize>,
-    /// That click activated: the double-click it starts must not activate
-    /// a second time.
-    last_click_activated: bool,
     _filter_events: Subscription,
 }
 
@@ -176,8 +174,6 @@ impl FilesPane {
             tx,
             theme,
             root_name,
-            last_click: None,
-            last_click_activated: false,
             _filter_events: filter_events,
         }
     }
@@ -237,8 +233,6 @@ impl FilesPane {
         if let Some(core) = self.model.core_mut() {
             core.set_query(query);
         }
-        self.last_click = None;
-        self.last_click_activated = false;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -258,7 +252,6 @@ impl FilesPane {
         if let Some(core) = self.model.core_mut() {
             core.set_query(query);
         }
-        self.last_click = None;
         self.reveal_selection();
         cx.notify();
     }
@@ -351,38 +344,6 @@ impl FilesPane {
         if let Some(pos) = self.model.core().and_then(|c| c.selected()) {
             self.scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
         }
-    }
-
-    /// A left click on the row at visible position `pos`: select it, and
-    /// activate it on a click-click or a double-click.
-    fn click_row(
-        &mut self,
-        pos: usize,
-        event: &ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(core) = self.model.core_mut() else {
-            return;
-        };
-        let was_selected = core.selected() == Some(pos);
-        core.select(pos);
-        let prev_click = self.last_click.replace(pos);
-        let was_activate = std::mem::take(&mut self.last_click_activated);
-        let activate = match event.click_count() {
-            // Again on the row a click selected (not one the keys or the
-            // load put the selection on).
-            1 => was_selected && prev_click == Some(pos),
-            // The second press of a double-click, unless its first press
-            // already activated.
-            2 => prev_click == Some(pos) && !was_activate,
-            _ => false,
-        };
-        if activate {
-            self.last_click_activated = event.click_count() == 1;
-            self.activate(window, cx);
-        }
-        cx.notify();
     }
 
     /// Do what the selected row asks for.
@@ -483,13 +444,11 @@ impl FilesPane {
     }
 
     fn render_filter(&self) -> impl IntoElement {
-        div().flex_none().px_2().pb_1().child(
-            Input::new(&self.filter)
-                .id(FILTER_ID)
-                .aria_label("Filter notes, or name a new one")
-                .bg(theme::background(&self.theme))
-                .border_color(theme::divider(&self.theme))
-                .text_color(theme::foreground(&self.theme)),
+        query_field(
+            &self.filter,
+            FILTER_ID,
+            "Filter notes, or name a new one",
+            &self.theme,
         )
     }
 
@@ -508,9 +467,10 @@ impl FilesPane {
             | FileListEntry::Attachment { .. } => Some(row.path().clone()),
             FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
         };
-        let row = entry_row(row_id(row), row, selected, &self.theme)
+        let row = entry_row(row_id(row), row, selected, false, &self.theme);
+        let row = with_click_cursor(row, ClickPolicy::Open, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.click_row(pos, event, window, cx)
+                ClickPolicy::Open.apply(event, this, pos, window, cx)
             }))
             .test_support();
         match entry {
@@ -533,13 +493,16 @@ impl FilesPane {
 /// One listing row as FILES draws it, shared with the note pickers so a
 /// note, a folder or `Create:` looks the same wherever it is listed: the
 /// icon lane, the title (a note's filename and journal date under it), and
-/// the open-note lane. Every row has the same height ([`ROW_REMS`]): the
+/// the open-note lane. `with_path` puts the note's full vault path under the
+/// title instead of its filename: FILES lists one folder, so the filename
+/// says where it is, but a result list (finder, links, SEM) mixes folders. Every row has the same height ([`NOTE_ROW_REMS`]): the
 /// lists over these rows are uniform. The caller adds the pointer handling
 /// and `test_support`.
 pub(super) fn entry_row(
     id: SharedString,
     row: &FileListEntry,
     selected: bool,
+    with_path: bool,
     t: &Theme,
 ) -> Stateful<Div> {
     let fg = theme::foreground(t);
@@ -551,19 +514,24 @@ pub(super) fn entry_row(
             (name.clone().into(), None, c, c)
         }
         FileListEntry::Note {
+            path,
             title,
             filename,
             journal_date,
             is_open,
-            ..
         } => {
+            let place = if with_path {
+                path.to_string()
+            } else {
+                filename.clone()
+            };
             let glyph = if *is_open { theme::accent(t) } else { fg };
             let line = div()
                 .flex()
                 .gap_1()
                 .min_w_0()
                 .text_xs()
-                .child(ellipsis(filename.clone()).text_color(theme::secondary(t)))
+                .child(ellipsis(place).text_color(theme::secondary(t)))
                 .when_some(journal_date.clone(), |line, date| {
                     line.child(
                         div()
@@ -597,43 +565,142 @@ pub(super) fn entry_row(
         _ if is_open => format!("{primary}, open").into(),
         _ => primary.clone(),
     };
-    row_frame(id, label, selected, ROW_REMS, t)
-        .gap_2()
-        // The icon lane: every label starts on one edge.
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .justify_center()
-                .w_5()
-                .child(Icon::new(row_icon(row)).size_4().text_color(glyph)),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .text_sm()
-                .child(ellipsis(primary).text_color(text))
-                .children(secondary),
-        )
-        // The open-note lane: a dot as well as the accent glyph, so the
-        // open note is not told by colour alone.
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .justify_center()
-                .w_3()
-                .when(is_open, |lane| {
-                    lane.child(
-                        Icon::new(IconName::Circle)
-                            .size_2()
-                            .text_color(theme::accent(t)),
-                    )
-                }),
-        )
+    let icon = Icon::new(row_icon(row)).size_4().text_color(glyph);
+    lane_row(
+        id,
+        label,
+        selected,
+        NOTE_ROW_REMS,
+        Some(icon.into_any_element()),
+        [ellipsis(primary).text_color(text).into_any_element()]
+            .into_iter()
+            .chain(secondary),
+        t,
+    )
+    // The open-note lane: a dot as well as the accent glyph, so the
+    // open note is not told by colour alone.
+    .child(
+        div()
+            .flex()
+            .flex_none()
+            .justify_center()
+            .w_3()
+            .when(is_open, |lane| {
+                lane.child(
+                    Icon::new(IconName::Circle)
+                        .size_2()
+                        .text_color(theme::accent(t)),
+                )
+            }),
+    )
+}
+
+/// How a list's rows take a left click — one policy for every list (C1).
+/// Lists name theirs; the rows' handler asks [`Self::click`] what a click
+/// does and [`with_click_cursor`] gives them the pointer that says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ClickPolicy {
+    /// A click selects the row and activates it, as Enter does (FILES, the
+    /// drawer lists, the pickers, the dialogs). The pointing hand says so.
+    #[default]
+    Open,
+    /// A click selects (the selection drives a preview or a reader); a
+    /// double-click opens the row's note (the search browser, the Sources
+    /// view). The default arrow: a double-click is the manual's to tell.
+    Select,
+}
+
+/// What one left click on a row does, under its list's [`ClickPolicy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowClick {
+    /// Nothing at all: not a left click, or a press `Open` already acted on.
+    Ignore,
+    /// Select the row.
+    Select,
+    /// Select the row, then activate it.
+    Activate,
+}
+
+/// A list whose rows take clicks ([`ClickPolicy::apply`]).
+pub(crate) trait ClickRows: Sized + 'static {
+    /// Select the row at visible position `pos`.
+    fn select_row(&mut self, pos: usize, cx: &mut Context<Self>);
+    /// Do what Enter does on the row just selected.
+    fn activate_row(&mut self, window: &mut Window, cx: &mut Context<Self>);
+}
+
+impl RowClick {
+    /// Carry the click out on the row at `pos` of `list`: nothing, select,
+    /// or select then activate.
+    pub(crate) fn run<L: ClickRows>(
+        self,
+        list: &mut L,
+        pos: usize,
+        window: &mut Window,
+        cx: &mut Context<L>,
+    ) {
+        if self == Self::Ignore {
+            return;
+        }
+        list.select_row(pos, cx);
+        if self == Self::Activate {
+            list.activate_row(window, cx);
+        }
+    }
+}
+
+impl ClickPolicy {
+    /// A click on the row at `pos` of `list`, answered under this policy:
+    /// [`Self::click`], then [`RowClick::run`].
+    pub(crate) fn apply<L: ClickRows>(
+        self,
+        event: &ClickEvent,
+        list: &mut L,
+        pos: usize,
+        window: &mut Window,
+        cx: &mut Context<L>,
+    ) {
+        self.click(event).run(list, pos, window, cx);
+    }
+
+    /// What `event`, a click on a row, does. A right click is the row's
+    /// menu's, never this. Under `Open` only a double-click's first press
+    /// counts: the first one activated and may have changed what is under
+    /// the pointer (a folder entered, a dialog closed, another view shown),
+    /// so the second must not act on whatever it lands on. Under `Select`
+    /// the second press opens; a third is a click again.
+    pub(crate) fn click(self, event: &ClickEvent) -> RowClick {
+        if !event.standard_click() {
+            return RowClick::Ignore;
+        }
+        match (self, event.click_count()) {
+            (Self::Open, 1) => RowClick::Activate,
+            (Self::Open, _) => RowClick::Ignore,
+            (Self::Select, 2) => RowClick::Activate,
+            (Self::Select, _) => RowClick::Select,
+        }
+    }
+
+    /// The pointer over a row of this policy: the pointing hand where a
+    /// click opens it, the default arrow (`None`) where a click only
+    /// selects or the row cannot be activated now (`enabled` false: a
+    /// missing pinned note, a picker waiting on its `Create:`).
+    pub(crate) fn cursor(self, enabled: bool) -> Option<CursorStyle> {
+        match self {
+            Self::Open if enabled => Some(CursorStyle::PointingHand),
+            Self::Open | Self::Select => None,
+        }
+    }
+}
+
+/// `row` with the pointer its list's `policy` gives it ([`ClickPolicy::cursor`]).
+/// Every list row that takes clicks goes through here, so none is missed.
+pub(super) fn with_click_cursor(
+    row: Stateful<Div>,
+    policy: ClickPolicy,
+    enabled: bool,
+) -> Stateful<Div> {
+    row.when_some(policy.cursor(enabled), |row, cursor| row.cursor(cursor))
 }
 
 /// The frame every list row shares (FILES, the pickers, the drawer lists):
@@ -661,6 +728,54 @@ pub(super) fn row_frame(
         .rounded_md()
         .when(selected, |row| row.bg(theme::selected_background(t)))
         .when(!selected, |row| row.hover(move |style| style.bg(hover)))
+}
+
+/// A list row of [`row_frame`] with a leading lane and lines beside it:
+/// the lane (an icon, a number, or nothing) centred in a fixed width so
+/// every row's text starts on one edge, then `lines` stacked in small text,
+/// each taking the rest of the width. FILES, the pickers, LINKS, FIND,
+/// TAGS, the saved searches and the pinned notes all draw their rows with
+/// it; a caller may add a trailing lane (FILES' open-note dot, TAGS'
+/// count). OUTLINE has no lane (its headings indent from the edge), so it
+/// uses [`row_frame`] itself.
+pub(super) fn lane_row(
+    id: SharedString,
+    label: SharedString,
+    selected: bool,
+    height_rems: f32,
+    lane: Option<AnyElement>,
+    lines: impl IntoIterator<Item = AnyElement>,
+    t: &Theme,
+) -> Stateful<Div> {
+    row_frame(id, label, selected, height_rems, t)
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .w_5()
+                .children(lane),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .children(lines),
+        )
+}
+
+/// The title a note row shows: its filename when it has no title (the
+/// TUI's rule).
+pub(super) fn display_title<'a>(title: &'a str, filename: &'a str) -> &'a str {
+    if title.trim().is_empty() {
+        filename
+    } else {
+        title
+    }
 }
 
 /// `row` with the FILES entry menu for `path`: Rename…, Move…, Delete….
@@ -705,6 +820,19 @@ pub(super) fn ellipsis(text: impl Into<SharedString>) -> Div {
         .whitespace_nowrap()
         .text_ellipsis()
         .child(text.into())
+}
+
+impl ClickRows for FilesPane {
+    fn select_row(&mut self, pos: usize, cx: &mut Context<Self>) {
+        if let Some(core) = self.model.core_mut() {
+            core.select(pos);
+        }
+        cx.notify();
+    }
+
+    fn activate_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate(window, cx);
+    }
 }
 
 impl Focusable for FilesPane {
@@ -921,9 +1049,7 @@ impl Workspace {
     /// give it the keyboard.
     pub(super) fn open_file_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (side, index) = self.layout.open_view(DrawerView::Files);
-        if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == DrawerView::Files) {
-            self.rail_cursor = i;
-        }
+        self.place_rail_cursor(Some(DrawerView::Files));
         self.layout.focus_region(Region::Slot { side, index });
         if !self.opening_first() {
             let dir = self.open_note_dir();

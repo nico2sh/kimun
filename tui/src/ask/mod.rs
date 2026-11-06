@@ -1,6 +1,7 @@
 pub mod citations;
 pub mod jobs;
 pub mod locate;
+pub mod markdown;
 pub mod save;
 
 use crate::server_client::dto::ChunkResult;
@@ -13,6 +14,17 @@ const HISTORY_WINDOW: usize = 5;
 /// Human-readable joiner for a chunk's nested heading segments, replacing core's
 /// control-char [`BREADCRUMB_SEP`] for display (`"Chapter › Section"`).
 const HEADING_JOINER: &str = " \u{203a} ";
+
+/// A chunk title for display: core's breadcrumb with its control-char
+/// [`BREADCRUMB_SEP`] replaced by `HEADING_JOINER` (`"Chapter › Section"`), so
+/// the raw separator never reaches a row.
+pub fn readable_heading(title: &str) -> String {
+    title
+        .split(BREADCRUMB_SEP)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(HEADING_JOINER)
+}
 
 /// A single retrieved chunk backing an answer — one row of a **Turn**'s
 /// sources, shown in CONTEXT.md's **Sources view** / **Source reader**.
@@ -53,11 +65,7 @@ impl AskSource {
     /// [`AskSource::match_heading`].
     pub fn from_chunk(position: usize, c: ChunkResult) -> Self {
         let stripped = strip_date_prefix(&c.title, c.date.as_deref());
-        let heading = stripped
-            .split(BREADCRUMB_SEP)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(HEADING_JOINER);
+        let heading = readable_heading(&stripped);
         Self {
             path: VaultPath::new(&c.path),
             heading,

@@ -28,8 +28,6 @@
 //! `Close` keep what was applied; the kit gives the keyboard back to the
 //! opener.
 
-use std::cell::Cell;
-
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
@@ -54,8 +52,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::key_suggestions::KeySuggestions;
-use super::modal::{self, ModalKind};
-use super::route::NO_WORKSPACE;
+use super::modal::{self, ModalKind, Slot};
 use crate::keymap;
 use crate::theme;
 
@@ -563,9 +560,7 @@ impl Workspace {
         use kimun_notes::logic::layout::Panel;
         use kimun_notes::logic::nav::DrawerView;
         let view = match self.layout.focused() {
-            Panel::Rail => crate::shell_layout::RAIL_VIEWS
-                .get(self.rail_cursor)
-                .copied(),
+            Panel::Rail => self.rail_cursor_view(),
             _ => self.focused_view(),
         };
         let target = match view {
@@ -632,15 +627,12 @@ impl Workspace {
         if !allowed {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
-            self.flash(NO_WORKSPACE, cx);
+        let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
         let Some((state, unsorted)) = self.sort_state_of(target, cx) else {
             return;
         };
-        // A modal takes every key: no sequence survives under it.
-        self.cancel_leader(cx);
         let workspace = cx.entity().downgrade();
         let theme = self.theme.clone();
         let view = cx.new(|cx| {
@@ -665,46 +657,47 @@ impl Workspace {
             }
         })
         .detach();
-        if !stacked {
-            self.modal = Some(ModalKind::Sort);
-        }
         self.sort = Some(SortOpen {
             dialog: view.downgrade(),
             stacked,
         });
-        let width = window.rem_size() * DIALOG_REMS;
-        let first = Cell::new(true);
         let closed = workspace.clone();
         let mine = view.downgrade();
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first.replace(false) {
-                let field = view.read(cx).field.clone();
-                field.update(cx, |select, cx| select.focus(window, cx));
-            }
-            let closed = closed.clone();
-            let mine = mine.clone();
-            dialog
-                .title("Sort")
-                .w(width)
-                .close_button(false)
-                .on_close(move |_, _, cx| {
-                    closed
-                        .update(cx, |workspace, _| {
-                            // Only this dialog's record (a newer one may be
-                            // open by now).
-                            if workspace
-                                .sort
-                                .as_ref()
-                                .is_some_and(|open| open.dialog == mine)
-                            {
-                                workspace.sort = None;
-                            }
-                        })
-                        .ok();
-                })
-                .child(view.clone())
-        });
-        cx.notify();
+        let field = view.read(cx).field.clone();
+        self.show_modal(
+            // Over the browser the slot stays `Search`.
+            if stacked {
+                Slot::Stacked
+            } else {
+                Slot::Own(ModalKind::Sort)
+            },
+            DIALOG_REMS,
+            move |window, cx| field.update(cx, |select, cx| select.focus(window, cx)),
+            move |dialog, _, _| {
+                let closed = closed.clone();
+                let mine = mine.clone();
+                dialog
+                    .title("Sort")
+                    .on_close(move |_, _, cx| {
+                        closed
+                            .update(cx, |workspace, _| {
+                                // Only this dialog's record (a newer one may
+                                // be open by now).
+                                if workspace
+                                    .sort
+                                    .as_ref()
+                                    .is_some_and(|open| open.dialog == mine)
+                                {
+                                    workspace.sort = None;
+                                }
+                            })
+                            .ok();
+                    })
+                    .child(view.clone())
+            },
+            window,
+            cx,
+        );
     }
 
     /// Close the sort dialog (Escape, `Close`, the chord again): over the

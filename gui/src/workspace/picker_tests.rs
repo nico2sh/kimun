@@ -17,7 +17,7 @@ use kimun_notes::logic::message::AppMessage;
 use tokio::runtime::Runtime;
 
 use super::modal::ModalKind;
-use super::picker::{NotePicker, PICKER_ERROR_ID};
+use super::picker::{NotePicker, PICKER_ERROR_ID, picker_row_id};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -133,6 +133,42 @@ fn files_filter_focused(s: &Started, cx: &mut TestAppContext) -> bool {
         files.read(cx).focus_handle(cx).is_focused(window)
     })
     .unwrap()
+}
+
+/// The element id of the picker row for note `p`.
+fn row_of(s: &Started, p: &str, cx: &TestAppContext) -> String {
+    let view = picker(s, cx);
+    cx.read(|cx| {
+        view.read(cx)
+            .rows()
+            .iter()
+            .find(|row| {
+                !matches!(row, FileListEntry::CreateNote { .. }) && row.path().is_like(&path(p))
+            })
+            .map(|row| picker_row_id(row).to_string())
+            .unwrap_or_else(|| panic!("no row {p}"))
+    })
+}
+
+fn click_on(s: &Started, id: String, how: Click, cx: &mut TestAppContext) {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let id = gpui_kit::SharedString::from(id);
+        match how {
+            Click::Left => window.click(id, cx),
+            Click::Double => window.double_click(id, cx),
+            Click::Right => window.right_click(id, cx),
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[derive(Clone, Copy)]
+enum Click {
+    Left,
+    Double,
+    Right,
 }
 
 fn region(s: &Started, cx: &TestAppContext) -> Panel {
@@ -358,6 +394,106 @@ fn the_leader_and_the_palette_open_the_finder(cx: &mut TestAppContext) {
     type_in(&started, "find files", cx);
     press(&started, "enter", cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
+}
+
+// ── the pointer (C1) ─────────────────────────────────────────────────────
+
+/// A click on a finder row opens it at once, as Enter does; a right click
+/// opens nothing.
+#[gpui_kit::test]
+fn a_click_on_a_finder_row_opens_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("work/bravo.md", "Bravo")],
+        "a.md",
+    );
+    press(&started, "ctrl-o", cx);
+    picker_rows(&started, &rt, cx);
+    let row = row_of(&started, "work/bravo.md", cx);
+    click_on(&started, row.clone(), Click::Right, cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
+    assert!(on(&started, "a.md", cx), "a right click opens nothing");
+    click_on(&started, row, Click::Left, cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    assert!(on(&started, "work/bravo.md", cx));
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+}
+
+/// A double-click on a finder row opens it once: the picker closed on the
+/// first press, the second lands on the window under it.
+#[gpui_kit::test]
+fn a_double_click_on_a_finder_row_opens_it_once(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("work/bravo.md", "Bravo")],
+        "a.md",
+    );
+    press(&started, "ctrl-o", cx);
+    picker_rows(&started, &rt, cx);
+    let row = row_of(&started, "work/bravo.md", cx);
+    click_on(&started, row, Click::Double, cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert!(on(&started, "work/bravo.md", cx));
+}
+
+/// While a `Create:` runs no row can be chosen: a click is inert, as Enter
+/// is (the picker waits).
+#[gpui_kit::test]
+fn a_busy_finder_ignores_a_click(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("work/bravo.md", "Bravo")],
+        "a.md",
+    );
+    press(&started, "ctrl-o", cx);
+    picker_rows(&started, &rt, cx);
+    let view = picker(&started, cx);
+    view.update(cx, |picker, cx| picker.set_busy(true, None, cx));
+    let row = row_of(&started, "work/bravo.md", cx);
+    click_on(&started, row, Click::Left, cx);
+    drive(&rt, cx, |_| true);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
+    assert!(on(&started, "a.md", cx), "nothing opened");
+}
+
+/// A click on a link chooser row opens that note.
+#[gpui_kit::test]
+fn a_click_on_a_link_chooser_row_opens_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[
+            ("a.md", "[[dup]]"),
+            ("dup.md", "Dup one"),
+            ("sub/dup.md", "Dup two"),
+        ],
+        "a.md",
+    );
+    press(&started, "ctrl-enter", cx);
+    drive(&rt, cx, |cx| {
+        started.shown_modal(cx) == Some(ModalKind::LinkChooser)
+    });
+    picker_rows(&started, &rt, cx);
+    let row = row_of(&started, "sub/dup.md", cx);
+    click_on(&started, row, Click::Left, cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Dup two");
+    assert!(on(&started, "sub/dup.md", cx));
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
 }
 
 // ── following a link ─────────────────────────────────────────────────────
@@ -606,7 +742,67 @@ fn the_quick_note_saves_into_the_inbox(cx: &mut TestAppContext) {
     assert_eq!(note_error(&started, cx), None);
 }
 
-// ── leader `n n` ─────────────────────────────────────────────────────────
+/// A file operation landing while the quick note is saving closes the
+/// dialog (and forgets its status). The save still reports when it lands —
+/// a failure as an error flash, since the dialog is gone — and leaves alone
+/// the modal opened since.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_quick_note_still_reports_after_a_file_op_closed_it(cx: &mut TestAppContext) {
+    use kimun_notes::logic::message::FileOp;
+    use std::os::unix::fs::PermissionsExt;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    // An inbox the quick note cannot write into.
+    let inbox = v.vault.inbox_path().clone();
+    rt.block_on(
+        v.vault
+            .create_note(&inbox.append(&VaultPath::note_path_from("old")), "old"),
+    )
+    .unwrap();
+    let dir = v.vault.path_to_pathbuf(&inbox);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    press(&started, "ctrl-shift-w", cx);
+    type_in(&started, "a thought", cx);
+    press(&started, "enter", cx);
+    assert!(cx.read(|cx| started.workspace.read(cx).note_task.is_some()));
+    // A file operation lands before the save does: every modal closes.
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Deleted(path("gone.md"))),
+        cx,
+    );
+    cx.run_until_parked();
+    assert_eq!(started.shown_modal(cx), None);
+    press(&started, "ctrl-o", cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
+
+    let last = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .last_flash()
+                .map(|(text, error)| (text.to_string(), error))
+        })
+    };
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).note_task.is_none())
+    });
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (text, error) = last(cx).expect("the failure is flashed");
+    assert!(error, "{text}");
+    assert_eq!(
+        started.shown_modal(cx),
+        Some(ModalKind::Finder),
+        "the finder opened since stays"
+    );
+    assert!(on(&started, "a.md", cx));
+}
+
+// ── leader `n n`─────────────────────────────────────────────────────────
 
 /// Leader `n n` shows FILES (its drawer was hidden) with the filter holding
 /// the keyboard: typing a name offers `Create:`.

@@ -22,7 +22,7 @@ use kimun_notes::logic::query::is_default_query;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
-use crate::shell_layout::{self, RAIL_VIEWS};
+use crate::shell_layout;
 
 /// Why a command cannot run here yet: no surface in the desktop app.
 pub(crate) const NOT_YET: &str = "Not in the desktop app yet";
@@ -52,14 +52,15 @@ const DRAWER_STEP_REMS: f32 = 2.;
 
 impl Workspace {
     /// The facts a route reads: the open note (the vault root when none is
-    /// open). The GUI has no Ask workspace yet.
+    /// open) and whether the Thread holds the editor Panel (then no note is
+    /// "this note").
     pub(crate) fn route_facts(&self) -> RouteFacts {
         let note = self
             .notes
             .as_ref()
             .and_then(|h| h.note.clone())
             .unwrap_or_else(VaultPath::root);
-        RouteFacts::new(note, false)
+        RouteFacts::new(note, self.ask_shown())
     }
 
     /// The route of `action` in this window.
@@ -88,8 +89,16 @@ impl Workspace {
     ) -> Option<&'static str> {
         let has_vault = self.notes.is_some();
         match route {
-            LeaderRoute::Drawer(view) if shell_layout::is_on_rail(*view) => None,
+            // SEM only while the server can search (the TUI's words why
+            // not); the rail hides its cell then too.
+            LeaderRoute::Drawer(DrawerView::Semantic) => self.semantic_block(),
+            // ASK (the Sources view beside the Thread) only while the server
+            // can answer (the TUI gates every route into it so).
+            LeaderRoute::Drawer(DrawerView::Ask) => self.ask_drawer_block(),
+            LeaderRoute::Drawer(view) if shell_layout::hosts(*view) => None,
             LeaderRoute::Drawer(_) => Some(NOT_YET),
+            // `+ask`: the Thread ([`super::ask`]).
+            LeaderRoute::Ask(step) => self.ask_block(*step),
             // LINKS, on that tab.
             LeaderRoute::LinksTab(_) => None,
             LeaderRoute::NewNote if self.files.is_some() => None,
@@ -148,13 +157,13 @@ impl Workspace {
                 NoteDialog::Rename | NoteDialog::Move | NoteDialog::Delete | NoteDialog::Properties,
                 _,
             ) if has_vault => None,
+            // `app.onboarding`: the setup assistant, vault or not.
+            LeaderRoute::OpenOnboarding => None,
             LeaderRoute::Overlay(_)
             | LeaderRoute::OpenPreferences
-            | LeaderRoute::OpenOnboarding
             | LeaderRoute::NoteDialog(..)
             | LeaderRoute::Job(LeaderJob::CheckUpdates)
-            | LeaderRoute::GitStatus
-            | LeaderRoute::Ask(_) => Some(NOT_YET),
+            | LeaderRoute::GitStatus => Some(NOT_YET),
         }
     }
 
@@ -179,7 +188,10 @@ impl Workspace {
     ) {
         match route {
             LeaderRoute::Drawer(DrawerView::Files) => self.open_file_browser(window, cx),
-            LeaderRoute::Drawer(view) if shell_layout::is_on_rail(view) => {
+            // Gated again: a leaf sent on the channel skips `route_block`.
+            LeaderRoute::Drawer(DrawerView::Semantic) => self.open_semantic(window, cx),
+            LeaderRoute::Drawer(DrawerView::Ask) => self.open_ask_drawer(window, cx),
+            LeaderRoute::Drawer(view) if shell_layout::hosts(view) => {
                 self.show_view(view, window, cx)
             }
             LeaderRoute::LinksTab(tab) => self.show_links_tab(tab, window, cx),
@@ -217,6 +229,10 @@ impl Workspace {
             }
             LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, window, cx),
             LeaderRoute::OpenJournal => self.open_journal(window, cx),
+            LeaderRoute::OpenOnboarding => self.open_onboarding(window, cx),
+            // Gated again inside: a leaf sent on the channel skips
+            // `route_block`.
+            LeaderRoute::Ask(step) => self.ask_step(step, window, cx),
             LeaderRoute::NoteDialog(dialog, path) => {
                 let kind = match dialog {
                     NoteDialog::Rename => FileOpKind::Rename,
@@ -231,9 +247,7 @@ impl Workspace {
             | LeaderRoute::NewNote
             | LeaderRoute::Overlay(_)
             | LeaderRoute::OpenPreferences
-            | LeaderRoute::OpenOnboarding
             | LeaderRoute::GitStatus
-            | LeaderRoute::Ask(_)
             | LeaderRoute::Soon(_) => {}
         }
         cx.notify();
@@ -249,9 +263,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(i) = RAIL_VIEWS.iter().position(|v| *v == view) {
-            self.rail_cursor = i;
-        }
+        self.place_rail_cursor(Some(view));
         let (side, index) = self.layout.open_view(view);
         self.layout.focus_region(Region::Slot { side, index });
         self.ensure_files_listing(cx);
@@ -292,10 +304,7 @@ impl Workspace {
     /// Spawn an asynchronous leaf (`leader_route::jobs`) on the window's
     /// runtime; it reports on the app channel.
     fn run_leader_job(&mut self, job: LeaderJob, cx: &mut Context<Self>) {
-        let (Some(tx), Some(vault)) = (
-            self.tx.clone(),
-            self.notes.as_ref().map(|h| h.session.vault().clone()),
-        ) else {
+        let (Some(tx), Some(vault)) = (self.tx.clone(), self.vault()) else {
             return;
         };
         match job {

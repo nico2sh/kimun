@@ -225,8 +225,11 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // redo; the search browser takes it too while it is the open modal
         // (the workspace checks [`Keymap::is_bound`]).
         A::OpenSortDialog => &["primary+r"],
+        // The Ask Thread, its composer focused (M7c G10a): the TUI's F6.
+        // Everywhere, as in the TUI; no editor or vim key is F6.
+        A::OpenAsk => &["f6"],
         // Not in the GUI yet (M7 and later).
-        A::OpenPreferences | A::ToggleQueryPanel | A::OpenAsk | A::SwitchWorkspace => return None,
+        A::OpenPreferences | A::ToggleQueryPanel | A::SwitchWorkspace => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
     })

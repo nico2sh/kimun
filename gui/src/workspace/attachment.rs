@@ -51,15 +51,14 @@ use kimun_notes::logic::file_ops::relocated;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::FileOp;
-use kimun_notes::logic::session::FlushResult;
 use kimun_notes::settings::themes::Theme;
-use tokio::task::JoinError;
 
 use super::Workspace;
 use super::files::ellipsis;
-use super::note::{Closing, flush_problem};
+use super::note::{Closing, LeavingFor, NoteLeft};
 use crate::input;
 use crate::startup::EmptyState;
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -508,7 +507,7 @@ impl Workspace {
         if self.closing != Closing::Open {
             return;
         }
-        let Some(vault) = self.notes.as_ref().map(|h| h.session.vault().clone()) else {
+        let Some(vault) = self.vault() else {
             return;
         };
         if self.attachment_flushing.is_some() {
@@ -520,12 +519,20 @@ impl Workspace {
             tokio::spawn(async move { load(&vault, &path).await })
         };
         let path = path.clone();
+        // Leaving the note for it needs the window (a flush runs in it).
+        let window = self.window;
         self.attachment_loading = Some(cx.spawn(async move |this, cx| {
-            let loaded = read.await.unwrap_or_else(|e| Err(e.to_string()));
-            this.update(cx, |workspace, cx| {
-                workspace.attachment_loaded(path, loaded, cx)
-            })
-            .ok();
+            let loaded = tasks::joined(read).await;
+            let Some(window) = window else {
+                return;
+            };
+            window
+                .update(cx, |_, window, cx| {
+                    this.update(cx, |workspace, cx| {
+                        workspace.attachment_loaded(path, loaded, window, cx)
+                    })
+                })
+                .ok();
         }));
     }
 
@@ -535,12 +542,14 @@ impl Workspace {
         self.attachment_wanted = None;
     }
 
-    /// The attachment was read: show it, flushing the open note first; or
-    /// say why not (the note stays).
+    /// The attachment was read: show it, leaving the open note for it
+    /// first ([`Workspace::leave_note`]: flushed, or refused and the note
+    /// stays); or say why not.
     fn attachment_loaded(
         &mut self,
         path: VaultPath,
         loaded: Result<Loaded, String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.attachment_loading = None;
@@ -551,132 +560,35 @@ impl Workspace {
                 return;
             }
         };
-        let dirty = self.editor_dirty(cx);
-        let can_save = self.can_save();
-        let held = self.note_held();
-        let closing = self.closing != Closing::Open;
-        let Some(host) = self.notes.as_mut() else {
-            return;
-        };
-        let refusal = if closing {
-            Some("the window is closing")
-        } else if held {
-            Some("a change to the note is still being written")
-        } else if host.is_switching() || host.is_open_wanted() {
-            Some("a note is still opening")
-        } else if host.note.is_some() && dirty && !can_save {
-            Some("the note's edits can't be saved")
-        } else {
-            None
-        };
-        if let Some(why) = refusal {
-            self.flash_error(format!("Couldn't open {}: {why}.", loaded.name()), cx);
-            return;
-        }
-        if host.note.is_none() || !can_save {
-            self.show_attachment(loaded, cx);
-            return;
-        }
-        // No tick from here: the flush is the last write of the note.
-        host.session.stop_autosave();
-        let flush = match host
-            .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
-        {
-            Ok(flush) => flush,
-            Err(_) => {
-                self.restart_tick();
-                let text = format!(
-                    "Couldn't open {}: another save is still running.",
-                    loaded.name()
-                );
-                self.flash_error(text, cx);
-                return;
-            }
-        };
-        self.block_input(true, cx);
-        self.attachment_flushing = Some(cx.spawn(async move |this, cx| {
-            let flushed = tokio::spawn(flush.run()).await;
-            this.update(cx, |workspace, cx| {
-                workspace.attachment_flushed(loaded, flushed, cx)
-            })
-            .ok();
-        }));
-        cx.notify();
+        let name = loaded.name().clone();
+        self.leave_note(
+            LeavingFor::Attachment,
+            name,
+            move |workspace, left, _, cx| match left {
+                NoteLeft::Now => workspace.show_attachment(loaded, cx),
+                NoteLeft::Flushed => {
+                    workspace.show_attachment(loaded, cx);
+                    // One asked for while the flush ran goes now.
+                    if let Some(next) = workspace.attachment_wanted.take() {
+                        workspace.open_attachment(&next, cx);
+                    }
+                }
+                NoteLeft::Stays => workspace.attachment_wanted = None,
+            },
+            window,
+            cx,
+        );
     }
 
-    /// The flush before the attachment ended: show it when everything is
-    /// written, else refuse (the note keeps its edits, tick and input).
-    fn attachment_flushed(
-        &mut self,
-        loaded: Loaded,
-        flushed: Result<FlushResult, JoinError>,
-        cx: &mut Context<Self>,
-    ) {
-        self.attachment_flushing = None;
-        let outcome = self.apply_flush(flushed, cx);
-        let problem = flush_problem(&outcome).or_else(|| {
-            self.editor_dirty(cx)
-                .then(|| "the editor still has unsaved edits".to_string())
-        });
-        self.block_input(false, cx);
-        let note_wanted = self.notes.as_ref().is_some_and(|h| h.is_open_wanted());
-        if let Some(problem) = problem {
-            let note = self
-                .notes
-                .as_ref()
-                .and_then(|h| h.note.clone())
-                .unwrap_or_else(VaultPath::root);
-            self.restart_tick_unless_read_only();
-            self.attachment_wanted = None;
-            self.flash_error(
-                format!(
-                    "Couldn't save {note}: {problem}. {} was not opened.",
-                    loaded.name()
-                ),
-                cx,
-            );
-        } else if note_wanted {
-            // A note was asked for meanwhile: it opens instead.
-            self.restart_tick_unless_read_only();
-            self.attachment_wanted = None;
-        } else {
-            self.show_attachment(loaded, cx);
-            if let Some(next) = self.attachment_wanted.take() {
-                self.open_attachment(&next, cx);
-            }
-        }
-        // An open that waited for the flush goes now.
-        self.file_op_ended(cx);
-    }
-
-    fn restart_tick_unless_read_only(&mut self) {
-        if !self.status.read_only {
-            self.restart_tick();
-        }
-    }
-
-    /// Put `loaded` in the editor Panel. The note (already flushed) is let
-    /// go: no session path, no tick, an empty clean buffer, so nothing can
-    /// save while the attachment shows.
+    /// Put `loaded` in the editor Panel, the note (already flushed) let go
+    /// ([`Workspace::release_note`]), so nothing can save while the
+    /// attachment shows.
     fn show_attachment(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        if let Some(host) = self.notes.as_mut() {
-            host.session.stop_autosave();
-            host.session.abort_autosave();
-            host.session.set_path(VaultPath::root());
-            host.note = None;
-        }
-        self.editor.update(cx, |view, cx| {
-            view.editor.set_text(String::new());
-            view.editor.mark_saved(String::new());
-            view.preedit = None;
-            view.input_blocked = false;
-            cx.notify();
-        });
+        // The Thread gives way (its conversation is kept).
+        self.hide_ask(cx);
+        self.release_note(cx);
         let path = loaded.path.clone();
-        self.status.note = None;
         self.status.attachment = Some(path.clone());
-        self.note_gone = None;
         let theme = self.theme.clone();
         let chord = self.chord_labels.follow_link;
         let view = cx.new(|cx| AttachmentView::new(loaded, theme, chord, cx));
@@ -695,7 +607,7 @@ impl Workspace {
 
     /// The editor Panel's content changed under the keyboard: when it has
     /// the keyboard, give it to what shows now.
-    fn focus_shown_content(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn focus_shown_content(&mut self, cx: &mut Context<Self>) {
         if self.layout.focused() == Panel::Editor {
             self.with_window(cx, |workspace, window, cx| {
                 workspace.apply_focus(window, cx)
@@ -703,11 +615,19 @@ impl Workspace {
         }
     }
 
+    /// Let the attachment view go: the view, its event subscription and the
+    /// status line's name for it, together (a field added to the view's
+    /// lifetime belongs here). True when one was shown. The caller
+    /// refocuses and redraws.
+    pub(super) fn drop_attachment(&mut self) -> bool {
+        self._attachment_events = None;
+        self.status.attachment = None;
+        self.attachment.take().is_some()
+    }
+
     /// A note opened: the attachment view goes (the editor is back).
     pub(super) fn clear_attachment(&mut self, cx: &mut Context<Self>) {
-        if self.attachment.take().is_some() {
-            self._attachment_events = None;
-            self.status.attachment = None;
+        if self.drop_attachment() {
             self.focus_shown_content(cx);
             cx.notify();
         }
@@ -744,9 +664,7 @@ impl Workspace {
             }
             FileOp::Deleted(gone) if relocated(&shown, gone, gone).is_some() => {
                 let name = shown.get_parent_path().1;
-                self.attachment = None;
-                self._attachment_events = None;
-                self.status.attachment = None;
+                self.drop_attachment();
                 self.note_gone = Some(EmptyState {
                     title: format!("{name} was deleted"),
                     detail: String::new(),

@@ -34,10 +34,11 @@ pub fn chunks_to_entries(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<Fil
         let filename = path.get_parent_path().1;
         // The chunk title is the matched section's breadcrumb — informative for
         // "which part matched".
-        let title = if chunk.title.trim().is_empty() {
+        let title = crate::ask::readable_heading(&chunk.title);
+        let title = if title.trim().is_empty() {
             "<no title>".to_string()
         } else {
-            chunk.title
+            title
         };
         let journal_date = vault.journal_date(&path).map(format_journal_date);
         out.push(FileListEntry::Note {

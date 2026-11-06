@@ -65,6 +65,7 @@ ctrl_h = "auto"
 current_workspace = "personal"
 update_check = true
 mouse = true
+kimun_server_url = "http://localhost:7573"
 
 [workspaces.personal]
 path = "/home/nico/Development/kimun/example/personal"

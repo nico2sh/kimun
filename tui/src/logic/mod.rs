@@ -24,6 +24,7 @@ pub mod views;
 
 pub mod message;
 pub mod nav;
+pub mod onboarding;
 pub mod overlay_open;
 pub mod palette;
 pub mod pinned;
@@ -32,6 +33,7 @@ pub mod rag_caps;
 pub mod session;
 pub mod sort;
 pub mod startup;
+pub mod task_slot;
 pub mod text_action;
 pub mod text_match;
 pub mod which_key;
