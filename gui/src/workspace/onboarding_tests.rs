@@ -26,9 +26,10 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use tokio::runtime::Runtime;
 
+use super::folder_chooser::{FolderChooser, Listing};
 use super::onboarding::{
     BACK_ID, CANCEL_ID, CHOOSE_FOLDER_FIRST, CHOOSE_FOLDER_ID, CONFIRM_NO_ID, Confirm, LOGO_ID,
-    Listing, NEXT_ID, ONBOARDING_ID, OnboardingView, chooser_row_id,
+    NEXT_ID, ONBOARDING_ID, OnboardingView, chooser_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -151,6 +152,12 @@ impl Started {
         cx.read(|cx| f(view.read(cx)))
     }
 
+    /// Read the folder chooser, while it shows.
+    fn ob_chooser<R>(&self, cx: &TestAppContext, f: impl FnOnce(&FolderChooser) -> R) -> Option<R> {
+        let chooser = self.ob_read_view(cx, |v| v.chooser().cloned())?;
+        Some(cx.read(|cx| f(chooser.read(cx))))
+    }
+
     fn ob_model<R>(&self, cx: &TestAppContext, f: impl FnOnce(&OnboardingModel) -> R) -> R {
         self.ob_read_view(cx, |v| f(v.model().expect("the model is read")))
     }
@@ -251,19 +258,18 @@ impl Started {
 
     fn ob_listed(&self, rt: &Runtime, cx: &mut TestAppContext) {
         drive(rt, cx, |cx| {
-            self.ob_read_view(cx, |v| {
-                v.chooser()
-                    .is_some_and(|c| !matches!(c.listing(), Listing::Loading))
-            })
+            self.ob_chooser(cx, |c| !matches!(c.listing(), Listing::Loading))
+                .unwrap_or(false)
         });
     }
 
     fn ob_chooser_dir(&self, cx: &TestAppContext) -> PathBuf {
-        self.ob_read_view(cx, |v| v.chooser().unwrap().dir().as_path().to_path_buf())
+        self.ob_chooser(cx, |c| c.dir().as_path().to_path_buf())
+            .unwrap()
     }
 
     fn ob_chooser_rows(&self, cx: &TestAppContext) -> Vec<String> {
-        self.ob_read_view(cx, |v| match v.chooser().unwrap().listing() {
+        self.ob_chooser(cx, |c| match c.listing() {
             Listing::Loaded(rows) => rows
                 .iter()
                 .map(|r| {
@@ -276,6 +282,7 @@ impl Started {
                 .collect(),
             other => panic!("not listed: {other:?}"),
         })
+        .unwrap()
     }
 
     fn ob_name_value(&self, cx: &TestAppContext) -> String {
@@ -537,10 +544,7 @@ fn the_chooser_lists_subfolders_and_walks_them(cx: &mut TestAppContext) {
     assert!(s.shows(super::onboarding::CHOOSER_ID, cx));
     s.ob_browse(&rt, &base, cx);
     assert_eq!(s.ob_chooser_rows(cx), ["Alpha", "beta", "gamma"]);
-    assert_eq!(
-        s.ob_read_view(cx, |v| v.chooser().unwrap().selected()),
-        Some(0)
-    );
+    assert_eq!(s.ob_chooser(cx, |c| c.selected()).unwrap(), Some(0));
     s.ob_press("down", cx);
     s.ob_press("enter", cx);
     s.ob_listed(&rt, cx);
@@ -574,14 +578,18 @@ fn new_folder_creates_and_enters_it(cx: &mut TestAppContext) {
     s.ob_go_to(OnbStep::Workspace, cx);
     s.ob_browse(&rt, &base, cx);
     s.ob_press("n", cx);
-    assert!(s.ob_read_view(cx, |v| v.chooser().unwrap().new_folder_open()));
+    assert!(s.ob_chooser(cx, |c| c.new_folder_open()).unwrap());
     s.ob_typed("bad:name", cx);
     s.ob_press("enter", cx);
     drive(&rt, cx, |cx| {
-        s.ob_read_view(cx, |v| v.chooser().unwrap().new_folder_error().is_some())
+        s.ob_chooser(cx, |c| c.new_folder_error().is_some())
+            .unwrap()
     });
     assert!(!base.join("bad:name").exists());
-    let input = s.ob_read_view(cx, |v| v.new_folder_input().unwrap());
+    let input = s
+        .ob_chooser(cx, |c| c.new_folder_input())
+        .flatten()
+        .unwrap();
     cx.update_window(s.handle, |_, window, cx| {
         input.update(cx, |i, cx| i.set_value("", window, cx))
     })
@@ -589,14 +597,13 @@ fn new_folder_creates_and_enters_it(cx: &mut TestAppContext) {
     s.ob_typed("fresh", cx);
     s.ob_press("enter", cx);
     drive(&rt, cx, |cx| {
-        s.ob_read_view(cx, |v| {
-            v.chooser().is_some_and(|c| {
-                c.dir().as_path() == base.join("fresh") && !matches!(c.listing(), Listing::Loading)
-            })
+        s.ob_chooser(cx, |c| {
+            c.dir().as_path() == base.join("fresh") && !matches!(c.listing(), Listing::Loading)
         })
+        .unwrap_or(false)
     });
     assert!(base.join("fresh").is_dir());
-    assert!(!s.ob_read_view(cx, |v| v.chooser().unwrap().new_folder_open()));
+    assert!(!s.ob_chooser(cx, |c| c.new_folder_open()).unwrap());
     // Chosen: it is the workspace folder, named after it.
     s.ob_press("ctrl-enter", cx);
     assert_eq!(
@@ -614,10 +621,10 @@ fn a_listing_error_is_shown(cx: &mut TestAppContext) {
     let s = first_run(cx, &rt, &f);
     s.ob_go_to(OnbStep::Workspace, cx);
     s.ob_browse(&rt, &f.root.join("missing"), cx);
-    assert!(s.ob_read_view(cx, |v| matches!(
-        v.chooser().unwrap().listing(),
-        Listing::Failed(_)
-    )));
+    assert!(
+        s.ob_chooser(cx, |c| matches!(c.listing(), Listing::Failed(_)))
+            .unwrap()
+    );
     assert!(s.shows("onboarding-chooser-error", cx));
 }
 

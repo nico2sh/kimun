@@ -62,7 +62,7 @@ group_directories = false
 ctrl_h = "auto"
 
 [global]
-current_workspace = "personal"
+current_workspace = "work"
 update_check = true
 mouse = true
 kimun_server_url = "http://localhost:7573"
@@ -71,6 +71,11 @@ kimun_server_url = "http://localhost:7573"
 path = "/home/nico/Development/kimun/example/personal"
 created = "2026-11-03T17:46:03.708231452Z"
 file_key = "d6eab63db51d"
+
+[workspaces.work]
+path = "/home/nico/Development/kimun/example/work"
+created = "2026-11-07T17:07:02.812213085Z"
+file_key = "d32f3e00ea0b"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
@@ -98,6 +103,13 @@ OpenCommandPalette = ["ctrl&P"]
 [leader]
 
 [gui]
-drawer_left = ["files"]
+drawer_left_split = 0.5
 drawer_left_visible = true
 drawer_left_width = 299.0
+drawer_right_visible = false
+drawer_right_width = 260.0
+
+[gui.views.files]
+shown = true
+side = "left"
+slot = 0

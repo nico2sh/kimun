@@ -115,10 +115,18 @@ pub(crate) fn empty_state(start: &Start) -> Option<EmptyState> {
 /// The window title: the workspace's name, when there is one.
 pub(crate) fn window_title(start: &Start) -> String {
     match start {
-        Start::Vault(VaultStart { name, .. }) if !name.is_empty() => {
-            format!("{name} - {APP_NAME}")
-        }
+        Start::Vault(VaultStart { name, .. }) => title_for_workspace(name),
         _ => APP_NAME.to_string(),
+    }
+}
+
+/// The window title for a workspace named `name` (just the app's name when
+/// the name is empty).
+pub(crate) fn title_for_workspace(name: &str) -> String {
+    if name.is_empty() {
+        APP_NAME.to_string()
+    } else {
+        format!("{name} - {APP_NAME}")
     }
 }
 

@@ -591,12 +591,27 @@ fn a_case_conflict_makes_notes_read_only(cx: &mut TestAppContext) {
     );
     assert!(!started.indexing(cx));
     assert!(cx.read(|cx| started.workspace.read(cx).status.read_only));
-    assert!(started.shows(READ_ONLY_ID, cx));
     let flash = started.flash(cx).unwrap();
     assert!(
         flash.contains("2 names") && flash.contains("case"),
         "{flash}"
     );
+    // Preferences > Workspaces show the vault's words (M9b-2); closing them
+    // leaves the read-only vault with its Footer mark.
+    let prefs = cx
+        .read(|cx| started.workspace.read(cx).preferences.clone())
+        .expect("Preferences show the conflict");
+    let (section, conflict) = cx.read(|cx| {
+        let p = prefs.read(cx);
+        (p.section(), p.conflict().map(str::to_string))
+    });
+    assert_eq!(section, super::preferences::Section::Workspaces);
+    assert!(conflict.unwrap().contains("a.md / A.md"));
+    drive(&rt, cx, |cx| cx.read(|cx| prefs.read(cx).model().is_some()));
+    cx.update_window(started.handle, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(started.shows(READ_ONLY_ID, cx));
 }
 
 /// The editor's background parse/layout jobs report on the window's

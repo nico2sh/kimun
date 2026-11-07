@@ -185,6 +185,18 @@ impl FilesPane {
         }
     }
 
+    /// The workspace was renamed: the breadcrumb's root follows.
+    pub(crate) fn set_root_name(&mut self, name: SharedString, cx: &mut Context<Self>) {
+        self.root_name = name;
+        cx.notify();
+    }
+
+    /// The breadcrumb's root (tests).
+    #[cfg(test)]
+    pub(crate) fn root_name(&self) -> &SharedString {
+        &self.root_name
+    }
+
     /// The listing's rules, for reads (tests).
     #[cfg(test)]
     pub(crate) fn model(&self) -> &FilesModel {

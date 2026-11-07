@@ -5,11 +5,18 @@
 //! are not drawn, and the window's chords (leader, palette, drawer toggles)
 //! do nothing.
 //!
-//! **Layout.** A section list on the left (Appearance, Display, Sorting,
-//! Editor, Server: the TUI's order; Workspaces and Indexing come with
-//! M9b-2), the selected section's controls on the right, a footer with
-//! `Cancel` and `Save`. In a narrow window the section list becomes a row
-//! of section tabs above the controls, so the controls keep the width.
+//! **Layout.** A section list on the left (Workspaces, Appearance, Display,
+//! Sorting, Indexing, Editor, Server: the TUI's order, and like the TUI they
+//! open on Workspaces), the selected section's controls on the right, a
+//! footer with `Cancel` and `Save`. In a narrow window the section list
+//! becomes a row of section tabs above the controls, so the controls keep
+//! the width.
+//!
+//! **Workspaces and Indexing** ([`workspaces`]) act at once, outside the
+//! draft: a workspace change is written as it is made, a reindex runs as it
+//! is asked for. A vault whose files differ only by case (found by a
+//! reindex, or by the window opening it) is shown in a panel over the
+//! sections.
 //!
 //! **State.** The draft and its rules (ranges, steps, cycles, which settings
 //! the desktop app shows) are the logic `PreferencesModel`'s; this view
@@ -26,7 +33,8 @@
 //! file is written does the draft go into the shared settings and the view
 //! close; a failed write is shown in the view, which stays open with the
 //! settings untouched. What changes then, and how it takes effect, is the
-//! window's ([`Workspace::apply_saved_preferences`]).
+//! window's ([`Workspace::apply_saved_preferences`]). A save whose plan
+//! needs the vault indexed first takes the vault-path reindex flow.
 //!
 //! **Cancel**, Esc and the window's own close: at once when the draft is
 //! clean; otherwise an inline "Discard your changes?" (Keep editing /
@@ -60,6 +68,9 @@ use std::cell::Cell;
 
 use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
+use kimun_notes::logic::preferences::SavePlan;
+
+pub(crate) mod workspaces;
 use crate::input;
 use crate::theme;
 
@@ -99,28 +110,33 @@ const NARROW_REMS: f32 = 44.;
 /// for it (as the setup assistant says).
 pub(crate) const NVIM_UNCHANGED: &str = "nvim (unchanged; the desktop app uses the plain editor)";
 
-/// One section of the view, in the TUI's sidebar order (Workspaces and
-/// Indexing are M9b-2's).
+/// One section of the view, in the TUI's sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Section {
+    Workspaces,
     Appearance,
     Display,
     Sorting,
+    Indexing,
     Editor,
     Server,
 }
 
 impl Section {
-    pub(crate) const ALL: [Section; 5] = [
+    pub(crate) const ALL: [Section; 7] = [
+        Section::Workspaces,
         Section::Appearance,
         Section::Display,
         Section::Sorting,
+        Section::Indexing,
         Section::Editor,
         Section::Server,
     ];
 
     fn title(self) -> &'static str {
         match self {
+            Section::Workspaces => "Workspaces",
+            Section::Indexing => "Indexing",
             Section::Appearance => "Appearance",
             Section::Display => "Display",
             Section::Sorting => "Sorting",
@@ -131,6 +147,8 @@ impl Section {
 
     fn slug(self) -> &'static str {
         match self {
+            Section::Workspaces => "workspaces",
+            Section::Indexing => "indexing",
             Section::Appearance => "appearance",
             Section::Display => "display",
             Section::Sorting => "sorting",
@@ -182,6 +200,19 @@ pub(crate) enum PreferencesEvent {
     /// The draft is in the shared settings and on disk: show `theme`, apply
     /// what changed, and reopen the vault when `reopen` ([`needs_reopen`]).
     Saved { theme: Theme, reopen: bool },
+    /// Leave (the draft goes; the window back to `theme`) and switch to
+    /// workspace `name` (M8b).
+    Switch { theme: Theme, name: String },
+    /// A workspace change is in the shared settings and on disk that moves
+    /// the window to another vault (the current workspace's new folder, the
+    /// first workspace): leave, back to `theme`, and enter it.
+    Reopen { theme: Theme },
+    /// The open workspace was reindexed: pick the new index up.
+    Reindexed,
+    /// The current workspace is called `0` now.
+    Renamed(String),
+    /// Leave, back to `theme`, and run the setup assistant.
+    RunSetup { theme: Theme },
 }
 
 /// The "Discard your changes?" question, while it is asked.
@@ -199,6 +230,9 @@ pub(crate) struct PreferencesView {
     original: Theme,
     /// `None` while it is being read.
     model: Option<PreferencesModel>,
+    /// The settings as the draft was read from them: a save whose vault is
+    /// not this one's any more takes the vault-path reindex flow.
+    opened: Option<AppSettings>,
     /// [`Self::is_dirty`]'s answer until the draft or the settings change
     /// (rendering asks every frame): cleared by [`Self::model_mut`], a new
     /// model and a save.
@@ -221,6 +255,10 @@ pub(crate) struct PreferencesView {
     /// The write under way: every control waits for it.
     saving: Option<Task<()>>,
     theme_scroll: UniformListScrollHandle,
+    /// Preferences > Workspaces ([`workspaces`]).
+    ws: workspaces::Workspaces,
+    /// Preferences > Indexing, the reindex under way and its panels.
+    index: workspaces::Indexing,
     _load: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -228,9 +266,15 @@ pub(crate) struct PreferencesView {
 impl EventEmitter<PreferencesEvent> for PreferencesView {}
 
 impl Focusable for PreferencesView {
-    /// Where the keyboard goes when the view gets it: the section list.
+    /// Where the keyboard goes when the view gets it: the section list, or
+    /// the root while a question or the progress panel holds the view.
     fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
-        if self.confirm.is_some() {
+        let holding = self.confirm.is_some()
+            || self.ws.ask.is_some()
+            || self.index.confirm_full
+            || self.index.running.is_some()
+            || matches!(self.ws.form, Some(workspaces::Form::Delete(_)));
+        if holding {
             self.focus.clone()
         } else {
             self.sections_focus.clone()
@@ -274,8 +318,9 @@ impl PreferencesView {
             store,
             original,
             model: None,
+            opened: None,
             dirty: Cell::new(None),
-            section: Section::Appearance,
+            section: Section::Workspaces,
             focus: cx.focus_handle(),
             sections_focus: cx.focus_handle().tab_stop(true),
             themes_focus: cx.focus_handle().tab_stop(true),
@@ -287,6 +332,8 @@ impl PreferencesView {
             confirm: None,
             saving: None,
             theme_scroll: UniformListScrollHandle::new(),
+            ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
+            index: workspaces::Indexing::new(),
             _load: Some(load),
             _subscriptions: subscriptions,
         }
@@ -305,6 +352,9 @@ impl PreferencesView {
                 self.theme_scroll
                     .scroll_to_item(model.theme_idx, ScrollStrategy::Nearest);
                 self.model = Some(model);
+                self.opened = Some(self.initial());
+                self.ws.selected =
+                    kimun_notes::logic::workspaces::initial_selection(&self.ws_rows()).unwrap_or(0);
                 self.dirty.set(None);
                 self.server_input
                     .update(cx, |input, cx| input.set_value(url, window, cx));
@@ -359,16 +409,23 @@ impl PreferencesView {
         self.saving.is_some()
     }
 
-    /// The handles of the section list, the theme list and the two
-    /// steppers, in that order.
+    /// The handles of the section list, the theme list, the two steppers
+    /// and the workspace list, in that order.
     #[cfg(test)]
-    pub(crate) fn handles(&self) -> [FocusHandle; 4] {
+    pub(crate) fn handles(&self) -> [FocusHandle; 5] {
         [
             self.sections_focus.clone(),
             self.themes_focus.clone(),
             self.delay_focus.clone(),
             self.autosave_focus.clone(),
+            self.ws.focus.clone(),
         ]
+    }
+
+    /// The root's handle (the questions and the progress panel hold it).
+    #[cfg(test)]
+    pub(crate) fn root_handle(&self) -> FocusHandle {
+        self.focus.clone()
     }
 
     fn initial(&self) -> AppSettings {
@@ -406,7 +463,7 @@ impl PreferencesView {
     /// Whether `Save` would save now: a changed, valid draft, no write under
     /// way.
     pub(crate) fn can_save(&self) -> bool {
-        self.saving.is_none() && self.server_error.is_none() && self.is_dirty()
+        !self.busy() && self.server_error.is_none() && self.is_dirty()
     }
 
     fn server_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
@@ -538,7 +595,7 @@ impl PreferencesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.saving.is_some() {
+        if self.busy() {
             return;
         }
         if self.is_dirty() {
@@ -557,7 +614,10 @@ impl PreferencesView {
     /// lose); else the question is asked (the window gives it the keyboard)
     /// and the window stays.
     pub(crate) fn window_close_requested(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.saving.is_some() {
+        // A reindex or a write running: the close is refused with a
+        // message, and not queued; the user closes again once it is done.
+        if self.busy() {
+            self.close_refused(cx);
             return false;
         }
         if !self.is_dirty() {
@@ -610,12 +670,39 @@ impl PreferencesView {
         model.apply(&mut after);
         let reopen = needs_reopen(&before, &after);
         let theme = self.chosen_theme(&before);
-        let write = reopen::write_settings(self.store.clone(), move || after);
         self.message = None;
+        let opened = self.opened.clone().unwrap_or_else(|| before.clone());
+        match kimun_notes::logic::preferences::save_plan(&after, &opened) {
+            Err(e) => {
+                self.message = Some(e.to_string().into());
+                cx.notify();
+            }
+            // The vault moved under the draft: indexed first, then written
+            // and entered again (the vault-path reindex flow).
+            Ok(SavePlan::NeedsReindex { workspace, cache }) => {
+                self.save_after_reindex(after, theme, workspace, cache, window, cx)
+            }
+            Ok(SavePlan::SaveOnly) => self.write_save(after, theme, reopen, window, cx),
+        }
+    }
+
+    /// Write `after` (the settings with the draft applied); once written,
+    /// the draft goes into the shared settings (`reopen`: the window enters
+    /// the vault again).
+    fn write_save(
+        &mut self,
+        after: AppSettings,
+        theme: Theme,
+        reopen: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let indexed = !after.needs_indexing();
+        let write = reopen::write_settings(self.store.clone(), move || after);
         self.saving = Some(cx.spawn_in(window, async move |this, cx| {
             let written = write.await;
             this.update_in(cx, |view, window, cx| {
-                view.saved(written, theme, reopen, window, cx)
+                view.saved(written, theme, reopen, indexed, window, cx)
             })
             .ok();
         }));
@@ -627,13 +714,20 @@ impl PreferencesView {
         written: Result<(), String>,
         theme: Theme,
         reopen: bool,
+        indexed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.saving = None;
         match (written, self.model.as_ref()) {
             (Ok(()), Some(model)) => {
-                model.apply(&mut self.settings.write().unwrap_or_else(|e| e.into_inner()));
+                {
+                    let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
+                    model.apply(&mut settings);
+                    if indexed {
+                        settings.report_indexed();
+                    }
+                }
                 self.dirty.set(None);
                 cx.emit(PreferencesEvent::Saved { theme, reopen });
             }
@@ -654,6 +748,9 @@ impl PreferencesView {
         if self.server_focused(window, cx) {
             self.save(window, cx);
             cx.stop_propagation();
+        } else if self.ws_field_focused(window, cx) {
+            self.ws_field_enter(window, cx);
+            cx.stop_propagation();
         }
     }
 
@@ -661,6 +758,9 @@ impl PreferencesView {
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
         if self.server_focused(window, cx) {
             self.cancel(false, window, cx);
+            cx.stop_propagation();
+        } else if self.ws_field_focused(window, cx) {
+            self.ws_field_escape(window, cx);
             cx.stop_propagation();
         }
     }
@@ -686,13 +786,39 @@ impl PreferencesView {
     ) -> bool {
         let plain = key.mods == Mods::NONE;
         let primary = (key.mods.ctrl || key.mods.sup) && !key.mods.alt && !key.mods.shift;
-        if self.saving.is_some() {
-            return true;
+        // A write or a reindex holds the view; Tab may still walk it.
+        if self.busy() {
+            return !matches!(key.key, Key::Tab | Key::BackTab);
         }
+        let on_root = self.focus.is_focused(window);
         if self.confirm.is_some() {
             match key.key {
                 Key::Esc => self.keep_editing(window, cx),
-                Key::Enter if plain && self.focus.is_focused(window) => self.discard(cx),
+                Key::Enter if plain && on_root => self.discard(cx),
+                _ => return false,
+            }
+            return true;
+        }
+        if self.ws.ask.is_some() {
+            match key.key {
+                Key::Esc => self.ask_keep(window, cx),
+                Key::Enter if plain && on_root => self.ask_go(window, cx),
+                _ => return false,
+            }
+            return true;
+        }
+        if self.index.confirm_full {
+            match key.key {
+                Key::Esc => self.full_cancel(window, cx),
+                Key::Enter if plain && on_root => self.full_confirm(window, cx),
+                _ => return false,
+            }
+            return true;
+        }
+        if matches!(self.ws.form, Some(workspaces::Form::Delete(_))) {
+            match key.key {
+                Key::Esc => self.ws_close_form(window, cx),
+                Key::Enter if plain && on_root => self.ws_delete_confirm(window, cx),
                 _ => return false,
             }
             return true;
@@ -701,17 +827,40 @@ impl PreferencesView {
             self.save(window, cx);
             return true;
         }
-        if self.server_focused(window, cx) {
+        if self.server_focused(window, cx) || self.ws_field_focused(window, cx) {
             return false;
         }
+        // The chooser up in Workspaces has the arrows, Enter and Esc.
+        if let Some(chooser) = self.ws_chooser()
+            && on_root
+        {
+            return chooser.update(cx, |c, cx| c.key(key, window, cx));
+        }
         if key.key == Key::Esc {
-            self.cancel(false, window, cx);
+            if self.ws.form.is_some() {
+                self.ws_close_form(window, cx);
+            } else {
+                self.cancel(false, window, cx);
+            }
             return true;
         }
         if !plain {
             return false;
         }
         let on = |handle: &FocusHandle| handle.is_focused(window);
+        if on(&self.ws.focus) {
+            match key.key {
+                Key::Up => self.ws_move(false, cx),
+                Key::Down => self.ws_move(true, cx),
+                Key::Enter => self.ws_switch(window, cx),
+                Key::F(2) | Key::Char('r') => self.ws_rename(window, cx),
+                Key::Delete | Key::Char('d') => self.ws_delete(window, cx),
+                Key::Char('n') => self.ws_new(window, cx),
+                Key::Char('b') => self.ws_change_path(window, cx),
+                _ => return false,
+            }
+            return true;
+        }
         if on(&self.sections_focus) || on(&self.focus) {
             match key.key {
                 Key::Up => self.move_section(false, window, cx),
@@ -1334,11 +1483,27 @@ impl PreferencesView {
     fn render_content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
+        let conflict = self
+            .index
+            .conflict
+            .clone()
+            .filter(|_| self.confirm.is_none())
+            .map(|text| self.render_conflict(text, cx));
+        let running = self.index.running.as_ref().map(|r| r.label);
+        let ask = self.ask_text();
         let (title, body) = match (self.confirm, self.model.as_ref()) {
             (Some(_), _) => (
                 "Discard your changes?",
                 para("Your changes to the preferences have not been saved.", t).into_any_element(),
             ),
+            (None, _) if running.is_some() => (
+                "Indexing",
+                self.render_progress(running.unwrap_or_default(), cx),
+            ),
+            (None, _) if ask.is_some() => {
+                let (title, text) = ask.unwrap_or_default();
+                (title, para(text, t).into_any_element())
+            }
             (None, None) => (
                 "Preferences",
                 note("Reading the preferences…", t).into_any_element(),
@@ -1346,6 +1511,8 @@ impl PreferencesView {
             (None, Some(model)) => (
                 self.section.title(),
                 match self.section {
+                    Section::Workspaces => self.render_workspaces(window, cx),
+                    Section::Indexing => self.render_indexing(cx),
                     Section::Appearance => self.render_appearance(model, window, cx),
                     Section::Display => self.render_display(model, window, cx),
                     Section::Sorting => self.render_sorting(model, cx),
@@ -1378,6 +1545,7 @@ impl PreferencesView {
                             .text_color(theme::bright(t))
                             .child(title),
                     )
+                    .children(conflict)
                     .child(body),
             )
             .into_any_element()
@@ -1418,6 +1586,13 @@ impl PreferencesView {
                 .text_color(theme::muted(t))
                 .child("Enter: discard · Esc: keep editing")
                 .into_any_element(),
+            (None, None) if self.ws.ask.is_some() => div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child("Enter: discard and go on · Esc: keep editing")
+                .into_any_element(),
             (None, None) => div()
                 .flex_1()
                 .min_w_0()
@@ -1426,6 +1601,9 @@ impl PreferencesView {
                 .child("↑/↓: sections and lists · ←/→: steps · Tab: next control · Ctrl+S: save · Esc: cancel")
                 .into_any_element(),
         };
+        if let Some(buttons) = self.ask_buttons(cx) {
+            return row.child(lead).children(buttons).into_any_element();
+        }
         if self.confirm.is_some() {
             return row
                 .child(lead)
@@ -1441,11 +1619,12 @@ impl PreferencesView {
                 .into_any_element();
         }
         let saving = self.saving.is_some();
+        let busy = self.busy();
         row.child(lead)
             .child(
                 Button::new(CANCEL_ID)
                     .label("Cancel")
-                    .disabled(saving)
+                    .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.cancel(false, window, cx)
                     })),
@@ -1596,6 +1775,80 @@ impl Workspace {
                 self.close_preferences(window, cx);
                 self.apply_saved_preferences(*reopen, cx);
             }
+            PreferencesEvent::Switch { theme: t, name } => {
+                self.apply_theme(t.clone(), cx);
+                self.close_preferences(window, cx);
+                self.switch_workspace(name.clone(), cx);
+            }
+            PreferencesEvent::Reopen { theme: t } => {
+                self.apply_theme(t.clone(), cx);
+                self.close_preferences(window, cx);
+                match self.tx.clone() {
+                    Some(tx) if tx.send(AppMessage::PreferencesSaved).is_ok() => {}
+                    _ => self.reopen(cx),
+                }
+            }
+            PreferencesEvent::Reindexed => self.index_rebuilt(cx),
+            PreferencesEvent::Renamed(name) => self.workspace_renamed(name, window, cx),
+            PreferencesEvent::RunSetup { theme: t } => {
+                self.apply_theme(t.clone(), cx);
+                self.close_preferences(window, cx);
+                self.open_onboarding(window, cx);
+            }
+        }
+    }
+
+    /// The open workspace's index was rebuilt on a throwaway vault (the same
+    /// index file): the views over it load again, as after the startup's
+    /// indexing (`IndexingDone`), and FILES lists its folder again.
+    fn index_rebuilt(&mut self, cx: &mut Context<Self>) {
+        self.refresh_note_counts();
+        self.invalidate_views(cx);
+        if let Some(files) = self.files.clone() {
+            files.update(cx, |pane, cx| {
+                let dir = pane.current_dir().clone();
+                pane.refresh_if_showing(&dir, cx);
+            });
+        }
+        self.refresh_views(cx);
+        cx.notify();
+    }
+
+    /// The current workspace was renamed (its files keep their names): the
+    /// window title and FILES' root follow.
+    fn workspace_renamed(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.vault().is_none() {
+            return;
+        }
+        window.set_window_title(&crate::startup::title_for_workspace(name));
+        if let Some(files) = self.files.clone() {
+            let name = SharedString::from(name.to_string());
+            files.update(cx, |pane, cx| pane.set_root_name(name, cx));
+        }
+        cx.notify();
+    }
+
+    /// Opening the vault found files whose names differ only by case
+    /// (`VaultConflict`): Preferences open on Workspaces with the vault's
+    /// message in a panel, so another workspace or folder can be picked.
+    /// The workspace config stays as it is. Not over the setup assistant;
+    /// a modal open closes first. Needs the tokio runtime entered.
+    pub(crate) fn show_vault_conflict(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.onboarding_open() {
+            return;
+        }
+        if self.preferences.is_none() && super::modal::dialog_open(window, cx) {
+            self.close_modal(window, cx);
+        }
+        self.open_preferences(window, cx);
+        if let Some(view) = self.preferences.clone() {
+            view.update(cx, |view, cx| view.show_conflict(text, window, cx));
+            self.apply_focus(window, cx);
         }
     }
 

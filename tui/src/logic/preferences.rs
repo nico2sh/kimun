@@ -755,6 +755,114 @@ pub fn set_workspace_path(s: &mut AppSettings, name: &str, path: PathBuf) -> boo
     moved
 }
 
+/// One workspace change made from a Preferences view that persists each
+/// change as it is made (the desktop app): applied first to a copy of the
+/// settings, which is written, and only once that write succeeded to the
+/// live settings — the same call both times, so the two cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceEdit {
+    /// Register a new workspace ([`add_workspace`]).
+    Add { name: String, path: PathBuf },
+    /// Rename `old` ([`rename_workspace`]); an empty name is refused.
+    Rename { old: String, new: String },
+    /// Remove a workspace that is not the current one
+    /// ([`take_workspace_for_delete`]).
+    Delete { name: String },
+    /// Point a workspace at another folder ([`set_workspace_path`]).
+    SetPath { name: String, path: PathBuf },
+}
+
+/// What a [`WorkspaceEdit`] did.
+#[derive(Debug, Default)]
+pub struct EditOutcome {
+    /// Something changed (a rename to the same name, or a path to the same
+    /// folder, does not).
+    pub changed: bool,
+    /// The edit was made on the current workspace (rename, path), or made
+    /// the new one current (the first one added).
+    pub current: bool,
+    /// The workspace's folder changed ([`SetPath`](WorkspaceEdit::SetPath)):
+    /// its index must be built again.
+    pub moved: bool,
+    /// A deleted workspace's index and history, to remove outside the lock
+    /// ([`remove_workspace_artifacts`]).
+    pub artifacts: Option<(IndexFile, HistoryFile)>,
+}
+
+impl WorkspaceEdit {
+    /// Apply the edit to `s`, with the validation the TUI's own calls have,
+    /// plus: a rename to an empty name is refused rather than ignored.
+    pub fn apply(&self, s: &mut AppSettings) -> Result<EditOutcome, WorkspaceError> {
+        let current = s.current_workspace_name();
+        let is_current = |name: &str| current.as_deref() == Some(name);
+        match self {
+            WorkspaceEdit::Add { name, path } => {
+                let had_vault = has_vault(s);
+                add_workspace(s, name, path.clone())?;
+                let name = name.trim().to_lowercase();
+                Ok(EditOutcome {
+                    changed: true,
+                    current: !had_vault
+                        && s.current_workspace_name().as_deref() == Some(name.as_str()),
+                    ..EditOutcome::default()
+                })
+            }
+            WorkspaceEdit::Rename { old, new } => {
+                if new.trim().is_empty() {
+                    return Err(WorkspaceError::EmptyName);
+                }
+                let renamed = rename_workspace(s, old, new)?;
+                Ok(EditOutcome {
+                    changed: renamed,
+                    current: is_current(old),
+                    ..EditOutcome::default()
+                })
+            }
+            WorkspaceEdit::Delete { name } => {
+                let artifacts = take_workspace_for_delete(s, name)?;
+                Ok(EditOutcome {
+                    changed: true,
+                    artifacts: Some(artifacts),
+                    ..EditOutcome::default()
+                })
+            }
+            WorkspaceEdit::SetPath { name, path } => {
+                if !workspace_exists(s, name) {
+                    return Err(WorkspaceError::NotFound(name.clone()));
+                }
+                let moved = set_workspace_path(s, name, path.clone());
+                Ok(EditOutcome {
+                    changed: moved,
+                    current: is_current(name),
+                    moved,
+                    ..EditOutcome::default()
+                })
+            }
+        }
+    }
+}
+
+/// Whether `name` is a registered workspace in `s`.
+pub fn workspace_exists(s: &AppSettings, name: &str) -> bool {
+    s.workspace_config
+        .as_ref()
+        .is_some_and(|wc| wc.workspaces.contains_key(name))
+}
+
+/// Make sure the folder a new workspace goes in exists (the first
+/// workspace's suggested folder may not yet), through core. Returns it as
+/// core resolved it. Blocking: run it off a UI thread.
+pub fn prepare_workspace_folder(path: &std::path::Path) -> Result<PathBuf, String> {
+    kimun_core::system::create_dir(path)
+        .map(SystemPath::into_path_buf)
+        .map_err(|e| e.to_string())
+}
+
+/// What an index rebuild reports when it finished, e.g. "Indexed in 1.2s".
+pub fn indexed_in(duration: Duration) -> String {
+    format!("Indexed in {duration:.1?}")
+}
+
 // ── Save plan and reindex runners ────────────────────────────────────────────
 
 /// What saving the Preferences takes.

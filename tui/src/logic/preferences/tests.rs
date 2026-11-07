@@ -780,3 +780,131 @@ fn picker_and_preferences_start_on_the_same_theme_row() {
         );
     }
 }
+
+// ── WorkspaceEdit ────────────────────────────────────────────────────────────
+
+#[test]
+fn workspace_edit_add_registers_and_the_first_becomes_current() {
+    let mut s = settings_with(|_| {});
+    let out = WorkspaceEdit::Add {
+        name: " First ".into(),
+        path: abs("/first"),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(out.changed && out.current);
+    assert_eq!(s.current_workspace_name().as_deref(), Some("first"));
+    let out = WorkspaceEdit::Add {
+        name: "second".into(),
+        path: abs("/second"),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(out.changed && !out.current, "the second is not current");
+    assert!(workspace_exists(&s, "second"));
+    let dup = WorkspaceEdit::Add {
+        name: "SECOND".into(),
+        path: abs("/x"),
+    }
+    .apply(&mut s);
+    assert!(matches!(dup, Err(WorkspaceError::Duplicate(_))));
+    let empty = WorkspaceEdit::Add {
+        name: "  ".into(),
+        path: abs("/x"),
+    }
+    .apply(&mut s);
+    assert!(matches!(empty, Err(WorkspaceError::EmptyName)));
+}
+
+#[test]
+fn workspace_edit_rename_refuses_empty_and_duplicates() {
+    let mut s = with_workspaces(&["a", "b"], "a");
+    let empty = WorkspaceEdit::Rename {
+        old: "a".into(),
+        new: " ".into(),
+    }
+    .apply(&mut s);
+    assert!(matches!(empty, Err(WorkspaceError::EmptyName)));
+    let dup = WorkspaceEdit::Rename {
+        old: "a".into(),
+        new: "b".into(),
+    }
+    .apply(&mut s);
+    assert!(matches!(dup, Err(WorkspaceError::Duplicate(_))));
+    let same = WorkspaceEdit::Rename {
+        old: "a".into(),
+        new: "a".into(),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(!same.changed);
+    let out = WorkspaceEdit::Rename {
+        old: "a".into(),
+        new: "c".into(),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(out.changed && out.current);
+    assert_eq!(s.current_workspace_name().as_deref(), Some("c"));
+}
+
+#[test]
+fn workspace_edit_delete_refuses_the_current_one() {
+    let mut s = with_workspaces(&["a", "b"], "a");
+    let refused = WorkspaceEdit::Delete { name: "a".into() }.apply(&mut s);
+    assert!(matches!(refused, Err(WorkspaceError::IsCurrent(_))));
+    let out = WorkspaceEdit::Delete { name: "b".into() }
+        .apply(&mut s)
+        .unwrap();
+    assert!(out.changed && out.artifacts.is_some());
+    assert!(!workspace_exists(&s, "b"));
+}
+
+#[test]
+fn workspace_edit_set_path_says_whether_the_vault_moved() {
+    let mut s = with_workspaces(&["a", "b"], "a");
+    let same = WorkspaceEdit::SetPath {
+        name: "b".into(),
+        path: abs("/b"),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(!same.changed && !same.moved && !same.current);
+    let other = WorkspaceEdit::SetPath {
+        name: "b".into(),
+        path: abs("/elsewhere"),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(other.moved && !other.current);
+    let current = WorkspaceEdit::SetPath {
+        name: "a".into(),
+        path: abs("/moved"),
+    }
+    .apply(&mut s)
+    .unwrap();
+    assert!(current.moved && current.current);
+    assert!(s.needs_indexing());
+    let unknown = WorkspaceEdit::SetPath {
+        name: "zz".into(),
+        path: abs("/x"),
+    }
+    .apply(&mut s);
+    assert!(matches!(unknown, Err(WorkspaceError::NotFound(_))));
+}
+
+#[test]
+fn prepare_workspace_folder_makes_a_missing_folder() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let target = dir.path().join("fresh");
+    let made = prepare_workspace_folder(&target).unwrap();
+    assert!(target.is_dir());
+    assert!(made.ends_with("fresh"));
+    // Already there: fine, untouched.
+    assert!(prepare_workspace_folder(&target).is_ok());
+}
+
+#[test]
+fn indexed_in_reads_as_a_short_duration() {
+    assert_eq!(indexed_in(Duration::from_millis(1234)), "Indexed in 1.2s");
+}

@@ -320,7 +320,11 @@ fn opens_from_the_route_the_chords_and_the_palette(cx: &mut TestAppContext) {
     assert!(s.shows(PREFERENCES_ID, cx));
     assert!(!s.shows("rail", cx) && !s.shows("editor-panel", cx));
     assert!(s.pf_focused(0, cx), "the section list has the keyboard");
-    assert_eq!(s.pf_read(cx, |v| v.section()), Section::Appearance);
+    assert_eq!(
+        s.pf_read(cx, |v| v.section()),
+        Section::Workspaces,
+        "they open on Workspaces, as the TUI's"
+    );
     assert!(s.pf_disabled(SAVE_ID, cx), "nothing to save yet");
     s.pf_press("escape", cx);
     assert!(!s.pf_is_open(cx), "clean: Esc closes at once");
@@ -443,21 +447,26 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
     let v = vault(&rt);
     let s = with_prefs(cx, &rt, &v);
     let mut seen = vec![s.pf_read(cx, |v| v.section())];
-    for _ in 0..5 {
+    for _ in 0..7 {
         s.pf_press("down", cx);
         seen.push(s.pf_read(cx, |v| v.section()));
     }
     assert_eq!(
         seen,
         [
+            Section::Workspaces,
             Section::Appearance,
             Section::Display,
             Section::Sorting,
+            Section::Indexing,
             Section::Editor,
             Section::Server,
             Section::Server,
         ]
     );
+    for section in Section::ALL {
+        assert!(s.pf_shows(section_id(section), cx), "{section:?} is listed");
+    }
     s.pf_press("up", cx);
     assert_eq!(s.pf_read(cx, |v| v.section()), Section::Editor);
     s.pf_section(cx, Section::Display);
@@ -482,6 +491,7 @@ fn each_section_edits_the_draft_only(cx: &mut TestAppContext) {
 
     // Appearance: Tab to the theme list, Down selects the next theme.
     let next = next_theme(&s, cx);
+    s.pf_section(cx, Section::Appearance);
     s.pf_with_view(cx, |v, window, cx| {
         let handle = v.handles()[1].clone();
         window.focus(&handle, cx);
@@ -926,6 +936,12 @@ fn tab_leaves_the_section_list(cx: &mut TestAppContext) {
     assert!(s.pf_focused(0, cx));
     s.pf_press("tab", cx);
     assert!(!s.pf_focused(0, cx), "Tab moved on");
+    assert!(
+        s.pf_focused(4, cx),
+        "to the workspace list (Workspaces shows)"
+    );
+    s.pf_section(cx, Section::Appearance);
+    s.pf_press("tab", cx);
     assert!(s.pf_focused(1, cx), "to the theme list");
     s.pf_press("down", cx);
     assert!(!s.pf_disabled(SAVE_ID, cx), "its arrows work there");
