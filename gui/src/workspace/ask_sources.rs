@@ -262,7 +262,6 @@ pub(crate) struct SourcesView {
     /// How many times the reader was pointed (tests).
     #[cfg(test)]
     pub(crate) reader_pointed: usize,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -275,28 +274,17 @@ pub(crate) enum SourcesEvent {
 
 impl EventEmitter<SourcesEvent> for SourcesView {}
 
-impl SourcesView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        self.list.update(cx, |list, cx| list.set_theme(t, cx));
-        self.reader.update(cx, |reader, cx| reader.set_theme(t, cx));
-        cx.notify();
-    }
-}
+impl SourcesView {}
 
 impl SourcesView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<SourceRow>>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(FILTER_LABEL));
-        let reader_theme = theme.clone();
-        let reader =
-            cx.new(|_| SearchPreview::new(vault, reader_theme).with_ids(READER_ID, READER_ROW_ID));
+        let reader = cx.new(|cx| SearchPreview::new(vault, cx).with_ids(READER_ID, READER_ROW_ID));
         let subscriptions = vec![
             cx.subscribe(&filter, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -318,7 +306,6 @@ impl SourcesView {
             reading: None,
             #[cfg(test)]
             reader_pointed: 0,
-            theme,
             _subscriptions: subscriptions,
         };
         view.rebuild(Vec::new(), cx);
@@ -709,7 +696,7 @@ impl Focusable for SourcesView {
 
 impl Render for SourcesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = self.theme.clone();
+        let t = theme::current(cx);
         let has_sources = !self.list.read(cx).all_rows().is_empty();
         let full = self.model.is_full();
         let list = div()
@@ -799,13 +786,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
         // A click picks the source the reader reads; a double-click opens
         // its note.
-        let list = DrawerList::spawn_with(SOURCES_LIST_ID, "Sources", tx, &theme, cx, |list| {
+        let list = DrawerList::spawn_with(SOURCES_LIST_ID, "Sources", tx, cx, |list| {
             list.with_click_policy(ClickPolicy::Select)
         });
-        let view = cx.new(|cx| SourcesView::new(vault, list.clone(), theme, window, cx));
+        let view = cx.new(|cx| SourcesView::new(vault, list.clone(), window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_sources_list_event));
         self._views_events.push(cx.subscribe_in(
@@ -913,5 +899,3 @@ impl Workspace {
             .is_some_and(|view| view.read(cx).filter_focused(window, cx))
     }
 }
-
-crate::theme::impl_themed!(SourcesView);

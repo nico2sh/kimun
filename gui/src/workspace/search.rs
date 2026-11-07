@@ -371,7 +371,6 @@ type Wanted = (VaultPath, Mark);
 /// The search browser's preview column. See the module docs.
 pub(crate) struct SearchPreview {
     vault: Arc<NoteVault>,
-    theme: Theme,
     /// The pane's element id and its rows' (the search browser's, or FIND's).
     ids: (&'static str, &'static str),
     /// The selection's note and needles, `None` for no note.
@@ -392,24 +391,18 @@ pub(crate) struct SearchPreview {
     /// The reader scrolled the shown note: a re-wrap keeps their place
     /// rather than the first match.
     scrolled: bool,
+    /// Redraws the pane when the theme changes: it is drawn cached, so its
+    /// parent's redraw does not reach it.
+    _theme: gpui_kit::Subscription,
     /// Reads started (tests: the debounce reads nothing while arrowing).
     #[cfg(test)]
     pub(crate) reads: usize,
 }
 
 impl SearchPreview {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        cx.notify();
-    }
-}
-
-impl SearchPreview {
-    pub(crate) fn new(vault: Arc<NoteVault>, theme: Theme) -> Self {
+    pub(crate) fn new(vault: Arc<NoteVault>, cx: &mut Context<Self>) -> Self {
         Self {
             vault,
-            theme,
             ids: (PREVIEW_ID, PREVIEW_ROW_ID),
             wanted: None,
             shown: None,
@@ -419,6 +412,7 @@ impl SearchPreview {
             rewrap: None,
             scroll: UniformListScrollHandle::new(),
             scrolled: false,
+            _theme: theme::observe(cx),
             #[cfg(test)]
             reads: 0,
         }
@@ -759,8 +753,9 @@ impl SearchPreview {
         Some((row.line, row.start, ScrollStrategy::Top))
     }
 
-    fn render_header(&self) -> AnyElement {
-        let t = &self.theme;
+    fn render_header(&self, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         let (name, count): (SharedString, Option<SharedString>) = match &self.shown {
             Some(shown) => {
                 let needles = matches!(&self.wanted, Some((_, Mark::Needles(n))) if !n.is_empty());
@@ -827,7 +822,8 @@ impl SearchPreview {
 
 impl Render for SearchPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let (family, size) = {
             let kit = cx.theme();
             (kit.mono_font_family.clone(), kit.mono_font_size)
@@ -921,7 +917,7 @@ impl Render for SearchPreview {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(self.render_header())
+            .child(self.render_header(cx))
             .when(self.shown.as_ref().is_some_and(|s| s.truncated), |pane| {
                 pane.child(
                     div()
@@ -1039,8 +1035,7 @@ impl Workspace {
                 self.open_note_dir(),
             ),
         );
-        let theme = self.theme.clone();
-        let preview = cx.new(|_| SearchPreview::new(vault, theme));
+        let preview = cx.new(|cx| SearchPreview::new(vault, cx));
         self.open_search_picker(source, query.unwrap_or_default(), open, preview, window, cx);
     }
 
@@ -1064,7 +1059,7 @@ impl Workspace {
             _ => return,
         };
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
+        let theme = theme::current(cx);
         self.show_modal(
             slot,
             HELP_REMS,

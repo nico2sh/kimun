@@ -120,22 +120,13 @@ pub(crate) struct LinksView {
     shown: bool,
     /// A file operation landed since the rows were listed.
     stale: bool,
-    theme: Theme,
 }
 
-impl LinksView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        self.list.update(cx, |list, cx| list.set_theme(t, cx));
-        cx.notify();
-    }
-}
+impl LinksView {}
 
 impl LinksView {
-    fn new(vault: Arc<NoteVault>, redraw: Notifier, theme: Theme, cx: &mut Context<Self>) -> Self {
-        let list_theme = theme.clone();
-        let list = cx.new(|cx| DrawerList::new(LINKS_LIST_ID, "Links", redraw, list_theme, cx));
+    fn new(vault: Arc<NoteVault>, redraw: Notifier, cx: &mut Context<Self>) -> Self {
+        let list = cx.new(|cx| DrawerList::new(LINKS_LIST_ID, "Links", redraw, cx));
         Self {
             list,
             vault,
@@ -143,7 +134,6 @@ impl LinksView {
             note: None,
             shown: false,
             stale: false,
-            theme,
         }
     }
 
@@ -281,7 +271,7 @@ impl Render for LinksView {
             }))
             .child(div().flex_none().px_2().pb_2().child(tabs))
             .child(self.list.clone())
-            .text_color(theme::foreground(&self.theme))
+            .text_color(theme::foreground(&theme::current(cx)))
     }
 }
 
@@ -297,8 +287,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
-        let view = cx.new(|cx| LinksView::new(vault, redraw_callback(tx), theme, cx));
+        let view = cx.new(|cx| LinksView::new(vault, redraw_callback(tx), cx));
         let list = view.read(cx).list.clone();
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_links_event));
@@ -340,5 +329,3 @@ impl Workspace {
         self.show_view(DrawerView::Links, window, cx);
     }
 }
-
-crate::theme::impl_themed!(LinksView);

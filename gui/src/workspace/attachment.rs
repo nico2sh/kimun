@@ -51,7 +51,6 @@ use kimun_notes::logic::file_ops::relocated;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::FileOp;
-use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::files::ellipsis;
@@ -211,25 +210,17 @@ pub(crate) struct AttachmentView {
     pub(crate) loaded: Loaded,
     focus: FocusHandle,
     pub(crate) scroll: UniformListScrollHandle,
-    theme: Theme,
     /// The `FollowLink` chord, for the hint beside the button.
     open_chord: Option<KeyInput>,
 }
 
 impl EventEmitter<AttachmentEvent> for AttachmentView {}
 
-impl AttachmentView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        cx.notify();
-    }
-}
+impl AttachmentView {}
 
 impl AttachmentView {
     pub(crate) fn new(
         loaded: Loaded,
-        theme: Theme,
         open_chord: Option<KeyInput>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -237,7 +228,6 @@ impl AttachmentView {
             loaded,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
-            theme,
             open_chord,
         }
     }
@@ -281,7 +271,8 @@ impl AttachmentView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let muted = theme::muted(t);
         let fg = theme::foreground(t);
         let fact = |label: &'static str, value: SharedString| {
@@ -358,7 +349,8 @@ impl AttachmentView {
     }
 
     fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         match &self.loaded.preview {
             Preview::Text { lines, truncated } => {
                 let (family, size) = {
@@ -491,7 +483,7 @@ impl Render for AttachmentView {
                     .flex_none()
                     .h(px(1.))
                     .w_full()
-                    .bg(theme::divider(&self.theme)),
+                    .bg(theme::divider(&theme::current(cx))),
             )
             .child(self.render_preview(cx))
     }
@@ -597,9 +589,8 @@ impl Workspace {
         self.release_note(cx);
         let path = loaded.path.clone();
         self.status.attachment = Some(path.clone());
-        let theme = self.theme.clone();
         let chord = self.chord_labels.follow_link;
-        let view = cx.new(|cx| AttachmentView::new(loaded, theme, chord, cx));
+        let view = cx.new(|cx| AttachmentView::new(loaded, chord, cx));
         self._attachment_events = Some(cx.subscribe(&view, |this, _, event, cx| match event {
             AttachmentEvent::OpenExternally => this.open_attachment_externally(cx),
         }));
@@ -688,5 +679,3 @@ impl Workspace {
         }
     }
 }
-
-crate::theme::impl_themed!(AttachmentView);

@@ -60,8 +60,7 @@ fn open(
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let editor =
-                    cx.new(|cx| EditorView::on_channel(Theme::default(), false, tx.clone(), cx));
+                let editor = cx.new(|cx| EditorView::on_channel(false, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, Theme::default(), layout, store, window, cx);
@@ -255,7 +254,7 @@ impl Started {
     }
 
     fn pf_window_theme(&self, cx: &TestAppContext) -> String {
-        cx.read(|cx| self.workspace.read(cx).theme.name.clone())
+        cx.read(|cx| crate::theme::current(cx).name.clone())
     }
 
     /// Give the server field the keyboard and replace its text by typing.
@@ -565,12 +564,6 @@ fn the_theme_previews_live_and_cancel_restores_it(cx: &mut TestAppContext) {
     let original = s.pf_window_theme(cx);
     let next = s.pf_pick_next_theme(cx);
     assert_eq!(s.pf_window_theme(cx), next, "the window shows it");
-    assert_eq!(s.pf_read(cx, |v| v.preview_theme().name.clone()), next);
-    let editor_theme = cx.read(|cx| {
-        let editor = s.workspace.read(cx).editor.clone();
-        editor.read(cx).theme.name.clone()
-    });
-    assert_eq!(editor_theme, next);
     let picked = s.pf_model(cx, |m| m.selected_theme().clone());
     cx.read(|cx| {
         let kit = gpui_kit::component::Theme::global(cx);
@@ -727,11 +720,6 @@ fn save_persists_and_applies_without_a_reopen(cx: &mut TestAppContext) {
     assert_eq!(s.text(cx), "# A");
     // Live: theme, autosave, sort, leader delay.
     assert_eq!(s.pf_window_theme(cx), next);
-    let files_theme = cx.read(|cx| {
-        let files = s.workspace.read(cx).files.clone().unwrap();
-        files.read(cx).theme_name().to_string()
-    });
-    assert_eq!(files_theme, next, "the drawer views take it too");
     assert_eq!(s.autosave_interval(cx), Some(autosave + 5));
     let sort = cx.read(|cx| {
         let files = s.workspace.read(cx).files.clone().unwrap();

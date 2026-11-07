@@ -132,9 +132,8 @@ impl Workspace {
             return;
         }
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         let title = name_of(&target);
-        let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, theme, cx));
+        let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, cx));
         #[cfg(test)]
         {
             self.file_dialog = Some(FileDialogView::Menu);
@@ -198,16 +197,14 @@ impl Workspace {
         let status = cx.new(|_| OpStatus::default());
         self.file_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         // Escape, the Cancel button and the backdrop leave, unless an
         // operation runs (it would finish with nothing to report into).
         let running = status.clone();
         let on_cancel = move |_: &ClickEvent, _: &mut Window, cx: &mut App| !running.read(cx).busy;
         match kind {
             FileOpKind::Rename => {
-                let view = cx.new(|cx| {
-                    RenameDialog::new(target, vault, status, workspace, theme, window, cx)
-                });
+                let view =
+                    cx.new(|cx| RenameDialog::new(target, vault, status, workspace, window, cx));
                 #[cfg(test)]
                 {
                     self.file_dialog = Some(FileDialogView::Rename(view.downgrade()));
@@ -233,8 +230,8 @@ impl Workspace {
                 );
             }
             FileOpKind::Move => {
-                let view = cx
-                    .new(|cx| MoveDialog::new(target, vault, status, workspace, theme, window, cx));
+                let view =
+                    cx.new(|cx| MoveDialog::new(target, vault, status, workspace, window, cx));
                 #[cfg(test)]
                 {
                     self.file_dialog = Some(FileDialogView::Move(view.downgrade()));
@@ -260,7 +257,7 @@ impl Workspace {
                 );
             }
             FileOpKind::Delete => {
-                let body = cx.new(|cx| DeleteBody::new(status, theme, cx));
+                let body = cx.new(|cx| DeleteBody::new(status, cx));
                 self.modal = Some(ModalKind::Delete);
                 #[cfg(test)]
                 {

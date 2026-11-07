@@ -28,7 +28,6 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::{AppMessage, FileOp};
-use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::{CANCEL_ID, CONFIRM_ID, OpStatus, error_row, footer, path_line};
@@ -56,7 +55,6 @@ pub(crate) struct CreateNoteBody {
     content: Option<String>,
     workspace: WeakEntity<Workspace>,
     status: Entity<OpStatus>,
-    theme: Theme,
     _status_watch: Subscription,
 }
 
@@ -66,7 +64,6 @@ impl CreateNoteBody {
         content: Option<String>,
         workspace: WeakEntity<Workspace>,
         status: Entity<OpStatus>,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         let watch = cx.observe(&status, |_, _, cx| cx.notify());
@@ -75,7 +72,6 @@ impl CreateNoteBody {
             content,
             workspace,
             status,
-            theme,
             _status_watch: watch,
         }
     }
@@ -94,8 +90,12 @@ impl Render for CreateNoteBody {
             .flex()
             .flex_col()
             .gap_3()
-            .child(path_line("There is no note at", &self.path, &self.theme))
-            .children(error_row(status, &self.theme))
+            .child(path_line(
+                "There is no note at",
+                &self.path,
+                &theme::current(cx),
+            ))
+            .children(error_row(status, &theme::current(cx)))
             .child(footer(
                 "Create",
                 true,
@@ -127,7 +127,6 @@ pub(crate) struct QuickNoteDialog {
     pub(crate) input: Entity<InputState>,
     workspace: WeakEntity<Workspace>,
     status: Entity<OpStatus>,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -135,7 +134,6 @@ impl QuickNoteDialog {
     fn new(
         workspace: WeakEntity<Workspace>,
         status: Entity<OpStatus>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -157,7 +155,6 @@ impl QuickNoteDialog {
             input,
             workspace,
             status,
-            theme,
             _subscriptions: subscriptions,
         }
     }
@@ -183,7 +180,8 @@ impl QuickNoteDialog {
 
 impl Render for QuickNoteDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let status = self.status.read(cx);
         let busy = status.busy;
         let save = cx.entity().downgrade();
@@ -316,13 +314,12 @@ impl Workspace {
         let status = cx.new(|_| OpStatus::default());
         self.note_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         let title = format!("Create \"{}\"?", name_of(&path));
         let body = {
             let path = path.clone();
             let content = content.clone();
             let status = status.clone();
-            cx.new(|cx| CreateNoteBody::new(path, content, workspace.clone(), status, theme, cx))
+            cx.new(|cx| CreateNoteBody::new(path, content, workspace.clone(), status, cx))
         };
         self.show_modal(
             Slot::Own(ModalKind::CreateNote),
@@ -406,8 +403,7 @@ impl Workspace {
         let status = cx.new(|_| OpStatus::default());
         self.note_status = Some(status.clone());
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
-        let view = cx.new(|cx| QuickNoteDialog::new(workspace, status.clone(), theme, window, cx));
+        let view = cx.new(|cx| QuickNoteDialog::new(workspace, status.clone(), window, cx));
         self.quick_note = Some(view.downgrade());
         let input = view.read(cx).input.clone();
         self.show_modal(

@@ -142,7 +142,6 @@ pub(crate) struct FilesPane {
     filter: Entity<InputState>,
     scroll: UniformListScrollHandle,
     tx: AppTx,
-    theme: Theme,
     /// The workspace's name: the breadcrumb's root.
     root_name: SharedString,
     _filter_events: Subscription,
@@ -151,18 +150,6 @@ pub(crate) struct FilesPane {
 impl EventEmitter<FilesEvent> for FilesPane {}
 
 impl FilesPane {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        cx.notify();
-    }
-
-    /// The name of the theme it draws in (tests).
-    #[cfg(test)]
-    pub(crate) fn theme_name(&self) -> &str {
-        &self.theme.name
-    }
-
     /// Take the sort defaults `settings` name now (the preferences were
     /// saved): see `FilesModel::set_sort_defaults`.
     pub(crate) fn set_sort_defaults(&mut self, settings: &AppSettings, cx: &mut Context<Self>) {
@@ -178,7 +165,6 @@ impl FilesPane {
         root_name: SharedString,
         settings: &AppSettings,
         tx: AppTx,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -194,7 +180,6 @@ impl FilesPane {
             filter,
             scroll: UniformListScrollHandle::new(),
             tx,
-            theme,
             root_name,
             _filter_events: filter_events,
         }
@@ -423,8 +408,8 @@ impl FilesPane {
             crumbs.extend(tail);
         }
         let last = crumbs.len() - 1;
-        let muted = theme::muted(&self.theme);
-        let current = theme::foreground(&self.theme);
+        let muted = theme::muted(&theme::current(cx));
+        let current = theme::foreground(&theme::current(cx));
         let items = crumbs.into_iter().enumerate().map(|(i, (label, target))| {
             let item = BreadcrumbItem::new(label).whitespace_nowrap();
             if elided == Some(i) {
@@ -440,9 +425,13 @@ impl FilesPane {
             }
         });
         let (field, order) = self.model.current_sort();
-        let chip = sort_chip(FILES_SORT_ID, chip_label(&field, order), &self.theme)
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FilesEvent::Sort)))
-            .test_support();
+        let chip = sort_chip(
+            FILES_SORT_ID,
+            chip_label(&field, order),
+            &theme::current(cx),
+        )
+        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FilesEvent::Sort)))
+        .test_support();
         div()
             .flex()
             .flex_none()
@@ -465,12 +454,12 @@ impl FilesPane {
             .child(chip)
     }
 
-    fn render_filter(&self) -> impl IntoElement {
+    fn render_filter(&self, cx: &gpui_kit::App) -> impl IntoElement {
         query_field(
             &self.filter,
             FILTER_ID,
             "Filter notes, or name a new one",
-            &self.theme,
+            &theme::current(cx),
         )
     }
 
@@ -489,7 +478,7 @@ impl FilesPane {
             | FileListEntry::Attachment { .. } => Some(row.path().clone()),
             FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
         };
-        let row = entry_row(row_id(row), row, selected, false, &self.theme);
+        let row = entry_row(row_id(row), row, selected, false, &theme::current(cx));
         let row = with_click_cursor(row, ClickPolicy::Open, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 ClickPolicy::Open.apply(event, this, pos, window, cx)
@@ -502,12 +491,12 @@ impl FilesPane {
     }
 
     /// What the list area says when it has no row to show.
-    fn render_note(&self, text: &'static str) -> impl IntoElement {
+    fn render_note(&self, text: &'static str, cx: &gpui_kit::App) -> impl IntoElement {
         div()
             .px_3()
             .py_2()
             .text_sm()
-            .text_color(theme::muted(&self.theme))
+            .text_color(theme::muted(&theme::current(cx)))
             .child(text)
     }
 }
@@ -891,9 +880,10 @@ impl Render for FilesPane {
             .size_full()
             .into_any_element()
         } else if self.model.is_empty() || loading {
-            self.render_note("Loading…").into_any_element()
+            self.render_note("Loading…", cx).into_any_element()
         } else {
-            self.render_note("This folder is empty").into_any_element()
+            self.render_note("This folder is empty", cx)
+                .into_any_element()
         };
         div()
             .id(FILES_ID)
@@ -930,7 +920,7 @@ impl Render for FilesPane {
                 }
             }))
             .child(self.render_breadcrumb(cx))
-            .child(self.render_filter())
+            .child(self.render_filter(cx))
             .child(
                 div()
                     .id("files-rows")
@@ -959,9 +949,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
         let name = SharedString::from(name);
-        let pane = cx.new(|cx| FilesPane::new(vault, name, settings, tx, theme, window, cx));
+        let pane = cx.new(|cx| FilesPane::new(vault, name, settings, tx, window, cx));
         self._files_events = Some(cx.subscribe_in(&pane, window, Self::on_files_event));
         self.files = Some(pane);
     }
@@ -1088,5 +1077,3 @@ impl Workspace {
         cx.notify();
     }
 }
-
-crate::theme::impl_themed!(FilesPane);

@@ -47,7 +47,6 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::list::{ListCore, ListSetup, StaticRowSource};
 use kimun_notes::logic::message::PinnedRow;
 use kimun_notes::logic::pinned::{self, Outcome};
-use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::files::{ClickPolicy, ClickRows, NOTE_ROW_REMS, ellipsis, lane_row, with_click_cursor};
@@ -115,7 +114,6 @@ pub(crate) struct PinnedNotesDialog {
     wheel: input::ScrollAccumulator,
     focus: FocusHandle,
     workspace: WeakEntity<Workspace>,
-    theme: Theme,
 }
 
 impl PinnedNotesDialog {
@@ -123,7 +121,6 @@ impl PinnedNotesDialog {
         vault: Arc<NoteVault>,
         closed: Rc<Cell<bool>>,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -141,7 +138,6 @@ impl PinnedNotesDialog {
             wheel: input::ScrollAccumulator::default(),
             focus: cx.focus_handle(),
             workspace,
-            theme,
         }
     }
 
@@ -362,7 +358,8 @@ impl PinnedNotesDialog {
         row: &PinnedRow,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let name = row.path.get_clean_name();
         let (name_color, path_color) = if row.missing {
             (theme::muted(t), theme::muted(t))
@@ -504,7 +501,8 @@ impl Focusable for PinnedNotesDialog {
 
 impl Render for PinnedNotesDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let body = div()
             .id("pinned-notes-rows")
             .role(Role::ListBox)
@@ -567,9 +565,8 @@ impl Workspace {
         };
         let closed = Rc::new(Cell::new(false));
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         let view = cx.new(|cx| {
-            let mut dialog = PinnedNotesDialog::new(vault, closed.clone(), workspace, theme, cx);
+            let mut dialog = PinnedNotesDialog::new(vault, closed.clone(), workspace, cx);
             dialog.reload(cx);
             dialog
         });

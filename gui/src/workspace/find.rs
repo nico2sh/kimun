@@ -213,7 +213,6 @@ pub(crate) struct FindView {
     /// The `SaveCurrentQuery` chord as `Save…`'s tooltip names it, rebuilt
     /// when the keymap is replaced.
     save_tip: SharedString,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
     /// Queries run (tests: the debounce runs one per pause).
     #[cfg(test)]
@@ -222,22 +221,12 @@ pub(crate) struct FindView {
 
 impl EventEmitter<FindEvent> for FindView {}
 
-impl FindView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        self.list.update(cx, |list, cx| list.set_theme(t, cx));
-        self.preview
-            .update(cx, |preview, cx| preview.set_theme(t, cx));
-        cx.notify();
-    }
-}
+impl FindView {}
 
 impl FindView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<QueryHit>>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -245,11 +234,9 @@ impl FindView {
             // Starts empty like the TUI's: backlinks are LINKS' (leader `f b`).
             InputState::new(window, cx).placeholder("Search notes")
         });
-        let preview_theme = theme.clone();
         let preview_vault = vault.clone();
-        let preview = cx.new(|_| {
-            SearchPreview::new(preview_vault, preview_theme)
-                .with_ids(FIND_PREVIEW_ID, FIND_PREVIEW_ROW_ID)
+        let preview = cx.new(|cx| {
+            SearchPreview::new(preview_vault, cx).with_ids(FIND_PREVIEW_ID, FIND_PREVIEW_ROW_ID)
         });
         let subscriptions = vec![
             cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
@@ -279,7 +266,6 @@ impl FindView {
             shown: false,
             needles: (String::new(), VaultPath::empty(), Arc::from(Vec::new())),
             save_tip: save_tip(cx),
-            theme,
             _subscriptions: subscriptions,
             #[cfg(test)]
             runs: 0,
@@ -652,7 +638,8 @@ impl FindView {
     }
 
     fn render_bar(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let list = self.list.read(cx);
         let count = (self.started && !list.is_loading()).then(|| {
             let total = list.first_row().map_or(0, |r| r.total);
@@ -743,7 +730,7 @@ impl Focusable for FindView {
 
 impl Render for FindView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = self.theme.clone();
+        let t = theme::current(cx);
         let query = self.query(cx);
         let error = error_reason(&query).map(query_problem);
         let (shown, total) = {
@@ -862,9 +849,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
-        let list = DrawerList::spawn(FIND_LIST_ID, "Results", tx, &theme, cx);
-        let view = cx.new(|cx| FindView::new(vault, list.clone(), theme, window, cx));
+        let list = DrawerList::spawn(FIND_LIST_ID, "Results", tx, cx);
+        let view = cx.new(|cx| FindView::new(vault, list.clone(), window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_find_list_event));
         self._views_events
@@ -980,5 +966,3 @@ impl Workspace {
         })
     }
 }
-
-crate::theme::impl_themed!(FindView);

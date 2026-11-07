@@ -117,26 +117,17 @@ pub(crate) struct TagsView {
     shown: bool,
     /// The vault changed since the labels were read.
     stale: bool,
-    theme: Theme,
     _filter_events: Subscription,
 }
 
 impl EventEmitter<TagsEvent> for TagsView {}
 
-impl TagsView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        self.list.update(cx, |list, cx| list.set_theme(t, cx));
-        cx.notify();
-    }
-}
+impl TagsView {}
 
 impl TagsView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<TagEntry>>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -153,7 +144,6 @@ impl TagsView {
             vault,
             shown: false,
             stale: false,
-            theme,
             _filter_events: filter_events,
         }
     }
@@ -211,7 +201,8 @@ impl Focusable for TagsView {
 
 impl Render for TagsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         div()
             .id(TAGS_ID)
             .test_support()
@@ -260,9 +251,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
-        let list = DrawerList::spawn(TAGS_LIST_ID, "Tags", tx, &theme, cx);
-        let view = cx.new(|cx| TagsView::new(vault, list.clone(), theme, window, cx));
+        let list = DrawerList::spawn(TAGS_LIST_ID, "Tags", tx, cx);
+        let view = cx.new(|cx| TagsView::new(vault, list.clone(), window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_tags_list_event));
         self._views_events
@@ -315,5 +305,3 @@ impl Workspace {
         }
     }
 }
-
-crate::theme::impl_themed!(TagsView);

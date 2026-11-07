@@ -36,7 +36,6 @@ use gpui_kit::{
 use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::logic::list::{ListCore, ListSetup, StaticRowSource};
 use kimun_notes::logic::workspaces::{WorkspaceRow, initial_selection, workspace_rows};
-use kimun_notes::settings::themes::Theme;
 use std::sync::Arc;
 
 use super::Workspace;
@@ -76,14 +75,12 @@ pub(crate) struct WorkspaceSwitcher {
     wheel: input::ScrollAccumulator,
     focus: FocusHandle,
     workspace: WeakEntity<Workspace>,
-    theme: Theme,
 }
 
 impl WorkspaceSwitcher {
     fn new(
         rows: Vec<WorkspaceRow>,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         let start = initial_selection(&rows);
@@ -101,7 +98,6 @@ impl WorkspaceSwitcher {
             wheel: input::ScrollAccumulator::default(),
             focus: cx.focus_handle(),
             workspace,
-            theme,
         }
     }
 
@@ -195,7 +191,8 @@ impl WorkspaceSwitcher {
         row: &WorkspaceRow,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let label: SharedString = if row.current {
             format!("{}, current", row.name).into()
         } else {
@@ -300,7 +297,8 @@ impl Focusable for WorkspaceSwitcher {
 
 impl Render for WorkspaceSwitcher {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let body = div()
             .id("workspace-switcher-rows")
             .role(Role::ListBox)
@@ -367,8 +365,7 @@ impl Workspace {
             .map(|settings| workspace_rows(&settings.read().unwrap_or_else(|e| e.into_inner())))
             .unwrap_or_default();
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
-        let view = cx.new(|cx| WorkspaceSwitcher::new(rows, workspace, theme, cx));
+        let view = cx.new(|cx| WorkspaceSwitcher::new(rows, workspace, cx));
         self.switcher = Some(view.downgrade());
         let workspace = cx.entity().downgrade();
         self.show_modal(
