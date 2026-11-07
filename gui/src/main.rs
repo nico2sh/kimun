@@ -168,6 +168,11 @@ fn main() {
                     let mut workspace =
                         Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);
                     workspace.set_chrome(chrome);
+                    // The manual gate's faked release, when asked for.
+                    #[cfg(feature = "fake-update")]
+                    if let Some(fake) = workspace::fake_update_backend_from_env() {
+                        workspace.set_update_backend(fake);
+                    }
                     workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });

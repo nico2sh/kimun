@@ -147,12 +147,7 @@ pub(super) fn footer(
     on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_row()
-        .justify_end()
-        .gap_2()
-        .pt_2()
+    super::modal::footer_row()
         .child(
             Button::new(CANCEL_ID)
                 .label("Cancel")

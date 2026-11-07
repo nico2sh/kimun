@@ -1118,12 +1118,7 @@ impl PropertiesDialog {
                 )
             })
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
+                modal::footer_row()
                     .child(
                         Button::new(FORM_CANCEL_ID)
                             .label("Cancel")
@@ -1184,6 +1179,7 @@ impl Workspace {
             || self.attachment_flushing.is_some()
             || self.ask_flushing.is_some()
             || self.search_flush.is_some()
+            || self.updates.flushing.is_some()
             || self.reopen_running()
     }
 

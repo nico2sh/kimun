@@ -123,6 +123,8 @@ impl Workspace {
             }
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex) => Some(NO_WORKSPACE),
+            // Leader `v u`: the update dialog or a manual check, vault or not.
+            LeaderRoute::Job(LeaderJob::CheckUpdates) => None,
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
@@ -168,10 +170,9 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::ThemePicker) => None,
             // Not the theme picker (above): the overlays without a surface
             // here yet.
-            LeaderRoute::Overlay(_)
-            | LeaderRoute::NoteDialog(..)
-            | LeaderRoute::Job(LeaderJob::CheckUpdates)
-            | LeaderRoute::GitStatus => Some(NOT_YET),
+            LeaderRoute::Overlay(_) | LeaderRoute::NoteDialog(..) | LeaderRoute::GitStatus => {
+                Some(NOT_YET)
+            }
         }
     }
 
@@ -221,6 +222,7 @@ impl Workspace {
             }
             LeaderRoute::Save => self.save_note(cx),
             LeaderRoute::Layout(step) => self.layout_step(step, window, cx),
+            LeaderRoute::Job(LeaderJob::CheckUpdates) => self.check_for_updates(window, cx),
             LeaderRoute::Job(job) => self.run_leader_job(job, cx),
             LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
@@ -330,7 +332,7 @@ impl Workspace {
                 self.flash("Reindexing…", cx);
                 tokio::spawn(jobs::reindex(vault, tx));
             }
-            // Blocked (no update dialog until M10).
+            // Needs the window (`perform_route` runs it).
             LeaderJob::CheckUpdates => {}
         }
     }

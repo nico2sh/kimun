@@ -89,6 +89,12 @@ pub(crate) const SECTIONS_ID: &str = "preferences-sections";
 /// The controls.
 pub(crate) const THEMES_ID: &str = "preferences-themes";
 pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
+/// Display's `Check now`: a manual update check.
+pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
+/// The update check's help text, and its element.
+pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
+pub(crate) const UPDATE_CHECK_HELP: &str =
+    "Checks GitHub for a newer release on startup. Check now looks right away.";
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -213,6 +219,8 @@ pub(crate) enum PreferencesEvent {
     Renamed(String),
     /// Leave, back to `theme`, and run the setup assistant.
     RunSetup { theme: Theme },
+    /// Display's `Check now`: check for an update now (the view stays).
+    CheckForUpdates,
 }
 
 /// The "Discard your changes?" question, while it is asked.
@@ -1225,19 +1233,40 @@ impl PreferencesView {
                     .flex_col()
                     .gap_1()
                     .child(
-                        Checkbox::new(UPDATE_CHECK_ID)
-                            .label("Check for updates on startup")
-                            .checked(model.update_check)
-                            .disabled(self.saving.is_some())
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                this.set_update_check(*checked, cx)
-                            })),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Checkbox::new(UPDATE_CHECK_ID)
+                                    .label("Check for updates on startup")
+                                    .checked(model.update_check)
+                                    .disabled(self.saving.is_some())
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                        this.set_update_check(*checked, cx)
+                                    })),
+                            )
+                            .child(
+                                // Acts now, saved or not: it is not a setting.
+                                Button::new(CHECK_UPDATES_ID)
+                                    .small()
+                                    .outline()
+                                    .label("Check now")
+                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                        cx.emit(PreferencesEvent::CheckForUpdates)
+                                    })),
+                            ),
                     )
-                    .child(note(
-                        "Saved for the terminal app, which reads the public list of releases \
-                         on GitHub. The desktop app does not check for updates yet.",
-                        t,
-                    )),
+                    .child(
+                        div()
+                            .id(UPDATE_CHECK_HELP_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(UPDATE_CHECK_HELP)
+                            .child(note(UPDATE_CHECK_HELP, t)),
+                    ),
             )
             .child(field(
                 "Which-key delay",
@@ -1795,6 +1824,7 @@ impl Workspace {
                 self.close_preferences(window, cx);
                 self.open_onboarding(window, cx);
             }
+            PreferencesEvent::CheckForUpdates => self.check_updates_now(cx),
         }
     }
 
@@ -1860,7 +1890,7 @@ impl Workspace {
     /// - autosave interval: a running tick restarts on the new period;
     /// - sort defaults: FILES takes them (its folder re-sorts unless sorted
     ///   by hand);
-    /// - update check: stored only (the desktop app has no update check);
+    /// - update check: read by the next launch's startup check ([`super::update`]);
     /// - server address, editor engine: `reopen` ([`needs_reopen`]) sends
     ///   `PreferencesSaved`, so the vault is entered again (M8b). Nothing else
     ///   reopens.
