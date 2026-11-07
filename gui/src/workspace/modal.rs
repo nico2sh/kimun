@@ -107,6 +107,9 @@ pub(crate) enum ModalKind {
     Sort,
     /// The pinned notes (leader `f p`, the palette).
     PinnedNotes,
+    /// The workspace switcher (`SwitchWorkspace`, leader `v s`, the
+    /// palette).
+    WorkspaceSwitcher,
 }
 
 /// Where [`Workspace::show_modal`] puts a dialog.
@@ -130,6 +133,7 @@ impl ModalKind {
             Self::QuickNote => Some(ActionShortcuts::QuickNote),
             Self::Search => Some(ActionShortcuts::SearchNotes),
             Self::SavedSearches => Some(ActionShortcuts::OpenSavedSearches),
+            Self::WorkspaceSwitcher => Some(ActionShortcuts::SwitchWorkspace),
             _ => None,
         }
     }
@@ -262,6 +266,7 @@ impl Workspace {
         self.save_search = None;
         self.sort = None;
         self.forget_pinned_notes();
+        self.switcher = None;
     }
 
     /// Run `step` with the window, once the current update is done. For

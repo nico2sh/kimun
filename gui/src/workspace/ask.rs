@@ -280,6 +280,14 @@ pub(crate) struct AskView {
 impl EventEmitter<AskEvent> for AskView {}
 
 impl AskView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        cx.notify();
+    }
+}
+
+impl AskView {
     pub(crate) fn new(
         tx: AppTx,
         theme: Theme,
@@ -1396,3 +1404,5 @@ impl Workspace {
         &self.ask_flow
     }
 }
+
+crate::theme::impl_themed!(AskView);

@@ -276,6 +276,16 @@ pub(crate) enum SourcesEvent {
 impl EventEmitter<SourcesEvent> for SourcesView {}
 
 impl SourcesView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        self.reader.update(cx, |reader, cx| reader.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl SourcesView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<SourceRow>>,
@@ -903,3 +913,5 @@ impl Workspace {
             .is_some_and(|view| view.read(cx).filter_focused(window, cx))
     }
 }
+
+crate::theme::impl_themed!(SourcesView);

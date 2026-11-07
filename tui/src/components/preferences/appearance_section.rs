@@ -2,101 +2,90 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::logic::message::AppTx;
+use crate::logic::preferences::PreferencesModel;
 use crate::settings::themes::Theme;
 
 use super::ClickMap;
 
+/// The Appearance section: the theme list. The themes and the selection
+/// live in the [`PreferencesModel`] (`themes`, `theme_idx`); this holds the
+/// list's scroll state and the click targets.
+#[derive(Default)]
 pub struct AppearanceSection {
-    themes: Vec<Theme>,
     list_state: ListState,
     clicks: ClickMap,
 }
 
 impl AppearanceSection {
-    pub fn new(themes: Vec<Theme>, active_name: &str) -> Self {
-        let idx = themes
-            .iter()
-            .position(|t| t.name == active_name)
-            .unwrap_or(0);
-        let mut list_state = ListState::default();
-        list_state.select(Some(idx));
-        Self {
-            themes,
-            list_state,
-            clicks: ClickMap::default(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Resolve a click: a theme row selects (and so previews) it; the wheel
     /// steps through themes. Returns the key a wheel notch stands for; a
-    /// row click changes the selection directly (the screen syncs it).
+    /// row click changes the model's selection directly (the screen syncs
+    /// it).
     pub fn handle_mouse(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
+        model: &mut PreferencesModel,
     ) -> Option<ratatui::crossterm::event::KeyEvent> {
         // No controls and no re-click action: a row click only selects.
         self.clicks
-            .resolve(m, self.list_state.selected(), None)
-            .into_key(|row| self.list_state.select(Some(row)))
+            .resolve(m, Some(model.theme_idx), None)
+            .into_key(|row| {
+                model.select_theme(row);
+            })
     }
 
-    pub fn selected_theme_name(&self) -> &str {
-        &self.selected_theme().name
-    }
-
-    /// The currently highlighted theme. Cheaper than resolving the name
-    /// through `AppSettings::get_theme()`, which rebuilds the whole theme
-    /// list (including custom-theme disk reads) on every call.
-    pub fn selected_theme(&self) -> &Theme {
-        debug_assert!(
-            !self.themes.is_empty(),
-            "AppearanceSection requires at least one theme"
-        );
-        let idx = self.list_state.selected().unwrap_or(0);
-        &self.themes[idx]
-    }
-}
-
-impl Component for AppearanceSection {
-    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    pub fn handle_input(
+        &mut self,
+        event: &InputEvent,
+        model: &mut PreferencesModel,
+        _tx: &AppTx,
+    ) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
-        let count = self.themes.len();
         match key.code {
             ratatui::crossterm::event::KeyCode::Down
             | ratatui::crossterm::event::KeyCode::Char('j') => {
-                let cur = self.list_state.selected().unwrap_or(0);
-                self.list_state.select(Some((cur + 1) % count));
+                model.move_theme(1);
                 EventState::Consumed
             }
             ratatui::crossterm::event::KeyCode::Up
             | ratatui::crossterm::event::KeyCode::Char('k') => {
-                let cur = self.list_state.selected().unwrap_or(0);
-                self.list_state.select(Some((cur + count - 1) % count));
+                model.move_theme(-1);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        theme: &Theme,
+        focused: bool,
+        model: &PreferencesModel,
+    ) {
         let border_style = theme.border_style(focused);
         let block = Block::default()
             .title("Appearance")
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.base_style());
-        let items: Vec<ListItem> = self
+        self.list_state.select(Some(model.theme_idx));
+        let items: Vec<ListItem> = model
             .themes
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let selected = self.list_state.selected() == Some(i);
+                let selected = model.theme_idx == i;
                 let prefix = if selected { "● " } else { "  " };
                 ListItem::new(format!("{}{}", prefix, t.name))
             })
@@ -116,7 +105,7 @@ impl Component for AppearanceSection {
         // in view, and rows map from the offset it settled on.
         self.clicks.clear();
         self.clicks
-            .list_rows(inner, self.list_state.offset(), self.themes.len());
+            .list_rows(inner, self.list_state.offset(), model.themes.len());
     }
 }
 
@@ -124,18 +113,21 @@ impl Component for AppearanceSection {
 mod tests {
     use super::*;
 
-    fn make_themes() -> Vec<Theme> {
-        vec![
+    fn model(active: &str) -> PreferencesModel {
+        let mut m = PreferencesModel::new(&crate::settings::AppSettings::default());
+        m.themes = vec![
             Theme::gruvbox_dark(),
             Theme::gruvbox_light(),
             Theme::catppuccin_mocha(),
-        ]
+        ];
+        m.theme_idx = m.themes.iter().position(|t| t.name == active).unwrap();
+        m
     }
 
     #[test]
     fn selected_theme_name_returns_initial() {
-        let section = AppearanceSection::new(make_themes(), "Gruvbox Light");
-        assert_eq!(section.selected_theme_name(), "Gruvbox Light");
+        let m = model("Gruvbox Light");
+        assert_eq!(m.selected_theme().name, "Gruvbox Light");
     }
 
     #[test]
@@ -144,15 +136,17 @@ mod tests {
             KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = AppearanceSection::new(make_themes(), "Gruvbox Dark");
+        let mut section = AppearanceSection::new();
+        let mut m = model("Gruvbox Dark");
         let key = crate::components::events::InputEvent::Key(KeyEvent {
             code: KeyCode::Down,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        section.handle_input(&key, &tx);
-        assert_eq!(section.selected_theme_name(), "Gruvbox Light");
+        section.handle_input(&key, &mut m, &tx);
+        assert_eq!(m.selected_theme().name, "Gruvbox Light");
+        assert_eq!(m.theme_name, "Gruvbox Light");
     }
 
     #[test]
@@ -161,10 +155,11 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(40, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = AppearanceSection::new(make_themes(), "Gruvbox Dark");
+        let mut section = AppearanceSection::new();
+        let m = model("Gruvbox Dark");
         let theme = Theme::gruvbox_dark();
         terminal
-            .draw(|f| section.render(f, f.area(), &theme, false))
+            .draw(|f| section.render(f, f.area(), &theme, false, &m))
             .unwrap();
     }
 }

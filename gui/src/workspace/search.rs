@@ -398,6 +398,14 @@ pub(crate) struct SearchPreview {
 }
 
 impl SearchPreview {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        cx.notify();
+    }
+}
+
+impl SearchPreview {
     pub(crate) fn new(vault: Arc<NoteVault>, theme: Theme) -> Self {
         Self {
             vault,

@@ -37,6 +37,8 @@
 //! the vault is opened again as at startup (M8b). A refused draft is shown
 //! in the assistant, back on the step that can fix it.
 
+use crate::tasks::blocking;
+use crate::theme::retheme;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -275,18 +277,6 @@ impl EventEmitter<OnboardingEvent> for OnboardingView {}
 impl Focusable for OnboardingView {
     fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus.clone()
-    }
-}
-
-/// Run `job` on tokio's blocking pool, from the GPUI side: its result, or
-/// the task's failure as text. Needs the runtime entered.
-async fn blocking<T: Send + 'static>(
-    job: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    let handle = tokio::spawn(async move { tokio::task::spawn_blocking(job).await });
-    match handle.await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(e)) | Err(e) => Err(e.to_string()),
     }
 }
 
@@ -1878,6 +1868,10 @@ impl Workspace {
     /// already open. Modals and a pending leader sequence go. Needs the
     /// tokio runtime entered.
     pub(crate) fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Preferences have the window: one takeover at a time.
+        if self.preferences_open() {
+            return;
+        }
         if self.onboarding.is_none() {
             let Some(settings) = self.settings.clone() else {
                 return;
@@ -1946,16 +1940,25 @@ impl Workspace {
         }
     }
 
-    /// Show the whole window in `t` from now on: the workspace and the
-    /// editor redraw in it, and the kit's components (dialogs, buttons,
-    /// fields) take its colours. The drawer views built over the vault
-    /// keep theirs until they are built again (a vault change rebuilds
-    /// them); while the assistant shows they are not drawn.
+    /// Show the whole window in `t` from now on: the workspace, the editor,
+    /// every drawer view over the vault (FILES, LINKS, OUTLINE, FIND, TAGS,
+    /// SEM, ASK), the Thread and the attachment view redraw in it, and the
+    /// kit's components (dialogs, buttons, fields) take its colours. A
+    /// dialog opened later takes it from the window.
     pub(crate) fn apply_theme(&mut self, t: Theme, cx: &mut Context<Self>) {
         self.editor.update(cx, |view, cx| {
             view.theme = t.clone();
             cx.notify();
         });
+        retheme(self.files.as_ref(), &t, cx);
+        retheme(self.links.as_ref(), &t, cx);
+        retheme(self.outline.as_ref(), &t, cx);
+        retheme(self.find.as_ref(), &t, cx);
+        retheme(self.tags.as_ref(), &t, cx);
+        retheme(self.semantic.as_ref(), &t, cx);
+        retheme(self.ask.as_ref(), &t, cx);
+        retheme(self.ask_sources.as_ref(), &t, cx);
+        retheme(self.attachment.as_ref(), &t, cx);
         gpui_kit::component::Theme::update(cx, |kit| theme::apply_to_kit(&t, kit));
         self.theme = t;
         cx.notify();

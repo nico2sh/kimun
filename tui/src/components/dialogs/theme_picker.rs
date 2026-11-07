@@ -19,6 +19,7 @@ use crate::components::search_list::{
     Filter, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::preferences::ThemeChoices;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -67,18 +68,16 @@ pub struct ThemePickerDialog {
 
 impl ThemePickerDialog {
     pub fn new(settings: &AppSettings) -> Self {
-        let themes = settings.theme_list();
-        let current = settings.effective_theme_name();
-        let original = themes.iter().position(|t| t.name == current).unwrap_or(0);
-        let rows: Vec<ThemeRow> = themes
-            .iter()
-            .enumerate()
-            .map(|(index, t)| ThemeRow {
-                name: t.name.clone(),
+        let choices = ThemeChoices::new(settings);
+        let rows: Vec<ThemeRow> = choices
+            .entries()
+            .map(|(index, name, current)| ThemeRow {
+                name: name.to_string(),
                 index,
-                current: index == original,
+                current,
             })
             .collect();
+        let ThemeChoices { themes, original } = choices;
         // Static, in-memory rows: built synchronously (the redraw callback is
         // never fired on this path).
         let mut list = SearchList::builder(StaticRowSource, Arc::new(|| {}))

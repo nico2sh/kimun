@@ -3,56 +3,47 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::logic::message::AppTx;
+pub use crate::logic::preferences::DEFAULT_SERVER_URL_HINT;
+use crate::logic::preferences::PreferencesModel;
 use crate::settings::themes::Theme;
-
-/// Shown grayed out when the field is empty. Mirrors the server's built-in
-/// bind default (`127.0.0.1:7573` in `kimun-server`'s config).
-pub const DEFAULT_SERVER_URL_HINT: &str = "http://localhost:7573";
 
 /// Preferences section for the optional Kimün server connection.
 ///
 /// One combined address field (URL including port) mapped to
 /// `GlobalConfig::kimun_server_url`. An empty field means the server
 /// features (semantic search, Q&A) stay off — matching the `None`
-/// semantics of the config value.
+/// semantics of the config value. Every edit commits to the model
+/// ([`PreferencesModel::set_server_url`], which normalises it).
 pub struct ServerSection {
-    /// Committed value: `None` when the field is empty.
-    pub server_url: Option<String>,
     input: SingleLineInput,
 }
 
 impl ServerSection {
-    pub fn new(server_url: Option<String>) -> Self {
-        let input = match &server_url {
+    /// The field, prefilled with the model's URL.
+    pub fn new(model: &PreferencesModel) -> Self {
+        let input = match &model.server_url {
             Some(url) => SingleLineInput::with_value(url.clone()),
             None => SingleLineInput::new(),
         };
-        Self { server_url, input }
+        Self { input }
     }
 
-    fn commit(&mut self) {
-        let trimmed = self.input.value().trim();
-        self.server_url = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-    }
-}
-
-impl Component for ServerSection {
-    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    pub fn handle_input(
+        &mut self,
+        event: &InputEvent,
+        model: &mut PreferencesModel,
+        _tx: &AppTx,
+    ) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
         match self.input.handle_key(key) {
             InputOutcome::Changed => {
-                self.commit();
+                model.set_server_url(self.input.value());
                 EventState::Consumed
             }
             InputOutcome::Consumed => EventState::Consumed,
@@ -63,7 +54,7 @@ impl Component for ServerSection {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         let block = Block::default()
             .title("Server")
             .borders(Borders::ALL)
@@ -139,64 +130,77 @@ mod tests {
         })
     }
 
-    fn type_str(section: &mut ServerSection, s: &str) {
+    fn model(url: Option<&str>) -> PreferencesModel {
+        let mut m = PreferencesModel::new(&crate::settings::AppSettings::default());
+        m.server_url = url.map(str::to_string);
+        m
+    }
+
+    fn type_str(section: &mut ServerSection, m: &mut PreferencesModel, s: &str) {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         for c in s.chars() {
-            section.handle_input(&key(KeyCode::Char(c)), &tx);
+            section.handle_input(&key(KeyCode::Char(c)), m, &tx);
         }
     }
 
     #[test]
     fn new_with_none_starts_empty() {
-        let section = ServerSection::new(None);
-        assert_eq!(section.server_url, None);
+        let m = model(None);
+        let section = ServerSection::new(&m);
+        assert!(section.input.is_empty());
     }
 
     #[test]
     fn new_with_value_preserves_it() {
-        let section = ServerSection::new(Some("http://myhost:9000".to_string()));
-        assert_eq!(section.server_url.as_deref(), Some("http://myhost:9000"));
+        let m = model(Some("http://myhost:9000"));
+        let section = ServerSection::new(&m);
+        assert_eq!(section.input.value(), "http://myhost:9000");
     }
 
     #[test]
     fn typing_commits_value_live() {
-        let mut section = ServerSection::new(None);
-        type_str(&mut section, "http://myhost:9000");
-        assert_eq!(section.server_url.as_deref(), Some("http://myhost:9000"));
+        let mut m = model(None);
+        let mut section = ServerSection::new(&m);
+        type_str(&mut section, &mut m, "http://myhost:9000");
+        assert_eq!(m.server_url.as_deref(), Some("http://myhost:9000"));
     }
 
     #[test]
     fn clearing_field_commits_none() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = ServerSection::new(Some("x".to_string()));
-        section.handle_input(&key(KeyCode::Backspace), &tx);
-        assert_eq!(section.server_url, None);
+        let mut m = model(Some("x"));
+        let mut section = ServerSection::new(&m);
+        section.handle_input(&key(KeyCode::Backspace), &mut m, &tx);
+        assert_eq!(m.server_url, None);
     }
 
     #[test]
     fn whitespace_only_commits_none() {
-        let mut section = ServerSection::new(None);
-        type_str(&mut section, "   ");
-        assert_eq!(section.server_url, None);
+        let mut m = model(None);
+        let mut section = ServerSection::new(&m);
+        type_str(&mut section, &mut m, "   ");
+        assert_eq!(m.server_url, None);
     }
 
     #[test]
     fn value_is_trimmed() {
-        let mut section = ServerSection::new(None);
-        type_str(&mut section, " http://h:1 ");
-        assert_eq!(section.server_url.as_deref(), Some("http://h:1"));
+        let mut m = model(None);
+        let mut section = ServerSection::new(&m);
+        type_str(&mut section, &mut m, " http://h:1 ");
+        assert_eq!(m.server_url.as_deref(), Some("http://h:1"));
     }
 
     #[test]
     fn enter_and_esc_bubble_up() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = ServerSection::new(None);
+        let mut m = model(None);
+        let mut section = ServerSection::new(&m);
         assert_eq!(
-            section.handle_input(&key(KeyCode::Enter), &tx),
+            section.handle_input(&key(KeyCode::Enter), &mut m, &tx),
             EventState::NotConsumed
         );
         assert_eq!(
-            section.handle_input(&key(KeyCode::Esc), &tx),
+            section.handle_input(&key(KeyCode::Esc), &mut m, &tx),
             EventState::NotConsumed
         );
     }
@@ -207,7 +211,8 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = ServerSection::new(None);
+        let m = model(None);
+        let mut section = ServerSection::new(&m);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, true))
@@ -226,7 +231,8 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut section = ServerSection::new(Some("http://myhost:9000".to_string()));
+        let m = model(Some("http://myhost:9000"));
+        let mut section = ServerSection::new(&m);
         let theme = Theme::gruvbox_dark();
         terminal
             .draw(|f| section.render(f, f.area(), &theme, false))

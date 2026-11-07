@@ -10,6 +10,8 @@ use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::preferences::FIRST_WORKSPACE_NAME;
+use crate::logic::workspaces::{WorkspaceRow, workspace_rows};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -25,8 +27,8 @@ pub enum Mode {
 }
 
 pub struct WorkspacesSection {
-    /// Sorted list of (name, path, is_current).
-    entries: Vec<(String, PathBuf, bool)>,
+    /// Every workspace, sorted by name (see [`workspace_rows`]).
+    entries: Vec<WorkspaceRow>,
     list_state: ListState,
     mode: Mode,
     input: SingleLineInput,
@@ -77,29 +79,18 @@ impl WorkspacesSection {
         self.list_state
             .selected()
             .and_then(|i| self.entries.get(i))
-            .map(|(name, _, _)| name.as_str())
+            .map(|row| row.name.as_str())
     }
 
     pub fn current_path(&self) -> Option<PathBuf> {
         self.entries
             .iter()
-            .find(|(_, _, is_current)| *is_current)
-            .map(|(_, path, _)| path.clone())
+            .find(|row| row.current)
+            .map(|row| row.path.clone())
     }
 
     pub fn refresh(&mut self, settings: &AppSettings) {
-        self.entries.clear();
-        if let Some(ref wc) = settings.workspace_config {
-            let current = &wc.global.current_workspace;
-            let mut names: Vec<&String> = wc.workspaces.keys().collect();
-            names.sort();
-            for name in names {
-                if let Some(entry) = wc.workspaces.get(name) {
-                    self.entries
-                        .push((name.clone(), entry.path.clone(), name == current));
-                }
-            }
-        }
+        self.entries = workspace_rows(settings);
         // Preserve selection or default to first
         let max = self.entries.len();
         if max == 0 {
@@ -172,18 +163,21 @@ impl WorkspacesSection {
                 EventState::Consumed
             }
             KeyCode::Enter => {
-                if let Some((name, _, is_current)) =
-                    self.list_state.selected().and_then(|i| self.entries.get(i))
-                    && !is_current
+                if let Some(name) = self
+                    .list_state
+                    .selected()
+                    .and_then(|i| self.entries.get(i))
+                    .and_then(WorkspaceRow::switch_target)
                 {
-                    tx.send(AppMessage::WorkspaceSwitched(name.clone())).ok();
+                    tx.send(AppMessage::WorkspaceSwitched(name.to_string()))
+                        .ok();
                 }
                 EventState::Consumed
             }
             KeyCode::Char('n') => {
                 self.mode = Mode::Creating;
                 self.input = if self.entries.is_empty() {
-                    SingleLineInput::with_value("default")
+                    SingleLineInput::with_value(FIRST_WORKSPACE_NAME)
                 } else {
                     SingleLineInput::new()
                 };
@@ -308,10 +302,10 @@ impl Component for WorkspacesSection {
             let items: Vec<ListItem> = self
                 .entries
                 .iter()
-                .map(|(name, path, is_current)| {
-                    let marker = if *is_current { "\u{25CF} " } else { "  " };
-                    let line = format!("{}{}  {}", marker, name, path.to_string_lossy());
-                    let style = if *is_current {
+                .map(|row| {
+                    let marker = if row.current { "\u{25CF} " } else { "  " };
+                    let line = format!("{}{}  {}", marker, row.name, row.path.to_string_lossy());
+                    let style = if row.current {
                         Style::default()
                             .fg(theme.accent.to_ratatui())
                             .bg(bg)
@@ -445,8 +439,8 @@ mod tests {
         let section = WorkspacesSection::new(&settings);
         assert_eq!(section.entries.len(), 2);
         // Sorted alphabetically
-        assert_eq!(section.entries[0].0, "personal");
-        assert_eq!(section.entries[1].0, "work");
+        assert_eq!(section.entries[0].name, "personal");
+        assert_eq!(section.entries[1].name, "work");
     }
 
     #[test]

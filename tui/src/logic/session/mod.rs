@@ -520,6 +520,27 @@ impl NoteSession {
         self.autosave.restart(interval, tx.clone());
     }
 
+    /// The running tick's period in seconds, `None` while no tick runs.
+    pub fn autosave_interval(&self) -> Option<u64> {
+        self.autosave.interval_secs()
+    }
+
+    /// The settings' `autosave_interval_secs` may have changed (the
+    /// preferences were saved): a running tick is restarted on the new
+    /// period; a stopped one stays stopped (whatever stopped it starts it
+    /// again, on the settings as they are then). True when it was restarted.
+    /// Calls `tokio::spawn`: needs a tokio context.
+    pub fn retime_autosave(&mut self, tx: &AppTx) -> bool {
+        let wanted = self.settings.read().unwrap().autosave_interval_secs;
+        match self.autosave.interval_secs() {
+            Some(running) if running != wanted => {
+                self.autosave.restart(wanted, tx.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_save_timeout(&mut self, timeout: Duration) {
         self.save_timeout = timeout;

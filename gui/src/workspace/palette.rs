@@ -198,6 +198,8 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::FindSaved => Some(ActionShortcuts::OpenSavedSearches),
         LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
         LeaderAction::AskFocus => Some(ActionShortcuts::OpenAsk),
+        LeaderAction::VaultSwitch => Some(ActionShortcuts::SwitchWorkspace),
+        LeaderAction::VaultPreferences => Some(ActionShortcuts::OpenPreferences),
         _ => None,
     }
 }

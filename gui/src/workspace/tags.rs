@@ -124,6 +124,15 @@ pub(crate) struct TagsView {
 impl EventEmitter<TagsEvent> for TagsView {}
 
 impl TagsView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl TagsView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<TagEntry>>,
@@ -306,3 +315,5 @@ impl Workspace {
         }
     }
 }
+
+crate::theme::impl_themed!(TagsView);

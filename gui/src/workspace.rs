@@ -126,10 +126,23 @@
 //! and the editor are not drawn and the workspace's chords do nothing until
 //! it is finished or left. Its theme choice restyles the window live.
 //!
+//! **Preferences (M9b).** `OpenPreferences` (F4, Ctrl+,), leader `v p` and
+//! the palette show Preferences in place of the Panels ([`preferences`]),
+//! the same takeover as the setup assistant. A saved draft applies at once;
+//! only a new server address or editor engine enters the vault again.
+//!
 //! **Pinned notes (M7b G8).** The pinned-notes dialog (leader `f p`, the
 //! palette) lists the vault's pins by number: a digit opens one, and pins
 //! are raised, lowered and unpinned in place, each change written through
 //! core as it is made ([`pinned`]).
+//!
+//! **Workspace switcher (M8d).** F5 (`SwitchWorkspace`), leader `v s` and
+//! the palette list the configured workspaces, the current one marked; a
+//! pick moves the window onto another through the vault change
+//! ([`switcher`], [`reopen`]). It opens in every window state but under the
+//! setup assistant; with no workspace it offers the assistant. While the
+//! editor Panel shows an empty state, that state holds the editor's focus
+//! handle, so the window's chords still reach it.
 
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -494,6 +507,8 @@ pub(crate) struct Workspace {
     pub(crate) sort: Option<sort::SortOpen>,
     /// The pinned-notes dialog, while open ([`pinned`]).
     pub(crate) pinned: Option<pinned::PinnedOpen>,
+    /// The workspace switcher, while open ([`switcher`]).
+    pub(crate) switcher: Option<WeakEntity<switcher::WorkspaceSwitcher>>,
     /// The write of the open note before a search result opens: the
     /// browser waits for it, and it holds the note like a file operation.
     search_flush: Option<Task<()>>,
@@ -540,9 +555,16 @@ pub(crate) struct Workspace {
     /// Another vault change was asked for while one ran: the vault is
     /// opened again from the settings as they are then.
     reopen_again: bool,
+    /// The workspace a switch asked for, made current (and persisted) only
+    /// once the open note is flushed: a switch the flush refuses leaves the
+    /// settings naming the workspace the window stays on.
+    switch_to: Option<String>,
     /// The setup assistant, while it has the window ([`onboarding`]).
     pub(crate) onboarding: Option<Entity<onboarding::OnboardingView>>,
     _onboarding_events: Option<Subscription>,
+    /// Preferences, while they have the window ([`preferences`]).
+    pub(crate) preferences: Option<Entity<preferences::PreferencesView>>,
+    _preferences_events: Option<Subscription>,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -685,6 +707,7 @@ impl Workspace {
             saved_searches: None,
             sort: None,
             pinned: None,
+            switcher: None,
             save_search: None,
             save_task: None,
             search_flush: None,
@@ -707,8 +730,11 @@ impl Workspace {
             ask_test_client: None,
             reopening: None,
             reopen_again: false,
+            switch_to: None,
             onboarding: None,
             _onboarding_events: None,
+            preferences: None,
+            _preferences_events: None,
         }
     }
 
@@ -964,6 +990,12 @@ impl Workspace {
                     }
                     if workspace.onboarding_open() {
                         tracing::warn!("ExecuteLeaderAction({action:?}) dropped: the setup runs");
+                        return;
+                    }
+                    if workspace.preferences_open() {
+                        tracing::warn!(
+                            "ExecuteLeaderAction({action:?}) dropped: the preferences show"
+                        );
                         return;
                     }
                     let route = workspace.route_of(action);
@@ -1248,6 +1280,17 @@ impl Workspace {
         handle.unwrap_or_else(|| self.slot_focus(view).clone())
     }
 
+    /// The handle of a view that has the whole window (the setup assistant
+    /// first, then Preferences), if one has.
+    fn takeover_focus(&self, cx: &App) -> Option<FocusHandle> {
+        if let Some(view) = self.onboarding.as_ref() {
+            return Some(view.read(cx).focus_handle(cx));
+        }
+        self.preferences
+            .as_ref()
+            .map(|view| view.read(cx).focus_handle(cx))
+    }
+
     fn handle_for(&self, panel: Panel, cx: &App) -> FocusHandle {
         match panel {
             Panel::Rail => self.rail_focus.clone(),
@@ -1277,9 +1320,9 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        // The setup assistant has the window: the keyboard is its.
-        if let Some(view) = self.onboarding.as_ref() {
-            let handle = view.read(cx).focus_handle(cx);
+        // The setup assistant or Preferences have the window: the keyboard
+        // is theirs.
+        if let Some(handle) = self.takeover_focus(cx) {
             window.focus(&handle, cx);
             return;
         }
@@ -1602,8 +1645,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The setup assistant has every key; no shell chord runs under it.
-        if self.onboarding.is_some() {
+        // The setup assistant and Preferences have every key; no shell chord
+        // runs under them.
+        if self.onboarding.is_some() || self.preferences.is_some() {
             return;
         }
         // A pending leader sequence owns every key, in every panel, ahead of
@@ -1735,6 +1779,15 @@ impl Workspace {
             ActionShortcuts::YankRow => return self.yank_row(key.is_some(), window, cx),
             // The Thread, the composer focused (leader `a a`).
             ActionShortcuts::OpenAsk => self.ask_step(AskStep::Focus, window, cx),
+            // The workspace switcher, in every window state (M8d).
+            // Preferences, in every window state (M9b).
+            ActionShortcuts::OpenPreferences => self.open_preferences(window, cx),
+            ActionShortcuts::SwitchWorkspace => self.toggle_modal(
+                ModalKind::WorkspaceSwitcher,
+                Self::open_workspace_switcher,
+                window,
+                cx,
+            ),
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
@@ -2186,7 +2239,13 @@ impl Workspace {
         };
         let editor_shown = empty.is_none() && attachment.is_none() && ask.is_none();
         let document = match (&empty, ask, attachment) {
-            (Some(empty), _, _) => self.render_empty(empty).into_any_element(),
+            // The editor is not drawn: its focus handle sits on the empty
+            // state, so the keyboard still reaches the window's chords (F5
+            // away from a workspace that would not open, the leader, the
+            // palette).
+            (Some(empty), _, _) => self
+                .render_empty(empty, &self.editor.read(cx).focus_handle(cx))
+                .into_any_element(),
             (None, Some(view), _) => div()
                 .flex()
                 .flex_col()
@@ -2274,7 +2333,9 @@ impl Workspace {
     }
 
     /// Why there is no note to edit, centred in the editor Panel.
-    fn render_empty(&self, empty: &EmptyState) -> impl IntoElement {
+    /// `focus` is the editor's handle: the editor is not drawn, so the
+    /// empty state holds the keyboard for it.
+    fn render_empty(&self, empty: &EmptyState, focus: &FocusHandle) -> impl IntoElement {
         let (icon, tint) = if empty.failed {
             (IconName::TriangleAlert, theme::error(&self.theme))
         } else {
@@ -2282,6 +2343,7 @@ impl Workspace {
         };
         div()
             .id(EMPTY_STATE_ID)
+            .track_focus(focus)
             .test_support()
             .role(Role::Group)
             .aria_label(SharedString::from(empty.title.clone()))
@@ -2314,10 +2376,8 @@ impl Workspace {
 
 impl Focusable for Workspace {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        match self.onboarding.as_ref() {
-            Some(view) => view.read(cx).focus_handle(cx),
-            None => self.handle_for(self.layout.focused(), cx),
-        }
+        self.takeover_focus(cx)
+            .unwrap_or_else(|| self.handle_for(self.layout.focused(), cx))
     }
 }
 
@@ -2327,6 +2387,16 @@ impl Render for Workspace {
         // the workspace's key handler is not attached, so its chords are
         // inert.
         if let Some(view) = self.onboarding.clone() {
+            return div()
+                .id("workspace")
+                .flex()
+                .size_full()
+                .bg(theme::background(&self.theme))
+                .child(view)
+                .into_any_element();
+        }
+        // Preferences likewise.
+        if let Some(view) = self.preferences.clone() {
             return div()
                 .id("workspace")
                 .flex()
@@ -2474,6 +2544,7 @@ mod outline;
 mod palette;
 mod picker;
 mod pinned;
+mod preferences;
 mod properties;
 mod query_field;
 mod reopen;
@@ -2483,6 +2554,7 @@ mod search;
 mod semantic;
 mod server;
 mod sort;
+mod switcher;
 mod tags;
 
 #[cfg(test)]
@@ -2516,6 +2588,8 @@ mod picker_tests;
 #[cfg(test)]
 mod pinned_tests;
 #[cfg(test)]
+mod preferences_tests;
+#[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
 mod reopen_tests;
@@ -2529,6 +2603,8 @@ mod semantic_tests;
 mod sort_tests;
 #[cfg(test)]
 mod start_tests;
+#[cfg(test)]
+mod switcher_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

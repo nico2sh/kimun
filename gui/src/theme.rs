@@ -352,11 +352,16 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.button_danger_foreground = page.into();
     kit.button_danger_hover = mix_rgba(danger, page, hovered).into();
     kit.button_danger_active = mix_rgba(danger, page, pressed).into();
-    // The kit Radio (the setup assistant's Nerd Fonts, Editor backend and
-    // Updates choices) reads only roles mapped above: checked `primary` with
-    // its mark `primary_foreground`, unchecked `input` (border and fill), the
-    // label `foreground`, a disabled label `muted_foreground`, and the focus
-    // `ring`.
+    // The kit Radio (the setup assistant's Editor backend and Updates
+    // choices, Preferences' sort and backend choices) reads only roles mapped
+    // above: checked `primary` with its mark `primary_foreground`, unchecked
+    // `input` (border and fill), the label `foreground`, a disabled label
+    // `muted_foreground`, and the focus `ring`.
+    // The kit Checkbox (Preferences' update check) reads the same roles:
+    // checked `primary` with its tick `primary_foreground`, unchecked the
+    // `input` border on `input_background()` (derived from `input` and
+    // `background`), the label `foreground`, a disabled label
+    // `muted_foreground`, the focus `ring`.
 }
 
 // ---- FILES rows --------------------------------------------------------------
@@ -538,6 +543,38 @@ fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// A view that draws in the window's [`Theme`] and takes a new one in place
+/// (a theme preview, a switch). Implemented over the view's own inherent
+/// `set_theme` by [`impl_themed!`], so [`retheme`] reaches it generically.
+pub(crate) trait Themed: Sized + 'static {
+    fn set_theme(&mut self, t: &Theme, cx: &mut gpui_kit::Context<Self>);
+}
+
+/// Implement [`Themed`] for views that already have the inherent
+/// `set_theme(&mut self, &Theme, &mut Context<Self>)`.
+macro_rules! impl_themed {
+    ($($view:ty),+ $(,)?) => {$(
+        impl $crate::theme::Themed for $view {
+            fn set_theme(&mut self, t: &kimun_notes::settings::themes::Theme, cx: &mut gpui_kit::Context<Self>) {
+                // The inherent method wins path resolution: not recursion.
+                <$view>::set_theme(self, t, cx)
+            }
+        }
+    )+};
+}
+pub(crate) use impl_themed;
+
+/// Hand `t` to `view` when it is open.
+pub(crate) fn retheme<V: Themed>(
+    view: Option<&gpui_kit::Entity<V>>,
+    t: &Theme,
+    cx: &mut gpui_kit::App,
+) {
+    if let Some(view) = view {
+        view.update(cx, |view, cx| Themed::set_theme(view, t, cx));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +654,17 @@ mod tests {
             assert_eq!(kit.primary_foreground, hsla(background(&t)));
             assert_eq!(kit.input, hsla(divider(&t)));
             assert_eq!(kit.muted_foreground, hsla(muted(&t)));
+            // The Checkbox (Preferences' update check): checked fill and
+            // its tick, the unchecked box (border `input`, fill derived
+            // from `input` / `background`), the label and a disabled one.
+            assert_eq!(kit.primary, hsla(focus_border(&t)));
+            assert_eq!(kit.foreground, hsla(foreground(&t)));
+            assert_eq!(kit.background, hsla(panel_background(&t)));
+            assert_ne!(
+                kit.input_background(),
+                hsla(focus_border(&t)),
+                "the empty box never reads as checked"
+            );
         });
     }
 

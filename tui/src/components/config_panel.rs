@@ -16,15 +16,9 @@ use crate::logic::message::{AppMessage, AppTx, ScreenEvent};
 use crate::settings::themes::Theme;
 
 /// What the CFG drawer view displays — resolved by the host screen when the
-/// view opens (the panel itself holds no settings handle).
-#[derive(Default, Clone)]
-pub struct ConfigInfo {
-    pub theme_name: String,
-    pub leader_key: String,
-    pub preferences_key: String,
-    pub leader_timeout_ms: u64,
-    pub config_path: String,
-}
+/// view opens (the panel itself holds no settings handle), with
+/// [`config_info`](crate::logic::preferences::config_info).
+pub use crate::logic::preferences::ConfigInfo;
 
 /// Read-only settings summary plus two launcher keys: `t`/Enter opens the
 /// theme picker, `p` opens Preferences. Clicking a launcher row is its key.

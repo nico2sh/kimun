@@ -138,6 +138,8 @@ fn default_tables() {
         vec![
             lw("ctrl+q", A::Quit),
             lw("ctrl+shift+q", A::Quit),
+            lw("f(4)", A::OpenPreferences),
+            lw("ctrl+,", A::OpenPreferences),
             lw("ctrl+k", A::SearchNotes),
             lw("ctrl+shift+k", A::SearchNotes),
             lw("ctrl+o", A::OpenNote),
@@ -160,6 +162,7 @@ fn default_tables() {
             lw("ctrl+d", A::SaveCurrentQuery),
             lw("ctrl+shift+d", A::SaveCurrentQuery),
             lw("f(6)", A::OpenAsk),
+            lw("f(5)", A::SwitchWorkspace),
             lw("ctrl+f", A::FindInBuffer),
             lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
@@ -185,6 +188,8 @@ fn default_tables() {
         table(&Keymap::defaults(MacOs)),
         vec![
             lw("cmd+q", A::Quit),
+            lw("f(4)", A::OpenPreferences),
+            lw("cmd+,", A::OpenPreferences),
             lw("cmd+k", A::SearchNotes),
             lw("cmd+o", A::OpenNote),
             lw("cmd+j", A::NewJournal),
@@ -200,6 +205,7 @@ fn default_tables() {
             lw("f(3)", A::OpenSavedSearches),
             lw("cmd+d", A::SaveCurrentQuery),
             lw("f(6)", A::OpenAsk),
+            lw("f(5)", A::SwitchWorkspace),
             lw("cmd+f", A::FindInBuffer),
             lw("cmd+alt+f", A::ReplaceInBuffer),
             lw("cmd+shift+b", A::Leader),
@@ -217,6 +223,33 @@ fn default_tables() {
             lw("cmd+alt+shift+up", A::MoveViewUp),
             lw("cmd+alt+shift+down", A::MoveViewDown),
         ]
+    );
+}
+
+/// Preferences (M9b) are the TUI's F4 and primary+comma from every panel,
+/// under vim too (no letter: no twin).
+#[test]
+fn preferences_are_f4_and_primary_comma_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    for panel in PANELS {
+        for vim in [false, true] {
+            assert_eq!(
+                lw.resolve(KeyInput::plain(Key::F(4)), ctx(panel, vim)),
+                Some(&A::OpenPreferences)
+            );
+            assert_eq!(
+                lw.resolve(chord("ctrl+,"), ctx(panel, vim)),
+                Some(&A::OpenPreferences)
+            );
+        }
+    }
+    let mac = Keymap::defaults(MacOs);
+    assert_eq!(
+        mac.resolve(
+            KeyInput::new(Key::Char(','), Mods::SUPER),
+            ctx(Panel::Editor, false)
+        ),
+        Some(&A::OpenPreferences)
     );
 }
 
@@ -479,6 +512,37 @@ fn open_ask_is_f6_from_every_panel() {
         assert!(
             default_chords(&A::OpenAsk, p).is_some(),
             "{p:?}: OpenAsk is bound, not marked unbound"
+        );
+    }
+}
+
+/// The workspace switcher (F5, M8d) from every panel, vim or not, on both
+/// platforms: the TUI's default chord, no longer shipped unbound.
+#[test]
+fn switch_workspace_is_f5_from_every_panel() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let mac = Keymap::defaults(MacOs);
+    for panel in PANELS {
+        for vim in [false, true] {
+            let at = ctx(panel, vim);
+            assert_eq!(
+                lw.resolve(chord("f5"), at),
+                Some(&A::SwitchWorkspace),
+                "{panel:?}"
+            );
+            assert_eq!(
+                mac.resolve(chord("f5"), at),
+                Some(&A::SwitchWorkspace),
+                "{panel:?}"
+            );
+        }
+    }
+    assert_eq!(lw.chord_for(&A::SwitchWorkspace), Some(chord("f5")));
+    assert_eq!(mac.chord_for(&A::SwitchWorkspace), Some(chord("f5")));
+    for p in PLATFORMS {
+        assert!(
+            default_chords(&A::SwitchWorkspace, p).is_some(),
+            "{p:?}: SwitchWorkspace is bound, not marked unbound"
         );
     }
 }
