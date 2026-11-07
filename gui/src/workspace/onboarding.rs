@@ -38,7 +38,6 @@
 //! in the assistant, back on the step that can fix it.
 
 use crate::tasks::blocking;
-use crate::theme::retheme;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -251,8 +250,6 @@ impl Chooser {
 /// The setup assistant. See the module docs.
 pub(crate) struct OnboardingView {
     settings: SharedSettings,
-    /// The theme the assistant draws with: the preview.
-    theme: Theme,
     /// The theme the window had when the assistant opened.
     original: Theme,
     /// `None` while it is being read.
@@ -305,7 +302,6 @@ impl OnboardingView {
         });
         Self {
             settings,
-            theme: original.clone(),
             original,
             model: None,
             workspaces: Vec::new(),
@@ -397,12 +393,6 @@ impl OnboardingView {
     #[cfg(test)]
     pub(crate) fn finishing(&self) -> bool {
         self.finishing.is_some()
-    }
-
-    /// The theme the assistant draws with.
-    #[cfg(test)]
-    pub(crate) fn preview_theme(&self) -> &Theme {
-        &self.theme
     }
 
     fn first_run(&self) -> bool {
@@ -531,7 +521,6 @@ impl OnboardingView {
         };
         if let Some(t) = model.select_theme(idx) {
             let t = t.clone();
-            self.theme = t.clone();
             self.theme_scroll
                 .scroll_to_item(idx, ScrollStrategy::Nearest);
             cx.emit(OnboardingEvent::Preview(t));
@@ -1042,8 +1031,9 @@ fn note(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
 }
 
 impl OnboardingView {
-    fn render_header(&self, step: Option<OnbStep>) -> impl IntoElement {
-        let t = &self.theme;
+    fn render_header(&self, step: Option<OnbStep>, cx: &gpui_kit::App) -> impl IntoElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         let index = self.model.as_ref().map(OnboardingModel::step_index);
         let (title, index) = match (self.confirm, step) {
             (Some(Confirm::Quit), _) => ("Quit kimün?", index),
@@ -1097,8 +1087,9 @@ impl OnboardingView {
             )
     }
 
-    fn render_welcome(&self) -> AnyElement {
-        let t = &self.theme;
+    fn render_welcome(&self, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         div()
             .flex()
             .flex_col()
@@ -1148,7 +1139,8 @@ impl OnboardingView {
     }
 
     fn render_workspace(&self, model: &OnboardingModel, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         if !model.first_run {
             let rows = self.workspaces.iter().map(|row| {
                 div()
@@ -1292,7 +1284,8 @@ impl OnboardingView {
     }
 
     fn render_theme(&self, model: &OnboardingModel, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let count = model.themes.len();
         let list = uniform_list(
             THEME_LIST_ID,
@@ -1301,7 +1294,7 @@ impl OnboardingView {
                 let Some(model) = this.model.as_ref() else {
                     return Vec::new();
                 };
-                let t = this.theme.clone();
+                let t = theme::current(cx);
                 let hover = theme::hover_background(&t);
                 range
                     .filter_map(|ix| model.themes.get(ix).map(|theme| (ix, theme.name.clone())))
@@ -1366,7 +1359,8 @@ impl OnboardingView {
     }
 
     fn render_backend(&self, model: &OnboardingModel, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let radios = model
             .backends()
             .iter()
@@ -1386,7 +1380,8 @@ impl OnboardingView {
     }
 
     fn render_updates(&self, model: &OnboardingModel, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         div()
             .flex()
             .flex_col()
@@ -1409,8 +1404,9 @@ impl OnboardingView {
             .into_any_element()
     }
 
-    fn render_summary(&self, model: &OnboardingModel) -> AnyElement {
-        let t = &self.theme;
+    fn render_summary(&self, model: &OnboardingModel, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         let current = self
             .workspaces
             .iter()
@@ -1474,8 +1470,9 @@ impl OnboardingView {
             .into_any_element()
     }
 
-    fn render_confirm(&self, confirm: Confirm) -> AnyElement {
-        let t = &self.theme;
+    fn render_confirm(&self, confirm: Confirm, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         let text = match confirm {
             Confirm::Quit => "No workspace is set up yet, and kimün cannot run without one.",
             Confirm::Discard => "Your setup changes have not been applied.",
@@ -1484,7 +1481,8 @@ impl OnboardingView {
     }
 
     fn render_chooser(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let Some(chooser) = self.chooser.as_ref() else {
             return div().into_any_element();
         };
@@ -1511,7 +1509,7 @@ impl OnboardingView {
                     let Some(chooser) = this.chooser.as_ref() else {
                         return Vec::new();
                     };
-                    let t = this.theme.clone();
+                    let t = theme::current(cx);
                     let hover = theme::hover_background(&t);
                     range
                         .filter_map(|ix| chooser.rows().get(ix).map(|d| (ix, d.clone())))
@@ -1761,21 +1759,21 @@ impl OnboardingView {
 
 impl Render for OnboardingView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = self.theme.clone();
+        let t = theme::current(cx);
         let step = self.step();
         let body = match (self.confirm, self.model.as_ref()) {
-            (Some(confirm), _) => self.render_confirm(confirm),
+            (Some(confirm), _) => self.render_confirm(confirm, cx),
             (None, _) if self.chooser.is_some() => self.render_chooser(cx),
             (None, None) => note("Getting the setup ready…", &t).into_any_element(),
             (None, Some(model)) => match model.step {
-                OnbStep::Welcome => self.render_welcome(),
+                OnbStep::Welcome => self.render_welcome(cx),
                 OnbStep::Workspace => self.render_workspace(model, cx),
                 // Never shown: the desktop app's model has no Nerd Fonts step.
                 OnbStep::NerdFonts => div().into_any_element(),
                 OnbStep::Theme => self.render_theme(model, cx),
                 OnbStep::Backend => self.render_backend(model, cx),
                 OnbStep::Updates => self.render_updates(model, cx),
-                OnbStep::Summary => self.render_summary(model),
+                OnbStep::Summary => self.render_summary(model, cx),
             },
         };
         let message = self.message.clone();
@@ -1812,7 +1810,7 @@ impl Render for OnboardingView {
                     .border_1()
                     .border_color(theme::divider(&t))
                     .bg(theme::panel_background(&t))
-                    .child(self.render_header(step))
+                    .child(self.render_header(step, cx))
                     .child(
                         div()
                             .id("onboarding-body")
@@ -1880,7 +1878,7 @@ impl Workspace {
                 self.close_modal(window, cx);
             }
             self.cancel_leader(cx);
-            let original = self.theme.clone();
+            let original = (*theme::current(cx)).clone();
             let view = cx.new(|cx| OnboardingView::new(settings, original, window, cx));
             self._onboarding_events =
                 Some(cx.subscribe_in(&view, window, Self::on_onboarding_event));
@@ -1940,27 +1938,13 @@ impl Workspace {
         }
     }
 
-    /// Show the whole window in `t` from now on: the workspace, the editor,
-    /// every drawer view over the vault (FILES, LINKS, OUTLINE, FIND, TAGS,
-    /// SEM, ASK), the Thread and the attachment view redraw in it, and the
-    /// kit's components (dialogs, buttons, fields) take its colours. A
-    /// dialog opened later takes it from the window.
+    /// Show the whole window in `t` from now on: the one theme every view
+    /// reads as it renders ([`theme::set_current`]) and the kit's components
+    /// (dialogs, buttons, fields) take its colours. A view opened later
+    /// reads it too.
     pub(crate) fn apply_theme(&mut self, t: Theme, cx: &mut Context<Self>) {
-        self.editor.update(cx, |view, cx| {
-            view.theme = t.clone();
-            cx.notify();
-        });
-        retheme(self.files.as_ref(), &t, cx);
-        retheme(self.links.as_ref(), &t, cx);
-        retheme(self.outline.as_ref(), &t, cx);
-        retheme(self.find.as_ref(), &t, cx);
-        retheme(self.tags.as_ref(), &t, cx);
-        retheme(self.semantic.as_ref(), &t, cx);
-        retheme(self.ask.as_ref(), &t, cx);
-        retheme(self.ask_sources.as_ref(), &t, cx);
-        retheme(self.attachment.as_ref(), &t, cx);
         gpui_kit::component::Theme::update(cx, |kit| theme::apply_to_kit(&t, kit));
-        self.theme = t;
+        theme::set_current(cx, t);
         cx.notify();
     }
 }

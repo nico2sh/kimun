@@ -368,7 +368,7 @@ impl Workspace {
         }
         let entries = self.palette_entries(self.layout.focused(), cx);
         let workspace = cx.entity().downgrade();
-        let quiet = theme::muted(&self.theme);
+        let quiet = theme::muted(&theme::current(cx));
         let palette = cx.new(|cx| Palette::new(entries, quiet, workspace, window, cx));
         self.palette = Some(palette.downgrade());
         let state = palette.read(cx).state.clone();

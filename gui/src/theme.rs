@@ -543,36 +543,34 @@ fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
-/// A view that draws in the window's [`Theme`] and takes a new one in place
-/// (a theme preview, a switch). Implemented over the view's own inherent
-/// `set_theme` by [`impl_themed!`], so [`retheme`] reaches it generically.
-pub(crate) trait Themed: Sized + 'static {
-    fn set_theme(&mut self, t: &Theme, cx: &mut gpui_kit::Context<Self>);
+/// The theme the window is drawn in, shared by every view: they read it
+/// when they render ([`current`]) instead of keeping a copy, so a theme
+/// change is one [`set_current`] and no view can be left on the old one.
+struct AppTheme(std::sync::Arc<Theme>);
+
+impl gpui_kit::Global for AppTheme {}
+
+/// Make `theme` the one every view draws in, and redraw the window. Cached
+/// views follow through [`observe`]. Needs the kit initialised; the kit's
+/// own component colours are the caller's ([`apply_to_kit`]).
+pub(crate) fn set_current(cx: &mut gpui_kit::App, theme: Theme) {
+    cx.set_global(AppTheme(std::sync::Arc::new(theme)));
 }
 
-/// Implement [`Themed`] for views that already have the inherent
-/// `set_theme(&mut self, &Theme, &mut Context<Self>)`.
-macro_rules! impl_themed {
-    ($($view:ty),+ $(,)?) => {$(
-        impl $crate::theme::Themed for $view {
-            fn set_theme(&mut self, t: &kimun_notes::settings::themes::Theme, cx: &mut gpui_kit::Context<Self>) {
-                // The inherent method wins path resolution: not recursion.
-                <$view>::set_theme(self, t, cx)
-            }
-        }
-    )+};
+/// The theme in effect. Cheap to take (a shared pointer); take it once per
+/// render and borrow from it. The default theme before [`set_current`] has
+/// run (a view built outside the app, in a test).
+pub(crate) fn current(cx: &gpui_kit::App) -> std::sync::Arc<Theme> {
+    cx.try_global::<AppTheme>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default()
 }
-pub(crate) use impl_themed;
 
-/// Hand `t` to `view` when it is open.
-pub(crate) fn retheme<V: Themed>(
-    view: Option<&gpui_kit::Entity<V>>,
-    t: &Theme,
-    cx: &mut gpui_kit::App,
-) {
-    if let Some(view) = view {
-        view.update(cx, |view, cx| Themed::set_theme(view, t, cx));
-    }
+/// Redraw `view` whenever the theme changes. Only for a view the window
+/// keeps cached (it is not drawn again when its parent is): every other
+/// view reads [`current`] as it renders.
+pub(crate) fn observe<T: 'static>(cx: &mut gpui_kit::Context<T>) -> gpui_kit::Subscription {
+    cx.observe_global::<AppTheme>(|_, cx| cx.notify())
 }
 
 #[cfg(test)]
@@ -919,5 +917,55 @@ mod tests {
             ..rgb_theme()
         };
         assert_eq!(caret(&t), rgba((255, 255, 255)));
+    }
+
+    /// A view that reads [`current`] as it renders, and one that opted into
+    /// [`observe`] (a cached view): one `set_current` reaches both, and
+    /// `current` is the default theme until something installs one.
+    struct Probe {
+        drawn_in: Vec<String>,
+        _theme: Option<gpui_kit::Subscription>,
+    }
+
+    impl gpui_kit::Render for Probe {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            self.drawn_in.push(current(cx).name.clone());
+            gpui_kit::div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn one_set_current_redraws_the_observing_view_in_the_new_theme(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        assert_eq!(
+            cx.read(|cx| current(cx).name.clone()),
+            Theme::default().name,
+            "before any is installed"
+        );
+        let (view, cx) = cx.add_window_view(|_, cx| Probe {
+            drawn_in: Vec::new(),
+            _theme: Some(observe(cx)),
+        });
+        cx.run_until_parked();
+        let other = Theme {
+            name: "Some Other Theme".to_string(),
+            ..Theme::default()
+        };
+        cx.update(|_, cx| set_current(cx, other));
+        cx.run_until_parked();
+        view.read_with(cx, |p, _| {
+            assert_eq!(
+                p.drawn_in.last().map(String::as_str),
+                Some("Some Other Theme"),
+                "drawn again in the new theme: {:?}",
+                p.drawn_in
+            );
+        });
     }
 }

@@ -48,7 +48,6 @@ use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::{AppMessage, AppTx, redraw_callback};
 use kimun_notes::logic::text_action::TextAction;
-use kimun_notes::settings::themes::Theme;
 
 use crate::editor_element::{EditorElement, ShapedRows};
 use crate::find_bar::{self, BarPaint};
@@ -186,7 +185,6 @@ impl ClickRun {
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
 pub struct EditorView {
     pub(crate) editor: Editor,
-    pub(crate) theme: Theme,
     pub(crate) focus_handle: FocusHandle,
     /// The app channel the editor reports on (clipboard flashes) and the
     /// background parse/layout wake-up rides on.
@@ -222,7 +220,7 @@ impl EditorView {
     /// and only redraws on a message (no window owner to dispatch to). The
     /// rendering tests' editor; the app's is [`Self::on_channel`].
     #[cfg(test)]
-    pub fn new(text: Option<String>, theme: Theme, vim: bool, cx: &mut Context<Self>) -> Self {
+    pub fn new(text: Option<String>, vim: bool, cx: &mut Context<Self>) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // tokio's channels need no tokio executor to be awaited, so GPUI's
         // foreground executor can drain this one.
@@ -237,15 +235,15 @@ impl EditorView {
                 }
             }
         });
-        Self::build(text, theme, vim, tx, Some(messages), cx)
+        Self::build(text, vim, tx, Some(messages), cx)
     }
 
     /// An editor reporting on the window's app channel `tx`, which its owner
     /// (the [`Workspace`](crate::workspace::Workspace)) drains and
     /// dispatches: redraws and clipboard flashes. The note session loads
     /// notes into its [`Editor`] (`pub(crate) editor`) through `NoteBuffer`.
-    pub fn on_channel(theme: Theme, vim: bool, tx: AppTx, cx: &mut Context<Self>) -> Self {
-        Self::build(None, theme, vim, tx, None, cx)
+    pub fn on_channel(vim: bool, tx: AppTx, cx: &mut Context<Self>) -> Self {
+        Self::build(None, vim, tx, None, cx)
     }
 
     /// Report on `tx` from now on: the window's app channel was replaced
@@ -275,7 +273,6 @@ impl EditorView {
 
     fn build(
         text: Option<String>,
-        theme: Theme,
         vim: bool,
         tx: AppTx,
         messages: Option<Task<()>>,
@@ -291,7 +288,6 @@ impl EditorView {
         }
         Self {
             editor,
-            theme,
             focus_handle: cx.focus_handle(),
             tx,
             scroll: ScrollAccumulator::default(),
@@ -878,7 +874,7 @@ impl Render for EditorView {
             .size_full()
             .px_4()
             .py_2()
-            .bg(theme::background(&self.theme))
+            .bg(theme::background(&theme::current(cx)))
             .child(EditorElement::new(cx.entity()))
     }
 }

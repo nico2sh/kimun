@@ -150,7 +150,6 @@ pub(crate) struct SortDialog {
     known_keys: Vec<String>,
     suggestions: KeySuggestions,
     workspace: WeakEntity<Workspace>,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -160,7 +159,6 @@ impl SortDialog {
         state: SortState,
         unsorted: bool,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -220,7 +218,6 @@ impl SortDialog {
             known_keys: Vec::new(),
             suggestions: KeySuggestions::default(),
             workspace,
-            theme,
             _subscriptions: subscriptions,
         }
     }
@@ -387,7 +384,7 @@ impl SortDialog {
             .ok();
     }
 
-    fn row(&self, label: &'static str, control: impl IntoElement) -> Div {
+    fn row(&self, label: &'static str, control: impl IntoElement, cx: &gpui_kit::App) -> Div {
         div()
             .flex()
             .items_center()
@@ -397,7 +394,7 @@ impl SortDialog {
                     .w(rems(LABEL_REMS))
                     .flex_none()
                     .text_sm()
-                    .text_color(theme::muted(&self.theme))
+                    .text_color(theme::muted(&theme::current(cx)))
                     .child(label),
             )
             .child(div().flex_1().min_w_0().child(control))
@@ -406,7 +403,7 @@ impl SortDialog {
 
 impl Render for SortDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = self.theme.clone();
+        let t = theme::current(cx);
         let property = matches!(self.state.field, SortField::Property(_));
         let suggestions = if property && self.key_focused(window, cx) {
             self.suggestions.render(
@@ -457,6 +454,7 @@ impl Render for SortDialog {
                         Input::new(&self.key)
                             .id(SORT_KEY_ID)
                             .aria_label("Property key"),
+                        cx,
                     ),
                 )
                 .when_some(suggestions, |column, list| {
@@ -475,6 +473,7 @@ impl Render for SortDialog {
                         this.update(cx, |dialog, cx| dialog.set_group_dirs(checked, window, cx))
                             .ok();
                     }),
+                cx,
             )
         });
         let hint = if self.target == SortTarget::Sidebar {
@@ -495,6 +494,7 @@ impl Render for SortDialog {
                         .id(SORT_FIELD_ID)
                         .placeholder("Unsorted")
                         .accessibility_label("Sort by"),
+                    cx,
                 ),
             )
             .child(
@@ -503,6 +503,7 @@ impl Render for SortDialog {
                     Select::new(&self.order)
                         .id(SORT_ORDER_ID)
                         .accessibility_label("Order"),
+                    cx,
                 ),
             )
             .children(key_row)
@@ -634,18 +635,8 @@ impl Workspace {
             return;
         };
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
-        let view = cx.new(|cx| {
-            SortDialog::new(
-                target,
-                state,
-                unsorted,
-                workspace.clone(),
-                theme,
-                window,
-                cx,
-            )
-        });
+        let view =
+            cx.new(|cx| SortDialog::new(target, state, unsorted, workspace.clone(), window, cx));
         // The known keys, read off the UI thread.
         let keys = tokio::spawn(async move { vault.property_keys().await });
         let loading = view.downgrade();

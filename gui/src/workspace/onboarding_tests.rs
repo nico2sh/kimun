@@ -84,8 +84,7 @@ fn open(
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let editor =
-                    cx.new(|cx| EditorView::on_channel(Theme::default(), false, tx.clone(), cx));
+                let editor = cx.new(|cx| EditorView::on_channel(false, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, Theme::default(), layout, store, window, cx);
@@ -285,7 +284,7 @@ impl Started {
     }
 
     fn ob_window_theme(&self, cx: &TestAppContext) -> String {
-        cx.read(|cx| self.workspace.read(cx).theme.name.clone())
+        cx.read(|cx| crate::theme::current(cx).name.clone())
     }
 
     fn ob_shows_id(&self, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
@@ -681,16 +680,7 @@ fn the_theme_previews_live_and_discard_restores_it(cx: &mut TestAppContext) {
     let chosen = s.ob_model(cx, |m| m.draft.theme_name.clone());
     assert_ne!(chosen, original);
     assert_eq!(s.ob_window_theme(cx), chosen, "the window shows it");
-    assert_eq!(
-        s.ob_read_view(cx, |v| v.preview_theme().name.clone()),
-        chosen
-    );
     let picked = s.ob_model(cx, |m| m.themes[m.theme_idx].clone());
-    let editor_theme = cx.read(|cx| {
-        let editor = s.workspace.read(cx).editor.clone();
-        editor.read(cx).theme.name.clone()
-    });
-    assert_eq!(editor_theme, chosen);
     cx.read(|cx| {
         let kit = gpui_kit::component::Theme::global(cx);
         let want: gpui_kit::Hsla = theme::panel_background(&picked).into();

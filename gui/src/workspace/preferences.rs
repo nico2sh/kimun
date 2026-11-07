@@ -195,8 +195,6 @@ pub(crate) struct Discard {
 pub(crate) struct PreferencesView {
     settings: SharedSettings,
     store: LayoutStore,
-    /// The theme the view draws with: the preview.
-    theme: Theme,
     /// The theme the window had when the view opened.
     original: Theme,
     /// `None` while it is being read.
@@ -274,7 +272,6 @@ impl PreferencesView {
         Self {
             settings,
             store,
-            theme: original.clone(),
             original,
             model: None,
             dirty: Cell::new(None),
@@ -360,12 +357,6 @@ impl PreferencesView {
     #[cfg(test)]
     pub(crate) fn saving(&self) -> bool {
         self.saving.is_some()
-    }
-
-    /// The theme the view draws with.
-    #[cfg(test)]
-    pub(crate) fn preview_theme(&self) -> &Theme {
-        &self.theme
     }
 
     /// The handles of the section list, the theme list and the two
@@ -463,7 +454,6 @@ impl PreferencesView {
         };
         if let Some(t) = model.select_theme(idx) {
             let t = t.clone();
-            self.theme = t.clone();
             self.theme_scroll
                 .scroll_to_item(idx, ScrollStrategy::Nearest);
             cx.emit(PreferencesEvent::Preview(t));
@@ -809,7 +799,8 @@ struct StepperSpec {
 
 impl PreferencesView {
     fn render_section_row(&self, section: Section, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let selected = self.section == section;
         let hover = theme::hover_background(t);
         div()
@@ -840,7 +831,8 @@ impl PreferencesView {
     /// The section list: a column beside the controls, or (`narrow`) a row
     /// of tabs above them. It holds the keyboard for Up / Down.
     fn render_sections(&self, narrow: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let focused = self.sections_focus.is_focused(window);
         let rows: Vec<AnyElement> = Section::ALL
             .into_iter()
@@ -905,7 +897,8 @@ impl PreferencesView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let focused = focus.is_focused(window);
         let text = format!("{} {}", spec.value, spec.unit);
         h_row()
@@ -970,7 +963,8 @@ impl PreferencesView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let count = model.themes.len();
         let focused = self.themes_focus.is_focused(window);
         let list = uniform_list(
@@ -980,7 +974,7 @@ impl PreferencesView {
                 let Some(model) = this.model.as_ref() else {
                     return Vec::new();
                 };
-                let t = this.theme.clone();
+                let t = theme::current(cx);
                 let hover = theme::hover_background(&t);
                 range
                     .filter_map(|ix| model.themes.get(ix).map(|theme| (ix, theme.name.clone())))
@@ -1054,7 +1048,8 @@ impl PreferencesView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let delay = self.render_stepper(
             StepperSpec {
                 id: DELAY_ID,
@@ -1117,7 +1112,8 @@ impl PreferencesView {
         model: &PreferencesModel,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let field_ix = model.sort_selected(field_slot);
         let order_ix = model.sort_selected(order_slot);
         let busy = self.saving.is_some();
@@ -1178,7 +1174,8 @@ impl PreferencesView {
     }
 
     fn render_sorting(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         div()
             .flex()
             .flex_col()
@@ -1213,7 +1210,8 @@ impl PreferencesView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let autosave = self.render_stepper(
             StepperSpec {
                 id: AUTOSAVE_ID,
@@ -1284,8 +1282,9 @@ impl PreferencesView {
             .into_any_element()
     }
 
-    fn render_server(&self) -> AnyElement {
-        let t = &self.theme;
+    fn render_server(&self, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
         let input = Input::new(&self.server_input)
             .id(SERVER_ID)
             .aria_label("kimün server address")
@@ -1333,7 +1332,8 @@ impl PreferencesView {
     /// The selected section's title and controls (or the question, or the
     /// wait for the draft).
     fn render_content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let (title, body) = match (self.confirm, self.model.as_ref()) {
             (Some(_), _) => (
                 "Discard your changes?",
@@ -1350,7 +1350,7 @@ impl PreferencesView {
                     Section::Display => self.render_display(model, window, cx),
                     Section::Sorting => self.render_sorting(model, cx),
                     Section::Editor => self.render_editor(model, window, cx),
-                    Section::Server => self.render_server(),
+                    Section::Server => self.render_server(cx),
                 },
             ),
         };
@@ -1385,7 +1385,8 @@ impl PreferencesView {
 
     /// The key hints, or the problem line, and the commands.
     fn render_footer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let row = div()
             .flex()
             .flex_row()
@@ -1470,7 +1471,7 @@ fn h_row() -> gpui_kit::Div {
 
 impl Render for PreferencesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = self.theme.clone();
+        let t = theme::current(cx);
         let narrow = window.viewport_size().width < window.rem_size() * NARROW_REMS;
         let sections = self.render_sections(narrow, window, cx);
         let content = self.render_content(window, cx);
@@ -1529,7 +1530,7 @@ impl Workspace {
                 return;
             };
             self.cancel_leader(cx);
-            let original = self.theme.clone();
+            let original = (*theme::current(cx)).clone();
             let store = self.store.clone();
             let view = cx.new(|cx| PreferencesView::new(settings, original, store, window, cx));
             self._preferences_events =

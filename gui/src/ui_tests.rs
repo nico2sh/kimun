@@ -45,7 +45,7 @@ fn open_with(
             },
             cx,
             |window, cx| {
-                let view = cx.new(|cx| EditorView::new(Some(text), Theme::default(), vim, cx));
+                let view = cx.new(|cx| EditorView::new(Some(text), vim, cx));
                 window.focus(&view.read(cx).focus_handle(cx), cx);
                 view
             },
@@ -712,7 +712,7 @@ fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<Key
             },
             cx,
             |window, cx| {
-                let editor = cx.new(|cx| EditorView::new(Some(text), Theme::default(), true, cx));
+                let editor = cx.new(|cx| EditorView::new(Some(text), true, cx));
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
                 cx.new(|_| KeySpy { editor, bubbled: 0 })
             },

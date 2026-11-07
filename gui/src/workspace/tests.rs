@@ -86,8 +86,7 @@ pub(super) fn open_shell(
                 },
                 cx,
                 |window, cx| {
-                    let editor =
-                        cx.new(|cx| EditorView::new(Some(text), Theme::default(), vim, cx));
+                    let editor = cx.new(|cx| EditorView::new(Some(text), vim, cx));
                     let workspace = cx.new(|cx| {
                         Workspace::new(editor, Theme::default(), layout, store, window, cx)
                     });

@@ -105,7 +105,7 @@ pub struct RowKey {
     fonts: EditorFonts,
     font_size: Pixels,
     cell_width: u32,
-    theme: Theme,
+    theme: std::sync::Arc<Theme>,
 }
 
 /// The view's cache of shaped rows.
@@ -295,7 +295,7 @@ impl Element for EditorElement {
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let origin = bounds.origin;
 
-        let mut prepaint = self.view.update(cx, |view, _| {
+        let mut prepaint = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&kit_family, &text_system);
             let base_font = fonts.face(false, false);
             let cells =
@@ -332,13 +332,14 @@ impl Element for EditorElement {
                 .session()
                 .display
                 .frame(cols, focused && !bar_open);
-            let theme = &view.theme;
+            let theme_in_effect = theme::current(view_cx);
+            let theme = &*theme_in_effect;
 
             view.row_cache.begin_frame(RowKey {
                 fonts: fonts.clone(),
                 font_size,
                 cell_width: cells.width().to_bits(),
-                theme: theme.clone(),
+                theme: theme_in_effect.clone(),
             });
             let mut fills = Vec::new();
             let mut strokes = Vec::new();

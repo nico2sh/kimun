@@ -52,7 +52,6 @@ use kimun_notes::logic::properties::{
     self as props, FormError, KIND_CHOICES, PropertyForm, PropertyWriteError, WritePlan,
 };
 use kimun_notes::logic::session::{NoteRead, ReloadOutcome, ReloadStep};
-use kimun_notes::settings::themes::Theme;
 use tokio::task::JoinError;
 
 use super::Workspace;
@@ -148,7 +147,6 @@ pub(crate) struct PropertiesDialog {
     vault: Arc<NoteVault>,
     tx: AppTx,
     workspace: WeakEntity<Workspace>,
-    theme: Theme,
     entries: Vec<PropertyEntry>,
     rows: Vec<Row>,
     /// The frontmatter would not parse: read-only, the reason shown.
@@ -178,7 +176,6 @@ impl PropertiesDialog {
         vault: Arc<NoteVault>,
         tx: AppTx,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         locked: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -189,7 +186,6 @@ impl PropertiesDialog {
             vault,
             tx,
             workspace,
-            theme,
             entries: Vec::new(),
             rows: Vec::new(),
             load_error: None,
@@ -746,7 +742,8 @@ impl Focusable for PropertiesDialog {
 
 impl PropertiesDialog {
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let row = &self.rows[ix];
         let selected = ix == self.selected;
         let hover = theme::hover_background(t);
@@ -805,7 +802,8 @@ impl PropertiesDialog {
     }
 
     fn render_list(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let muted = theme::muted(t);
         let note = |text: SharedString| {
             div()
@@ -896,7 +894,8 @@ impl PropertiesDialog {
     }
 
     fn render_list_mode(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let writable = self.can_write();
         let has_row = writable && !self.rows.is_empty();
         let deleting = self.busy && self.form.is_none();
@@ -999,7 +998,8 @@ impl PropertiesDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let busy = self.busy;
         let label = |text: &'static str| div().text_xs().text_color(theme::muted(t)).child(text);
         let field = || div().flex().flex_col().gap_1();
@@ -1300,9 +1300,7 @@ impl Workspace {
             return;
         };
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
-        let view =
-            cx.new(|cx| PropertiesDialog::new(path, vault, tx, workspace, theme, locked, cx));
+        let view = cx.new(|cx| PropertiesDialog::new(path, vault, tx, workspace, locked, cx));
         self.properties = Some(view.downgrade());
         self.show_modal(
             Slot::Own(ModalKind::Properties),

@@ -187,7 +187,6 @@ pub(crate) struct SaveSearchDialog {
     existing: Option<Vec<String>>,
     workspace: WeakEntity<Workspace>,
     status: Entity<OpStatus>,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -199,7 +198,6 @@ impl SaveSearchDialog {
         source: SaveSource,
         workspace: WeakEntity<Workspace>,
         status: Entity<OpStatus>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -231,7 +229,6 @@ impl SaveSearchDialog {
             existing: None,
             workspace,
             status,
-            theme,
             _subscriptions: subscriptions,
         }
     }
@@ -342,7 +339,8 @@ impl SaveSearchDialog {
 
 impl Render for SaveSearchDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let verdict = self.verdict(cx);
         let status = self.status.read(cx);
         let busy = status.busy;
@@ -595,7 +593,6 @@ impl Workspace {
         }
         let status = cx.new(|_| OpStatus::default());
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         let browser_query = source == SaveSource::Browser;
         let query_back = query.clone();
         let view = cx.new(|cx| {
@@ -605,7 +602,6 @@ impl Workspace {
                 source,
                 workspace.clone(),
                 status.clone(),
-                theme,
                 window,
                 cx,
             )

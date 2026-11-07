@@ -116,20 +116,12 @@ pub(crate) struct SemanticView {
     installed: bool,
     /// Why the server cannot search now (`None`: it can).
     unavailable: Option<&'static str>,
-    theme: Theme,
     _input_events: Subscription,
 }
 
 impl EventEmitter<SemanticEvent> for SemanticView {}
 
-impl SemanticView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        self.list.update(cx, |list, cx| list.set_theme(t, cx));
-        cx.notify();
-    }
-}
+impl SemanticView {}
 
 impl SemanticView {
     fn new(
@@ -137,7 +129,6 @@ impl SemanticView {
         settings: SharedSettings,
         list: Entity<DrawerList<FileListEntry>>,
         unavailable: Option<&'static str>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -156,7 +147,6 @@ impl SemanticView {
             client: None,
             installed: false,
             unavailable,
-            theme,
             _input_events: input_events,
         };
         let empty = view.empty_text("");
@@ -275,7 +265,8 @@ impl Focusable for SemanticView {
 
 impl Render for SemanticView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         div()
             .id(SEMANTIC_ID)
             .test_support()
@@ -320,22 +311,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let theme = self.theme.clone();
-        let list = DrawerList::spawn_with(SEMANTIC_LIST_ID, "Results", tx, &theme, cx, |list| {
+        let list = DrawerList::spawn_with(SEMANTIC_LIST_ID, "Results", tx, cx, |list| {
             list.with_loading_text(SEARCHING_TEXT)
         });
         let unavailable = self.semantic_block();
-        let view = cx.new(|cx| {
-            SemanticView::new(
-                vault,
-                settings,
-                list.clone(),
-                unavailable,
-                theme,
-                window,
-                cx,
-            )
-        });
+        let view =
+            cx.new(|cx| SemanticView::new(vault, settings, list.clone(), unavailable, window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_semantic_list_event));
         self._views_events
@@ -397,5 +378,3 @@ impl Workspace {
         self.show_view(DrawerView::Semantic, window, cx);
     }
 }
-
-crate::theme::impl_themed!(SemanticView);

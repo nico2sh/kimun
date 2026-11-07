@@ -169,8 +169,7 @@ pub(super) fn open_started_with(
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let editor =
-                    cx.new(|cx| EditorView::on_channel(Theme::default(), vim, tx.clone(), cx));
+                let editor = cx.new(|cx| EditorView::on_channel(vim, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace = Workspace::new(
                         editor,
@@ -551,7 +550,7 @@ fn a_flash_without_a_toast_layer_is_dropped(cx: &mut TestAppContext) {
     let handle = cx
         .update(|cx| {
             cx.open_window(WindowOptions::default(), |window, cx| {
-                let editor = cx.new(|cx| EditorView::new(None, Theme::default(), false, cx));
+                let editor = cx.new(|cx| EditorView::new(None, false, cx));
                 cx.new(|cx| {
                     Workspace::new(
                         editor,

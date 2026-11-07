@@ -221,7 +221,6 @@ pub(crate) struct NotePicker<R: PickerRow = FileListEntry> {
     pub(crate) input: Entity<InputState>,
     scroll: UniformListScrollHandle,
     workspace: WeakEntity<Workspace>,
-    theme: Theme,
     /// Why the last `Create:` failed; cleared by the next keystroke.
     error: Option<SharedString>,
     /// A `Create:` is running: Enter and Escape wait for it.
@@ -242,7 +241,6 @@ impl<R: PickerRow> NotePicker<R> {
         search: Option<SearchParts>,
         redraw: kimun_notes::logic::message::Notifier,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -275,7 +273,6 @@ impl<R: PickerRow> NotePicker<R> {
             input,
             scroll: UniformListScrollHandle::new(),
             workspace,
-            theme,
             error: None,
             busy: false,
             search,
@@ -423,7 +420,7 @@ impl<R: PickerRow> NotePicker<R> {
             let (field, order) = order_of_query(query);
             chip_label(&field, order)
         };
-        sort_chip(BROWSER_SORT_ID, label, &self.theme)
+        sort_chip(BROWSER_SORT_ID, label, &theme::current(cx))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 // After this update: the dialog reads the browser's query.
                 let workspace = this.workspace.clone();
@@ -547,7 +544,7 @@ impl<R: PickerRow> NotePicker<R> {
             .items_center()
             .gap_2()
             .text_xs()
-            .text_color(theme::muted(&self.theme))
+            .text_color(theme::muted(&theme::current(cx)))
             .child(div().flex_1().min_w_0().child("Enter runs it in FIND"))
             .child(
                 Button::new(PICKER_DELETE_ID)
@@ -567,12 +564,12 @@ impl<R: PickerRow> NotePicker<R> {
             .into_any_element()
     }
 
-    fn render_note(&self, text: &'static str) -> AnyElement {
+    fn render_note(&self, text: &'static str, cx: &gpui_kit::App) -> AnyElement {
         div()
             .px_3()
             .py_2()
             .text_sm()
-            .text_color(theme::muted(&self.theme))
+            .text_color(theme::muted(&theme::current(cx)))
             .child(text)
             .into_any_element()
     }
@@ -595,7 +592,8 @@ impl<R: PickerRow> ClickRows for NotePicker<R> {
 
 impl<R: PickerRow> Render for NotePicker<R> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let count = self.core.visible_len();
         let selected = self.core.selected();
         let policy = self.click_policy();
@@ -611,7 +609,7 @@ impl<R: PickerRow> Render for NotePicker<R> {
                         .filter_map(|pos| {
                             let row = this.core.visible_row(pos)?;
                             let element = with_click_cursor(
-                                row.render_row(selected == Some(pos), &this.theme),
+                                row.render_row(selected == Some(pos), &theme::current(cx)),
                                 policy,
                                 enabled,
                             )
@@ -628,17 +626,17 @@ impl<R: PickerRow> Render for NotePicker<R> {
             .size_full()
             .into_any_element()
         } else if self.core.is_loading() {
-            self.render_note("Loading…")
+            self.render_note("Loading…", cx)
         } else {
             match self.kind {
                 PickerKind::Finder if self.core.query().trim().is_empty() => {
-                    self.render_note("No notes yet. Type a name to create one.")
+                    self.render_note("No notes yet. Type a name to create one.", cx)
                 }
                 PickerKind::Search if self.core.query().trim().is_empty() => {
-                    self.render_note("No recent notes. Type to search.")
+                    self.render_note("No recent notes. Type to search.", cx)
                 }
-                PickerKind::SavedSearches => self.render_note("No saved search matches"),
-                _ => self.render_note("No notes match"),
+                PickerKind::SavedSearches => self.render_note("No saved search matches", cx),
+                _ => self.render_note("No notes match", cx),
             }
         };
         let (label, rows_label) = match self.kind {
@@ -920,7 +918,6 @@ impl Workspace {
     ) -> Option<Entity<NotePicker<R>>> {
         let tx = self.tx.clone()?;
         let workspace = cx.entity().downgrade();
-        let theme = self.theme.clone();
         let picker = cx.new(|cx| {
             NotePicker::new(
                 kind,
@@ -929,7 +926,6 @@ impl Workspace {
                 search,
                 redraw_callback(tx),
                 workspace,
-                theme,
                 window,
                 cx,
             )

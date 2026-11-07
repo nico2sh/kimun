@@ -374,7 +374,6 @@ pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 pub(crate) struct Workspace {
     pub(crate) layout: PanelLayout<DrawerView>,
     pub(crate) editor: Entity<EditorView>,
-    theme: Theme,
     rail_focus: FocusHandle,
     /// Each drawer's own scope (left, right): never focused itself, it holds
     /// its slots' focus.
@@ -608,6 +607,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The one theme every view of the window draws in.
+        theme::set_current(cx, theme);
         let rail_cursor = layout
             .slot_views(Side::Left)
             .first()
@@ -645,7 +646,6 @@ impl Workspace {
         Self {
             layout,
             editor,
-            theme,
             rail_focus: cx.focus_handle(),
             drawer_focus: [cx.focus_handle(), cx.focus_handle()],
             view_focus: DrawerView::ALL
@@ -1870,7 +1870,7 @@ impl Workspace {
     /// The focused region's marker: a thin bar in the focus colour across
     /// its top edge, laid over it so focusing never shifts content. Subtle,
     /// but always there (design guides: state must be visible).
-    fn focus_bar(&self, region: Region) -> Option<impl IntoElement> {
+    fn focus_bar(&self, region: Region, cx: &gpui_kit::App) -> Option<impl IntoElement> {
         (self.layout.focused_region() == region).then(|| {
             div()
                 .absolute()
@@ -1878,12 +1878,12 @@ impl Workspace {
                 .left_0()
                 .right_0()
                 .h_0p5()
-                .bg(theme::focus_border(&self.theme))
+                .bg(theme::focus_border(&theme::current(cx)))
         })
     }
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let panel_bg = theme::panel_background(&self.theme);
+        let panel_bg = theme::panel_background(&theme::current(cx));
         let focused = self.layout.focused() == Panel::Rail;
         let views = self.rail_views();
         let (top, pinned) = views.split_at(views.len() - 1);
@@ -1917,7 +1917,7 @@ impl Workspace {
             .relative()
             .bg(panel_bg)
             .border_r_1()
-            .border_color(theme::divider(&self.theme))
+            .border_color(theme::divider(&theme::current(cx)))
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.focus_panel(Panel::Rail, window, cx)
             }))
@@ -1925,7 +1925,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(pinned)
             // Last, so it paints over a highlighted cell.
-            .children(self.focus_bar(Region::Rail))
+            .children(self.focus_bar(Region::Rail, cx))
     }
 
     fn render_rail_cell(
@@ -1935,16 +1935,16 @@ impl Workspace {
         cursor: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let accent = theme::focus_border(&self.theme);
+        let accent = theme::focus_border(&theme::current(cx));
         let glyph = if active {
             accent
         } else if cursor {
-            theme::bright(&self.theme)
+            theme::bright(&theme::current(cx))
         } else {
-            theme::muted(&self.theme)
+            theme::muted(&theme::current(cx))
         };
-        let hover = theme::hover_background(&self.theme);
-        let selected = theme::selected_background(&self.theme);
+        let hover = theme::hover_background(&theme::current(cx));
+        let selected = theme::selected_background(&theme::current(cx));
         let name = shell_layout::view_name(view);
         div()
             .id(rail_cell_id(view))
@@ -2030,7 +2030,7 @@ impl Workspace {
             .h_full()
             // Measured runtime geometry: the user's dragged width, in pixels.
             .w(px(width as f32))
-            .bg(theme::panel_background(&self.theme))
+            .bg(theme::panel_background(&theme::current(cx)))
             // The split divider's drag, measured against this drawer.
             .on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<SlotResize>, _, cx| {
@@ -2043,8 +2043,8 @@ impl Workspace {
                     .inside(edge)
                     .with_appearance(hairline(
                         Axis::Horizontal,
-                        theme::divider(&self.theme),
-                        theme::focus_border(&self.theme),
+                        theme::divider(&theme::current(cx)),
+                        theme::focus_border(&theme::current(cx)),
                     ))
                     .on_drag(DrawerResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
                     .on_mouse_down(
@@ -2097,7 +2097,7 @@ impl Workspace {
                     .pb_1()
                     .text_sm()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_color(theme::foreground(&self.theme))
+                    .text_color(theme::foreground(&theme::current(cx)))
                     .child(shell_layout::slot_title(view)),
             )
             .map(|slot| match self.view_content(view) {
@@ -2106,11 +2106,11 @@ impl Workspace {
                     div()
                         .px_3()
                         .text_sm()
-                        .text_color(theme::muted(&self.theme))
+                        .text_color(theme::muted(&theme::current(cx)))
                         .child("Coming soon"),
                 ),
             })
-            .children(self.focus_bar(region))
+            .children(self.focus_bar(region, cx))
             .when(share.is_some(), |slot| {
                 slot.child(self.render_split_divider(side, cx))
             })
@@ -2138,8 +2138,8 @@ impl Workspace {
             .inside(HandleEdge::Trailing)
             .with_appearance(hairline(
                 Axis::Vertical,
-                theme::divider(&self.theme),
-                theme::focus_border(&self.theme),
+                theme::divider(&theme::current(cx)),
+                theme::focus_border(&theme::current(cx)),
             ))
             .on_drag(SlotResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
             .on_mouse_down(
@@ -2185,7 +2185,7 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_center()
-                    .text_color(theme::muted(&self.theme))
+                    .text_color(theme::muted(&theme::current(cx)))
                     .child(hint),
             )
             .when(share.is_some(), |slot| {
@@ -2244,7 +2244,7 @@ impl Workspace {
             // away from a workspace that would not open, the leader, the
             // palette).
             (Some(empty), _, _) => self
-                .render_empty(empty, &self.editor.read(cx).focus_handle(cx))
+                .render_empty(empty, &self.editor.read(cx).focus_handle(cx), cx)
                 .into_any_element(),
             (None, Some(view), _) => div()
                 .flex()
@@ -2285,7 +2285,7 @@ impl Workspace {
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(theme::background(&self.theme))
+            .bg(theme::background(&theme::current(cx)))
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.focus_panel(Panel::Editor, window, cx)
             }))
@@ -2293,7 +2293,7 @@ impl Workspace {
             .child(status_row::render(
                 &self.status,
                 &self.doc_facts(editor_shown, cx),
-                &self.theme,
+                &theme::current(cx),
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.show_links_tab(LinksTab::Backlinks, window, cx)
                 }),
@@ -2301,7 +2301,7 @@ impl Workspace {
                     this.open_properties_for_open_note(window, cx)
                 }),
             ))
-            .children(self.focus_bar(Region::Group(self.layout.active_group())))
+            .children(self.focus_bar(Region::Group(self.layout.active_group()), cx))
     }
 
     /// What the Footer reads off the editor and the open note this frame.
@@ -2335,11 +2335,16 @@ impl Workspace {
     /// Why there is no note to edit, centred in the editor Panel.
     /// `focus` is the editor's handle: the editor is not drawn, so the
     /// empty state holds the keyboard for it.
-    fn render_empty(&self, empty: &EmptyState, focus: &FocusHandle) -> impl IntoElement {
+    fn render_empty(
+        &self,
+        empty: &EmptyState,
+        focus: &FocusHandle,
+        cx: &gpui_kit::App,
+    ) -> impl IntoElement {
         let (icon, tint) = if empty.failed {
-            (IconName::TriangleAlert, theme::error(&self.theme))
+            (IconName::TriangleAlert, theme::error(&theme::current(cx)))
         } else {
-            (IconName::FolderOpen, theme::muted(&self.theme))
+            (IconName::FolderOpen, theme::muted(&theme::current(cx)))
         };
         div()
             .id(EMPTY_STATE_ID)
@@ -2354,19 +2359,19 @@ impl Workspace {
             .child(
                 Empty::new()
                     .border_0()
-                    .text_color(theme::foreground(&self.theme))
+                    .text_color(theme::foreground(&theme::current(cx)))
                     .header(
                         EmptyHeader::new()
                             .media(
                                 EmptyMedia::new()
                                     .with_variant(EmptyMediaVariant::Icon)
-                                    .bg(theme::panel_background(&self.theme))
+                                    .bg(theme::panel_background(&theme::current(cx)))
                                     .child(Icon::new(icon).text_color(tint)),
                             )
                             .title(EmptyTitle::new().child(empty.title.clone()))
                             .description(
                                 EmptyDescription::new()
-                                    .text_color(theme::muted(&self.theme))
+                                    .text_color(theme::muted(&theme::current(cx)))
                                     .child(empty.detail.clone()),
                             ),
                     ),
@@ -2391,7 +2396,7 @@ impl Render for Workspace {
                 .id("workspace")
                 .flex()
                 .size_full()
-                .bg(theme::background(&self.theme))
+                .bg(theme::background(&theme::current(cx)))
                 .child(view)
                 .into_any_element();
         }
@@ -2401,7 +2406,7 @@ impl Render for Workspace {
                 .id("workspace")
                 .flex()
                 .size_full()
-                .bg(theme::background(&self.theme))
+                .bg(theme::background(&theme::current(cx)))
                 .child(view)
                 .into_any_element();
         }
@@ -2430,7 +2435,7 @@ impl Render for Workspace {
             .flex_row()
             .items_stretch()
             .size_full()
-            .bg(theme::background(&self.theme))
+            .bg(theme::background(&theme::current(cx)))
             .child(self.render_rail(cx))
             .when_some(left, |row, width| {
                 row.child(self.render_drawer(Side::Left, width, cx))

@@ -78,7 +78,6 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::{self, Caps};
 use kimun_notes::rag::RagStatus;
 use kimun_notes::server_client::RagClient;
-use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::note::{Closing, LeavingFor, NoteLeft};
@@ -273,27 +272,15 @@ pub(crate) struct AskView {
     /// cleared.
     answers: HashMap<u64, DrawnAnswer>,
     tx: AppTx,
-    theme: Theme,
     _composer_events: Subscription,
 }
 
 impl EventEmitter<AskEvent> for AskView {}
 
-impl AskView {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        cx.notify();
-    }
-}
+impl AskView {}
 
 impl AskView {
-    pub(crate) fn new(
-        tx: AppTx,
-        theme: Theme,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(tx: AppTx, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| InputState::new(window, cx));
         // Send's enabled state follows whether the text is blank, so only
         // that flipping redraws the Thread: a keystroke in a long
@@ -318,7 +305,6 @@ impl AskView {
             scroll: ScrollHandle::new(),
             answers: HashMap::new(),
             tx,
-            theme,
             _composer_events: composer_events,
         }
     }
@@ -623,7 +609,8 @@ impl AskView {
     }
 
     fn render_turn(&self, turn: &Turn, selected: bool, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let id = turn.id;
         let body: AnyElement = match &turn.status {
             TurnStatus::Thinking | TurnStatus::Streaming => div()
@@ -691,7 +678,8 @@ impl AskView {
     /// hit-tested on the shaped line ([`Self::click_citation`]) and shows
     /// the pointing hand.
     fn render_answer(&self, turn: &Turn, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let id = turn.id;
         let answer = div()
             .id(turn_answer_id(id))
@@ -805,7 +793,8 @@ impl AskView {
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let enabled = self.client.is_some();
         let title = if enabled {
             COMPOSER_TITLE
@@ -888,7 +877,8 @@ impl Focusable for AskView {
 
 impl Render for AskView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let selected = self.thread.selected().map(|turn| turn.id);
         let turns: Vec<AnyElement> = self
             .thread
@@ -1004,8 +994,7 @@ impl Workspace {
     /// Build the Thread for the vault the window opened (empty, no server
     /// until the status says one can answer).
     pub(super) fn start_ask(&mut self, tx: AppTx, window: &mut Window, cx: &mut Context<Self>) {
-        let theme = self.theme.clone();
-        let view = cx.new(|cx| AskView::new(tx, theme, window, cx));
+        let view = cx.new(|cx| AskView::new(tx, window, cx));
         self._ask_events = Some(cx.subscribe_in(&view, window, Self::on_ask_event));
         self.ask = Some(view);
     }
@@ -1404,5 +1393,3 @@ impl Workspace {
         &self.ask_flow
     }
 }
-
-crate::theme::impl_themed!(AskView);

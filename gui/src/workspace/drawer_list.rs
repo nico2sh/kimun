@@ -185,7 +185,6 @@ pub(crate) struct DrawerList<R: DrawerRow> {
     focus: FocusHandle,
     /// Wakes the window when a load has rows (the app channel's redraw).
     redraw: Notifier,
-    theme: Theme,
     /// The list element's id and its accessible name.
     id: &'static str,
     label: &'static str,
@@ -204,20 +203,13 @@ pub(crate) struct DrawerList<R: DrawerRow> {
 
 impl<R: DrawerRow> EventEmitter<DrawerListEvent<R>> for DrawerList<R> {}
 
-impl<R: DrawerRow> DrawerList<R> {
-    /// Draw in `t` from now on (the window's theme changed).
-    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
-        self.theme = t.clone();
-        cx.notify();
-    }
-}
+impl<R: DrawerRow> DrawerList<R> {}
 
 impl<R: DrawerRow> DrawerList<R> {
     pub(crate) fn new(
         id: &'static str,
         label: &'static str,
         redraw: Notifier,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -225,7 +217,6 @@ impl<R: DrawerRow> DrawerList<R> {
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             redraw,
-            theme,
             id,
             label,
             empty: SharedString::default(),
@@ -236,16 +227,14 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
-    /// A new list as an entity of `cx`'s view, on the app channel `tx`,
-    /// drawn in `theme`.
+    /// A new list as an entity of `cx`'s view, on the app channel `tx`.
     pub(crate) fn spawn<W: 'static>(
         id: &'static str,
         label: &'static str,
         tx: AppTx,
-        theme: &Theme,
         cx: &mut Context<W>,
     ) -> Entity<Self> {
-        Self::spawn_with(id, label, tx, theme, cx, |list| list)
+        Self::spawn_with(id, label, tx, cx, |list| list)
     }
 
     /// [`Self::spawn`], the list set up by `configure` first (its click
@@ -254,12 +243,10 @@ impl<R: DrawerRow> DrawerList<R> {
         id: &'static str,
         label: &'static str,
         tx: AppTx,
-        theme: &Theme,
         cx: &mut Context<W>,
         configure: impl FnOnce(Self) -> Self,
     ) -> Entity<Self> {
-        let theme = theme.clone();
-        cx.new(|cx| configure(Self::new(id, label, redraw_callback(tx), theme, cx)))
+        cx.new(|cx| configure(Self::new(id, label, redraw_callback(tx), cx)))
     }
 
     /// Show (`true`) or hide every row's hover action from now on.
@@ -528,7 +515,8 @@ impl<R: DrawerRow> DrawerList<R> {
         action: RowAction,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let hover = theme::foreground(t);
         let tooltip = action.tooltip;
         let verb = action.verb;
@@ -614,7 +602,7 @@ impl<R: DrawerRow> DrawerList<R> {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let action = self.row_actions.then(|| row.hover_action()).flatten();
-        let mut element = row.render_row(selected, &self.theme);
+        let mut element = row.render_row(selected, &theme::current(cx));
         if let Some(action) = action {
             let action = self.render_action(pos, selected, action, cx);
             element = element.group(ROW_GROUP).relative().child(action);
@@ -718,7 +706,7 @@ impl<R: DrawerRow> Render for DrawerList<R> {
                 .px_3()
                 .py_2()
                 .text_sm()
-                .text_color(theme::muted(&self.theme))
+                .text_color(theme::muted(&theme::current(cx)))
                 .child(text)
                 .into_any_element()
         };

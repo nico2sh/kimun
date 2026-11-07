@@ -374,7 +374,8 @@ impl Workspace {
     pub(crate) fn render_which_key(&self, cx: &gpui_kit::App) -> Option<AnyElement> {
         let model = self.leader.which_key()?;
         let mono = &cx.theme().mono_font_family;
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let header = div()
             .flex()
             .flex_row()

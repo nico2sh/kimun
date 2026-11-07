@@ -161,8 +161,7 @@ fn main() {
                 // The window's one app channel: the editor reports on it, the
                 // workspace drains it.
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let editor =
-                    cx.new(|cx| EditorView::on_channel(theme.clone(), vim, tx.clone(), cx));
+                let editor = cx.new(|cx| EditorView::on_channel(vim, tx.clone(), cx));
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);

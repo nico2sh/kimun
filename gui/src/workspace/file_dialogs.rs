@@ -205,7 +205,6 @@ pub(crate) struct FileOpsMenu {
     workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
     selected: usize,
-    theme: Theme,
 }
 
 impl FileOpsMenu {
@@ -213,7 +212,6 @@ impl FileOpsMenu {
         target: VaultPath,
         with_properties: bool,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -222,7 +220,6 @@ impl FileOpsMenu {
             workspace,
             focus: cx.focus_handle(),
             selected: 0,
-            theme,
         }
     }
 
@@ -275,7 +272,8 @@ impl Focusable for FileOpsMenu {
 
 impl Render for FileOpsMenu {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let rows = self
             .items
             .iter()
@@ -348,7 +346,6 @@ pub(crate) struct RenameDialog {
     candidate: Option<Result<VaultPath, String>>,
     /// The availability check under way; a newer one replaces it.
     check: Option<Task<()>>,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -358,7 +355,6 @@ impl RenameDialog {
         vault: Arc<NoteVault>,
         status: Entity<OpStatus>,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -381,7 +377,6 @@ impl RenameDialog {
             state: ValidationState::Idle,
             candidate: None,
             check: None,
-            theme,
             _subscriptions: subscriptions,
         }
     }
@@ -462,7 +457,8 @@ impl RenameDialog {
 
 impl Render for RenameDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let status = self.status.read(cx);
         let busy = status.busy;
         let invalid = match &self.candidate {
@@ -544,7 +540,6 @@ pub(crate) struct MoveDialog {
     check: Option<Task<()>>,
     _load: Option<Task<()>>,
     scroll: UniformListScrollHandle,
-    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -563,7 +558,6 @@ impl MoveDialog {
         vault: Arc<NoteVault>,
         status: Entity<OpStatus>,
         workspace: WeakEntity<Workspace>,
-        theme: Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -605,7 +599,6 @@ impl MoveDialog {
             check: None,
             _load: Some(load),
             scroll: UniformListScrollHandle::new(),
-            theme,
             _subscriptions: subscriptions,
         }
     }
@@ -736,7 +729,8 @@ impl MoveDialog {
     }
 
     fn render_row(&self, ix: usize, dir: &VaultPath, cx: &mut Context<Self>) -> AnyElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let selected = self.selected == Some(ix);
         let hover = theme::hover_background(t);
         div()
@@ -769,7 +763,8 @@ impl MoveDialog {
 
 impl Render for MoveDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = &self.theme;
+        let theme = theme::current(cx);
+        let t = &*theme;
         let status = self.status.read(cx);
         let busy = status.busy;
         let invalid = match &self.candidate {
@@ -910,16 +905,14 @@ pub(crate) fn confirm_delete(
 /// buttons are the kit `AlertDialog`'s.
 pub(crate) struct DeleteBody {
     status: Entity<OpStatus>,
-    theme: Theme,
     _status_watch: Subscription,
 }
 
 impl DeleteBody {
-    pub(crate) fn new(status: Entity<OpStatus>, theme: Theme, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(status: Entity<OpStatus>, cx: &mut Context<Self>) -> Self {
         let watch = cx.observe(&status, |_, _, cx| cx.notify());
         Self {
             status,
-            theme,
             _status_watch: watch,
         }
     }
@@ -927,6 +920,6 @@ impl DeleteBody {
 
 impl Render for DeleteBody {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().children(error_row(self.status.read(cx), &self.theme))
+        div().children(error_row(self.status.read(cx), &theme::current(cx)))
     }
 }
