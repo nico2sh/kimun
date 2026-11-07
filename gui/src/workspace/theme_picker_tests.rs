@@ -15,7 +15,9 @@ use kimun_notes::keys::leader::LeaderAction;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::overlay_open::OverlayOpen;
+use kimun_notes::logic::sort::{SortField, SortOrder, SortState};
 use kimun_notes::settings::themes::Theme;
+use kimun_notes::settings::{SortFieldSetting, SortOrderSetting};
 use tokio::runtime::Runtime;
 
 use super::modal::ModalKind;
@@ -404,6 +406,65 @@ fn a_failed_write_keeps_the_dialog_with_the_error(cx: &mut TestAppContext) {
     assert!(!s.tp_is_open(cx));
     assert_eq!(s.tp_window_theme(cx), original);
     settle(&rt, cx);
+}
+
+/// A kept theme and a sort default queued back to back (`theme_first`
+/// says which first), both written before the UI thread hears of either:
+/// neither write undoes the other, on disk or in memory.
+fn queued_writes_both_land(theme_first: bool, cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = with_picker(cx, &rt, &v);
+    let before = v.settings.read().unwrap().clone();
+    let state = SortState {
+        field: SortField::Title,
+        order: SortOrder::Descending,
+        group_dirs: None,
+    };
+    assert_ne!(before.default_sort_field, SortFieldSetting::Title);
+    s.tp_press("down", cx);
+    let next = s.tp_selected(cx).unwrap();
+    assert_ne!(next, before.theme);
+    let sort = |cx: &mut TestAppContext| {
+        s.tp_on_window(cx, |w, _, cx| w.save_sort_default(state.clone(), false, cx))
+    };
+    // Neither write has started: the runtime is not driven yet.
+    if theme_first {
+        s.tp_press("enter", cx);
+        sort(cx);
+    } else {
+        sort(cx);
+        s.tp_press("enter", cx);
+    }
+    // Both run now, one after the other, while the UI thread is not run:
+    // what each callback applies lands only after both are on disk.
+    rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(500)));
+    drive(&rt, cx, |cx| !s.tp_is_open(cx));
+    settle(&rt, cx);
+    let memory = v.settings.read().unwrap().clone();
+    let disk = on_disk(&v);
+    for (what, got) in [("memory", &memory), ("disk", &disk)] {
+        assert_eq!(got.theme, next, "the theme in {what}");
+        assert_eq!(
+            got.default_sort_field,
+            SortFieldSetting::Title,
+            "the sort default in {what}"
+        );
+        assert_eq!(got.default_sort_order, SortOrderSetting::Descending);
+        assert_eq!(got.journal_sort_field, before.journal_sort_field);
+    }
+    assert_eq!(s.tp_window_theme(cx), next);
+}
+
+#[gpui_kit::test]
+fn a_theme_then_a_sort_default_queued_both_land(cx: &mut TestAppContext) {
+    queued_writes_both_land(true, cx);
+}
+
+#[gpui_kit::test]
+fn a_sort_default_then_a_theme_queued_both_land(cx: &mut TestAppContext) {
+    queued_writes_both_land(false, cx);
 }
 
 /// Enter on the opening theme, nothing moved, keeps nothing to write: the

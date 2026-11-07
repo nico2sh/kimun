@@ -32,9 +32,9 @@
 //! **The settings write** ([`Workspace::persist_settings`]): the one way the
 //! window writes the shared settings (not its `[gui]` table, which the
 //! layout store owns). Off the UI thread, one write at a time, each writing
-//! the settings as they are when it runs; the `[gui]` table on disk is kept
-//! and a config that does not parse is never overwritten. A failure is an
-//! error flash.
+//! the settings as they are when it runs (every write before it included,
+//! [`write_settings`]); the `[gui]` table on disk is kept and a config that
+//! does not parse is never overwritten. A failure is an error flash.
 
 use std::sync::{Arc, Mutex};
 
@@ -47,7 +47,7 @@ use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
 use kimun_notes::rag::RagStatus;
-use kimun_notes::settings::AppSettings;
+use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::task::JoinError;
 
 use super::note::Closing;
@@ -57,7 +57,8 @@ use crate::startup;
 use crate::status_row::Status;
 
 /// One settings write at a time, process-wide: each reads the settings as
-/// they are when it runs, so the last one to run writes the newest.
+/// they are when it runs and puts its change in them before the next one
+/// runs ([`write_settings`]), so the last one to run writes the newest.
 static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
 
 impl Workspace {
@@ -131,9 +132,8 @@ impl Workspace {
         let Some(settings) = self.settings.clone() else {
             return;
         };
-        let write = write_settings(self.store.clone(), move || {
-            settings.read().unwrap_or_else(|e| e.into_inner()).clone()
-        });
+        // The change is already in memory: the write puts it on disk.
+        let write = write_settings(self.store.clone(), settings, |_| ());
         cx.spawn(async move |this, cx| {
             let Err(error) = write.await else {
                 return;
@@ -386,19 +386,41 @@ impl Workspace {
     }
 }
 
-/// The settings write ([module docs](self)) to `store`: `snapshot` runs when
-/// the write's turn comes, off the UI thread, and gives the settings to
-/// write. Resolves to the write's failure, if any. Must be called with the
-/// tokio runtime entered (the write starts at once).
-pub(super) fn write_settings(
+/// The settings write ([module docs](self)) to `store`: `change` applied to
+/// the shared `settings`, on disk first, then in memory. Off the UI thread,
+/// when the write's turn comes ([`SETTINGS_WRITE`]):
+///
+/// 1. a candidate is the shared settings as they are then, with `change`
+///    applied, and it is written;
+/// 2. written, `change` is applied to the shared settings themselves, still
+///    in its turn, and its answer is what the write resolves to.
+///
+/// So every write starts from the settings with each write before it
+/// already in them, landed or not yet heard of on the UI thread: a write
+/// queued behind another never puts an older copy back on disk. `change`
+/// runs twice (candidate, then memory) rather than the candidate replacing
+/// memory, so a change the UI thread made to memory meanwhile (a switch's
+/// workspace, `report_indexed`) is not undone. A failed write leaves memory
+/// as it was (and the disk: an unparsable config is never replaced, the
+/// `[gui]` table on disk is kept), so the next write does not carry it.
+/// Callers must not apply the change to memory themselves.
+///
+/// Must be called with the tokio runtime entered (the write starts at once).
+pub(super) fn write_settings<R: Send + 'static>(
     store: LayoutStore,
-    snapshot: impl FnOnce() -> AppSettings + Send + 'static,
-) -> impl std::future::Future<Output = Result<(), String>> + 'static {
+    settings: SharedSettings,
+    change: impl Fn(&mut AppSettings) -> R + Send + 'static,
+) -> impl std::future::Future<Output = Result<R, String>> + 'static {
     // The write blocks: off the UI thread, and off the runtime's own
     // thread too (`blocking` starts it at once).
     let write = crate::tasks::blocking(move || {
         let _one_at_a_time = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
-        store.save_settings(&snapshot())
+        let mut candidate = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+        change(&mut candidate);
+        store.save_settings(&candidate)?;
+        Ok(change(
+            &mut settings.write().unwrap_or_else(|e| e.into_inner()),
+        ))
     });
     async move { write.await.and_then(|result| result) }
 }

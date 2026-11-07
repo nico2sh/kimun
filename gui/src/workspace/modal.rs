@@ -378,7 +378,9 @@ impl Workspace {
             // F1 in the browser: its query syntax (once), not the keyboard
             // reference F1 is bound to elsewhere. A rebound F1 stays the
             // user's.
-            (ModalKind::Search, None | Some(ActionShortcuts::KeyboardHelp)) if key == QUERY_HELP_KEY => {
+            (ModalKind::Search, None | Some(ActionShortcuts::KeyboardHelp))
+                if key == QUERY_HELP_KEY =>
+            {
                 self.open_query_help(window, cx);
                 true
             }

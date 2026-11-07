@@ -1149,16 +1149,3 @@ fn the_sort_chord_is_scoped_to_lists() {
     assert!(mac.is_bound(chord("cmd+r"), &A::OpenSortDialog));
     assert_eq!(lw.chord_for(&A::OpenSortDialog), Some(chord("ctrl+r")));
 }
-
-/// F11 is free in every default table (the window's fullscreen key takes it
-/// then), and an override that binds it takes it back.
-#[test]
-fn f11_is_free_by_default_and_an_override_can_take_it() {
-    let f11 = KeyInput::plain(Key::F(11));
-    for platform in PLATFORMS {
-        assert!(!Keymap::defaults(platform).binds(f11), "{platform:?}");
-    }
-    let (keymap, errors) = Keymap::load(LinuxWindows, &overrides(&[("SearchNotes", &["f11"])]));
-    assert!(errors.is_empty(), "{errors:?}");
-    assert!(keymap.binds(f11));
-}

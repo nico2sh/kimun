@@ -23,7 +23,8 @@
 //!   now`): bypasses the throttle and always reports, as a toast: up to
 //!   date, available (with `View`), or the error. The palette row shows the
 //!   dialog instead when a version is already known. A check asked for
-//!   while one runs joins it (and makes it report).
+//!   while one runs joins it (and makes it report); while that one is the
+//!   throttled startup check, a forced check follows it and is the report.
 //! - **The dialog** (the window's one modal slot; refused under the setup
 //!   assistant, another modal or the window's close; allowed over
 //!   Preferences, whose `Check now` leads to it). The versions; then, by
@@ -32,7 +33,10 @@
 //!   `Release notes` (the releases page through the window's opener),
 //!   `Skip this version` (persisted by the backend's `dismiss`), `Later`.
 //!   Enter runs the primary button, Escape is `Later`, Tab walks the
-//!   buttons.
+//!   buttons. While a check runs the dialog says so ("Checking for
+//!   updates…") and `Install update` and `Skip this version` wait (its
+//!   answer may replace the version shown); `Release notes` and `Later`
+//!   still work, and `Later` on a failed install cleans the failure up.
 //! - **Install.** The open note is flushed first, as before any operation
 //!   that lets it go ([`super::note_flush`]); a flush that cannot run or
 //!   fails refuses the install inline. Then the backend installs off the UI
@@ -160,19 +164,29 @@ pub(crate) fn fake_backend_from_env() -> Option<Arc<dyn UpdateBackend>> {
     fake.map(|f| Arc::new(f) as Arc<dyn UpdateBackend>)
 }
 
-/// What the dialog shows: the flow's phase, what the install allows, and
-/// whether the open note is being written before the install.
+/// What the dialog shows: the flow's phase (the one a running check
+/// replaced), what the install allows, whether the open note is being
+/// written before the install, and whether a check runs.
 #[derive(Debug, Clone)]
 pub(crate) struct DialogState {
     pub(crate) phase: UpdatePhase,
     pub(crate) offer: Option<UpdateOffer>,
     pub(crate) saving_note: bool,
+    /// A check runs: its answer may replace the version shown, so nothing
+    /// acts on it until it lands (Install and Skip wait, Enter installs
+    /// nothing); Release notes and Later still work.
+    pub(crate) checking: bool,
 }
 
 impl DialogState {
     /// Whether everything waits (the flush or the install runs).
     fn busy(&self) -> bool {
         self.saving_note || matches!(self.phase, UpdatePhase::Installing(_))
+    }
+
+    /// Whether Install and Skip wait: everything waits, or a check runs.
+    fn acting_waits(&self) -> bool {
+        self.busy() || self.checking
     }
 }
 
@@ -254,6 +268,7 @@ impl UpdateDialog {
                     .on_click(on(Workspace::update_later)),
             );
         }
+        let waits = state.acting_waits();
         let can_install = state.offer == Some(UpdateOffer::Install);
         let failed = matches!(state.phase, UpdatePhase::Failed { .. });
         let install = can_install.then(|| {
@@ -262,7 +277,7 @@ impl UpdateDialog {
                 .small()
                 .label(if failed { RETRY_LABEL } else { INSTALL_LABEL })
                 .loading(busy)
-                .disabled(busy)
+                .disabled(waits)
                 .on_click(on(Workspace::install_update))
         });
         let [notes_focus, skip_focus, later_focus] = &self.secondary;
@@ -286,7 +301,7 @@ impl UpdateDialog {
                     .small()
                     .ghost()
                     .label("Skip this version")
-                    .disabled(busy)
+                    .disabled(waits)
                     .on_click(on(Workspace::skip_update)),
             )
             .child(
@@ -337,6 +352,7 @@ impl Render for UpdateDialog {
             (UpdatePhase::Installed { version }, _) => rules::installed_text(version).into(),
             _ if state.saving_note => SAVING_NOTE_TEXT.into(),
             (UpdatePhase::Installing(_), _) => rules::INSTALLING_TEXT.into(),
+            _ if state.checking => rules::CHECKING_TEXT.into(),
             (_, Some(UpdateOffer::PackageManager { .. })) => rules::PACKAGE_MANAGER_TEXT.into(),
             (_, Some(UpdateOffer::Download)) => rules::DOWNLOAD_TEXT.into(),
             (UpdatePhase::Available(_) | UpdatePhase::Failed { .. }, _) => {
@@ -462,6 +478,19 @@ impl Workspace {
         if manual {
             self.flash(rules::CHECKING_TEXT, cx);
         }
+        self.spawn_update_check(backend, force, cx);
+        // An open dialog says the check runs.
+        self.refresh_update_dialog(cx);
+    }
+
+    /// Ask `backend` (`force`: past the throttle) off the UI thread; the
+    /// answer goes to [`Self::update_check_landed`].
+    fn spawn_update_check(
+        &mut self,
+        backend: Arc<dyn UpdateBackend>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
         let job = blocking(move || backend.check(force));
         self.updates.check = Some(cx.spawn(async move |this, cx| {
             let result = job.await.and_then(|r| r);
@@ -488,6 +517,12 @@ impl Workspace {
             CheckReport::UpToDate(text) => self.flash(text, cx),
             CheckReport::Failed(text) => self.flash_error(text, cx),
             CheckReport::Silent => {}
+            // A manual ask waited on a throttled check: now really check.
+            CheckReport::RunForced => {
+                if let Some(backend) = self.updates.backend.clone() {
+                    self.spawn_update_check(backend, true, cx);
+                }
+            }
         }
         self.refresh_update_dialog(cx);
     }
@@ -503,6 +538,7 @@ impl Workspace {
             phase: machine.shown_phase().clone(),
             offer,
             saving_note: self.updates.flushing.is_some(),
+            checking: machine.is_checking(),
         }
     }
 
@@ -578,7 +614,8 @@ impl Workspace {
     }
 
     /// Enter in the dialog: install (or retry), else the release notes, or
-    /// close once installed. Nothing while busy.
+    /// close once installed. Nothing while busy; no install while a check
+    /// runs (the button is disabled then).
     fn update_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.update_dialog_state();
         if state.busy() {
@@ -586,6 +623,7 @@ impl Workspace {
         }
         match (&state.phase, &state.offer) {
             (UpdatePhase::Installed { .. }, _) => self.update_later(window, cx),
+            (_, Some(UpdateOffer::Install)) if state.checking => {}
             (_, Some(UpdateOffer::Install)) => self.install_update(window, cx),
             (_, Some(_)) => self.open_release_notes(cx),
             _ => {}
@@ -593,7 +631,8 @@ impl Workspace {
     }
 
     /// `Later`, `Close`, Escape: close the dialog (a failure is offered
-    /// clean next time). Not while the install runs.
+    /// clean next time, also when a check runs). Not while the install
+    /// runs.
     pub(crate) fn update_later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.update_busy() {
             return;

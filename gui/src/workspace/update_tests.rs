@@ -490,7 +490,9 @@ fn manual_checks_while_one_runs_are_coalesced(cx: &mut TestAppContext) {
     assert_eq!(fake.checks(), [false], "joined, not started again");
     fake.release();
     drive(&rt, cx, |cx| !s.up_checking(cx));
-    // The startup check now reports, as a manual one would.
+    // The throttled startup check is followed by one forced check (both
+    // asks coalesced into it), whose answer is the report.
+    assert_eq!(fake.checks(), [false, true]);
     // Each manual ask said a check runs (no dead click), then the report.
     assert_eq!(
         s.up_flashes(cx),
@@ -499,6 +501,123 @@ fn manual_checks_while_one_runs_are_coalesced(cx: &mut TestAppContext) {
             (rules::CHECKING_TEXT.into(), false),
             (rules::check_failed_text("network unreachable"), true),
         ]
+    );
+}
+
+/// A manual check while a throttled startup check runs: the startup
+/// check's "nothing known" (the throttle, no network) is not reported as
+/// up to date; a forced check runs after it and its answer is the report.
+#[gpui_kit::test]
+fn a_manual_check_during_a_throttled_startup_check_really_checks(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW).throttled());
+    fake.hold();
+    let s = open_with(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+        Some(fake.clone()),
+    );
+    drive(&rt, cx, |cx| !s.indexing(cx) && s.text(cx) == "alpha");
+    assert!(s.up_checking(cx), "the startup check waits");
+    s.up_route(cx);
+    fake.release();
+    drive(&rt, cx, |cx| !s.up_checking(cx));
+    assert_eq!(fake.checks(), [false, true], "a forced check followed");
+    assert_eq!(
+        s.up_flashes(cx),
+        [
+            (rules::CHECKING_TEXT.into(), false),
+            (rules::available_text(NEW), false),
+        ]
+    );
+    assert!(matches!(s.up_phase(cx), UpdatePhase::Available(_)));
+}
+
+/// The dialog open on a known version while a check runs: it says the
+/// check runs, Install and Skip are disabled (they could not act) and
+/// Enter installs nothing; Release notes and Later still work. Once the
+/// check lands, Install is back.
+#[gpui_kit::test]
+fn the_dialog_waits_on_a_running_check(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    s.up_found(&rt, cx);
+    s.up_view(cx);
+    assert!(!s.up_disabled(UPDATE_INSTALL_ID, cx));
+    fake.hold();
+    s.up_on_window(cx, |w, _, cx| w.check_updates_now(cx));
+    assert!(s.up_checking(cx));
+    assert_eq!(
+        s.up_label(UPDATE_TEXT_ID, cx).as_deref(),
+        Some(rules::CHECKING_TEXT)
+    );
+    assert!(
+        s.up_label(UPDATE_VERSIONS_ID, cx).is_some(),
+        "the version stays"
+    );
+    assert!(s.up_disabled(UPDATE_INSTALL_ID, cx), "Install waits");
+    assert!(s.up_disabled(UPDATE_SKIP_ID, cx), "Skip waits");
+    assert!(!s.up_disabled(UPDATE_NOTES_ID, cx));
+    assert!(!s.up_disabled(UPDATE_LATER_ID, cx));
+    s.up_press("enter", cx);
+    assert!(!s.up_on_window(cx, |w, _, _| w.update_busy()));
+    assert_eq!(fake.installs(), 0);
+    assert_eq!(s.shown_modal(cx), Some(ModalKind::Update));
+    fake.release();
+    drive(&rt, cx, |cx| !s.up_checking(cx));
+    assert!(!s.up_disabled(UPDATE_INSTALL_ID, cx), "Install is back");
+    assert!(!s.up_disabled(UPDATE_SKIP_ID, cx));
+    assert_ne!(
+        s.up_label(UPDATE_TEXT_ID, cx).as_deref(),
+        Some(rules::CHECKING_TEXT)
+    );
+    // Later still closes while a check runs.
+    fake.hold();
+    s.up_on_window(cx, |w, _, cx| w.check_updates_now(cx));
+    s.up_click(UPDATE_LATER_ID, cx);
+    s.settle_dialog(cx);
+    assert_eq!(s.shown_modal(cx), None);
+    fake.release();
+    drive(&rt, cx, |cx| !s.up_checking(cx));
+}
+
+/// A failed install, then a check, then Later: the failure is cleaned up,
+/// so a check that fails goes back to the version offered clean, not to
+/// the failure.
+#[gpui_kit::test]
+fn later_on_a_failure_during_a_check_cleans_it_up(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    s.up_found(&rt, cx);
+    s.up_view(cx);
+    s.up_click(UPDATE_INSTALL_ID, cx);
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
+    });
+    fake.hold();
+    fake.go_offline("network unreachable");
+    s.up_on_window(cx, |w, _, cx| w.check_updates_now(cx));
+    assert!(s.up_checking(cx));
+    s.up_click(UPDATE_LATER_ID, cx);
+    s.settle_dialog(cx);
+    assert_eq!(s.shown_modal(cx), None);
+    fake.release();
+    drive(&rt, cx, |cx| !s.up_checking(cx));
+    assert!(
+        matches!(s.up_phase(cx), UpdatePhase::Available(_)),
+        "{:?}",
+        s.up_phase(cx)
     );
 }
 

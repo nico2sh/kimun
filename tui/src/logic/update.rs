@@ -12,7 +12,8 @@
 //! → Installed (a restart runs it) or Failed (retry). Skipping a version
 //! (`dismiss`) leaves it Skipped. A startup check is silent unless it finds a
 //! newer version that was not skipped, and says so once per session; a
-//! manual check bypasses the throttle and always reports.
+//! manual check bypasses the throttle and always reports (asked for while a
+//! throttled check runs, a forced one follows it and is the report).
 
 use crate::update::{self, InstallChannel, UpdateStatus};
 
@@ -127,8 +128,9 @@ pub const CLOSE_REFUSED_TEXT: &str = "Wait until the update is installed, then c
 pub enum UpdatePhase {
     /// Nothing known (no check yet, or nothing newer).
     Idle,
-    /// A check runs; `manual` when it reports whatever it finds.
-    Checking { manual: bool },
+    /// A check runs; `manual` when it reports whatever it finds, `force`
+    /// when it bypasses the throttle.
+    Checking { manual: bool, force: bool },
     /// A newer version is known.
     Available(UpdateStatus),
     /// That version is being installed.
@@ -166,6 +168,11 @@ pub enum CheckReport {
     /// Nothing to say (a startup check that found nothing, was offline, or
     /// found a version already announced or skipped).
     Silent,
+    /// The check that landed was throttled and a manual check waits on it:
+    /// its answer is dropped (a throttled "nothing known" is no "up to
+    /// date"). Run a forced check now and give its result to
+    /// [`UpdateMachine::check_landed`]; the flow is still checking.
+    RunForced,
 }
 
 /// The update flow's state machine. See the module docs.
@@ -178,6 +185,9 @@ pub struct UpdateMachine {
     /// The version already announced this session: a startup check does not
     /// announce it again.
     announced: Option<String>,
+    /// A manual check asked for while a throttled one runs: a forced check
+    /// runs once that one lands ([`CheckReport::RunForced`]).
+    forced_after: bool,
 }
 
 impl Default for UpdateMachine {
@@ -192,6 +202,7 @@ impl UpdateMachine {
             phase: UpdatePhase::Idle,
             before_check: None,
             announced: None,
+            forced_after: false,
         }
     }
 
@@ -241,29 +252,52 @@ impl UpdateMachine {
         matches!(self.phase, UpdatePhase::Installed { .. })
     }
 
-    /// A check is asked for (`manual`: by the user). A manual ask while a
-    /// startup check runs makes that check report explicitly.
+    /// A check is asked for (`manual`: by the user, so it bypasses the
+    /// throttle and reports). One asked for while a check runs joins it: a
+    /// manual ask makes the running check report, and when that check is
+    /// throttled (a startup check) a forced one follows it, whose answer is
+    /// the report ([`CheckReport::RunForced`]).
     pub fn begin_check(&mut self, manual: bool) -> CheckStart {
         match &mut self.phase {
-            UpdatePhase::Checking { manual: running } => {
+            UpdatePhase::Checking {
+                manual: running,
+                force,
+            } => {
                 *running |= manual;
+                if manual && !*force {
+                    self.forced_after = true;
+                }
                 CheckStart::Busy
             }
             UpdatePhase::Installing(_) => CheckStart::Busy,
             UpdatePhase::Installed { .. } => CheckStart::Installed,
             _ => {
-                let before = std::mem::replace(&mut self.phase, UpdatePhase::Checking { manual });
+                let checking = UpdatePhase::Checking {
+                    manual,
+                    force: manual,
+                };
+                let before = std::mem::replace(&mut self.phase, checking);
                 self.before_check = Some(before);
+                self.forced_after = false;
                 CheckStart::Run { force: manual }
             }
         }
     }
 
-    /// The check's result. Ignored unless a check runs.
+    /// The check's result. Ignored unless a check runs. A throttled check
+    /// a manual one waits on is not reported: the forced check runs instead
+    /// ([`CheckReport::RunForced`]), still checking.
     pub fn check_landed(&mut self, result: Result<Option<UpdateStatus>, String>) -> CheckReport {
-        let UpdatePhase::Checking { manual } = self.phase else {
+        let UpdatePhase::Checking { manual, .. } = self.phase else {
             return CheckReport::Silent;
         };
+        if std::mem::take(&mut self.forced_after) {
+            self.phase = UpdatePhase::Checking {
+                manual: true,
+                force: true,
+            };
+            return CheckReport::RunForced;
+        }
         let before = self.before_check.take().unwrap_or(UpdatePhase::Idle);
         match result {
             Ok(Some(status)) if status.update_available => {
@@ -357,10 +391,17 @@ impl UpdateMachine {
         };
     }
 
-    /// `Later` after a failure: the version is offered again, clean.
+    /// `Later` after a failure: the version is offered again, clean. While
+    /// a check runs, the phase it replaced (the one shown) is cleaned, so
+    /// the check going back to it does not bring the failure back.
     pub fn later(&mut self) {
-        if let UpdatePhase::Failed { status, .. } = &self.phase {
-            self.phase = UpdatePhase::Available(status.clone());
+        let checking = self.is_checking();
+        let shown = match self.before_check.as_mut() {
+            Some(before) if checking => before,
+            _ => &mut self.phase,
+        };
+        if let UpdatePhase::Failed { status, .. } = shown {
+            *shown = UpdatePhase::Available(status.clone());
         }
     }
 }
@@ -465,6 +506,10 @@ mod scripted {
         /// Each check's `force`, in order.
         checks: Vec<bool>,
         installs: usize,
+        /// A check without `force` answers "nothing known" (`Ok(None)`), as
+        /// the real throttle does with a fresh state file and no version
+        /// cached.
+        throttled: bool,
     }
 
     /// The releases page the scripted backend names.
@@ -489,6 +534,7 @@ mod scripted {
                     dismissed: None,
                     checks: Vec::new(),
                     installs: 0,
+                    throttled: false,
                 }),
                 open: Mutex::new(true),
                 opened: Condvar::new(),
@@ -575,6 +621,18 @@ mod scripted {
             self
         }
 
+        /// Checks without `force` are throttled with nothing cached: they
+        /// answer `Ok(None)` (see `throttled` in the script).
+        pub fn throttled(self) -> Self {
+            self.edit(|s| s.throttled = true);
+            self
+        }
+
+        /// Later checks fail with `error` (offline).
+        pub fn go_offline(&self, error: &str) {
+            self.edit(|s| s.latest = Err(error.to_string()));
+        }
+
         /// What later installs do.
         pub fn set_install(&self, result: Result<(), String>) {
             self.edit(|s| s.install = result);
@@ -616,6 +674,9 @@ mod scripted {
             }
             drop(open);
             self.read(|s| {
+                if s.throttled && !force {
+                    return Ok(None);
+                }
                 let current = update::CURRENT_VERSION.to_string();
                 Ok(Some(match s.latest.clone()? {
                     Some(latest) => UpdateStatus {
@@ -790,7 +851,13 @@ mod tests {
     fn a_check_while_one_runs_is_coalesced_and_reports_if_manual() {
         let mut m = UpdateMachine::new();
         m.begin_check(false);
+        assert_eq!(m.begin_check(false), CheckStart::Busy);
         assert_eq!(m.begin_check(true), CheckStart::Busy);
+        // The throttled check's answer waits for the forced one's.
+        assert!(matches!(
+            m.check_landed(Err("offline".into())),
+            CheckReport::RunForced
+        ));
         assert!(matches!(
             m.check_landed(Err("offline".into())),
             CheckReport::Failed(_)
@@ -800,6 +867,100 @@ mod tests {
             m.check_landed(Ok(Some(up_to_date()))),
             CheckReport::Silent
         ));
+    }
+
+    /// A manual ask while a throttled (startup) check runs: that check's
+    /// answer is not reported (a throttled `Ok(None)` is no "up to date"),
+    /// a forced check runs after it and its answer is the report.
+    #[test]
+    fn a_manual_check_during_a_throttled_one_runs_a_forced_check_after_it() {
+        let mut m = UpdateMachine::new();
+        assert_eq!(m.begin_check(false), CheckStart::Run { force: false });
+        assert_eq!(m.begin_check(true), CheckStart::Busy);
+        assert!(matches!(m.check_landed(Ok(None)), CheckReport::RunForced));
+        assert!(m.is_checking(), "the forced check runs now");
+        assert!(matches!(
+            m.check_landed(Ok(Some(status("0.2.0", InstallChannel::Direct, false)))),
+            CheckReport::Available(found) if found.latest == "0.2.0"
+        ));
+        assert!(!m.is_checking());
+        // Its failure reports too, and what was known before stays.
+        let mut m = UpdateMachine::new();
+        m.begin_check(false);
+        m.begin_check(true);
+        assert!(matches!(
+            m.check_landed(Ok(Some(up_to_date()))),
+            CheckReport::RunForced
+        ));
+        assert!(matches!(
+            m.check_landed(Err("offline".into())),
+            CheckReport::Failed(text) if text == check_failed_text("offline")
+        ));
+        assert!(matches!(m.phase(), UpdatePhase::Idle));
+    }
+
+    /// Two manual asks during a throttled check: one forced check after
+    /// it. A manual ask during a forced check joins it.
+    #[test]
+    fn manual_asks_coalesce_into_one_forced_check() {
+        let mut m = UpdateMachine::new();
+        m.begin_check(false);
+        assert_eq!(m.begin_check(true), CheckStart::Busy);
+        assert_eq!(m.begin_check(true), CheckStart::Busy);
+        assert!(matches!(m.check_landed(Ok(None)), CheckReport::RunForced));
+        assert_eq!(m.begin_check(true), CheckStart::Busy, "joins the forced");
+        assert_eq!(m.begin_check(false), CheckStart::Busy);
+        assert!(matches!(
+            m.check_landed(Ok(Some(up_to_date()))),
+            CheckReport::UpToDate(_)
+        ));
+        assert!(!m.is_checking(), "no third check");
+        // A manual check alone is forced from the start: nothing follows.
+        assert_eq!(m.begin_check(true), CheckStart::Run { force: true });
+        assert_eq!(m.begin_check(true), CheckStart::Busy);
+        assert!(matches!(
+            m.check_landed(Ok(Some(up_to_date()))),
+            CheckReport::UpToDate(_)
+        ));
+        assert!(!m.is_checking());
+    }
+
+    /// While a check runs, nothing can act on the version shown (the dialog
+    /// says the check runs and disables Install and Skip): `dismiss` and
+    /// `begin_install` refuse, `known` is none; once it lands they act.
+    #[test]
+    fn nothing_acts_while_a_check_runs() {
+        let mut m = UpdateMachine::new();
+        m.begin_check(true);
+        m.check_landed(Ok(Some(status("0.2.0", InstallChannel::Direct, false))));
+        m.begin_check(true);
+        assert!(m.is_checking());
+        assert!(m.shown().is_some(), "still shown");
+        assert!(m.known().is_none());
+        assert_eq!(m.dismiss(), None);
+        assert!(m.begin_install(&UpdateOffer::Install).is_none());
+        assert!(m.is_checking(), "the check still runs");
+        m.check_landed(Err("offline".into()));
+        assert_eq!(m.dismiss().as_deref(), Some("0.2.0"));
+    }
+
+    /// `Later` on a failed install while a check runs: the failure goes
+    /// (the version is offered clean), and a check that fails then goes
+    /// back to that, not to the failure.
+    #[test]
+    fn later_on_a_failure_cleans_up_while_a_check_runs() {
+        let mut m = UpdateMachine::new();
+        m.begin_check(true);
+        m.check_landed(Ok(Some(status("0.2.0", InstallChannel::Direct, false))));
+        m.begin_install(&UpdateOffer::Install);
+        m.install_landed(Err("checksum mismatch".into()));
+        m.begin_check(true);
+        assert!(matches!(m.shown_phase(), UpdatePhase::Failed { .. }));
+        m.later();
+        assert!(matches!(m.shown_phase(), UpdatePhase::Available(_)));
+        assert!(m.is_checking(), "the check still runs");
+        m.check_landed(Err("offline".into()));
+        assert!(matches!(m.phase(), UpdatePhase::Available(_)));
     }
 
     #[test]

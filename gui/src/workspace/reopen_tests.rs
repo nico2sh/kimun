@@ -725,6 +725,46 @@ fn the_gui_table_survives_a_settings_write(cx: &mut TestAppContext) {
     assert_eq!(on_disk_gui(&p.config).drawer_visible(Side::Left), !visible);
 }
 
+/// Two settings writes queued back to back, the first failing (its config
+/// does not parse): its change reaches neither memory nor the second write,
+/// which lands with only its own change. The second's answer is its
+/// change's, on the shared settings.
+#[test]
+fn a_failed_write_does_not_poison_the_next() {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.toml");
+    let good = dir.path().join("good.toml");
+    std::fs::write(&bad, "this is [not toml").unwrap();
+    let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+    let before = settings.read().unwrap().clone();
+    assert_ne!(before.theme, "Nord");
+    assert_ne!(before.leader_timeout_ms, 1234);
+    let first =
+        super::reopen::write_settings(LayoutStore::File(bad.clone()), settings.clone(), |s| {
+            s.theme = "Nord".into()
+        });
+    let second =
+        super::reopen::write_settings(LayoutStore::File(good.clone()), settings.clone(), |s| {
+            s.leader_timeout_ms = 1234;
+            s.theme.clone()
+        });
+    let (first, second) = rt.block_on(async { (first.await, second.await) });
+    assert!(first.is_err(), "the first fails: {first:?}");
+    assert_eq!(second, Ok(before.theme.clone()), "seen without the first");
+    let memory = settings.read().unwrap().clone();
+    assert_eq!(
+        memory.theme, before.theme,
+        "the failed change is not in memory"
+    );
+    assert_eq!(memory.leader_timeout_ms, 1234);
+    let disk = AppSettings::load_from_file(good).unwrap();
+    assert_eq!(disk.theme, before.theme, "nor on disk");
+    assert_eq!(disk.leader_timeout_ms, 1234);
+    assert_eq!(std::fs::read_to_string(bad).unwrap(), "this is [not toml");
+}
+
 /// A switch while the window cannot change vault (the close flush runs)
 /// changes nothing: settings, disk and window stay on A.
 #[gpui_kit::test]
