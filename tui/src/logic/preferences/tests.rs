@@ -281,6 +281,57 @@ fn theme_choices_mark_the_effective_theme() {
     assert_eq!(unset.themes[unset.original].name, Theme::default().name);
 }
 
+#[test]
+fn theme_rows_follow_the_entries_and_filter_by_name() {
+    let s = settings_with(|s| {
+        s.theme = "Gruvbox Light".to_string();
+    });
+    let choices = ThemeChoices::new(&s);
+    let rows = choices.rows();
+    assert_eq!(rows.len(), choices.themes.len());
+    for (row, (index, name, current)) in rows.iter().zip(choices.entries()) {
+        assert_eq!(
+            (row.index, row.name.as_str(), row.current),
+            (index, name, current)
+        );
+        assert_eq!(crate::logic::list::ListRow::match_text(row), Some(name));
+    }
+}
+
+#[test]
+fn the_preview_is_the_selected_theme_unless_it_is_the_opening_one() {
+    let s = settings_with(|s| {
+        s.theme = "Gruvbox Light".to_string();
+    });
+    let choices = ThemeChoices::new(&s);
+    let other = (choices.original + 1) % choices.themes.len();
+    assert_eq!(choices.preview_target(Some(other)), Some(other));
+    assert_eq!(
+        choices.preview_target(Some(choices.original)),
+        None,
+        "the opening theme's row shows the opening theme"
+    );
+    assert_eq!(choices.preview_target(None), None, "nothing selected");
+    assert_eq!(
+        choices.preview_target(Some(choices.themes.len())),
+        None,
+        "out of range"
+    );
+}
+
+#[test]
+fn with_theme_changes_the_theme_only() {
+    let s = settings_with(|s| {
+        s.theme = "Gruvbox Light".to_string();
+        s.leader_timeout_ms = 250;
+    });
+    let picked = with_theme(&s, "Nord");
+    assert_eq!(picked.theme, "Nord");
+    let mut back = picked.clone();
+    back.theme = s.theme.clone();
+    assert_eq!(back, s, "nothing else changed");
+}
+
 // ── dirty / apply ────────────────────────────────────────────────────────────
 
 #[test]
@@ -616,6 +667,7 @@ fn config_info_summarises_the_settings() {
         config_info(&s).config_path,
         abs("/cfg/config.toml").display().to_string()
     );
+    assert_eq!(config_path_label(&s), config_info(&s).config_path);
 }
 
 #[test]

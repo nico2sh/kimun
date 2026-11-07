@@ -316,9 +316,10 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.info = accent(theme).into();
     kit.success = available(theme).into();
     // The default Button (the attachment view's `Open externally`, the
-    // dialogs' Cancel): its fill, label, hover and press; its border is the
-    // `input` role above. Its fill is the panel surface, so on the editor's
-    // page it reads as a control, in a dialog as the dialog's own tone.
+    // dialogs' Cancel, the CFG view's `Theme…` / `Preferences…`): its fill,
+    // label, hover and press; its border is the `input` role above. Its
+    // fill is the panel surface, so on the editor's page it reads as a
+    // control, in a dialog as the dialog's own tone.
     kit.button = surface.into();
     kit.button_foreground = text.into();
     kit.button_hover = hover.into();

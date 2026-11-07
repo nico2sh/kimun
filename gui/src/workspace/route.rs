@@ -164,6 +164,10 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => None,
             // Leader `v p`: Preferences, vault or not.
             LeaderRoute::OpenPreferences => None,
+            // Leader `v t`: the theme picker, vault or not.
+            LeaderRoute::Overlay(OverlayOpen::ThemePicker) => None,
+            // Not the theme picker (above): the overlays without a surface
+            // here yet.
             LeaderRoute::Overlay(_)
             | LeaderRoute::NoteDialog(..)
             | LeaderRoute::Job(LeaderJob::CheckUpdates)
@@ -229,6 +233,7 @@ impl Workspace {
             LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => {
                 self.open_workspace_switcher(window, cx)
             }
+            LeaderRoute::Overlay(OverlayOpen::ThemePicker) => self.open_theme_picker(window, cx),
             // Leader `f b` is the open note's backlinks, which LINKS owns (its
             // Backlinks tab): show that, not FIND on a query.
             LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {

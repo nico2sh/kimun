@@ -477,7 +477,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             window.close_all_dialogs(cx);
         }
-        self.reset_modal_state();
+        self.reset_modal_state(cx);
         self.file_status = None;
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
