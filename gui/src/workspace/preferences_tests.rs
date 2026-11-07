@@ -619,6 +619,34 @@ fn the_theme_previews_live_and_cancel_restores_it(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read_to_string(config(&v)).unwrap(), file);
 }
 
+/// With no theme configured, picking a theme enables Save and going back
+/// to the one in effect disables it again: the draft is clean (M10d).
+#[gpui_kit::test]
+fn an_unset_theme_picked_and_put_back_is_clean(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    v.settings.write().unwrap().theme = String::new();
+    let s = with_prefs(cx, &rt, &v);
+    let original = s.pf_window_theme(cx);
+    assert_eq!(original, Theme::default().name, "unset: the default");
+    assert!(s.pf_disabled(SAVE_ID, cx));
+    let next = s.pf_pick_next_theme(cx);
+    assert_ne!(next, original);
+    assert!(!s.pf_disabled(SAVE_ID, cx), "another theme: Save");
+    s.pf_click(theme_row_id(&original), cx);
+    assert_eq!(s.pf_model(cx, |m| m.theme_name.clone()), original);
+    assert!(
+        s.pf_disabled(SAVE_ID, cx),
+        "back on the effective theme: clean"
+    );
+    // Clean: Esc closes without asking.
+    s.pf_press("escape", cx);
+    assert!(!s.pf_is_open(cx));
+    settle(&rt, cx);
+    assert_eq!(v.settings.read().unwrap().theme, "", "still unset");
+}
+
 /// Enter on the question discards.
 #[gpui_kit::test]
 fn enter_on_the_question_discards(cx: &mut TestAppContext) {

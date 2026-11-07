@@ -96,6 +96,8 @@ impl Workspace {
             // can answer (the TUI gates every route into it so).
             LeaderRoute::Drawer(DrawerView::Ask) => self.ask_drawer_block(),
             LeaderRoute::Drawer(view) if shell_layout::hosts(*view) => None,
+            // Every view is hosted (`shell_layout::hosts`); a guard for a
+            // drawer view added later.
             LeaderRoute::Drawer(_) => Some(NOT_YET),
             // `+ask`: the Thread ([`super::ask`]).
             LeaderRoute::Ask(step) => self.ask_block(*step),
@@ -168,11 +170,16 @@ impl Workspace {
             LeaderRoute::OpenPreferences => None,
             // Leader `v t`: the theme picker, vault or not.
             LeaderRoute::Overlay(OverlayOpen::ThemePicker) => None,
-            // Not the theme picker (above): the overlays without a surface
-            // here yet.
-            LeaderRoute::Overlay(_) | LeaderRoute::NoteDialog(..) | LeaderRoute::GitStatus => {
-                Some(NOT_YET)
-            }
+            // Leader `?`: the keyboard reference (F1), vault or not. It lists
+            // the leader tree, so it is the cheatsheet too.
+            LeaderRoute::Overlay(OverlayOpen::Cheatsheet | OverlayOpen::Help) => None,
+            // A note dialog without a vault (not produced today: with no
+            // vault there is no open note, the route is `NoNoteOpen`).
+            LeaderRoute::NoteDialog(..) => Some(NO_WORKSPACE),
+            // Leader `g s`: the desktop app shows no git state. The other
+            // overlays are no leader leaf's route (the sort and query-help
+            // recipes, the quick note: chords and buttons open those).
+            LeaderRoute::Overlay(_) | LeaderRoute::GitStatus => Some(NOT_YET),
         }
     }
 
@@ -236,6 +243,9 @@ impl Workspace {
                 self.open_workspace_switcher(window, cx)
             }
             LeaderRoute::Overlay(OverlayOpen::ThemePicker) => self.open_theme_picker(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::Cheatsheet | OverlayOpen::Help) => {
+                self.open_keyboard_help(window, cx)
+            }
             // Leader `f b` is the open note's backlinks, which LINKS owns (its
             // Backlinks tab): show that, not FIND on a query.
             LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {

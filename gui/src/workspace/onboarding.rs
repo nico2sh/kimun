@@ -27,6 +27,12 @@
 //! ([`Workspace::apply_theme`]); leaving without finishing puts the theme
 //! the window had back.
 //!
+//! **Welcome.** The logo and the wordmark "Kimün", whose two dots keep
+//! bouncing while the step shows (a GPUI repeating `with_animation`: a ~600 ms
+//! spring, then a rest, every 2.4 s); it moves by an offset only, in a fixed
+//! line box, so nothing beside it shifts. Reduced motion (`[gui] reduce_motion`,
+//! GPUI's `App::reduce_motion`: GPUI reads no OS hint) keeps it still.
+//!
 //! **Finish** applies the draft off the UI thread (`apply_draft`: the folder
 //! is created, the workspace registered), then hands over to the window,
 //! which applies the theme, persists the settings through its one settings
@@ -42,10 +48,11 @@ use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit, ParentElement, Render,
-    Role, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, StyledImage as _,
-    Subscription, Task, UniformListScrollHandle, Window, div, img, px, rems, uniform_list,
+    Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
+    EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
+    KeyDownEvent, ObjectFit, ParentElement, Render, Role, ScrollStrategy, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage as _, Subscription, Task,
+    UniformListScrollHandle, Window, div, img, px, rems, uniform_list,
 };
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::logic::input::{Key, KeyInput};
@@ -71,6 +78,35 @@ pub(crate) const CANCEL_ID: &str = "onboarding-cancel";
 pub(crate) const MESSAGE_ID: &str = "onboarding-message";
 /// The app logo on the Welcome step.
 pub(crate) const LOGO_ID: &str = "onboarding-logo";
+/// The wordmark under it.
+pub(crate) const WORDMARK_ID: &str = "onboarding-wordmark";
+/// The wordmark's bouncing letter.
+pub(crate) const WORDMARK_U_ID: &str = "onboarding-wordmark-u";
+/// The wordmark's text, also its accessible name.
+pub(crate) const WORDMARK: &str = "Kimün";
+/// The wordmark around its bouncing letter.
+const WORDMARK_PARTS: [&str; 3] = ["Kim", "u", "n"];
+/// The font's own diaeresis, laid over the "u": the two dots that bounce.
+const DIAERESIS: &str = "\u{a8}";
+/// The wordmark's size, in rems.
+const WORDMARK_REMS: f32 = 3.;
+/// One round of the loop: the spring, then a rest.
+const BOUNCE_PERIOD: std::time::Duration = std::time::Duration::from_millis(2400);
+/// The share of the period the spring takes (≈ 600 ms).
+const BOUNCE_SHARE: f32 = 0.25;
+/// The spring's highest point, in ems of the wordmark (≈ 0.25 em).
+const BOUNCE_EMS: f32 = 0.25;
+
+/// The ü's offset at `t` (0 to 1) of the spring, in ems (negative is up):
+/// a quick rise, a smaller dip, rest at both ends — a damped sine, so the
+/// end state (`t` = 1, which reduced motion renders) is the resting glyph.
+pub(crate) fn bounce_offset(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    // sin(2πt)·(1−t)² peaks at ≈ 0.61 near t = 0.2; scale that to the
+    // spring's height.
+    const PEAK: f32 = 0.61;
+    -BOUNCE_EMS * (std::f32::consts::TAU * t).sin() * (1. - t).powi(2) / PEAK
+}
 /// The Workspace step's controls.
 pub(crate) const CHOOSE_FOLDER_ID: &str = "onboarding-choose-folder";
 pub(crate) const NAME_ID: &str = "onboarding-name";
@@ -855,6 +891,57 @@ impl OnboardingView {
             )
     }
 
+    /// The wordmark: "Kimün" in one fixed line box, its accessible name the
+    /// whole word. The ü springs ([`bounce_offset`]) as a relative offset,
+    /// which moves its paint and nothing else: its neighbours and the line
+    /// keep their place.
+    fn render_wordmark(&self, cx: &gpui_kit::App) -> AnyElement {
+        let theme = theme::current(cx);
+        let [before, letter, after] = WORDMARK_PARTS;
+        // A plain "u" with the font's "¨" over it, centred on it and on the
+        // same line box; only the dots move.
+        let dots = div()
+            .id(WORDMARK_U_ID)
+            .test_support()
+            .absolute()
+            .left_0()
+            .right_0()
+            .flex()
+            .flex_row()
+            .justify_center()
+            .child(DIAERESIS);
+        // Reduced motion needs no branch: `with_animation` draws the end
+        // state (`t` = 1, the resting glyph) when GPUI's switch is on.
+        let dots = dots.with_animation(
+            "onboarding-wordmark-bounce",
+            Animation::new(BOUNCE_PERIOD).repeat(),
+            |dots, t| {
+                // The spring fills the start of each period; the rest of it
+                // the dots sit still.
+                let spring = (t / BOUNCE_SHARE).min(1.);
+                dots.top(rems(bounce_offset(spring) * WORDMARK_REMS))
+            },
+        );
+        let glyph = div().relative().child(letter).child(dots);
+        div()
+            .id(WORDMARK_ID)
+            .test_support()
+            .role(Role::Heading)
+            .aria_label(WORDMARK)
+            .flex()
+            .flex_row()
+            .flex_none()
+            .h(rems(WORDMARK_REMS * 1.25))
+            .line_height(rems(WORDMARK_REMS * 1.25))
+            .text_size(rems(WORDMARK_REMS))
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme::accent(&theme))
+            .child(before)
+            .child(glyph)
+            .child(after)
+            .into_any_element()
+    }
+
     fn render_welcome(&self, cx: &gpui_kit::App) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
@@ -863,35 +950,44 @@ impl OnboardingView {
             .flex_col()
             .gap_4()
             .child(
-                // A fixed square, so the layout holds before the PNG is
-                // decoded (and in tests, where it may never be); `Contain`
-                // keeps the whole mark inside it. The wrapper carries the
-                // id and the label: `img` exposes no accessibility node.
+                // The logo with the wordmark and the pitch beside it.
                 div()
-                    .id(LOGO_ID)
-                    .test_support()
-                    .role(Role::Image)
-                    .aria_label("kimün logo")
-                    .size(px(112.))
-                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_4()
                     .child(
-                        img(assets::logo())
-                            .size_full()
-                            .object_fit(ObjectFit::Contain),
+                        // A fixed square, so the layout holds before the PNG
+                        // is decoded (and in tests, where it may never be);
+                        // `Contain` keeps the whole mark inside it. The
+                        // wrapper carries the id and the label: `img`
+                        // exposes no accessibility node.
+                        div()
+                            .id(LOGO_ID)
+                            .test_support()
+                            .role(Role::Image)
+                            .aria_label("kimün logo")
+                            .size(px(112.))
+                            .flex_none()
+                            .child(
+                                img(assets::logo())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(self.render_wordmark(cx))
+                            .child(
+                                div()
+                                    .text_base()
+                                    .text_color(theme::bright(t))
+                                    .child("Your notes as plain Markdown files, on your own disk."),
+                            ),
                     ),
-            )
-            .child(
-                div()
-                    .text_size(rems(3.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme::accent(t))
-                    .child("Kimün"),
-            )
-            .child(
-                div()
-                    .text_base()
-                    .text_color(theme::bright(t))
-                    .child("Your notes as plain Markdown files, on your own disk."),
             )
             .child(para(
                 "This setup walks you through the essentials: where your notes live, how \

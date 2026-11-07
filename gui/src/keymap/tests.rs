@@ -182,6 +182,7 @@ fn default_tables() {
             lw("ctrl+shift+s", A::SaveNote),
             lw("alt+shift+up", A::MoveViewUp),
             lw("alt+shift+down", A::MoveViewDown),
+            lw("f(1)", A::KeyboardHelp),
         ]
     );
     assert_eq!(
@@ -222,6 +223,7 @@ fn default_tables() {
             lw("cmd+s", A::SaveNote),
             lw("cmd+alt+shift+up", A::MoveViewUp),
             lw("cmd+alt+shift+down", A::MoveViewDown),
+            lw("f(1)", A::KeyboardHelp),
         ]
     );
 }
@@ -251,6 +253,65 @@ fn preferences_are_f4_and_primary_comma_from_every_panel() {
         ),
         Some(&A::OpenPreferences)
     );
+}
+
+/// The keyboard reference (M10d) is a bare F1 on both platforms, from every
+/// panel, under vim too (no letter: no twin, nothing for the vim rule), and
+/// nothing else holds F1. An override moves it like any other action.
+#[test]
+fn keyboard_help_is_f1_from_every_panel_on_both_platforms() {
+    let f1 = KeyInput::plain(Key::F(1));
+    for platform in [LinuxWindows, MacOs] {
+        let keymap = Keymap::defaults(platform);
+        assert_eq!(keymap.chords_for(&A::KeyboardHelp), [f1]);
+        for panel in PANELS {
+            for vim in [false, true] {
+                assert_eq!(
+                    keymap.resolve(f1, ctx(panel, vim)),
+                    Some(&A::KeyboardHelp),
+                    "{platform:?} {panel:?} vim={vim}"
+                );
+            }
+        }
+        let holders: Vec<_> = table(&keymap)
+            .into_iter()
+            .filter(|(c, _)| c == "f(1)")
+            .collect();
+        assert_eq!(holders.len(), 1, "{platform:?}: F1 is the reference's only");
+    }
+    let (moved, errors) = Keymap::load(
+        LinuxWindows,
+        &overrides(&[("KeyboardHelp", &["ctrl+shift+slash", "f12"])]),
+    );
+    assert_eq!(
+        errors,
+        [KeymapError::InvalidChord {
+            action: A::KeyboardHelp,
+            chord: "ctrl+shift+slash".into(),
+            reason: ChordError::UnknownKey("slash".into()),
+        }]
+    );
+    assert_eq!(
+        moved.chords_for(&A::KeyboardHelp),
+        [KeyInput::plain(Key::F(12))]
+    );
+    assert_eq!(moved.resolve(f1, ctx(Panel::Editor, false)), None);
+}
+
+/// The vim rule's shadow, for a keyboard reference: only a Ctrl+letter the
+/// engine reads, only for an action live in the editor, only on Linux and
+/// Windows.
+#[test]
+fn vim_shadows_only_editor_chords_the_engine_reads() {
+    let lw = Keymap::defaults(LinuxWindows);
+    // Ctrl+R sorts from the drawers only: never the editor's to lose.
+    assert!(!lw.vim_shadows(&A::OpenSortDialog, chord("ctrl+r")));
+    // An everywhere action bound to Ctrl+V loses it in the vim editor.
+    assert!(lw.vim_shadows(&A::OpenNote, chord("ctrl+v")));
+    assert!(!lw.vim_shadows(&A::OpenNote, chord("ctrl+o")));
+    assert!(!lw.vim_shadows(&A::OpenNote, chord("ctrl+shift+v")));
+    let mac = Keymap::defaults(MacOs);
+    assert!(!mac.vim_shadows(&A::OpenNote, chord("ctrl+v")));
 }
 
 /// Every chord of an action, in order, for the CFG summary: Preferences

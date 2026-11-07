@@ -1,5 +1,6 @@
 //! The `[gui]` table of the shared `config.toml` (ADR-0049 §6, ADR-0050 §5):
-//! the GUI's drawer placements, sizes, key overrides and window decorations.
+//! the GUI's drawer placements, sizes, key overrides, window decorations and
+//! reduced motion.
 //!
 //! Each placed view has its own entry, `[gui.views.<view-id>]`, with its
 //! `side` (`"left"` or `"right"`), its drawer `slot` (an index, 0 the top)
@@ -40,6 +41,7 @@ pub const DEFAULT_LEFT_VIEWS: [&str; 1] = ["files"];
 const KEYS: &str = "keys";
 const VIEWS: &str = "views";
 const WINDOW_DECORATIONS: &str = "window_decorations";
+const REDUCE_MOTION: &str = "reduce_motion";
 
 /// `window_decorations`: who draws the GUI window's title bar and frame.
 /// Read once, when the window opens (changing it needs a restart). macOS
@@ -392,6 +394,29 @@ impl GuiSettings {
             WINDOW_DECORATIONS.into(),
             Value::String(decorations.as_str().into()),
         );
+    }
+
+    /// `reduce_motion`: `true` keeps the GUI's decorative motion still (the
+    /// Welcome wordmark's bounce, the kit's spinners). Read once, when the
+    /// app starts. Missing reads as `false`; any other value than a boolean
+    /// is logged and reads as `false` too.
+    pub fn reduce_motion(&self) -> bool {
+        match self.table.get(REDUCE_MOTION) {
+            None => false,
+            Some(Value::Boolean(reduce)) => *reduce,
+            Some(other) => {
+                tracing::warn!(
+                    "[gui] reduce_motion: expected true or false, got {other}; using false"
+                );
+                false
+            }
+        }
+    }
+
+    /// Records `reduce_motion`.
+    pub fn set_reduce_motion(&mut self, reduce: bool) {
+        self.table
+            .insert(REDUCE_MOTION.into(), Value::Boolean(reduce));
     }
 
     /// The `[gui.keys]` overrides: action name → chords, as written. A single
@@ -764,6 +789,31 @@ kept = 1
         let back: AppSettings = toml::from_str(&written).unwrap();
         assert_eq!(back.gui.window_decorations(), WindowDecorations::System);
         assert_eq!(back.gui, settings.gui);
+    }
+
+    #[test]
+    fn reduce_motion_is_read_leniently_and_round_trips() {
+        assert!(!AppSettings::default().gui.reduce_motion());
+        let read = |value: &str| gui(&format!("[gui]\nreduce_motion = {value}\n"));
+        assert!(read("true").reduce_motion());
+        assert!(!read("false").reduce_motion());
+        // Wrong types fall back to motion, and the config still loads.
+        for garbage in ["\"yes\"", "1", "\"true\"", "[true]", "{ on = true }"] {
+            assert!(!read(garbage).reduce_motion(), "{garbage}");
+        }
+
+        let mut settings = AppSettings::default();
+        settings.gui.set_reduce_motion(true);
+        let written = toml::to_string(&settings).unwrap();
+        assert!(written.contains("reduce_motion = true"), "{written}");
+        let back: AppSettings = toml::from_str(&written).unwrap();
+        assert!(back.gui.reduce_motion());
+        assert_eq!(back.gui, settings.gui);
+        // Next to the other `[gui]` keys, which it leaves alone.
+        let mut both = read("true");
+        both.set_window_decorations(WindowDecorations::System);
+        assert!(both.reduce_motion());
+        assert_eq!(both.window_decorations(), WindowDecorations::System);
     }
 
     #[test]

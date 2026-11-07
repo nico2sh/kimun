@@ -13,11 +13,12 @@
 //!   the configured name changes, and the configured name (or the default
 //!   theme's) shows until it lands. Nothing else here reads a file.
 //! - **Launchers.** `Theme…` (Enter or `t` with the view focused) opens the
-//!   theme picker, `Preferences…` (`p`) opens Preferences — through the same
-//!   leader leaves (`vault.theme`, `vault.preferences`) and the same refusals
-//!   as the leader, so neither opens over a modal or the setup assistant.
-//!   Both are kit Buttons, mouse and keyboard, after the view in the Tab
-//!   order.
+//!   theme picker, `Preferences…` (`p`) opens Preferences, `Keyboard
+//!   shortcuts…` (`k`) the keyboard reference — through the same leader
+//!   leaves (`vault.theme`, `vault.preferences`, `help`) and the same
+//!   refusals as the leader, so none opens over a modal or the setup
+//!   assistant. All are kit Buttons, mouse and keyboard, after the view in
+//!   the Tab order.
 //! - **No vault needed.** The view only reads the settings: it works in
 //!   every window state, a workspace open or not.
 
@@ -47,6 +48,7 @@ use crate::theme;
 pub(crate) const CONFIG_ID: &str = "config";
 pub(crate) const CONFIG_THEME_ID: &str = "config-theme";
 pub(crate) const CONFIG_PREFERENCES_ID: &str = "config-preferences";
+pub(crate) const CONFIG_KEYS_ID: &str = "config-keys";
 pub(crate) const CONFIG_PATH_ID: &str = "config-path";
 
 /// What a key row says when its action has no chord.
@@ -109,6 +111,7 @@ pub(crate) struct ConfigView {
     focus: FocusHandle,
     theme_focus: FocusHandle,
     preferences_focus: FocusHandle,
+    keys_focus: FocusHandle,
 }
 
 impl EventEmitter<ConfigEvent> for ConfigView {}
@@ -128,6 +131,7 @@ impl ConfigView {
             focus: cx.focus_handle().tab_stop(true),
             theme_focus: cx.focus_handle(),
             preferences_focus: cx.focus_handle(),
+            keys_focus: cx.focus_handle(),
         }
     }
 
@@ -137,13 +141,14 @@ impl ConfigView {
         cx.notify();
     }
 
-    /// The view's root and its two launchers, in Tab order (tests).
+    /// The view's root and its three launchers, in Tab order (tests).
     #[cfg(test)]
-    pub(crate) fn handles(&self) -> [FocusHandle; 3] {
+    pub(crate) fn handles(&self) -> [FocusHandle; 4] {
         [
             self.focus.clone(),
             self.theme_focus.clone(),
             self.preferences_focus.clone(),
+            self.keys_focus.clone(),
         ]
     }
 
@@ -238,7 +243,8 @@ impl ConfigView {
         cx.emit(ConfigEvent::Launch(action));
     }
 
-    /// Enter and `t` open the theme picker, `p` Preferences. Enter only
+    /// Enter and `t` open the theme picker, `p` Preferences, `k` the
+    /// keyboard reference. Enter only
     /// on the view itself: on a launcher it is the launcher's.
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(KeyInput { key, mods }) = input::key_down_input(event) else {
@@ -253,6 +259,7 @@ impl ConfigView {
             }
             Key::Char('t') if !mods.shift => self.launch(LeaderAction::VaultTheme, cx),
             Key::Char('p') if !mods.shift => self.launch(LeaderAction::VaultPreferences, cx),
+            Key::Char('k') if !mods.shift => self.launch(LeaderAction::Help, cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -313,6 +320,14 @@ impl ConfigView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.launch(LeaderAction::VaultPreferences, cx)
                     })),
+            )
+            .child(
+                Button::new(CONFIG_KEYS_ID)
+                    .small()
+                    .label("Keyboard shortcuts…")
+                    .tooltip("Every shortcut and leader key (k)")
+                    .track_focus(&self.keys_focus)
+                    .on_click(cx.listener(|this, _, _, cx| this.launch(LeaderAction::Help, cx))),
             )
     }
 }

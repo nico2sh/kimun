@@ -10,8 +10,10 @@ use crate::logic::text_action::TextAction;
 /// a test in `settings`. The layout actions (ADR-0050) have no TUI meaning yet:
 /// the TUI has one drawer, one slot and one group, and its shortcut tier
 /// ignores them even if a user binds one. `SaveNote` is the leader's `w`
-/// (save now); the TUI has no free chord for it.
-pub const TUI_UNBOUND: [ActionShortcuts; 14] = [
+/// (save now); the TUI has no free chord for it. `KeyboardHelp` is the
+/// desktop app's F1 reference; the TUI's F1 help is built in (the editor
+/// screen's F-key fallback), not a keymap action.
+pub const TUI_UNBOUND: [ActionShortcuts; 15] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -28,6 +30,7 @@ pub const TUI_UNBOUND: [ActionShortcuts; 14] = [
     ActionShortcuts::SaveNote,
     ActionShortcuts::MoveViewUp,
     ActionShortcuts::MoveViewDown,
+    ActionShortcuts::KeyboardHelp,
 ];
 
 /// Groups an [`ActionShortcuts`] variant for display in the help modal.
@@ -88,7 +91,9 @@ impl ActionShortcuts {
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
-            ActionShortcuts::Quit | ActionShortcuts::OpenPreferences => ShortcutCategory::Other,
+            ActionShortcuts::Quit
+            | ActionShortcuts::OpenPreferences
+            | ActionShortcuts::KeyboardHelp => ShortcutCategory::Other,
         }
     }
 
@@ -129,6 +134,7 @@ impl ActionShortcuts {
             ActionShortcuts::SaveNote => "Save note".into(),
             ActionShortcuts::MoveViewUp => "Move view up".into(),
             ActionShortcuts::MoveViewDown => "Move view down".into(),
+            ActionShortcuts::KeyboardHelp => "Keyboard shortcuts".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),

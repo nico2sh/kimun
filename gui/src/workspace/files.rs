@@ -338,7 +338,8 @@ impl FilesPane {
     }
 
     /// Keep the listing in step with a file operation that finished (the
-    /// TUI's row effects; dialogs and the open note are M6's).
+    /// TUI's row effects; the dialogs and the open note follow it in
+    /// `file_ops`).
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {

@@ -200,6 +200,7 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::AskFocus => Some(ActionShortcuts::OpenAsk),
         LeaderAction::VaultSwitch => Some(ActionShortcuts::SwitchWorkspace),
         LeaderAction::VaultPreferences => Some(ActionShortcuts::OpenPreferences),
+        LeaderAction::Help => Some(ActionShortcuts::KeyboardHelp),
         _ => None,
     }
 }

@@ -6,6 +6,7 @@ pub mod actions;
 pub mod ask_flow;
 pub mod clipboard;
 pub mod input;
+pub mod keyboard_help;
 pub mod layout;
 pub mod list;
 
