@@ -18,6 +18,11 @@ tokio = { workspace = true }
 tracing = "0.1"
 unicode-segmentation = "1"
 
+# The X11 window icon (`WindowOptions::icon`, an `image::RgbaImage`): GPUI's
+# own `image` major, PNG decoding only.
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [dev-dependencies]
 async-trait = "0.1"
 gpui-kit = { version = "0.9.0", features = ["test-support"] }

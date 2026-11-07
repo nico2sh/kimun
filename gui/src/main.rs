@@ -43,6 +43,7 @@ use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use crate::assets::AppAssets;
 use crate::editor_view::EditorView;
 use crate::keymap::{Keymap, Platform};
+use crate::workspace::titlebar::{self, Os};
 use crate::workspace::{LayoutStore, Workspace};
 
 /// The config, read the TUI's way and migrated in memory, but never written
@@ -127,6 +128,8 @@ fn main() {
     let vim = uses_vim(settings.editor_backend);
     let keymap = load_keymap(&settings);
     let layout = shell_layout::restore(&settings.gui);
+    // Read once: changing who draws the title bar needs a restart.
+    let chrome = titlebar::chrome_for(settings.gui.window_decorations(), Os::current());
     let name = settings.current_workspace_name();
     let settings: SharedSettings = Arc::new(RwLock::new(settings));
     // Opening the vault (the index file) is quick; indexing, which is not,
@@ -135,6 +138,12 @@ fn main() {
     let arg = std::env::args_os().nth(1);
     let start = startup::decide(opened, name, arg.as_deref(), current_dir().as_ref());
     let title: SharedString = startup::window_title(&start).into();
+    let options = WindowOptions {
+        // The X11 icon, decoded from the embedded PNG before the event loop.
+        #[cfg(target_os = "linux")]
+        icon: assets::window_icon(),
+        ..titlebar::window_options(chrome, title)
+    };
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(move |cx| {
@@ -150,13 +159,6 @@ fn main() {
             });
             editor_view::init(cx);
             keymap::init(cx, keymap);
-            let options = WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
             gpui_kit::open_window(options, cx, |window, cx| {
                 // The window's one app channel: the editor reports on it, the
                 // workspace drains it.
@@ -165,6 +167,7 @@ fn main() {
                 let workspace = cx.new(|cx| {
                     let mut workspace =
                         Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);
+                    workspace.set_chrome(chrome);
                     workspace.start(start, settings, tx, rx, window, cx);
                     workspace
                 });

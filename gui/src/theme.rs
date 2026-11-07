@@ -353,6 +353,14 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     kit.button_danger_foreground = page.into();
     kit.button_danger_hover = mix_rgba(danger, page, hovered).into();
     kit.button_danger_active = mix_rgba(danger, page, pressed).into();
+    // The kit's TitleBar (the window's bar, M10a): its surface and hairline,
+    // and the close control, which is the danger colour under the pointer
+    // with its glyph on the page colour (its other controls read the
+    // `foreground` / `secondary_*` roles above).
+    kit.title_bar = surface.into();
+    kit.title_bar_border = divider(theme).into();
+    kit.danger_foreground = page.into();
+    kit.danger_active = mix_rgba(danger, page, pressed).into();
     // The kit Radio (the setup assistant's Editor backend and Updates
     // choices, Preferences' sort and backend choices) reads only roles mapped
     // above: checked `primary` with its mark `primary_foreground`, unchecked
@@ -638,6 +646,11 @@ mod tests {
             assert_eq!(kit.success, hsla(available(&t)));
             assert_eq!(kit.warning, hsla(caution(&t)));
             assert_eq!(kit.danger, hsla(error(&t)));
+            // The window's title bar: the surface and hairline, and the
+            // close control's danger roles.
+            assert_eq!(kit.title_bar, hsla(panel_background(&t)));
+            assert_eq!(kit.title_bar_border, hsla(divider(&t)));
+            assert_eq!(kit.danger_foreground, hsla(background(&t)));
             assert_eq!(kit.tokens.popover.color, want);
             assert_eq!(kit.border, hsla(divider(&t)));
             assert_eq!(kit.foreground, hsla(foreground(&t)));

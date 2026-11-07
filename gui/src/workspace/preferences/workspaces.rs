@@ -247,7 +247,9 @@ enum Job {
     /// The current workspace's new folder: write the edit applied to the
     /// settings as they are then, then the edit on the shared settings,
     /// then the window enters the vault.
-    Move { edit: WorkspaceEdit },
+    Move {
+        edit: WorkspaceEdit,
+    },
     /// A Save whose plan needs a reindex: write `after`, as a Save does.
     Save {
         after: Box<AppSettings>,
@@ -871,13 +873,7 @@ impl PreferencesView {
             cx.notify();
             return;
         };
-        self.run_reindex(
-            Job::Move { edit },
-            workspace,
-            cache,
-            window,
-            cx,
-        );
+        self.run_reindex(Job::Move { edit }, workspace, cache, window, cx);
     }
 
     // ---- forms ------------------------------------------------------------

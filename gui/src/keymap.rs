@@ -532,6 +532,13 @@ impl Keymap {
             .any(|b| b.chord == chord && b.action == *action)
     }
 
+    /// Whether any action holds `chord`, in any context: a window-level key
+    /// outside the shared vocabulary (F11's fullscreen) only acts on a chord
+    /// no action — default or `[gui.keys]` override — has taken.
+    pub fn binds(&self, chord: KeyInput) -> bool {
+        self.bindings.iter().any(|b| b.chord == chord)
+    }
+
     /// The action `chord` triggers in `ctx`, if any. `None` also when the vim
     /// rule gives the chord to the editor.
     pub fn resolve(&self, chord: KeyInput, ctx: KeyCtx) -> Option<&ActionShortcuts> {

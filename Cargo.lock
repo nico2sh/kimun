@@ -5012,6 +5012,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "gpui-kit",
+ "image",
  "kimun-notes",
  "kimun_core",
  "open",

@@ -23,6 +23,24 @@ pub(crate) fn logo() -> Arc<Image> {
     LOGO.clone()
 }
 
+/// The window icon (`WindowOptions::icon`, which only X11 reads): the logo
+/// at 128 px, decoded from embedded bytes (no file is read). Wayland, macOS
+/// and Windows take the icon from the desktop entry, the bundle or the
+/// executable's resources instead. `None` (logged) if it would not decode.
+#[cfg(target_os = "linux")]
+pub(crate) fn window_icon() -> Option<Arc<image::RgbaImage>> {
+    match image::load_from_memory_with_format(
+        include_bytes!("../../assets/logo-128.png"),
+        image::ImageFormat::Png,
+    ) {
+        Ok(icon) => Some(Arc::new(icon.into_rgba8())),
+        Err(e) => {
+            tracing::warn!("the window icon would not decode: {e}");
+            None
+        }
+    }
+}
+
 gpui_kit::assets::icon_assets!(
     RailIcons,
     [
@@ -81,6 +99,26 @@ mod tests {
                 "{view:?}: {path} is not bundled"
             );
         }
+    }
+
+    /// The title bar's window controls use the default bundle's icons.
+    #[test]
+    fn every_window_control_icon_is_bundled() {
+        for icon in crate::workspace::WINDOW_CONTROL_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
+    /// The X11 window icon decodes, at the size it is embedded at.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_window_icon_decodes() {
+        let icon = window_icon().expect("the embedded icon decodes");
+        assert_eq!((icon.width(), icon.height()), (128, 128));
     }
 
     /// Every FILES row icon resolves too.
