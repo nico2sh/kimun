@@ -791,8 +791,10 @@ fn save_as_default_for_notes_writes_the_notes_default(cx: &mut TestAppContext) {
     click(&started, SORT_CLOSE_ID, cx);
     started.settle_dialog(cx);
     assert!(!sort_open(&started, cx), "the confirm closes it");
-    drive(&rt, cx, |_| {
+    // Memory takes it in the write; the flash once the UI thread hears.
+    drive(&rt, cx, |cx| {
         settings_now(&v).default_sort_order == SortOrderSetting::Descending
+            && started.flash(cx).is_some()
     });
     let memory = settings_now(&v);
     let disk = on_disk(&v);
@@ -871,8 +873,9 @@ fn save_as_default_in_the_journal_writes_the_journal_default(cx: &mut TestAppCon
     assert_eq!(save_box(&started, cx).0, Some(true), "a click ticks it");
     click(&started, SORT_CLOSE_ID, cx);
     started.settle_dialog(cx);
-    drive(&rt, cx, |_| {
+    drive(&rt, cx, |cx| {
         settings_now(&v).journal_sort_field == SortFieldSetting::Title
+            && started.flash(cx).is_some()
     });
     for s in [settings_now(&v), on_disk(&v)] {
         assert_eq!(s.journal_sort_field, SortFieldSetting::Title);

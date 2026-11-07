@@ -36,9 +36,10 @@
 //! confirm: the sort stays applied, and the field and order of that context
 //! (plus the grouping) are written with the shared candidate-then-apply
 //! seam (`reopen::write_settings`, off the UI thread). Only once the write
-//! lands do the shared settings and FILES' remembered default take it
-//! (later folder opens use it); a failed write is flashed and nothing is
-//! remembered. Escape, a click outside and the chord again never save. A
+//! is on disk do the shared settings take it (the write itself, so a write
+//! queued behind it starts from it), and FILES' remembered default once it
+//! lands (later folder opens use it); a failed write is flashed and nothing
+//! is remembered. Escape, a click outside and the chord again never save. A
 //! property sort can't be a default (the TUI's rule): the box is disabled.
 
 use gpui_kit::base::TestSupportExt as _;
@@ -906,10 +907,10 @@ impl Workspace {
 
     /// FILES' "save as default" confirmed: `state` as the default of its
     /// context (`journal`), written with the shared candidate-then-apply
-    /// seam — the shared settings as they are when the write's turn comes,
-    /// plus this default, off the UI thread. Memory changes only once the
-    /// write landed ([`Self::sort_default_written`]). Must run with the
-    /// tokio runtime entered.
+    /// seam ([`reopen::write_settings`]) — the shared settings as they are
+    /// when the write's turn comes, plus this default, off the UI thread;
+    /// the shared settings take it once it is on disk, so a write queued
+    /// behind it starts from it. Must run with the tokio runtime entered.
     pub(crate) fn save_sort_default(
         &mut self,
         state: SortState,
@@ -920,10 +921,8 @@ impl Workspace {
             return;
         };
         let written_state = state.clone();
-        let write = reopen::write_settings(self.store.clone(), move || {
-            let mut candidate = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-            save_sort_default(&mut candidate, &written_state, journal);
-            candidate
+        let write = reopen::write_settings(self.store.clone(), settings, move |s| {
+            save_sort_default(s, &written_state, journal);
         });
         cx.spawn(async move |this, cx| {
             let written = write.await;
@@ -935,10 +934,11 @@ impl Workspace {
         .detach();
     }
 
-    /// The default's write landed. Written: the shared settings take it
-    /// (Preferences read them) and FILES remembers it for later folder
-    /// opens; the folder shown already has that sort. Failed: the sort
-    /// stays on the folder shown, nothing is remembered, a flash says so.
+    /// The default's write landed. Written: the shared settings already
+    /// have it (the write put it there) and FILES remembers it for later
+    /// folder opens; the folder shown already has that sort. Failed: the
+    /// sort stays on the folder shown, nothing is remembered, a flash says
+    /// so.
     fn sort_default_written(
         &mut self,
         state: SortState,
@@ -950,13 +950,6 @@ impl Workspace {
             tracing::warn!("could not save the sort default: {error}");
             self.flash_error(format!("Couldn't save the sort default: {error}"), cx);
             return;
-        }
-        if let Some(settings) = self.settings.as_ref() {
-            save_sort_default(
-                &mut settings.write().unwrap_or_else(|e| e.into_inner()),
-                &state,
-                journal,
-            );
         }
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, _| {

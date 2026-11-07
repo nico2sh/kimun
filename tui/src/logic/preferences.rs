@@ -580,8 +580,7 @@ impl PreferencesModel {
                 None => std::borrow::Cow::Owned(Theme::default().name),
             }
         };
-        self.theme_name != initial.theme
-            && resolved(&self.theme_name) != resolved(&initial.theme)
+        self.theme_name != initial.theme && resolved(&self.theme_name) != resolved(&initial.theme)
     }
 
     /// Write the Appearance draft: the theme name, only when it differs.

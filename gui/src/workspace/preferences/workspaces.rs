@@ -51,7 +51,8 @@ use gpui_kit::{
 use kimun_core::IndexFile;
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::logic::preferences::{
-    self as prefs, FIRST_WORKSPACE_NAME, ReindexOutcome, WorkspaceEdit, WorkspaceError,
+    self as prefs, EditOutcome, FIRST_WORKSPACE_NAME, PreferencesModel, ReindexOutcome,
+    WorkspaceEdit, WorkspaceError,
 };
 use kimun_notes::logic::workspaces::{WorkspaceRow, workspace_rows};
 use kimun_notes::settings::AppSettings;
@@ -250,9 +251,10 @@ enum Job {
     Move {
         edit: WorkspaceEdit,
     },
-    /// A Save whose plan needs a reindex: write `after`, as a Save does.
+    /// A Save whose plan needs a reindex: write the draft (`model`), as a
+    /// Save does.
     Save {
-        after: Box<AppSettings>,
+        model: Box<PreferencesModel>,
         theme: Theme,
     },
     /// Indexing's buttons, on the open workspace.
@@ -916,8 +918,9 @@ impl PreferencesView {
     // ---- the write --------------------------------------------------------
 
     /// Apply `edit` to a copy of the settings and write it; once written,
-    /// apply it to the shared settings too ([module docs](self)). A refused
-    /// edit or a failed write is shown, and nothing changes.
+    /// the shared settings take it in the write's turn ([module docs](self),
+    /// [`reopen::write_settings`]). A refused edit or a failed write is
+    /// shown, and nothing changes.
     fn commit_edit(&mut self, edit: WorkspaceEdit, window: &mut Window, cx: &mut Context<Self>) {
         let mut candidate = self.initial();
         match edit.apply(&mut candidate) {
@@ -931,15 +934,13 @@ impl PreferencesView {
             }
             Ok(_) => {}
         }
-        // The snapshot is taken when the write's turn comes, not now: a
-        // write queued meanwhile (theme, sort default) must not be undone.
-        let settings = self.settings.clone();
+        // Applied to the settings as they are when the write's turn comes,
+        // not now: a write queued meanwhile (theme, sort default) must not
+        // be undone. Refused then: `edit_written` shows it, and the write
+        // leaves the settings as they were.
         let applied = edit.clone();
-        let write = reopen::write_settings(self.store.clone(), move || {
-            let mut latest = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-            // Refused now: `edit_written` shows it; nothing to change on disk.
-            let _ = applied.apply(&mut latest);
-            latest
+        let write = reopen::write_settings(self.store.clone(), self.settings.clone(), move |s| {
+            applied.apply(s)
         });
         self.ws.message = None;
         self.ws.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -969,22 +970,23 @@ impl PreferencesView {
         self.ws.message = Some(Notice::error(format!("Couldn't save the workspaces: {e}")));
     }
 
+    /// The edit's write landed: `written` is the edit's outcome on the
+    /// shared settings (applied in the write), or the write's failure.
     fn edit_written(
         &mut self,
         edit: WorkspaceEdit,
-        written: Result<(), String>,
+        written: Result<Result<EditOutcome, WorkspaceError>, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.ws.task = None;
-        if let Err(e) = written {
-            self.write_failed(&e);
-            cx.notify();
-            return;
-        }
-        let applied = {
-            let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
-            edit.apply(&mut settings)
+        let applied = match written {
+            Ok(applied) => applied,
+            Err(e) => {
+                self.write_failed(&e);
+                cx.notify();
+                return;
+            }
         };
         // A new draft baseline: workspace edits never touch the draft's
         // fields, but the cached answer is worked out again.
@@ -1070,7 +1072,7 @@ impl PreferencesView {
     /// the same flow as a moved workspace; `after` is written once indexed.
     pub(crate) fn save_after_reindex(
         &mut self,
-        after: AppSettings,
+        model: PreferencesModel,
         theme: Theme,
         workspace: SystemPath,
         cache: Option<IndexFile>,
@@ -1079,7 +1081,7 @@ impl PreferencesView {
     ) {
         self.run_reindex(
             Job::Save {
-                after: Box::new(after),
+                model: Box::new(model),
                 theme,
             },
             workspace,
@@ -1224,19 +1226,19 @@ impl PreferencesView {
             }
             Job::Move { edit } => {
                 // As in `commit_edit`: the shared settings when the write's
-                // turn comes, not a copy from before a long reindex.
-                let settings = self.settings.clone();
+                // turn comes, not a copy from before a long reindex; they
+                // take the move (indexed) in that turn.
                 let applied = edit.clone();
-                let write = reopen::write_settings(self.store.clone(), move || {
-                    let mut latest = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-                    let _ = applied.apply(&mut latest);
-                    latest.report_indexed();
-                    latest
-                });
+                let write =
+                    reopen::write_settings(self.store.clone(), self.settings.clone(), move |s| {
+                        let out = applied.apply(s);
+                        s.report_indexed();
+                        out
+                    });
                 let task = cx.spawn_in(window, async move |this, cx| {
                     let written = write.await;
                     this.update_in(cx, |view, window, cx| {
-                        view.move_written(edit, written, window, cx)
+                        view.move_written(written, window, cx)
                     })
                     .ok();
                 });
@@ -1245,36 +1247,31 @@ impl PreferencesView {
                     _task: task,
                 });
             }
-            Job::Save { after, theme } => {
-                let mut after = *after;
-                after.report_indexed();
-                self.write_save(after, theme, true, window, cx);
+            Job::Save { model, theme } => {
+                self.write_save(*model, true, theme, true, window, cx);
             }
         }
         cx.notify();
     }
 
-    /// The moved workspace's settings are on disk: the shared settings take
-    /// the move (indexed), and the window enters the vault there.
+    /// The moved workspace's settings are on disk and the shared settings
+    /// took the move (indexed) in the write (`written`: the edit's outcome
+    /// there): the window enters the vault there.
     fn move_written(
         &mut self,
-        edit: WorkspaceEdit,
-        written: Result<(), String>,
+        written: Result<Result<EditOutcome, WorkspaceError>, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.index.running = None;
-        if let Err(e) = written {
-            self.write_failed(&e);
-            window.focus(&self.sections_focus, cx);
-            cx.notify();
-            return;
-        }
-        let applied = {
-            let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
-            let applied = edit.apply(&mut settings);
-            settings.report_indexed();
-            applied
+        let applied = match written {
+            Ok(applied) => applied,
+            Err(e) => {
+                self.write_failed(&e);
+                window.focus(&self.sections_focus, cx);
+                cx.notify();
+                return;
+            }
         };
         if let Err(e) = applied {
             // Written, but the shared settings refuse it: entering the vault

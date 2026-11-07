@@ -7,9 +7,8 @@
 //! [`titlebar`]: super::titlebar
 #![cfg(test)]
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -27,7 +26,7 @@ use super::preferences_tests::{on_vault, vault};
 use super::reopen_tests::{BETA, open_on_a, pair, set_current};
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use super::titlebar::{
-    APP_ID, Chrome, Os, TITLE_BAR_ID, TITLE_TEXT_ID, WindowChrome, WindowOp, bar_colors, bar_shown,
+    APP_ID, Chrome, Os, TITLE_BAR_ID, TITLE_TEXT_ID, WindowChrome, bar_colors, bar_shown,
     chrome_for, close_hook, window_options,
 };
 use crate::startup::{FirstNote, Start};
@@ -119,33 +118,20 @@ fn the_colours_come_from_the_theme_roles() {
 
 // ── the fake window ──────────────────────────────────────────────────────
 
-/// Records what the bar asks and plays the window's state back.
+/// Plays the window's state back.
 struct FakeWindow {
-    ops: RefCell<Vec<WindowOp>>,
     decorations: Cell<Decorations>,
     fullscreen: Cell<bool>,
-    clock: Cell<Instant>,
 }
 
 impl FakeWindow {
-    /// Let `by` pass on the fake clock.
-    fn advance(&self, by: Duration) {
-        self.clock.set(self.clock.get() + by);
-    }
-
     fn new() -> Rc<Self> {
         Rc::new(Self {
-            ops: RefCell::new(Vec::new()),
             decorations: Cell::new(Decorations::Client {
                 tiling: Tiling::default(),
             }),
             fullscreen: Cell::new(false),
-            clock: Cell::new(Instant::now()),
         })
-    }
-
-    fn ops(&self) -> Vec<WindowOp> {
-        self.ops.borrow().clone()
     }
 }
 
@@ -156,17 +142,6 @@ impl WindowChrome for FakeWindow {
 
     fn is_fullscreen(&self, _: &Window) -> bool {
         self.fullscreen.get()
-    }
-
-    fn now(&self) -> Instant {
-        self.clock.get()
-    }
-
-    fn run(&self, op: WindowOp, _: &Window) {
-        match op {
-            WindowOp::ToggleFullscreen => self.fullscreen.set(!self.fullscreen.get()),
-        }
-        self.ops.borrow_mut().push(op);
     }
 }
 
@@ -274,40 +249,26 @@ fn no_bar_when_the_compositor_draws_one(cx: &mut TestAppContext) {
     assert!(!started.shows(TITLE_BAR_ID, cx));
 }
 
-/// F11 toggles fullscreen, which hides the bar; F11 again brings it back.
+/// Fullscreen from outside (the compositor, the window manager) hides the
+/// bar; leaving it brings the bar back. F11 is no longer kimün's: it
+/// changes nothing.
 #[gpui_kit::test]
-fn f11_toggles_fullscreen_and_hides_the_bar(cx: &mut TestAppContext) {
+fn fullscreen_hides_the_bar_and_f11_is_not_ours(cx: &mut TestAppContext) {
     let started = bare(cx);
     let fake = started.tb_client(cx);
-    cx.update_window(started.handle, |_, window, cx| window.press("f11", cx))
-        .unwrap();
-    cx.run_until_parked();
-    assert_eq!(fake.ops(), [WindowOp::ToggleFullscreen]);
+    fake.fullscreen.set(true);
     assert!(!started.shows(TITLE_BAR_ID, cx), "fullscreen: no bar");
-    fake.advance(Duration::from_secs(2));
+    fake.fullscreen.set(false);
+    assert!(started.shows(TITLE_BAR_ID, cx));
     cx.update_window(started.handle, |_, window, cx| window.press("f11", cx))
         .unwrap();
     cx.run_until_parked();
+    assert!(!fake.fullscreen.get(), "F11 toggles nothing");
+    assert!(
+        cx.update_window(started.handle, |_, window, _| !window.is_fullscreen())
+            .unwrap()
+    );
     assert!(started.shows(TITLE_BAR_ID, cx));
-}
-
-/// A held F11 auto-repeats: the repeats do not flip fullscreen again, and
-/// they keep the guard armed until the key is released.
-#[gpui_kit::test]
-fn a_held_f11_toggles_once(cx: &mut TestAppContext) {
-    let started = bare(cx);
-    let fake = started.tb_client(cx);
-    let press = |cx: &mut TestAppContext| {
-        cx.update_window(started.handle, |_, window, cx| window.press("f11", cx))
-            .unwrap();
-        cx.run_until_parked();
-    };
-    press(cx);
-    for _ in 0..5 {
-        fake.advance(Duration::from_millis(30));
-        press(cx);
-    }
-    assert_eq!(fake.ops(), [WindowOp::ToggleFullscreen]);
 }
 
 /// The bar sits over the setup assistant too.
@@ -320,11 +281,6 @@ fn the_bar_is_over_the_setup_assistant(cx: &mut TestAppContext) {
     assert!(started.shows(ONBOARDING_ID, cx));
     assert!(started.shows(TITLE_BAR_ID, cx));
     assert_eq!(started.tb_title(cx).as_deref(), Some("kimün"));
-    // F11 is the window's there as well.
-    cx.update_window(started.handle, |_, window, cx| window.press("f11", cx))
-        .unwrap();
-    cx.run_until_parked();
-    assert!(!started.shows(TITLE_BAR_ID, cx));
 }
 
 // ── the title ────────────────────────────────────────────────────────────
@@ -363,7 +319,7 @@ fn close_with_nothing_dirty_closes(cx: &mut TestAppContext) {
         v.settings.clone(),
     );
     drive(&rt, cx, |cx| started.text(cx) == "alpha");
-    let fake = started.tb_client(cx);
+    started.tb_client(cx);
     assert_eq!(
         started.tb_title(cx),
         Some(format!("{NAME} - kimün")),
@@ -371,7 +327,6 @@ fn close_with_nothing_dirty_closes(cx: &mut TestAppContext) {
     );
     started.tb_close(cx);
     assert!(started.tb_closed(cx));
-    assert!(fake.ops().is_empty(), "closing is not a window op");
 }
 
 /// Close with unsaved edits goes through the close guard: the window waits

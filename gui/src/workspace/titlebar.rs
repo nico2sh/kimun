@@ -12,12 +12,16 @@
 //! `window_border`). kimün configures it: the theme (`theme::apply_to_kit`
 //! gives it the `title_bar*` and `danger*` roles), the background, the
 //! title content, and the close hook ([`Workspace::request_close`]). What is
-//! kimün's: *whether* the bar shows ([`bar_shown`]), the window options
-//! ([`window_options`]) and F11.
+//! kimün's: *whether* the bar shows ([`bar_shown`]) and the window options
+//! ([`window_options`]).
 //!
 //! **Where it sits.** At the very top of the workspace's root, above every
 //! view: the panels, the empty states, and the setup assistant and
-//! Preferences takeovers. Fullscreen hides it.
+//! Preferences takeovers. Fullscreen (the operating system's or the
+//! compositor's: kimün has no fullscreen key of its own) hides it. GPUI
+//! redraws the whole window when it is activated or deactivated and when
+//! its bounds change (a fullscreen change arrives as one), so the bar's
+//! inactive colour and its fullscreen check are always current.
 //!
 //! **Close.** Linux: the kit's close button calls the hook, which goes
 //! through the window's close guard: unsaved notes are flushed, dirty
@@ -25,30 +29,27 @@
 //! the window itself closes, and asks the same guard.
 //!
 //! **Keyboard.** The controls are mouse chrome, like the operating system's:
-//! not in the Tab order. Their keyboard paths are the existing chords (Quit
-//! closes through the same guard) and F11, which toggles fullscreen when no
-//! keymap action holds it (not on macOS, where F11 is the system's).
+//! not in the Tab order. Their keyboard path is the existing chords (Quit
+//! closes through the same guard).
 //!
-//! **Testing seam.** What kimün itself reads and drives (the decorations,
-//! fullscreen, the F11 clock) goes through [`WindowChrome`], so tests swap in
-//! a recorder.
+//! **Testing seam.** What kimün itself reads of the window (the
+//! decorations, fullscreen) goes through [`WindowChrome`], so tests swap in
+//! a fake.
 
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::TitleBar as KitTitleBar;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Decorations, Entity, InteractiveElement, IntoElement,
-    KeystrokeEvent, ParentElement, Rgba, Role, SharedString, StatefulInteractiveElement, Styled,
-    Window, WindowDecorations, WindowOptions, div, img,
+    ParentElement, Rgba, Role, SharedString, StatefulInteractiveElement, Styled, Window,
+    WindowDecorations, WindowOptions, div, img,
 };
-use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::settings::gui::WindowDecorations as DecorationsSetting;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use crate::{assets, input, keymap, startup, theme};
+use crate::{assets, startup, theme};
 
 /// The window's application id (Wayland `app_id`, X11 `WM_CLASS`): what a
 /// desktop entry names to group the window and give it its icon. The repo
@@ -167,21 +168,10 @@ pub(crate) const WINDOW_CONTROL_ICONS: [gpui_kit::assets::IconName; 4] = {
     ]
 };
 
-/// What kimün asks of the window itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum WindowOp {
-    ToggleFullscreen,
-}
-
 /// The window, as kimün reads and drives it.
 pub(crate) trait WindowChrome {
     fn decorations(&self, window: &Window) -> Decorations;
     fn is_fullscreen(&self, window: &Window) -> bool;
-    fn run(&self, op: WindowOp, window: &Window);
-    /// The clock the F11 repeat guard reads (tests move it by hand).
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
 }
 
 /// The real window.
@@ -195,12 +185,6 @@ impl WindowChrome for PlatformWindow {
     fn is_fullscreen(&self, window: &Window) -> bool {
         window.is_fullscreen()
     }
-
-    fn run(&self, op: WindowOp, window: &Window) {
-        match op {
-            WindowOp::ToggleFullscreen => window.toggle_fullscreen(),
-        }
-    }
 }
 
 /// The bar's state, kept by the workspace.
@@ -210,15 +194,7 @@ pub(crate) struct TitleBar {
     window: Rc<dyn WindowChrome>,
     /// The window title, as the operating system's title shows it too.
     pub(crate) title: SharedString,
-    /// When the last F11 keystroke arrived, toggled or not: a held key's
-    /// auto-repeat keeps arriving and must not flip fullscreen again.
-    last_f11: Option<Instant>,
 }
-
-/// An F11 keystroke this soon after the previous one is the key repeating
-/// (the repeat delay is under this on every desktop), not a new press. The
-/// interceptor sees no held-key flag, so time is the only signal.
-const F11_REPEAT_WINDOW: Duration = Duration::from_millis(700);
 
 impl TitleBar {
     /// The system's chrome (no bar) until `main` says otherwise.
@@ -228,7 +204,6 @@ impl TitleBar {
             os: Os::current(),
             window: Rc::new(PlatformWindow),
             title: startup::APP_NAME.into(),
-            last_f11: None,
         }
     }
 }
@@ -283,34 +258,6 @@ impl Workspace {
     pub(super) fn set_title(&mut self, title: String, window: &mut Window) {
         window.set_window_title(&title);
         self.titlebar.title = title.into();
-    }
-
-    /// F11, when no keymap action holds it and not on macOS: fullscreen on
-    /// or off. Whether it took the key.
-    pub(super) fn fullscreen_key(
-        &mut self,
-        event: &KeystrokeEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let f11 = KeyInput::plain(Key::F(11));
-        if self.titlebar.os == Os::Mac
-            || input::key_input(&event.keystroke) != Some(f11)
-            || keymap::active(cx).binds(f11)
-        {
-            return false;
-        }
-        let now = self.titlebar.window.now();
-        let repeating = self
-            .titlebar
-            .last_f11
-            .replace(now)
-            .is_some_and(|last| now.duration_since(last) < F11_REPEAT_WINDOW);
-        if !repeating {
-            self.titlebar.window.run(WindowOp::ToggleFullscreen, window);
-            cx.notify();
-        }
-        true
     }
 
     /// The bar, when it shows (see [`bar_shown`]): the kit's title bar,

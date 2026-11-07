@@ -161,7 +161,7 @@
 //! gives the system's back, read at startup); on macOS a themed bar sits
 //! under the native traffic lights. It tops every view, takeovers included,
 //! names the workspace, drags, maximizes and closes the window, closing
-//! through the close guard; F11 toggles fullscreen ([`titlebar`]).
+//! through the close guard ([`titlebar`]); fullscreen hides it.
 //!
 //! **The keyboard reference (M10d).** F1 (`KeyboardHelp`), leader `?`, the
 //! palette and the CFG view list every chord of the active keymap under its
@@ -1774,12 +1774,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // F11 is the window's (fullscreen), over every view, unless a
-        // pending leader sequence owns the key.
-        if !self.leader.is_pending() && self.fullscreen_key(event, window, cx) {
-            cx.stop_propagation();
-            return;
-        }
         // The setup assistant and Preferences have every key; no shell chord
         // runs under them.
         if self.onboarding.is_some() || self.preferences.is_some() {

@@ -15,10 +15,11 @@
 //!   selected (the filter matches no theme: "No themes match.") the window
 //!   goes back to the theme it had when the picker opened.
 //! - **Enter** (or `Apply`, or a double-click) keeps the selected theme:
-//!   the settings with only their theme changed (`with_theme`) are written
-//!   off the UI thread, as Preferences save (the same writer, the `[gui]`
-//!   table kept, an unparsable config never replaced); only then does the
-//!   shared settings' theme change and the picker close. Nothing reopens. A
+//!   the settings with only their theme changed are written off the UI
+//!   thread, as Preferences save (the same writer, `reopen::write_settings`:
+//!   the `[gui]` table kept, an unparsable config never replaced); only then
+//!   does the shared settings' theme change (in the write's turn) and the
+//!   picker close. Nothing reopens. A
 //!   failed write is shown in the dialog, which stays open on the previewed
 //!   theme with the settings untouched; Escape still reverts. Keys wait
 //!   while the write runs.
@@ -48,7 +49,7 @@ use gpui_kit::{
     UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
 };
 use kimun_notes::logic::list::{Filter, ListCore, ListSetup, StaticRowSource};
-use kimun_notes::logic::preferences::{ThemeChoices, ThemeRow, with_theme};
+use kimun_notes::logic::preferences::{ThemeChoices, ThemeRow};
 use kimun_notes::settings::SharedSettings;
 use kimun_notes::settings::themes::Theme;
 
@@ -603,8 +604,9 @@ impl Workspace {
     /// picker's: a modal reset that drops the picker mid-write cannot leave
     /// the file with a theme the window never took. Whether the write
     /// started (`false` without settings). The settings are read when the
-    /// write's turn comes, so a settings change queued before it is not
-    /// overwritten by an older copy.
+    /// write's turn comes and take the theme in that turn
+    /// ([`reopen::write_settings`]), so a settings change queued before it
+    /// is not overwritten by an older copy, nor it by one queued after.
     fn keep_theme(
         &mut self,
         theme: Theme,
@@ -616,8 +618,8 @@ impl Workspace {
             return false;
         };
         let name = theme.name.clone();
-        let write = reopen::write_settings(self.store.clone(), move || {
-            with_theme(&settings.read().unwrap_or_else(|e| e.into_inner()), &name)
+        let write = reopen::write_settings(self.store.clone(), settings, move |s| {
+            s.theme = name.clone();
         });
         cx.spawn_in(window, async move |this, cx| {
             let written = write.await;
@@ -639,8 +641,8 @@ impl Workspace {
         true
     }
 
-    /// The write landed: the shared settings take the theme and the window
-    /// shows it. When `picker` is still the open one it closes with nothing
+    /// The write landed (the shared settings took the theme in it): the
+    /// window shows it. When `picker` is still the open one it closes with nothing
     /// to put back; when it is gone (its modal was reset, the opening theme
     /// put back) or another picker is open, the modal is left alone and the
     /// theme is shown (the other picker's opening theme is the new one).
@@ -651,9 +653,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(settings) = self.settings.as_ref() {
-            settings.write().unwrap_or_else(|e| e.into_inner()).theme = theme.name.clone();
-        }
         match self.theme_picker.as_mut() {
             Some(open) if open.view.entity_id() == picker => {
                 // Kept: closing the modal must not put the opening theme back.

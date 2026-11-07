@@ -688,29 +688,39 @@ impl PreferencesView {
             // The vault moved under the draft: indexed first, then written
             // and entered again (the vault-path reindex flow).
             Ok(SavePlan::NeedsReindex { workspace, cache }) => {
-                self.save_after_reindex(after, theme, workspace, cache, window, cx)
+                self.save_after_reindex(model, theme, workspace, cache, window, cx)
             }
-            Ok(SavePlan::SaveOnly) => self.write_save(after, theme, reopen, window, cx),
+            Ok(SavePlan::SaveOnly) => {
+                let indexed = !after.needs_indexing();
+                self.write_save(model, indexed, theme, reopen, window, cx)
+            }
         }
     }
 
-    /// Write `after` (the settings with the draft applied); once written,
-    /// the draft goes into the shared settings (`reopen`: the window enters
-    /// the vault again).
+    /// Write the settings with the draft (`model`) applied, as they are when
+    /// the write's turn comes ([`reopen::write_settings`]); written, the
+    /// shared settings take the draft in that turn (`indexed`: a pending
+    /// reindex is done too), then the view hears of it (`reopen`: the window
+    /// enters the vault again).
     fn write_save(
         &mut self,
-        after: AppSettings,
+        model: PreferencesModel,
+        indexed: bool,
         theme: Theme,
         reopen: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let indexed = !after.needs_indexing();
-        let write = reopen::write_settings(self.store.clone(), move || after);
+        let write = reopen::write_settings(self.store.clone(), self.settings.clone(), move |s| {
+            model.apply(s);
+            if indexed {
+                s.report_indexed();
+            }
+        });
         self.saving = Some(cx.spawn_in(window, async move |this, cx| {
             let written = write.await;
             this.update_in(cx, |view, window, cx| {
-                view.saved(written, theme, reopen, indexed, window, cx)
+                view.saved(written, theme, reopen, window, cx)
             })
             .ok();
         }));
@@ -722,20 +732,13 @@ impl PreferencesView {
         written: Result<(), String>,
         theme: Theme,
         reopen: bool,
-        indexed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.saving = None;
         match (written, self.model.as_ref()) {
-            (Ok(()), Some(model)) => {
-                {
-                    let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
-                    model.apply(&mut settings);
-                    if indexed {
-                        settings.report_indexed();
-                    }
-                }
+            // The shared settings took the draft in the write.
+            (Ok(()), Some(_)) => {
                 self.dirty.set(None);
                 cx.emit(PreferencesEvent::Saved { theme, reopen });
             }
