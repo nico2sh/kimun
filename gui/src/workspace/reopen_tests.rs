@@ -220,7 +220,7 @@ impl Started {
 
     /// Switch to the workspace the settings name now, driven until it
     /// landed (and its first note, when `text`).
-    fn sw_reopen_to(&self, rt: &Runtime, text: Option<&str>, cx: &mut TestAppContext) {
+    pub(super) fn sw_reopen_to(&self, rt: &Runtime, text: Option<&str>, cx: &mut TestAppContext) {
         self.sw_reopen(cx);
         drive(rt, cx, |cx| {
             !self.sw_reopening(cx) && !self.indexing(cx) && text.is_none_or(|t| self.text(cx) == t)

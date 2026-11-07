@@ -155,6 +155,13 @@
 //! setup assistant; with no workspace it offers the assistant. While the
 //! editor Panel shows an empty state, that state holds the editor's focus
 //! handle, so the window's chords still reach it.
+//!
+//! **The title bar (M10a).** On Linux and Windows the window draws its own
+//! title bar in the theme's colours (`[gui] window_decorations = "system"`
+//! gives the system's back, read at startup); on macOS a themed bar sits
+//! under the native traffic lights. It tops every view, takeovers included,
+//! names the workspace, drags, maximizes and closes the window, closing
+//! through the close guard; F11 toggles fullscreen ([`titlebar`]).
 
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -214,6 +221,8 @@ use modal::ModalKind;
 pub(crate) use note::Closing;
 use note::NoteHost;
 pub(crate) use palette::Palette;
+#[cfg(test)]
+pub(crate) use titlebar::WINDOW_CONTROL_ICONS;
 
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
@@ -582,6 +591,8 @@ pub(crate) struct Workspace {
     _config_events: Subscription,
     /// The theme picker, while open ([`theme_picker`]).
     pub(crate) theme_picker: Option<theme_picker::ThemePickerOpen>,
+    /// The window's title bar and its title ([`titlebar`]).
+    pub(crate) titlebar: titlebar::TitleBar,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -759,6 +770,7 @@ impl Workspace {
             config,
             _config_events: config_events,
             theme_picker: None,
+            titlebar: titlebar::TitleBar::new(),
         }
     }
 
@@ -846,7 +858,7 @@ impl Workspace {
             .unwrap_or_else(|e| e.into_inner())
             .leader_tree();
         self.leader.set_tree(tree);
-        window.set_window_title(&startup::window_title(&start));
+        self.set_title(startup::window_title(&start), window);
         self.empty = startup::empty_state(&start);
         // No workspace: the setup assistant makes one. A vault entered
         // leaves nothing for one still up to set up.
@@ -1690,6 +1702,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // F11 is the window's (fullscreen), over every view, unless a
+        // pending leader sequence owns the key.
+        if !self.leader.is_pending() && self.fullscreen_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         // The setup assistant and Preferences have every key; no shell chord
         // runs under them.
         if self.onboarding.is_some() || self.preferences.is_some() {
@@ -2432,7 +2450,23 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
+    /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bar = self.render_title_bar(window, cx);
+        let body = self.render_body(window, cx);
+        div()
+            .id("window-frame")
+            .flex()
+            .flex_col()
+            .size_full()
+            .children(bar)
+            .child(body)
+    }
+}
+
+impl Workspace {
+    /// Everything under the title bar. It takes the height the bar leaves.
+    fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // The setup assistant takes the whole body: no Panel is drawn, and
         // the workspace's key handler is not attached, so its chords are
         // inert.
@@ -2440,7 +2474,9 @@ impl Render for Workspace {
             return div()
                 .id("workspace")
                 .flex()
-                .size_full()
+                .w_full()
+                .flex_1()
+                .min_h_0()
                 .bg(theme::background(&theme::current(cx)))
                 .child(view)
                 .into_any_element();
@@ -2450,7 +2486,9 @@ impl Render for Workspace {
             return div()
                 .id("workspace")
                 .flex()
-                .size_full()
+                .w_full()
+                .flex_1()
+                .min_h_0()
                 .bg(theme::background(&theme::current(cx)))
                 .child(view)
                 .into_any_element();
@@ -2479,7 +2517,9 @@ impl Render for Workspace {
             .flex()
             .flex_row()
             .items_stretch()
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h_0()
             .bg(theme::background(&theme::current(cx)))
             .child(self.render_rail(cx))
             .when_some(left, |row, width| {
@@ -2609,6 +2649,7 @@ mod sort;
 mod switcher;
 mod tags;
 mod theme_picker;
+pub(crate) mod titlebar;
 
 #[cfg(test)]
 mod ask_sources_tests;
@@ -2666,5 +2707,7 @@ mod switcher_tests;
 mod tests;
 #[cfg(test)]
 mod theme_picker_tests;
+#[cfg(test)]
+mod titlebar_tests;
 #[cfg(test)]
 mod views_tests;

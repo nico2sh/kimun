@@ -1,5 +1,5 @@
 //! The `[gui]` table of the shared `config.toml` (ADR-0049 §6, ADR-0050 §5):
-//! the GUI's drawer placements, sizes and key overrides.
+//! the GUI's drawer placements, sizes, key overrides and window decorations.
 //!
 //! Each placed view has its own entry, `[gui.views.<view-id>]`, with its
 //! `side` (`"left"` or `"right"`), its drawer `slot` (an index, 0 the top)
@@ -39,6 +39,31 @@ pub const DEFAULT_LEFT_VIEWS: [&str; 1] = ["files"];
 
 const KEYS: &str = "keys";
 const VIEWS: &str = "views";
+const WINDOW_DECORATIONS: &str = "window_decorations";
+
+/// `window_decorations`: who draws the GUI window's title bar and frame.
+/// Read once, when the window opens (changing it needs a restart). macOS
+/// ignores it: the native traffic lights always stay.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowDecorations {
+    /// `"client"`: the GUI draws its own title bar in the theme's colours
+    /// (Linux, Windows).
+    #[default]
+    Client,
+    /// `"system"`: the operating system's title bar and frame, the escape
+    /// hatch for a desktop where client decorations misbehave.
+    System,
+}
+
+impl WindowDecorations {
+    /// The value as the config file writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WindowDecorations::Client => "client",
+            WindowDecorations::System => "system",
+        }
+    }
+}
 
 /// One view's placement as `[gui.views.<view-id>]` records it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -337,6 +362,36 @@ impl GuiSettings {
             }
         }
         self.table.remove(&key(Side::Right, "home"));
+    }
+
+    /// `window_decorations`: `"client"` or `"system"` (trimmed, any case).
+    /// Missing reads as [`WindowDecorations::Client`]; any other value is
+    /// logged and reads as the default too.
+    pub fn window_decorations(&self) -> WindowDecorations {
+        match self.table.get(WINDOW_DECORATIONS) {
+            None => WindowDecorations::default(),
+            Some(Value::String(s)) if s.trim().eq_ignore_ascii_case("client") => {
+                WindowDecorations::Client
+            }
+            Some(Value::String(s)) if s.trim().eq_ignore_ascii_case("system") => {
+                WindowDecorations::System
+            }
+            Some(other) => {
+                tracing::warn!(
+                    "[gui] window_decorations: expected \"client\" or \"system\", got {other}; \
+                     using \"client\""
+                );
+                WindowDecorations::default()
+            }
+        }
+    }
+
+    /// Records `window_decorations`.
+    pub fn set_window_decorations(&mut self, decorations: WindowDecorations) {
+        self.table.insert(
+            WINDOW_DECORATIONS.into(),
+            Value::String(decorations.as_str().into()),
+        );
     }
 
     /// The `[gui.keys]` overrides: action name → chords, as written. A single
@@ -667,6 +722,48 @@ kept = 1
             assert_eq!(g.legacy_hidden_slot(Side::Left), None, "{bad}");
             assert!(g.legacy_right_home_views().is_empty());
         }
+    }
+
+    #[test]
+    fn window_decorations_are_read_leniently_and_round_trip() {
+        assert_eq!(
+            AppSettings::default().gui.window_decorations(),
+            WindowDecorations::Client
+        );
+        let read = |value: &str| gui(&format!("[gui]\nwindow_decorations = {value}\n"));
+        assert_eq!(
+            read("\"system\"").window_decorations(),
+            WindowDecorations::System
+        );
+        assert_eq!(
+            read("\" System \"").window_decorations(),
+            WindowDecorations::System
+        );
+        assert_eq!(
+            read("\"client\"").window_decorations(),
+            WindowDecorations::Client
+        );
+        // Unknown values and wrong types fall back, and the config still loads.
+        for garbage in ["\"native\"", "\"\"", "1", "true", "[\"system\"]"] {
+            assert_eq!(
+                read(garbage).window_decorations(),
+                WindowDecorations::Client,
+                "{garbage}"
+            );
+        }
+
+        let mut settings = AppSettings::default();
+        settings
+            .gui
+            .set_window_decorations(WindowDecorations::System);
+        let written = toml::to_string(&settings).unwrap();
+        assert!(
+            written.contains("window_decorations = \"system\""),
+            "{written}"
+        );
+        let back: AppSettings = toml::from_str(&written).unwrap();
+        assert_eq!(back.gui.window_decorations(), WindowDecorations::System);
+        assert_eq!(back.gui, settings.gui);
     }
 
     #[test]

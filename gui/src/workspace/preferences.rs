@@ -1820,7 +1820,7 @@ impl Workspace {
         if self.vault().is_none() {
             return;
         }
-        window.set_window_title(&crate::startup::title_for_workspace(name));
+        self.set_title(crate::startup::title_for_workspace(name), window);
         if let Some(files) = self.files.clone() {
             let name = SharedString::from(name.to_string());
             files.update(cx, |pane, cx| pane.set_root_name(name, cx));

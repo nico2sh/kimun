@@ -132,11 +132,15 @@ impl Started {
             .expect("Preferences are open")
     }
 
-    fn pf_is_open(&self, cx: &TestAppContext) -> bool {
+    pub(super) fn pf_is_open(&self, cx: &TestAppContext) -> bool {
         cx.read(|cx| self.workspace.read(cx).preferences.is_some())
     }
 
-    fn pf_read<R>(&self, cx: &TestAppContext, f: impl FnOnce(&PreferencesView) -> R) -> R {
+    pub(super) fn pf_read<R>(
+        &self,
+        cx: &TestAppContext,
+        f: impl FnOnce(&PreferencesView) -> R,
+    ) -> R {
         let view = self.pf_view(cx);
         cx.read(|cx| f(view.read(cx)))
     }
@@ -174,7 +178,7 @@ impl Started {
     }
 
     /// Open Preferences through the leader route (`v p`).
-    fn pf_route(&self, cx: &mut TestAppContext) {
+    pub(super) fn pf_route(&self, cx: &mut TestAppContext) {
         self.pf_on_window(cx, |w, window, cx| {
             assert_eq!(
                 w.route_block(&LeaderRoute::OpenPreferences, Panel::Editor, cx),
@@ -184,7 +188,7 @@ impl Started {
         });
     }
 
-    fn pf_loaded(&self, rt: &Runtime, cx: &mut TestAppContext) {
+    pub(super) fn pf_loaded(&self, rt: &Runtime, cx: &mut TestAppContext) {
         drive(rt, cx, |cx| self.pf_read(cx, |v| v.model().is_some()));
     }
 
@@ -200,7 +204,7 @@ impl Started {
         cx.run_until_parked();
     }
 
-    fn pf_click(&self, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
+    pub(super) fn pf_click(&self, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
         let id = id.into();
         cx.update_window(self.handle, |_, window, cx| {
             window.render_frame(cx);
@@ -235,7 +239,7 @@ impl Started {
             .unwrap()
     }
 
-    fn pf_section(&self, cx: &mut TestAppContext, section: Section) {
+    pub(super) fn pf_section(&self, cx: &mut TestAppContext, section: Section) {
         self.pf_click(section_id(section), cx);
         assert_eq!(self.pf_read(cx, |v| v.section()), section);
     }
