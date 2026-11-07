@@ -20,11 +20,8 @@
 //! nvim survives Finish when no other backend is chosen.
 //!
 //! **The folder chooser** is a panel of its own inside the assistant, not a
-//! dialog over it: the current folder with Up, its subfolders (a click
-//! enters one, a double-click or `Choose this folder` takes the folder
-//! shown) and an inline `New folder…` field. Listings and the new folder run
-//! on tokio's blocking pool (`logic::onboarding::list_subdirs`,
-//! `create_subdir`, through core); a stale listing is dropped by revision.
+//! dialog over it: the shared [`FolderChooser`] (Preferences > Workspaces
+//! uses it too), its commands in the assistant's footer.
 //!
 //! **Theme preview.** Choosing a theme restyles the whole window at once
 //! ([`Workspace::apply_theme`]); leaving without finishing puts the theme
@@ -58,6 +55,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{EditorBackendSetting, SharedSettings};
 
 use super::Workspace;
+use super::folder_chooser::{self, FolderChooser, FolderChooserEvent};
 use crate::assets;
 use crate::input;
 use crate::startup::EmptyState;
@@ -76,15 +74,12 @@ pub(crate) const LOGO_ID: &str = "onboarding-logo";
 /// The Workspace step's controls.
 pub(crate) const CHOOSE_FOLDER_ID: &str = "onboarding-choose-folder";
 pub(crate) const NAME_ID: &str = "onboarding-name";
-/// The folder chooser's controls.
+/// The folder chooser's panel and its `Choose this folder` (the shared
+/// [`FolderChooser`] under the prefix `onboarding`).
+#[cfg(test)]
 pub(crate) const CHOOSER_ID: &str = "onboarding-chooser";
-pub(crate) const CHOOSER_UP_ID: &str = "onboarding-chooser-up";
-pub(crate) const CHOOSER_NEW_ID: &str = "onboarding-chooser-new";
+#[cfg(test)]
 pub(crate) const CHOOSER_CHOOSE_ID: &str = "onboarding-chooser-choose";
-pub(crate) const CHOOSER_CANCEL_ID: &str = "onboarding-chooser-cancel";
-pub(crate) const CHOOSER_LIST_ID: &str = "onboarding-chooser-list";
-pub(crate) const NEW_FOLDER_ID: &str = "onboarding-new-folder";
-pub(crate) const NEW_FOLDER_CREATE_ID: &str = "onboarding-new-folder-create";
 /// The confirmation's two answers.
 pub(crate) const CONFIRM_YES_ID: &str = "onboarding-confirm-yes";
 pub(crate) const CONFIRM_NO_ID: &str = "onboarding-confirm-no";
@@ -98,22 +93,18 @@ pub(crate) const CHOOSE_FOLDER_FIRST: &str = "Choose a folder for your notes fir
 pub(crate) const INVALID_NAME: &str =
     "Not a valid workspace name: it must work as a folder name on every system.";
 
+/// The id prefix of the assistant's folder chooser.
+const CHOOSER_PREFIX: &str = "onboarding";
+
 /// The element id of the chooser's row for `dir` (its folder name).
+#[cfg(test)]
 pub(crate) fn chooser_row_id(dir: &SystemPath) -> SharedString {
-    format!("onboarding-dir-{}", folder_name(dir)).into()
+    folder_chooser::row_id(CHOOSER_PREFIX, dir)
 }
 
 /// The element id of the Theme step's row for `name`.
 pub(crate) fn theme_row_id(name: &str) -> SharedString {
     format!("onboarding-theme-{name}").into()
-}
-
-/// The last component of `dir`, as shown in the chooser.
-fn folder_name(dir: &SystemPath) -> String {
-    dir.as_path()
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| system::path_to_string(dir))
 }
 
 /// What the assistant asks of the window.
@@ -181,72 +172,6 @@ pub(crate) enum Confirm {
     Discard,
 }
 
-/// A folder listing: under way, done, or refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Listing {
-    Loading,
-    Loaded(Vec<SystemPath>),
-    Failed(String),
-}
-
-/// The inline `New folder…` field and the folder being made.
-struct NewFolder {
-    input: Entity<InputState>,
-    error: Option<SharedString>,
-    task: Option<Task<()>>,
-}
-
-/// The folder chooser panel: the folder shown and its subfolders.
-pub(crate) struct Chooser {
-    dir: SystemPath,
-    listing: Listing,
-    selected: Option<usize>,
-    /// Bumped by every listing asked for: an older one landing is dropped.
-    revision: u64,
-    task: Option<Task<()>>,
-    new_folder: Option<NewFolder>,
-    scroll: UniformListScrollHandle,
-}
-
-impl Chooser {
-    /// The folder shown.
-    #[cfg(test)]
-    pub(crate) fn dir(&self) -> &SystemPath {
-        &self.dir
-    }
-
-    /// Its listing.
-    #[cfg(test)]
-    pub(crate) fn listing(&self) -> &Listing {
-        &self.listing
-    }
-
-    /// The selected row.
-    #[cfg(test)]
-    pub(crate) fn selected(&self) -> Option<usize> {
-        self.selected
-    }
-
-    /// The new folder field's problem, if it shows one.
-    #[cfg(test)]
-    pub(crate) fn new_folder_error(&self) -> Option<&str> {
-        self.new_folder.as_ref()?.error.as_deref()
-    }
-
-    /// Whether the new folder field shows.
-    #[cfg(test)]
-    pub(crate) fn new_folder_open(&self) -> bool {
-        self.new_folder.is_some()
-    }
-
-    fn rows(&self) -> &[SystemPath] {
-        match &self.listing {
-            Listing::Loaded(rows) => rows,
-            _ => &[],
-        }
-    }
-}
-
 /// The setup assistant. See the module docs.
 pub(crate) struct OnboardingView {
     settings: SharedSettings,
@@ -260,7 +185,8 @@ pub(crate) struct OnboardingView {
     name_error: Option<SharedString>,
     /// The inline problem line.
     message: Option<SharedString>,
-    chooser: Option<Chooser>,
+    chooser: Option<Entity<FolderChooser>>,
+    _chooser_events: Option<Subscription>,
     confirm: Option<Confirm>,
     /// The draft being applied: every control waits for it.
     finishing: Option<Task<()>>,
@@ -310,6 +236,7 @@ impl OnboardingView {
             name_error: None,
             message: None,
             chooser: None,
+            _chooser_events: None,
             confirm: None,
             finishing: None,
             theme_scroll: UniformListScrollHandle::new(),
@@ -379,7 +306,7 @@ impl OnboardingView {
 
     /// The folder chooser, while it shows.
     #[cfg(test)]
-    pub(crate) fn chooser(&self) -> Option<&Chooser> {
+    pub(crate) fn chooser(&self) -> Option<&Entity<FolderChooser>> {
         self.chooser.as_ref()
     }
 
@@ -408,19 +335,13 @@ impl OnboardingView {
     fn field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         let focused =
             |input: &Entity<InputState>| input.read(cx).focus_handle(cx).is_focused(window);
-        focused(&self.name_input)
-            || self
-                .chooser
-                .as_ref()
-                .and_then(|c| c.new_folder.as_ref())
-                .is_some_and(|f| focused(&f.input))
+        focused(&self.name_input) || self.new_folder_focused(window, cx)
     }
 
     fn new_folder_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         self.chooser
             .as_ref()
-            .and_then(|c| c.new_folder.as_ref())
-            .is_some_and(|f| f.input.read(cx).focus_handle(cx).is_focused(window))
+            .is_some_and(|c| c.read(cx).new_folder_focused(window, cx))
     }
 
     // ---- the steps --------------------------------------------------------
@@ -468,7 +389,7 @@ impl OnboardingView {
     /// comes back to the assistant, and the theme list scrolls to its row.
     fn left_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.message = None;
-        self.chooser = None;
+        self.drop_chooser();
         window.focus(&self.focus, cx);
         if let Some(model) = self.model.as_ref()
             && model.step == OnbStep::Theme
@@ -581,7 +502,7 @@ impl OnboardingView {
                 .update(cx, |input, cx| input.set_value(name, window, cx));
             self.name_error = None;
         }
-        self.chooser = None;
+        self.drop_chooser();
         self.message = None;
         window.focus(&self.focus, cx);
         cx.notify();
@@ -607,192 +528,45 @@ impl OnboardingView {
             cx.notify();
             return;
         };
-        self.chooser = Some(Chooser {
-            dir: start.clone(),
-            listing: Listing::Loading,
-            selected: None,
-            revision: 0,
-            task: None,
-            new_folder: None,
-            scroll: UniformListScrollHandle::new(),
-        });
+        let host = self.focus.clone();
+        let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, host, window, cx));
+        self._chooser_events = Some(cx.subscribe_in(&chooser, window, Self::on_chooser_event));
+        self.chooser = Some(chooser);
         self.message = None;
         window.focus(&self.focus, cx);
-        self.browse(start, window, cx);
-    }
-
-    /// Show `dir` in the chooser, listed in the background.
-    pub(crate) fn browse(&mut self, dir: SystemPath, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(chooser) = self.chooser.as_mut() else {
-            return;
-        };
-        chooser.revision += 1;
-        let revision = chooser.revision;
-        chooser.dir = dir.clone();
-        chooser.listing = Listing::Loading;
-        chooser.selected = None;
-        chooser.new_folder = None;
-        chooser.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let listed = blocking(move || onb::list_subdirs(&dir).map_err(|e| e.to_string())).await;
-            this.update(cx, |view, cx| {
-                view.listed(revision, listed.and_then(|r| r), cx)
-            })
-            .ok();
-        }));
         cx.notify();
     }
 
-    fn listed(
+    fn on_chooser_event(
         &mut self,
-        revision: u64,
-        listed: Result<Vec<SystemPath>, String>,
+        _: &Entity<FolderChooser>,
+        event: &FolderChooserEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(chooser) = self.chooser.as_mut() else {
-            return;
-        };
-        if chooser.revision != revision {
-            return;
-        }
-        chooser.task = None;
-        match listed {
-            Ok(rows) => {
-                chooser.selected = (!rows.is_empty()).then_some(0);
-                chooser.listing = Listing::Loaded(rows);
-                chooser.scroll.scroll_to_item(0, ScrollStrategy::Top);
-            }
-            Err(e) => chooser.listing = Listing::Failed(e),
-        }
-        cx.notify();
-    }
-
-    /// `Up` (Left, Backspace): the parent folder.
-    pub(crate) fn chooser_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(parent) = self.chooser.as_ref().and_then(|c| c.dir.parent()) {
-            self.browse(parent, window, cx);
+        match event {
+            FolderChooserEvent::Chosen(dir) => self.choose_directory(dir.clone(), window, cx),
+            FolderChooserEvent::Cancelled => self.close_chooser(window, cx),
         }
     }
 
-    /// Enter (Right): into the selected subfolder.
-    fn chooser_enter_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self
-            .chooser
-            .as_ref()
-            .and_then(|c| c.selected.and_then(|ix| c.rows().get(ix).cloned()));
-        if let Some(target) = target {
-            self.browse(target, window, cx);
+    /// Show `dir` in the chooser (tests: a folder of the temp dir).
+    #[cfg(test)]
+    pub(crate) fn browse(&mut self, dir: SystemPath, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(chooser) = self.chooser.clone() {
+            chooser.update(cx, |c, cx| c.browse(dir, window, cx));
         }
     }
 
-    fn chooser_move(&mut self, down: bool, cx: &mut Context<Self>) {
-        let Some(chooser) = self.chooser.as_mut() else {
-            return;
-        };
-        let count = chooser.rows().len();
-        if count == 0 {
-            return;
-        }
-        let ix = match (chooser.selected, down) {
-            (None, _) => 0,
-            (Some(ix), true) => (ix + 1).min(count - 1),
-            (Some(ix), false) => ix.saturating_sub(1),
-        };
-        chooser.selected = Some(ix);
-        chooser.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
-        cx.notify();
-    }
-
-    /// `Choose this folder` (Ctrl+Enter, a double-click): the folder shown.
-    pub(crate) fn chooser_choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dir) = self.chooser.as_ref().map(|c| c.dir.clone()) {
-            self.choose_directory(dir, window, cx);
-        }
+    fn drop_chooser(&mut self) {
+        self.chooser = None;
+        self._chooser_events = None;
     }
 
     /// `Cancel` (Esc): back to the Workspace step, nothing chosen.
     pub(crate) fn close_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chooser = None;
+        self.drop_chooser();
         window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    /// `New folder…` (n): the inline name field, focused.
-    pub(crate) fn open_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(chooser) = self.chooser.as_mut() else {
-            return;
-        };
-        if chooser.new_folder.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("New folder name"));
-            chooser.new_folder = Some(NewFolder {
-                input,
-                error: None,
-                task: None,
-            });
-        }
-        if let Some(folder) = chooser.new_folder.as_ref() {
-            let handle = folder.input.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
-        }
-        cx.notify();
-    }
-
-    /// The new folder field's text, for tests.
-    #[cfg(test)]
-    pub(crate) fn new_folder_input(&self) -> Option<Entity<InputState>> {
-        Some(self.chooser.as_ref()?.new_folder.as_ref()?.input.clone())
-    }
-
-    fn close_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.chooser.as_mut() {
-            chooser.new_folder = None;
-        }
-        window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    /// `Create` (Enter in the field): make the folder in the background and
-    /// enter it.
-    pub(crate) fn create_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(chooser) = self.chooser.as_mut() else {
-            return;
-        };
-        let dir = chooser.dir.clone();
-        let Some(folder) = chooser.new_folder.as_mut() else {
-            return;
-        };
-        if folder.task.is_some() {
-            return;
-        }
-        let name = folder.input.read(cx).value().to_string();
-        folder.error = None;
-        folder.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let made = blocking(move || onb::create_subdir(&dir, &name).map_err(|e| e.to_string()))
-                .await
-                .and_then(|r| r);
-            this.update_in(cx, |view, window, cx| view.folder_made(made, window, cx))
-                .ok();
-        }));
-        cx.notify();
-    }
-
-    fn folder_made(
-        &mut self,
-        made: Result<SystemPath, String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match made {
-            Ok(dir) => {
-                window.focus(&self.focus, cx);
-                self.browse(dir, window, cx);
-            }
-            Err(e) => {
-                if let Some(folder) = self.chooser.as_mut().and_then(|c| c.new_folder.as_mut()) {
-                    folder.task = None;
-                    folder.error = Some(format!("Couldn't create the folder: {e}").into());
-                }
-            }
-        }
         cx.notify();
     }
 
@@ -867,7 +641,9 @@ impl OnboardingView {
     /// folder, or leave the name field forward.
     fn on_field_enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         if self.new_folder_focused(window, cx) {
-            self.create_folder(window, cx);
+            if let Some(chooser) = self.chooser.clone() {
+                chooser.update(cx, |c, cx| c.create_folder(window, cx));
+            }
             cx.stop_propagation();
         } else if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
             self.next(window, cx);
@@ -879,7 +655,9 @@ impl OnboardingView {
     /// field for the assistant (Esc again cancels).
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
         if self.new_folder_focused(window, cx) {
-            self.close_new_folder(window, cx);
+            if let Some(chooser) = self.chooser.clone() {
+                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
+            }
             cx.stop_propagation();
         } else if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
             window.focus(&self.focus, cx);
@@ -920,18 +698,8 @@ impl OnboardingView {
             }
             return true;
         }
-        if self.chooser.is_some() {
-            match key.key {
-                Key::Enter if key.mods.ctrl => self.chooser_choose(window, cx),
-                Key::Enter | Key::Right if plain => self.chooser_enter_selected(window, cx),
-                Key::Left | Key::Backspace if plain => self.chooser_up(window, cx),
-                Key::Up if plain => self.chooser_move(false, cx),
-                Key::Down if plain => self.chooser_move(true, cx),
-                Key::Esc => self.close_chooser(window, cx),
-                Key::Char('n') if plain => self.open_new_folder(window, cx),
-                _ => return false,
-            }
-            return true;
+        if let Some(chooser) = self.chooser.clone() {
+            return chooser.update(cx, |c, cx| c.key(key, window, cx));
         }
         let Some(step) = self.step() else {
             return false;
@@ -1480,174 +1248,11 @@ impl OnboardingView {
         para(text, t).into_any_element()
     }
 
-    fn render_chooser(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = theme::current(cx);
-        let t = &*theme;
-        let Some(chooser) = self.chooser.as_ref() else {
-            return div().into_any_element();
-        };
-        let path = system::path_to_string(&chooser.dir);
-        let has_parent = chooser.dir.parent().is_some();
-        let body = match &chooser.listing {
-            Listing::Loading => note("Loading…", t).into_any_element(),
-            Listing::Failed(e) => div()
-                .id("onboarding-chooser-error")
-                .test_support()
-                .role(Role::Label)
-                .aria_label(SharedString::from(e.clone()))
-                .text_sm()
-                .text_color(theme::error(t))
-                .child(format!("Couldn't list this folder: {e}"))
-                .into_any_element(),
-            Listing::Loaded(rows) if rows.is_empty() => {
-                note("No folders here. Choose this one, or make a new one.", t).into_any_element()
-            }
-            Listing::Loaded(rows) => uniform_list(
-                CHOOSER_LIST_ID,
-                rows.len(),
-                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                    let Some(chooser) = this.chooser.as_ref() else {
-                        return Vec::new();
-                    };
-                    let t = theme::current(cx);
-                    let hover = theme::hover_background(&t);
-                    range
-                        .filter_map(|ix| chooser.rows().get(ix).map(|d| (ix, d.clone())))
-                        .map(|(ix, dir)| {
-                            let selected = chooser.selected == Some(ix);
-                            let name = folder_name(&dir);
-                            div()
-                                .id(chooser_row_id(&dir))
-                                .test_support()
-                                .role(Role::ListBoxOption)
-                                .aria_label(SharedString::from(name.clone()))
-                                .aria_selected(selected)
-                                .flex()
-                                .items_center()
-                                .w_full()
-                                .h(rems(1.75))
-                                .px_2()
-                                .rounded_md()
-                                .text_sm()
-                                .text_color(theme::directory(&t))
-                                .when(selected, |row| row.bg(theme::selected_background(&t)))
-                                .when(!selected, |row| row.hover(move |style| style.bg(hover)))
-                                .child(div().truncate().child(name))
-                                .on_click(cx.listener(
-                                    move |this, event: &ClickEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        if event.click_count() >= 2 {
-                                            // The first click entered it: take it.
-                                            this.chooser_choose(window, cx);
-                                        } else {
-                                            this.browse(dir.clone(), window, cx);
-                                        }
-                                    },
-                                ))
-                                .into_any_element()
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(&chooser.scroll)
-            .size_full()
-            .into_any_element(),
-        };
-        let new_folder = chooser.new_folder.as_ref().map(|folder| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div().flex_1().min_w_0().child(
-                                Input::new(&folder.input)
-                                    .id(NEW_FOLDER_ID)
-                                    .aria_label("New folder name")
-                                    .disabled(folder.task.is_some())
-                                    .bg(theme::background(t))
-                                    .border_color(theme::divider(t))
-                                    .text_color(theme::foreground(t)),
-                            ),
-                        )
-                        .child(
-                            Button::new(NEW_FOLDER_CREATE_ID)
-                                .label("Create")
-                                .loading(folder.task.is_some())
-                                .disabled(folder.task.is_some())
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.create_folder(window, cx)
-                                })),
-                        ),
-                )
-                .when_some(folder.error.clone(), |col, error| {
-                    col.child(div().text_xs().text_color(theme::error(t)).child(error))
-                })
-        });
-        div()
-            .id(CHOOSER_ID)
-            .test_support()
-            .role(Role::Group)
-            .aria_label("Choose a folder")
-            .flex()
-            .flex_col()
-            .gap_3()
-            .flex_1()
-            .min_h_0()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        Button::new(CHOOSER_UP_ID)
-                            .label("Up")
-                            .disabled(!has_parent)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.chooser_up(window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("onboarding-chooser-path")
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(SharedString::from(path.clone()))
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(theme::foreground(t))
-                            .child(path),
-                    ),
-            )
-            .children(new_folder)
-            .child(
-                div()
-                    .id("onboarding-chooser-rows")
-                    .role(Role::ListBox)
-                    .aria_label("Folders")
-                    .flex_1()
-                    .min_h(rems(8.))
-                    .h(rems(14.))
-                    .p_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(theme::divider(t))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        if event.click_count() >= 2 {
-                            this.chooser_choose(window, cx);
-                        }
-                    }))
-                    .child(body),
-            )
-            .into_any_element()
+    fn render_chooser(&self) -> AnyElement {
+        match self.chooser.clone() {
+            Some(chooser) => chooser.into_any_element(),
+            None => div().into_any_element(),
+        }
     }
 
     /// The key hints under the body: what the keyboard does here.
@@ -1656,7 +1261,7 @@ impl OnboardingView {
             return "Enter: yes · Esc: back to the setup";
         }
         if self.chooser.is_some() {
-            return "↑/↓: select · Enter: open · ←: up · Ctrl+Enter: choose · N: new folder · Esc: back";
+            return FolderChooser::HINTS;
         }
         match step {
             Some(OnbStep::Welcome) => "Enter: start · ←/→: steps · Esc: cancel",
@@ -1694,34 +1299,9 @@ impl OnboardingView {
                 )
                 .into_any_element();
         }
-        if self.chooser.is_some() {
-            let creating = self
-                .chooser
-                .as_ref()
-                .and_then(|c| c.new_folder.as_ref())
-                .is_some_and(|f| f.task.is_some());
+        if let Some(chooser) = self.chooser.as_ref() {
             return row
-                .child(
-                    Button::new(CHOOSER_NEW_ID)
-                        .label("New folder…")
-                        .disabled(creating)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_new_folder(window, cx)
-                        })),
-                )
-                .child(div().flex_1())
-                .child(Button::new(CHOOSER_CANCEL_ID).label("Cancel").on_click(
-                    cx.listener(|this, _: &ClickEvent, window, cx| this.close_chooser(window, cx)),
-                ))
-                .child(
-                    Button::new(CHOOSER_CHOOSE_ID)
-                        .primary()
-                        .label("Choose this folder")
-                        .disabled(creating)
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.chooser_choose(window, cx)
-                        })),
-                )
+                .children(folder_chooser::actions(chooser, cx))
                 .into_any_element();
         }
         let busy = self.busy();
@@ -1763,7 +1343,7 @@ impl Render for OnboardingView {
         let step = self.step();
         let body = match (self.confirm, self.model.as_ref()) {
             (Some(confirm), _) => self.render_confirm(confirm, cx),
-            (None, _) if self.chooser.is_some() => self.render_chooser(cx),
+            (None, _) if self.chooser.is_some() => self.render_chooser(),
             (None, None) => note("Getting the setup ready…", &t).into_any_element(),
             (None, Some(model)) => match model.step {
                 OnbStep::Welcome => self.render_welcome(cx),

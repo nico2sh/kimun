@@ -362,6 +362,9 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     // `input` border on `input_background()` (derived from `input` and
     // `background`), the label `foreground`, a disabled label
     // `muted_foreground`, the focus `ring`.
+    // The kit Spinner (Preferences' reindex progress panel, and every
+    // Button's `loading`) is an Icon drawn in the text colour it is given,
+    // else the kit `foreground`: mapped above.
 }
 
 // ---- FILES rows --------------------------------------------------------------
@@ -663,6 +666,9 @@ mod tests {
                 hsla(focus_border(&t)),
                 "the empty box never reads as checked"
             );
+            // The Spinner (Preferences' reindex progress): its icon falls
+            // back to the kit's `foreground`.
+            assert_eq!(kit.foreground, hsla(foreground(&t)));
         });
     }
 

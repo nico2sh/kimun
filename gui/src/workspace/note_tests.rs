@@ -201,6 +201,20 @@ fn a_read_only_vault_writes_nothing(cx: &mut TestAppContext) {
         AppMessage::VaultConflict("conflicts:\na.md / A.md".into()),
         cx,
     );
+    // Preferences > Workspaces show the conflict over the window: close
+    // them (nothing changed, Esc closes) to get back to the note.
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .preferences
+                .as_ref()
+                .is_some_and(|p| p.read(cx).model().is_some())
+        })
+    });
+    started.press("escape", cx);
+    assert!(cx.read(|cx| started.workspace.read(cx).preferences.is_none()));
     started.type_text("X", cx);
     started.press("ctrl-s", cx);
     send(&started, AppMessage::Autosave, cx);

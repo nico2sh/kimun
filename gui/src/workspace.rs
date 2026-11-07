@@ -130,6 +130,10 @@
 //! the palette show Preferences in place of the Panels ([`preferences`]),
 //! the same takeover as the setup assistant. A saved draft applies at once;
 //! only a new server address or editor engine enters the vault again.
+//! Workspaces (M9b-2) are managed there, each change written as it is made;
+//! a vault that opens with names differing only by case (`VaultConflict`)
+//! stays read-only and brings Preferences up on Workspaces with the vault's
+//! message, so another workspace or folder can be picked.
 //!
 //! **Pinned notes (M7b G8).** The pinned-notes dialog (leader `f p`, the
 //! palette) lists the vault's pins by number: a digit opens one, and pins
@@ -906,6 +910,11 @@ impl Workspace {
                     host.session.stop_autosave();
                 }
                 self.flash_error(conflict_flash(&details), cx);
+                // Preferences > Workspaces, with the vault's own words, so
+                // another workspace or folder can be picked from there.
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.show_vault_conflict(details, window, cx)
+                });
             }
             AppMessage::OpenPath { path, emphasis } => {
                 // The restore's landing (or anything after it): no longer
@@ -2537,6 +2546,7 @@ mod file_dialogs;
 mod file_ops;
 mod files;
 mod find;
+mod folder_chooser;
 mod follow;
 mod key_suggestions;
 mod leader;
@@ -2594,6 +2604,8 @@ mod picker_tests;
 mod pinned_tests;
 #[cfg(test)]
 mod preferences_tests;
+#[cfg(test)]
+mod preferences_workspaces_tests;
 #[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
