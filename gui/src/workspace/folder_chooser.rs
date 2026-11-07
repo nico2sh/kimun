@@ -226,6 +226,11 @@ impl FolderChooser {
 
     /// `Up` (Left, Backspace): the parent folder.
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Not while a folder is being made: leaving drops the task, and
+        // with it a failure the user should see.
+        if self.creating() {
+            return;
+        }
         if let Some(parent) = self.dir.parent() {
             self.browse(parent, window, cx);
         }
@@ -233,6 +238,9 @@ impl FolderChooser {
 
     /// Enter (Right): into the selected subfolder.
     fn enter_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creating() {
+            return;
+        }
         let target = self.selected.and_then(|ix| self.rows().get(ix).cloned());
         if let Some(target) = target {
             self.browse(target, window, cx);
@@ -427,7 +435,7 @@ impl Render for FolderChooser {
                                         if event.click_count() >= 2 {
                                             // The first click entered it: take it.
                                             this.choose(cx);
-                                        } else {
+                                        } else if !this.creating() {
                                             this.browse(dir.clone(), window, cx);
                                         }
                                     },

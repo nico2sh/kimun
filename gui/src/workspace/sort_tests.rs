@@ -21,16 +21,24 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query};
 use tokio::runtime::Runtime;
 
+use super::LayoutStore;
 use super::Workspace;
 use super::files::{FILES_SORT_ID, FILTER_ID};
 use super::find::{FIND_DEBOUNCE, FIND_INPUT_ID, FIND_SORT_ID, FindView};
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::picker::{BROWSER_SORT_ID, NotePicker, PICKER_INPUT_ID};
-use super::sort::{FILES_HINT, QUERY_HINT, SORT_DIALOG_ID, SORT_HINT_ID, SortDialog};
+use super::preferences_tests::{config, on_disk, open as open_saving, settle};
+use super::sort::{
+    CLOSE_LABEL, FILES_HINT, FILES_PROPERTY_HINT, FILES_SAVE_HINT, QUERY_HINT, SAVE_JOURNAL_LABEL,
+    SAVE_LABEL, SAVE_NOTES_LABEL, SORT_CLOSE_ID, SORT_DIALOG_ID, SORT_HINT_ID, SORT_SAVE_ID,
+    SortDialog,
+};
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
+use kimun_notes::logic::leader_route::LeaderRoute;
+use kimun_notes::settings::{AppSettings, SortFieldSetting, SortOrderSetting};
 
 fn path(p: &str) -> VaultPath {
     VaultPath::new(p)
@@ -620,4 +628,440 @@ fn the_palette_row_opens_it(cx: &mut TestAppContext) {
     run(cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Sort));
     assert_eq!(with_dialog(&started, cx, |d| d.target()), SortTarget::Query);
+}
+
+// ── Save as default (M9d) ───────────────────────────────────────────────
+
+/// Started on a.md with the window saving to the vault's own config, FILES
+/// listing the root, and two notes in the journal folder.
+fn started_saving(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Started) {
+    let v = rt.block_on(test_vault(NOTES, &["c.md", "a.md", "b.md"]));
+    let journal = v.vault.journal_path().clone();
+    for (name, text) in [
+        ("2026-01-02.md", "# Alpha day"),
+        ("2026-01-01.md", "# Zed day"),
+    ] {
+        rt.block_on(v.vault.create_note(&journal.append(&path(name)), text))
+            .expect("the journal note is created");
+    }
+    let started = open_saving(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+        LayoutStore::File(config(&v)),
+    );
+    let want = NOTES[0].1;
+    drive(rt, cx, |cx| {
+        started.text(cx) == want && !started.indexing(cx) && files_listed(&started, cx)
+    });
+    (v, started)
+}
+
+fn settings_now(v: &TestVault) -> AppSettings {
+    v.settings.read().unwrap().clone()
+}
+
+fn files_entity(s: &Started, cx: &TestAppContext) -> gpui_kit::EntityId {
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .files
+            .as_ref()
+            .expect("FILES")
+            .entity_id()
+    })
+}
+
+fn files_sort(s: &Started, cx: &TestAppContext) -> (SortField, SortOrder) {
+    cx.read(|cx| {
+        let files = s.workspace.read(cx).files.clone().expect("FILES");
+        files.read(cx).model().current_sort()
+    })
+}
+
+/// FILES opens `dir`, listed.
+fn files_open(s: &Started, rt: &Runtime, dir: VaultPath, cx: &mut TestAppContext) {
+    let files = cx.read(|cx| s.workspace.read(cx).files.clone().expect("FILES"));
+    cx.update(|cx| files.update(cx, |pane, cx| pane.navigate(dir.clone(), cx)));
+    drive(rt, cx, |cx| {
+        files_listed(s, cx) && cx.read(|cx| files.read(cx).current_dir() == &dir)
+    });
+}
+
+/// The element `id`'s accessible label in the last frame.
+fn label_of(s: &Started, id: &'static str, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(id)
+            .and_then(|e| e.label().map(str::to_string))
+    })
+    .unwrap()
+}
+
+/// The checkbox's ticked and disabled states in the last frame.
+fn save_box(s: &Started, cx: &mut TestAppContext) -> (Option<bool>, bool) {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let e = window.find(SORT_SAVE_ID);
+        (e.checked(), e.disabled() == Some(true))
+    })
+    .unwrap()
+}
+
+/// Open Preferences (the route) and read its draft's four sort choices.
+fn preferences_sorting(
+    s: &Started,
+    rt: &Runtime,
+    cx: &mut TestAppContext,
+) -> (
+    SortFieldSetting,
+    SortOrderSetting,
+    SortFieldSetting,
+    SortOrderSetting,
+) {
+    on_workspace(s, cx, |w, window, cx| {
+        w.perform_route(LeaderRoute::OpenPreferences, window, cx)
+    });
+    let loaded = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            s.workspace.read(cx).preferences.as_ref().and_then(|p| {
+                p.read(cx).model().map(|m| {
+                    (
+                        m.default_sort_field,
+                        m.default_sort_order,
+                        m.journal_sort_field,
+                        m.journal_sort_order,
+                    )
+                })
+            })
+        })
+    };
+    drive(rt, cx, |cx| loaded(cx).is_some());
+    loaded(cx).unwrap()
+}
+
+/// Ticked with `s` and confirmed with `Save` on a notes folder: the sort
+/// stays, the notes' default is written (disk and memory), the journal's
+/// untouched, no reopen; later folder opens use it, Preferences show it.
+#[gpui_kit::test]
+fn save_as_default_for_notes_writes_the_notes_default(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_saving(cx, &rt);
+    let before = settings_now(&v);
+    let files = files_entity(&started, cx);
+    focus_files(&started, cx);
+    press(&started, "ctrl-r", cx);
+    assert_eq!(
+        with_dialog(&started, cx, |d| d.save_default_label()),
+        Some(SAVE_NOTES_LABEL)
+    );
+    assert_eq!(
+        label_of(&started, SORT_SAVE_ID, cx).as_deref(),
+        Some(SAVE_NOTES_LABEL)
+    );
+    assert_eq!(save_box(&started, cx), (Some(false), false));
+    assert_eq!(
+        label_of(&started, SORT_CLOSE_ID, cx).as_deref(),
+        Some(CLOSE_LABEL)
+    );
+    pick(&started, cx, |d, window, cx| {
+        d.pick_field("Title", window, cx)
+    });
+    pick(&started, cx, |d, window, cx| {
+        d.pick_order(SortOrder::Descending, window, cx)
+    });
+    // `s` ticks it (the field select has the keyboard), again clears it.
+    press(&started, "s", cx);
+    assert!(with_dialog(&started, cx, |d| d.saves_default()));
+    assert_eq!(save_box(&started, cx).0, Some(true));
+    press(&started, "s", cx);
+    assert!(!with_dialog(&started, cx, |d| d.saves_default()));
+    press(&started, "s", cx);
+    assert_eq!(
+        label_of(&started, SORT_CLOSE_ID, cx).as_deref(),
+        Some(SAVE_LABEL)
+    );
+    assert_eq!(
+        label_of(&started, SORT_HINT_ID, cx).as_deref(),
+        Some(FILES_SAVE_HINT)
+    );
+
+    click(&started, SORT_CLOSE_ID, cx);
+    started.settle_dialog(cx);
+    assert!(!sort_open(&started, cx), "the confirm closes it");
+    drive(&rt, cx, |_| {
+        settings_now(&v).default_sort_order == SortOrderSetting::Descending
+    });
+    let memory = settings_now(&v);
+    let disk = on_disk(&v);
+    for s in [&memory, &disk] {
+        assert_eq!(s.default_sort_field, SortFieldSetting::Title);
+        assert_eq!(s.default_sort_order, SortOrderSetting::Descending);
+        assert_eq!(s.journal_sort_field, before.journal_sort_field);
+        assert_eq!(s.journal_sort_order, before.journal_sort_order);
+        assert_eq!(s.group_directories, before.group_directories);
+    }
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Sort saved as the default for notes")
+    );
+    assert_eq!(files_entity(&started, cx), files, "no reopen");
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Title, SortOrder::Descending)
+    );
+    // Later opens of a notes folder use it; the journal keeps its own.
+    files_open(&started, &rt, path("sub"), cx);
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Title, SortOrder::Descending)
+    );
+    files_open(&started, &rt, v.vault.journal_path().clone(), cx);
+    assert_eq!(
+        files_sort(&started, cx),
+        (
+            SortField::from(before.journal_sort_field),
+            SortOrder::from(before.journal_sort_order)
+        )
+    );
+    // Preferences > Sorting reads the saved values.
+    assert_eq!(
+        preferences_sorting(&started, &rt, cx),
+        (
+            SortFieldSetting::Title,
+            SortOrderSetting::Descending,
+            before.journal_sort_field,
+            before.journal_sort_order,
+        )
+    );
+    settle(&rt, cx);
+}
+
+/// On the journal folder the box says so and saves the journal's default
+/// (ticked with a click), plus the grouping the dialog set; the notes'
+/// default is untouched.
+#[gpui_kit::test]
+fn save_as_default_in_the_journal_writes_the_journal_default(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_saving(cx, &rt);
+    let before = settings_now(&v);
+    let journal = v.vault.journal_path().clone();
+    // FILES with the keyboard first: its chord reveals the note's folder.
+    focus_files(&started, cx);
+    files_open(&started, &rt, journal.clone(), cx);
+    press(&started, "ctrl-r", cx);
+    assert_eq!(
+        with_dialog(&started, cx, |d| d.save_default_label()),
+        Some(SAVE_JOURNAL_LABEL)
+    );
+    assert_eq!(
+        label_of(&started, SORT_SAVE_ID, cx).as_deref(),
+        Some(SAVE_JOURNAL_LABEL)
+    );
+    pick(&started, cx, |d, window, cx| {
+        d.pick_field("Title", window, cx)
+    });
+    pick(&started, cx, |d, window, cx| {
+        d.set_group_dirs(!before.group_directories, window, cx)
+    });
+    click(&started, SORT_SAVE_ID, cx);
+    assert_eq!(save_box(&started, cx).0, Some(true), "a click ticks it");
+    click(&started, SORT_CLOSE_ID, cx);
+    started.settle_dialog(cx);
+    drive(&rt, cx, |_| {
+        settings_now(&v).journal_sort_field == SortFieldSetting::Title
+    });
+    for s in [settings_now(&v), on_disk(&v)] {
+        assert_eq!(s.journal_sort_field, SortFieldSetting::Title);
+        assert_eq!(s.journal_sort_order, before.journal_sort_order);
+        assert_eq!(s.default_sort_field, before.default_sort_field);
+        assert_eq!(s.default_sort_order, before.default_sort_order);
+        assert_eq!(s.group_directories, !before.group_directories);
+    }
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Sort saved as the default for the journal")
+    );
+    // The notes keep theirs; back in the journal, its new default.
+    files_open(&started, &rt, VaultPath::root(), cx);
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Name, SortOrder::Ascending)
+    );
+    files_open(&started, &rt, journal, cx);
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Title, SortOrder::from(before.journal_sort_order))
+    );
+    settle(&rt, cx);
+}
+
+/// Unticked, `Close` changes nothing on disk or in memory; ticked, Escape
+/// still saves nothing; `s` in the Key field is typed, not a toggle; a
+/// property sort disables the box. The query lists have no box.
+#[gpui_kit::test]
+fn nothing_is_saved_unticked_on_escape_or_for_a_property_sort(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_saving(cx, &rt);
+    let before = settings_now(&v);
+    // The window writes its layout (`[gui]`) on its own: the sort fields
+    // are what must not move on disk.
+    let sorting = |s: &AppSettings| {
+        (
+            s.default_sort_field,
+            s.default_sort_order,
+            s.journal_sort_field,
+            s.journal_sort_order,
+            s.group_directories,
+        )
+    };
+    let disk = sorting(&on_disk(&v));
+    let unchanged = |cx: &mut TestAppContext| {
+        settle(&rt, cx);
+        assert_eq!(settings_now(&v), before, "memory unchanged");
+        assert_eq!(sorting(&on_disk(&v)), disk, "disk unchanged");
+    };
+    focus_files(&started, cx);
+    press(&started, "ctrl-r", cx);
+    pick(&started, cx, |d, window, cx| {
+        d.pick_order(SortOrder::Descending, window, cx)
+    });
+    click(&started, SORT_CLOSE_ID, cx);
+    started.settle_dialog(cx);
+    assert!(!sort_open(&started, cx));
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Name, SortOrder::Descending)
+    );
+    unchanged(cx);
+
+    // Ticked, then Escape: the sort stays, nothing is saved.
+    press(&started, "ctrl-r", cx);
+    press(&started, "s", cx);
+    assert!(with_dialog(&started, cx, |d| d.saves_default()));
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert!(!sort_open(&started, cx));
+    unchanged(cx);
+
+    // A property sort: the Key field takes `s` as text, the box is
+    // disabled and the hint says why; a confirm saves nothing.
+    press(&started, "ctrl-r", cx);
+    press(&started, "s", cx);
+    pick(&started, cx, |d, window, cx| {
+        d.pick_field("Property", window, cx)
+    });
+    type_in(&started, "s", cx);
+    press(&started, "s", cx);
+    let view = dialog(&started, cx);
+    let typed = cx.read(|cx| view.read(cx).state().clone());
+    assert!(matches!(typed.field, SortField::Property(_)));
+    assert!(!with_dialog(&started, cx, |d| d.saves_default()));
+    assert_eq!(save_box(&started, cx), (Some(false), true));
+    assert_eq!(
+        label_of(&started, SORT_HINT_ID, cx).as_deref(),
+        Some(FILES_PROPERTY_HINT)
+    );
+    assert_eq!(
+        label_of(&started, SORT_CLOSE_ID, cx).as_deref(),
+        Some(CLOSE_LABEL)
+    );
+    // The tick went with the property sort: back on Name it stays clear.
+    pick(&started, cx, |d, window, cx| {
+        d.pick_field("Name", window, cx)
+    });
+    assert!(!with_dialog(&started, cx, |d| d.saves_default()));
+    assert_eq!(save_box(&started, cx), (Some(false), false));
+    pick(&started, cx, |d, window, cx| {
+        d.pick_key("priority".into(), window, cx);
+        d.set_save_default(true, cx);
+        d.confirm(window, cx);
+    });
+    started.settle_dialog(cx);
+    assert!(!sort_open(&started, cx));
+    unchanged(cx);
+
+    // FIND: no box, and nothing it could save.
+    find_on(&started, &rt, "#rust", cx);
+    press(&started, "ctrl-r", cx);
+    assert_eq!(with_dialog(&started, cx, |d| d.target()), SortTarget::Query);
+    assert_eq!(with_dialog(&started, cx, |d| d.save_default_label()), None);
+    assert!(!started.shows(SORT_SAVE_ID, cx));
+    pick(&started, cx, |d, window, cx| {
+        d.pick_field("Title", window, cx);
+        d.set_save_default(true, cx);
+        d.confirm(window, cx);
+    });
+    started.settle_dialog(cx);
+    unchanged(cx);
+}
+
+/// The search browser's dialog has no box either.
+#[gpui_kit::test]
+fn the_browser_sort_has_no_save_as_default(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    press(&started, "ctrl-k", cx);
+    browser_rows(&started, &rt, cx);
+    press(&started, "ctrl-r", cx);
+    assert_eq!(
+        with_dialog(&started, cx, |d| d.target()),
+        SortTarget::Browser
+    );
+    assert_eq!(with_dialog(&started, cx, |d| d.save_default_label()), None);
+    assert!(!started.shows(SORT_SAVE_ID, cx));
+    press(&started, "s", cx);
+    assert!(!with_dialog(&started, cx, |d| d.saves_default()));
+}
+
+/// A failed write (an unparsable config): the sort stays on the folder
+/// shown, a flash says it couldn't be saved, memory is untouched and the
+/// default is not remembered (the next open is on the old one).
+#[gpui_kit::test]
+fn a_failed_write_keeps_the_sort_and_remembers_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_saving(cx, &rt);
+    let before = settings_now(&v);
+    std::fs::write(config(&v), "this is [not toml").unwrap();
+    focus_files(&started, cx);
+    press(&started, "ctrl-r", cx);
+    pick(&started, cx, |d, window, cx| {
+        d.pick_order(SortOrder::Descending, window, cx)
+    });
+    press(&started, "s", cx);
+    click(&started, SORT_CLOSE_ID, cx);
+    started.settle_dialog(cx);
+    drive(&rt, cx, |cx| started.flash(cx).is_some());
+    let flash = started.flash(cx).unwrap();
+    assert!(
+        flash.starts_with("Couldn't save the sort default"),
+        "{flash}"
+    );
+    assert!(
+        cx.read(|cx| started.workspace.read(cx).last_flash().unwrap().1),
+        "an error"
+    );
+    assert_eq!(settings_now(&v), before, "memory untouched");
+    assert_eq!(
+        std::fs::read_to_string(config(&v)).unwrap(),
+        "this is [not toml",
+        "the unreadable config is left alone"
+    );
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Name, SortOrder::Descending)
+    );
+    files_open(&started, &rt, path("sub"), cx);
+    assert_eq!(
+        files_sort(&started, cx),
+        (SortField::Name, SortOrder::Ascending),
+        "not remembered"
+    );
+    settle(&rt, cx);
 }

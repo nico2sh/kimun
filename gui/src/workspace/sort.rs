@@ -6,8 +6,8 @@
 //!   already listed re-sort in place; a property sort reads its values from
 //!   the index off the UI thread and re-sorts when they land (newest key
 //!   wins, notes without the key last). It holds until FILES opens another
-//!   folder, which starts on its default; nothing is saved (decision 5:
-//!   "save as default" is M9's).
+//!   folder, which starts on its default, unless it is saved as the default
+//!   (below).
 //! - **FIND** and the **search browser**: the sort is the query's order
 //!   directive (`logic::sort::query_with_sort`), so a change rewrites the
 //!   query and runs it again. In FIND that is an edit like any other: a
@@ -27,22 +27,39 @@
 //! (loaded off the UI thread), or typed and confirmed with Enter. Escape or
 //! `Close` keep what was applied; the kit gives the keyboard back to the
 //! opener.
+//!
+//! **Save as default** (FILES only, the TUI's `s`): a checkbox, "Save as
+//! default for notes" or "…for the journal" after the folder shown
+//! (`FilesModel::is_current_journal`), ticked and cleared by click, Space on
+//! it, or `s` anywhere in the dialog but the Key field. Ticked, the `Close`
+//! button reads `Save`; pressing it (or Enter closing the Key field) is the
+//! confirm: the sort stays applied, and the field and order of that context
+//! (plus the grouping) are written with the shared candidate-then-apply
+//! seam (`reopen::write_settings`, off the UI thread). Only once the write
+//! lands do the shared settings and FILES' remembered default take it
+//! (later folder opens use it); a failed write is flashed and nothing is
+//! remembered. Escape, a click outside and the chord again never save. A
+//! property sort can't be a default (the TUI's rule): the box is disabled.
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{IndexPath, WindowExt as _};
+use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, rems,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity,
+    Window, div, rems,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::files::save_sort_default;
+use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::sort::{
     SortField, SortOrder, SortState, is_blank_property, order_of_query, property_key,
@@ -53,6 +70,8 @@ use kimun_notes::settings::themes::Theme;
 use super::Workspace;
 use super::key_suggestions::KeySuggestions;
 use super::modal::{self, ModalKind, Slot};
+use super::reopen;
+use crate::input;
 use crate::keymap;
 use crate::theme;
 
@@ -64,6 +83,7 @@ pub(crate) const SORT_KEY_ID: &str = "sort-key";
 pub(crate) const SORT_GROUP_ID: &str = "sort-group-dirs";
 pub(crate) const SORT_HINT_ID: &str = "sort-hint";
 pub(crate) const SORT_CLOSE_ID: &str = "sort-close";
+pub(crate) const SORT_SAVE_ID: &str = "sort-save-default";
 
 /// A known key suggested under the Key field.
 pub(crate) fn sort_suggestion_id(key: &str) -> SharedString {
@@ -81,7 +101,27 @@ const FIELDS: [&str; 3] = ["Name", "Title", "Property"];
 const ORDERS: [&str; 2] = ["Ascending ↑", "Descending ↓"];
 
 /// What FILES' dialog says about how long its sort holds.
-pub(crate) const FILES_HINT: &str = "Applies until FILES opens another folder. Not saved.";
+pub(crate) const FILES_HINT: &str = "Applies until FILES opens another folder.";
+/// What FILES' dialog says with "save as default" ticked.
+pub(crate) const FILES_SAVE_HINT: &str = "Save keeps it as the default. Esc closes without saving.";
+/// What FILES' dialog says on a property sort.
+pub(crate) const FILES_PROPERTY_HINT: &str =
+    "Applies until FILES opens another folder. A property sort can't be a default.";
+/// The checkbox, in the notes' context and in the journal's.
+pub(crate) const SAVE_NOTES_LABEL: &str = "Save as default for notes";
+pub(crate) const SAVE_JOURNAL_LABEL: &str = "Save as default for the journal";
+/// What the confirm button reads, plain and with the box ticked.
+pub(crate) const CLOSE_LABEL: &str = "Close";
+pub(crate) const SAVE_LABEL: &str = "Save";
+
+/// The checkbox's label for the `journal` context or the notes'.
+pub(crate) fn save_label(journal: bool) -> &'static str {
+    if journal {
+        SAVE_JOURNAL_LABEL
+    } else {
+        SAVE_NOTES_LABEL
+    }
+}
 /// What a query's dialog says about where its sort goes.
 pub(crate) const QUERY_HINT: &str = "Written into the query as its order.";
 
@@ -149,6 +189,12 @@ pub(crate) struct SortDialog {
     key: Entity<InputState>,
     known_keys: Vec<String>,
     suggestions: KeySuggestions,
+    /// FILES' "save as default": the context it saves to (`true`: the
+    /// journal's), taken when the dialog opened (FILES cannot move under a
+    /// modal). `None` for the query lists, which never save.
+    save_context: Option<bool>,
+    /// The "save as default" box is ticked.
+    save_default: bool,
     workspace: WeakEntity<Workspace>,
     _subscriptions: Vec<Subscription>,
 }
@@ -158,6 +204,7 @@ impl SortDialog {
         target: SortTarget,
         state: SortState,
         unsorted: bool,
+        save_context: Option<bool>,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -217,6 +264,8 @@ impl SortDialog {
             key,
             known_keys: Vec::new(),
             suggestions: KeySuggestions::default(),
+            save_context: save_context.filter(|_| target == SortTarget::Sidebar),
+            save_default: false,
             workspace,
             _subscriptions: subscriptions,
         }
@@ -238,6 +287,19 @@ impl SortDialog {
     #[cfg(test)]
     pub(crate) fn is_unsorted(&self) -> bool {
         self.unsorted
+    }
+
+    /// The "save as default" checkbox's label, when the dialog has one
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn save_default_label(&self) -> Option<&'static str> {
+        self.save_context.map(save_label)
+    }
+
+    /// Whether a confirm now saves the sort as the default (tests).
+    #[cfg(test)]
+    pub(crate) fn saves_default(&self) -> bool {
+        self.will_save()
     }
 
     /// The known keys suggested now (tests).
@@ -288,6 +350,9 @@ impl SortDialog {
         };
         self.sync_selects(window, cx);
         if matches!(self.state.field, SortField::Property(_)) {
+            // A property sort can't be a default: the tick goes with it,
+            // and doesn't come back on a later Name or Title.
+            self.save_default = false;
             self.key.update(cx, |input, cx| input.focus(window, cx));
         }
         self.emit(window, cx);
@@ -318,6 +383,42 @@ impl SortDialog {
         self.emit(window, cx);
     }
 
+    /// The sort can be saved as a default: FILES' dialog, not a property
+    /// sort.
+    fn can_save(&self) -> bool {
+        self.save_context.is_some() && !matches!(self.state.field, SortField::Property(_))
+    }
+
+    /// A confirm saves: the box is ticked and the sort can be a default.
+    fn will_save(&self) -> bool {
+        self.save_default && self.can_save()
+    }
+
+    /// The "save as default" box (a click, Space on it, `s`, or a test).
+    /// Nothing for the query lists or a property sort.
+    pub(crate) fn set_save_default(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !self.can_save() {
+            return;
+        }
+        self.save_default = on;
+        cx.notify();
+    }
+
+    /// `s` outside the Key field: tick or clear the box (the TUI's key).
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(KeyInput { key, mods }) = input::key_down_input(event) else {
+            return;
+        };
+        if mods.ctrl || mods.alt || mods.sup || mods.shift || key != Key::Char('s') {
+            return;
+        }
+        if !self.can_save() || self.key_focused(window, cx) {
+            return;
+        }
+        self.set_save_default(!self.save_default, cx);
+        cx.stop_propagation();
+    }
+
     /// Sort by the property `key` (a suggestion taken, or the typed key
     /// confirmed). A blank key does nothing.
     pub(crate) fn pick_key(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -332,6 +433,7 @@ impl SortDialog {
         }
         self.unsorted = false;
         self.state.field = SortField::Property(key);
+        self.save_default = false;
         self.refresh_suggestions(cx);
         self.emit(window, cx);
     }
@@ -368,7 +470,7 @@ impl SortDialog {
         if !typed.is_empty() && self.state.field != SortField::Property(typed.clone()) {
             self.pick_key(typed, window, cx);
         } else {
-            self.close(window, cx);
+            self.confirm(window, cx);
         }
     }
 
@@ -376,6 +478,24 @@ impl SortDialog {
         if let Some(key) = self.suggestions.get(ix).cloned() {
             self.pick_key(key, window, cx);
         }
+    }
+
+    /// The confirm (`Close` / `Save`, Enter closing the Key field): with
+    /// "save as default" ticked the sort is written as its context's
+    /// default; the dialog closes either way.
+    pub(crate) fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let save = self
+            .save_context
+            .filter(|_| self.will_save())
+            .map(|journal| (self.state.clone(), journal));
+        self.workspace
+            .update(cx, |workspace, cx| {
+                if let Some((state, journal)) = save {
+                    workspace.save_sort_default(state, journal, cx);
+                }
+                workspace.dismiss_sort(window, cx);
+            })
+            .ok();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -476,14 +596,45 @@ impl Render for SortDialog {
                 cx,
             )
         });
-        let hint = if self.target == SortTarget::Sidebar {
-            FILES_HINT
-        } else {
-            QUERY_HINT
+        let save_row = self.save_context.map(|journal| {
+            let this = cx.entity().downgrade();
+            let can_save = self.can_save();
+            let tip = if can_save {
+                "Keep this sort for every such folder (S)"
+            } else {
+                "A property sort can't be a default"
+            };
+            self.row(
+                "",
+                Checkbox::new(SORT_SAVE_ID)
+                    .label(save_label(journal))
+                    .checked(self.will_save())
+                    .disabled(!can_save)
+                    .tooltip(tip)
+                    .on_click(move |checked, _, cx| {
+                        let checked = *checked;
+                        this.update(cx, |dialog, cx| dialog.set_save_default(checked, cx))
+                            .ok();
+                    }),
+                cx,
+            )
+        });
+        let saving = self.will_save();
+        let hint = match self.target {
+            SortTarget::Sidebar if saving => FILES_SAVE_HINT,
+            SortTarget::Sidebar if !self.can_save() => FILES_PROPERTY_HINT,
+            SortTarget::Sidebar => FILES_HINT,
+            _ => QUERY_HINT,
         };
+        let confirm = Button::new(SORT_CLOSE_ID)
+            .small()
+            .label(if saving { SAVE_LABEL } else { CLOSE_LABEL })
+            .when(saving, |button| button.primary())
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.confirm(window, cx)));
         div()
             .id(SORT_DIALOG_ID)
             .test_support()
+            .on_key_down(cx.listener(Self::on_key))
             .flex()
             .flex_col()
             .gap_3()
@@ -508,6 +659,7 @@ impl Render for SortDialog {
             )
             .children(key_row)
             .children(group)
+            .children(save_row)
             .child(
                 div()
                     .flex()
@@ -526,9 +678,7 @@ impl Render for SortDialog {
                             .text_color(theme::muted(&t))
                             .child(hint),
                     )
-                    .child(Button::new(SORT_CLOSE_ID).small().label("Close").on_click(
-                        cx.listener(|this, _: &ClickEvent, window, cx| this.close(window, cx)),
-                    )),
+                    .child(confirm),
             )
     }
 }
@@ -634,9 +784,26 @@ impl Workspace {
         let Some((state, unsorted)) = self.sort_state_of(target, cx) else {
             return;
         };
+        // FILES' "save as default" saves to the context of the folder shown.
+        let save_context = match target {
+            SortTarget::Sidebar => self
+                .files
+                .as_ref()
+                .map(|files| files.read(cx).is_current_journal()),
+            _ => None,
+        };
         let workspace = cx.entity().downgrade();
-        let view =
-            cx.new(|cx| SortDialog::new(target, state, unsorted, workspace.clone(), window, cx));
+        let view = cx.new(|cx| {
+            SortDialog::new(
+                target,
+                state,
+                unsorted,
+                save_context,
+                workspace.clone(),
+                window,
+                cx,
+            )
+        });
         // The known keys, read off the UI thread.
         let keys = tokio::spawn(async move { vault.property_keys().await });
         let loading = view.downgrade();
@@ -735,6 +902,69 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// FILES' "save as default" confirmed: `state` as the default of its
+    /// context (`journal`), written with the shared candidate-then-apply
+    /// seam — the shared settings as they are when the write's turn comes,
+    /// plus this default, off the UI thread. Memory changes only once the
+    /// write landed ([`Self::sort_default_written`]). Must run with the
+    /// tokio runtime entered.
+    pub(crate) fn save_sort_default(
+        &mut self,
+        state: SortState,
+        journal: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(settings) = self.settings.clone() else {
+            return;
+        };
+        let written_state = state.clone();
+        let write = reopen::write_settings(self.store.clone(), move || {
+            let mut candidate = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+            save_sort_default(&mut candidate, &written_state, journal);
+            candidate
+        });
+        cx.spawn(async move |this, cx| {
+            let written = write.await;
+            this.update(cx, |workspace, cx| {
+                workspace.sort_default_written(state, journal, written, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The default's write landed. Written: the shared settings take it
+    /// (Preferences read them) and FILES remembers it for later folder
+    /// opens; the folder shown already has that sort. Failed: the sort
+    /// stays on the folder shown, nothing is remembered, a flash says so.
+    fn sort_default_written(
+        &mut self,
+        state: SortState,
+        journal: bool,
+        written: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = written {
+            tracing::warn!("could not save the sort default: {error}");
+            self.flash_error(format!("Couldn't save the sort default: {error}"), cx);
+            return;
+        }
+        if let Some(settings) = self.settings.as_ref() {
+            save_sort_default(
+                &mut settings.write().unwrap_or_else(|e| e.into_inner()),
+                &state,
+                journal,
+            );
+        }
+        if let Some(files) = self.files.as_ref() {
+            files.update(cx, |pane, _| {
+                pane.remember_default_for(journal, state.field.clone(), state.order)
+            });
+        }
+        let context = if journal { "the journal" } else { "notes" };
+        self.flash(format!("Sort saved as the default for {context}"), cx);
     }
 
     /// The sort dialog's view, while open (tests).

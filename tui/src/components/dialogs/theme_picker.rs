@@ -16,28 +16,13 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
-    Filter, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
+    Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
 use crate::logic::message::{AppMessage, AppTx};
-use crate::logic::preferences::ThemeChoices;
+use crate::logic::preferences::{ThemeChoices, ThemeRow};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-
-/// One picker row: a theme's name and its index into the resolved theme list.
-#[derive(Clone)]
-struct ThemeRow {
-    name: String,
-    index: usize,
-    /// The theme active when the picker opened.
-    current: bool,
-}
-
-impl ListRow for ThemeRow {
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.name)
-    }
-}
 
 impl SearchRow for ThemeRow {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
@@ -54,13 +39,13 @@ impl SearchRow for ThemeRow {
 
 pub struct ThemePickerDialog {
     /// Themes in presentation order, fully resolved once on open — applying
-    /// a selection never goes back to disk.
-    themes: Vec<Theme>,
+    /// a selection never goes back to disk — and the one to restore when
+    /// the picker is cancelled.
+    choices: ThemeChoices,
     list: SearchList<ThemeRow>,
-    /// Index of the theme to restore when the picker is cancelled.
-    original: usize,
-    /// Index of the theme currently applied as a preview.
-    previewed: usize,
+    /// Index of the theme previewed on the window; `None`: the one the
+    /// picker opened on (see [`ThemeChoices::preview_target`]).
+    previewed: Option<usize>,
     /// Dismiss-on-outside-press and hint-chip clicks (see [`ModalShell`]).
     shell: ModalShell,
     hints: HintRow,
@@ -69,26 +54,17 @@ pub struct ThemePickerDialog {
 impl ThemePickerDialog {
     pub fn new(settings: &AppSettings) -> Self {
         let choices = ThemeChoices::new(settings);
-        let rows: Vec<ThemeRow> = choices
-            .entries()
-            .map(|(index, name, current)| ThemeRow {
-                name: name.to_string(),
-                index,
-                current,
-            })
-            .collect();
-        let ThemeChoices { themes, original } = choices;
+        let rows = choices.rows();
         // Static, in-memory rows: built synchronously (the redraw callback is
         // never fired on this path).
         let mut list = SearchList::builder(StaticRowSource, Arc::new(|| {}))
             .filter(Filter::Fuzzy)
             .build_with_rows(rows);
-        list.select(original);
+        list.select(choices.original);
         Self {
-            themes,
+            choices,
             list,
-            original,
-            previewed: original,
+            previewed: None,
             shell: ModalShell::default(),
             hints: HintRow::new(&[
                 (KeyCode::Null, "type", "Filter"),
@@ -126,7 +102,7 @@ impl ThemePickerDialog {
     }
 
     fn apply(&self, index: usize, persist: bool, tx: &AppTx) {
-        if let Some(theme) = self.themes.get(index) {
+        if let Some(theme) = self.choices.themes.get(index) {
             tx.send(AppMessage::ApplyTheme {
                 theme: Box::new(theme.clone()),
                 persist,
@@ -140,11 +116,18 @@ impl ThemePickerDialog {
     /// the picker opened on, so the screen never shows a theme that isn't
     /// highlighted.
     fn sync_preview(&mut self, tx: &AppTx) {
-        let target = self.list.selected_row().map_or(self.original, |r| r.index);
+        let target = self.preview_target();
         if target != self.previewed {
             self.previewed = target;
-            self.apply(target, false, tx);
+            self.apply(target.unwrap_or(self.choices.original), false, tx);
         }
+    }
+
+    /// The theme the selection previews: the shared rule, so the window
+    /// never shows a theme that is not highlighted.
+    fn preview_target(&self) -> Option<usize> {
+        let selected = self.list.selected_row().map(|r| r.index);
+        self.choices.preview_target(selected)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
@@ -158,8 +141,8 @@ impl ThemePickerDialog {
                 }
             }
             KeyReaction::Cancel => {
-                if self.previewed != self.original {
-                    self.apply(self.original, false, tx);
+                if self.previewed.is_some() {
+                    self.apply(self.choices.original, false, tx);
                 }
                 tx.send(AppMessage::CloseOverlay).ok();
             }
@@ -171,7 +154,7 @@ impl ThemePickerDialog {
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         let width = 52u16.min(rect.width);
         // Border (2) + query row + hint row, plus one row per theme.
-        let height = (self.themes.len() as u16 + 4)
+        let height = (self.choices.themes.len() as u16 + 4)
             .min(rect.height.saturating_sub(4))
             .max(7);
         let area = super::fixed_centered_rect(width, height, rect);
@@ -313,7 +296,10 @@ mod tests {
             visible.contains(&"Flexoki Light".to_string()),
             "{visible:?}"
         );
-        assert!(visible.len() < picker.themes.len(), "list must be filtered");
+        assert!(
+            visible.len() < picker.choices.themes.len(),
+            "list must be filtered"
+        );
 
         picker.handle_key(KeyEvent::from(KeyCode::Enter), &tx);
         let mut last = None;

@@ -244,13 +244,10 @@ impl Workspaces {
 
 /// What a reindex is for, and what follows it.
 enum Job {
-    /// The current workspace's new folder: write `candidate` (the edit
-    /// applied), then the edit on the shared settings, then the window
-    /// enters the vault.
-    Move {
-        candidate: Box<AppSettings>,
-        edit: WorkspaceEdit,
-    },
+    /// The current workspace's new folder: write the edit applied to the
+    /// settings as they are then, then the edit on the shared settings,
+    /// then the window enters the vault.
+    Move { edit: WorkspaceEdit },
     /// A Save whose plan needs a reindex: write `after`, as a Save does.
     Save {
         after: Box<AppSettings>,
@@ -295,6 +292,16 @@ impl PreferencesView {
     /// settings in memory: nothing is read from disk).
     pub(crate) fn ws_rows(&self) -> Vec<WorkspaceRow> {
         workspace_rows(&self.settings.read().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// How many workspaces are listed, without building the rows.
+    fn ws_count(&self) -> usize {
+        self.settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .workspace_config
+            .as_ref()
+            .map_or(0, |c| c.workspaces.len())
     }
 
     fn ws_selected_row(&self) -> Option<WorkspaceRow> {
@@ -436,7 +443,7 @@ impl PreferencesView {
 
     /// Up / Down in the list (clamped).
     pub(crate) fn ws_move(&mut self, down: bool, cx: &mut Context<Self>) {
-        let count = self.ws_rows().len();
+        let count = self.ws_count();
         if count == 0 {
             return;
         }
@@ -451,7 +458,15 @@ impl PreferencesView {
 
     /// Select the row of workspace `name`, if listed.
     fn ws_select_name(&mut self, name: &str) {
-        if let Some(ix) = self.ws_rows().iter().position(|r| r.name == name) {
+        // The list is the config's map, sorted by name (`workspace_rows`).
+        let ix = {
+            let settings = self.settings.read().unwrap_or_else(|e| e.into_inner());
+            settings
+                .workspace_config
+                .as_ref()
+                .and_then(|c| c.workspaces.keys().position(|k| k == name))
+        };
+        if let Some(ix) = ix {
             self.ws.selected = ix;
         }
     }
@@ -520,7 +535,7 @@ impl PreferencesView {
         if self.busy() {
             return;
         }
-        let first = self.ws_rows().is_empty();
+        let first = self.ws_count() == 0;
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Workspace name"));
         if first {
             input.update(cx, |i, cx| i.set_value(FIRST_WORKSPACE_NAME, window, cx));
@@ -680,6 +695,17 @@ impl PreferencesView {
     /// Make the folder when needed (through core), then register the
     /// workspace ([`Self::commit_edit`]).
     fn create(&mut self, name: String, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // Refused (a duplicate name, say) before anything is made on disk,
+        // so a refusal leaves no stray folder behind.
+        let mut dry_run = self.initial();
+        let edit = WorkspaceEdit::Add {
+            name: name.clone(),
+            path: path.clone(),
+        };
+        if let Err(e) = edit.apply(&mut dry_run) {
+            self.edit_refused(e.to_string(), cx);
+            return;
+        }
         self.ws.message = None;
         self.ws.task = Some(cx.spawn_in(window, async move |this, cx| {
             let made = blocking(move || prefs::prepare_workspace_folder(&path))
@@ -784,7 +810,10 @@ impl PreferencesView {
         let Some(row) = self.ws_selected_row() else {
             return;
         };
-        let Some(start) = Self::chooser_start(Some(&row.path), false) else {
+        // The resolved folder: the as-written path (`~/notes`, a relative
+        // one) is not absolute, and would start the chooser at home.
+        let folder = PathBuf::from(&row.folder);
+        let Some(start) = Self::chooser_start(Some(&folder), false) else {
             return;
         };
         let chooser = self.open_chooser(start, window, cx);
@@ -843,10 +872,7 @@ impl PreferencesView {
             return;
         };
         self.run_reindex(
-            Job::Move {
-                candidate: Box::new(candidate),
-                edit,
-            },
+            Job::Move { edit },
             workspace,
             cache,
             window,
@@ -909,7 +935,16 @@ impl PreferencesView {
             }
             Ok(_) => {}
         }
-        let write = reopen::write_settings(self.store.clone(), move || candidate);
+        // The snapshot is taken when the write's turn comes, not now: a
+        // write queued meanwhile (theme, sort default) must not be undone.
+        let settings = self.settings.clone();
+        let applied = edit.clone();
+        let write = reopen::write_settings(self.store.clone(), move || {
+            let mut latest = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+            // Refused now: `edit_written` shows it; nothing to change on disk.
+            let _ = applied.apply(&mut latest);
+            latest
+        });
         self.ws.message = None;
         self.ws.task = Some(cx.spawn_in(window, async move |this, cx| {
             let written = write.await;
@@ -972,7 +1007,7 @@ impl PreferencesView {
         };
         match edit {
             WorkspaceEdit::Add { name, .. } => {
-                let name = name.trim().to_lowercase();
+                let name = out.name.unwrap_or(name);
                 self.ws_select_name(&name);
                 self.ws.message = Some(Notice::info(format!("Workspace '{name}' created.")));
                 if out.current {
@@ -982,7 +1017,7 @@ impl PreferencesView {
                 }
             }
             WorkspaceEdit::Rename { new, .. } => {
-                let name = new.trim().to_lowercase();
+                let name = out.name.unwrap_or(new);
                 self.ws_select_name(&name);
                 self.ws.message = Some(Notice::info(format!("Renamed to '{name}'.")));
                 if out.current {
@@ -1191,10 +1226,17 @@ impl PreferencesView {
                 window.focus(&self.sections_focus, cx);
                 cx.emit(PreferencesEvent::Reindexed);
             }
-            Job::Move { candidate, edit } => {
-                let mut candidate = *candidate;
-                candidate.report_indexed();
-                let write = reopen::write_settings(self.store.clone(), move || candidate);
+            Job::Move { edit } => {
+                // As in `commit_edit`: the shared settings when the write's
+                // turn comes, not a copy from before a long reindex.
+                let settings = self.settings.clone();
+                let applied = edit.clone();
+                let write = reopen::write_settings(self.store.clone(), move || {
+                    let mut latest = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+                    let _ = applied.apply(&mut latest);
+                    latest.report_indexed();
+                    latest
+                });
                 let task = cx.spawn_in(window, async move |this, cx| {
                     let written = write.await;
                     this.update_in(cx, |view, window, cx| {

@@ -358,7 +358,8 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     // above: checked `primary` with its mark `primary_foreground`, unchecked
     // `input` (border and fill), the label `foreground`, a disabled label
     // `muted_foreground`, and the focus `ring`.
-    // The kit Checkbox (Preferences' update check) reads the same roles:
+    // The kit Checkbox (Preferences' update check, the sort dialog's "save
+    // as default") reads the same roles:
     // checked `primary` with its tick `primary_foreground`, unchecked the
     // `input` border on `input_background()` (derived from `input` and
     // `background`), the label `foreground`, a disabled label
@@ -656,7 +657,8 @@ mod tests {
             assert_eq!(kit.primary_foreground, hsla(background(&t)));
             assert_eq!(kit.input, hsla(divider(&t)));
             assert_eq!(kit.muted_foreground, hsla(muted(&t)));
-            // The Checkbox (Preferences' update check): checked fill and
+            // The Checkbox (Preferences' update check, the sort dialog's
+            // "save as default"): checked fill and
             // its tick, the unchecked box (border `input`, fill derived
             // from `input` / `background`), the label and a disabled one.
             assert_eq!(kit.primary, hsla(focus_border(&t)));

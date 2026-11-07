@@ -51,7 +51,7 @@ use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::Saved;
-use kimun_notes::logic::sort::SortState;
+use kimun_notes::logic::sort::{SortField, SortOrder, SortState};
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
@@ -156,6 +156,25 @@ impl FilesPane {
         self.model.set_sort_defaults(settings);
         self.reveal_selection();
         cx.notify();
+    }
+
+    /// The folder shown is the journal (its sort default is the
+    /// journal's): `FilesModel::is_current_journal`.
+    pub(crate) fn is_current_journal(&self) -> bool {
+        self.model.is_current_journal()
+    }
+
+    /// The sort dialog's "save as default" was written: folders of the
+    /// `journal` context (the journal, or every other folder) open on
+    /// `field` / `order` from now on. The listing shown is left as it is
+    /// (it already shows that sort). See `FilesModel::remember_default_for`.
+    pub(crate) fn remember_default_for(
+        &mut self,
+        journal: bool,
+        field: SortField,
+        order: SortOrder,
+    ) {
+        self.model.remember_default_for(journal, field, order);
     }
 }
 

@@ -676,11 +676,18 @@ impl std::fmt::Display for WorkspaceError {
 
 impl std::error::Error for WorkspaceError {}
 
+/// A typed workspace name as the config keys it: trimmed, lowercased. The
+/// only place that spelling lives; validation is
+/// [`normalize_workspace_name`].
+fn workspace_key(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
 /// The one rule every workspace name goes through (add, rename, the name
 /// check before a folder is picked): trimmed, not empty, lowercased, valid on
 /// every filesystem, not taken by another workspace.
 fn normalize_workspace_name(s: &AppSettings, raw: &str) -> Result<String, WorkspaceError> {
-    let name = raw.trim().to_lowercase();
+    let name = workspace_key(raw);
     if name.is_empty() {
         return Err(WorkspaceError::EmptyName);
     }
@@ -731,7 +738,7 @@ pub fn rename_workspace(
     old: &str,
     raw_new: &str,
 ) -> Result<bool, WorkspaceError> {
-    if raw_new.trim().is_empty() || raw_new.trim().to_lowercase() == old {
+    if raw_new.trim().is_empty() || workspace_key(raw_new) == old {
         return Ok(false);
     }
     if s.workspace_config.is_none() {
@@ -830,6 +837,9 @@ pub struct EditOutcome {
     /// The workspace's folder changed ([`SetPath`](WorkspaceEdit::SetPath)):
     /// its index must be built again.
     pub moved: bool,
+    /// The key an [`Add`](WorkspaceEdit::Add) registered or a
+    /// [`Rename`](WorkspaceEdit::Rename) gave, as the config spells it.
+    pub name: Option<String>,
     /// A deleted workspace's index and history, to remove outside the lock
     /// ([`remove_workspace_artifacts`]).
     pub artifacts: Option<(IndexFile, HistoryFile)>,
@@ -845,11 +855,12 @@ impl WorkspaceEdit {
             WorkspaceEdit::Add { name, path } => {
                 let had_vault = has_vault(s);
                 add_workspace(s, name, path.clone())?;
-                let name = name.trim().to_lowercase();
+                let name = workspace_key(name);
                 Ok(EditOutcome {
                     changed: true,
                     current: !had_vault
                         && s.current_workspace_name().as_deref() == Some(name.as_str()),
+                    name: Some(name),
                     ..EditOutcome::default()
                 })
             }
@@ -861,6 +872,7 @@ impl WorkspaceEdit {
                 Ok(EditOutcome {
                     changed: renamed,
                     current: is_current(old),
+                    name: Some(workspace_key(new)),
                     ..EditOutcome::default()
                 })
             }
