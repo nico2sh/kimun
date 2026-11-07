@@ -74,8 +74,8 @@ impl Started {
             .unwrap_or_else(|| panic!("no {label} row"))
     }
 
-    /// The view's root and its two launchers.
-    fn cf_handles(&self, cx: &TestAppContext) -> [FocusHandle; 3] {
+    /// The view's root and its three launchers.
+    fn cf_handles(&self, cx: &TestAppContext) -> [FocusHandle; 4] {
         cx.read(|cx| self.workspace.read(cx).config.read(cx).handles())
     }
 
@@ -346,6 +346,10 @@ fn the_launchers_follow_the_view_in_the_focus_order(cx: &mut TestAppContext) {
     assert!(s.cf_focused(1, cx), "Theme… is next");
     s.cf_press("tab", cx);
     assert!(s.cf_focused(2, cx), "then Preferences…");
+    s.cf_press("tab", cx);
+    assert!(s.cf_focused(3, cx), "then Keyboard shortcuts…");
+    s.cf_press("shift-tab", cx);
+    assert!(s.cf_focused(2, cx));
     s.cf_press("enter", cx);
     assert!(
         s.shows(PREFERENCES_ID, cx),

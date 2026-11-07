@@ -115,8 +115,8 @@ impl Scope {
 }
 
 /// The default chords for `action`, written with `primary`; `None` marks an
-/// action the GUI deliberately ships unbound (so far: not built yet, or only
-/// reachable through the palette and the rail). The match has no wildcard: a
+/// action the GUI deliberately ships unbound (its surface is reached another
+/// way: the leader, the palette, the rail). The match has no wildcard: a
 /// new shared action does not compile until it is given chords or marked.
 fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'static [&'static str]> {
     use ActionShortcuts as A;
@@ -235,7 +235,13 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // platform's settings chord). Everywhere; no editor or vim key is F4,
         // and vim reads no Ctrl+, (no letter: no twin).
         A::OpenPreferences => &["f4", "primary+,"],
-        // Not in the GUI yet.
+        // The keyboard reference (M10d): the TUI's F1 help, the desktop's
+        // help key. Everywhere, on both platforms; no editor or vim key is
+        // F1. Where F1 already means the query syntax (the search browser,
+        // FIND with the keyboard) that stays: the workspace hands it on there.
+        A::KeyboardHelp => &["f1"],
+        // The TUI's FIND toggle: here FIND is a drawer view, shown from the
+        // rail, the leader (`o q`) and the palette. Nothing acts on it.
         A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
@@ -270,7 +276,8 @@ impl fmt::Display for ChordError {
 }
 
 /// An override the loader rejected. Reported, never fatal: the rest of the
-/// keymap loads (ADR-0050 §6, shown in Preferences > Keyboard).
+/// keymap loads (ADR-0050 §6). Logged at startup; the F1 reference shows the
+/// keymap that did load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeymapError {
     /// `[gui.keys]` names no action.
@@ -532,6 +539,23 @@ impl Keymap {
             .any(|b| b.chord == chord && b.action == *action)
     }
 
+    /// Whether the desktop app ships `action` with a chord on this
+    /// platform: an action it could bind, so one without chords was unbound
+    /// by a `[gui.keys]` override.
+    pub fn ships_bound(&self, action: &ActionShortcuts) -> bool {
+        default_chords(action, self.platform).is_some()
+    }
+
+    /// Whether the vim rule takes `chord` from `action` while the vim editor
+    /// has the keyboard: a Ctrl+letter the engine reads, on Linux and
+    /// Windows, for an action live in the editor. Elsewhere the chord stays
+    /// the action's (a keyboard reference says so next to it).
+    pub fn vim_shadows(&self, action: &ActionShortcuts, chord: KeyInput) -> bool {
+        self.platform == Platform::LinuxWindows
+            && is_vim_ctrl_chord(chord)
+            && Scope::of(action).applies(Panel::Editor)
+    }
+
     /// Whether any action holds `chord`, in any context: a window-level key
     /// outside the shared vocabulary (F11's fullscreen) only acts on a chord
     /// no action — default or `[gui.keys]` override — has taken.
@@ -591,12 +615,15 @@ pub fn active(cx: &App) -> Rc<Keymap> {
         .expect("keymap::init must run before any view resolves a key")
 }
 
+/// `key` written the platform's way (`Ctrl+Shift+B`, `⌘⇧B`).
+pub(crate) fn format_chord(key: KeyInput) -> String {
+    Kbd::format(&crate::input::keystroke(key))
+}
+
 /// The chord the active keymap binds `action` to, written the platform's
 /// way (`Ctrl+Shift+B`, `⌘⇧B`), for a hint. `None` when unbound.
 pub(crate) fn chord_label(cx: &App, action: &ActionShortcuts) -> Option<String> {
-    active(cx)
-        .chord_for(action)
-        .map(|key| Kbd::format(&crate::input::keystroke(key)))
+    active(cx).chord_for(action).map(format_chord)
 }
 
 /// Every chord the active keymap binds `action` to, each written the
@@ -605,7 +632,7 @@ pub(crate) fn chord_labels(cx: &App, action: &ActionShortcuts) -> Vec<String> {
     active(cx)
         .chords_for(action)
         .into_iter()
-        .map(|key| Kbd::format(&crate::input::keystroke(key)))
+        .map(format_chord)
         .collect()
 }
 

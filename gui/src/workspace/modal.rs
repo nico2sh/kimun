@@ -45,8 +45,8 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use super::Workspace;
 use crate::input;
 
-/// The search browser's query-syntax key.
-const QUERY_HELP_KEY: KeyInput = KeyInput {
+/// The search browser's and FIND's query-syntax key.
+pub(super) const QUERY_HELP_KEY: KeyInput = KeyInput {
     key: Key::F(1),
     mods: Mods::NONE,
 };
@@ -121,6 +121,8 @@ pub(crate) enum ModalKind {
     ThemePicker,
     /// The update dialog (the update toast's `View`, the palette).
     Update,
+    /// The keyboard reference (F1, leader `?`, the palette, the CFG view).
+    KeyboardHelp,
 }
 
 /// Where [`Workspace::show_modal`] puts a dialog.
@@ -145,6 +147,7 @@ impl ModalKind {
             Self::Search => Some(ActionShortcuts::SearchNotes),
             Self::SavedSearches => Some(ActionShortcuts::OpenSavedSearches),
             Self::WorkspaceSwitcher => Some(ActionShortcuts::SwitchWorkspace),
+            Self::KeyboardHelp => Some(ActionShortcuts::KeyboardHelp),
             _ => None,
         }
     }
@@ -282,6 +285,7 @@ impl Workspace {
         self.switcher = None;
         self.forget_theme_picker(cx);
         self.forget_update_dialog();
+        self.keyboard_help = None;
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -371,8 +375,10 @@ impl Workspace {
                 self.close_by_chord(open, window, cx);
                 true
             }
-            // F1 in the browser: its query syntax (once).
-            (ModalKind::Search, None) if key == QUERY_HELP_KEY => {
+            // F1 in the browser: its query syntax (once), not the keyboard
+            // reference F1 is bound to elsewhere. A rebound F1 stays the
+            // user's.
+            (ModalKind::Search, None | Some(ActionShortcuts::KeyboardHelp)) if key == QUERY_HELP_KEY => {
                 self.open_query_help(window, cx);
                 true
             }

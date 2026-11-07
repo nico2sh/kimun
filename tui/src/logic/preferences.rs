@@ -549,9 +549,13 @@ impl PreferencesModel {
     /// Whether the draft differs from `initial` (the settings it was built
     /// from) in any setting [`PreferencesModel::apply`] writes. Workspace
     /// edits are not part of the draft: compare the settings they were made
-    /// on for those.
+    /// on for those. The theme counts as changed only when the selected
+    /// theme is another than the one `initial`'s name resolves to
+    /// ([`resolve_theme`]): with no theme configured (or one that is
+    /// missing), picking a theme and going back to the one in effect is
+    /// clean.
     pub fn dirty(&self, initial: &AppSettings) -> bool {
-        self.theme_name != initial.theme
+        self.theme_changed(initial)
             || self.use_nerd_fonts != initial.use_nerd_fonts
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
@@ -563,6 +567,21 @@ impl PreferencesModel {
             || self.autosave_interval_secs != initial.autosave_interval_secs
             || self.editor_backend != initial.editor_backend
             || self.server_url != configured_server_url(initial)
+    }
+
+    /// Whether the draft's theme is another than the one in effect for
+    /// `initial`: the names differ and so do the themes they resolve to.
+    fn theme_changed(&self, initial: &AppSettings) -> bool {
+        // Names only: no theme is cloned for the comparison (this runs on
+        // every Preferences render).
+        let resolved = |configured: &str| -> std::borrow::Cow<'_, str> {
+            match self.themes.iter().find(|t| t.name == configured) {
+                Some(t) => std::borrow::Cow::Borrowed(t.name.as_str()),
+                None => std::borrow::Cow::Owned(Theme::default().name),
+            }
+        };
+        self.theme_name != initial.theme
+            && resolved(&self.theme_name) != resolved(&initial.theme)
     }
 
     /// Write the Appearance draft: the theme name, only when it differs.

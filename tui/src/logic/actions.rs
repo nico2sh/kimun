@@ -86,12 +86,34 @@ pub enum ActionShortcuts {
     MoveViewUp,
     /// Swap the focused drawer view with the slot below it in a split drawer.
     MoveViewDown,
+    /// The keyboard reference: every chord and leader sequence in effect
+    /// (F1 in the desktop app). The TUI binds no chord to it: its F1 help is
+    /// built in.
+    KeyboardHelp,
+}
+
+/// Where an action is listed in a keyboard reference (the desktop app's F1
+/// dialog), next to the action definitions so a new action cannot go
+/// ungrouped: [`ActionShortcuts::group`] has no wildcard. The order is the
+/// reference's heading order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ActionGroup {
+    /// Drawers, focus and the arrangement of drawer views.
+    WindowAndPanels,
+    /// What acts on the note being edited.
+    Editor,
+    /// Opening, creating and managing notes and their lists.
+    FilesAndNotes,
+    /// Searching, saved queries and Ask.
+    SearchAndAsk,
+    /// The app itself: preferences, workspaces, the palette, quitting.
+    Other,
 }
 
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 48] = [
+    pub const ALL: [ActionShortcuts; 49] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -140,7 +162,46 @@ impl ActionShortcuts {
         ActionShortcuts::SaveNote,
         ActionShortcuts::MoveViewUp,
         ActionShortcuts::MoveViewDown,
+        ActionShortcuts::KeyboardHelp,
     ];
+
+    /// The heading `self` is listed under in a keyboard reference.
+    pub fn group(&self) -> ActionGroup {
+        use ActionShortcuts as A;
+        match self {
+            A::ToggleSidebar
+            | A::ToggleRightDrawer
+            | A::ToggleQueryPanel
+            | A::FocusEditor
+            | A::FocusSidebar
+            | A::FocusRegion(_)
+            | A::MoveViewToLeftDrawer
+            | A::MoveViewToRightDrawer
+            | A::MoveViewUp
+            | A::MoveViewDown
+            | A::SplitDrawerSlot
+            | A::UnsplitDrawerSlot => ActionGroup::WindowAndPanels,
+            A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
+                ActionGroup::Editor
+            }
+            A::OpenNote
+            | A::NewJournal
+            | A::QuickNote
+            | A::FileOperations
+            | A::OpenFileBrowser
+            | A::OpenSortDialog
+            | A::YankRow => ActionGroup::FilesAndNotes,
+            A::SearchNotes | A::OpenSavedSearches | A::SaveCurrentQuery | A::OpenAsk => {
+                ActionGroup::SearchAndAsk
+            }
+            A::Quit
+            | A::OpenPreferences
+            | A::SwitchWorkspace
+            | A::OpenCommandPalette
+            | A::Leader
+            | A::KeyboardHelp => ActionGroup::Other,
+        }
+    }
 
     /// The layout direction a `FocusRegion` action moves focus in.
     pub fn focus_dir(&self) -> Option<Dir> {
@@ -190,6 +251,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SaveNote => "SaveNote".to_string(),
             ActionShortcuts::MoveViewUp => "MoveViewUp".to_string(),
             ActionShortcuts::MoveViewDown => "MoveViewDown".to_string(),
+            ActionShortcuts::KeyboardHelp => "KeyboardHelp".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -243,6 +305,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SaveNote" => ActionShortcuts::SaveNote,
             "MoveViewUp" => ActionShortcuts::MoveViewUp,
             "MoveViewDown" => ActionShortcuts::MoveViewDown,
+            "KeyboardHelp" => ActionShortcuts::KeyboardHelp,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -306,9 +369,10 @@ mod tests {
             ActionShortcuts::SaveNote => 30,
             ActionShortcuts::MoveViewUp => 31,
             ActionShortcuts::MoveViewDown => 32,
+            ActionShortcuts::KeyboardHelp => 33,
         }
     }
-    const VARIANTS: usize = 33;
+    const VARIANTS: usize = 34;
 
     #[test]
     fn all_lists_every_variant() {
@@ -385,7 +449,8 @@ mod tests {
     }
 
     /// The slot-swap actions keep their on-disk names (GUI keymaps write
-    /// them) and come last, so the serialized keymap's order is unchanged.
+    /// them) and stay after every older action, so the serialized keymap's
+    /// order is unchanged.
     #[test]
     fn move_view_up_down_names() {
         for (action, name) in [
@@ -395,10 +460,48 @@ mod tests {
             assert_eq!(action.to_string(), name);
             assert_eq!(ActionShortcuts::try_from(name.to_string()), Ok(action));
         }
+        let n = ActionShortcuts::ALL.len();
+        assert_eq!(
+            ActionShortcuts::ALL[n - 2..],
+            [ActionShortcuts::MoveViewDown, ActionShortcuts::KeyboardHelp]
+        );
+    }
+
+    /// `KeyboardHelp`'s on-disk name is permanent (`[gui.keys]` writes it),
+    /// and it comes last, so the serialized keymap's order is unchanged.
+    #[test]
+    fn keyboard_help_name() {
+        assert_eq!(ActionShortcuts::KeyboardHelp.to_string(), "KeyboardHelp");
+        assert_eq!(
+            ActionShortcuts::try_from("KeyboardHelp".to_string()),
+            Ok(ActionShortcuts::KeyboardHelp)
+        );
         assert_eq!(
             ActionShortcuts::ALL.last(),
-            Some(&ActionShortcuts::MoveViewDown)
+            Some(&ActionShortcuts::KeyboardHelp)
         );
+    }
+
+    /// Every heading holds at least one action, and the headings keep the
+    /// reference's order.
+    #[test]
+    fn every_group_holds_an_action() {
+        for group in [
+            ActionGroup::WindowAndPanels,
+            ActionGroup::Editor,
+            ActionGroup::FilesAndNotes,
+            ActionGroup::SearchAndAsk,
+            ActionGroup::Other,
+        ] {
+            assert!(
+                ActionShortcuts::ALL.iter().any(|a| a.group() == group),
+                "{group:?} is empty"
+            );
+        }
+        assert!(ActionGroup::WindowAndPanels < ActionGroup::Editor);
+        assert!(ActionGroup::SearchAndAsk < ActionGroup::Other);
+        assert_eq!(ActionShortcuts::KeyboardHelp.group(), ActionGroup::Other);
+        assert_eq!(ActionShortcuts::FindInBuffer.group(), ActionGroup::Editor);
     }
 
     #[test]

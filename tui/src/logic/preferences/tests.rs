@@ -334,6 +334,33 @@ fn with_theme_changes_the_theme_only() {
 
 // ── dirty / apply ────────────────────────────────────────────────────────────
 
+/// With no theme configured (or a missing one), picking another theme is
+/// dirty and going back to the one in effect (the resolved default) is
+/// clean again; a configured theme left as it is stays clean.
+#[test]
+fn an_unset_theme_is_clean_again_once_the_effective_theme_is_back() {
+    for configured in ["", "No Such Theme"] {
+        let s = settings_with(|s| s.theme = configured.to_string());
+        let mut m = PreferencesModel::new(&s);
+        let effective = m.theme_idx;
+        assert_eq!(m.selected_theme().name, Theme::default().name);
+        let other = (effective + 1) % m.themes.len();
+        m.select_theme(other);
+        assert!(m.dirty(&s), "{configured:?}: another theme is a change");
+        m.select_theme(effective);
+        assert_eq!(m.theme_name, Theme::default().name);
+        assert!(!m.dirty(&s), "{configured:?}: back on the effective theme");
+    }
+    let s = settings_with(|s| s.theme = "Gruvbox Light".to_string());
+    let mut m = PreferencesModel::new(&s);
+    assert!(!m.dirty(&s));
+    let at = m.theme_idx;
+    m.select_theme((at + 1) % m.themes.len());
+    assert!(m.dirty(&s));
+    m.select_theme(at);
+    assert!(!m.dirty(&s), "a set theme picked back is clean");
+}
+
 #[test]
 fn dirty_tracks_each_field() {
     let s = with_workspaces(&["main"], "main");

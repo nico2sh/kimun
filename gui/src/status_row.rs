@@ -77,7 +77,8 @@ pub(crate) struct Status {
     /// The vault's index is being brought up to date.
     pub(crate) indexing: bool,
     /// Notes must not be written (the vault has names that differ only by
-    /// case; until M8/M9 give that a screen). Saves honour it.
+    /// case; Preferences > Workspaces says so and offers a way out). Saves
+    /// honour it.
     pub(crate) read_only: bool,
     /// The kimün server's state as the TUI's footer words it
     /// (`RagStatus::label`: "rag: online", …); `None` with no server

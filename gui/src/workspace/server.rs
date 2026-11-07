@@ -15,8 +15,10 @@
 //! sync with the vault it leaves and resets the status to `Disabled`; the
 //! entry into the new vault starts [`Workspace::start_rag_sync`] again.
 //!
-//! **Not handled here.** `AppMessage::ServerUpdate` (the server's update
-//! notice) waits for M10's update surfaces; the window ignores it.
+//! **Not handled here.** `AppMessage::ServerUpdate` (the server's own update
+//! notice, the TUI's footer hint and its dialog) has no surface in the
+//! desktop app: the window ignores it. The app's update flow is
+//! [`update`](super::update)'s.
 //!
 //! [`TaskSlot`]: kimun_notes::logic::task_slot::TaskSlot
 

@@ -162,6 +162,12 @@
 //! under the native traffic lights. It tops every view, takeovers included,
 //! names the workspace, drags, maximizes and closes the window, closing
 //! through the close guard; F11 toggles fullscreen ([`titlebar`]).
+//!
+//! **The keyboard reference (M10d).** F1 (`KeyboardHelp`), leader `?`, the
+//! palette and the CFG view list every chord of the active keymap under its
+//! heading and every leader sequence, filtered as you type; it runs nothing
+//! ([`keyboard_help`]). Where F1 already means the query syntax (FIND with
+//! the keyboard, the search browser) it keeps meaning that.
 
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
@@ -596,6 +602,8 @@ pub(crate) struct Workspace {
     _config_events: Subscription,
     /// The theme picker, while open ([`theme_picker`]).
     pub(crate) theme_picker: Option<theme_picker::ThemePickerOpen>,
+    /// The keyboard reference, while open ([`keyboard_help`]).
+    pub(crate) keyboard_help: Option<WeakEntity<keyboard_help::KeyboardHelp>>,
     /// The window's title bar and its title ([`titlebar`]).
     pub(crate) titlebar: titlebar::TitleBar,
     /// The update flow: its checks, its dialog, an install ([`update`]).
@@ -778,6 +786,7 @@ impl Workspace {
             config,
             _config_events: config_events,
             theme_picker: None,
+            keyboard_help: None,
             titlebar: titlebar::TitleBar::new(),
             updates: update::UpdateHost::new(update::default_backend()),
         }
@@ -1080,7 +1089,8 @@ impl Workspace {
             AppMessage::RagStatus(status) => self.on_rag_status(status, cx),
             // An answer for the Thread ([`ask`]).
             AppMessage::Ask(data) => self.ask_data(data, cx),
-            // The server's update notice: M10's update surfaces.
+            // The server's own update notice (the TUI's footer hint): no
+            // surface here ([`server`]).
             AppMessage::ServerUpdate(_) => {}
             // The configured workspace may have changed (the TUI rebuilds
             // the vault on these): enter it again ([`reopen`]).
@@ -1380,8 +1390,8 @@ impl Workspace {
 
     /// Where the keyboard goes in `view`'s slot: FILES' and TAGS' filters,
     /// so typing filters; FIND's query field; LINKS' and OUTLINE's lists;
-    /// the CFG view itself; the slot itself for a view not built yet (no
-    /// vault).
+    /// the CFG view itself; the slot itself for a view that needs a
+    /// workspace while none is open.
     fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
         let handle = match view {
             DrawerView::Files => self.files.as_ref().map(|v| v.read(cx).focus_handle(cx)),
@@ -1913,6 +1923,23 @@ impl Workspace {
                 window,
                 cx,
             ),
+            // The keyboard reference (M10d), in every window state. FIND's
+            // own F1 (the query syntax) wins while FIND has the keyboard, as
+            // in the TUI: the key goes on to it.
+            ActionShortcuts::KeyboardHelp => {
+                if key == Some(modal::QUERY_HELP_KEY)
+                    && matches!(self.layout.focused(), Panel::Drawer(_))
+                    && self.focused_view() == Some(DrawerView::Find)
+                {
+                    return false;
+                }
+                self.toggle_modal(
+                    ModalKind::KeyboardHelp,
+                    Self::open_keyboard_help,
+                    window,
+                    cx,
+                )
+            }
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
@@ -2186,7 +2213,8 @@ impl Workspace {
     }
 
     /// Slot `index` of `side`'s drawer, showing `view`: its title over the
-    /// view (FILES, or the placeholder of a view not built yet). `share` is
+    /// view (FILES, or, for a view that needs a workspace while none is
+    /// open, a line saying so). `share` is
     /// the first slot's part of a split drawer's height; that slot also
     /// carries the divider between the two.
     fn render_slot(
@@ -2227,12 +2255,13 @@ impl Workspace {
             )
             .map(|slot| match self.view_content(view) {
                 Some(content) => slot.child(content),
+                // Every view is built; one without content needs a vault.
                 None => slot.child(
                     div()
                         .px_3()
                         .text_sm()
                         .text_color(theme::muted(&theme::current(cx)))
-                        .child("Coming soon"),
+                        .child(route::NO_WORKSPACE),
                 ),
             })
             .children(self.focus_bar(region, cx))
@@ -2729,6 +2758,7 @@ mod find;
 mod folder_chooser;
 mod follow;
 mod key_suggestions;
+mod keyboard_help;
 mod leader;
 mod links;
 mod modal;
@@ -2777,6 +2807,8 @@ mod find_tests;
 mod follow_tests;
 #[cfg(test)]
 mod footer_tests;
+#[cfg(test)]
+mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
 #[cfg(test)]

@@ -29,7 +29,8 @@ use tokio::runtime::Runtime;
 use super::folder_chooser::{FolderChooser, Listing};
 use super::onboarding::{
     BACK_ID, CANCEL_ID, CHOOSE_FOLDER_FIRST, CHOOSE_FOLDER_ID, CONFIRM_NO_ID, Confirm, LOGO_ID,
-    NEXT_ID, ONBOARDING_ID, OnboardingView, chooser_row_id,
+    NEXT_ID, ONBOARDING_ID, OnboardingView, WORDMARK, WORDMARK_ID, WORDMARK_U_ID, bounce_offset,
+    chooser_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -412,6 +413,105 @@ fn only_welcome_draws_the_logo(cx: &mut TestAppContext) {
         s.ob_shows_id(LOGO_ID, cx),
         "back on Welcome, the logo again"
     );
+}
+
+/// The wordmark under the logo: its accessible name the whole word, and
+/// the frame that draws it.
+fn wordmark(
+    s: &Started,
+    cx: &mut TestAppContext,
+) -> (Option<String>, gpui_kit::Bounds<gpui_kit::Pixels>) {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let e = window.find(WORDMARK_ID);
+        (e.label().map(str::to_owned), e.bounds())
+    })
+    .unwrap()
+}
+
+/// Whether Welcome asks for another frame now: the ü's spring is running.
+fn bounces(s: &Started, cx: &mut TestAppContext) -> bool {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx)
+    })
+    .unwrap()
+        > 0
+}
+
+/// "Kimün" reads as one word, and its ü keeps bouncing while Welcome
+/// shows: its line box holds while it moves, and it keeps asking for
+/// frames (it loops). The test platform draws a frame only when asked and
+/// its clock only moves when advanced, so nothing runs on its own.
+#[gpui_kit::test]
+fn the_wordmark_keeps_bouncing_and_keeps_its_place(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let f = fresh();
+    let s = first_run(cx, &rt, &f);
+    assert!(!cx.read(|cx| cx.reduce_motion()), "motion is on by default");
+    assert!(bounces(&s, cx));
+    let (label, at_rest) = wordmark(&s, cx);
+    assert_eq!(label.as_deref(), Some(WORDMARK));
+    assert_eq!(WORDMARK, "Kimün");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(90));
+    assert_eq!(wordmark(&s, cx).1, at_rest, "the line box holds");
+    let running = cx
+        .update_window(s.handle, |_, window, cx| window.simulate_next_frame(cx))
+        .unwrap();
+    assert!(running > 0, "mid-spring it asks for the next frame");
+    // A long time on, it still loops.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(30));
+    cx.run_until_parked();
+    let pending = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.simulate_next_frame(cx);
+            window.render_frame(cx);
+            window.simulate_next_frame(cx)
+        })
+        .unwrap();
+    assert!(pending > 0, "it never stops asking for frames");
+
+    s.ob_press("right", cx);
+    assert_eq!(s.ob_step(cx), OnbStep::Workspace);
+    s.ob_press("left", cx);
+    assert_eq!(s.ob_step(cx), OnbStep::Welcome);
+    assert!(bounces(&s, cx), "back on Welcome it bounces again");
+    assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
+}
+
+/// `[gui] reduce_motion = true` sets GPUI's switch: the wordmark is drawn
+/// still, its text unchanged.
+#[gpui_kit::test]
+fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let f = fresh();
+    let mut gui = GuiSettings::default();
+    gui.set_reduce_motion(true);
+    cx.update(|cx| crate::apply_reduce_motion(&gui, cx));
+    assert!(cx.read(|cx| cx.reduce_motion()));
+    let s = first_run(cx, &rt, &f);
+    assert!(!bounces(&s, cx));
+    assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
+    // Unset again, the default: motion.
+    cx.update(|cx| crate::apply_reduce_motion(&GuiSettings::default(), cx));
+    assert!(!cx.read(|cx| cx.reduce_motion()));
+}
+
+/// The spring rests at both ends (what reduced motion draws is the glyph
+/// in place), rises first, and stays within its height.
+#[test]
+fn the_spring_rests_at_both_ends_and_rises_first() {
+    assert_eq!(bounce_offset(0.), 0.);
+    assert!(bounce_offset(1.).abs() < 1e-6);
+    assert!(bounce_offset(0.2) < 0., "up first");
+    let peak = (0..=100)
+        .map(|i| bounce_offset(i as f32 / 100.).abs())
+        .fold(0., f32::max);
+    assert!((0.24..=0.26).contains(&peak), "≈ 0.25 em, got {peak}");
 }
 
 // ── steps ───────────────────────────────────────────────────────────────────
@@ -1022,4 +1122,30 @@ fn shell_chords_are_inert_while_it_shows(cx: &mut TestAppContext) {
     assert_eq!(s.ob_step(cx), OnbStep::Welcome);
     assert!(s.ob_is_open(cx));
     settle(&rt, cx);
+}
+
+/// The ü really moves: higher mid-spring than at rest, at rest again in
+/// the pause, and up again on the next round.
+#[gpui_kit::test]
+fn the_u_moves_mid_spring(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let f = fresh();
+    let s = first_run(cx, &rt, &f);
+    let top = |cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(WORDMARK_U_ID).bounds().origin.y
+        })
+        .unwrap()
+    };
+    let ms = std::time::Duration::from_millis;
+    let start = top(cx);
+    cx.executor().advance_clock(ms(120));
+    let mid = top(cx);
+    assert!(mid < start, "the ü rises mid-spring: {start:?} -> {mid:?}");
+    cx.executor().advance_clock(ms(1200 - 120));
+    assert_eq!(top(cx), start, "it rests in the pause");
+    cx.executor().advance_clock(ms(2400 - 1200 + 120));
+    assert!(top(cx) < start, "and rises again on the next round");
 }

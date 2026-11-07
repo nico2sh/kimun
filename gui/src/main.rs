@@ -96,8 +96,8 @@ pub(crate) fn uses_vim(backend: EditorBackendSetting) -> bool {
 
 /// This platform's keymap with the `[gui.keys]` overrides. What the loader
 /// rejects is reported and skipped; the rest of the keymap still loads.
-/// (Preferences > Keyboard will show these, ADR-0050 §6; until then, the log
-/// file — a GUI started from a launcher has no visible stderr — and stderr.)
+/// Rejections go to the log file (a GUI started from a launcher has no
+/// visible stderr) and stderr; the F1 reference shows the chords in effect.
 fn load_keymap(settings: &AppSettings) -> Keymap {
     let (keymap, errors) = Keymap::load(Platform::current(), &settings.gui.key_overrides());
     for error in errors {
@@ -105,6 +105,14 @@ fn load_keymap(settings: &AppSettings) -> Keymap {
         eprintln!("kimun-gui: {error}");
     }
     keymap
+}
+
+/// `[gui] reduce_motion` onto GPUI's own switch, which every
+/// `with_animation` (the Welcome wordmark's bounce, the kit's spinners)
+/// honours by drawing its end state. GPUI reads no OS hint for it, so the
+/// setting is the only source. Read once, at startup.
+pub(crate) fn apply_reduce_motion(gui: &kimun_notes::settings::gui::GuiSettings, cx: &mut App) {
+    cx.set_reduce_motion(gui.reduce_motion());
 }
 
 /// Where kimün was started from, for a relative note on the command line.
@@ -130,6 +138,7 @@ fn main() {
     let layout = shell_layout::restore(&settings.gui);
     // Read once: changing who draws the title bar needs a restart.
     let chrome = titlebar::chrome_for(settings.gui.window_decorations(), Os::current());
+    let gui_settings = settings.gui.clone();
     let name = settings.current_workspace_name();
     let settings: SharedSettings = Arc::new(RwLock::new(settings));
     // Opening the vault (the index file) is quick; indexing, which is not,
@@ -148,6 +157,7 @@ fn main() {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            apply_reduce_motion(&gui_settings, cx);
             // The kit's components (the palette dialog, the FILES filter) read the
             // kit theme, which is not kimün's: hand them kimün's colours. The
             // dialog's fade is dropped: a palette should appear and go at once.
