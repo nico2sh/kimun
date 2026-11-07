@@ -114,6 +114,9 @@ pub(crate) struct ThemePicker {
     /// The settings write running: keys wait for it. The write itself is the
     /// workspace's ([`Workspace::keep_theme`]), so it outlives the picker.
     saving: bool,
+    /// Typed while saving: applied only if the write fails, so the
+    /// preview and the selection stay on the theme being written.
+    held_query: Option<String>,
     _load: Option<Task<()>>,
     workspace: WeakEntity<Workspace>,
     _input_events: Subscription,
@@ -157,6 +160,7 @@ impl ThemePicker {
             previewed: None,
             error: None,
             saving: false,
+            held_query: None,
             _load: Some(load),
             workspace,
             _input_events: input_events,
@@ -235,6 +239,10 @@ impl ThemePicker {
     }
 
     fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.saving {
+            self.held_query = Some(query);
+            return;
+        }
         self.error = None;
         self.list.set_query(query);
         self.seed_selection();
@@ -315,9 +323,12 @@ impl ThemePicker {
     /// The write failed: shown, the picker open again for another try.
     fn save_failed(&mut self, error: &str, cx: &mut Context<Self>) {
         self.saving = false;
+        match self.held_query.take() {
+            // The filter typed meanwhile now applies (it clears the error).
+            Some(query) => self.set_query(query, cx),
+            None => cx.notify(),
+        }
         self.error = Some(format!("Couldn't save the theme: {error}").into());
-        cx.notify();
-        cx.notify();
     }
 
     /// Escape, `Cancel`, a click outside: close, the opening theme back.

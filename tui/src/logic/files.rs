@@ -23,7 +23,7 @@ pub use crate::logic::sort::PropertyValues;
 use crate::logic::sort::{
     PropertySort, SortField, SortOrder, SortState, is_blank_property, property_key,
 };
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, SortFieldSetting, SortOrderSetting};
 
 // ---------------------------------------------------------------------------
 // Sort options
@@ -701,7 +701,16 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     /// construction-time values until restart. Never called with a property
     /// sort (it can't be a default).
     pub fn remember_default(&mut self, field: SortField, order: SortOrder) {
-        if self.is_current_journal() {
+        let journal = self.is_current_journal();
+        self.remember_default_for(journal, field, order);
+    }
+
+    /// [`remember_default`](Self::remember_default) for the context the
+    /// caller names (`journal`) rather than the folder shown now: a save
+    /// that lands later records the default it was asked for even if the
+    /// listing moved meanwhile.
+    pub fn remember_default_for(&mut self, journal: bool, field: SortField, order: SortOrder) {
+        if journal {
             self.journal_sort_field = field;
             self.journal_sort_order = order;
         } else {
@@ -753,6 +762,30 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     pub(crate) fn property_sort(&self) -> &PropertySort {
         &self.property_sort
     }
+}
+
+/// Write `state` into `settings` as FILES' "save as default" does: the
+/// field and order of its context (`journal`: the journal's, else the
+/// notes'), and the grouping when the dialog set one; nothing else.
+/// A property sort can't be a default: `settings` stay as they are and
+/// the answer is `false`.
+pub fn save_sort_default(settings: &mut AppSettings, state: &SortState, journal: bool) -> bool {
+    if matches!(state.field, SortField::Property(_)) {
+        return false;
+    }
+    let field = SortFieldSetting::from(state.field.clone());
+    let order = SortOrderSetting::from(state.order);
+    if journal {
+        settings.journal_sort_field = field;
+        settings.journal_sort_order = order;
+    } else {
+        settings.default_sort_field = field;
+        settings.default_sort_order = order;
+    }
+    if let Some(group) = state.group_dirs {
+        settings.group_directories = group;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1214,6 +1247,70 @@ mod tests {
         assert_eq!(
             model.current_sort(),
             (SortField::Name, SortOrder::Ascending)
+        );
+    }
+
+    /// "Save as default" writes the field and order of its context only,
+    /// the grouping when set, and never a property sort.
+    #[test]
+    fn save_sort_default_writes_its_context_only() {
+        use crate::settings::{SortFieldSetting, SortOrderSetting};
+        let before = AppSettings::default();
+        let title_down = SortState {
+            field: SortField::Title,
+            order: SortOrder::Descending,
+            group_dirs: None,
+        };
+        let mut notes = before.clone();
+        assert!(save_sort_default(&mut notes, &title_down, false));
+        assert_eq!(notes.default_sort_field, SortFieldSetting::Title);
+        assert_eq!(notes.default_sort_order, SortOrderSetting::Descending);
+        assert_eq!(notes.journal_sort_field, before.journal_sort_field);
+        assert_eq!(notes.journal_sort_order, before.journal_sort_order);
+        assert_eq!(notes.group_directories, before.group_directories);
+
+        let mut journal = before.clone();
+        let grouped = SortState {
+            group_dirs: Some(!before.group_directories),
+            ..title_down.clone()
+        };
+        assert!(save_sort_default(&mut journal, &grouped, true));
+        assert_eq!(journal.journal_sort_field, SortFieldSetting::Title);
+        assert_eq!(journal.journal_sort_order, SortOrderSetting::Descending);
+        assert_eq!(journal.default_sort_field, before.default_sort_field);
+        assert_eq!(journal.default_sort_order, before.default_sort_order);
+        assert_eq!(journal.group_directories, !before.group_directories);
+
+        let mut property = before.clone();
+        let by_key = SortState {
+            field: SortField::Property("due".into()),
+            ..title_down
+        };
+        assert!(!save_sort_default(&mut property, &by_key, false));
+        assert_eq!(property, before, "a property sort is never a default");
+    }
+
+    /// A default remembered for a context the listing no longer shows still
+    /// lands in that context: the next open of it uses it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remember_default_for_names_its_context() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        model.remember_default_for(true, SortField::Title, SortOrder::Descending);
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        assert_eq!(
+            model.current_sort(),
+            (SortField::Name, SortOrder::Ascending),
+            "the notes' default is untouched"
+        );
+        model.remember_default_for(false, SortField::Title, SortOrder::Descending);
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        assert_eq!(
+            model.current_sort(),
+            (SortField::Title, SortOrder::Descending)
         );
     }
 

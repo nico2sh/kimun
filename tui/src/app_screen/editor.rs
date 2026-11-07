@@ -1037,21 +1037,12 @@ impl EditorScreen {
         self.panels
             .sidebar_mut()
             .remember_default(state.field.clone(), state.order);
-        {
-            let mut s = self.settings.write().unwrap();
-            let field = crate::settings::SortFieldSetting::from(state.field.clone());
-            let order = crate::settings::SortOrderSetting::from(state.order);
-            if is_journal {
-                s.journal_sort_field = field;
-                s.journal_sort_order = order;
-            } else {
-                s.default_sort_field = field;
-                s.default_sort_order = order;
-            }
-            if let Some(group) = state.group_dirs {
-                s.group_directories = group;
-            }
-        }
+        // The rule the desktop app shares (`logic::files`).
+        crate::logic::files::save_sort_default(
+            &mut self.settings.write().unwrap(),
+            state,
+            is_journal,
+        );
         let snapshot = self.settings.read().unwrap().clone();
         tokio::spawn(async move {
             snapshot.save_to_disk().ok();
