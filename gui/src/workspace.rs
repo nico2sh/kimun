@@ -163,7 +163,7 @@
 //! names the workspace, drags, maximizes and closes the window, closing
 //! through the close guard; F11 toggles fullscreen ([`titlebar`]).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -172,6 +172,7 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::ResizeHandleRenderer;
 use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_handle};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
@@ -424,6 +425,10 @@ pub(crate) struct Workspace {
     /// background jobs report on, and the task draining its receiver.
     tx: Option<AppTx>,
     _messages: Option<Task<()>>,
+    /// The take-down timer of each toast with an action, by its key: a toast
+    /// shown again replaces its timer (the old one is dropped, so it cannot
+    /// take the new toast down early).
+    action_timers: HashMap<SharedString, Task<()>>,
     /// Every flash shown, in order, with whether it was an error: what the
     /// tests read (the kit's toasts keep their message and kind private).
     #[cfg(test)]
@@ -593,6 +598,8 @@ pub(crate) struct Workspace {
     pub(crate) theme_picker: Option<theme_picker::ThemePickerOpen>,
     /// The window's title bar and its title ([`titlebar`]).
     pub(crate) titlebar: titlebar::TitleBar,
+    /// The update flow: its checks, its dialog, an install ([`update`]).
+    pub(crate) updates: update::UpdateHost,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -693,6 +700,7 @@ impl Workspace {
             notes: None,
             tx: None,
             _messages: None,
+            action_timers: HashMap::new(),
             #[cfg(test)]
             flashes: Vec::new(),
             toasts: VecDeque::new(),
@@ -771,6 +779,7 @@ impl Workspace {
             _config_events: config_events,
             theme_picker: None,
             titlebar: titlebar::TitleBar::new(),
+            updates: update::UpdateHost::new(update::default_backend()),
         }
     }
 
@@ -904,6 +913,9 @@ impl Workspace {
             }
             self.ensure_files_listing(cx);
         }
+        // Once per launch, never under the setup assistant (it runs on the
+        // entry that follows the assistant's finish).
+        self.check_updates_on_start(cx);
         cx.notify();
     }
 
@@ -1101,13 +1113,51 @@ impl Workspace {
     /// corner ([`flash_toast`]); it hides itself after the kit's autohide
     /// (five seconds, paused while the pointer is over the stack).
     pub(crate) fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.show_flash(text.into(), false, cx);
+        self.show_flash(text.into(), false, None, cx);
+    }
+
+    /// Show the notice `text` as an info toast with `action`'s button (the
+    /// update flow's `View`). Clicking it closes the toast and runs the
+    /// action on the window. The kit never hides a toast with an action on
+    /// its own, so the window takes it down after
+    /// [`update::ACTION_TOAST_LIFETIME`] unless it was dismissed before.
+    pub(crate) fn flash_with_action(
+        &mut self,
+        text: impl Into<SharedString>,
+        action: ToastAction,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
+        self.show_flash(text.clone(), false, Some(action), cx);
+        let key = text.clone();
+        let timer = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(update::ACTION_TOAST_LIFETIME)
+                .await;
+            this.update(cx, |workspace, cx| {
+                workspace.action_timers.remove(&text);
+                workspace.remove_flash(text, cx)
+            })
+            .ok();
+        });
+        // A toast shown again drops (cancels) the timer it had.
+        self.action_timers.insert(key, timer);
+    }
+
+    /// Take the flash toast keyed `text` down (a no-op when it is gone).
+    fn remove_flash(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        self.toasts.retain(|key| key != &text);
+        self.with_window(cx, move |_, window, cx| {
+            if matches!(window.root::<gpui_kit::base::Root>(), Some(Some(_))) {
+                window.remove_notification1::<FlashId>(text, cx);
+            }
+        });
     }
 
     /// Show the problem `text` as an error toast, like [`Self::flash`]. A
     /// later notice no longer displaces it: toasts stack.
     pub(crate) fn flash_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.show_flash(text.into(), true, cx);
+        self.show_flash(text.into(), true, None, cx);
     }
 
     /// Push the toast once the current update is done: callers hold only
@@ -1116,7 +1166,13 @@ impl Workspace {
     /// no window or no `Root` to show it in is logged and dropped. At most
     /// [`MAX_FLASH_TOASTS`] are up: a new one past that takes the oldest's
     /// place.
-    fn show_flash(&mut self, text: SharedString, error: bool, cx: &mut Context<Self>) {
+    fn show_flash(
+        &mut self,
+        text: SharedString,
+        error: bool,
+        action: Option<ToastAction>,
+        cx: &mut Context<Self>,
+    ) {
         #[cfg(test)]
         self.flashes.push((text.clone(), error));
         let Some(handle) = self.window else {
@@ -1124,13 +1180,19 @@ impl Workspace {
             return;
         };
         let evicted = track_toast(&mut self.toasts, &text);
+        let workspace = cx.entity().downgrade();
         cx.defer(move |cx| {
             let shown = handle.update(cx, |_, window, cx| {
                 if matches!(window.root::<gpui_kit::base::Root>(), Some(Some(_))) {
                     if let Some(oldest) = evicted {
                         window.remove_notification1::<FlashId>(oldest, cx);
                     }
-                    window.push_notification(flash_toast(text.clone(), error), cx);
+                    let toast = flash_toast(text.clone(), error);
+                    let toast = match action {
+                        Some(action) => action.attach(toast, workspace),
+                        None => toast,
+                    };
+                    window.push_notification(toast, cx);
                     true
                 } else {
                     false
@@ -2555,6 +2617,47 @@ fn track_toast(toasts: &mut VecDeque<SharedString>, text: &SharedString) -> Opti
     }
 }
 
+/// A button on a flash toast ([`Workspace::flash_with_action`]): its label
+/// and what it runs on the window.
+#[derive(Clone)]
+pub(crate) struct ToastAction {
+    label: SharedString,
+    run: update::ToastRun,
+}
+
+impl ToastAction {
+    pub(crate) fn new(
+        label: impl Into<SharedString>,
+        run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            run: Rc::new(run),
+        }
+    }
+
+    /// `toast` with this action's button: a click closes the toast, then
+    /// runs the action on `workspace` (gone: nothing).
+    fn attach(self, toast: Notification, workspace: WeakEntity<Workspace>) -> Notification {
+        toast.action(move |_, _, cx| {
+            let note = cx.entity().downgrade();
+            let run = self.run.clone();
+            let workspace = workspace.clone();
+            Button::new(TOAST_ACTION_ID)
+                .label(self.label.clone())
+                .on_click(move |_, window, cx| {
+                    note.update(cx, |note, cx| note.dismiss(window, cx)).ok();
+                    workspace
+                        .update(cx, |workspace, cx| (run)(workspace, window, cx))
+                        .ok();
+                })
+        })
+    }
+}
+
+/// The element id of a flash toast's action button.
+pub(crate) const TOAST_ACTION_ID: &str = "toast-action";
+
 /// The kit notification id type of the flashes: keyed by the message, so a
 /// repeated flash replaces its toast instead of stacking a second one.
 struct FlashId;
@@ -2650,6 +2753,9 @@ mod switcher;
 mod tags;
 mod theme_picker;
 pub(crate) mod titlebar;
+mod update;
+#[cfg(feature = "fake-update")]
+pub(crate) use update::fake_backend_from_env as fake_update_backend_from_env;
 
 #[cfg(test)]
 mod ask_sources_tests;
@@ -2709,5 +2815,7 @@ mod tests;
 mod theme_picker_tests;
 #[cfg(test)]
 mod titlebar_tests;
+#[cfg(test)]
+mod update_tests;
 #[cfg(test)]
 mod views_tests;

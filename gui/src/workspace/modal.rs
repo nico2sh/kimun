@@ -52,6 +52,13 @@ const QUERY_HELP_KEY: KeyInput = KeyInput {
 };
 use crate::keymap;
 
+/// The row of buttons under a dialog's body, right-aligned: the one shape
+/// every dialog's footer shares (add `.flex_wrap()` where it must wrap).
+pub(crate) fn footer_row() -> gpui_kit::Div {
+    use gpui_kit::{Styled as _, div};
+    div().flex().flex_row().justify_end().gap_2().pt_2()
+}
+
 /// Whether a kit dialog holds the keyboard. `false` while the window is
 /// still being built (no `Root` yet), where the kit's own query would panic.
 pub(crate) fn dialog_open(window: &mut Window, cx: &mut gpui_kit::App) -> bool {
@@ -112,6 +119,8 @@ pub(crate) enum ModalKind {
     WorkspaceSwitcher,
     /// The theme picker (leader `v t`, the palette, the CFG view).
     ThemePicker,
+    /// The update dialog (the update toast's `View`, the palette).
+    Update,
 }
 
 /// Where [`Workspace::show_modal`] puts a dialog.
@@ -272,6 +281,7 @@ impl Workspace {
         self.forget_pinned_notes();
         self.switcher = None;
         self.forget_theme_picker(cx);
+        self.forget_update_dialog();
     }
 
     /// Run `step` with the window, once the current update is done. For

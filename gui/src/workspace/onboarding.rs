@@ -1157,7 +1157,7 @@ impl OnboardingView {
             .child(para(
                 "kimün can check GitHub for a newer release on startup and show a small \
                  notice. Nothing is sent: it only reads the public list of releases. The \
-                 terminal app checks today; the desktop app does not check yet.",
+                 terminal and desktop apps both check.",
                 t,
             ))
             .child(
@@ -1223,8 +1223,12 @@ impl OnboardingView {
             "Finish applies everything at once. The theme and the editor take effect \
              right away."
                 .to_string(),
-            "The update check is used by the terminal app.".to_string(),
         ];
+        if model.draft.update_check {
+            notes.push(
+                "The update check looks for a newer release on GitHub at startup.".to_string(),
+            );
+        }
         if model.first_run {
             notes.push("The folder is created if it does not exist yet.".to_string());
         }

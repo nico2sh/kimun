@@ -37,5 +37,6 @@ pub mod startup;
 pub mod task_slot;
 pub mod text_action;
 pub mod text_match;
+pub mod update;
 pub mod which_key;
 pub mod workspaces;

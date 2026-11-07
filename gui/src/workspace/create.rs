@@ -217,12 +217,7 @@ impl Render for QuickNoteDialog {
             )
             .children(error_row(status, t))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
+                modal::footer_row()
                     .child(
                         Button::new(CANCEL_ID)
                             .label("Cancel")

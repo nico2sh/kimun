@@ -742,6 +742,12 @@ impl Workspace {
     /// Whether the window may close now. With edits to write it starts the
     /// close flush and says no; the flush closes the window when done.
     pub(crate) fn should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        // An update installing (or the note's flush before it): refused and
+        // said, not queued, as Preferences refuse it while they index.
+        if self.update_busy() {
+            self.flash_error(kimun_notes::logic::update::CLOSE_REFUSED_TEXT, cx);
+            return false;
+        }
         // Unsaved preferences ask first, as their Cancel does.
         if !self.preferences_allow_close(cx) {
             return false;

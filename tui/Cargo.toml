@@ -84,6 +84,11 @@ self-replace = "1"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["termios"] }
 
+[features]
+# The scripted update backend (`logic::update::ScriptedUpdates`): a test fake
+# and the GUI manual gate's `KIMUN_GUI_FAKE_UPDATE`. Never in a shipped build.
+scripted-updates = []
+
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
