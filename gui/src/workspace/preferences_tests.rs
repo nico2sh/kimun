@@ -44,7 +44,7 @@ use crate::test_vault::{NAME, TestVault, test_vault};
 use crate::theme;
 
 /// The window as `main` builds it, on `start`, saving to `store`.
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
     start: Start,
     settings: SharedSettings,
@@ -79,25 +79,25 @@ fn open(
 }
 
 /// The config file `v`'s settings came from (and are saved to).
-fn config(v: &TestVault) -> PathBuf {
+pub(super) fn config(v: &TestVault) -> PathBuf {
     v.settings.read().unwrap().config_file.clone().unwrap()
 }
 
 /// The settings as they are on disk now.
-fn on_disk(v: &TestVault) -> AppSettings {
+pub(super) fn on_disk(v: &TestVault) -> AppSettings {
     AppSettings::load_from_file(config(v)).expect("the config on disk loads")
 }
 
 /// A vault with `a.md` ("# A") open, the window saving to its config.
 /// Its theme is named (the window's), so going back to it is clean.
-fn vault(rt: &Runtime) -> TestVault {
+pub(super) fn vault(rt: &Runtime) -> TestVault {
     let v = rt.block_on(test_vault(&[("a.md", "# A"), ("b.md", "# B")], &["a.md"]));
     v.settings.write().unwrap().theme = Theme::default().name;
     v
 }
 
 /// The window on `v`, indexed, `a.md` restored.
-fn on_vault(cx: &mut TestAppContext, rt: &Runtime, v: &TestVault) -> Started {
+pub(super) fn on_vault(cx: &mut TestAppContext, rt: &Runtime, v: &TestVault) -> Started {
     let start = Start::Vault(VaultStart {
         vault: v.vault.clone(),
         name: NAME.into(),
@@ -118,7 +118,7 @@ fn with_prefs(cx: &mut TestAppContext, rt: &Runtime, v: &TestVault) -> Started {
 }
 
 /// Let the vault's background work land while the runtime is still up.
-fn settle(rt: &Runtime, cx: &mut TestAppContext) {
+pub(super) fn settle(rt: &Runtime, cx: &mut TestAppContext) {
     let mut rounds = 0;
     drive(rt, cx, |_| {
         rounds += 1;

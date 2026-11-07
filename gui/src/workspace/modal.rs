@@ -110,6 +110,8 @@ pub(crate) enum ModalKind {
     /// The workspace switcher (`SwitchWorkspace`, leader `v s`, the
     /// palette).
     WorkspaceSwitcher,
+    /// The theme picker (leader `v t`, the palette, the CFG view).
+    ThemePicker,
 }
 
 /// Where [`Workspace::show_modal`] puts a dialog.
@@ -234,7 +236,7 @@ impl Workspace {
                 window.close_dialog(cx);
             }
         }
-        self.reset_modal_state();
+        self.reset_modal_state(cx);
     }
 
     /// Forget every modal's state: the slot, what is stacked over it, and
@@ -247,8 +249,10 @@ impl Workspace {
     /// which outlives its dialog and clears them when it ends. The note
     /// dialogs' `note_status` does go: a note task landing after its dialog
     /// was closed this way flashes its failure instead, and closes nothing
-    /// (`create.rs`, `is_note_dialog_up`).
-    pub(crate) fn reset_modal_state(&mut self) {
+    /// (`create.rs`, `is_note_dialog_up`). The theme picker's preview goes
+    /// with it: the window takes back the theme it had when the picker
+    /// opened.
+    pub(crate) fn reset_modal_state(&mut self, cx: &mut Context<Self>) {
         self.modal = None;
         self.query_help = false;
         self.palette = None;
@@ -267,6 +271,7 @@ impl Workspace {
         self.sort = None;
         self.forget_pinned_notes();
         self.switcher = None;
+        self.forget_theme_picker(cx);
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -304,7 +309,7 @@ impl Workspace {
                 if dialog_open(window, cx) {
                     window.close_all_dialogs(cx);
                 }
-                workspace.reset_modal_state();
+                workspace.reset_modal_state(cx);
             });
         }
     }

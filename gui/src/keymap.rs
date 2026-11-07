@@ -514,6 +514,16 @@ impl Keymap {
             .map(|b| b.chord)
     }
 
+    /// Every chord `action` is bound to, in binding order (its first is
+    /// [`Self::chord_for`]'s). Empty when unbound.
+    pub fn chords_for(&self, action: &ActionShortcuts) -> Vec<KeyInput> {
+        self.bindings
+            .iter()
+            .filter(|b| b.action == *action)
+            .map(|b| b.chord)
+            .collect()
+    }
+
     /// Whether `chord` is one of `action`'s, wherever it is live: for a
     /// modal that takes a scoped chord whatever panel opened it.
     pub fn is_bound(&self, chord: KeyInput, action: &ActionShortcuts) -> bool {
@@ -580,6 +590,16 @@ pub(crate) fn chord_label(cx: &App, action: &ActionShortcuts) -> Option<String> 
     active(cx)
         .chord_for(action)
         .map(|key| Kbd::format(&crate::input::keystroke(key)))
+}
+
+/// Every chord the active keymap binds `action` to, each written the
+/// platform's way, for a summary (the CFG view). Empty when unbound.
+pub(crate) fn chord_labels(cx: &App, action: &ActionShortcuts) -> Vec<String> {
+    active(cx)
+        .chords_for(action)
+        .into_iter()
+        .map(|key| Kbd::format(&crate::input::keystroke(key)))
+        .collect()
 }
 
 /// Call `f` on `view` whenever [`init`] replaces the active keymap, so a

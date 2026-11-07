@@ -580,8 +580,7 @@ impl PreferencesView {
     ) -> Entity<FolderChooser> {
         let host = self.focus.clone();
         let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, host, window, cx));
-        self.ws._chooser_events =
-            Some(cx.subscribe_in(&chooser, window, Self::on_chooser_event));
+        self.ws._chooser_events = Some(cx.subscribe_in(&chooser, window, Self::on_chooser_event));
         window.focus(&self.focus, cx);
         chooser
     }

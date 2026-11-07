@@ -272,6 +272,52 @@ impl ThemeChoices {
             .enumerate()
             .map(|(i, t)| (i, t.name.as_str(), i == self.original))
     }
+
+    /// The picker's rows, one per [entry](Self::entries), for a list engine
+    /// that fuzzy-filters them by name.
+    pub fn rows(&self) -> Vec<ThemeRow> {
+        self.entries()
+            .map(|(index, name, current)| ThemeRow {
+                index,
+                name: name.to_string(),
+                current,
+            })
+            .collect()
+    }
+
+    /// The theme a picker previews with the theme of row `selected` (an
+    /// index into [`ThemeChoices::themes`]) under its cursor: that theme,
+    /// or `None` — the theme the window had when the picker opened — when
+    /// nothing is selected (the filter matches no theme) or the selection
+    /// is that theme's row. So the window never shows a theme that is not
+    /// highlighted, and the opening theme is put back as it was.
+    pub fn preview_target(&self, selected: Option<usize>) -> Option<usize> {
+        selected.filter(|&index| index != self.original && index < self.themes.len())
+    }
+}
+
+/// One theme picker row: a theme's name, its index into
+/// [`ThemeChoices::themes`], and whether it is the theme active when the
+/// picker opened. Filtered by its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeRow {
+    pub index: usize,
+    pub name: String,
+    pub current: bool,
+}
+
+impl crate::logic::list::ListRow for ThemeRow {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+}
+
+/// `s` with only its theme changed to `name`: what the theme picker writes,
+/// so a pick never touches another setting.
+pub fn with_theme(s: &AppSettings, name: &str) -> AppSettings {
+    let mut candidate = s.clone();
+    candidate.theme = name.to_string();
+    candidate
 }
 
 // ── Model ────────────────────────────────────────────────────────────────────
@@ -1001,12 +1047,17 @@ pub fn config_info(s: &AppSettings) -> ConfigInfo {
         leader_key: key_of(&ActionShortcuts::Leader),
         preferences_key: key_of(&ActionShortcuts::OpenPreferences),
         leader_timeout_ms: s.leader_timeout_ms,
-        config_path: s
-            .config_file
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string()),
+        config_path: config_path_label(s),
     }
+}
+
+/// Where `s` is saved, as the CFG view shows it: the config file's path, or
+/// [`DEFAULT_CONFIG_LOCATION`] when the settings carry none.
+pub fn config_path_label(s: &AppSettings) -> String {
+    s.config_file
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| DEFAULT_CONFIG_LOCATION.to_string())
 }
 
 #[cfg(test)]

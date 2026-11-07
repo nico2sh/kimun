@@ -361,7 +361,12 @@ impl Workspace {
 
     /// A leaf fired: run its route where the keyboard is, or say why it
     /// cannot run here.
-    fn fire_leader(&mut self, action: LeaderAction, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn fire_leader(
+        &mut self,
+        action: LeaderAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let route = self.route_of(action);
         match self.route_block(&route, self.layout.focused(), cx) {
             Some(reason) => self.flash(reason, cx),

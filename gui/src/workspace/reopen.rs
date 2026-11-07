@@ -313,7 +313,7 @@ impl Workspace {
         if super::modal::dialog_open(window, cx) {
             window.close_all_dialogs(cx);
         }
-        self.reset_modal_state();
+        self.reset_modal_state(cx);
         self.file_status = None;
         self.cancel_leader(cx);
         // The Thread gives the editor Panel back and ASK leaves its slot

@@ -253,6 +253,27 @@ fn preferences_are_f4_and_primary_comma_from_every_panel() {
     );
 }
 
+/// Every chord of an action, in order, for the CFG summary: Preferences
+/// has two, the leader one, and an unbound action none.
+#[test]
+fn chords_for_lists_every_binding_in_order() {
+    let lw = Keymap::defaults(LinuxWindows);
+    assert_eq!(
+        lw.chords_for(&A::OpenPreferences),
+        [KeyInput::plain(Key::F(4)), chord("ctrl+,")]
+    );
+    assert_eq!(lw.chords_for(&A::Leader), [chord("ctrl+shift+b")]);
+    assert_eq!(
+        lw.chords_for(&A::OpenPreferences).first().copied(),
+        lw.chord_for(&A::OpenPreferences)
+    );
+    let mut overrides = BTreeMap::new();
+    overrides.insert("Leader".to_string(), Vec::new());
+    let (unbound, errors) = Keymap::load(LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(unbound.chords_for(&A::Leader).is_empty());
+}
+
 /// Save (M5b-2 G2) is primary+S from every panel, under vim too: the vim
 /// engine reads no Ctrl+S.
 #[test]

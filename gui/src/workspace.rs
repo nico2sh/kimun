@@ -135,6 +135,14 @@
 //! stays read-only and brings Preferences up on Workspaces with the vault's
 //! message, so another workspace or folder can be picked.
 //!
+//! **CFG and the theme picker (M9c).** The CFG drawer view summarises the
+//! settings that shape the window (theme, leader and Preferences chords,
+//! which-key delay, config file) and launches the theme picker and
+//! Preferences ([`config`]); it needs no vault. The theme picker (leader
+//! `v t`, the palette, CFG's `Theme…`) restyles the window live as its
+//! selection moves, keeps a pick by writing only the theme, and puts the
+//! opening theme back on every other way out ([`theme_picker`]).
+//!
 //! **Pinned notes (M7b G8).** The pinned-notes dialog (leader `f p`, the
 //! palette) lists the vault's pins by number: a digit opens one, and pins
 //! are raised, lowered and unpinned in place, each change written through
@@ -568,6 +576,12 @@ pub(crate) struct Workspace {
     /// Preferences, while they have the window ([`preferences`]).
     pub(crate) preferences: Option<Entity<preferences::PreferencesView>>,
     _preferences_events: Option<Subscription>,
+    /// The CFG drawer view ([`config`]): built with the window, it needs no
+    /// vault.
+    pub(crate) config: Entity<config::ConfigView>,
+    _config_events: Subscription,
+    /// The theme picker, while open ([`theme_picker`]).
+    pub(crate) theme_picker: Option<theme_picker::ThemePickerOpen>,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -641,12 +655,15 @@ impl Workspace {
         let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
         let keymap_watch = keymap::observe(cx, |this: &mut Self, cx| {
             this.chord_labels = ChordLabels::new(cx);
+            this.config.update(cx, |_, cx| cx.notify());
             let chord = this.chord_labels.follow_link;
             if let Some(view) = this.attachment.as_ref() {
                 view.update(cx, |view, cx| view.set_open_chord(chord, cx));
             }
             cx.notify();
         });
+        let config = cx.new(config::ConfigView::new);
+        let config_events = cx.subscribe_in(&config, window, Self::on_config_event);
         Self {
             layout,
             editor,
@@ -739,7 +756,23 @@ impl Workspace {
             _onboarding_events: None,
             preferences: None,
             _preferences_events: None,
+            config,
+            _config_events: config_events,
+            theme_picker: None,
         }
+    }
+
+    /// A CFG launcher: its leader leaf, run (or refused, with the reason)
+    /// as the leader runs it.
+    fn on_config_event(
+        &mut self,
+        _: &Entity<config::ConfigView>,
+        event: &config::ConfigEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let config::ConfigEvent::Launch(action) = *event;
+        self.fire_leader(action, window, cx);
     }
 
     /// The editor asked for something only the window has.
@@ -774,6 +807,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.config
+            .update(cx, |view, cx| view.set_settings(settings.clone(), cx));
         self.settings = Some(settings);
         self.set_channel(tx, rx, cx);
         self.enter(start, window, cx);
@@ -1271,7 +1306,8 @@ impl Workspace {
 
     /// Where the keyboard goes in `view`'s slot: FILES' and TAGS' filters,
     /// so typing filters; FIND's query field; LINKS' and OUTLINE's lists;
-    /// the slot itself for the views without content yet.
+    /// the CFG view itself; the slot itself for a view not built yet (no
+    /// vault).
     fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
         let handle = match view {
             DrawerView::Files => self.files.as_ref().map(|v| v.read(cx).focus_handle(cx)),
@@ -1284,7 +1320,7 @@ impl Workspace {
                 .ask_sources
                 .as_ref()
                 .map(|v| v.read(cx).focus_handle(cx)),
-            _ => None,
+            DrawerView::Config => Some(self.config.read(cx).focus_handle(cx)),
         };
         handle.unwrap_or_else(|| self.slot_focus(view).clone())
     }
@@ -2136,7 +2172,7 @@ impl Workspace {
             DrawerView::Tags => self.tags.clone().map(|v| v.into_any_element()),
             DrawerView::Semantic => self.semantic.clone().map(|v| v.into_any_element()),
             DrawerView::Ask => self.ask_sources.clone().map(|v| v.into_any_element()),
-            _ => None,
+            DrawerView::Config => Some(self.config.clone().into_any_element()),
         }
     }
 
@@ -2540,6 +2576,7 @@ fn conflict_flash(details: &str) -> String {
 mod ask;
 mod ask_sources;
 mod attachment;
+mod config;
 mod create;
 mod drawer_list;
 mod file_dialogs;
@@ -2571,6 +2608,7 @@ mod server;
 mod sort;
 mod switcher;
 mod tags;
+mod theme_picker;
 
 #[cfg(test)]
 mod ask_sources_tests;
@@ -2578,6 +2616,8 @@ mod ask_sources_tests;
 mod ask_tests;
 #[cfg(test)]
 mod attachment_tests;
+#[cfg(test)]
+mod cfg_tests;
 #[cfg(test)]
 mod drawer_tests;
 #[cfg(test)]
@@ -2624,5 +2664,7 @@ mod start_tests;
 mod switcher_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod theme_picker_tests;
 #[cfg(test)]
 mod views_tests;
