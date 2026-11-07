@@ -228,8 +228,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The Ask Thread, its composer focused (M7c G10a): the TUI's F6.
         // Everywhere, as in the TUI; no editor or vim key is F6.
         A::OpenAsk => &["f6"],
-        // Not in the GUI yet (M7 and later).
-        A::OpenPreferences | A::ToggleQueryPanel | A::SwitchWorkspace => return None,
+        // The workspace switcher (M8d): the TUI's F5. Everywhere, as in the
+        // TUI; no editor or vim key is F5.
+        A::SwitchWorkspace => &["f5"],
+        // Preferences (M9b): the TUI's F4 and Ctrl+, (Cmd+, on macOS, the
+        // platform's settings chord). Everywhere; no editor or vim key is F4,
+        // and vim reads no Ctrl+, (no letter: no twin).
+        A::OpenPreferences => &["f4", "primary+,"],
+        // Not in the GUI yet.
+        A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
     })

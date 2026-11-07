@@ -151,6 +151,28 @@ pub(crate) struct FilesPane {
 impl EventEmitter<FilesEvent> for FilesPane {}
 
 impl FilesPane {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        cx.notify();
+    }
+
+    /// The name of the theme it draws in (tests).
+    #[cfg(test)]
+    pub(crate) fn theme_name(&self) -> &str {
+        &self.theme.name
+    }
+
+    /// Take the sort defaults `settings` name now (the preferences were
+    /// saved): see `FilesModel::set_sort_defaults`.
+    pub(crate) fn set_sort_defaults(&mut self, settings: &AppSettings, cx: &mut Context<Self>) {
+        self.model.set_sort_defaults(settings);
+        self.reveal_selection();
+        cx.notify();
+    }
+}
+
+impl FilesPane {
     pub(crate) fn new(
         vault: Arc<NoteVault>,
         root_name: SharedString,
@@ -1066,3 +1088,5 @@ impl Workspace {
         cx.notify();
     }
 }
+
+crate::theme::impl_themed!(FilesPane);

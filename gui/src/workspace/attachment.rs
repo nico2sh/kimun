@@ -219,6 +219,14 @@ pub(crate) struct AttachmentView {
 impl EventEmitter<AttachmentEvent> for AttachmentView {}
 
 impl AttachmentView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        cx.notify();
+    }
+}
+
+impl AttachmentView {
     pub(crate) fn new(
         loaded: Loaded,
         theme: Theme,
@@ -680,3 +688,5 @@ impl Workspace {
         }
     }
 }
+
+crate::theme::impl_themed!(AttachmentView);

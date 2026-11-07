@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use kimun_core::error::VaultError;
-use kimun_core::{NoteVault, NotesValidation, VaultConfig};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -30,9 +28,11 @@ use crate::components::preferences::workspaces_section::{
     Mode as WorkspaceMode, WorkspacesSection,
 };
 use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::preferences::{
+    self as prefs, PreferencesModel, ReindexOutcome, SavePlan, WorkspaceError,
+};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
-use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::themes::Theme;
 
 use crate::components::dir_browser::FileBrowserState;
@@ -90,6 +90,9 @@ enum PreferencesFocus {
 pub struct PreferencesScreen {
     pub settings: SharedSettings,
     pub initial_settings: AppSettings,
+    /// The draft of every scalar setting the sections edit, written into
+    /// `settings` section by section as it changes (`sync_section`).
+    pub(crate) model: PreferencesModel,
     pub theme: Theme,
     section: PreferencesSection,
     focus: PreferencesFocus,
@@ -133,55 +136,27 @@ pub struct PreferencesScreen {
 impl PreferencesScreen {
     pub fn new(settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
-        // Build the theme list once and resolve the active theme from it;
-        // `get_theme()` would rebuild the entire list (plus disk IO) again.
-        let themes = s.theme_list();
-        let theme = themes
-            .iter()
-            .find(|t| t.name == s.theme)
-            .cloned()
-            .unwrap_or_default()
-            .adapt_to_terminal();
-        let active_name = theme.name.clone();
-        let vault_available = s
-            .workspace_config
-            .as_ref()
-            .is_some_and(|wc| wc.get_current_workspace().is_some());
-        let autosave_interval_secs = s.autosave_interval_secs;
-        let editor_backend = s.editor_backend;
-        let use_nerd_fonts = s.use_nerd_fonts;
-        let update_check = s.update_check();
-        let mouse = s.mouse();
-        let leader_timeout_ms = s.leader_timeout_ms;
-        let server_url = s
-            .workspace_config
-            .as_ref()
-            .and_then(|wc| wc.global.kimun_server_url.clone());
+        // The model builds the theme list once; the active theme resolves
+        // from it — `get_theme()` would rebuild the entire list (plus disk
+        // IO) again.
+        let model = PreferencesModel::new(&s);
+        let theme = prefs::resolve_theme(&model.themes, &s.theme).adapt_to_terminal();
+        let vault_available = prefs::has_vault(&s);
         let initial_settings = s.clone();
         let workspaces_section = WorkspacesSection::new(&s);
-        let sorting_section = SortingSection::new(
-            s.default_sort_field,
-            s.default_sort_order,
-            s.journal_sort_field,
-            s.journal_sort_order,
-        );
         drop(s);
         Self {
-            appearance_section: AppearanceSection::new(themes, &active_name),
-            display_section: DisplaySection::new(
-                use_nerd_fonts,
-                update_check,
-                mouse,
-                leader_timeout_ms,
-            ),
-            sorting_section,
+            appearance_section: AppearanceSection::new(),
+            display_section: DisplaySection::new(),
+            sorting_section: SortingSection::new(),
             workspaces_section,
             pending_create_name: None,
             indexing_section: IndexingSection::new(vault_available),
-            editor_section: EditorSection::new(autosave_interval_secs, editor_backend),
-            server_section: ServerSection::new(server_url),
+            editor_section: EditorSection::new(),
+            server_section: ServerSection::new(&model),
             settings,
             initial_settings,
+            model,
             theme,
             section: PreferencesSection::Workspaces,
             focus: PreferencesFocus::Sidebar,
@@ -225,101 +200,64 @@ impl PreferencesScreen {
 
     fn do_save(&mut self, tx: &AppTx) {
         let s = self.settings.read().unwrap();
-        let current_path = s.resolve_workspace_path();
-        let initial_path = self.initial_settings.resolve_workspace_path();
-        if current_path != initial_path {
-            let Some(workspace) = current_path else {
+        match prefs::save_plan(&s, &self.initial_settings) {
+            Err(e) => {
                 drop(s);
-                tx.send(AppMessage::IndexingDone(
-                    Err("No workspace set".to_string()),
-                ))
-                .ok();
-                return;
-            };
-            let workspace_name = s
-                .workspace_config
-                .as_ref()
-                .map(|wc| wc.global.current_workspace.clone())
-                .filter(|n| !n.is_empty());
-            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
-            drop(s);
-            self.pending_save_after_index = true;
-            let tx2 = tx.clone();
-            let handle = tokio::spawn(async move {
-                let mut config = VaultConfig::new(workspace);
-                if let Some(path) = cache_path {
-                    config = config.with_index(path);
-                }
-                let event = match NoteVault::new(config).await {
-                    Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
-                    Ok(vault) => {
-                        let result = vault.recreate_index().await;
-                        // Throwaway vault with its own pool — closing it does
-                        // not touch the app's vault, and leaving it to drop
-                        // keeps a second handle on the cache file open.
-                        vault.close().await;
-                        match result {
-                            Ok(r) => AppMessage::IndexingDone(Ok(r.duration)),
-                            Err(e @ VaultError::CaseConflict { .. }) => {
-                                AppMessage::VaultConflict(e.to_string())
-                            }
-                            Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
-                        }
-                    }
-                };
-                tx2.send(event).ok();
-            });
-            self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
-        } else {
-            s.save_to_disk().ok();
-            drop(s);
-            tx.send(AppMessage::PreferencesSaved).ok();
+                tx.send(AppMessage::IndexingDone(Err(e.to_string()))).ok();
+            }
+            Ok(SavePlan::NeedsReindex { workspace, cache }) => {
+                drop(s);
+                self.pending_save_after_index = true;
+                self.overlay =
+                    Overlay::IndexingProgress(spawn_recreate_index(workspace, cache, tx));
+            }
+            Ok(SavePlan::SaveOnly) => {
+                s.save_to_disk().ok();
+                drop(s);
+                tx.send(AppMessage::PreferencesSaved).ok();
+            }
         }
     }
 
     /// Called when the file browser confirms a directory path (via 'c' or Ctrl+Enter).
     fn confirm_file_browser(&mut self, chosen: PathBuf, _tx: &AppTx) {
-        use crate::settings::workspace_config::WorkspaceConfig;
-
         if let Some(name) = self.pending_create_name.take() {
-            let name = name.to_lowercase();
+            if let Err(e) = prefs::add_workspace(&mut self.settings.write().unwrap(), &name, chosen)
             {
-                let mut s = self.settings.write().unwrap();
-                if s.workspace_config.is_none() {
-                    s.workspace_config = Some(WorkspaceConfig::new_empty());
-                    s.config_version = CURRENT_CONFIG_VERSION;
-                }
-                if let Some(ref mut wc) = s.workspace_config
-                    && let Err(e) = wc.add_workspace(name.clone(), chosen)
-                {
-                    tracing::warn!("rejected workspace add: {}", e);
-                }
+                tracing::warn!("rejected workspace add: {}", e);
             }
-            self.workspaces_section
-                .refresh(&self.settings.read().unwrap());
-            self.indexing_section.set_vault_available(true);
-        } else {
-            // Browsing path for the selected workspace.
-            {
-                let mut s = self.settings.write().unwrap();
-                // Repoints the selected entry and flags a reindex when that
-                // actually moves the vault — one call, so the two cannot
-                // disagree the way they did when the reindex flag hung off a
-                // separate legacy field.
-                if let Some(name) = self
-                    .workspaces_section
-                    .selected_name()
-                    .map(|s| s.to_string())
-                {
-                    s.set_workspace_path(&name, chosen);
-                }
-            }
-            self.workspaces_section
-                .refresh(&self.settings.read().unwrap());
-            self.indexing_section.set_vault_available(true);
+        } else if let Some(name) = self.workspaces_section.selected_name().map(str::to_string) {
+            // Browsing path for the selected workspace: repoints the entry
+            // and flags a reindex when that actually moves the vault — one
+            // call, so the two cannot disagree.
+            prefs::set_workspace_path(&mut self.settings.write().unwrap(), &name, chosen);
         }
+        self.workspaces_section
+            .refresh(&self.settings.read().unwrap());
+        self.indexing_section
+            .set_vault_available(prefs::has_vault(&self.settings.read().unwrap()));
         self.overlay = Overlay::None;
     }
+}
+
+/// Rebuild the index of `workspace` on a throwaway vault in the background
+/// (a Save after the vault moved, and Full Reindex); the outcome comes back
+/// as `IndexingDone` or, for a case conflict, `VaultConflict`.
+fn spawn_recreate_index(
+    workspace: kimun_core::system::SystemPath,
+    cache: Option<kimun_core::IndexFile>,
+    tx: &AppTx,
+) -> IndexingProgressState {
+    let tx2 = tx.clone();
+    let handle = tokio::spawn(async move {
+        let event = match prefs::reindex_new_vault(workspace, cache).await {
+            ReindexOutcome::Done(duration) => AppMessage::IndexingDone(Ok(duration)),
+            ReindexOutcome::Conflict(msg) => AppMessage::VaultConflict(msg),
+            ReindexOutcome::Failed(msg) => AppMessage::IndexingDone(Err(msg)),
+        };
+        tx2.send(event).ok();
+    });
+    spawn_running(handle, tx)
 }
 
 impl PreferencesScreen {
@@ -329,49 +267,31 @@ impl PreferencesScreen {
     /// previews exactly like the arrow key does. Workspaces and Indexing
     /// act through their own key flows and have nothing to sync here.
     fn sync_section(&mut self) {
-        use crate::settings::workspace_config::WorkspaceConfig;
         match self.section {
             PreferencesSection::Appearance => {
-                // Take the theme straight from the section's already-loaded
-                // list: `get_theme()` would re-read custom themes from disk
-                // and rebuild every built-in on each step.
-                let theme = self.appearance_section.selected_theme().clone();
-                if self.settings.read().unwrap().theme != theme.name {
-                    self.settings.write().unwrap().set_theme(theme.name.clone());
-                    self.theme = theme.adapt_to_terminal();
+                // The highlighted row is the theme (a click that landed on no
+                // row still previews it). Taken straight from the model's
+                // already-loaded list: `get_theme()` would re-read custom
+                // themes from disk and rebuild every built-in on each step.
+                self.model.select_theme(self.model.theme_idx);
+                let changed = self
+                    .model
+                    .apply_appearance(&mut self.settings.write().unwrap());
+                if changed {
+                    self.theme = self.model.selected_theme().clone().adapt_to_terminal();
                 }
             }
-            PreferencesSection::Display => {
-                let mut s = self.settings.write().unwrap();
-                s.use_nerd_fonts = self.display_section.use_nerd_fonts;
-                let global = &mut s
-                    .workspace_config
-                    .get_or_insert_with(WorkspaceConfig::new_empty)
-                    .global;
-                global.update_check = self.display_section.update_check;
-                global.mouse = self.display_section.mouse;
-                s.leader_timeout_ms = self.display_section.leader_timeout_ms;
-            }
-            PreferencesSection::Sorting => {
-                let mut s = self.settings.write().unwrap();
-                s.default_sort_field = self.sorting_section.default_sort_field;
-                s.default_sort_order = self.sorting_section.default_sort_order;
-                s.journal_sort_field = self.sorting_section.journal_sort_field;
-                s.journal_sort_order = self.sorting_section.journal_sort_order;
-            }
+            PreferencesSection::Display => self
+                .model
+                .apply_display(&mut self.settings.write().unwrap()),
+            PreferencesSection::Sorting => self
+                .model
+                .apply_sorting(&mut self.settings.write().unwrap()),
             PreferencesSection::Editor => {
-                let mut s = self.settings.write().unwrap();
-                s.autosave_interval_secs = self.editor_section.autosave_interval_secs;
-                s.editor_backend = self.editor_section.editor_backend;
+                self.model.apply_editor(&mut self.settings.write().unwrap())
             }
             PreferencesSection::Server => {
-                self.settings
-                    .write()
-                    .unwrap()
-                    .workspace_config
-                    .get_or_insert_with(WorkspaceConfig::new_empty)
-                    .global
-                    .kimun_server_url = self.server_section.server_url.clone();
+                self.model.apply_server(&mut self.settings.write().unwrap())
             }
             PreferencesSection::Workspaces | PreferencesSection::Indexing => {}
         }
@@ -419,7 +339,9 @@ impl PreferencesScreen {
         }
         let key = match self.section {
             PreferencesSection::Workspaces => self.workspaces_section.handle_mouse(m),
-            PreferencesSection::Appearance => self.appearance_section.handle_mouse(m),
+            PreferencesSection::Appearance => {
+                self.appearance_section.handle_mouse(m, &mut self.model)
+            }
             PreferencesSection::Display => self.display_section.handle_mouse(m),
             PreferencesSection::Sorting => self.sorting_section.handle_mouse(m),
             PreferencesSection::Indexing => self.indexing_section.handle_mouse(m),
@@ -628,44 +550,14 @@ impl AppScreen for PreferencesScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let s = self.settings.read().unwrap();
-                            let Some(workspace) = s.resolve_workspace_path() else {
-                                drop(s);
+                            let target = prefs::reindex_target(&self.settings.read().unwrap());
+                            let Some((workspace, cache)) = target else {
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
                             };
-                            let workspace_name = s
-                                .workspace_config
-                                .as_ref()
-                                .map(|wc| wc.global.current_workspace.clone())
-                                .filter(|n| !n.is_empty());
-                            let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
-                            drop(s);
-                            let tx2 = tx.clone();
-                            let handle = tokio::spawn(async move {
-                                let mut config = VaultConfig::new(workspace);
-                                if let Some(path) = cache_path {
-                                    config = config.with_index(path);
-                                }
-                                let event = match NoteVault::new(config).await {
-                                    Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
-                                    Ok(vault) => {
-                                        let result = vault.recreate_index().await;
-                                        // Throwaway vault with its own pool —
-                                        // see the reindex task above.
-                                        vault.close().await;
-                                        match result {
-                                            Ok(r) => AppMessage::IndexingDone(Ok(r.duration)),
-                                            Err(e @ VaultError::CaseConflict { .. }) => {
-                                                AppMessage::VaultConflict(e.to_string())
-                                            }
-                                            Err(e) => AppMessage::IndexingDone(Err(e.to_string())),
-                                        }
-                                    }
-                                };
-                                tx2.send(event).ok();
-                            });
-                            self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
+                            self.overlay = Overlay::IndexingProgress(spawn_recreate_index(
+                                workspace, cache, tx,
+                            ));
                         } else {
                             self.overlay = Overlay::None;
                         }
@@ -794,7 +686,11 @@ impl AppScreen for PreferencesScreen {
                     let app_event = InputEvent::Key(*key);
                     match self.section {
                         PreferencesSection::Appearance => {
-                            let r = self.appearance_section.handle_input(&app_event, tx);
+                            let r = self.appearance_section.handle_input(
+                                &app_event,
+                                &mut self.model,
+                                tx,
+                            );
                             // Live theme preview on every navigation step.
                             if r.is_consumed() {
                                 self.sync_section();
@@ -802,12 +698,16 @@ impl AppScreen for PreferencesScreen {
                             r
                         }
                         PreferencesSection::Display => {
-                            let r = self.display_section.handle_input(&app_event, tx);
+                            let r =
+                                self.display_section
+                                    .handle_input(&app_event, &mut self.model, tx);
                             self.sync_section();
                             r
                         }
                         PreferencesSection::Sorting => {
-                            let r = self.sorting_section.handle_input(&app_event, tx);
+                            let r =
+                                self.sorting_section
+                                    .handle_input(&app_event, &mut self.model, tx);
                             self.sync_section();
                             r
                         }
@@ -830,25 +730,18 @@ impl AppScreen for PreferencesScreen {
                                 && post_mode == WorkspaceMode::Creating
                                 && key.code == KeyCode::Enter
                             {
-                                let name = self.workspaces_section.input().trim().to_string();
-                                if !name.is_empty() {
-                                    // Check for duplicate name.
-                                    let exists = self
-                                        .settings
-                                        .read()
-                                        .unwrap()
-                                        .workspace_config
-                                        .as_ref()
-                                        .is_some_and(|wc| wc.workspaces.contains_key(&name));
-                                    if exists {
-                                        self.workspaces_section.set_error(format!(
-                                            "Workspace '{}' already exists.",
-                                            name
-                                        ));
-                                    } else {
+                                let checked = prefs::check_new_workspace_name(
+                                    &self.settings.read().unwrap(),
+                                    self.workspaces_section.input(),
+                                );
+                                match checked {
+                                    Ok(name) => {
                                         self.pending_create_name = Some(name);
                                         self.workspaces_section.reset_mode();
                                     }
+                                    // An empty name: nothing to create yet.
+                                    Err(WorkspaceError::EmptyName) => {}
+                                    Err(e) => self.workspaces_section.set_error(e.to_string()),
                                 }
                             }
 
@@ -857,41 +750,22 @@ impl AppScreen for PreferencesScreen {
                                 && post_mode == WorkspaceMode::Renaming
                                 && key.code == KeyCode::Enter
                             {
-                                let new_name = self.workspaces_section.input().trim().to_string();
-                                // Check for duplicate name.
-                                let duplicate = !new_name.is_empty()
-                                    && pre_selected.as_deref() != Some(&new_name)
-                                    && self
-                                        .settings
-                                        .read()
-                                        .unwrap()
-                                        .workspace_config
-                                        .as_ref()
-                                        .is_some_and(|wc| wc.workspaces.contains_key(&new_name));
-                                if duplicate {
-                                    self.workspaces_section.set_error(format!(
-                                        "Workspace '{}' already exists.",
-                                        new_name
-                                    ));
-                                } else if let Some(old_name) = pre_selected.as_deref()
-                                    && !new_name.is_empty()
-                                    && new_name != old_name
-                                {
-                                    let mut s = self.settings.write().unwrap();
-                                    if let Some(ref mut wc) = s.workspace_config {
-                                        // Through `rename_workspace`, never by
-                                        // re-keying the map here: it also pins
-                                        // what the index and history files are
-                                        // called, and a rename that skips that
-                                        // step points the workspace at files
-                                        // that were never created — an empty
-                                        // index and a lost history, silently.
-                                        wc.rename_workspace(old_name, new_name.clone());
+                                let renamed = match pre_selected.as_deref() {
+                                    Some(old_name) => prefs::rename_workspace(
+                                        &mut self.settings.write().unwrap(),
+                                        old_name,
+                                        self.workspaces_section.input(),
+                                    ),
+                                    None => Ok(false),
+                                };
+                                match renamed {
+                                    Err(e) => self.workspaces_section.set_error(e.to_string()),
+                                    Ok(_) => {
+                                        self.workspaces_section.reset_mode();
+                                        self.workspaces_section
+                                            .refresh(&self.settings.read().unwrap());
                                     }
                                 }
-                                self.workspaces_section.reset_mode();
-                                self.workspaces_section
-                                    .refresh(&self.settings.read().unwrap());
                             }
 
                             // Delete confirmation: section stays in ConfirmDelete after 'y'.
@@ -900,39 +774,15 @@ impl AppScreen for PreferencesScreen {
                                 && key.code == KeyCode::Char('y')
                             {
                                 if let Some(name) = pre_selected.as_deref() {
-                                    // Artifacts are read while the entry still
-                                    // exists — both file names come from its
-                                    // `file_key` — and deleted after the lock
-                                    // is released, since a delete can wait on a
-                                    // handle another process holds. This path
-                                    // used to drop the entry and leave the
-                                    // index and history behind under a key
-                                    // nothing could attribute to a workspace.
-                                    let artifacts = {
-                                        let mut s = self.settings.write().unwrap();
-                                        let removable =
-                                            s.workspace_config.as_ref().is_some_and(|wc| {
-                                                name != wc.global.current_workspace
-                                                    && wc.workspaces.contains_key(name)
-                                            });
-                                        removable.then(|| {
-                                            let artifacts = s.workspace_artifacts(name);
-                                            if let Some(ref mut wc) = s.workspace_config {
-                                                wc.workspaces.remove(name);
-                                            }
-                                            artifacts
-                                        })
-                                    };
-                                    if let Some((index, history)) = artifacts {
-                                        let leftovers =
-                                            crate::settings::delete_artifacts(&index, &history);
-                                        if !leftovers.is_empty() {
-                                            tracing::warn!(
-                                                "workspace '{name}' removed, but these files \
-                                                 stayed behind:\n{}",
-                                                leftovers.join("\n")
-                                            );
-                                        }
+                                    // The entry goes under the lock; its files
+                                    // after it is released, since a delete can
+                                    // wait on a handle another process holds.
+                                    let taken = prefs::take_workspace_for_delete(
+                                        &mut self.settings.write().unwrap(),
+                                        name,
+                                    );
+                                    if let Ok((index, history)) = taken {
+                                        prefs::remove_workspace_artifacts(name, &index, &history);
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
@@ -946,12 +796,16 @@ impl AppScreen for PreferencesScreen {
                             self.indexing_section.handle_input(&app_event, tx)
                         }
                         PreferencesSection::Editor => {
-                            let r = self.editor_section.handle_input(&app_event, tx);
+                            let r =
+                                self.editor_section
+                                    .handle_input(&app_event, &mut self.model, tx);
                             self.sync_section();
                             r
                         }
                         PreferencesSection::Server => {
-                            let r = self.server_section.handle_input(&app_event, tx);
+                            let r =
+                                self.server_section
+                                    .handle_input(&app_event, &mut self.model, tx);
                             if r.is_consumed() {
                                 self.sync_section();
                             }
@@ -979,37 +833,17 @@ impl AppScreen for PreferencesScreen {
             AppMessage::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let s = self.settings.read().unwrap();
-                let Some(workspace) = s.resolve_workspace_path() else {
-                    drop(s);
+                let target = prefs::reindex_target(&self.settings.read().unwrap());
+                let Some((workspace, cache)) = target else {
                     tx.send(AppMessage::IndexingDone(
                         Err("No workspace set".to_string()),
                     ))
                     .ok();
                     return;
                 };
-                let workspace_name = s
-                    .workspace_config
-                    .as_ref()
-                    .map(|wc| wc.global.current_workspace.clone())
-                    .filter(|n| !n.is_empty());
-                let cache_path = workspace_name.as_ref().map(|n| s.index_for(n));
-                drop(s);
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
-                    let result = async {
-                        let mut config = VaultConfig::new(workspace);
-                        if let Some(path) = cache_path {
-                            config = config.with_index(path);
-                        }
-                        let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
-                        let result = vault.index_notes(NotesValidation::Fast).await;
-                        // Throwaway vault with its own pool — see the reindex
-                        // task above.
-                        vault.close().await;
-                        result.map_err(|e| e.to_string()).map(|r| r.duration)
-                    }
-                    .await;
+                    let result = prefs::fast_reindex(workspace, cache).await;
                     tx2.send(AppMessage::IndexingDone(result)).ok();
                 });
                 self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
@@ -1125,15 +959,15 @@ impl AppScreen for PreferencesScreen {
         match self.section {
             PreferencesSection::Appearance => {
                 self.appearance_section
-                    .render(f, cols[1], &theme, content_focused)
+                    .render(f, cols[1], &theme, content_focused, &self.model)
             }
             PreferencesSection::Display => {
                 self.display_section
-                    .render(f, cols[1], &theme, content_focused)
+                    .render(f, cols[1], &theme, content_focused, &self.model)
             }
             PreferencesSection::Sorting => {
                 self.sorting_section
-                    .render(f, cols[1], &theme, content_focused)
+                    .render(f, cols[1], &theme, content_focused, &self.model)
             }
             PreferencesSection::Workspaces => {
                 self.workspaces_section
@@ -1145,7 +979,7 @@ impl AppScreen for PreferencesScreen {
             }
             PreferencesSection::Editor => {
                 self.editor_section
-                    .render(f, cols[1], &theme, content_focused)
+                    .render(f, cols[1], &theme, content_focused, &self.model)
             }
             PreferencesSection::Server => {
                 self.server_section

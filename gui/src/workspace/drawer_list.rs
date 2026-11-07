@@ -205,6 +205,14 @@ pub(crate) struct DrawerList<R: DrawerRow> {
 impl<R: DrawerRow> EventEmitter<DrawerListEvent<R>> for DrawerList<R> {}
 
 impl<R: DrawerRow> DrawerList<R> {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        cx.notify();
+    }
+}
+
+impl<R: DrawerRow> DrawerList<R> {
     pub(crate) fn new(
         id: &'static str,
         label: &'static str,

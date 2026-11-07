@@ -12,3 +12,22 @@ pub(crate) async fn joined<T, E: ToString>(task: JoinHandle<Result<T, E>>) -> Re
         Err(e) => Err(e.to_string()),
     }
 }
+
+/// Run `job` on tokio's blocking pool, from the GPUI side: its result, or
+/// the task's failure as text. The job starts when this is called, not when
+/// the future is first polled, so the runtime must be entered at the call.
+///
+/// The blocking task is spawned from a runtime task: the runtime wakes it
+/// itself, so the GPUI executor polling the returned future is not needed
+/// for the job to make progress.
+pub(crate) fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> T + Send + 'static,
+) -> impl std::future::Future<Output = Result<T, String>> + 'static {
+    let handle = tokio::spawn(async move { tokio::task::spawn_blocking(job).await });
+    async move {
+        match handle.await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(e)) | Err(e) => Err(e.to_string()),
+        }
+    }
+}

@@ -742,6 +742,10 @@ impl Workspace {
     /// Whether the window may close now. With edits to write it starts the
     /// close flush and says no; the flush closes the window when done.
     pub(crate) fn should_close(&mut self, cx: &mut Context<Self>) -> bool {
+        // Unsaved preferences ask first, as their Cancel does.
+        if !self.preferences_allow_close(cx) {
+            return false;
+        }
         match self.closing {
             Closing::Requested | Closing::Flushing => return false,
             Closing::Closed => return true,

@@ -47,11 +47,12 @@ use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
 use kimun_notes::rag::RagStatus;
+use kimun_notes::settings::AppSettings;
 use tokio::task::JoinError;
 
-use super::Workspace;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
+use super::{LayoutStore, Workspace};
 use crate::startup;
 use crate::status_row::Status;
 
@@ -85,10 +86,12 @@ impl Workspace {
         }
     }
 
-    /// `WorkspaceSwitched(name)`: make `name` the current workspace in the
-    /// shared settings, persist them, and enter it ([`Self::reopen`]), as
-    /// the TUI does. Refused, with nothing changed, while the window cannot
-    /// change vault.
+    /// `WorkspaceSwitched(name)`, the workspace switcher: enter `name`
+    /// ([`Self::reopen`]), making it the current workspace in the shared
+    /// settings and persisting them, as the TUI does. Refused, with nothing
+    /// changed, while the window cannot change vault; the settings change
+    /// only once the open note is flushed, so a flush that fails leaves them
+    /// naming the workspace the window stays on.
     pub(crate) fn switch_workspace(&mut self, name: String, cx: &mut Context<Self>) {
         if !self.reopen_running()
             && let Some(reason) = self.reopen_block(cx)
@@ -96,7 +99,21 @@ impl Workspace {
             self.flash_error(format!("Couldn't switch to {name}: {reason}."), cx);
             return;
         }
-        let Some(settings) = self.settings.clone() else {
+        if self.settings.is_none() {
+            return;
+        }
+        self.switch_to = Some(name);
+        self.reopen(cx);
+        // Refused at once (another save running): nothing changes.
+        if !self.reopen_running() {
+            self.switch_to = None;
+        }
+    }
+
+    /// A switch asked for: its workspace becomes the current one, in memory
+    /// and on disk. Runs once the flush is done, before the vault opens.
+    fn apply_switch(&mut self, cx: &mut Context<Self>) {
+        let (Some(name), Some(settings)) = (self.switch_to.take(), self.settings.clone()) else {
             return;
         };
         {
@@ -106,7 +123,6 @@ impl Workspace {
             }
         }
         self.persist_settings(cx);
-        self.reopen(cx);
     }
 
     /// Persist the shared settings ([module docs](self)): off the UI
@@ -115,22 +131,12 @@ impl Workspace {
         let Some(settings) = self.settings.clone() else {
             return;
         };
-        let store = self.store.clone();
-        // The write blocks: off the UI thread, and off the runtime's own
-        // thread too. The outer task wakes this one from the runtime.
-        let write = tokio::spawn(async move {
-            tokio::task::spawn_blocking(move || {
-                let _one_at_a_time = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
-                let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-                store.save_settings(&snapshot)
-            })
-            .await
+        let write = write_settings(self.store.clone(), move || {
+            settings.read().unwrap_or_else(|e| e.into_inner()).clone()
         });
         cx.spawn(async move |this, cx| {
-            let error = match write.await {
-                Ok(Ok(Ok(()))) => return,
-                Ok(Ok(Err(e))) => e,
-                Ok(Err(e)) | Err(e) => e.to_string(),
+            let Err(error) = write.await else {
+                return;
             };
             tracing::warn!("could not save the settings: {error}");
             this.update(cx, |workspace, cx| {
@@ -193,6 +199,8 @@ impl Workspace {
                 }
             }
             loop {
+                this.update(cx, |workspace, cx| workspace.apply_switch(cx))
+                    .ok();
                 let settings = settings.clone();
                 let opened = tokio::spawn(async move {
                     let name = settings
@@ -242,6 +250,7 @@ impl Workspace {
         };
         self.reopening = None;
         self.reopen_again = false;
+        self.switch_to = None;
         self.block_input(false, cx);
         self.restart_tick_unless_read_only();
         let note = self
@@ -292,6 +301,13 @@ impl Workspace {
     /// Footer's state. Kept: the layout (the views' places and the drawers'
     /// sizes), the theme, the keymap, the focus handles, the window.
     pub(super) fn leave_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Preferences over the old vault: their draft goes, and the theme
+        // they were previewing with it.
+        if let Some(view) = self.preferences.clone() {
+            let original = view.read(cx).original_theme().clone();
+            self.drop_preferences();
+            self.apply_theme(original, cx);
+        }
         // The modals show the old vault's data; the leader would run its
         // route there.
         if super::modal::dialog_open(window, cx) {
@@ -322,6 +338,7 @@ impl Workspace {
         // Every task over the old vault: dropped, so none lands here.
         self.reopening = None;
         self.reopen_again = false;
+        self.switch_to = None;
         self.following = None;
         self.file_task = None;
         self.note_task = None;
@@ -367,4 +384,21 @@ impl Workspace {
         self.status = Status::default();
         self.closing = Closing::Open;
     }
+}
+
+/// The settings write ([module docs](self)) to `store`: `snapshot` runs when
+/// the write's turn comes, off the UI thread, and gives the settings to
+/// write. Resolves to the write's failure, if any. Must be called with the
+/// tokio runtime entered (the write starts at once).
+pub(super) fn write_settings(
+    store: LayoutStore,
+    snapshot: impl FnOnce() -> AppSettings + Send + 'static,
+) -> impl std::future::Future<Output = Result<(), String>> + 'static {
+    // The write blocks: off the UI thread, and off the runtime's own
+    // thread too (`blocking` starts it at once).
+    let write = crate::tasks::blocking(move || {
+        let _one_at_a_time = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+        store.save_settings(&snapshot())
+    });
+    async move { write.await.and_then(|result| result) }
 }

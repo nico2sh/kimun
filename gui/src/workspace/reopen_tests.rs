@@ -46,21 +46,21 @@ const B_NOTES: &[(&str, &str)] = &[
     ("beta.md", "# Beta\nthe beta note #btag"),
     ("bfriend.md", "# Bfriend\nsee [[beta]]"),
 ];
-const ALPHA: &str = "# Alpha\nthe alpha note #atag";
-const BETA: &str = "# Beta\nthe beta note #btag";
+pub(super) const ALPHA: &str = "# Alpha\nthe alpha note #atag";
+pub(super) const BETA: &str = "# Beta\nthe beta note #btag";
 
 /// Two workspaces, `a` and `b`, in one config under a temp dir (history and
 /// index there too), each holding its notes, each with its first note as
 /// its history. The settings name `a`.
-struct Pair {
-    settings: SharedSettings,
-    config: PathBuf,
-    a: PathBuf,
+pub(super) struct Pair {
+    pub(super) settings: SharedSettings,
+    pub(super) config: PathBuf,
+    pub(super) a: PathBuf,
     _dir: tempfile::TempDir,
 }
 
 /// Name `name` the current workspace in `settings` (in memory).
-fn set_current(settings: &SharedSettings, name: &str) {
+pub(super) fn set_current(settings: &SharedSettings, name: &str) {
     settings
         .write()
         .unwrap()
@@ -71,7 +71,7 @@ fn set_current(settings: &SharedSettings, name: &str) {
         .current_workspace = name.into();
 }
 
-fn current(settings: &SharedSettings) -> Option<String> {
+pub(super) fn current(settings: &SharedSettings) -> Option<String> {
     settings.read().unwrap().current_workspace_name()
 }
 
@@ -89,7 +89,7 @@ async fn fill(settings: &SharedSettings, notes: &[(&str, &str)]) {
     });
 }
 
-async fn pair() -> Pair {
+pub(super) async fn pair() -> Pair {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let (a, b) = (root.join("a"), root.join("b"));
@@ -134,7 +134,7 @@ async fn pair() -> Pair {
 
 /// The window as `main` builds it, on what the settings name now (as
 /// `main` decides it), persisting to `store`.
-fn open(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: LayoutStore) -> Started {
+pub(super) fn open(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: LayoutStore) -> Started {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
@@ -169,7 +169,12 @@ fn open(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: LayoutStore) -> 
 }
 
 /// [`open`] on A, driven until alpha is restored and the index built.
-fn open_on_a(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: LayoutStore) -> Started {
+pub(super) fn open_on_a(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    p: &Pair,
+    store: LayoutStore,
+) -> Started {
     let started = open(cx, rt, p, store);
     drive(rt, cx, |cx| {
         started.text(cx) == ALPHA && !started.indexing(cx)
@@ -178,15 +183,15 @@ fn open_on_a(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: LayoutStore
 }
 
 impl Started {
-    fn sw_open_note(&self, cx: &TestAppContext) -> Option<VaultPath> {
+    pub(super) fn sw_open_note(&self, cx: &TestAppContext) -> Option<VaultPath> {
         cx.read(|cx| self.workspace.read(cx).notes.as_ref()?.note.clone())
     }
 
-    fn sw_is_on(&self, p: &str, cx: &TestAppContext) -> bool {
+    pub(super) fn sw_is_on(&self, p: &str, cx: &TestAppContext) -> bool {
         self.sw_open_note(cx).is_some_and(|n| n.is_like(&path(p)))
     }
 
-    fn sw_reopening(&self, cx: &TestAppContext) -> bool {
+    pub(super) fn sw_reopening(&self, cx: &TestAppContext) -> bool {
         cx.read(|cx| self.workspace.read(cx).reopen_running())
     }
 
@@ -194,17 +199,17 @@ impl Started {
         cx.read(|cx| self.workspace.read(cx).tx.clone().unwrap())
     }
 
-    fn sw_title(&self, cx: &mut TestAppContext) -> Option<String> {
+    pub(super) fn sw_title(&self, cx: &mut TestAppContext) -> Option<String> {
         VisualTestContext::from_window(self.handle, cx).window_title()
     }
 
-    fn sw_typed(&self, text: &str, cx: &mut TestAppContext) {
+    pub(super) fn sw_typed(&self, text: &str, cx: &mut TestAppContext) {
         cx.update_window(self.handle, |_, window, cx| window.input(text, cx))
             .unwrap();
         cx.run_until_parked();
     }
 
-    fn sw_key(&self, key: &str, cx: &mut TestAppContext) {
+    pub(super) fn sw_key(&self, key: &str, cx: &mut TestAppContext) {
         cx.update_window(self.handle, |_, window, cx| window.press(key, cx))
             .unwrap();
         cx.run_until_parked();
@@ -266,7 +271,7 @@ impl Started {
 }
 
 /// FILES' rows (file names, folders `name/`).
-fn files_rows(s: &Started, cx: &TestAppContext) -> Vec<String> {
+pub(super) fn files_rows(s: &Started, cx: &TestAppContext) -> Vec<String> {
     use kimun_notes::logic::files::FileListEntry;
     cx.read(|cx| {
         let files = s.workspace.read(cx).files.clone().unwrap();
@@ -353,7 +358,7 @@ fn on_disk(config: &Path) -> Option<toml::Value> {
 }
 
 /// The config file's current workspace as written on disk.
-fn on_disk_current(config: &Path) -> Option<String> {
+pub(super) fn on_disk_current(config: &Path) -> Option<String> {
     on_disk(config)?
         .get("global")?
         .get("current_workspace")?

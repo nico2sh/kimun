@@ -91,6 +91,14 @@ pub(crate) struct OutlineView {
 }
 
 impl OutlineView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl OutlineView {
     fn new(list: Entity<DrawerList<OutlineEntry>>) -> Self {
         Self {
             list,
@@ -279,3 +287,5 @@ impl Workspace {
         }
     }
 }
+
+crate::theme::impl_themed!(OutlineView);

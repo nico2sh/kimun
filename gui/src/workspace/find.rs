@@ -223,6 +223,17 @@ pub(crate) struct FindView {
 impl EventEmitter<FindEvent> for FindView {}
 
 impl FindView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        self.preview
+            .update(cx, |preview, cx| preview.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl FindView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<QueryHit>>,
@@ -969,3 +980,5 @@ impl Workspace {
         })
     }
 }
+
+crate::theme::impl_themed!(FindView);

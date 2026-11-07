@@ -710,6 +710,26 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
         }
     }
 
+    /// Take the sort defaults `settings` name now (the preferences were
+    /// saved): every folder opened from here on is sorted by them. The
+    /// listing shown re-sorts too when it is still on its old default; one
+    /// the sort dialog re-sorted keeps its order.
+    pub fn set_sort_defaults(&mut self, settings: &AppSettings) {
+        let before = self.sort_for(&self.current_dir);
+        self.default_sort_field = SortField::from(settings.default_sort_field);
+        self.default_sort_order = SortOrder::from(settings.default_sort_order);
+        self.journal_sort_field = SortField::from(settings.journal_sort_field);
+        self.journal_sort_order = SortOrder::from(settings.journal_sort_order);
+        let after = self.sort_for(&self.current_dir);
+        if self.sort == before && after != before {
+            if self.list.is_some() {
+                self.apply_sort(after.0, after.1, self.group_dirs);
+            } else {
+                self.sort = after;
+            }
+        }
+    }
+
     /// Number of note rows currently visible (excludes Up / dirs / create).
     pub fn note_count(&self) -> usize {
         match self.core() {
@@ -1194,6 +1214,46 @@ mod tests {
         assert_eq!(
             model.current_sort(),
             (SortField::Name, SortOrder::Ascending)
+        );
+    }
+
+    /// New sort defaults (the preferences were saved) re-sort a listing still
+    /// on the old default and sort every folder opened afterwards; a listing
+    /// the sort dialog re-sorted keeps its order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_sort_defaults_apply_to_the_listing_and_later_opens() {
+        use crate::settings::{SortFieldSetting, SortOrderSetting};
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        assert_eq!(labels(&model), ["alpha", "bravo", "sub/"]);
+
+        let mut settings = AppSettings::default();
+        settings.default_sort_order = SortOrderSetting::Descending;
+        model.set_sort_defaults(&settings);
+        assert_eq!(
+            model.current_sort(),
+            (SortField::Name, SortOrder::Descending)
+        );
+        assert_eq!(labels(&model), ["sub/", "bravo", "alpha"]);
+
+        // Re-sorted by hand: a later default leaves it alone...
+        model.apply_sort(SortField::Title, SortOrder::Ascending, false);
+        settings.default_sort_order = SortOrderSetting::Ascending;
+        model.set_sort_defaults(&settings);
+        assert_eq!(
+            model.current_sort(),
+            (SortField::Title, SortOrder::Ascending)
+        );
+        // ...and the next open uses it.
+        settings.default_sort_field = SortFieldSetting::Name;
+        settings.default_sort_order = SortOrderSetting::Descending;
+        model.set_sort_defaults(&settings);
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        assert_eq!(
+            model.current_sort(),
+            (SortField::Name, SortOrder::Descending)
         );
     }
 }

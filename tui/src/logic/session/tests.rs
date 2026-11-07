@@ -791,3 +791,29 @@ async fn affects_open_note_covers_the_note_and_every_directory_holding_it() {
     assert!(!s.affects_open_note(&VaultPath::new("work/projects/plan.md/x")));
     assert!(!s.affects_open_note(&VaultPath::new("work/projects/plan")));
 }
+
+// ---- Preferences: the autosave period follows a save ---------------------------
+
+#[tokio::test]
+async fn retime_restarts_a_running_tick_on_the_new_period() {
+    let mut f = on_note("session-retime").await;
+    let configured = f.settings.read().unwrap().autosave_interval_secs;
+    assert_eq!(f.session.autosave_interval(), Some(configured));
+    assert!(!f.session.retime_autosave(&f.tx), "same period: left alone");
+    f.settings.write().unwrap().autosave_interval_secs = configured + 5;
+    assert!(f.session.retime_autosave(&f.tx));
+    assert_eq!(f.session.autosave_interval(), Some(configured + 5));
+    assert!(f.session.is_ticking());
+}
+
+#[tokio::test]
+async fn retime_never_starts_a_stopped_tick() {
+    let mut f = on_note("session-retime-stopped").await;
+    f.session.stop_autosave();
+    assert_eq!(f.session.autosave_interval(), None);
+    f.settings.write().unwrap().autosave_interval_secs = 120;
+    assert!(!f.session.retime_autosave(&f.tx));
+    assert!(!f.session.is_ticking());
+    f.session.restart_autosave(&f.tx);
+    assert_eq!(f.session.autosave_interval(), Some(120));
+}

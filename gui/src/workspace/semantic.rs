@@ -123,6 +123,15 @@ pub(crate) struct SemanticView {
 impl EventEmitter<SemanticEvent> for SemanticView {}
 
 impl SemanticView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl SemanticView {
     fn new(
         vault: Arc<NoteVault>,
         settings: SharedSettings,
@@ -388,3 +397,5 @@ impl Workspace {
         self.show_view(DrawerView::Semantic, window, cx);
     }
 }
+
+crate::theme::impl_themed!(SemanticView);

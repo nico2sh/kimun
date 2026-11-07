@@ -124,6 +124,15 @@ pub(crate) struct LinksView {
 }
 
 impl LinksView {
+    /// Draw in `t` from now on (the window's theme changed).
+    pub(crate) fn set_theme(&mut self, t: &Theme, cx: &mut Context<Self>) {
+        self.theme = t.clone();
+        self.list.update(cx, |list, cx| list.set_theme(t, cx));
+        cx.notify();
+    }
+}
+
+impl LinksView {
     fn new(vault: Arc<NoteVault>, redraw: Notifier, theme: Theme, cx: &mut Context<Self>) -> Self {
         let list_theme = theme.clone();
         let list = cx.new(|cx| DrawerList::new(LINKS_LIST_ID, "Links", redraw, list_theme, cx));
@@ -331,3 +340,5 @@ impl Workspace {
         self.show_view(DrawerView::Links, window, cx);
     }
 }
+
+crate::theme::impl_themed!(LinksView);

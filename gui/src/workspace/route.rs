@@ -159,8 +159,12 @@ impl Workspace {
             ) if has_vault => None,
             // `app.onboarding`: the setup assistant, vault or not.
             LeaderRoute::OpenOnboarding => None,
+            // Leader `v s`: the workspace switcher, vault or not (a broken
+            // workspace can be switched away from).
+            LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => None,
+            // Leader `v p`: Preferences, vault or not.
+            LeaderRoute::OpenPreferences => None,
             LeaderRoute::Overlay(_)
-            | LeaderRoute::OpenPreferences
             | LeaderRoute::NoteDialog(..)
             | LeaderRoute::Job(LeaderJob::CheckUpdates)
             | LeaderRoute::GitStatus => Some(NOT_YET),
@@ -222,6 +226,9 @@ impl Workspace {
                 self.open_saved_searches(window, cx)
             }
             LeaderRoute::Overlay(OverlayOpen::PinnedNotes) => self.open_pinned_notes(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => {
+                self.open_workspace_switcher(window, cx)
+            }
             // Leader `f b` is the open note's backlinks, which LINKS owns (its
             // Backlinks tab): show that, not FIND on a query.
             LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {
@@ -230,6 +237,7 @@ impl Workspace {
             LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, window, cx),
             LeaderRoute::OpenJournal => self.open_journal(window, cx),
             LeaderRoute::OpenOnboarding => self.open_onboarding(window, cx),
+            LeaderRoute::OpenPreferences => self.open_preferences(window, cx),
             // Gated again inside: a leaf sent on the channel skips
             // `route_block`.
             LeaderRoute::Ask(step) => self.ask_step(step, window, cx),
@@ -246,7 +254,6 @@ impl Workspace {
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
             | LeaderRoute::Overlay(_)
-            | LeaderRoute::OpenPreferences
             | LeaderRoute::GitStatus
             | LeaderRoute::Soon(_) => {}
         }

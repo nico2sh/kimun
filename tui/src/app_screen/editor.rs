@@ -1708,25 +1708,7 @@ impl EditorScreen {
                 self.reveal_note_dir_in_sidebar(tx);
             }
             DrawerView::Config => {
-                let info = {
-                    let s = self.settings.read().unwrap();
-                    let key_of = |a: &ActionShortcuts| {
-                        s.key_bindings
-                            .first_combo_for(a)
-                            .unwrap_or_else(|| "unbound".to_string())
-                    };
-                    crate::components::drawer::ConfigInfo {
-                        theme_name: s.get_theme().name,
-                        leader_key: key_of(&ActionShortcuts::Leader),
-                        preferences_key: key_of(&ActionShortcuts::OpenPreferences),
-                        leader_timeout_ms: s.leader_timeout_ms,
-                        config_path: s
-                            .config_file
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "default location".to_string()),
-                    }
-                };
+                let info = crate::logic::preferences::config_info(&self.settings.read().unwrap());
                 self.panels.drawer_set_config_info(info);
             }
             DrawerView::Semantic => self.panels.semantic_mut().ensure_source(tx),
