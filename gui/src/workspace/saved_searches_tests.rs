@@ -644,7 +644,7 @@ fn the_leader_and_the_palette(cx: &mut TestAppContext) {
     assert_eq!(save.blocked(), Some(NEEDS_FIND_FOCUS));
 
     find_on(&started, &rt, "#go", cx);
-    let opener = cx.read(|cx| started.workspace.read(cx).layout.focused());
+    let opener = cx.read(|cx| started.workspace.read(cx).focused_panel());
     let save = entries(opener, cx)
         .into_iter()
         .find(|e| *e.run() == PaletteRun::Chord(ActionShortcuts::SaveCurrentQuery))

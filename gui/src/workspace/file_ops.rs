@@ -36,7 +36,6 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{App, AppContext as _, ClickEvent, Context, ParentElement as _, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops::{self, relocated};
-use kimun_notes::logic::layout::Region;
 use kimun_notes::logic::message::FileOp;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::{FlushResult, NoteRead, ReadRequest, RenameOutcome};
@@ -619,9 +618,8 @@ impl Workspace {
                 pane.set_open_note(None, cx);
                 pane.enter_dir(dir, window, cx);
             });
-            let (side, index) = self.layout.open_view(DrawerView::Files);
+            self.open_view_focused(DrawerView::Files);
             self.place_rail_cursor(Some(DrawerView::Files));
-            self.layout.focus_region(Region::Slot { side, index });
             self.apply_focus(window, cx);
             self.save_layout(cx);
         }

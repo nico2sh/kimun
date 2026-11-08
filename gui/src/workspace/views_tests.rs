@@ -169,7 +169,7 @@ fn shown(s: &Started, view: DrawerView, cx: &TestAppContext) -> bool {
 }
 
 fn region(s: &Started, cx: &TestAppContext) -> Panel {
-    cx.read(|cx| s.workspace.read(cx).layout.focused())
+    cx.read(|cx| s.workspace.read(cx).focused_panel())
 }
 
 fn list_focused<R: super::drawer_list::DrawerRow>(
@@ -413,7 +413,7 @@ fn links_follows_a_switch_a_rename_and_a_delete(cx: &mut TestAppContext) {
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
     // In the right drawer, so the FILES a delete shows does not hide it.
     started.workspace.update(cx, |w, cx| {
-        w.layout.move_view(DrawerView::Links, Side::Right);
+        w.move_to_side(DrawerView::Links, Side::Right);
         w.refresh_views(cx);
     });
     assert!(shown(&started, DrawerView::Links, cx));
@@ -652,7 +652,7 @@ fn a_deleted_heading_flashes(cx: &mut TestAppContext) {
     let (_v, started) = started_on(cx, &rt, &[("o.md", "# Top\n## Gone\ntext")], "o.md");
     // In the right drawer, so the editor can be typed in while it shows.
     started.workspace.update(cx, |w, cx| {
-        w.layout.move_view(DrawerView::Outline, Side::Right);
+        w.move_to_side(DrawerView::Outline, Side::Right);
         w.refresh_views(cx);
     });
     assert_eq!(outline_rows(&started, cx), ["Top", "  Gone"]);
@@ -694,7 +694,7 @@ fn outline_updates_after_a_save(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (v, started) = started_on(cx, &rt, &[("o.md", "# One\ntext")], "o.md");
     started.workspace.update(cx, |w, cx| {
-        w.layout.move_view(DrawerView::Outline, Side::Right);
+        w.move_to_side(DrawerView::Outline, Side::Right);
         w.refresh_views(cx);
     });
     assert_eq!(outline_rows(&started, cx), ["One"]);

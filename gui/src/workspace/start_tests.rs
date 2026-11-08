@@ -24,7 +24,6 @@ use super::modal::ModalKind;
 use super::{EMPTY_STATE_ID, LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
 use crate::startup::{FirstNote, Start, VaultStart};
 use gpui_kit::component::WindowExt as _;
 
@@ -164,7 +163,8 @@ pub(super) fn open_started_with(
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(&GuiSettings::default());
+    let layout =
+        crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
     let (handle, workspace) = cx
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
@@ -546,7 +546,8 @@ fn a_flash_without_a_toast_layer_is_dropped(cx: &mut TestAppContext) {
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(&GuiSettings::default());
+    let layout =
+        crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
     let handle = cx
         .update(|cx| {
             cx.open_window(WindowOptions::default(), |window, cx| {

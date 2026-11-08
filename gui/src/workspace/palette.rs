@@ -367,7 +367,7 @@ impl Workspace {
         if super::modal::dialog_open(window, cx) {
             return;
         }
-        let entries = self.palette_entries(self.layout.focused(), cx);
+        let entries = self.palette_entries(self.focused_panel(), cx);
         let workspace = cx.entity().downgrade();
         let quiet = theme::muted(&theme::current(cx));
         let palette = cx.new(|cx| Palette::new(entries, quiet, workspace, window, cx));

@@ -19,6 +19,7 @@ kimun_core = { path = "../core" }
 gpui-kit = "0.9.0"
 open = "5"
 tokio = { workspace = true }
+toml = { workspace = true }
 tracing = "0.1"
 unicode-segmentation = "1"
 
@@ -32,7 +33,6 @@ kimun-notes = { path = "../tui", features = ["scripted-updates"] }
 async-trait = "0.1"
 gpui-kit = { version = "0.9.0", features = ["test-support"] }
 tempfile = "3"
-toml = { workspace = true }
 
 # A real text system for the UI font's tests (`ui_font`): Linux's
 # cosmic-text backend, built without system fonts. Already in the tree

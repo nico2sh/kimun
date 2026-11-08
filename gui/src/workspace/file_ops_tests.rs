@@ -200,7 +200,7 @@ impl Started {
     }
 
     fn region_focused(&self, cx: &TestAppContext) -> Panel {
-        cx.read(|cx| self.workspace.read(cx).layout.focused())
+        cx.read(|cx| self.workspace.read(cx).focused_panel())
     }
 
     fn editor_focused(&self, cx: &mut TestAppContext) -> bool {

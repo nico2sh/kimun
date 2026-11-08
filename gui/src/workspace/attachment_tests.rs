@@ -311,7 +311,7 @@ fn a_files_attachment_row_shows_the_view(cx: &mut TestAppContext) {
                 .unwrap()
                 .is_like(&path("notes.txt"))
         );
-        assert_eq!(w.layout.focused(), Panel::Editor);
+        assert_eq!(w.focused_panel(), Panel::Editor);
     });
     // The Footer has no caret, save state or counts for it.
     let facts = cx.read(|cx| started.workspace.read(cx).doc_facts(false, cx));

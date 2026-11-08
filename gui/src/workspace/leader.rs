@@ -220,7 +220,7 @@ impl Workspace {
     /// closed and its input open.
     fn space_leads(&self, cx: &gpui_kit::App) -> bool {
         let view = self.editor.read(cx);
-        self.layout.focused() == Panel::Editor
+        self.focused_panel() == Panel::Editor
             && self.empty.is_none()
             && self.note_empty_state().is_none()
             && !view.input_blocked
@@ -327,7 +327,7 @@ impl Workspace {
             LeaderOutcome::Cancelled => {
                 self.leader.end();
                 if key.key == Key::Esc {
-                    self.layout.focus(Panel::Editor);
+                    self.set_focus_panel(Panel::Editor);
                     self.apply_focus(window, cx);
                 }
             }
@@ -368,7 +368,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let route = self.route_of(action);
-        match self.route_block(&route, self.layout.focused(), cx) {
+        match self.route_block(&route, self.focused_panel(), cx) {
             Some(reason) => self.flash(reason, cx),
             None => self.perform_route(route, window, cx),
         }

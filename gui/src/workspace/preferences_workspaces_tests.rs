@@ -42,7 +42,6 @@ use super::start_tests::{Started, drive, runtime, send};
 use super::{LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
 use crate::startup::Start;
 
 /// The window on A (alpha restored, indexed), Preferences open on
@@ -97,7 +96,8 @@ fn no_workspace(cx: &mut TestAppContext) -> (Started, SharedSettings, PathBuf, t
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(&GuiSettings::default());
+    let layout =
+        crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
     let store = LayoutStore::File(config.clone());
     let shared = settings.clone();
     let (handle, workspace) = cx

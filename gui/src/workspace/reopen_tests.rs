@@ -29,7 +29,6 @@ use super::start_tests::{Started, drive, runtime, send};
 use super::{EMPTY_STATE_ID, LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
 use crate::startup::{self, FirstNote, Start, VaultStart};
 
 fn path(p: &str) -> VaultPath {
@@ -144,7 +143,8 @@ pub(super) fn open(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: Layou
     let opened = rt.block_on(try_open_vault(&p.settings));
     let start = startup::decide(opened, name, None, None);
     let settings = p.settings.clone();
-    let layout = shell_layout::restore(&GuiSettings::default());
+    let layout =
+        crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
     let (handle, workspace) = cx
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
@@ -227,10 +227,10 @@ impl Started {
         });
     }
 
-    /// Show `view` in the drawer where it is placed, as the rail does.
+    /// Show `view` in the slot where it is placed, as the rail does.
     fn sw_reveal(&self, view: DrawerView, cx: &mut TestAppContext) {
         self.workspace.update(cx, |w, cx| {
-            w.layout.open_view(view);
+            w.open_view(view);
             w.refresh_views(cx);
         });
         cx.run_until_parked();
@@ -668,10 +668,8 @@ fn workspace_switched_persists_and_reopens(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let p = rt.block_on(pair());
-    AppSettings::update_gui_at(p.config.clone(), |gui| {
-        gui.set_drawer_width(Side::Left, 321.0)
-    })
-    .unwrap();
+    AppSettings::update_gui_at(p.config.clone(), |gui| gui.set_layout_preset(Some("mine")))
+        .unwrap();
     let started = open_on_a(cx, &rt, &p, LayoutStore::File(p.config.clone()));
     assert_eq!(on_disk_current(&p.config).as_deref(), Some("a"));
     started
@@ -683,7 +681,10 @@ fn workspace_switched_persists_and_reopens(cx: &mut TestAppContext) {
     });
     assert_eq!(current(&p.settings).as_deref(), Some("b"));
     assert!(started.sw_is_on("beta.md", cx));
-    assert_eq!(on_disk_gui(&p.config).drawer_width(Side::Left), 321.0);
+    assert_eq!(
+        on_disk_gui(&p.config).layout_preset().as_deref(),
+        Some("mine")
+    );
 }
 
 /// A settings write keeps the `[gui]` table on disk, and a layout saved
@@ -694,10 +695,8 @@ fn the_gui_table_survives_a_settings_write(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let p = rt.block_on(pair());
     let started = open_on_a(cx, &rt, &p, LayoutStore::File(p.config.clone()));
-    AppSettings::update_gui_at(p.config.clone(), |gui| {
-        gui.set_drawer_width(Side::Left, 321.0)
-    })
-    .unwrap();
+    AppSettings::update_gui_at(p.config.clone(), |gui| gui.set_layout_preset(Some("mine")))
+        .unwrap();
     let persist = |theme: &str, cx: &mut TestAppContext| {
         p.settings.write().unwrap().theme = theme.into();
         started.workspace.update(cx, |w, cx| w.persist_settings(cx));
@@ -709,20 +708,29 @@ fn the_gui_table_survives_a_settings_write(cx: &mut TestAppContext) {
         });
     };
     persist("Nord", cx);
-    assert_eq!(on_disk_gui(&p.config).drawer_width(Side::Left), 321.0);
+    assert_eq!(
+        on_disk_gui(&p.config).layout_preset().as_deref(),
+        Some("mine")
+    );
 
-    // The window saves its layout (the left drawer hidden), then the
+    // The window saves its layout (the left side hidden), then the
     // settings are written again.
-    let visible = on_disk_gui(&p.config).drawer_visible(Side::Left);
+    let before = on_disk_gui(&p.config).layout();
     cx.update_window(started.handle, |_, window, cx| {
         started
             .workspace
             .update(cx, |w, cx| w.toggle_drawer(Side::Left, window, cx))
     })
     .unwrap();
-    assert_eq!(on_disk_gui(&p.config).drawer_visible(Side::Left), !visible);
+    let toggled = on_disk_gui(&p.config).layout();
+    assert!(toggled.is_some());
+    assert_ne!(toggled, before);
     persist("Gruvbox Dark", cx);
-    assert_eq!(on_disk_gui(&p.config).drawer_visible(Side::Left), !visible);
+    assert_eq!(on_disk_gui(&p.config).layout(), toggled);
+    assert_eq!(
+        on_disk_gui(&p.config).layout_preset().as_deref(),
+        Some("mine")
+    );
 }
 
 /// Two settings writes queued back to back, the first failing (its config

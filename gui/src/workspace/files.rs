@@ -46,7 +46,7 @@ use gpui_kit::{
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
-use kimun_notes::logic::layout::{Panel, Region};
+use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
@@ -1091,9 +1091,8 @@ impl Workspace {
     /// another one (a filter and a selection in the right folder stay), and
     /// give it the keyboard.
     pub(super) fn open_file_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (side, index) = self.layout.open_view(DrawerView::Files);
+        self.open_view_focused(DrawerView::Files);
         self.place_rail_cursor(Some(DrawerView::Files));
-        self.layout.focus_region(Region::Slot { side, index });
         if !self.opening_first() {
             let dir = self.open_note_dir();
             if let Some(files) = self.files.as_ref() {
