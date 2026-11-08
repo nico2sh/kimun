@@ -221,7 +221,7 @@ pub struct AppSettings {
     /// (see [`crate::app::ctrl_h`]); this picks which.
     #[serde(default)]
     pub ctrl_h: CtrlHSetting,
-    /// The `[gui]` table (ADR-0050 §5): the GUI's drawers and key overrides.
+    /// The `[gui]` table (ADR-0050 §5): the GUI's layout and key overrides.
     /// The TUI never reads it; it is kept as written so a TUI save
     /// round-trips it untouched, and left out of the file while empty.
     #[serde(default, skip_serializing_if = "gui::GuiSettings::is_empty")]
