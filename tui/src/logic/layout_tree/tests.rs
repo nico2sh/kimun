@@ -1230,3 +1230,35 @@ fn vacate_close_keeps_a_slot_with_hidden_views() {
     assert_eq!(t.slot_views(a), vec!["x"]);
     assert_eq!(t.vacate_close(a), None);
 }
+
+#[test]
+fn vacate_close_keeps_the_last_slot_on_its_side() {
+    // FILES leaves the default left slot for the right one: the left slot
+    // is the only one left of the editor, so it stays, empty.
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    assert!(t.move_view("files", right));
+    assert!(t.slot_views(left).is_empty());
+    assert_eq!(t.vacate_close(left), None);
+    assert_eq!(t.slots(), vec![left, right]);
+    // The same for the right slot once FILES goes back.
+    assert!(t.move_view("files", left));
+    assert_eq!(t.vacate_close(right), None);
+    assert_eq!(t.slots(), vec![left, right]);
+}
+
+#[test]
+fn vacate_close_closes_a_slot_with_a_sibling_on_its_side() {
+    // Two stacked left slots: the lower one, emptied, closes.
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    assert!(t.move_view("x", left));
+    let lower = t.place_beside("x", left, Dir::Down).unwrap();
+    assert!(t.move_view("x", right));
+    assert_eq!(t.vacate_close(lower), Some(left));
+    assert_eq!(t.slots(), vec![left, right]);
+    // A slot with views stays whatever its side holds.
+    let lower = t.place_beside("files", left, Dir::Down).unwrap();
+    assert!(!t.slot_views(lower).is_empty());
+    assert_eq!(t.vacate_close(lower), None);
+}

@@ -769,10 +769,20 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Ok(new)
     }
 
-    /// Close `slot` when it holds no views at all and is not the only
-    /// slot; returns the slot that absorbed it. `None` otherwise.
+    /// Close `slot` when it holds no views at all and another slot reads
+    /// as on its side of the active group ([`Self::slot_side`]); returns
+    /// the slot that absorbed it. `None` otherwise: the last slot on a
+    /// side stays, empty, so that side can be filled again.
     pub fn vacate_close(&mut self, slot: SlotId) -> Option<SlotId> {
         if !self.slots.get(&slot)?.views.is_empty() {
+            return None;
+        }
+        let side = self.slot_side(slot);
+        if !self
+            .slots()
+            .into_iter()
+            .any(|s| s != slot && self.slot_side(s) == side)
+        {
             return None;
         }
         self.close_slot(slot).ok()

@@ -601,19 +601,12 @@ impl Started {
 /// With the FILES filter holding the keyboard (where the kit's input binds
 /// Alt+Shift+Left/Right to word selection and Alt+Shift+Up/Down to extra
 /// carets), the move chords still carry FILES between the slots, both
-/// ways, and the keyboard stays in its filter. Each slot keeps a hidden
-/// view (FIND left, TAGS right), so no move empties a slot (which would
-/// close it, ADR-0054).
+/// ways, and the keyboard stays in its filter.
 #[gpui_kit::test]
 fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "top.md");
-    started.workspace.update(cx, |w, _| {
-        let slots = w.layout.slots();
-        assert!(w.layout.place(DrawerView::Find, slots[0], false));
-        assert!(w.layout.place(DrawerView::Tags, slots[1], false));
-    });
     focus_files(&started, cx);
     assert!(started.filter_focused(cx));
 
