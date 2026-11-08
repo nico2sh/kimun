@@ -43,13 +43,27 @@ const fn s(
     name: &'static str,
     needs: Needs,
 ) -> ViewSpec {
-    ViewSpec { id, view, title, name, needs, min: MIN, home_right: false }
+    ViewSpec {
+        id,
+        view,
+        title,
+        name,
+        needs,
+        min: MIN,
+        home_right: false,
+    }
 }
 
 static TABLE: [ViewSpec; 8] = [
     s("files", DrawerView::Files, "Files", "Files", Needs::Nothing),
     s("find", DrawerView::Find, "Find", "Find", Needs::Nothing),
-    s("semantic", DrawerView::Semantic, "Semantic search", "Semantic search", Needs::Semantic),
+    s(
+        "semantic",
+        DrawerView::Semantic,
+        "Semantic search",
+        "Semantic search",
+        Needs::Semantic,
+    ),
     ViewSpec {
         id: "ask",
         view: DrawerView::Ask,
@@ -61,8 +75,20 @@ static TABLE: [ViewSpec; 8] = [
     },
     s("tags", DrawerView::Tags, "Tags", "Tags", Needs::Nothing),
     s("links", DrawerView::Links, "Links", "Links", Needs::Nothing),
-    s("outline", DrawerView::Outline, "Outline", "Outline", Needs::Nothing),
-    s("config", DrawerView::Config, "Settings", "Settings", Needs::Nothing),
+    s(
+        "outline",
+        DrawerView::Outline,
+        "Outline",
+        "Outline",
+        Needs::Nothing,
+    ),
+    s(
+        "config",
+        DrawerView::Config,
+        "Settings",
+        "Settings",
+        Needs::Nothing,
+    ),
 ];
 
 /// Every built-in view, in rail order.
@@ -117,8 +143,14 @@ mod tests {
     #[test]
     fn ask_needs_ask_and_files_needs_nothing() {
         let none = Caps::default();
-        let sem = Caps { semantic: true, ask: false };
-        let ask = Caps { semantic: false, ask: true };
+        let sem = Caps {
+            semantic: true,
+            ask: false,
+        };
+        let ask = Caps {
+            semantic: false,
+            ask: true,
+        };
         assert!(available(spec(DrawerView::Files), none));
         assert!(!available(spec(DrawerView::Ask), none));
         assert!(available(spec(DrawerView::Ask), ask));
