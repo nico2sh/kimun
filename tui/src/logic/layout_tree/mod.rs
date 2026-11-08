@@ -16,7 +16,7 @@ pub mod spec;
 
 pub use crate::logic::layout::node::Fit;
 pub(crate) use crate::logic::layout::node::Node;
-pub use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
+pub use crate::logic::layout::{Axis, Dir, GroupId, Side, UnitRect};
 
 /// Tolerance for comparing unit-square coordinates.
 const EPS: f64 = 1e-4;
@@ -24,6 +24,21 @@ const EPS: f64 = 1e-4;
 /// Length of the overlap of `[a0, a1]` and `[b0, b1]` (0 when disjoint).
 fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
     (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// The leaf of `regions` that reads first: leftmost, then topmost.
+fn first_in_reading_order(regions: &[(Leaf, UnitRect)]) -> Option<Leaf> {
+    regions
+        .iter()
+        .min_by(|a, b| {
+            let x = if (a.1.x() - b.1.x()).abs() <= EPS {
+                std::cmp::Ordering::Equal
+            } else {
+                a.1.x().total_cmp(&b.1.x())
+            };
+            x.then(a.1.y().total_cmp(&b.1.y()))
+        })
+        .map(|(l, _)| *l)
 }
 
 /// Identifies one slot. Stable across splits and closes.
@@ -377,35 +392,39 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         self.focus_dir_among(dir, &|_| true)
     }
 
+    /// The leaves `visible` accepts with the rectangles they are drawn at:
+    /// the others are removed first, so their siblings share their weight
+    /// (as [`Self::fit`] draws them), not the rectangles they would have
+    /// had.
+    fn visible_regions(&self, visible: &dyn Fn(Leaf) -> bool) -> Vec<(Leaf, UnitRect)> {
+        let mut root = self.root.clone();
+        for leaf in self.root.leaves() {
+            if !visible(*leaf) {
+                root.remove_leaf(leaf);
+            }
+        }
+        root.layout(UnitRect::new(0.0, 0.0, 1.0, 1.0))
+            .into_iter()
+            .filter(|(l, _)| visible(*l))
+            .collect()
+    }
+
     /// [`Self::focus_dir`] over only the leaves `visible` accepts (a
     /// frontend that leaves some leaves undrawn, such as a slot with no
     /// shown view): the others are neither targets nor obstacles, and keep
-    /// their place in the geometry. The zoomed leaf ignores `visible`.
+    /// no place in the geometry: the rest is laid out as drawn. The zoomed
+    /// leaf ignores `visible`.
     pub fn focus_dir_among(&mut self, dir: Dir, visible: &dyn Fn(Leaf) -> bool) -> TreeFocusMove {
         let regions = match self.zoomed {
             Some(z) => vec![(z, UnitRect::new(0.0, 0.0, 1.0, 1.0))],
-            None => self
-                .regions()
-                .into_iter()
-                .filter(|(l, _)| visible(*l))
-                .collect(),
+            None => self.visible_regions(visible),
         };
         let current = match self.focus {
             Focus::Leaf(l) => l,
             Focus::Rail => {
                 return match dir {
                     Dir::Right => {
-                        let first = regions
-                            .iter()
-                            .min_by(|a, b| {
-                                let x = if (a.1.x() - b.1.x()).abs() <= EPS {
-                                    std::cmp::Ordering::Equal
-                                } else {
-                                    a.1.x().total_cmp(&b.1.x())
-                                };
-                                x.then(a.1.y().total_cmp(&b.1.y()))
-                            })
-                            .map(|(l, _)| *l);
+                        let first = first_in_reading_order(&regions);
                         match first {
                             Some(l) => {
                                 self.focus(Focus::Leaf(l));
@@ -449,6 +468,91 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                 }
             },
         }
+    }
+
+    // ── Sides ─────────────────────────────────────────────────────────
+
+    /// The active group's rectangle.
+    fn active_rect(&self) -> Option<UnitRect> {
+        let active = Leaf::Group(self.active_group);
+        self.regions()
+            .into_iter()
+            .find(|(leaf, _)| *leaf == active)
+            .map(|(_, rect)| rect)
+    }
+
+    /// The slots of `side` in reading order: those lying entirely left
+    /// (right) of the active group.
+    pub fn side_slots(&self, side: Side) -> Vec<SlotId> {
+        let Some(group) = self.active_rect() else {
+            return Vec::new();
+        };
+        self.regions()
+            .into_iter()
+            .filter_map(|(leaf, rect)| match leaf {
+                Leaf::Slot(slot) => {
+                    let beside = match side {
+                        Side::Left => rect.right() <= group.x() + EPS,
+                        Side::Right => rect.x() >= group.right() - EPS,
+                    };
+                    beside.then_some(slot)
+                }
+                Leaf::Group(_) => None,
+            })
+            .collect()
+    }
+
+    /// The side `slot` reads as: left when its centre lies left of the
+    /// active group's, else right.
+    pub fn slot_side(&self, slot: SlotId) -> Side {
+        let rect = self
+            .regions()
+            .into_iter()
+            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
+            .map(|(_, rect)| rect);
+        match (rect, self.active_rect()) {
+            (Some(rect), Some(group))
+                if rect.x() + rect.width() / 2.0 >= group.x() + group.width() / 2.0 =>
+            {
+                Side::Right
+            }
+            _ => Side::Left,
+        }
+    }
+
+    /// The first slot right of the rail (leftmost, then topmost), drawn
+    /// or not.
+    pub fn slot_beside_rail(&self) -> Option<SlotId> {
+        let slots: Vec<_> = self
+            .regions()
+            .into_iter()
+            .filter(|(leaf, _)| matches!(leaf, Leaf::Slot(_)))
+            .collect();
+        match first_in_reading_order(&slots) {
+            Some(Leaf::Slot(slot)) => Some(slot),
+            _ => None,
+        }
+    }
+
+    /// Whether another slot `drawn` accepts shares `slot`'s column
+    /// (stacked above or below it).
+    pub fn slot_stacked(&self, slot: SlotId, drawn: &dyn Fn(SlotId) -> bool) -> bool {
+        let regions = self.regions();
+        let Some(rect) = regions
+            .iter()
+            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
+            .map(|(_, rect)| *rect)
+        else {
+            return false;
+        };
+        regions.iter().any(|(leaf, other)| match leaf {
+            Leaf::Slot(s) => {
+                *s != slot
+                    && drawn(*s)
+                    && overlap(other.x(), other.right(), rect.x(), rect.right()) > EPS
+            }
+            Leaf::Group(_) => false,
+        })
     }
 
     // ── Zoom ──────────────────────────────────────────────────────────

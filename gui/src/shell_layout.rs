@@ -7,6 +7,7 @@
 
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
+use kimun_notes::logic::view_registry;
 
 /// The rail's width, in rems: one icon cell plus its inset.
 pub const RAIL_REMS: f32 = 3.0;
@@ -26,19 +27,22 @@ pub const EDITOR_MIN_REMS: f32 = 20.0;
 /// capability flips. A view shown in a slot stays there when its cell
 /// goes.
 pub fn rail_views(caps: Caps) -> &'static [DrawerView] {
-    use DrawerView::*;
-    // One fixed list per capability combination: the rail is read on every
-    // frame and every rail key, and never needs to own its views.
-    const BOTH: &[DrawerView] = &[Files, Find, Semantic, Ask, Tags, Links, Outline, Config];
-    const SEMANTIC: &[DrawerView] = &[Files, Find, Semantic, Tags, Links, Outline, Config];
-    const ASK: &[DrawerView] = &[Files, Find, Ask, Tags, Links, Outline, Config];
-    const NEITHER: &[DrawerView] = &[Files, Find, Tags, Links, Outline, Config];
-    match (caps.semantic, caps.ask) {
-        (true, true) => BOTH,
-        (true, false) => SEMANTIC,
-        (false, true) => ASK,
-        (false, false) => NEITHER,
-    }
+    use std::sync::OnceLock;
+    // One list per capability combination, built once from the registry:
+    // the rail is read on every frame and every rail key, and never needs
+    // to own its views.
+    static LISTS: OnceLock<[Vec<DrawerView>; 4]> = OnceLock::new();
+    let lists = LISTS.get_or_init(|| {
+        [(false, false), (true, false), (false, true), (true, true)].map(|(semantic, ask)| {
+            let caps = Caps { semantic, ask };
+            view_registry::all()
+                .iter()
+                .filter(|spec| view_registry::available(spec, caps))
+                .map(|spec| spec.view)
+                .collect()
+        })
+    });
+    &lists[usize::from(caps.semantic) + 2 * usize::from(caps.ask)]
 }
 
 /// The hint an empty slot shows: how a view gets there.
@@ -59,11 +63,7 @@ pub fn empty_slot_hint(right: Option<&str>, left: Option<&str>) -> String {
 /// Whether the window hosts `view` as a slot view the leader may open:
 /// every view the rail can offer, whether or not its cell shows right now.
 pub fn hosts(view: DrawerView) -> bool {
-    rail_views(Caps {
-        semantic: true,
-        ask: true,
-    })
-    .contains(&view)
+    view_registry::all().iter().any(|spec| spec.view == view)
 }
 
 #[cfg(test)]

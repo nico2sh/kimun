@@ -145,16 +145,20 @@ impl LayoutStore {
 impl Workspace {
     /// Read the presets file again (when the window opens, and "Reload
     /// layout presets"), and the preset the config records. A file that
-    /// does not parse is said once, here, and leaves no presets; the
-    /// layout on screen is never touched.
+    /// does not parse is said once, here; the presets loaded before stay
+    /// (none at startup), and the layout on screen is never touched.
     pub(super) fn load_presets(&mut self, cx: &mut Context<Self>) {
+        // What the config records is read back: after the writes in flight.
+        self.layout_writer.flush();
         self.layout_preset = self.store.recorded_preset();
         let Some(dir) = self.store.presets_dir() else {
             self.presets.clear();
             return;
         };
         let load = load(&dir);
-        self.presets = load.presets;
+        if load.error.is_none() {
+            self.presets = load.presets;
+        }
         if let Some(error) = load.error {
             tracing::warn!("{PRESETS_FILE}: {error}");
             self.flash_error(format!("{PRESETS_FILE}: {error}"), cx);

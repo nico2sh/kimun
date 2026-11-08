@@ -198,7 +198,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, SlotId, TreeError, TreeFocusMove, UnitRect,
+    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, SlotId, TreeError, TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -324,9 +324,6 @@ fn side_ix(side: Side) -> usize {
     }
 }
 
-/// Tolerance for comparing unit-square coordinates.
-const EPS: f64 = 1e-4;
-
 /// The Lucide icon of a drawer view's rail cell.
 pub(crate) fn rail_icon(view: DrawerView) -> gpui_kit::assets::IconName {
     use gpui_kit::assets::IconName;
@@ -375,6 +372,9 @@ pub(crate) struct Workspace {
     /// on with nothing placed, a split's new slot. Session only; a slot
     /// leaves the set when a view lands in it or it closes.
     opened_empty: HashSet<SlotId>,
+    /// Slots a split created this session: left out of every layout save
+    /// while they hold no view ([`Self::persisted_layout`]).
+    split_slots: HashSet<SlotId>,
     /// The views a side toggle hid (left, right), shown again when that
     /// side is toggled back on. Session only.
     side_memory: [Vec<DrawerView>; 2],
@@ -399,6 +399,8 @@ pub(crate) struct Workspace {
     /// [`Self::rail_views`]).
     rail_cursor: usize,
     store: LayoutStore,
+    /// Background writes of the layout to `store`, the newest only.
+    layout_writer: layout_writer::LayoutWriter,
     /// The layout presets as `layouts.toml` last loaded ([`presets`]).
     presets: BTreeMap<String, ChildSpec>,
     /// The preset the live layout was last applied from, as `[gui]`
@@ -683,6 +685,7 @@ impl Workspace {
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
             opened_empty: HashSet::new(),
+            split_slots: HashSet::new(),
             side_memory: [Vec::new(), Vec::new()],
             collapsed: HashSet::new(),
             title_bar_height: Default::default(),
@@ -690,6 +693,7 @@ impl Workspace {
             resizing: false,
             press_offset: 0.0,
             rail_cursor,
+            layout_writer: layout_writer::LayoutWriter::new(store.clone()),
             store,
             presets: BTreeMap::new(),
             layout_preset: None,
@@ -1257,8 +1261,21 @@ impl Workspace {
 
     fn save_layout_with(&mut self, preset: PresetRecord<'_>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
-        self.store.save(&self.layout, preset);
+        self.layout_writer.submit(self.persisted_layout(), preset);
         self.refresh_views(cx);
+    }
+
+    /// The layout as saved: a slot split open this session while it holds no
+    /// view ([`Self::split_slots`]) stays out, so a restart does
+    /// not bring back a slot that cannot be focused or closed.
+    fn persisted_layout(&self) -> LayoutTree<DrawerView> {
+        let mut layout = self.layout.clone();
+        for slot in &self.split_slots {
+            if layout.slot_views(*slot).is_empty() {
+                let _ = layout.close_slot(*slot);
+            }
+        }
+        layout
     }
 
     /// Bring the session state in step with the tree: every slot has its
@@ -1271,6 +1288,7 @@ impl Workspace {
         let layout = &self.layout;
         self.opened_empty
             .retain(|s| slots.contains(s) && layout.shown(*s).is_none());
+        self.split_slots.retain(|s| slots.contains(s));
         self.fix_focus();
     }
 
@@ -1447,55 +1465,15 @@ impl Workspace {
         }
     }
 
-    /// The active group's rectangle in the tree's unit square.
-    fn active_rect(&self) -> Option<UnitRect> {
-        let active = Leaf::Group(self.layout.active_group());
-        self.layout
-            .regions()
-            .into_iter()
-            .find(|(leaf, _)| *leaf == active)
-            .map(|(_, rect)| rect)
-    }
-
-    /// The slots of `side` in reading order: those lying entirely left
-    /// (right) of the active group (Ruling 13).
+    /// The slots of `side` in reading order ([`LayoutTree::side_slots`],
+    /// Ruling 13).
     pub(crate) fn side_slots(&self, side: Side) -> Vec<SlotId> {
-        let Some(group) = self.active_rect() else {
-            return Vec::new();
-        };
-        self.layout
-            .regions()
-            .into_iter()
-            .filter_map(|(leaf, rect)| match leaf {
-                Leaf::Slot(slot) => {
-                    let beside = match side {
-                        Side::Left => rect.right() <= group.x() + EPS,
-                        Side::Right => rect.x() >= group.right() - EPS,
-                    };
-                    beside.then_some(slot)
-                }
-                Leaf::Group(_) => None,
-            })
-            .collect()
+        self.layout.side_slots(side)
     }
 
-    /// The side `slot` reads as for the key contexts and the palette: left
-    /// when its centre lies left of the active group's, else right.
+    /// The side `slot` reads as for the key contexts and the palette.
     fn slot_side(&self, slot: SlotId) -> Side {
-        let rect = self
-            .layout
-            .regions()
-            .into_iter()
-            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
-            .map(|(_, rect)| rect);
-        match (rect, self.active_rect()) {
-            (Some(rect), Some(group))
-                if rect.x() + rect.width() / 2.0 >= group.x() + group.width() / 2.0 =>
-            {
-                Side::Right
-            }
-            _ => Side::Left,
-        }
+        self.layout.slot_side(slot)
     }
 
     /// What has the keyboard, as the keymap and the palette read it: the
@@ -1560,8 +1538,18 @@ impl Workspace {
     /// [`Self::apply_focus`] hands GPUI focus over).
     pub(crate) fn open_view_focused(&mut self, view: DrawerView) -> Option<SlotId> {
         let slot = self.open_view(view)?;
-        self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
+        self.focus_slot_ending_zoom(slot);
         Some(slot)
+    }
+
+    /// Give `slot` the keyboard. A zoom on any other leaf ends: the user
+    /// asked to see this slot, which the zoom would hide (ADR-0053).
+    fn focus_slot_ending_zoom(&mut self, slot: SlotId) {
+        let leaf = Leaf::Slot(slot);
+        if self.layout.zoomed().is_some_and(|z| z != leaf) {
+            self.layout.zoom(None);
+        }
+        self.layout.focus(Focus::Leaf(leaf));
     }
 
     /// `slot`'s focus handle (the rail's while it has none yet: a slot is
@@ -1704,9 +1692,7 @@ impl Workspace {
                 first = Some(slot);
             }
             match first {
-                Some(slot) => {
-                    self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
-                }
+                Some(slot) => self.focus_slot_ending_zoom(slot),
                 None => {
                     if let Some(slot) = slots.first() {
                         self.opened_empty.insert(*slot);
@@ -1780,22 +1766,7 @@ impl Workspace {
     /// The first slot right of the rail (leftmost, then topmost): where a
     /// move from the rail lands.
     fn slot_beside_rail(&self) -> Option<SlotId> {
-        self.layout
-            .regions()
-            .into_iter()
-            .filter_map(|(leaf, rect)| match leaf {
-                Leaf::Slot(slot) => Some((slot, rect)),
-                Leaf::Group(_) => None,
-            })
-            .min_by(|a, b| {
-                let x = if (a.1.x() - b.1.x()).abs() <= EPS {
-                    std::cmp::Ordering::Equal
-                } else {
-                    a.1.x().total_cmp(&b.1.x())
-                };
-                x.then(a.1.y().total_cmp(&b.1.y()))
-            })
-            .map(|(slot, _)| slot)
+        self.layout.slot_beside_rail()
     }
 
     /// `MoveViewToNeighbour(Left / Right)`: move the focused view to the
@@ -1843,20 +1814,7 @@ impl Workspace {
     /// Whether another drawn slot shares `slot`'s column (stacked above or
     /// below it).
     fn stacked(&self, slot: SlotId) -> bool {
-        let regions = self.layout.regions();
-        let Some(rect) = regions
-            .iter()
-            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
-            .map(|(_, rect)| *rect)
-        else {
-            return false;
-        };
-        regions.iter().any(|(leaf, other)| {
-            *leaf != Leaf::Slot(slot)
-                && matches!(leaf, Leaf::Slot(_))
-                && self.leaf_drawn(*leaf)
-                && other.right().min(rect.right()) - other.x().max(rect.x()) > EPS
-        })
+        self.layout.slot_stacked(slot, &|s| self.slot_drawn(s))
     }
 
     /// `MoveViewToNeighbour(Up / Down)`: move the focused view (or the rail
@@ -1935,7 +1893,8 @@ impl Workspace {
     /// `axis` ([`LayoutTree::split_slot`]); the new slot, right of it or
     /// below, opens **empty** (a hint in place of a view; Ruling 12) and
     /// the keyboard stays on the view. A view gets there only by a move.
-    /// Session only: nothing is saved.
+    /// Session only: the slot is left out of every later layout save
+    /// ([`Self::persisted_layout`]) until a view moves in.
     fn split_focused_slot(
         &mut self,
         axis: TreeAxis,
@@ -1947,6 +1906,7 @@ impl Workspace {
         };
         if let Ok(new) = self.layout.split_slot(slot, axis) {
             self.opened_empty.insert(new);
+            self.split_slots.insert(new);
             self.sync_slot_handles(cx);
             self.apply_focus(window, cx);
         }
@@ -2875,6 +2835,7 @@ mod folder_chooser;
 mod follow;
 mod key_suggestions;
 mod keyboard_help;
+mod layout_writer;
 mod leader;
 mod links;
 mod modal;

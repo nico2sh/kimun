@@ -615,3 +615,38 @@ fn a_rail_click_on_a_view_outside_the_zoom_leaves_zoom(cx: &mut TestAppContext) 
     })
     .unwrap();
 }
+
+/// A rail click on a view placed but hidden (it shares a slot with the
+/// shown one) while another leaf, or the editor group, is zoomed: zoom
+/// ends and the view's slot takes the keyboard.
+#[gpui_kit::test]
+fn a_rail_click_on_a_hidden_placed_view_ends_zoom(cx: &mut TestAppContext) {
+    use super::rail_cell_id;
+    for zoom_editor in [false, true] {
+        let shell = open_shell(
+            cx,
+            1000.,
+            &gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+                 { weight = 0.2, views = [\"files\"], shown = \"files\" },\n\
+                 { weight = 0.6, editor = true },\n\
+                 { weight = 0.2, views = [\"outline\", \"tags\"], shown = \"outline\" },\n]\n"),
+            "",
+            false,
+            LayoutStore::Off,
+        );
+        cx.update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            if !zoom_editor {
+                window.press("alt-left", cx);
+            }
+            window.press(ZOOM, cx);
+            assert!(shell.zoomed(cx).is_some());
+            window.click(rail_cell_id(DrawerView::Tags), cx);
+            window.render_frame(cx);
+            let tags = Leaf::Slot(shell.slot_of(DrawerView::Tags, cx));
+            assert_eq!(shell.zoomed(cx), None, "zoom_editor={zoom_editor}");
+            assert_eq!(shell.tree_focus(cx), Focus::Leaf(tags));
+        })
+        .unwrap();
+    }
+}

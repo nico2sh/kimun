@@ -622,3 +622,24 @@ fn loaded_presets_are_specs() {
     let focus: &ChildSpec = &load.presets["focus"];
     assert!(spec::build(focus, Caps::default()).is_ok());
 }
+
+#[gpui_kit::test]
+fn a_reload_of_a_broken_file_keeps_the_presets_loaded_before(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with(
+        cx,
+        &config,
+        Some("[preset.focus]\nsplit = \"horizontal\"\nchildren = [{ editor = true }]\n"),
+    );
+    let listed = |cx: &mut TestAppContext| {
+        rows(&shell, cx)
+            .iter()
+            .filter(|(l, _)| l.starts_with("Apply layout preset"))
+            .count()
+    };
+    assert_eq!(listed(cx), 1);
+    std::fs::write(presets_path(&config), "[preset.focus\n").unwrap();
+    run(&shell, cx, PresetCommand::Reload);
+    assert_eq!(listed(cx), 1, "the last good presets stay");
+    assert!(flashes(&shell, cx).iter().any(|(_, error)| *error));
+}
