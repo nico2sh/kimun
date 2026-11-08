@@ -695,6 +695,12 @@ impl AskView {
     /// A key on the turn list (the TUI's `handle_turns_key`). True when
     /// taken.
     fn turns_key(&mut self, key: KeyInput, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Only the turn list's own keys: the sources part sits inside the
+        // turn column, and its filter and list must never fire Thread
+        // commands (Ruling 21).
+        if !self.turns_focus.is_focused(window) {
+            return false;
+        }
         if key.mods != Mods::NONE && !(matches!(key.key, Key::Char(_)) && key.mods == Mods::SHIFT) {
             return false;
         }

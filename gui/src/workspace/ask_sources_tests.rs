@@ -686,6 +686,86 @@ fn sources_list_expands_in_place_under_the_selected_turn(cx: &mut TestAppContext
     assert!(focused(&started, LIST_ROWS_ID, cx));
 }
 
+/// The selected turn's question.
+fn selected_question(s: &Started, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        let view = s.workspace.read(cx).ask.clone().unwrap();
+        view.read(cx)
+            .thread()
+            .selected()
+            .map(|t| t.question.clone())
+    })
+}
+
+fn filter_text(s: &Started, cx: &TestAppContext) -> String {
+    let view = sources(s, cx);
+    cx.read(|cx| view.read(cx).filter.read(cx).value().to_string())
+}
+
+/// Real key presses typed into the sources filter are the filter's: no
+/// Thread command runs (`r` regenerates nothing, `s` does not shut the
+/// part, nothing moves the turn selection) and the filter holds the text.
+#[gpui_kit::test]
+fn keys_typed_in_the_sources_filter_never_reach_the_thread(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "first", cx);
+    ask(&started, &rt, "second", cx);
+    press(&started, "up", cx);
+    assert_eq!(selected_question(&started, cx).as_deref(), Some("first"));
+    click(&started, SOURCES_FILTER_ID, cx);
+    for key in ["r", "u", "s", "t", "j", "k", "e", "y", "i"] {
+        press(&started, key, cx);
+    }
+    assert!(!pending(&started, cx), "nothing regenerated");
+    assert_eq!(selected_question(&started, cx).as_deref(), Some("first"));
+    assert!(sources_open(&started, cx));
+    assert!(drawn(&started, SOURCES_PART_ID, cx));
+    assert_eq!(started.shown_modal(cx), None, "no Save as note");
+    assert_eq!(filter_text(&started, cx), "rustjkeyi");
+}
+
+/// Real key presses on the sources list: `j`, `k`, `r`, `e`, `s` are not the
+/// list's and never Thread commands (the turn selection stays, nothing is
+/// regenerated or saved, the part stays open with the list focused); Down,
+/// the list's own, moves the source selection.
+#[gpui_kit::test]
+fn keys_on_the_sources_list_never_reach_the_thread(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "first", cx);
+    ask(&started, &rt, "second", cx);
+    press(&started, "up", cx);
+    click(&started, source_row_id(1), cx);
+    assert!(focused(&started, LIST_ROWS_ID, cx));
+    for key in ["j", "k", "r", "e", "s"] {
+        press(&started, key, cx);
+        assert!(!pending(&started, cx), "{key}: nothing regenerated");
+        assert_eq!(
+            selected_question(&started, cx).as_deref(),
+            Some("first"),
+            "{key}"
+        );
+        assert!(drawn(&started, SOURCES_PART_ID, cx), "{key}");
+        assert!(focused(&started, LIST_ROWS_ID, cx), "{key}");
+        assert_eq!(started.shown_modal(cx), None, "{key}");
+    }
+    assert_eq!(selected_row(&started, cx), Some(0));
+    press(&started, "down", cx);
+    assert_eq!(selected_row(&started, cx), Some(1));
+
+    // Regenerate (the button) with the list focused: the part goes while
+    // the turn is pending, and the keyboard never rests on its undrawn
+    // list: the turn list has it.
+    click(&started, REGENERATE_ID, cx);
+    assert!(pending(&started, cx));
+    assert!(!drawn(&started, SOURCES_PART_ID, cx));
+    assert!(focused(&started, super::ask::TURNS_ID, cx));
+    drive(&rt, cx, |cx| !pending(&started, cx));
+}
+
 // ---- The reader ------------------------------------------------------------------
 
 /// Enter on a row opens the reader on that source's note, read off the UI
