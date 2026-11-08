@@ -93,7 +93,7 @@ const ROW_REMS: f32 = 2.;
 
 /// What the desktop app calls an action where the TUI's own label would
 /// mislead (the TUI's directional focus is the window's panel cycle here).
-fn action_label(action: &ActionShortcuts) -> String {
+pub(crate) fn action_label(action: &ActionShortcuts) -> String {
     use ActionShortcuts as A;
     match action {
         A::ToggleSidebar => "Toggle left side".into(),

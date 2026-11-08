@@ -82,7 +82,7 @@ enum Scope {
     Everywhere,
     /// Only while the editor is focused (the find bar is the editor's).
     Editor,
-    /// Only while the rail or a drawer is focused: arranging drawer views,
+    /// Only while the rail or a slot is focused: arranging views and slots,
     /// which acts on the focused slot (or the rail's cell). The editor keeps
     /// these chords for itself.
     Shell,
@@ -102,8 +102,6 @@ impl Scope {
             | ActionShortcuts::SplitSlotRight
             | ActionShortcuts::SplitSlotDown
             | ActionShortcuts::CloseSlot
-            | ActionShortcuts::MoveViewUp
-            | ActionShortcuts::MoveViewDown
             | ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
@@ -178,7 +176,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // still bind it under `[gui.keys]`). Never Shift+Enter: in the editor
         // that is a plain newline.
         A::FollowLink => &["primary+enter"],
-        // The right drawer's toggle: the left toggle plus Shift. It takes
+        // The right side's toggle: the left toggle plus Shift. It takes
         // the Ctrl+Shift+T that would be Ctrl+T's vim twin (no twin is made
         // for a chord another default holds); Ctrl+T needs none, as vim
         // reads no Ctrl+T.
@@ -274,9 +272,6 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
-        // The slot swaps: `MoveViewToNeighbour(Up / Down)` took their
-        // chords and does the same thing. A user may still bind them.
-        A::MoveViewUp | A::MoveViewDown => return None,
     })
 }
 

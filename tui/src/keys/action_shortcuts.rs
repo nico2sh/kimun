@@ -16,7 +16,7 @@ use crate::logic::text_action::TextAction;
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 19] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 17] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -27,8 +27,6 @@ pub const TUI_UNBOUND: [ActionShortcuts; 19] = [
     ActionShortcuts::FocusRegion(Dir::Down),
     ActionShortcuts::ToggleRightDrawer,
     ActionShortcuts::SaveNote,
-    ActionShortcuts::MoveViewUp,
-    ActionShortcuts::MoveViewDown,
     ActionShortcuts::KeyboardHelp,
     ActionShortcuts::QuerySyntax,
     ActionShortcuts::SplitSlotRight,
@@ -131,8 +129,6 @@ impl ActionShortcuts {
             ActionShortcuts::FocusRegion(Dir::Down) => "Focus region down".into(),
             ActionShortcuts::ToggleRightDrawer => "Toggle right drawer".into(),
             ActionShortcuts::SaveNote => "Save note".into(),
-            ActionShortcuts::MoveViewUp => "Move view up".into(),
-            ActionShortcuts::MoveViewDown => "Move view down".into(),
             ActionShortcuts::KeyboardHelp => "Keyboard shortcuts".into(),
             ActionShortcuts::QuerySyntax => "Query syntax".into(),
             ActionShortcuts::SplitSlotRight => "Split slot right".into(),
@@ -295,8 +291,6 @@ mod tests {
             (ActionShortcuts::MoveViewToNeighbour(Dir::Left), Nav),
             (ActionShortcuts::ToggleRightDrawer, Nav),
             (ActionShortcuts::SaveNote, Notes),
-            (ActionShortcuts::MoveViewUp, Nav),
-            (ActionShortcuts::MoveViewDown, Nav),
             (ActionShortcuts::KeyboardHelp, Other),
         ];
         for (action, category) in expected {

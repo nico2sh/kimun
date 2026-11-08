@@ -1811,8 +1811,7 @@ impl Workspace {
         })
     }
 
-    /// `MoveViewToNeighbour(Up / Down)` (and the unbound `MoveViewUp` /
-    /// `MoveViewDown`): move the focused view (or the rail
+    /// `MoveViewToNeighbour(Up / Down)`: move the focused view (or the rail
     /// cursor's) to the nearest drawn slot above (`up`) or below it,
     /// trading places with the view shown there; a focused view keeps the
     /// keyboard. With the rail cursor on a view no
@@ -2105,10 +2104,10 @@ impl Workspace {
             ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {
                 return self.move_view(*dir, window, cx);
             }
-            ActionShortcuts::MoveViewToNeighbour(Dir::Up) | ActionShortcuts::MoveViewUp => {
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up) => {
                 return self.move_view_vertically(true, window, cx);
             }
-            ActionShortcuts::MoveViewToNeighbour(Dir::Down) | ActionShortcuts::MoveViewDown => {
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down) => {
                 return self.move_view_vertically(false, window, cx);
             }
             ActionShortcuts::SplitSlotRight => {
