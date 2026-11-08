@@ -21,18 +21,17 @@
 //! which cannot collapse) shows [`TOO_SMALL`] under its header.
 //!
 //! **Dividers.** One pixel of window background separates drawn
-//! neighbours. Where the two are neighbours in the tree too, that pixel is
-//! a divider: a [`resize_handle`] straddling it, whose drag moves only that
+//! neighbours, and between two drawn children of one split that pixel is a
+//! divider: a [`resize_handle`] straddling it, whose drag moves only that
 //! boundary ([`Workspace::on_divider_drag`], the tree's
-//! [`resize_after`]) and is saved when it ends. The handles sit in an
-//! empty copy of the split's cells and gaps laid over it, so they paint
-//! above both neighbours. A drag or step stops at either cell's drawn
-//! minimum (Ruling 16). A drawn cell and an
-//! undrawn slot have no divider (Ruling 12), and neither do two drawn cells
-//! with an undrawn slot between them in the tree: `resize_after` moves the
-//! boundary between tree siblings, which there is not the one drawn. The
-//! leader's grow and shrink steps move a divider of the focused leaf by
-//! [`RESIZE_STEP`] ([`Workspace::step_focused_leaf`]).
+//! [`resize_after_visible`]) and is saved when it ends. Undrawn or
+//! collapsed siblings between the two are skipped and keep their weights
+//! (Ruling 23); an undrawn slot itself has no divider (Ruling 12). The
+//! handles sit in an empty copy of the split's cells and gaps laid over it,
+//! so they paint above both neighbours. A drag or step stops at either
+//! cell's drawn minimum (Ruling 16). The leader's grow and shrink steps
+//! move a divider of the focused leaf by [`RESIZE_STEP`]
+//! ([`Workspace::step_focused_leaf`]).
 //!
 //! **Zoom** (ADR-0053). While a leaf is zoomed only it is drawn, filling
 //! the whole area with the Footer under it (an editor group's own), and
@@ -42,7 +41,7 @@
 //! zoom draws the arrangement as it was.
 //!
 //! [shape]: kimun_notes::logic::layout_tree::LayoutTree::shape
-//! [`resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
+//! [`resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -165,9 +164,9 @@ impl DividerCell {
 pub(super) type DividerCells = Rc<RefCell<HashMap<Leaf, DividerCell>>>;
 
 /// The payload of a divider drag: the leaf whose following boundary it
-/// moves ([`LayoutTree::resize_after`]).
+/// moves ([`LayoutTree::resize_after_visible`]).
 ///
-/// [`LayoutTree::resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
+/// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DividerDrag(Leaf);
 
@@ -182,10 +181,10 @@ impl Render for DragGhost {
 }
 
 /// The last leaf of `shape` in reading order: in every split under it, it
-/// is in the last child, so [`LayoutTree::resize_after`] on it moves the
+/// is in the last child, so [`LayoutTree::resize_after_visible`] on it moves the
 /// boundary after `shape` itself.
 ///
-/// [`LayoutTree::resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
+/// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
 fn last_leaf(shape: &TreeShape) -> Leaf {
     match shape {
         TreeShape::Leaf(leaf) => *leaf,
@@ -534,25 +533,25 @@ impl Workspace {
                 // (element before, element after, divider leaf, minimums)
                 // per divider.
                 let mut pairs: Vec<(usize, usize, Leaf, f64, f64)> = Vec::new();
-                let mut previous: Option<(usize, usize, Leaf, f64)> = None;
+                // Consecutive drawn children are neighbours on screen, and
+                // the tree resizes between them across hidden siblings
+                // (`resize_after_visible`), so every seam is a divider.
+                let mut previous: Option<(usize, Leaf, f64)> = None;
                 let mut any_divider = false;
-                for (index, weight, min, last, element) in drawn {
-                    if let Some((prev_index, prev_element, prev_last, prev_min)) = previous {
-                        let adjacent = prev_index + 1 == index;
+                for (_, weight, min, last, element) in drawn {
+                    if let Some((prev_element, prev_last, prev_min)) = previous {
                         elements.push(self.render_gap(axis, None, cx));
-                        handles.push(self.render_gap(axis, adjacent.then_some(prev_last), cx));
-                        if adjacent {
-                            any_divider = true;
-                            pairs.push((
-                                prev_element,
-                                elements.len(),
-                                prev_last,
-                                prev_min,
-                                min.unwrap_or(0.0) / rem,
-                            ));
-                        }
+                        handles.push(self.render_gap(axis, Some(prev_last), cx));
+                        any_divider = true;
+                        pairs.push((
+                            prev_element,
+                            elements.len(),
+                            prev_last,
+                            prev_min,
+                            min.unwrap_or(0.0) / rem,
+                        ));
                     }
-                    previous = Some((index, elements.len(), last, min.unwrap_or(0.0) / rem));
+                    previous = Some((elements.len(), last, min.unwrap_or(0.0) / rem));
                     elements.push(cell(weight, min).child(element).into_any_element());
                     handles.push(cell(weight, min).into_any_element());
                 }
@@ -606,8 +605,8 @@ impl Workspace {
     }
 
     /// The pixel of window background between two drawn neighbours, so
-    /// touching cells never merge; with `divider` (the leaf before it,
-    /// when the two are tree siblings), a resize handle straddling it.
+    /// touching cells never merge; with `divider` (the last leaf of the
+    /// cell before it), a resize handle straddling it.
     fn render_gap(&self, axis: Axis, divider: Option<Leaf>, cx: &mut Context<Self>) -> AnyElement {
         let gap = div().flex_none().relative().map(|gap| match axis {
             Axis::Horizontal => gap.w(px(1.)).h_full(),
@@ -681,13 +680,13 @@ impl Workspace {
 
     /// The divider after `leaf` dragged to `pixel` (window px along its
     /// axis): the cell before it takes the share of the two cells' combined
-    /// drawn extent that ends there ([`LayoutTree::resize_after`]), held so
+    /// drawn extent that ends there ([`LayoutTree::resize_after_visible`]), held so
     /// neither cell goes under its drawn minimum (Ruling 16: past a floor
     /// flex would take the difference from a third cell). Only those two
     /// cells' weights change. Saved when the drag ends
     /// ([`Self::end_resize`]), not on every move.
     ///
-    /// [`LayoutTree::resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
+    /// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
     pub(crate) fn on_divider_drag(
         &mut self,
         leaf: Leaf,
@@ -702,7 +701,7 @@ impl Workspace {
         let Some(share) = cell.share_at(pixel - cell.start(), rem) else {
             return;
         };
-        if self.layout.resize_after(leaf, share) {
+        if self.resize_after_visible(leaf, share) {
             self.resizing = true;
             cx.notify();
         }
@@ -749,7 +748,7 @@ impl Workspace {
         let Some(share) = cell.share_at(cell.first() + step * cell.pair(), rem) else {
             return;
         };
-        if self.layout.resize_after(divider, share) {
+        if self.resize_after_visible(divider, share) {
             self.save_layout(cx);
             cx.notify();
         }
@@ -766,13 +765,27 @@ impl Workspace {
         if let Some(found) = self.divider_beside(&children[i].1, leaf) {
             return Some(found);
         }
-        if i + 1 < children.len() && self.shape_visible(&children[i + 1].1) {
+        // The nearest drawn sibling on either side, hidden ones between
+        // skipped, as the dividers are drawn.
+        if children[i + 1..].iter().any(|(_, c)| self.shape_visible(c)) {
             return Some((last_leaf(&children[i].1), true));
         }
-        if i > 0 && self.shape_visible(&children[i - 1].1) {
-            return Some((last_leaf(&children[i - 1].1), false));
-        }
-        None
+        children[..i]
+            .iter()
+            .rev()
+            .find(|(_, c)| self.shape_visible(c))
+            .map(|(_, c)| (last_leaf(c), false))
+    }
+
+    /// Move the boundary after `leaf`'s branch to `share` of it and the
+    /// next drawn sibling (hidden and collapsed leaves skipped, keeping
+    /// their weights), as the dividers are drawn.
+    fn resize_after_visible(&mut self, leaf: Leaf, share: f64) -> bool {
+        let leaves = self.layout.slots().into_iter().map(Leaf::Slot);
+        let leaves = leaves.chain(self.layout.groups().into_iter().map(Leaf::Group));
+        let visible: Vec<Leaf> = leaves.filter(|l| self.leaf_visible(*l)).collect();
+        self.layout
+            .resize_after_visible(leaf, share, &|l| visible.contains(&l))
     }
 
     /// Whether anything in `shape` is visible (drawn and not collapsed).
