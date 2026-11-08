@@ -1736,14 +1736,14 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         assert_eq!(
             spy.read(cx).bubbled,
             1,
-            "the right drawer's chord passes the editor by"
+            "the right side's chord passes the editor by"
         );
         // Ctrl-T has no vim twin, but vim reads no Ctrl-T: it passes too.
         window.press("ctrl-t", cx);
         assert_eq!(
             spy.read(cx).bubbled,
             2,
-            "the left drawer's chord passes the editor by"
+            "the left side's chord passes the editor by"
         );
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx), "Ctrl-F is find under vim");
@@ -1809,7 +1809,7 @@ fn the_macos_table_finds_on_cmd_f(cx: &mut TestAppContext) {
 }
 
 /// A chord bound to an app command the editor does not own (focus, the
-/// drawer) is not the editor's to act on: Alt+Left no longer moves by word
+/// slot) is not the editor's to act on: Alt+Left no longer moves by word
 /// (ADR-0050 §4), Ctrl-T does not reach the editor.
 #[gpui_kit::test]
 fn app_chords_pass_the_editor_by(cx: &mut TestAppContext) {

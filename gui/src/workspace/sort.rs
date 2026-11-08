@@ -16,7 +16,7 @@
 //!   query syntax does); Escape returns to it.
 //!
 //! **Opening.** The `OpenSortDialog` chord (primary+R) from the rail or a
-//! drawer sorts the focused view (FILES or FIND), and inside the search
+//! slot sorts the focused view (FILES or FIND), and inside the search
 //! browser the browser; it is never live in the editor, where Ctrl+R is
 //! vim's redo. The palette row sorts the focused view (FILES when it is
 //! none); each list's sort chip opens it with a click. The chord again

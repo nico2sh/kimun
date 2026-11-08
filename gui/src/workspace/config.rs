@@ -7,7 +7,7 @@
 //!   theme pick or a Preferences save shows at once, without a reopen. The
 //!   key rows are the desktop app's own chords (`keymap`), every chord of the
 //!   action (`F4 / Ctrl+,`), or "not set" when none is bound. A path too long
-//!   for the drawer ends in an ellipsis; its tooltip holds all of it.
+//!   for the slot ends in an ellipsis; its tooltip holds all of it.
 //! - **Theme name.** The configured name resolves against the theme list,
 //!   which reads the themes folder: that runs on tokio's blocking pool when
 //!   the configured name changes, and the configured name (or the default

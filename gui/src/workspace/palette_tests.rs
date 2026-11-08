@@ -305,7 +305,7 @@ fn a_click_on_a_disabled_row_is_inert(cx: &mut TestAppContext) {
     assert!(dialog_open(&shell, cx), "a disabled row does not run");
 }
 
-/// A click on a runnable row runs it at once: the right drawer's toggle.
+/// A click on a runnable row runs it at once: the right side's toggle.
 #[gpui_kit::test]
 fn a_click_runs_a_runnable_row(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
@@ -378,7 +378,7 @@ fn formatting_runs_on_the_note_that_had_the_keyboard(cx: &mut TestAppContext) {
 }
 
 /// A GUI-only row runs the chord's command in the opener's context: the
-/// right drawer's toggle.
+/// right side's toggle.
 #[gpui_kit::test]
 fn a_gui_row_runs_its_chord(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
@@ -402,7 +402,7 @@ fn a_drawer_leaf_shows_its_view(cx: &mut TestAppContext) {
     type_text(&shell, "open drawer tags", cx);
     press(&shell, "enter", cx);
     settle(&shell, cx);
-    assert_eq!(cx.read(|cx| shell.drawer_view(cx)), DrawerView::Tags);
+    assert_eq!(cx.read(|cx| shell.left_slot_view(cx)), DrawerView::Tags);
     assert_eq!(cx.read(|cx| shell.focused(cx)), Panel::Drawer(Side::Left));
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -517,7 +517,7 @@ fn a_leaf_sent_on_the_channel_runs_unless_a_modal_is_open(cx: &mut TestAppContex
     );
     cx.run_until_parked();
     assert_ne!(
-        cx.read(|cx| shell.drawer_view(cx)),
+        cx.read(|cx| shell.left_slot_view(cx)),
         DrawerView::Tags,
         "dropped under the palette"
     );
@@ -529,7 +529,7 @@ fn a_leaf_sent_on_the_channel_runs_unless_a_modal_is_open(cx: &mut TestAppContex
         cx,
     );
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| shell.drawer_view(cx)), DrawerView::Tags);
+    assert_eq!(cx.read(|cx| shell.left_slot_view(cx)), DrawerView::Tags);
     assert_eq!(cx.read(|cx| shell.focused(cx)), Panel::Drawer(Side::Left));
 }
 

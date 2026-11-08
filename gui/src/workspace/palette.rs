@@ -51,7 +51,7 @@ use super::files::ClickPolicy;
 use super::modal::{ModalKind, Slot};
 use super::presets::PresetCommand;
 use super::route::{
-    NEEDS_DRAWER_FOCUS, NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE,
+    NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS, NO_WORKSPACE,
 };
 use crate::input;
 use crate::keymap;
@@ -365,9 +365,9 @@ impl Workspace {
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink => {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
-            A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_DRAWER_FOCUS),
+            A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
             A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => {
-                (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_DRAWER_FOCUS)
+                (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_SLOT_FOCUS)
             }
             A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),

@@ -970,7 +970,7 @@ impl Render for FilesPane {
 // ---- The workspace's side ----------------------------------------------------
 
 impl Workspace {
-    /// Make the FILES view over the vault the window opened (the drawer
+    /// Make the FILES view over the vault the window opened (the slot
     /// shows it; nothing is listed until it is first needed).
     pub(super) fn start_files(
         &mut self,
@@ -1086,7 +1086,7 @@ impl Workspace {
             .map_or_else(VaultPath::root, |note| note.get_parent_path().0)
     }
 
-    /// `OpenFileBrowser`: show FILES in the drawer where it lives (its home
+    /// `OpenFileBrowser`: show FILES in the slot where it lives (its home
     /// side when it is in no slot), on the open note's folder when it shows
     /// another one (a filter and a selection in the right folder stay), and
     /// give it the keyboard.

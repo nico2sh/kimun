@@ -346,7 +346,7 @@ impl Workspace {
             return false;
         }
         // The browser's sort: stacked over it, whatever panel opened it
-        // (the chord is scoped to the drawers otherwise).
+        // (the chord is scoped to the slots otherwise).
         if open == ModalKind::Search
             && !self.query_help
             && keymap.is_bound(key, &ActionShortcuts::OpenSortDialog)
@@ -355,7 +355,7 @@ impl Workspace {
             return true;
         }
         // The browser's query is saved from the browser whatever panel
-        // opened it (the chord is scoped to the drawers otherwise).
+        // opened it (the chord is scoped to the slots otherwise).
         if open == ModalKind::Search && keymap.is_bound(key, &ActionShortcuts::SaveCurrentQuery) {
             self.save_browser_query(window, cx);
             return true;

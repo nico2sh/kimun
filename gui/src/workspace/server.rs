@@ -55,7 +55,7 @@ impl Workspace {
 
     /// What the server can do changed (`AppMessage::RagStatus`): the Footer
     /// words it; a capability that flipped rebuilds the rail (a view placed
-    /// in a drawer stays put, only its cell comes or goes; the rail cursor
+    /// in a slot stays put, only its cell comes or goes; the rail cursor
     /// stays on its view when it can); SEM learns whether it can search.
     pub(crate) fn on_rag_status(&mut self, status: RagStatus, cx: &mut Context<Self>) {
         self.rag_status = status;

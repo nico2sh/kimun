@@ -17,7 +17,7 @@
 //! (Ctrl+S saves, Ctrl+E opens FILES). Every default bound to a bare
 //! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads, unless
 //! another default already holds that Ctrl+Shift chord (Ctrl+Shift+T is the
-//! right drawer's toggle, so Ctrl+T has no twin; vim reads no Ctrl+T).
+//! right side's toggle, so Ctrl+T has no twin; vim reads no Ctrl+T).
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
 
@@ -115,7 +115,7 @@ impl Scope {
             // The query chord shadows, see the type's docs.
             (Scope::Query, Scope::Everywhere) | (Scope::Everywhere, Scope::Query) => false,
             (Scope::Everywhere, _) | (_, Scope::Everywhere) => true,
-            // A query is typed in a drawer (FIND) or over any panel (the
+            // A query is typed in a slot (FIND) or over any panel (the
             // browser): it meets both of the panel scopes.
             (Scope::Query, _) | (_, Scope::Query) => true,
             (a, b) => a == b,
@@ -145,7 +145,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // find-and-replace. Elsewhere Ctrl+H stays where M4 put it.
         A::ReplaceInBuffer if mac => &["cmd+alt+f"],
         A::ReplaceInBuffer => &["ctrl+h"],
-        // The TUI's drawer toggle, kept for muscle memory.
+        // The TUI's side toggle, kept for muscle memory.
         A::ToggleSidebar => &["primary+t"],
         // Directional focus (ADR-0050 §4). Not Ctrl+Arrow (word motion) and
         // not Ctrl+Alt+Arrow (GNOME's workspace switch).
@@ -234,8 +234,8 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Cmd/Ctrl+W closes a tab or window on the desktop. Not a bare
         // Ctrl+letter, so no twin; vim reads no Ctrl+Shift+W.
         A::QuickNote => &["primary+shift+w"],
-        // Copy the selected drawer row (a note's path, a heading's text;
-        // M7a G1): the desktop's copy, only from the rail or a drawer, so
+        // Copy the selected list row (a note's path, a heading's text;
+        // M7a G1): the desktop's copy, only from the rail or a slot, so
         // the editor keeps it. Where no list row is selected (the FILES
         // filter) the chord passes on and copies the field's text.
         A::YankRow => &["primary+c"],
@@ -246,12 +246,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The saved searches (M7b G6): the TUI's F3. Everywhere.
         A::OpenSavedSearches => &["f3"],
         // Save the query (M7b G6): the TUI's Ctrl+D, only from the rail or
-        // a drawer (FIND), so the editor keeps it whatever it means there
+        // a slot (FIND), so the editor keeps it whatever it means there
         // (vim's half-page down); the search browser takes it too while it
         // is the open modal (the workspace checks [`Keymap::is_bound`]).
         A::SaveCurrentQuery => &["primary+d"],
         // The sort dialog (M7b G7): the TUI's Ctrl+R, only from the rail or
-        // a drawer (FILES, FIND), never the editor, where Ctrl+R is vim's
+        // a slot (FILES, FIND), never the editor, where Ctrl+R is vim's
         // redo; the search browser takes it too while it is the open modal
         // (the workspace checks [`Keymap::is_bound`]).
         A::OpenSortDialog => &["primary+r"],

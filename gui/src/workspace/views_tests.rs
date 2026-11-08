@@ -411,7 +411,7 @@ fn links_follows_a_switch_a_rename_and_a_delete(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
-    // In the right drawer, so the FILES a delete shows does not hide it.
+    // In the right slot, so the FILES a delete shows does not hide it.
     started.workspace.update(cx, |w, cx| {
         w.move_to_side(DrawerView::Links, Side::Right);
         w.refresh_views(cx);
@@ -650,7 +650,7 @@ fn a_deleted_heading_flashes(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("o.md", "# Top\n## Gone\ntext")], "o.md");
-    // In the right drawer, so the editor can be typed in while it shows.
+    // In the right slot, so the editor can be typed in while it shows.
     started.workspace.update(cx, |w, cx| {
         w.move_to_side(DrawerView::Outline, Side::Right);
         w.refresh_views(cx);

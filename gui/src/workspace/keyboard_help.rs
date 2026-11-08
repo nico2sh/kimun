@@ -432,7 +432,7 @@ impl Workspace {
             .into_iter()
             .filter_map(|action| {
                 let chords = keymap.chords_for(&action);
-                // Shipped without a chord (formatting, the query drawer):
+                // Shipped without a chord (formatting, the query view):
                 // not the reference's to list.
                 if chords.is_empty() && !keymap.ships_bound(&action) {
                     return None;

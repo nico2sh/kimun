@@ -1118,7 +1118,7 @@ fn leaving_a_rerun_closes_or_asks(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
-/// While the assistant shows, the shell's chords do nothing: no drawer
+/// While the assistant shows, the shell's chords do nothing: no slot
 /// toggles, no palette, no leader sequence.
 #[gpui_kit::test]
 fn shell_chords_are_inert_while_it_shows(cx: &mut TestAppContext) {
@@ -1129,7 +1129,7 @@ fn shell_chords_are_inert_while_it_shows(cx: &mut TestAppContext) {
     let left = |cx: &TestAppContext| cx.read(|cx| s.workspace.read(cx).side_drawn(Side::Left));
     let before = left(cx);
     s.ob_press("ctrl-t", cx);
-    assert_eq!(left(cx), before, "the drawer toggle is inert");
+    assert_eq!(left(cx), before, "the side toggle is inert");
     s.ob_press("ctrl-shift-p", cx);
     assert_eq!(s.shown_modal(cx), None, "no palette");
     s.ob_press("ctrl-shift-b", cx);

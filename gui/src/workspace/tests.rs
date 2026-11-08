@@ -1,4 +1,4 @@
-//! UI integration tests for the shell: a real `Workspace` (rail, drawer,
+//! UI integration tests for the shell: a real `Workspace` (rail, slot,
 //! editor) in a headless window, driven by GPUI keyboard and pointer events.
 
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use crate::{shell_layout, shell_tree};
 
 pub(super) const HEIGHT: f32 = 480.;
 /// The left slot in the default layout, showing FILES.
-const DRAWER: &str = "slot-files";
+const FILES_SLOT: &str = "slot-files";
 
 pub(super) struct Shell {
     pub(super) handle: AnyWindowHandle,
@@ -43,7 +43,7 @@ impl Shell {
     }
 
     /// Whether a slot left of the editor is drawn.
-    pub(super) fn drawer_shown(&self, cx: &gpui_kit::App) -> bool {
+    pub(super) fn left_side_shown(&self, cx: &gpui_kit::App) -> bool {
         let workspace = self.workspace.read(cx);
         workspace
             .side_slots(Side::Left)
@@ -52,7 +52,7 @@ impl Shell {
     }
 
     /// The view the first slot left of the editor shows.
-    pub(super) fn drawer_view(&self, cx: &gpui_kit::App) -> DrawerView {
+    pub(super) fn left_slot_view(&self, cx: &gpui_kit::App) -> DrawerView {
         let workspace = self.workspace.read(cx);
         let slot = workspace.side_slots(Side::Left)[0];
         workspace
@@ -171,18 +171,18 @@ fn the_shell_composes_at_several_window_widths(cx: &mut TestAppContext) {
             let rem = f32::from(window.rem_size());
             assert_eq!(rem, 16.0, "the widths below assume the default rem");
             let rail = window.find("rail").bounds();
-            let drawer_b = window.find(DRAWER).bounds();
+            let slot_b = window.find(FILES_SLOT).bounds();
             let editor = window.find("editor-panel").bounds();
             assert!(close(rail.left(), 0.0));
             assert!(close(rail.size.width, shell_layout::RAIL_REMS * rem));
-            assert!(close(drawer_b.left(), f32::from(rail.right())));
+            assert!(close(slot_b.left(), f32::from(rail.right())));
             let rest = width - shell_layout::RAIL_REMS * rem;
             assert!(
-                close(drawer_b.size.width, (rest - 1.) * 0.25),
+                close(slot_b.size.width, (rest - 1.) * 0.25),
                 "{width}: slot {:?}",
-                drawer_b.size.width
+                slot_b.size.width
             );
-            assert!(close(editor.left(), f32::from(drawer_b.right()) + 1.));
+            assert!(close(editor.left(), f32::from(slot_b.right()) + 1.));
             assert!(close(editor.right(), width), "{width}: editor {editor:?}");
             assert!(close(editor.size.height, HEIGHT));
         })
@@ -198,7 +198,7 @@ fn the_shell_starts_with_the_editor_focused(cx: &mut TestAppContext) {
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(window.find("editor").focused(), Some(true));
         assert_eq!(window.find("rail").focused(), Some(false));
-        assert_eq!(window.find(DRAWER).focused(), Some(false));
+        assert_eq!(window.find(FILES_SLOT).focused(), Some(false));
         window.input("hi", cx);
         assert_eq!(shell.text(cx), "hi");
     })
@@ -208,7 +208,7 @@ fn the_shell_starts_with_the_editor_focused(cx: &mut TestAppContext) {
 /// The left side's toggle hides its slot, giving its width to the editor,
 /// and brings it back focused (the TUI's toggle); each change is saved.
 #[gpui_kit::test]
-fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
+fn the_toggle_gives_the_slot_width_to_the_editor(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
@@ -222,7 +222,7 @@ fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert!(window.try_find(DRAWER).is_none());
+        assert!(window.try_find(FILES_SLOT).is_none());
         let rail = window.find("rail").bounds();
         let editor = window.find("editor-panel").bounds();
         assert!(close(editor.left(), f32::from(rail.right())));
@@ -234,15 +234,18 @@ fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
 
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert!(close(window.find(DRAWER).bounds().size.width, 951.0 * 0.25));
+        assert!(close(
+            window.find(FILES_SLOT).bounds().size.width,
+            951.0 * 0.25
+        ));
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        assert_eq!(window.find(DRAWER).focused(), Some(true));
+        assert_eq!(window.find(FILES_SLOT).focused(), Some(true));
         assert!(saved_left_shows(&path));
-        // From the drawer the toggle works too (app chords win there), and
-        // closing the focused drawer gives the keyboard to the editor, not
+        // From the slot the toggle works too (app chords win there), and
+        // closing the focused slot gives the keyboard to the editor, not
         // to the rail (the model's and the TUI's fallback).
         window.press("ctrl-t", cx);
-        assert!(!shell.drawer_shown(cx));
+        assert!(!shell.left_side_shown(cx));
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(window.find("editor").focused(), Some(true));
         window.input("d", cx);
@@ -251,8 +254,8 @@ fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// A rail click opens its view in the drawer and focuses it; clicking the
-/// shown view closes the drawer. The view is saved.
+/// A rail click opens its view in the slot and focuses it; clicking the
+/// shown view closes the slot. The view is saved.
 #[gpui_kit::test]
 fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -277,7 +280,7 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
 
         window.click(rail_cell_id(DrawerView::Tags), cx);
         window.render_frame(cx);
-        assert_eq!(shell.drawer_view(cx), DrawerView::Tags);
+        assert_eq!(shell.left_slot_view(cx), DrawerView::Tags);
         assert_eq!(window.find("slot-tags").label(), Some("Tags"));
         assert_eq!(
             window.find(rail_cell_id(DrawerView::Tags)).selected(),
@@ -297,7 +300,7 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
         let config = window.find(rail_cell_id(DrawerView::Config)).bounds();
         assert!(f32::from(config.bottom()) > HEIGHT - 2.0 * 16.0 - 8.0);
         window.click(rail_cell_id(DrawerView::Config), cx);
-        assert_eq!(shell.drawer_view(cx), DrawerView::Config);
+        assert_eq!(shell.left_slot_view(cx), DrawerView::Config);
 
         // The shown view again: its slot closes, focus stays on the rail;
         // it stays placed there, hidden.
@@ -322,9 +325,9 @@ fn keys_go_to_the_focused_panel_only(cx: &mut TestAppContext) {
     let shell = open_default(cx, "");
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(DRAWER, cx);
+        window.click(FILES_SLOT, cx);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        assert_eq!(window.find(DRAWER).focused(), Some(true));
+        assert_eq!(window.find(FILES_SLOT).focused(), Some(true));
         window.input("x", cx);
         window.press("enter", cx);
         assert_eq!(shell.text(cx), "", "the editor is not focused");
@@ -347,7 +350,7 @@ fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("alt-left", cx);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        assert_eq!(window.find(DRAWER).focused(), Some(true));
+        assert_eq!(window.find(FILES_SLOT).focused(), Some(true));
         window.press("alt-left", cx);
         assert_eq!(shell.focused(cx), Panel::Rail);
         assert_eq!(window.find("rail").focused(), Some(true));
@@ -367,7 +370,7 @@ fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.press("ctrl-shift-tab", cx);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        // A hidden drawer is skipped (hiding it focused the editor).
+        // A hidden slot is skipped (hiding it focused the editor).
         window.press("ctrl-t", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.press("ctrl-tab", cx);
@@ -389,14 +392,14 @@ fn the_rail_works_from_the_keyboard(cx: &mut TestAppContext) {
         assert_eq!(shell.focused(cx), Panel::Rail);
         window.press("down", cx);
         window.press("enter", cx);
-        assert_eq!(shell.drawer_view(cx), DrawerView::Find);
+        assert_eq!(shell.left_slot_view(cx), DrawerView::Find);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
     })
     .unwrap();
 }
 
 /// The find bar still opens and searches inside the shell, and its chord is
-/// the editor's only: with the drawer focused it does nothing.
+/// the editor's only: with the slot focused it does nothing.
 #[gpui_kit::test]
 fn the_find_bar_still_works_in_the_shell(cx: &mut TestAppContext) {
     let shell = open_default(cx, "foo bar foo");
@@ -487,10 +490,10 @@ fn the_saved_layout_is_restored(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("slot-outline").is_none());
-        assert!(window.try_find(DRAWER).is_none());
+        assert!(window.try_find(FILES_SLOT).is_none());
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert_eq!(window.find(DRAWER).label(), Some("Files"));
+        assert_eq!(window.find(FILES_SLOT).label(), Some("Files"));
     })
     .unwrap();
 }

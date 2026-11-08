@@ -804,14 +804,14 @@ fn a_quick_note_still_reports_after_a_file_op_closed_it(cx: &mut TestAppContext)
 
 // ── leader `n n`─────────────────────────────────────────────────────────
 
-/// Leader `n n` shows FILES (its drawer was hidden) with the filter holding
+/// Leader `n n` shows FILES (its slot was hidden) with the filter holding
 /// the keyboard: typing a name offers `Create:`.
 #[gpui_kit::test]
 fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
-    // Hide the left drawer first.
+    // Hide the left slot first.
     let shown = cx.read(|cx| started.workspace.read(cx).side_drawn(Side::Left));
     if shown {
         press(&started, "ctrl-t", cx);

@@ -201,12 +201,12 @@ pub fn divider(theme: &Theme) -> Rgba {
     to_gpui(&theme.border_dim, Token::Foreground, theme)
 }
 
-// ---- The shell (rail, drawer, focus) ----------------------------------------
+// ---- The shell (rail, slot, focus) ----------------------------------------
 
 /// How far the foreground is mixed into the background for a derived hover.
 const HOVER_MIX: f32 = 0.08;
 
-/// The rail and drawer surface: the TUI's panel background (the page when
+/// The rail and slot surface: the TUI's panel background (the page when
 /// the theme leaves it to the terminal).
 pub fn panel_background(theme: &Theme) -> Rgba {
     to_gpui(&theme.bg_panel, Token::Background, theme)
@@ -286,7 +286,7 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     let hover = hover_background(theme);
     let focus = focus_border(theme);
     // One tone for the dialog frame and its list (`popover`), so no seam shows
-    // where the frame is taller than the rows: the panel surface, as the drawers.
+    // where the frame is taller than the rows: the panel surface, as the slots.
     kit.background = surface.into();
     kit.foreground = text.into();
     kit.popover = surface.into();
@@ -759,7 +759,7 @@ mod tests {
     }
 
     /// Every built-in theme, light and dark, keeps a toast readable on its
-    /// card (the panel surface). The message is the drawers' own text on the
+    /// card (the panel surface). The message is the slots' own text on the
     /// same surface: at least 3:1 on all of them (the lowest, Solarized
     /// Light, is 3.6). The kinds' icons are the theme's own palette, as the
     /// editor and the TUI use it, and only repeat what the message says;

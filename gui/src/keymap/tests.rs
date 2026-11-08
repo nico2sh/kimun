@@ -368,7 +368,7 @@ fn query_syntax_is_f1_only_where_a_query_is_typed() {
         "F1 is the reference's again where a query is typed"
     );
 
-    // A drawer-scoped chord (the sort dialog's) is not free for it.
+    // A slot-scoped chord (the sort dialog's) is not free for it.
     let (_, errors) = Keymap::load(LinuxWindows, &overrides(&[("QuerySyntax", &["ctrl+r"])]));
     assert_eq!(
         errors,
@@ -386,7 +386,7 @@ fn query_syntax_is_f1_only_where_a_query_is_typed() {
 #[test]
 fn vim_shadows_only_editor_chords_the_engine_reads() {
     let lw = Keymap::defaults(LinuxWindows);
-    // Ctrl+R sorts from the drawers only: never the editor's to lose.
+    // Ctrl+R sorts from the slots only: never the editor's to lose.
     assert!(!lw.vim_shadows(&A::OpenSortDialog, chord("ctrl+r")));
     // An everywhere action bound to Ctrl+V loses it in the vim editor.
     assert!(lw.vim_shadows(&A::OpenNote, chord("ctrl+v")));
@@ -559,11 +559,11 @@ fn the_file_operations_chord_from_every_panel() {
     }
 }
 
-/// Copying the selected drawer row (M7a G1) is primary+C (and its Ctrl+Shift
-/// twin) from the rail and the drawers only: in the editor, vim or not, the
+/// Copying the selected list row (M7a G1) is primary+C (and its Ctrl+Shift
+/// twin) from the rail and the slots only: in the editor, vim or not, the
 /// chord stays the editor's copy.
 #[test]
-fn the_copy_row_chord_is_the_drawers_only() {
+fn the_copy_row_chord_is_the_slots_only() {
     let lw = Keymap::defaults(LinuxWindows);
     let mac = Keymap::defaults(MacOs);
     for panel in PANELS {
@@ -629,7 +629,7 @@ fn the_search_chord_from_every_panel() {
 }
 
 /// The saved searches (F3, M7b G6) from every panel, vim or not; saving
-/// the query (Ctrl/Cmd+D and Ctrl+Shift+D) only from the rail or a drawer:
+/// the query (Ctrl/Cmd+D and Ctrl+Shift+D) only from the rail or a slot:
 /// in the editor the chord stays the editor's (vim's half-page down), and
 /// the search browser takes it by [`Keymap::is_bound`] whatever opened it.
 #[test]
@@ -732,7 +732,7 @@ fn the_leader_chord_from_every_panel() {
 }
 
 /// A vim twin yields to another action's default: Ctrl+Shift+T is the
-/// right drawer's toggle, not Ctrl+T's twin. With the right toggle rebound,
+/// right side's toggle, not Ctrl+T's twin. With the right toggle rebound,
 /// Ctrl+T gets its twin back.
 #[test]
 fn a_vim_twin_yields_to_another_default() {
@@ -987,7 +987,7 @@ fn every_default_action_is_reachable_in_every_context() {
 }
 
 /// The exhaustive resolution table: each probe chord in the editor (plain,
-/// vim), in a drawer and on the rail. A drawer or the rail resolves the same
+/// vim), in a slot and on the rail. A slot or the rail resolves the same
 /// with vim on or off (the vim rule is the editor's), which the loop checks.
 fn resolution(platform: Platform, rows: &[(&str, [Option<ActionShortcuts>; 3])]) {
     let keymap = Keymap::defaults(platform);
@@ -1038,22 +1038,22 @@ fn linux_windows_resolution_table() {
     let split_right = Some(A::SplitSlotRight);
     let split_down = Some(A::SplitSlotDown);
     let close_slot = Some(A::CloseSlot);
-    let right_drawer = Some(A::ToggleRightDrawer);
+    let right_side = Some(A::ToggleRightDrawer);
     let view_up = Some(A::MoveViewToNeighbour(Dir::Up));
     let view_down = Some(A::MoveViewToNeighbour(Dir::Down));
     resolution(
         LinuxWindows,
         &[
-            //                 plain editor  vim editor  drawer / rail
+            //                 plain editor  vim editor  slot / rail
             ("ctrl+f", [find.clone(), find.clone(), None]),
             ("ctrl+shift+f", [find.clone(), find, None]),
             ("ctrl+h", [replace.clone(), replace.clone(), None]),
             ("ctrl+shift+h", [replace.clone(), replace, None]),
-            // Ctrl+T has no vim twin: Ctrl+Shift+T is the right drawer's.
+            // Ctrl+T has no vim twin: Ctrl+Shift+T is the right slot's.
             ("ctrl+t", [toggle.clone(), toggle.clone(), toggle]),
             (
                 "ctrl+shift+t",
-                [right_drawer.clone(), right_drawer.clone(), right_drawer],
+                [right_side.clone(), right_side.clone(), right_side],
             ),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
@@ -1061,7 +1061,7 @@ fn linux_windows_resolution_table() {
             ("ctrl+shift+n", [None, None, None]),
             ("ctrl+enter", [follow.clone(), follow, None]),
             // Vim reads Ctrl+R (redo): the sort dialog's chord is the rail's
-            // and the drawers' only, so the editor keeps it, vim or not.
+            // and the slots' only, so the editor keeps it, vim or not.
             ("ctrl+r", [None, None, Some(A::OpenSortDialog)]),
             ("ctrl+shift+r", [None, None, Some(A::OpenSortDialog)]),
             ("alt+left", [left.clone(), left.clone(), left]),
@@ -1070,7 +1070,7 @@ fn linux_windows_resolution_table() {
             ("alt+down", [down.clone(), down.clone(), down]),
             ("ctrl+tab", [next.clone(), next.clone(), next]),
             ("ctrl+shift+tab", [prev.clone(), prev.clone(), prev]),
-            // Arranging views: the rail's and the drawers', never the
+            // Arranging views: the rail's and the slots', never the
             // editor's (it keeps Alt+Shift+Arrow).
             ("alt+shift+left", [None, None, to_left]),
             ("alt+shift+right", [None, None, to_right]),
@@ -1079,14 +1079,14 @@ fn linux_windows_resolution_table() {
             ("alt+shift+r", [None, None, split_right]),
             ("alt+shift+d", [None, None, split_down]),
             ("alt+shift+w", [None, None, close_slot]),
-            // The retired drawer split / unsplit chords are free.
+            // The retired drawer-era split / unsplit chords are free.
             ("alt+shift+s", [None, None, None]),
             ("alt+shift+u", [None, None, None]),
-            // Saving FIND's query: the drawers' only; the editor (vim's
+            // Saving FIND's query: the slots' only; the editor (vim's
             // half-page down) keeps Ctrl+D.
             ("ctrl+d", [None, None, Some(A::SaveCurrentQuery)]),
             ("ctrl+shift+d", [None, None, Some(A::SaveCurrentQuery)]),
-            // The old right-drawer chord is free again.
+            // The old right-side chord is free again.
             ("ctrl+alt+b", [None, None, None]),
             // Not bound here: they reach the editor (or nothing).
             ("cmd+f", [None, None, None]),
@@ -1115,13 +1115,13 @@ fn macos_resolution_table() {
     let split_right = Some(A::SplitSlotRight);
     let split_down = Some(A::SplitSlotDown);
     let close_slot = Some(A::CloseSlot);
-    let right_drawer = Some(A::ToggleRightDrawer);
+    let right_side = Some(A::ToggleRightDrawer);
     let view_up = Some(A::MoveViewToNeighbour(Dir::Up));
     let view_down = Some(A::MoveViewToNeighbour(Dir::Down));
     resolution(
         MacOs,
         &[
-            //                 plain editor  vim editor  drawer / rail
+            //                 plain editor  vim editor  slot / rail
             ("cmd+f", [find.clone(), find, None]),
             ("cmd+alt+f", [replace.clone(), replace, None]),
             ("cmd+t", [toggle.clone(), toggle.clone(), toggle]),
@@ -1141,12 +1141,12 @@ fn macos_resolution_table() {
             ("cmd+alt+shift+r", [None, None, split_right]),
             ("cmd+alt+shift+d", [None, None, split_down]),
             ("cmd+alt+shift+w", [None, None, close_slot]),
-            // The retired drawer split / unsplit chords are free.
+            // The retired drawer-era split / unsplit chords are free.
             ("cmd+alt+shift+s", [None, None, None]),
             ("cmd+alt+shift+u", [None, None, None]),
             (
                 "cmd+shift+t",
-                [right_drawer.clone(), right_drawer.clone(), right_drawer],
+                [right_side.clone(), right_side.clone(), right_side],
             ),
             ("cmd+alt+b", [None, None, None]),
             // Option+Shift+Arrow is word selection on macOS: not ours.
@@ -1265,13 +1265,13 @@ fn a_chord_held_by_another_action_is_rejected_not_stolen() {
             taken_by: A::ToggleSidebar,
         }]
     );
-    let drawer = ctx(Panel::Drawer(Side::Left), false);
+    let slot = ctx(Panel::Drawer(Side::Left), false);
     assert_eq!(
-        keymap.resolve(chord("ctrl+t"), drawer),
+        keymap.resolve(chord("ctrl+t"), slot),
         Some(&A::ToggleSidebar)
     );
     assert_eq!(
-        keymap.resolve(chord("ctrl+shift+g"), drawer),
+        keymap.resolve(chord("ctrl+shift+g"), slot),
         Some(&A::ToggleRightDrawer)
     );
 }
@@ -1374,7 +1374,7 @@ fn the_current_platform_matches_the_build_target() {
 }
 
 /// The sort dialog (M7b G7): Ctrl/Cmd+R and the Ctrl+Shift+R twin only from
-/// the rail or a drawer; never in the editor, where Ctrl+R is vim's redo
+/// the rail or a slot; never in the editor, where Ctrl+R is vim's redo
 /// (and the plain editor's own key), vim or not. The search browser takes
 /// it by [`Keymap::is_bound`] whatever opened it.
 #[test]

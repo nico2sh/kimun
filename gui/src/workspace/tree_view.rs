@@ -10,7 +10,7 @@
 //!
 //! **Minimum sizes** (ADR-0052 §6). A slot's minimum is that of the view it
 //! shows (`view_registry`, 1 unit = 1 rem; an empty slot is
-//! [`DRAWER_MIN_REMS`] wide), an editor group's [`EDITOR_MIN_REMS`] wide;
+//! [`SLOT_MIN_REMS`] wide), an editor group's [`EDITOR_MIN_REMS`] wide;
 //! heights count only in vertical splits. Each frame [`Workspace::fit`]
 //! collapses what does not fit: in the first overflowing split, children
 //! last to first, never a subtree holding an editor group. A collapsed leaf
@@ -62,7 +62,7 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
 use super::{Workspace, empty_slot_id, route, slot_id};
-use crate::shell_layout::{DRAWER_MIN_REMS, EDITOR_MIN_REMS, RAIL_REMS};
+use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
 
 /// What one leader grow or shrink step moves a divider by: this share of
@@ -244,12 +244,12 @@ fn seam(axis: gpui_kit::Axis, active: Rgba) -> ResizeHandleRenderer {
 
 impl Workspace {
     /// The minimum (width, height) of `slot`, in rems: the shown view's
-    /// (`view_registry`), [`DRAWER_MIN_REMS`] wide for a slot opened empty.
+    /// (`view_registry`), [`SLOT_MIN_REMS`] wide for a slot opened empty.
     /// Hidden views do not count.
     pub(crate) fn slot_min(&self, slot: SlotId) -> (f64, f64) {
         match self.layout.shown(slot) {
             Some(view) => view_registry::spec(view).min,
-            None => (f64::from(DRAWER_MIN_REMS), 0.0),
+            None => (f64::from(SLOT_MIN_REMS), 0.0),
         }
     }
 

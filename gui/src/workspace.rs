@@ -46,7 +46,7 @@
 //! window closes are the note session's, hosted in [`note`]; the Footer
 //! shows the note's path and whether it is saved.
 //!
-//! **FILES (M5b-2 G3).** With a vault, the left drawer's FILES view is the
+//! **FILES (M5b-2 G3).** With a vault, the left slot's FILES view is the
 //! [`files::FilesPane`]; the workspace keeps it in step with the app channel
 //! and does what its rows ask (open a note, show an attachment).
 //!
@@ -101,7 +101,7 @@
 //! thread.
 //!
 //! **Sorting (M7b G7).** The sort dialog (`OpenSortDialog` from the rail or
-//! a drawer, inside the search browser, the palette, each list's sort chip)
+//! a slot, inside the search browser, the palette, each list's sort chip)
 //! re-sorts FILES in place, or rewrites FIND's or the browser's query order
 //! ([`sort`]). Changes apply live; nothing is saved.
 //!
@@ -120,7 +120,7 @@
 //!
 //! **The setup assistant (M8c).** With no workspace configured, and from
 //! the leader / palette (`guided setup`), the window shows the setup
-//! assistant in place of its Panels ([`onboarding`]): the rail, the drawers
+//! assistant in place of its Panels ([`onboarding`]): the rail, the slots
 //! and the editor are not drawn and the workspace's chords do nothing until
 //! it is finished or left. Its theme choice restyles the window live.
 //!
@@ -452,7 +452,7 @@ pub(crate) struct Workspace {
     /// Keeps the Footer's dirty state in step with the editor.
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
-    /// Resolves the workspace's chords before a drawer's own key bindings
+    /// Resolves the workspace's chords before a slot's own key bindings
     /// can take them ([`Self::intercept_shell_key`]).
     _shell_keys: Subscription,
     /// What the window's one modal slot holds, while the kit says a dialog
@@ -579,7 +579,7 @@ pub(crate) struct Workspace {
 
 /// The labels the window derives from the active keymap's chords.
 struct ChordLabels {
-    /// What an empty drawer and an empty slot say
+    /// What an empty slot says
     /// ([`shell_layout::empty_slot_hint`]).
     empty_slot_hint: SharedString,
     /// The `Leader` chord (`Ctrl+Shift+B`), or a stand-in when unbound.
@@ -1344,7 +1344,7 @@ impl Workspace {
         }
     }
 
-    /// Whether `opener` (the panel that had the keyboard) is a drawer whose
+    /// Whether `opener` (the panel that had the keyboard) is a slot whose
     /// focused view lists rows a row can be copied from: LINKS, OUTLINE,
     /// FIND, TAGS or the Sources view.
     pub(crate) fn lists_have_keyboard(&self, opener: Panel) -> bool {
@@ -2071,7 +2071,7 @@ impl Workspace {
         self.focused_view() == Some(DrawerView::Find)
     }
 
-    /// A key while the rail or a drawer holds GPUI focus, seen before any
+    /// A key while the rail or a slot holds GPUI focus, seen before any
     /// key binding: a chord the keymap gives the workspace there runs now.
     /// GPUI dispatches bindings before key-down listeners, so without this
     /// a focused element's own binding (the FILES filter's Alt+Shift+Left is

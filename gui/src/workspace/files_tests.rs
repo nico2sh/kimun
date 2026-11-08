@@ -525,7 +525,7 @@ fn open_file_browser_reveals_the_notes_folder(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "sub/a.md");
-    // Hide the drawer; the chord shows it again, focused.
+    // Hide the slot; the chord shows it again, focused.
     started.press_key("ctrl-t", cx);
     assert!(!started.shows(FILES_ID, cx));
     focus_files(&started, cx);
@@ -599,7 +599,7 @@ impl Started {
 
 /// With the FILES filter holding the keyboard (where the kit's input binds
 /// Alt+Shift+Left/Right to word selection and Alt+Shift+Up/Down to extra
-/// carets), the move chords still carry FILES between the drawers, both
+/// carets), the move chords still carry FILES between the slots, both
 /// ways, and the keyboard stays in its filter.
 #[gpui_kit::test]
 fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
@@ -649,7 +649,7 @@ fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
     assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
 
     // From the rail the move is spatial: Alt+Shift+Right brings the
-    // cursor's view (FILES, moved right first) to the drawer beside the
+    // cursor's view (FILES, moved right first) to the slot beside the
     // rail; Alt+Shift+Left points at the window's edge and moves nothing.
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
@@ -663,7 +663,7 @@ fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
     assert_eq!(started.focused(cx), Panel::Rail);
 }
 
-/// The swap chords reorder a split drawer whichever slot holds the
+/// The swap chords reorder a split side whichever slot holds the
 /// keyboard: the FILES filter, or a placeholder view. The keyboard follows
 /// the moved view.
 #[gpui_kit::test]
@@ -731,7 +731,7 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     assert!(started.filter_focused(cx));
     assert_eq!(started.query(cx), "");
 
-    // Moved to the empty right drawer (its top slot) and split there,
+    // Moved to the empty right side (its top slot) and split there,
     // from the filter: FILES moves down into the empty slot.
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);

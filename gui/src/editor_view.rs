@@ -88,7 +88,7 @@ enum AppCommand {
     None,
     /// An editor command (find, replace), done.
     Handled,
-    /// Another owner's command (focus, the drawer): not the editor's.
+    /// Another owner's command (focus, the slot): not the editor's.
     NotOurs,
 }
 
