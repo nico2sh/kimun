@@ -1882,8 +1882,8 @@ created = "2026-01-01T00:00:00Z"
         std::fs::write(&path, "config_version = 3\ntheme = \"Nord\"\n").unwrap();
 
         AppSettings::update_gui_at(path.clone(), |gui| {
-            gui.set_drawer_width(crate::logic::layout::Side::Left, 300.0);
-            gui.set_drawer_visible(crate::logic::layout::Side::Left, false);
+            gui.set_layout_preset(Some("writing"));
+            gui.set_reduce_motion(true);
         })
         .unwrap();
 
@@ -1894,18 +1894,14 @@ created = "2026-01-01T00:00:00Z"
             config_migration::CURRENT_CONFIG_VERSION,
             "never written back unmigrated"
         );
-        assert_eq!(
-            back.gui.drawer_width(crate::logic::layout::Side::Left),
-            300.0
-        );
-        assert!(!back.gui.drawer_visible(crate::logic::layout::Side::Left));
+        assert_eq!(back.gui.layout_preset().as_deref(), Some("writing"));
+        assert!(back.gui.reduce_motion());
     }
 
     /// A TUI that loaded before the GUI changed its layout keeps that layout
     /// on its next save, and its own change still lands.
     #[test]
     fn a_tui_save_after_a_gui_edit_keeps_the_gui_layout() {
-        use crate::logic::layout::Side;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().canonicalize().unwrap().join("config.toml");
         let current = config_migration::CURRENT_CONFIG_VERSION;
@@ -1916,19 +1912,17 @@ created = "2026-01-01T00:00:00Z"
         .unwrap();
         let mut tui = AppSettings::load_from_file(path.clone()).unwrap();
 
-        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 333.0))
-            .unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_layout_preset(Some("a"))).unwrap();
         tui.set_theme("Gruvbox Dark".into());
         tui.save_to_disk().unwrap();
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         assert_eq!(back.theme, "Gruvbox Dark");
-        assert_eq!(back.gui.drawer_width(Side::Left), 333.0);
+        assert_eq!(back.gui.layout_preset().as_deref(), Some("a"));
     }
 
     #[test]
     fn update_gui_creates_a_missing_config_once_with_the_edit() {
-        use crate::logic::layout::Side;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir
             .path()
@@ -1937,14 +1931,11 @@ created = "2026-01-01T00:00:00Z"
             .join("sub")
             .join("config.toml");
 
-        AppSettings::update_gui_at(path.clone(), |gui| {
-            gui.set_drawer_visible(Side::Left, false)
-        })
-        .unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_reduce_motion(true)).unwrap();
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         // The defaults the TUI's own first start writes, plus the edit.
-        assert!(!back.gui.drawer_visible(Side::Left));
+        assert!(back.gui.reduce_motion());
         assert_eq!(back.theme, AppSettings::default().theme);
     }
 
@@ -1985,7 +1976,6 @@ created = "2026-01-01T00:00:00Z"
     /// settings, the `[gui]` table on disk kept.
     #[test]
     fn save_to_disk_if_parsable_saves_and_keeps_the_gui_on_disk() {
-        use crate::logic::layout::Side;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().canonicalize().unwrap().join("config.toml");
         let current = config_migration::CURRENT_CONFIG_VERSION;
@@ -1995,22 +1985,20 @@ created = "2026-01-01T00:00:00Z"
         )
         .unwrap();
         let mut copy = AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
-        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 321.0))
-            .unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_layout_preset(Some("b"))).unwrap();
         copy.set_theme("Gruvbox Dark".into());
 
         copy.save_to_disk_if_parsable().unwrap();
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         assert_eq!(back.theme, "Gruvbox Dark");
-        assert_eq!(back.gui.drawer_width(Side::Left), 321.0);
+        assert_eq!(back.gui.layout_preset().as_deref(), Some("b"));
     }
 
     /// The `[gui]` edit a preferences save carries lands over the table on
     /// disk, whose other keys (a newer layout) are kept, in the same write.
     #[test]
     fn save_with_a_gui_edit_lands_it_and_keeps_the_rest_of_the_gui_on_disk() {
-        use crate::logic::layout::Side;
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().canonicalize().unwrap().join("config.toml");
         let current = config_migration::CURRENT_CONFIG_VERSION;
@@ -2023,8 +2011,7 @@ created = "2026-01-01T00:00:00Z"
         )
         .unwrap();
         let mut copy = AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
-        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 321.0))
-            .unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_layout_preset(Some("b"))).unwrap();
         let before = copy.gui.clone();
         copy.gui.set_reduce_motion(true);
 
@@ -2033,7 +2020,7 @@ created = "2026-01-01T00:00:00Z"
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         assert!(back.gui.reduce_motion());
-        assert_eq!(back.gui.drawer_width(Side::Left), 321.0);
+        assert_eq!(back.gui.layout_preset().as_deref(), Some("b"));
     }
 
     #[test]
