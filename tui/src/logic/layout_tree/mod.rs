@@ -336,9 +336,13 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// The rail sits at the far left: Left from a leaf with nothing to its
     /// left reaches [`Focus::Rail`], and Right from the rail reaches the
     /// first leaf (leftmost, then topmost); Up/Down from the rail are not
-    /// handled.
+    /// handled. While a leaf is zoomed, only it and the rail are visible:
+    /// the zoomed leaf covers the unit square and is the only candidate.
     pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
-        let regions = self.regions();
+        let regions = match self.zoomed {
+            Some(z) => vec![(z, UnitRect::new(0.0, 0.0, 1.0, 1.0))],
+            None => self.regions(),
+        };
         let current = match self.focus {
             Focus::Leaf(l) => l,
             Focus::Rail => {
@@ -499,8 +503,12 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// Move `view` to the nearest slot in `dir` from its slot (the
     /// geometric rule of [`Self::focus_dir`], with only slots as
     /// candidates), shown there as by [`Self::move_view`]. False when
-    /// `view` is unplaced or no slot lies that way.
+    /// `view` is unplaced, no slot lies that way, or a leaf is zoomed (the
+    /// other slots are not visible).
     pub fn move_view_dir(&mut self, view: &V, dir: Dir) -> bool {
+        if self.zoomed.is_some() {
+            return false;
+        }
         let Some(from) = self.view_slot(view) else {
             return false;
         };
