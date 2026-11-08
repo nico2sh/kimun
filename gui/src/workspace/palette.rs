@@ -176,20 +176,26 @@ fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
         ("+window · focus up", A::FocusRegion(Dir::Up)),
         ("+window · focus down", A::FocusRegion(Dir::Down)),
         (
-            "+window · move view left",
+            "+window · move view left (new slot if none)",
             A::MoveViewToNeighbour(Dir::Left),
         ),
         (
-            "+window · move view right",
+            "+window · move view right (new slot if none)",
             A::MoveViewToNeighbour(Dir::Right),
         ),
-        ("+window · move view up", A::MoveViewToNeighbour(Dir::Up)),
         (
-            "+window · move view down",
+            "+window · move view up (new slot if none)",
+            A::MoveViewToNeighbour(Dir::Up),
+        ),
+        (
+            "+window · move view down (new slot if none)",
             A::MoveViewToNeighbour(Dir::Down),
         ),
-        ("+window · split slot right", A::SplitSlotRight),
-        ("+window · split slot down", A::SplitSlotDown),
+        (
+            "+window · split slot right (pick a view)",
+            A::SplitSlotRight,
+        ),
+        ("+window · split slot down (pick a view)", A::SplitSlotDown),
         ("+window · close slot", A::CloseSlot),
         ("+window · toggle zoom", A::ToggleZoom),
         ("+text · find in note", A::FindInBuffer),

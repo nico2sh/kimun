@@ -42,7 +42,7 @@ use gpui_kit::{
 };
 use kimun_notes::logic::actions::{ActionGroup, ActionShortcuts};
 use kimun_notes::logic::keyboard_help::{self, HelpRow, HelpTarget, leader_rows};
-use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::layout::{Dir, Panel};
 use kimun_notes::logic::list::{Filter, ListCore, ListSetup, StaticRowSource};
 
 use super::Workspace;
@@ -101,6 +101,12 @@ pub(crate) fn action_label(action: &ActionShortcuts) -> String {
         A::FocusEditor => "Next panel".into(),
         A::FocusSidebar => "Previous panel".into(),
         A::Leader => "Leader (start a sequence)".into(),
+        A::SplitSlotRight => "Split slot right (pick a view)".into(),
+        A::SplitSlotDown => "Split slot down (pick a view)".into(),
+        A::MoveViewToNeighbour(Dir::Left) => "Move view left (new slot if none)".into(),
+        A::MoveViewToNeighbour(Dir::Right) => "Move view right (new slot if none)".into(),
+        A::MoveViewToNeighbour(Dir::Up) => "Move view up (new slot if none)".into(),
+        A::MoveViewToNeighbour(Dir::Down) => "Move view down (new slot if none)".into(),
         other => other.label(),
     }
 }
