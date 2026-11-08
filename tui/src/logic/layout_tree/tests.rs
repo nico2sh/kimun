@@ -486,3 +486,53 @@ fn move_view_dir_targets_the_neighbour_slot() {
     assert!(!t.move_view_dir(&"outline", Dir::Right));
     assert_eq!(t.view_slot(&"tags"), Some(s[0]));
 }
+
+#[test]
+fn focus_dir_while_zoomed_only_sees_the_zoomed_leaf_and_the_rail() {
+    let (mut t, s, g) = nested();
+    t.zoom(Some(Leaf::Group(g)));
+    assert_eq!(t.focus_dir(Dir::Right), TreeFocusMove::AtEdge);
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
+    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(leaf(Leaf::Group(g)))
+    );
+    assert_eq!(t.zoomed(), Some(Leaf::Group(g)));
+
+    // A zoomed slot below another: nothing stacked is visible either.
+    t.zoom(Some(Leaf::Slot(s[2])));
+    assert!(t.focus(leaf(Leaf::Slot(s[2]))));
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(s[2])))
+    );
+}
+
+#[test]
+fn move_view_dir_is_refused_while_zoomed() {
+    let (mut t, s, _) = nested();
+    assert!(t.place("tags", s[1], true));
+    t.zoom(Some(Leaf::Slot(s[1])));
+    assert!(!t.move_view_dir(&"tags", Dir::Down));
+    assert_eq!(t.view_slot(&"tags"), Some(s[1]));
+    assert_eq!(t.shown(s[1]), Some("tags"));
+}
+
+#[test]
+fn leaving_zoom_restores_normal_geometry() {
+    let (mut t, s, g) = nested();
+    assert!(t.place("tags", s[1], true));
+    t.zoom(Some(Leaf::Group(g)));
+    t.zoom(None);
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(s[1])))
+    );
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::AtEdge);
+    assert!(t.move_view_dir(&"tags", Dir::Down));
+    assert_eq!(t.view_slot(&"tags"), Some(s[2]));
+}
