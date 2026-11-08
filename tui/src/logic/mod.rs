@@ -19,6 +19,7 @@ pub mod follow;
 pub mod leader_route;
 pub mod pickers;
 pub mod preview;
+pub mod view_registry;
 pub mod query;
 pub mod saved_search;
 pub mod views;
