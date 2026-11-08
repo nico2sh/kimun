@@ -130,7 +130,8 @@ fn toggle_zoom_covers_everything_right_of_the_rail_and_keeps_footer(cx: &mut Tes
         assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
         assert!(window.try_find(slot_id(DrawerView::Outline)).is_none());
         let footer = window.find(status_row::ROW_ID).bounds();
-        assert!(close(footer.bottom(), HEIGHT), "{footer:?}");
+        // The editor's frame (margin + border) sits under its Footer.
+        assert!(close(footer.bottom(), HEIGHT - 5.), "{footer:?}");
         assert!(window.try_find(status_row::ZOOM_ID).is_some());
     })
     .unwrap();

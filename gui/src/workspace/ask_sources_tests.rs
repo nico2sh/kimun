@@ -161,6 +161,12 @@ fn ready(cx: &mut TestAppContext, rt: &Runtime, stub: Arc<Stub>) -> (TestVault, 
         .workspace
         .update(cx, |w, _| w.ask_test_client = Some(client));
     status(&started, ONLINE, cx);
+    // Wide enough for the sources to sit beside the Thread (a narrow slot
+    // drills into them instead: see `narrow_*` tests).
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(5000.), gpui_kit::px(1000.)),
+    );
     (v, started)
 }
 
@@ -664,8 +670,9 @@ fn sources_list_expands_in_place_under_the_selected_turn(cx: &mut TestAppContext
     let first = bounds_of(&started, turn_element_id(ids[0]), cx);
     let second = bounds_of(&started, turn_element_id(ids[1]), cx);
     let part = bounds_of(&started, SOURCES_PART_ID, cx);
-    assert!(part.top() >= first.bottom(), "{part:?} under {first:?}");
-    assert!(part.bottom() <= second.top(), "{part:?} above {second:?}");
+    // Beside the turns, not among them.
+    assert!(part.left() >= first.right(), "{part:?} beside {first:?}");
+    assert!(part.left() >= second.right(), "{part:?} beside {second:?}");
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
 
     // Down in the composer: the part follows to the second turn.
@@ -675,7 +682,7 @@ fn sources_list_expands_in_place_under_the_selected_turn(cx: &mut TestAppContext
     assert_eq!(rows(&started, cx), ranked(&["c.md"]));
     let second = bounds_of(&started, turn_element_id(ids[1]), cx);
     let part = bounds_of(&started, SOURCES_PART_ID, cx);
-    assert!(part.top() >= second.bottom(), "{part:?} under {second:?}");
+    assert!(part.left() >= second.right(), "{part:?} beside {second:?}");
 
     // `s` on the turn list: shut (the turn list keeps the keyboard), open.
     press(&started, "escape", cx);

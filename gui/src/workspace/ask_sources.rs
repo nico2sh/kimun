@@ -328,11 +328,6 @@ impl SourcesView {
         &self.model
     }
 
-    /// Whether the reader is collapsed (the list alone).
-    pub(crate) fn reader_collapsed(&self) -> bool {
-        self.model.is_collapsed()
-    }
-
     /// List `turn_id`'s `sources`, unless that turn is listed already: then
     /// the selection, the filter and the reader stay as they are.
     pub(crate) fn set_turn(

@@ -30,9 +30,10 @@ use kimun_notes::server_client::{
 use tokio::runtime::Runtime;
 
 use super::ask::{
-    ASK_ID, AskView, COMPOSER_DISABLED, COMPOSER_ID, COMPOSER_LABEL_ID, COMPOSER_TITLE, COPIED,
-    COPY_ID, LineKind, NEW_ID, REGENERATE_ID, RunStyle, SAVE_ID, SEND_ID, SOURCES_PART_ID,
-    SOURCES_TOGGLE_ID, THINKING, TURNS_ID, answer_lines, turn_answer_id, turn_status_id,
+    ASK_ID, AskView, BACK_ID, COMPOSER_DISABLED, COMPOSER_ID, COMPOSER_LABEL_ID, COMPOSER_TITLE,
+    COPIED, COPY_ID, LineKind, NEW_ID, REGENERATE_ID, RunStyle, SAVE_ID, SEND_ID, SOURCES_PART_ID,
+    SOURCES_TOGGLE_ID, THINKING, TURNS_ID, ZOOM_ID, answer_lines, turn_answer_id, turn_element_id,
+    turn_status_id,
 };
 use super::ask_sources::READER_ID;
 use super::files::row_id;
@@ -160,6 +161,11 @@ fn ready(cx: &mut TestAppContext, rt: &Runtime, stub: Arc<Stub>) -> (TestVault, 
         .update(cx, |w, _| w.ask_test_client = Some(client));
     status(&started, ONLINE, cx);
     assert!(has_client(&started, cx));
+    // Wide: the sources sit beside the Thread (narrow drills into them).
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(5000.), gpui_kit::px(1000.)),
+    );
     (v, started)
 }
 
@@ -911,6 +917,22 @@ fn escape_in_the_turn_list_returns_to_the_composer_and_never_leaves_zoom(cx: &mu
     assert!(shown(&started, cx));
 }
 
+/// The Thread's own zoom button zooms its slot and, once zoomed, leaves.
+#[gpui_kit::test]
+fn the_zoom_button_zooms_the_thread_and_zooms_out(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "why?", cx);
+    assert_eq!(zoomed(&started, cx), None);
+    click(&started, ZOOM_ID, cx);
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    assert!(!drawn_el(&started, "editor-panel", cx));
+    click(&started, ZOOM_ID, cx);
+    assert_eq!(zoomed(&started, cx), None);
+    assert!(drawn_el(&started, "editor-panel", cx));
+}
+
 /// Zoomed, ASK takes the whole width right of the rail, the reader opened
 /// on a source included: the turns, the sources part and the reader span
 /// it, and the editor is not drawn (nothing moved: leaving zoom brings it
@@ -933,15 +955,27 @@ fn zoomed_ask_gives_the_thread_the_full_width_with_the_reader_open(cx: &mut Test
         })
         .unwrap();
     let ask = bounds(&started, ASK_ID, cx);
-    assert!(close(ask.left(), f32::from(rail.right())), "{ask:?}");
-    assert!(close(ask.right(), f32::from(width)), "{ask:?}");
+    // The view sits inside the slot's margin, border and content padding.
+    const INSET: f32 = 4. + 1. + 8.;
+    assert!(
+        close(ask.left(), f32::from(rail.right()) + INSET),
+        "{ask:?}"
+    );
+    assert!(close(ask.right(), f32::from(width) - INSET), "{ask:?}");
     assert!(ask.size.width > narrow.size.width, "{ask:?} vs {narrow:?}");
     assert!(!drawn_el(&started, "editor-panel", cx));
     let part = bounds(&started, SOURCES_PART_ID, cx);
     let reader = bounds(&started, READER_ID, cx);
     assert!(drawn_el(&started, READER_ID, cx));
-    assert!(part.size.width > narrow.size.width, "{part:?}");
-    assert!(reader.size.width > narrow.size.width, "{reader:?}");
+    // The sources are a pane at the view's right edge; the reader is in it.
+    assert!(
+        close(part.right(), f32::from(ask.right())),
+        "{part:?} in {ask:?}"
+    );
+    assert!(
+        f32::from(reader.right()) <= f32::from(part.right()) + 0.5,
+        "{reader:?} in {part:?}"
+    );
     // Leaving zoom: ASK back in its slot beside the editor.
     press(&started, ZOOM, cx);
     assert_eq!(zoomed(&started, cx), None);
@@ -950,6 +984,74 @@ fn zoomed_ask_gives_the_thread_the_full_width_with_the_reader_open(cx: &mut Test
         bounds(&started, ASK_ID, cx).size.width,
         f32::from(narrow.size.width)
     ));
+}
+
+/// A narrow slot drills into the sources: the Thread is not drawn while
+/// they are, the back button (and Esc, up from the composer door) returns.
+#[gpui_kit::test]
+fn a_narrow_slot_drills_into_the_sources_and_back(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1000.)),
+    );
+    ask(&started, &rt, "why?", cx);
+    let id = turn_ids(&started, cx)[0];
+    assert!(drawn_el(&started, turn_element_id(id), cx));
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx));
+    assert!(!drawn_el(&started, turn_element_id(id), cx), "drilled in");
+    click(&started, BACK_ID, cx);
+    assert!(!drawn_el(&started, SOURCES_PART_ID, cx));
+    assert!(drawn_el(&started, turn_element_id(id), cx), "back");
+    // Esc's door (the composer) goes up too.
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx));
+    press(&started, "escape", cx);
+    press(&started, "escape", cx);
+    assert!(!drawn_el(&started, SOURCES_PART_ID, cx));
+}
+
+/// Drilled into the sources the Thread's actions row is gone, but the zoom
+/// button is not: it is in the drill-in header, and zooming widens the slot
+/// so the sources sit beside the Thread again.
+#[gpui_kit::test]
+fn the_zoom_button_stays_reachable_while_drilled(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1000.)),
+    );
+    ask(&started, &rt, "why?", cx);
+    let id = turn_ids(&started, cx)[0];
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(!drawn_el(&started, turn_element_id(id), cx), "drilled in");
+    assert!(drawn_el(&started, ZOOM_ID, cx));
+    click(&started, ZOOM_ID, cx);
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx));
+}
+
+/// Cycling the keyboard back to ASK (F6, leader `a a`) is not Esc: drilled
+/// into the sources, the reader stays.
+#[gpui_kit::test]
+fn focusing_ask_does_not_leave_the_drilled_sources(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    cx.simulate_window_resize(
+        started.handle,
+        gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1000.)),
+    );
+    ask(&started, &rt, "why?", cx);
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx));
+    leader(&started, LeaderAction::AskFocus, cx);
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx), "still drilled in");
 }
 
 // ---- New, Copy, Save as note -----------------------------------------------------
