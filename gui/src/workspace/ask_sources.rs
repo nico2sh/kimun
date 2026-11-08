@@ -1,8 +1,9 @@
-//! The **Sources view** (M7c G10b): the drawer view ASK, beside the Thread
-//! (CONTEXT.md: **Sources view**, **Source reader**). It lists the selected
-//! turn's sources, best first, and reads the one picked in the **Source
-//! reader** below the list: the whole note, its retrieved section in the
-//! accent colour and scrolled into view.
+//! The **Sources view** (M7c G10b): the part of the Ask view ([`super::ask`],
+//! ADR-0053) that expands in place under the selected turn (CONTEXT.md:
+//! **Sources view**, **Source reader**). It lists the selected turn's
+//! sources, best first, and reads the one picked in the **Source reader**
+//! below the list: the whole note, its retrieved section in the accent
+//! colour and scrolled into view.
 //!
 //! **Rows** are the turn's sources, built here and now (no load): the rank
 //! in the lane, the heading (a journal source's date beside it, a bare
@@ -28,16 +29,18 @@
 //! **Keys** (the list has the keyboard, as in the TUI): Up/Down/Home/End
 //! move (Up from the first row goes to the filter), Enter cycles the
 //! reader, Right grows it, Left shrinks it, Space cycles it; in Full,
-//! Up/Down scroll it, `o` opens the source's note in the editor. Escape steps the reader back, then gives the Thread's
-//! composer the keyboard. In the filter: Down, Enter or Escape go back to
+//! Up/Down scroll it, `o` opens the source's note in the editor (the Ask
+//! view stays). Escape steps the reader back, then gives the composer the
+//! keyboard (`Workspace::focus_ask_composer`). In the filter: Down, Enter or Escape go back to
 //! the list. **Pointer** ([`ClickPolicy::Select`]): a click selects (the
 //! reader follows), a double-click opens the source's note as `o` does, a
 //! right-click offers `Open note`.
 //!
 //! **Sync** with the Thread is the workspace's (`AskFlow`): the view only
 //! answers `set_turn` (a no-op for the turn shown), `refresh` (always
-//! rebuilds and collapses), `reset`, `focus_source` (a citation's ordinal,
-//! matched against the rows, never taken as a position) and `open_reader`.
+//! rebuilds and collapses), `reset`, `read_cited` (a citation's ordinal,
+//! matched against the rows, never taken as a position: the reader opens
+//! on it) and `open_reader`.
 
 use std::sync::Arc;
 
@@ -55,7 +58,6 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::ask::AskSource;
 use kimun_notes::logic::input::{Key, Mods};
-use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListRow, ListSetup, YankTarget};
 use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::preview::PreviewModel;
@@ -325,6 +327,11 @@ impl SourcesView {
         &self.model
     }
 
+    /// Whether the reader is collapsed (the list alone).
+    pub(crate) fn reader_collapsed(&self) -> bool {
+        self.model.is_collapsed()
+    }
+
     /// List `turn_id`'s `sources`, unless that turn is listed already: then
     /// the selection, the filter and the reader stay as they are.
     pub(crate) fn set_turn(
@@ -374,27 +381,25 @@ impl SourcesView {
         cx.notify();
     }
 
-    /// Select the source a citation `[ordinal]` names, matched by ordinal
-    /// against the rows (never `ordinal - 1`); the filter is cleared so it
-    /// is never hidden, and the reader collapses. An ordinal no row has
-    /// changes only that.
-    pub(crate) fn focus_source(
+    /// Read the source a citation `[ordinal]` names, matched by ordinal
+    /// against the rows (never `ordinal - 1`): the filter is cleared so it
+    /// is never hidden, the row selected, and the reader shows it (opened
+    /// to Context when collapsed, at its size otherwise). An ordinal no row
+    /// has changes nothing but the filter.
+    pub(crate) fn read_cited(
         &mut self,
         ordinal: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.clear_filter(window, cx);
-        self.model.reset();
         let pos = self
             .list
             .read(cx)
             .position(|row| row.source.ordinal == ordinal);
         if let Some(pos) = pos {
-            self.list.update(cx, |list, cx| list.select_at(pos, cx));
+            self.open_reader(pos, window, cx);
         }
-        self.sync_preview(cx);
-        cx.notify();
     }
 
     /// Read the source ranked `index + 1` (leader `a s`: the top one): it
@@ -609,13 +614,8 @@ impl SourcesView {
         query_field::focus_list(&self.list, window, cx);
     }
 
-    fn list_focused(&self, window: &Window, cx: &App) -> bool {
+    pub(crate) fn list_focused(&self, window: &Window, cx: &App) -> bool {
         query_field::list_focused(&self.list, window, cx)
-    }
-
-    /// Whether the filter has the keyboard (its copy chord is its own).
-    pub(crate) fn filter_focused(&self, window: &Window, cx: &App) -> bool {
-        self.filter.read(cx).focus_handle(cx).is_focused(window)
     }
 
     /// Keys the list must not see first: in Full, Up/Down scroll the
@@ -792,6 +792,10 @@ impl Workspace {
             list.with_click_policy(ClickPolicy::Select)
         });
         let view = cx.new(|cx| SourcesView::new(vault, list.clone(), window, cx));
+        // Folded into the Ask view, under its selected turn.
+        if let Some(ask) = self.ask.clone() {
+            ask.update(cx, |ask, cx| ask.set_sources(view.clone(), cx));
+        }
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_sources_list_event));
         self._views_events.push(cx.subscribe_in(
@@ -833,8 +837,8 @@ impl Workspace {
     }
 
     /// Open a source's note in the editor (the `o` key, the row menu's
-    /// `Open note`, a double-click on the row): the Thread goes down, the note
-    /// opens and the editor has the keyboard.
+    /// `Open note`, a double-click on the row): the note opens and the
+    /// editor has the keyboard; the Ask view stays where it is.
     pub(super) fn open_source_note(
         &mut self,
         path: VaultPath,
@@ -842,19 +846,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_chosen(path, None, window, cx);
-    }
-
-    /// Escape on the Sources list: the Thread's composer has the keyboard
-    /// (the editor Panel, whatever shows there, when the Thread does not).
-    /// Esc never leaves zoom: with a slot zoomed the keyboard stays.
-    fn focus_ask_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.zoom_keeps_keyboard() {
-            return;
-        }
-        if let Some(view) = self.ask.clone().filter(|_| self.ask_shown()) {
-            view.update(cx, |view, _| view.want_composer());
-        }
-        self.focus_panel(Panel::Editor, window, cx);
     }
 
     /// Point the Sources view at the Thread's selected turn (no-op for the
@@ -875,9 +866,9 @@ impl Workspace {
     }
 
     /// After an input on the Thread (a selection moved, a question sent, a
-    /// citation clicked): what `AskFlow::after_input` says — the Sources
-    /// view follows the selected turn, and a clicked `[n]` selects its
-    /// source.
+    /// citation clicked): what `AskFlow::after_input` says — the sources
+    /// part follows the selected turn, and a clicked `[n]` opens the
+    /// reader on its source.
     pub(super) fn after_ask_input(
         &mut self,
         citation: Option<usize>,
@@ -892,14 +883,15 @@ impl Workspace {
         if let Some(ordinal) = step.focus_citation
             && let Some(view) = self.ask_sources.clone()
         {
-            view.update(cx, |view, cx| view.focus_source(ordinal, window, cx));
+            view.update(cx, |view, cx| view.read_cited(ordinal, window, cx));
         }
     }
 
-    /// Whether the Sources view's filter has the keyboard.
-    pub(super) fn sources_filter_focused(&self, window: &Window, cx: &App) -> bool {
+    /// Whether the sources list (not its filter, not the composer) has
+    /// the keyboard: the copy chord is a row's there.
+    pub(super) fn sources_list_focused(&self, window: &Window, cx: &App) -> bool {
         self.ask_sources
             .as_ref()
-            .is_some_and(|view| view.read(cx).filter_focused(window, cx))
+            .is_some_and(|view| view.read(cx).list_focused(window, cx))
     }
 }

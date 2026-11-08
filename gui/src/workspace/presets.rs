@@ -10,8 +10,8 @@
 //!
 //! A preset is a starting point. "Apply layout preset: <name>" builds it
 //! as the startup restore builds the saved layout (a view the server does
-//! not offer yet keeps its place; ASK is never part of a layout) and
-//! copies it into the live layout
+//! not offer yet keeps its place, SEM and ASK included) and copies it
+//! into the live layout
 //! (`[gui.layout]`), recording `layout_preset = "<name>"`; from then on the
 //! live layout is dragged and rearranged on its own, and editing the file
 //! changes nothing until the preset is applied again. A preset that does
@@ -198,13 +198,13 @@ impl Workspace {
     }
 
     /// Copy the preset `name` into the live layout: built against the
-    /// startup restore's caps (`shell_tree::RESTORE_CAPS`: every view but
-    /// ASK, whatever the server says now), it replaces the tree, the session-only state is
+    /// startup restore's caps (`shell_tree::RESTORE_CAPS`: every view,
+    /// whatever the server says now), it replaces the tree, the session-only state is
     /// dropped (slots opened empty, the side toggles' memory, collapse and
     /// zoom), the editor gets the keyboard, and the layout and the preset's
     /// name are saved. A preset that does not build changes nothing; one
     /// flash lists its errors. Views left out because the layout cannot hold
-    /// them (ASK) are listed in one notice after a successful apply.
+    /// them (none today) are listed in one notice after a successful apply.
     fn apply_preset(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(preset) = self.presets.get(name) else {
             self.flash_error(format!("No layout preset \"{name}\""), cx);
@@ -213,8 +213,7 @@ impl Workspace {
         // The startup restore's caps, not the server's of the moment
         // (Ruling 18): a view the server does not offer yet (SEM before
         // the first report) keeps its placement, and the rail offers it
-        // once the server does. ASK is never part of a restored or saved
-        // layout (`shell_tree::record`), so it is skipped here too.
+        // once the server does; ASK likewise.
         let (tree, warnings) = match spec::build(preset, shell_tree::RESTORE_CAPS) {
             Ok(built) => built,
             Err(errors) => {

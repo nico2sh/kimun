@@ -106,7 +106,7 @@ fn live(shell: &Shell, cx: &mut TestAppContext) -> LayoutTree<DrawerView> {
     cx.read(|cx| shell.workspace.read(cx).layout.clone())
 }
 
-/// What `name` of `text` builds (all views available but ASK).
+/// What `name` of `text` builds (all views available but SEM and ASK).
 fn built(text: &str, name: &str) -> LayoutTree<DrawerView> {
     let file = spec::parse_presets(text).unwrap();
     spec::build(&file.preset[name], Caps::default()).unwrap().0
@@ -313,15 +313,12 @@ fn apply_preset_keeps_a_view_the_server_does_not_offer_yet(cx: &mut TestAppConte
     assert_eq!(live(&shell, cx).shown(left), Some(DrawerView::Semantic));
 }
 
-/// Before the server reports, a preset placing SEM and ASK keeps SEM's
-/// placement (live and saved). ASK follows the rule the startup restore
-/// and `record` already have: it is never part of a restored or saved
-/// layout (it shows only beside its Thread), so it is skipped under the
-/// restore caps with one notice naming it, and the saved layout has no ASK.
+/// Before the server reports, a preset placing SEM and ASK keeps both
+/// placements (live and saved): ASK is a regular view (ADR-0053), so a
+/// preset may place it like any other; only its rail entry waits for the
+/// server. No notice: nothing was left out.
 #[gpui_kit::test]
-fn applying_a_preset_before_the_server_reports_keeps_sem_and_ask_placement(
-    cx: &mut TestAppContext,
-) {
+fn a_preset_can_place_ask(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
     let text = lines(&[
         "[preset.rag]",
@@ -341,18 +338,18 @@ fn applying_a_preset_before_the_server_reports_keeps_sem_and_ask_placement(
     let slots = got.slots();
     assert_eq!(slots.len(), 3);
     assert_eq!(got.shown(slots[1]), Some(DrawerView::Semantic));
-    assert_eq!(got.view_slot(&DrawerView::Ask), None);
-    assert_eq!(got.slot_views(slots[2]), [DrawerView::Links]);
+    assert_eq!(got.view_slot(&DrawerView::Ask), Some(slots[2]));
+    assert_eq!(got.shown(slots[2]), Some(DrawerView::Ask));
+    assert_eq!(
+        got.slot_views(slots[2]),
+        [DrawerView::Ask, DrawerView::Links]
+    );
     let shown = flashes(&shell, cx);
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(!shown[0].1, "a notice, not an error");
-    assert!(shown[0].0.contains("\"rag\""), "{shown:?}");
-    assert!(shown[0].0.contains("\"ask\""), "{shown:?}");
-    assert!(!shown[0].0.contains("\"semantic\""), "{shown:?}");
-    // Saved as the startup restore would read it back: SEM kept, no ASK.
+    assert!(shown.is_empty(), "nothing skipped: {shown:?}");
+    // Saved as the startup restore reads it back: SEM and ASK kept.
     let back = saved_tree(&config);
     assert_eq!(back.shown(back.slots()[1]), Some(DrawerView::Semantic));
-    assert_eq!(back.view_slot(&DrawerView::Ask), None);
+    assert_eq!(back.shown(back.slots()[2]), Some(DrawerView::Ask));
     assert_eq!(spec::to_spec(&back), spec::to_spec(&got));
 }
 

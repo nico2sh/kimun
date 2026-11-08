@@ -111,13 +111,12 @@
 //! Footer says how the server is. SEM is the semantic search view
 //! ([`semantic`]).
 //!
-//! **Ask (M7c G10a).** The Thread, the Ask workspace's conversation, takes
-//! the editor Panel in place of the editor (leader `a a` / F6, `+ask`),
-//! leaving the open note as the attachment view does; a note opening or an
-//! attachment shown takes it down, its conversation kept ([`ask`]). It
-//! shows with the drawer view ASK (M7c G10b), the selected turn's Sources
-//! and the Source reader ([`ask_sources`]); the rail offers ASK while the
-//! server can answer, and ASK is never persisted.
+//! **Ask (M7c G10a/b, ADR-0053).** The view ASK, in a slot like any
+//! other (right by default): the Thread with the selected turn's sources
+//! and the Source reader expanding in place ([`ask`], [`ask_sources`]).
+//! It never replaces the editor, so the open note stays open beside it;
+//! the rail offers ASK while the server can answer, and its placement is
+//! persisted like every view's.
 //!
 //! **The setup assistant (M8c).** With no workspace configured, and from
 //! the leader / palette (`guided setup`), the window shows the setup
@@ -534,17 +533,14 @@ pub(crate) struct Workspace {
     attachment_flushing: Option<Task<()>>,
     /// An attachment asked for while that flush ran: it opens next.
     attachment_wanted: Option<VaultPath>,
-    /// The Thread (Ask), when the window has a vault ([`ask`]), and its
-    /// events. It lives as long as the window, shown or not.
+    /// The view ASK (the Thread), when the window has a vault ([`ask`]),
+    /// and its events. It lives as long as the vault session, shown or not.
     pub(crate) ask: Option<Entity<ask::AskView>>,
     _ask_events: Option<Subscription>,
-    /// The Sources view (the drawer view ASK), with the Thread.
+    /// The sources part folded into ASK (under the selected turn).
     pub(crate) ask_sources: Option<Entity<ask_sources::SourcesView>>,
-    /// Whether the Thread holds the editor Panel: the one record of it.
+    /// Which turn the sources part mirrors: the one record of it.
     ask_flow: AskFlow,
-    /// The flush of the open note before the Thread shows: it holds the
-    /// note like a file operation does.
-    ask_flushing: Option<Task<()>>,
     /// The Thread's client being built (a newer status replaces it).
     ask_client_task: Option<Task<()>>,
     /// The free path for a saved answer being found.
@@ -752,7 +748,6 @@ impl Workspace {
             _ask_events: None,
             ask_sources: None,
             ask_flow: AskFlow::new(),
-            ask_flushing: None,
             ask_client_task: None,
             ask_saving: None,
             #[cfg(test)]
@@ -1231,7 +1226,6 @@ impl Workspace {
 
     /// Persist the layout, and bring the views it shows (or stopped
     /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
-    /// A change that took ASK out of every slot takes the Thread down.
     fn save_layout(&mut self, cx: &mut Context<Self>) {
         self.save_layout_with(None, cx);
     }
@@ -1244,7 +1238,6 @@ impl Workspace {
 
     fn save_layout_with(&mut self, preset: Option<&str>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
-        self.leave_ask_if_drawer_moved_on(cx);
         self.store.save(&self.layout, preset);
         self.refresh_views(cx);
     }
@@ -1394,8 +1387,9 @@ impl Workspace {
                     list.read(cx).selected_row().and_then(|r| r.yank_target())
                 })
             }
-            // The Sources view: the source's path (the TUI's yank).
-            Some(DrawerView::Ask) if !(chord && self.sources_filter_focused(window, cx)) => {
+            // The sources part: the source's path (the TUI's yank). The
+            // chord is the composer's or the filter's own copy elsewhere.
+            Some(DrawerView::Ask) if !chord || self.sources_list_focused(window, cx) => {
                 self.ask_sources.as_ref().map(|sources| {
                     let list = sources.read(cx).list.clone();
                     list.read(cx).selected_row().and_then(|r| r.yank_target())
@@ -1572,10 +1566,7 @@ impl Workspace {
             DrawerView::Find => self.find.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Tags => self.tags.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Semantic => self.semantic.as_ref().map(|v| v.read(cx).focus_handle(cx)),
-            DrawerView::Ask => self
-                .ask_sources
-                .as_ref()
-                .map(|v| v.read(cx).focus_handle(cx)),
+            DrawerView::Ask => self.ask.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Config => Some(self.config.read(cx).focus_handle(cx)),
         };
         handle.unwrap_or_else(|| self.slot_handle(slot))
@@ -1600,12 +1591,10 @@ impl Workspace {
                 Some(view) => self.view_handle(view, slot, cx),
                 None => self.slot_handle(slot),
             },
-            // The Thread or the attachment view while one shows, else the
-            // editor.
-            Focus::Leaf(Leaf::Group(_)) => match (self.ask.as_ref(), self.attachment.as_ref()) {
-                (Some(ask), _) if self.ask_shown() => ask.read(cx).focus_handle(cx),
-                (_, Some(view)) => view.read(cx).focus_handle(cx),
-                _ => self.editor.read(cx).focus_handle(cx),
+            // The attachment view while one shows, else the editor.
+            Focus::Leaf(Leaf::Group(_)) => match self.attachment.as_ref() {
+                Some(view) => view.read(cx).focus_handle(cx),
+                None => self.editor.read(cx).focus_handle(cx),
             },
         }
     }
@@ -1678,7 +1667,6 @@ impl Workspace {
                 if let Some(slot) = self.layout.view_slot(&view)
                     && slots.contains(&slot)
                     && self.layout.shown(slot).is_none()
-                    && self.can_show(view)
                 {
                     self.layout.show_view(&view, false);
                     first.get_or_insert(slot);
@@ -1689,7 +1677,7 @@ impl Workspace {
                     self.layout
                         .slot_views(*s)
                         .into_iter()
-                        .find(|v| self.can_show(*v))
+                        .next()
                         .map(|v| (*s, v))
                 })
             {
@@ -1713,12 +1701,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Whether a side toggle may show `view` on its own: ASK only while its
-    /// Thread shows (Ruling 14; Task 13 removes the coupling).
-    fn can_show(&self, view: DrawerView) -> bool {
-        view != DrawerView::Ask || self.ask_flow.showing()
-    }
-
     /// A rail cell was activated. A shown view is hidden, keeping its
     /// placement: its slot is no longer drawn, and another drawn slot on
     /// its side takes the keyboard (the rail keeps it otherwise). Any other
@@ -1731,11 +1713,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // ASK shows with the Thread: entering it is the Thread's door.
-        if view == DrawerView::Ask && !self.is_shown(view) {
-            self.open_ask_drawer(window, cx);
-            return;
-        }
         self.place_rail_cursor(Some(view));
         // A view shown in a slot the zoom hides: the user asked to see it,
         // so zoom ends and its slot takes the keyboard (it is not hidden).
@@ -2074,8 +2051,8 @@ impl Workspace {
     /// [`Self::intercept_modal_key`]).
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.focused_panel() {
-            // The Thread and the attachment view read no vim keys.
-            Panel::Editor if self.attachment.is_some() || self.ask_shown() => KeyCtx {
+            // The attachment view reads no vim keys.
+            Panel::Editor if self.attachment.is_some() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
@@ -2497,42 +2474,28 @@ impl Workspace {
     /// The editor Panel: the editor (or the attachment view, or the empty
     /// state) over the Footer.
     pub(super) fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ask = self
-            .ask
-            .clone()
-            .filter(|_| self.ask_shown() && self.empty.is_none());
-        let attachment = self
-            .attachment
-            .clone()
-            .filter(|_| self.empty.is_none() && ask.is_none());
-        let empty = match (&ask, &attachment) {
-            (None, None) => self.empty.clone().or_else(|| self.note_empty_state()),
-            _ => None,
+        let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
+        let empty = match &attachment {
+            None => self.empty.clone().or_else(|| self.note_empty_state()),
+            Some(_) => None,
         };
-        let editor_shown = empty.is_none() && attachment.is_none() && ask.is_none();
-        let document = match (&empty, ask, attachment) {
+        let editor_shown = empty.is_none() && attachment.is_none();
+        let document = match (&empty, attachment) {
             // The editor is not drawn: its focus handle sits on the empty
             // state, so the keyboard still reaches the window's chords (F5
             // away from a workspace that would not open, the leader, the
             // palette).
-            (Some(empty), _, _) => self
+            (Some(empty), _) => self
                 .render_empty(empty, &self.editor.read(cx).focus_handle(cx), cx)
                 .into_any_element(),
-            (None, Some(view), _) => div()
+            (None, Some(view)) => div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
                 .child(view)
                 .into_any_element(),
-            (None, None, Some(view)) => div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .child(view)
-                .into_any_element(),
-            (None, None, None) => div()
+            (None, None) => div()
                 .flex_1()
                 .min_h_0()
                 .child(self.editor.clone())

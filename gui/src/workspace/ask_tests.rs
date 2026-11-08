@@ -1,4 +1,5 @@
-//! UI integration tests for the Thread (M7c G10a): a real `Workspace` on a
+//! UI integration tests for the Ask view (M7c G10a, ADR-0053: one view in a
+//! slot, the Thread with its sources folded in): a real `Workspace` on a
 //! real, indexed temp vault, the server's status fed as the sync reports it
 //! (`AppMessage::RagStatus`), and the questions answered by a stub
 //! transport (`RagClient::with_transport`) the Thread gets whenever the
@@ -17,9 +18,11 @@ use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::ask::{TurnStatus, citations, save};
 use kimun_notes::keys::leader::LeaderAction;
-use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout_tree::Leaf;
 use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::message::{AppMessage, AskData, FileOp};
+use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::rag::RagStatus;
 use kimun_notes::server_client::{
     AnswerResult, ChunkResult, ContextSize, QueryTransport, RagClient, RagError,
@@ -27,16 +30,22 @@ use kimun_notes::server_client::{
 use tokio::runtime::Runtime;
 
 use super::ask::{
-    AskView, COMPOSER_DISABLED, COMPOSER_ID, COMPOSER_LABEL_ID, COMPOSER_TITLE, COPIED, COPY_ID,
-    LineKind, NEW_ID, REGENERATE_ID, RunStyle, SAVE_ID, SEND_ID, THINKING, TURNS_ID, answer_lines,
-    turn_answer_id, turn_status_id,
+    ASK_ID, AskView, COMPOSER_DISABLED, COMPOSER_ID, COMPOSER_LABEL_ID, COMPOSER_TITLE, COPIED,
+    COPY_ID, LineKind, NEW_ID, REGENERATE_ID, RunStyle, SAVE_ID, SEND_ID, SOURCES_PART_ID,
+    SOURCES_TOGGLE_ID, THINKING, TURNS_ID, answer_lines, turn_answer_id, turn_status_id,
 };
+use super::ask_sources::READER_ID;
 use super::files::row_id;
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use super::tests::close;
+use super::{rail_cell_id, slot_id};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
+
+/// The zoom chord with the default Linux/Windows keymap.
+const ZOOM: &str = "ctrl-shift-m";
 
 /// The TUI's flash for a route into ASK the server can't serve.
 const NO_LLM: &str = "Ask needs an LLM-configured server; this one is semantic-search only";
@@ -299,6 +308,52 @@ fn ask(s: &Started, rt: &Runtime, question: &str, cx: &mut TestAppContext) {
 fn leader(s: &Started, action: LeaderAction, cx: &mut TestAppContext) {
     send(s, AppMessage::ExecuteLeaderAction(action), cx);
     cx.run_until_parked();
+}
+
+/// The views the slots of `side` show.
+fn slot_views(s: &Started, side: Side, cx: &TestAppContext) -> Vec<DrawerView> {
+    cx.read(|cx| s.workspace.read(cx).shown_on(side))
+}
+
+/// Whether the element `id` is drawn in a fresh frame.
+fn drawn_el(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some_and(|e| e.visible())
+    })
+    .unwrap()
+}
+
+/// Where the element `id` is laid out in a fresh frame.
+fn bounds(
+    s: &Started,
+    id: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds()
+    })
+    .unwrap()
+}
+
+fn zoomed(s: &Started, cx: &TestAppContext) -> Option<Leaf> {
+    cx.read(|cx| s.workspace.read(cx).layout.zoomed())
+}
+
+/// ASK's slot (it is placed).
+fn ask_slot(s: &Started, cx: &TestAppContext) -> Leaf {
+    cx.read(|cx| {
+        Leaf::Slot(
+            s.workspace
+                .read(cx)
+                .layout
+                .view_slot(&DrawerView::Ask)
+                .expect("ASK is placed"),
+        )
+    })
 }
 
 // ---- The answer's lines (no window) ----------------------------------------------
@@ -599,19 +654,24 @@ fn selection_keys_move_the_selected_turn(cx: &mut TestAppContext) {
     // i: back to the composer.
     press(&started, "i", cx);
     assert!(focused(&started, COMPOSER_ID, cx));
-    // Escape twice: the turns, then the drawer (the editor is gone).
+    // Escape twice: the turns, then the composer again (ASK keeps the
+    // keyboard; the editor beside it is not where Esc goes).
     press(&started, "escape", cx);
+    assert!(focused(&started, TURNS_ID, cx));
     press(&started, "escape", cx);
+    assert!(focused(&started, COMPOSER_ID, cx));
     let panel = cx.read(|cx| started.workspace.read(cx).focused_panel());
-    assert!(matches!(panel, Panel::Drawer(_) | Panel::Rail), "{panel:?}");
-    assert!(shown(&started, cx), "the Thread stays shown");
+    assert_eq!(panel, Panel::Drawer(Side::Right));
+    assert!(shown(&started, cx), "ASK stays shown");
 }
 
-/// The server losing its LLM keeps the thread readable but disables
-/// asking (the composer says so; Send, Regenerate and New are off, with the
-/// TUI's reason); it coming back enables them again.
+/// The server losing its LLM keeps the view readable but disables asking
+/// (the composer says so; Send, Regenerate and New are off, with the TUI's
+/// reason): the rail entry goes, the view stays in its slot with its
+/// turns, and its sources still expand; it coming back enables asking
+/// again.
 #[gpui_kit::test]
-fn losing_the_server_keeps_the_thread_and_disables_asking(cx: &mut TestAppContext) {
+fn ask_loses_capability_keeps_thread_readable_with_asking_disabled(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let stub = Stub::with(Vec::new());
@@ -620,7 +680,12 @@ fn losing_the_server_keeps_the_thread_and_disables_asking(cx: &mut TestAppContex
     let id = turn_ids(&started, cx)[0];
     status(&started, RagStatus::Offline, cx);
     assert!(!has_client(&started, cx));
-    assert!(shown(&started, cx), "the Thread stays");
+    assert!(shown(&started, cx), "the view stays");
+    assert!(!drawn_el(&started, rail_cell_id(DrawerView::Ask), cx));
+    assert!(drawn_el(&started, slot_id(DrawerView::Ask), cx));
+    // Still readable: the sources expand under the turn.
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(drawn_el(&started, SOURCES_PART_ID, cx));
     assert_eq!(
         label(&started, COMPOSER_LABEL_ID, cx).as_deref(),
         Some(COMPOSER_DISABLED)
@@ -661,6 +726,11 @@ fn losing_the_server_keeps_the_thread_and_disables_asking(cx: &mut TestAppContex
     assert_eq!(block(LeaderAction::AskNew, cx), Some(NO_LLM));
     assert_eq!(block(LeaderAction::AskRegenerate, cx), Some(NO_LLM));
     assert_eq!(block(LeaderAction::AskFocus, cx), None, "already shown");
+    assert_eq!(
+        block(LeaderAction::OpenDrawer(DrawerView::Ask), cx),
+        None,
+        "shown: the leader only gives it the keyboard"
+    );
     assert_eq!(block(LeaderAction::AskCopy, cx), None);
     leader(&started, LeaderAction::AskRegenerate, cx);
     assert_eq!(started.flash(cx).as_deref(), Some(NO_LLM));
@@ -679,13 +749,14 @@ fn losing_the_server_keeps_the_thread_and_disables_asking(cx: &mut TestAppContex
     assert_eq!(stub.asked()[1].0, "again?");
 }
 
-// ---- The editor Panel ------------------------------------------------------------
+// ---- Beside the editor -------------------------------------------------------------
 
-/// Leader `a a` shows the Thread: the dirty note is flushed first, then let
-/// go (no open note, an empty buffer), and note-scoped routes say there is
-/// no note open.
+/// Leader `a a` shows ASK in its slot with the composer focused, and the
+/// open note is untouched: still open, its unsaved edit still in the
+/// buffer (nothing flushed, nothing let go), still drawn in the editor,
+/// and note-scoped routes still act on it.
 #[gpui_kit::test]
-fn leader_a_a_flushes_the_note_and_shows_the_thread(cx: &mut TestAppContext) {
+fn open_note_survives_entering_ask(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = ready(cx, &rt, Stub::with(Vec::new()));
@@ -694,60 +765,95 @@ fn leader_a_a_flushes_the_note_and_shows_the_thread(cx: &mut TestAppContext) {
     press(&started, "a", cx);
     press(&started, "a", cx);
     drive(&rt, cx, |cx| shown(&started, cx));
-    assert_eq!(disk(&rt, &v, &path("a.md")), "Xalpha", "flushed first");
-    assert_eq!(open_note(&started, cx), None);
-    assert_eq!(started.text(cx), "");
     assert!(focused(&started, COMPOSER_ID, cx));
+    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("a.md"))));
+    assert_eq!(
+        started.text(cx),
+        "Xalpha",
+        "the edit is still in the buffer"
+    );
+    assert!(
+        drawn_el(&started, "editor-panel", cx),
+        "the editor stays drawn"
+    );
     cx.read(|cx| {
         let w = started.workspace.read(cx);
-        assert!(w.ask_flow().showing());
-        assert!(!w.can_save());
-        assert!(w.route_facts().open_note().is_none());
-        assert_eq!(
+        assert!(w.can_save());
+        assert!(
+            w.route_facts()
+                .open_note()
+                .is_some_and(|n| n.is_like(&path("a.md")))
+        );
+        assert_ne!(
             w.route_of(LeaderAction::NoteRename),
             LeaderRoute::NoNoteOpen
         );
-        assert_eq!(w.focused_panel(), Panel::Editor);
+        assert_eq!(w.focused_panel(), Panel::Drawer(Side::Right));
     });
+    // The autosave tick still runs: the edit reaches the disk.
+    drive(&rt, cx, |_| disk(&rt, &v, &path("a.md")) == "Xalpha");
 }
 
-/// A flush that fails refuses the Thread: the note stays with its edits.
-#[cfg(unix)]
+/// ASK defaults to the right slot: F6 (and the rail) place it there, FILES
+/// stays on the left, the editor between them.
 #[gpui_kit::test]
-fn a_failed_flush_refuses_the_thread(cx: &mut TestAppContext) {
-    use std::os::unix::fs::PermissionsExt;
+fn ask_defaults_to_the_right_slot(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
-    let (v, started) = ready(cx, &rt, Stub::with(Vec::new()));
-    let file = v.workspace.as_path().join("a.md");
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
-    type_in(&started, "X", cx);
-    press(&started, "f6", cx);
-    drive(&rt, cx, |cx| started.flash(cx).is_some());
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let flash = started.flash(cx).unwrap();
-    assert!(
-        flash.starts_with("Couldn't save a.md:") && flash.ends_with("Ask was not opened."),
-        "{flash}"
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    assert_eq!(
+        cx.read(|cx| started
+            .workspace
+            .read(cx)
+            .layout
+            .view_slot(&DrawerView::Ask)),
+        None
     );
-    assert!(!shown(&started, cx));
-    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("a.md"))));
-    assert_eq!(started.text(cx), "Xalpha");
+    press(&started, "f6", cx);
+    drive(&rt, cx, |cx| shown(&started, cx));
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+    let ask = bounds(&started, slot_id(DrawerView::Ask), cx);
+    let editor = bounds(&started, "editor-panel", cx);
+    assert!(ask.left() >= editor.right(), "{ask:?} right of {editor:?}");
 }
 
-/// A note opened from FILES, or from any other door (an open request),
-/// takes the Thread down and brings the editor back; the thread stays, and
-/// F6 shows its turns again. An attachment takes it down too.
+/// The rail toggles ASK like any view: a click hides it (its placement
+/// kept, the editor untouched), a click shows it again in the same slot
+/// with its turns. Nothing that opens a note or an attachment takes it
+/// down: it never shares the editor's place.
 #[gpui_kit::test]
-fn opening_a_note_takes_the_thread_down_and_keeps_it(cx: &mut TestAppContext) {
+fn ask_toggles_like_any_view_and_never_replaces_the_editor(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = ready(cx, &rt, Stub::with(Vec::new()));
     rt.block_on(v.vault.save_attachment(&path("notes.txt"), b"text"))
         .unwrap();
-    // FILES stays on the left: the Thread's Sources take the right slot.
+    click(&started, rail_cell_id(DrawerView::Ask), cx);
+    assert!(shown(&started, cx));
+    assert!(focused(&started, COMPOSER_ID, cx));
+    let slot = ask_slot(&started, cx);
+    assert_eq!(started.text(cx), "alpha", "the editor keeps its note");
     ask(&started, &rt, "why?", cx);
-    // FILES: double-click b.md.
+
+    // Toggle off: hidden, still placed; the editor is as it was.
+    click(&started, rail_cell_id(DrawerView::Ask), cx);
+    assert!(!shown(&started, cx));
+    assert!(!drawn_el(&started, slot_id(DrawerView::Ask), cx));
+    assert_eq!(ask_slot(&started, cx), slot);
+    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("a.md"))));
+    assert_eq!(started.text(cx), "alpha");
+    // Toggle on: the same slot, the turns kept.
+    click(&started, rail_cell_id(DrawerView::Ask), cx);
+    assert!(shown(&started, cx));
+    assert_eq!(ask_slot(&started, cx), slot);
+    let id = turn_ids(&started, cx)[0];
+    assert_eq!(
+        label(&started, turn_answer_id(id), cx).as_deref(),
+        Some("Alpha says hi [1].")
+    );
+
+    // A note opened from FILES: it opens in the editor, ASK stays.
     let row = cx.read(|cx| {
         let files = started.workspace.read(cx).files.clone().unwrap();
         let pane = files.read(cx);
@@ -764,32 +870,86 @@ fn opening_a_note_takes_the_thread_down_and_keeps_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     drive(&rt, cx, |cx| started.text(cx) == "beta");
-    assert!(!shown(&started, cx));
-    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("b.md"))));
-    assert_eq!(turns(&started, cx).len(), 1, "the thread is kept");
-
-    // F6: the old turns are back; an open request takes it down again.
-    press(&started, "f6", cx);
-    drive(&rt, cx, |cx| shown(&started, cx));
-    let id = turn_ids(&started, cx)[0];
-    assert_eq!(
-        label(&started, turn_answer_id(id), cx).as_deref(),
-        Some("Alpha says hi [1].")
-    );
+    assert!(shown(&started, cx));
+    assert!(drawn_el(&started, ASK_ID, cx));
+    // An open request, and an attachment shown: the same.
     send(&started, AppMessage::open(path("a.md")), cx);
     drive(&rt, cx, |cx| started.text(cx) == "alpha");
-    assert!(!shown(&started, cx));
-
-    // An attachment shown takes it down as well.
-    press(&started, "f6", cx);
-    drive(&rt, cx, |cx| shown(&started, cx));
+    assert!(shown(&started, cx));
     send(&started, AppMessage::OpenAttachment(path("notes.txt")), cx);
     drive(&rt, cx, |cx| {
         cx.read(|cx| started.workspace.read(cx).shown_attachment(cx))
             .is_some()
     });
-    assert!(!shown(&started, cx));
+    assert!(shown(&started, cx));
     assert_eq!(turns(&started, cx).len(), 1);
+}
+
+/// Escape on the turn list gives the composer the keyboard, and with ASK's
+/// slot zoomed it never leaves the zoom (Esc never exits zoom, ADR-0053);
+/// nor does Escape on the composer or on the sources list.
+#[gpui_kit::test]
+fn escape_in_the_turn_list_returns_to_the_composer_and_never_leaves_zoom(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "why?", cx);
+    press(&started, ZOOM, cx);
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    press(&started, "escape", cx);
+    assert!(focused(&started, TURNS_ID, cx));
+    press(&started, "escape", cx);
+    assert!(focused(&started, COMPOSER_ID, cx));
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    // The sources list's Escape too.
+    press(&started, "escape", cx);
+    press(&started, "s", cx);
+    assert!(focused(&started, "ask-sources-list-rows", cx));
+    press(&started, "escape", cx);
+    assert!(focused(&started, COMPOSER_ID, cx));
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    assert!(shown(&started, cx));
+}
+
+/// Zoomed, ASK takes the whole width right of the rail, the reader opened
+/// on a source included: the turns, the sources part and the reader span
+/// it, and the editor is not drawn (nothing moved: leaving zoom brings it
+/// back beside ASK).
+#[gpui_kit::test]
+fn zoomed_ask_gives_the_thread_the_full_width_with_the_reader_open(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "why?", cx);
+    let narrow = bounds(&started, ASK_ID, cx);
+    leader(&started, LeaderAction::AskSource, cx);
+    assert!(drawn_el(&started, READER_ID, cx));
+    press(&started, ZOOM, cx);
+    assert_eq!(zoomed(&started, cx), Some(ask_slot(&started, cx)));
+    let (rail, width) = cx
+        .update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (window.find("rail").bounds(), window.viewport_size().width)
+        })
+        .unwrap();
+    let ask = bounds(&started, ASK_ID, cx);
+    assert!(close(ask.left(), f32::from(rail.right())), "{ask:?}");
+    assert!(close(ask.right(), f32::from(width)), "{ask:?}");
+    assert!(ask.size.width > narrow.size.width, "{ask:?} vs {narrow:?}");
+    assert!(!drawn_el(&started, "editor-panel", cx));
+    let part = bounds(&started, SOURCES_PART_ID, cx);
+    let reader = bounds(&started, READER_ID, cx);
+    assert!(drawn_el(&started, READER_ID, cx));
+    assert!(part.size.width > narrow.size.width, "{part:?}");
+    assert!(reader.size.width > narrow.size.width, "{reader:?}");
+    // Leaving zoom: ASK back in its slot beside the editor.
+    press(&started, ZOOM, cx);
+    assert_eq!(zoomed(&started, cx), None);
+    assert!(drawn_el(&started, "editor-panel", cx));
+    assert!(close(
+        bounds(&started, ASK_ID, cx).size.width,
+        f32::from(narrow.size.width)
+    ));
 }
 
 // ---- New, Copy, Save as note -----------------------------------------------------
@@ -834,7 +994,7 @@ fn copy_puts_the_answer_on_the_clipboard(cx: &mut TestAppContext) {
 }
 
 /// Save as note offers the create dialog on `ask/<slug>` holding the turn;
-/// confirming makes it (core) and opens it, taking the Thread down. With
+/// confirming makes it (core) and opens it in the editor, ASK staying. With
 /// that name taken, the dialog offers the free one and the note lands
 /// there.
 #[gpui_kit::test]
@@ -855,7 +1015,7 @@ fn save_as_note_creates_the_note_under_ask(cx: &mut TestAppContext) {
         open_note(&started, cx).is_some_and(|n| n.is_like(&suggested))
     });
     assert_eq!(disk(&rt, &v, &suggested), content);
-    assert!(!shown(&started, cx), "the note took the editor Panel");
+    assert!(shown(&started, cx), "ASK stays beside the new note");
 
     // Taken: the free name is offered (ShowCreateWithContent's door).
     let free = rt.block_on(v.vault.free_note_path(&suggested));

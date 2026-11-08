@@ -143,7 +143,6 @@ fn rewritable(outcome: Option<&SaveOutcome>) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LeavingFor {
     Attachment,
-    Ask,
 }
 
 /// How leaving the open note went ([`Workspace::leave_note`]).
@@ -427,9 +426,7 @@ impl Workspace {
                 self.note_gone = None;
                 self.status.note = Some(path.clone());
                 self.files_note_opened(&path, cx);
-                // The note takes the editor Panel back from the Thread or
-                // an attachment (the Thread's conversation is kept).
-                self.hide_ask(cx);
+                // The note takes the editor Panel back from an attachment.
                 self.clear_attachment(cx);
             }
             // The editor still holds the note it had: point the session back
@@ -466,8 +463,8 @@ impl Workspace {
 
     // ---- Leaving the note for another panel -------------------------------
 
-    /// Leave the open note for a panel that is not a note (an attachment,
-    /// the Thread), then `then`: flushed first, the tick stopped and the
+    /// Leave the open note for a panel that is not a note (an
+    /// attachment), then `then`: flushed first, the tick stopped and the
     /// editor taking no input while it runs, and refused when the note
     /// cannot be let go — a change still being written, a note still
     /// opening, edits that can't be saved, the window closing — or the
@@ -559,7 +556,6 @@ impl Workspace {
     fn leaving_slot(&mut self, panel: LeavingFor) -> &mut Option<Task<()>> {
         match panel {
             LeavingFor::Attachment => &mut self.attachment_flushing,
-            LeavingFor::Ask => &mut self.ask_flushing,
         }
     }
 
