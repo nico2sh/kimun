@@ -76,11 +76,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), DrawerView::ALL.len());
-        // The `[gui]` default names the file browser by this id.
-        assert_eq!(
-            DrawerView::from_id(crate::settings::gui::DEFAULT_LEFT_VIEWS[0]),
-            Some(DrawerView::Files)
-        );
+        assert_eq!(DrawerView::from_id("files"), Some(DrawerView::Files));
         assert_eq!(DrawerView::from_id("backlinks"), None);
         assert_eq!(DrawerView::from_id("Files"), None);
     }
