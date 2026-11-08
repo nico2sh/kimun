@@ -372,6 +372,10 @@ pub(crate) struct Workspace {
     /// on with nothing placed. Session only; a slot leaves the set when a
     /// view lands in it or it closes.
     opened_empty: HashSet<SlotId>,
+    /// The slot that last held the keyboard ([`Self::apply_focus`]),
+    /// where the rail places a view (ADR-0054 §3). Session only; cleared
+    /// when that slot closes.
+    last_slot: Option<SlotId>,
     /// The views a side toggle hid (left, right), shown again when that
     /// side is toggled back on. Session only.
     side_memory: [Vec<DrawerView>; 2],
@@ -684,6 +688,7 @@ impl Workspace {
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
             opened_empty: HashSet::new(),
+            last_slot: None,
             side_memory: [Vec::new(), Vec::new()],
             collapsed: HashSet::new(),
             title_bar_height: Default::default(),
@@ -1274,6 +1279,7 @@ impl Workspace {
         let layout = &self.layout;
         self.opened_empty
             .retain(|s| slots.contains(s) && layout.shown(*s).is_none());
+        self.last_slot = self.last_slot.filter(|s| slots.contains(s));
         self.fix_focus();
     }
 
@@ -1593,8 +1599,12 @@ impl Workspace {
 
     /// Give the keyboard to the leaf the layout says is focused. Not
     /// while a modal is open: it has the keyboard, and gives it back to its
-    /// opener when it closes ([`modal`]).
-    pub(crate) fn apply_focus(&self, window: &mut Window, cx: &mut App) {
+    /// opener when it closes ([`modal`]). A focused slot is remembered
+    /// as the last one to hold the keyboard.
+    pub(crate) fn apply_focus(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(slot) = self.focused_slot() {
+            self.last_slot = Some(slot);
+        }
         if modal::dialog_open(window, cx) {
             return;
         }
@@ -1864,40 +1874,23 @@ impl Workspace {
         self.layout.slot_stacked(slot, &|s| self.slot_drawn(s))
     }
 
-    /// `MoveViewToNeighbour(Up / Down)`: move the focused view (or the rail
-    /// cursor's) to the nearest drawn slot above (`up`) or below it,
-    /// trading places with the view shown there; a focused view keeps the
-    /// keyboard. With the rail cursor on a view no
-    /// slot shows, it goes into a slot opened empty (the first in reading
-    /// order), the rail keeping the keyboard. Nothing drawn that way: a
-    /// focused view goes to a new slot on that side when its slot holds
-    /// other views ([`Self::spawn_beside`]); otherwise handled when slots
-    /// are stacked there, else not handled, so the key passes on. A slot
-    /// the move empties closes ([`Self::close_if_vacated`]). Persisted.
+    /// `MoveViewToNeighbour(Up / Down)`: move the focused view to the
+    /// nearest drawn slot above (`up`) or below it, trading places with the
+    /// view shown there; the view keeps the keyboard. Nothing drawn that
+    /// way: it goes to a new slot on that side when its slot holds other
+    /// views ([`Self::spawn_beside`]); otherwise handled when slots are
+    /// stacked there, else not handled, so the key passes on. From the rail
+    /// see [`Self::place_from_rail`]. A slot the move empties closes
+    /// ([`Self::close_if_vacated`]). Persisted.
     fn move_view_vertically(
         &mut self,
         up: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.layout.focused() == Focus::Rail
-            && let Some(view) = self.arranged_view()
-            && !self.is_shown(view)
-            && let Some(slot) = self
-                .layout
-                .slots()
-                .into_iter()
-                .find(|s| self.opened_empty.contains(s))
-        {
-            let from = self.layout.view_slot(&view);
-            self.layout.move_view(view, slot);
-            if let Some(from) = from {
-                self.close_if_vacated(from, view);
-            }
-            self.ensure_files_listing(cx);
-            self.apply_focus(window, cx);
-            self.save_layout(cx);
-            return true;
+        let dir = if up { Dir::Up } else { Dir::Down };
+        if self.layout.focused() == Focus::Rail {
+            return self.place_from_rail(dir, window, cx);
         }
         let Some((view, from)) = self
             .arranged_view()
@@ -1905,7 +1898,6 @@ impl Workspace {
         else {
             return false;
         };
-        let dir = if up { Dir::Up } else { Dir::Down };
         let before: Vec<(SlotId, Option<DrawerView>)> = self
             .layout
             .slots()
@@ -1919,8 +1911,7 @@ impl Workspace {
             // stacked there.
             if !to.is_some_and(|to| undo.shown(to).is_some() || self.opened_empty.contains(&to)) {
                 self.layout = undo;
-                return self.spawn_focused_beside(view, from, dir, window, cx)
-                    || self.stacked(from);
+                return self.spawn_beside(view, from, dir, window, cx) || self.stacked(from);
             }
             // A swap: the view shown where it landed takes the slot it left.
             if let Some(Some(other)) = before
@@ -1941,20 +1932,65 @@ impl Workspace {
             self.save_layout(cx);
             return true;
         }
-        self.spawn_focused_beside(view, from, dir, window, cx) || self.stacked(from)
+        self.spawn_beside(view, from, dir, window, cx) || self.stacked(from)
     }
 
-    /// [`Self::spawn_beside`] for the view the focused slot shows; a view
-    /// under the rail's cursor does not spawn from here.
-    fn spawn_focused_beside(
-        &mut self,
-        view: DrawerView,
-        from: SlotId,
-        dir: Dir,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.focused_slot() == Some(from) && self.spawn_beside(view, from, dir, window, cx)
+    /// Up / Down from the rail (ADR-0054 §3), on the cursor's view: a view
+    /// no slot shows goes into a slot opened empty when there is one (the
+    /// first in reading order). Otherwise the view is placed in a new slot
+    /// above (`Dir::Up`) or below the slot that last held the keyboard,
+    /// while it exists and is drawn, else the slot beside the rail
+    /// ([`LayoutTree::place_beside`]); it leaves the slot it was in, which
+    /// closes when emptied. Handled with nothing changed while zoomed (the
+    /// new slot would not be on screen) or when the view is alone in that
+    /// slot already. The rail keeps the keyboard. Persisted.
+    fn place_from_rail(&mut self, dir: Dir, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(view) = self.rail_cursor_view() else {
+            return false;
+        };
+        let from = self.layout.view_slot(&view);
+        let empty = self
+            .layout
+            .slots()
+            .into_iter()
+            .find(|s| self.opened_empty.contains(s));
+        match empty.filter(|_| !self.is_shown(view)) {
+            Some(slot) => {
+                self.layout.move_view(view, slot);
+            }
+            None => {
+                let Some(target) = self
+                    .last_slot
+                    .filter(|s| self.slot_drawn(*s))
+                    .or_else(|| self.slot_beside_rail())
+                else {
+                    return false;
+                };
+                let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
+                if self.layout.zoomed().is_some()
+                    || alone
+                    || self.layout.place_beside(view, target, dir).is_err()
+                {
+                    return true;
+                }
+                // Out of the slot it is placed beside: as a move toward
+                // nothing, the first view left there shows in its place.
+                if from == Some(target)
+                    && self.layout.shown(target).is_none()
+                    && let Some(next) = self.layout.slot_views(target).first().copied()
+                {
+                    self.layout.show_view(&next, false);
+                }
+            }
+        }
+        if let Some(from) = from {
+            self.close_if_vacated(from, view);
+        }
+        self.ensure_files_listing(cx);
+        self.tidy_layout(cx);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+        true
     }
 
     /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view

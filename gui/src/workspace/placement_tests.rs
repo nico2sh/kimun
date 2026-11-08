@@ -1,8 +1,10 @@
-//! UI integration tests for placing a view in one step (ADR-0054 §1, §2):
+//! UI integration tests for placing a view in one step (ADR-0054 §1-§3):
 //! a move toward nothing makes a slot on that side when the view's slot
 //! holds other views, a move that takes the last view out of a slot
-//! closes that slot, and a split asks which view the new slot holds. A real `Workspace` in a headless window, driven by
-//! GPUI keyboard and pointer events.
+//! closes that slot, a split asks which view the new slot holds, and the
+//! rail places its cursor's view above or below the last focused slot. A
+//! real `Workspace` in a headless window, driven by GPUI keyboard and
+//! pointer events.
 
 use gpui_kit::component::IndexPath;
 use gpui_kit::test::TestWindowExt;
@@ -620,6 +622,252 @@ fn keys_in_the_chooser_do_not_reach_the_view_below(cx: &mut TestAppContext) {
             Some("zz")
         );
         assert_eq!(shell.text(cx), "hello", "the editor got nothing");
+    })
+    .unwrap();
+}
+
+// --- The rail places (ADR-0054 §3) ---
+
+/// Put the rail's cursor on `view` (the rail has the keyboard).
+fn rail_cursor_on(shell: &Shell, view: DrawerView, cx: &mut gpui_kit::App) {
+    shell
+        .workspace
+        .update(cx, |workspace, _| workspace.place_rail_cursor(Some(view)));
+}
+
+/// FILES focused in the left slot, then the rail (`alt-left`) with its
+/// cursor on FIND (placed nowhere): Move Down puts FIND in a new slot
+/// under FILES' slot. The rail keeps the keyboard.
+#[gpui_kit::test]
+fn rail_down_places_the_cursor_view_below_the_last_focused_slot(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_alone(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let old = left_slots(&shell, cx)[0];
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-left", cx);
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+        rail_cursor_on(&shell, DrawerView::Find, cx);
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[0], old);
+        assert_eq!(shown_in(&shell, left[0], cx), Some(DrawerView::Files));
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Find));
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+        assert_eq!(window.find("rail").focused(), Some(true));
+        assert_eq!(
+            saved_placed(&path),
+            [vec![DrawerView::Files], vec![DrawerView::Find]]
+        );
+    })
+    .unwrap();
+}
+
+/// Move Up from the rail puts the cursor's view above the last focused
+/// slot.
+#[gpui_kit::test]
+fn rail_up_places_above(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &files_alone(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let old = left_slots(&shell, cx)[0];
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-left", cx);
+        rail_cursor_on(&shell, DrawerView::Find, cx);
+        window.press("alt-shift-up", cx);
+        window.render_frame(cx);
+
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[1], old);
+        assert_eq!(shown_in(&shell, left[0], cx), Some(DrawerView::Find));
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Files));
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}
+
+/// No slot has had the keyboard yet: the rail places beside the slot
+/// beside the rail. Here the last focused slot would be OUTLINE's, on the
+/// right, had any slot been focused.
+#[gpui_kit::test]
+fn rail_down_with_no_focused_slot_yet_uses_the_slot_beside_the_rail(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_find_hidden_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let old = left_slots(&shell, cx)[0];
+        window.click("rail", cx);
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+        rail_cursor_on(&shell, DrawerView::Tags, cx);
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[0], old);
+        assert_eq!(shown_in(&shell, left[0], cx), Some(DrawerView::Files));
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Tags));
+        assert_eq!(shell.workspace.read(cx).side_slots(Side::Right).len(), 1);
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}
+
+/// The last focused slot (FIND's, lower left) closes: the rail moves FIND
+/// right into the slot beside the rail, vacating it. The next placement
+/// from the rail goes beside the slot beside the rail.
+#[gpui_kit::test]
+fn last_slot_follows_a_closed_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let top = left_slots(&shell, cx)[0];
+        window.click(slot_id(DrawerView::Find), cx);
+        window.click("rail", cx);
+        rail_cursor_on(&shell, DrawerView::Find, cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+        assert_eq!(left_slots(&shell, cx), [top], "FIND's slot closed");
+
+        rail_cursor_on(&shell, DrawerView::Tags, cx);
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[0], top);
+        assert_eq!(shown_in(&shell, left[0], cx), Some(DrawerView::Find));
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Tags));
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}
+
+/// With a slot on the right focused last, Right from the rail still shows
+/// the cursor's view in the slot beside the rail (ADR-0052), not a new
+/// slot.
+#[gpui_kit::test]
+fn rail_right_still_shows_in_the_slot_beside_the_rail(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slots = layout(&shell, cx).slots();
+        let top = left_slots(&shell, cx)[0];
+        window.click(slot_id(DrawerView::Outline), cx);
+        window.click("rail", cx);
+        rail_cursor_on(&shell, DrawerView::Tags, cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+
+        assert_eq!(layout(&shell, cx).slots(), slots, "no new slot");
+        assert_eq!(shown_in(&shell, top, cx), Some(DrawerView::Tags));
+        assert_eq!(
+            views_of(&shell, top, cx),
+            [DrawerView::Files, DrawerView::Tags]
+        );
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}
+
+/// The cursor's view is the one the last focused slot shows, with FIND
+/// hidden beside it: Move Down puts it in a new slot below, and FIND shows
+/// in the slot it left, as a move toward nothing does.
+#[gpui_kit::test]
+fn rail_down_on_the_last_slots_view_shows_the_next_one_there(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_over_find_hidden(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let old = left_slots(&shell, cx)[0];
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-left", cx);
+        rail_cursor_on(&shell, DrawerView::Files, cx);
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left[0], old);
+        assert_eq!(shown_in(&shell, left[0], cx), Some(DrawerView::Find));
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Files));
+        assert_eq!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}
+
+/// A slot opened empty (the right side toggled on with nothing placed) is
+/// not closed by the vacate rule when a move empties another slot.
+#[gpui_kit::test]
+fn a_slot_opened_empty_survives_a_vacating_move(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let right = layout(&shell, cx).slots()[1];
+        assert!(views_of(&shell, right, cx).is_empty());
+        window.press("ctrl-shift-t", cx);
+        assert!(shell.workspace.read(cx).slot_drawn(right), "opened empty");
+        // FIND shows in FILES' slot, then moves down into a slot of its own.
+        window.click(super::rail_cell_id(DrawerView::Find), cx);
+        window.click(slot_id(DrawerView::Find), cx);
+        window.press("alt-shift-down", cx);
+        let below = left_slots(&shell, cx)[1];
+        assert_eq!(views_of(&shell, below, cx), [DrawerView::Find]);
+        // The rail moves FIND back beside it, vacating its slot.
+        window.click("rail", cx);
+        rail_cursor_on(&shell, DrawerView::Find, cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+
+        let slots = layout(&shell, cx).slots();
+        assert!(!slots.contains(&below), "the vacated slot closed");
+        assert!(slots.contains(&right), "{slots:?}");
+        assert!(shell.workspace.read(cx).slot_drawn(right), "still drawn");
     })
     .unwrap();
 }
