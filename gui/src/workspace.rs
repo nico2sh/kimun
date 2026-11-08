@@ -1854,8 +1854,9 @@ impl Workspace {
     }
 
     /// After a move of `view` out of `slot` (ADR-0054 §1): close `slot`
-    /// when it holds no views any more ([`LayoutTree::vacate_close`]),
-    /// never a slot opened empty, which is not vacated. A zoom on it moves
+    /// when it holds no views any more and is not the last slot on its
+    /// side of the editor ([`LayoutTree::vacate_close`]), never a slot
+    /// opened empty, which is not vacated. A zoom on it moves
     /// to `view`'s new slot. True when it closed.
     fn close_if_vacated(&mut self, slot: SlotId, view: DrawerView) -> bool {
         if self.opened_empty.contains(&slot) {

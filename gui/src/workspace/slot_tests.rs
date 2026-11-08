@@ -349,19 +349,14 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
 /// moved, never copied — and the keyboard goes with it; a slot left with no
 /// shown view is not drawn. From the rail the move is spatial: Right moves
 /// the cursor's view into the slot beside the rail; the rail keeps the
-/// keyboard. Every move is saved and restored. Each slot keeps a hidden
-/// view (FIND left, TAGS right), so no move empties a slot (which would
-/// close it, ADR-0054).
+/// keyboard. Every move is saved and restored.
 #[gpui_kit::test]
 fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
         1000.,
-        &three(
-            "views = [\"files\", \"find\"], shown = \"files\"",
-            "views = [\"tags\"]",
-        ),
+        &GuiSettings::default(),
         "",
         false,
         LayoutStore::File(path.clone()),
@@ -374,8 +369,7 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
 
         window.press("alt-shift-right", cx);
         window.render_frame(cx);
-        assert_eq!(shell.placed_on(Side::Left, cx), [DrawerView::Find]);
-        assert!(shell.shown_on(Side::Left, cx).is_empty());
+        assert!(shell.placed_on(Side::Left, cx).is_empty());
         assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Files]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(right)));
         assert_eq!(
@@ -389,26 +383,18 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
         let editor = window.find("editor-panel").bounds();
         let rail = window.find("rail").bounds();
         assert!(close(editor.left(), f32::from(rail.right())));
-        assert_eq!(
-            saved_placed(&path),
-            [
-                vec![DrawerView::Find],
-                vec![DrawerView::Tags, DrawerView::Files]
-            ]
-        );
+        assert_eq!(saved_placed(&path), [vec![], vec![DrawerView::Files]]);
+
+        // Nothing further right: handled, nothing moves.
+        window.press("alt-shift-right", cx);
+        assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Files]);
 
         // And back.
         window.press("alt-shift-left", cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
-        assert_eq!(shell.placed_on(Side::Right, cx), [DrawerView::Tags]);
+        assert!(shell.placed_on(Side::Right, cx).is_empty());
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
-        assert_eq!(
-            saved_placed(&path),
-            [
-                vec![DrawerView::Find, DrawerView::Files],
-                vec![DrawerView::Tags]
-            ]
-        );
+        assert_eq!(saved_placed(&path), [vec![DrawerView::Files], vec![]]);
 
         // Files to the right again, for the rail moves below.
         window.press("alt-shift-right", cx);

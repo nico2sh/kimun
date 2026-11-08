@@ -1212,3 +1212,50 @@ fn the_move_chooser_hints_follow_a_replaced_keymap(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// The last slot on a side is not closed when a move empties it: FILES
+/// moved out of the default left slot leaves that slot in the tree, empty
+/// and undrawn. A left-home view (LINKS) shown from the rail opens there,
+/// left of the editor, and the left side toggle works again. The empty
+/// slot is saved and restored with the layout.
+#[gpui_kit::test]
+fn the_last_slot_on_a_side_stays_when_vacated(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slots = layout(&shell, cx).slots();
+        let (left, right) = (slots[0], slots[1]);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+        assert_eq!(layout(&shell, cx).slots(), [left, right]);
+        assert!(views_of(&shell, left, cx).is_empty());
+        assert!(!shell.workspace.read(cx).slot_drawn(left), "undrawn");
+        assert_eq!(saved_placed(&path), [vec![], vec![DrawerView::Files]]);
+        let restored = shell_tree::restore(&saved(&path), shell_tree::RESTORE_CAPS);
+        assert_eq!(restored.slots().len(), 2, "the empty left slot restores");
+
+        window.click(super::rail_cell_id(DrawerView::Links), cx);
+        window.render_frame(cx);
+        assert_eq!(shown_in(&shell, left, cx), Some(DrawerView::Links));
+        let links = window.find(slot_id(DrawerView::Links)).bounds();
+        let editor = window.find("editor-panel").bounds();
+        assert!(links.right() <= editor.left(), "left of the editor");
+
+        // The left side toggle hides LINKS and shows it again.
+        window.press("ctrl-t", cx);
+        assert_eq!(shown_in(&shell, left, cx), None);
+        window.press("ctrl-t", cx);
+        assert_eq!(shown_in(&shell, left, cx), Some(DrawerView::Links));
+        assert_ne!(flash(&shell, cx).as_deref(), Some("No slot on that side"));
+    })
+    .unwrap();
+}
