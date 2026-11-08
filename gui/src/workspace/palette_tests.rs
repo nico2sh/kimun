@@ -627,7 +627,7 @@ fn the_palette_row_opens_the_move_chooser(cx: &mut TestAppContext) {
     .unwrap();
     open_palette(&shell, cx);
     assert_eq!(blocked(&shell, cx), Some(None));
-    type_text(&shell, "move view to…", cx);
+    type_text(&shell, "move view to", cx);
     assert_eq!(visible(&shell, cx).first().map(String::as_str), Some(ROW));
     press(&shell, "enter", cx);
     settle(&shell, cx);
@@ -639,5 +639,43 @@ fn the_palette_row_opens_the_move_chooser(cx: &mut TestAppContext) {
             workspace.move_chooser_rows(cx),
             Some(vec!["Into Find slot".to_string()])
         );
+    });
+}
+
+/// The highlight follows the query: after the arrows moved it down the
+/// list, a longer query leaves several rows and Enter runs the first
+/// runnable one, not whatever row now sits where the highlight was.
+#[gpui_kit::test]
+fn enter_runs_the_first_row_after_the_query_changes(cx: &mut TestAppContext) {
+    let settings = super::tests::gui(
+        "[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+         { weight = 0.8, editor = true },\n]\n",
+    );
+    let shell = open_shell(cx, 1000., &settings, "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.click(super::slot_id(DrawerView::Files), cx)
+    })
+    .unwrap();
+    open_palette(&shell, cx);
+    type_text(&shell, "move view", cx);
+    assert!(visible(&shell, cx).len() > 3, "{:?}", visible(&shell, cx));
+    for _ in 0..3 {
+        press(&shell, "down", cx);
+    }
+    type_text(&shell, " to", cx);
+    let rows = visible(&shell, cx);
+    assert!(rows.len() > 1, "several rows stay: {rows:?}");
+    assert_eq!(rows[0], "+window · move view to…");
+    press(&shell, "enter", cx);
+    settle(&shell, cx);
+    assert!(
+        dialog_open(&shell, cx),
+        "the first row ran: the chooser is open"
+    );
+    cx.read(|cx| {
+        assert_eq!(shell.workspace.read(cx).modal, Some(ModalKind::ViewChooser));
     });
 }
