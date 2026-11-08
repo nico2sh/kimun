@@ -195,4 +195,51 @@ mod tests {
         let back = restore(&settings, RESTORE_CAPS);
         assert_eq!(back.shown(right), Some(DrawerView::Semantic));
     }
+
+    #[test]
+    fn invalid_saved_layout_falls_back_to_default() {
+        // No editor group: a layout must hold one.
+        let no_editor = lines(&[
+            "[gui.layout]",
+            "split = \"horizontal\"",
+            "children = [",
+            "{ views = [\"files\"], shown = \"files\" },",
+            "{ views = [\"tags\"], shown = \"tags\" },",
+            "]",
+        ]);
+        assert_eq!(restore(&gui(&no_editor), RESTORE_CAPS), default());
+        // A shown view that is not placed in its slot.
+        let stray = lines(&[
+            "[gui.layout]",
+            "split = \"horizontal\"",
+            "children = [",
+            "{ views = [\"files\"], shown = \"tags\" },",
+            "{ editor = true },",
+            "]",
+        ]);
+        assert_eq!(restore(&gui(&stray), RESTORE_CAPS), default());
+        // Not a table.
+        assert_eq!(
+            restore(&gui("[gui]\nlayout = 3\n"), RESTORE_CAPS),
+            default()
+        );
+    }
+
+    #[test]
+    fn record_does_not_write_zoom_or_collapse_state() {
+        let mut tree = default();
+        let left = tree.slots()[0];
+        tree.zoom(Some(Leaf::Slot(left)));
+        assert_eq!(tree.zoomed(), Some(Leaf::Slot(left)));
+        let mut settings = GuiSettings::default();
+        record(&tree, &mut settings);
+        let written = toml::to_string(&settings).unwrap();
+        assert!(!written.contains("zoom"), "{written}");
+        assert!(!written.contains("collapse"), "{written}");
+        // The unzoomed tree writes the same table.
+        let mut plain = GuiSettings::default();
+        record(&default(), &mut plain);
+        assert_eq!(plain, settings);
+        assert_eq!(restore(&settings, RESTORE_CAPS).zoomed(), None);
+    }
 }
