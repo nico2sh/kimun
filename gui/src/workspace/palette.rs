@@ -7,7 +7,9 @@
 //! **Rows.** The leaves come from the configured leader tree
 //! (`logic::palette::palette_rows`, labelled `+group · leaf`); the GUI-only
 //! rows (`+window · toggle right side`, moving views, splitting and
-//! closing slots, directional focus, find and replace, following a link) follow them. A
+//! closing slots, directional focus, find and replace, following a link) follow them,
+//! then the layout preset rows (`Apply layout preset: <name>` per loaded
+//! preset, `Reload layout presets`, `Reset to preset`). A
 //! row the window cannot run is shown disabled with the reason in its
 //! trailing slot; a runnable one shows there its leader sequence (a leaf,
 //! from the gateway that works where the keyboard was: `Space` in vim
@@ -47,6 +49,7 @@ use kimun_notes::logic::palette::palette_rows;
 use super::Workspace;
 use super::files::ClickPolicy;
 use super::modal::{ModalKind, Slot};
+use super::presets::PresetCommand;
 use super::route::{
     NEEDS_DRAWER_FOCUS, NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NO_WORKSPACE,
 };
@@ -64,6 +67,8 @@ pub(crate) enum PaletteRun {
     Leaf(LeaderAction),
     /// One of the GUI's own chords, as if pressed in the opener.
     Chord(ActionShortcuts),
+    /// A layout preset command ([`super::presets`]).
+    Preset(PresetCommand),
 }
 
 /// One row of the palette.
@@ -334,7 +339,17 @@ impl Workspace {
                 blocked: self.chord_block(&action, opener, cx),
                 run: PaletteRun::Chord(action),
             });
-        leaves.chain(chords).collect()
+        let presets = self
+            .preset_rows()
+            .into_iter()
+            .map(|(command, blocked)| PaletteEntry {
+                label: command.label().into(),
+                hint: None,
+                sequence: None,
+                blocked,
+                run: PaletteRun::Preset(command),
+            });
+        leaves.chain(chords).chain(presets).collect()
     }
 
     /// Why one of the GUI's own chords cannot run from the palette now.
@@ -409,6 +424,7 @@ impl Workspace {
             PaletteRun::Chord(action) => {
                 self.workspace_command(&action, None, window, cx);
             }
+            PaletteRun::Preset(command) => self.run_preset_command(command, window, cx),
         }
         cx.notify();
     }
