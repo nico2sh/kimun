@@ -9,7 +9,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, SharedString, TestAppContext};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::layout::{Dir, Panel, Side};
-use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId, TreeShape};
+use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId, TreeFocusMove, TreeShape};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 use kimun_notes::settings::gui::GuiSettings;
@@ -1325,15 +1325,18 @@ fn divider_between_a_drawn_slot_and_an_undrawn_empty_slot_does_not_exist(cx: &mu
 }
 
 /// A slot narrower than its title keeps a one-line header: the title is
-/// clipped, never wrapped.
+/// clipped, never wrapped. Slots keep their minimum width where they can,
+/// so the narrow one is under the editor in a window narrower than both
+/// minimums (it cannot collapse there and shows `Too small`).
 #[gpui_kit::test]
 fn a_narrow_slot_header_does_not_wrap(cx: &mut TestAppContext) {
     let narrow = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
-         { weight = 0.01, split = \"vertical\", children = [\n\
-         { views = [\"semantic\"], shown = \"semantic\" },\n\
-         { views = [\"tags\"], shown = \"tags\" },\n] },\n\
-         { weight = 0.99, editor = true },\n]\n");
-    let shell = open_shell(cx, 1000., &narrow, "", false, LayoutStore::Off);
+         { weight = 0.2, views = [\"tags\"], shown = \"tags\" },\n\
+         { weight = 0.8, split = \"vertical\", children = [\n\
+         { editor = true },\n\
+         { views = [\"semantic\"], shown = \"semantic\" },\n] },\n]\n");
+    // 32 px right of the rail.
+    let shell = open_shell(cx, 80., &narrow, "", false, LayoutStore::Off);
     let wide = open_shell(
         cx,
         1000.,
@@ -1776,6 +1779,322 @@ fn focus_region_walks_nested_slots_and_reaches_the_rail(cx: &mut TestAppContext)
         step("alt-left", Focus::Rail, &rail);
         step("alt-left", Focus::Rail, &rail);
         step("alt-right", slot(files_s), &files);
+    })
+    .unwrap();
+}
+
+// ── Minimum sizes and collapse (ADR-0052 §6) ──────────────────────────
+
+/// FILES left, the editor, OUTLINE right: every slot shown.
+fn files_editor_outline() -> GuiSettings {
+    three(
+        "views = [\"files\"], shown = \"files\"",
+        "views = [\"outline\"], shown = \"outline\"",
+    )
+}
+
+/// FILES left of a column holding the editor over TAGS.
+fn files_beside_editor_over_tags() -> GuiSettings {
+    gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, views = [\"files\"], shown = \"files\" },\n\
+         { weight = 0.8, split = \"vertical\", children = [\n\
+           { weight = 0.7, editor = true },\n\
+           { weight = 0.3, views = [\"tags\"], shown = \"tags\" },\n] },\n]\n")
+}
+
+/// Resize the shell's window to `width` x [`HEIGHT`] px.
+fn resize(cx: &mut TestAppContext, shell: &Shell, width: f32) {
+    cx.simulate_window_resize(
+        shell.handle,
+        gpui_kit::size(gpui_kit::px(width), gpui_kit::px(HEIGHT)),
+    );
+}
+
+/// The window narrows: OUTLINE (trailing) goes first, then FILES; the
+/// editor is always drawn and fills what the rail leaves.
+#[gpui_kit::test]
+fn narrow_window_collapses_trailing_slots_not_the_editor(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_editor_outline(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_some());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+    })
+    .unwrap();
+    // 560 px right of the rail = 35 rem < 10 + 20 + 10: OUTLINE goes.
+    resize(cx, &shell, 608.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_none());
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        let editor = window.find("editor-panel").bounds();
+        assert!(close(editor.left(), f32::from(files.right()) + 1.));
+        assert!(close(editor.right(), 608.), "editor {editor:?}");
+    })
+    .unwrap();
+    // 352 px = 22 rem < 10 + 20: FILES goes too; the editor stays.
+    resize(cx, &shell, 400.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_none());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
+        let editor = window.find("editor-panel").bounds();
+        assert!(close(editor.left(), 48.), "editor {editor:?}");
+        assert!(close(editor.right(), 400.), "editor {editor:?}");
+    })
+    .unwrap();
+}
+
+/// The trailing child holds the editor, so it is skipped and FILES before
+/// it collapses instead; TAGS, inside the editor's subtree, stays. Even
+/// narrower than the editor's own minimum, the editor is drawn.
+#[gpui_kit::test]
+fn editor_group_subtree_never_collapses(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_beside_editor_over_tags(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+        assert!(window.try_find(slot_id(DrawerView::Tags)).is_some());
+    })
+    .unwrap();
+    for width in [400., 200.] {
+        resize(cx, &shell, width);
+        cx.update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find(slot_id(DrawerView::Files)).is_none(),
+                "{width}"
+            );
+            assert!(
+                window.try_find(slot_id(DrawerView::Tags)).is_some(),
+                "{width}"
+            );
+            let editor = window.find("editor-panel").bounds();
+            assert!(close(editor.left(), 48.), "{width}: editor {editor:?}");
+            assert!(close(editor.right(), width), "{width}: editor {editor:?}");
+            let fit = shell.workspace.read(cx).fit(window);
+            assert!(
+                fit.rects
+                    .iter()
+                    .any(|(leaf, _)| matches!(leaf, Leaf::Group(_)))
+            );
+        })
+        .unwrap();
+    }
+}
+
+/// Collapse lives in the session only: the saved `config.toml` is the same
+/// bytes before the shrink, while shrunk (even when saved then) and after
+/// the window grows back.
+#[gpui_kit::test]
+fn collapse_is_session_only_saved_layout_unchanged_after_shrink_and_regrow(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_editor_outline(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Twice: the first save of a missing file stamps no config
+        // version; the second, reading it back, does.
+        shell.workspace.update(cx, |ws, cx| ws.save_layout(cx));
+        shell.workspace.update(cx, |ws, cx| ws.save_layout(cx));
+    })
+    .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    resize(cx, &shell, 400.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), before, "shrunk");
+        shell.workspace.update(cx, |ws, cx| ws.save_layout(cx));
+        assert_eq!(std::fs::read(&path).unwrap(), before, "saved while shrunk");
+    })
+    .unwrap();
+    resize(cx, &shell, 1000.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_some());
+        shell.workspace.update(cx, |ws, cx| ws.save_layout(cx));
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before, "regrown");
+}
+
+/// Collapsed slots come back, at their old widths, when the window grows.
+#[gpui_kit::test]
+fn collapsed_slots_return_when_the_window_grows(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_editor_outline(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let wide = |window: &mut gpui_kit::Window| {
+        (
+            window.find(slot_id(DrawerView::Files)).bounds(),
+            window.find(slot_id(DrawerView::Outline)).bounds(),
+        )
+    };
+    let before = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            wide(window)
+        })
+        .unwrap();
+    resize(cx, &shell, 400.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
+        assert!(window.try_find(slot_id(DrawerView::Outline)).is_none());
+    })
+    .unwrap();
+    resize(cx, &shell, 1000.);
+    let after = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            wide(window)
+        })
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+/// A slot's minimum is that of the view it shows: a hidden view with a
+/// larger one (ASK, 18 rem) does not count, so the slot still fits at 31
+/// rem beside the editor (10 + 20); showing ASK makes it 18 and collapses
+/// it there.
+#[gpui_kit::test]
+fn slot_minimum_is_the_largest_shown_view_minimum(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let left = cx.read(|cx| shell.slots(cx))[0];
+    shell.workspace.update(cx, |ws, _| {
+        assert!(ws.layout.place(DrawerView::Ask, left, false));
+        assert_eq!(ws.layout.shown(left), Some(DrawerView::Files));
+        assert_eq!(
+            ws.slot_min(left),
+            view_registry::spec(DrawerView::Files).min
+        );
+    });
+    // 496 px right of the rail = 31 rem.
+    resize(cx, &shell, 544.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+        shell.workspace.update(cx, |ws, _| {
+            assert_eq!(ws.layout.show_view(&DrawerView::Ask, false), Some(left));
+            assert_eq!(ws.slot_min(left), view_registry::spec(DrawerView::Ask).min);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Ask)).is_none());
+    })
+    .unwrap();
+}
+
+/// A collapsed slot is no focus target: the keyboard leaves it when it
+/// collapses, and neither the directional moves nor the focus cycle reach
+/// it.
+#[gpui_kit::test]
+fn focus_skips_collapsed_slots(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_editor_outline(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Outline), cx);
+        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Right));
+    })
+    .unwrap();
+    resize(cx, &shell, 608.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let ws = shell.workspace.clone();
+        let group = Focus::Leaf(Leaf::Group(ws.read(cx).layout.active_group()));
+        assert_eq!(shell.focus(cx), group, "focus left the collapsed slot");
+        let moved = ws.update(cx, |ws, _| ws.focus_dir(Dir::Right));
+        assert_eq!(moved, TreeFocusMove::AtEdge);
+        assert_eq!(shell.focus(cx), group);
+        // Rail, FILES, editor: OUTLINE is not in the cycle.
+        let next = ws.update(cx, |ws, _| ws.cycle_focus(true));
+        assert_eq!(next, Some(Focus::Rail));
+    })
+    .unwrap();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("editor").focused(), Some(true));
+    })
+    .unwrap();
+}
+
+/// TAGS sits in the editor's subtree, so it never collapses; narrower than
+/// its own minimum it keeps its header and says `Too small` instead of
+/// listing tags. Wide again, the placeholder goes.
+#[gpui_kit::test]
+fn a_slot_below_its_minimum_shows_too_small(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_beside_editor_over_tags(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(super::tree_view::TOO_SMALL_ID).is_none());
+    })
+    .unwrap();
+    // 152 px right of the rail: TAGS is 152 px wide, under its 160.
+    resize(cx, &shell, 200.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let tags = window.find(slot_id(DrawerView::Tags)).bounds();
+        let placeholder = window.find(super::tree_view::TOO_SMALL_ID);
+        assert_eq!(placeholder.label(), Some("Too small"));
+        assert!(tags.contains(&placeholder.bounds().center()));
+        let header = window.find("slot-header").bounds();
+        assert!(tags.contains(&header.center()), "the header stays");
+        // FILES, outside the editor's subtree, collapsed: no placeholder.
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
+    })
+    .unwrap();
+    resize(cx, &shell, 1000.);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(super::tree_view::TOO_SMALL_ID).is_none());
     })
     .unwrap();
 }

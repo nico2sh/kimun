@@ -5,16 +5,17 @@
 //! view renders and routes; everything here is plain data and tested
 //! without a window.
 
-use kimun_notes::logic::layout::WidthLimits;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 
 /// The rail's width, in rems: one icon cell plus its inset.
 pub const RAIL_REMS: f32 = 3.0;
-/// The narrowest a slot may be dragged, in rems: room for a short label
-/// and its icon.
+/// The width of a slot opened empty, in rems (a slot showing a view takes
+/// the view's minimum, `view_registry`): room for a short label and its
+/// icon.
 pub const DRAWER_MIN_REMS: f32 = 10.0;
-/// The width the editor always keeps, in rems: a readable line of text.
+/// An editor group's minimum width, in rems: a readable line of text. The
+/// editor never collapses; the slots beside it do first.
 pub const EDITOR_MIN_REMS: f32 = 20.0;
 
 /// The views the rail offers when the kimün server can do `caps`, top to
@@ -68,16 +69,6 @@ pub fn hosts(view: DrawerView) -> bool {
         .contains(&view)
 }
 
-/// The model's sizing floors for a window `window_width` px wide at `rem`
-/// px per rem.
-pub fn limits(window_width: f64, rem: f64) -> WidthLimits {
-    WidthLimits {
-        drawer_min: f64::from(DRAWER_MIN_REMS) * rem,
-        editor_min: f64::from(EDITOR_MIN_REMS) * rem,
-        available: (window_width - f64::from(RAIL_REMS) * rem).max(0.0),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,17 +92,6 @@ mod tests {
             empty_slot_hint(None, None),
             "No view here. Pick one from the rail."
         );
-    }
-
-    #[test]
-    fn limits_are_rem_based() {
-        let l = limits(1000.0, 16.0);
-        assert_eq!(l.drawer_min, 160.0);
-        assert_eq!(l.editor_min, 320.0);
-        assert_eq!(l.available, 952.0);
-        // Zoomed: the floors grow with the rem.
-        assert_eq!(limits(1000.0, 20.0).drawer_min, 200.0);
-        assert_eq!(limits(10.0, 16.0).available, 0.0);
     }
 
     #[test]
