@@ -286,22 +286,41 @@ impl<L: Clone + PartialEq> Node<L> {
     /// `share` of (branch + next sibling), clamped to [`MIN_RATIO`]. False
     /// when no such split exists.
     pub(crate) fn resize_after(&mut self, leaf: &L, share: f64) -> bool {
+        self.resize_after_visible(leaf, share, &|_| true)
+    }
+
+    /// [`Self::resize_after`] over what is drawn: the sibling the boundary
+    /// is with is the next one holding a `visible` leaf, so two drawn
+    /// branches with hidden siblings between them still share a boundary.
+    /// Only those two branches' weights change; the hidden siblings keep
+    /// theirs. False when no visible sibling follows at any level.
+    pub(crate) fn resize_after_visible(
+        &mut self,
+        leaf: &L,
+        share: f64,
+        visible: &dyn Fn(&L) -> bool,
+    ) -> bool {
         let Kind::Split { children, .. } = &mut self.kind else {
             return false;
         };
         let Some(i) = children.iter().position(|c| c.node.contains(leaf)) else {
             return false;
         };
-        if children[i].node.resize_after(leaf, share) {
+        if children[i].node.resize_after_visible(leaf, share, visible) {
             return true;
         }
-        if i + 1 >= children.len() || !share.is_finite() {
+        if !share.is_finite() {
             return false;
         }
-        let pair = children[i].weight + children[i + 1].weight;
+        let Some(j) =
+            (i + 1..children.len()).find(|&j| children[j].node.leaves().into_iter().any(visible))
+        else {
+            return false;
+        };
+        let pair = children[i].weight + children[j].weight;
         let w = share.clamp(MIN_RATIO, 1.0 - MIN_RATIO) * pair;
         children[i].weight = w;
-        children[i + 1].weight = pair - w;
+        children[j].weight = pair - w;
         true
     }
 
@@ -605,6 +624,39 @@ mod tests {
         assert!(!n.resize_after(&'c', 0.5));
         assert!(n.resize_after(&'a', 0.2));
         assert!((n.layout(unit())[0].1.width() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resize_after_visible_skips_hidden_siblings() {
+        // a | b (hidden) | c | d: the boundary after `a` is with `c`.
+        let mut n = Node::split(
+            Axis::Horizontal,
+            vec![
+                (0.25, Node::leaf('a')),
+                (0.25, Node::leaf('b')),
+                (0.25, Node::leaf('c')),
+                (0.25, Node::leaf('d')),
+            ],
+        );
+        let visible = |l: &char| *l != 'b';
+        assert!(n.resize_after_visible(&'a', 0.8, &visible));
+        let r = n.ratios();
+        assert!((r[0] - 0.4).abs() < 1e-9, "{r:?}");
+        assert!((r[1] - 0.25).abs() < 1e-9, "b keeps its weight: {r:?}");
+        assert!((r[2] - 0.1).abs() < 1e-9, "{r:?}");
+        assert!((r[3] - 0.25).abs() < 1e-9, "d keeps its weight: {r:?}");
+        // Nothing visible after `d`, nor after `c` once `d` hides.
+        assert!(!n.resize_after_visible(&'d', 0.5, &visible));
+        assert!(!n.resize_after_visible(&'c', 0.5, &|l: &char| *l != 'd'));
+        // A nested branch whose following sibling is hidden defers to the
+        // outer split.
+        let col = Node::split(
+            Axis::Vertical,
+            vec![(1.0, Node::leaf('x')), (1.0, Node::leaf('y'))],
+        );
+        let mut n = Node::split(Axis::Horizontal, vec![(1.0, col), (1.0, Node::leaf('z'))]);
+        assert!(n.resize_after_visible(&'x', 0.3, &|l: &char| *l != 'y'));
+        assert!((n.ratios()[0] - 0.3).abs() < 1e-9, "{:?}", n.ratios());
     }
 
     #[test]

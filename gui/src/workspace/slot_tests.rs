@@ -2098,3 +2098,103 @@ fn a_slot_below_its_minimum_shows_too_small(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// Two drawn cells with a hidden slot between them in the tree still share
+/// a divider (Ruling 23): FILES split right gives `[A, B, editor, right]`,
+/// FILES moved into B, TAGS shown in A from the rail, FILES hidden from the
+/// rail: TAGS and the editor are drawn side by side across hidden B. A drag
+/// of that divider changes only those two weights (B and the right slot
+/// keep theirs), and the leader's grow step resizes TAGS.
+#[gpui_kit::test]
+fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        let tags = |window: &mut gpui_kit::Window| {
+            f32::from(window.find(slot_id(DrawerView::Tags)).bounds().size.width)
+        };
+        let editor = |window: &mut gpui_kit::Window| {
+            f32::from(window.find("editor-panel").bounds().size.width)
+        };
+        window.render_frame(cx);
+        window.press("alt-left", cx);
+        window.press("alt-shift-r", cx);
+        window.render_frame(cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+        window.click(rail_cell_id(DrawerView::Tags), cx);
+        window.render_frame(cx);
+        window.click(rail_cell_id(DrawerView::Files), cx);
+        window.render_frame(cx);
+        {
+            let w = shell.workspace.read(cx);
+            let slots = w.layout.slots();
+            assert_eq!(slots.len(), 3, "A, B and the right slot");
+            assert_eq!(w.layout.shown(slots[0]), Some(DrawerView::Tags));
+            assert_eq!(w.layout.slot_views(slots[1]), [DrawerView::Files]);
+            assert_eq!(w.layout.shown(slots[1]), None);
+            assert_eq!(top_weights(&w.layout).len(), 4, "[A, B, editor, right]");
+        }
+        assert!(
+            window.try_find("divider-slot-0").is_some(),
+            "a divider between TAGS and the editor"
+        );
+        let before = top_weights(&shell.workspace.read(cx).layout);
+        let (t, e) = (tags(window), editor(window));
+        let from = window.find("divider-slot-0").bounds().center();
+        window.drag(
+            from,
+            gpui_kit::point(from.x + gpui_kit::px(100.), from.y),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(
+            (tags(window) - (t + 100.)).abs() < 1.0,
+            "{t} -> {}",
+            tags(window)
+        );
+        assert!(
+            (editor(window) - (e - 100.)).abs() < 1.0,
+            "{e} -> {}",
+            editor(window)
+        );
+        let after = top_weights(&saved_tree(&path));
+        assert!(
+            near(after[1], before[1]),
+            "B keeps its weight: {before:?} -> {after:?}"
+        );
+        assert!(
+            near(after[3], before[3]),
+            "right keeps its weight: {before:?} -> {after:?}"
+        );
+        assert!(
+            near(after[0] + after[2], before[0] + before[2]),
+            "{before:?} -> {after:?}"
+        );
+        assert!(after[0] > before[0], "{before:?} -> {after:?}");
+
+        // The leader's grow step on TAGS moves the same divider.
+        window.click(slot_id(DrawerView::Tags), cx);
+        window.render_frame(cx);
+        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
+        let t = tags(window);
+        window.press("ctrl-shift-b", cx);
+        window.input("w", cx);
+        window.input("l", cx);
+        window.render_frame(cx);
+        assert!(tags(window) > t + 1.0, "{t} -> {}", tags(window));
+        let stepped = top_weights(&saved_tree(&path));
+        assert!(
+            near(stepped[1], before[1]) && near(stepped[3], before[3]),
+            "{stepped:?}"
+        );
+    })
+    .unwrap();
+}

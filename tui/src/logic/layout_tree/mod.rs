@@ -756,6 +756,20 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         self.root.resize_after(&leaf, share)
     }
 
+    /// [`Self::resize_after`] between drawn cells: the boundary after
+    /// `leaf`'s branch is with the next sibling holding a `visible` leaf,
+    /// hidden siblings between them skipped and keeping their weights
+    /// (see `Node::resize_after_visible`). False when there is none.
+    pub fn resize_after_visible(
+        &mut self,
+        leaf: Leaf,
+        share: f64,
+        visible: &dyn Fn(Leaf) -> bool,
+    ) -> bool {
+        self.root
+            .resize_after_visible(&leaf, share, &|l: &Leaf| visible(*l))
+    }
+
     /// Which leaves fit in `area` (ADR-0052 §6): the leaves `drawn` rejects
     /// are left out first (their siblings share their weight; they are not
     /// reported as collapsed), then each overflowing split collapses its
