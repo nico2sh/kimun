@@ -1,4 +1,4 @@
-//! The recursive layout node shared by drawer slots and editor groups: a
+//! The recursive layout node shared by slots and editor groups: a
 //! **leaf** holding one id, or a **split** laying its children out along an
 //! axis by relative weight. Toolkit-free: geometry is in abstract
 //! [`UnitRect`]s, which the front end scales to columns or pixels.
