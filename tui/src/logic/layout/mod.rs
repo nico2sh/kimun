@@ -96,6 +96,13 @@ const PANEL_ORDER: [Panel; 4] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GroupId(u32);
 
+impl GroupId {
+    /// The group with id `n` (for layouts built outside this module).
+    pub(crate) fn new(n: u32) -> GroupId {
+        GroupId(n)
+    }
+}
+
 /// A focusable region: the rail, one drawer slot, or one editor group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Region {
