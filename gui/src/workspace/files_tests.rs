@@ -17,6 +17,7 @@ use kimun_notes::logic::nav::DrawerView;
 use tokio::runtime::Runtime;
 
 use super::files::{FILES_ID, row_id};
+use super::modal::ModalKind;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -679,19 +680,15 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "top.md");
     focus_files(&started, cx);
-    // Split opens an empty slot below; the rail cursor's Find goes there.
+    // Split from the filter asks what the slot below holds; FIND (the
+    // first row) goes there and takes the keyboard.
     started.press_key("alt-shift-d", cx);
-    assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
-    cx.update_window(started.handle, |_, window, cx| window.click("rail", cx))
-        .unwrap();
-    started.press_key("down", cx);
-    started.press_key("alt-shift-down", cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::ViewChooser));
+    started.press_key("enter", cx);
     assert_eq!(
         started.views(Side::Left, cx),
         [DrawerView::Files, DrawerView::Find]
     );
-    started.press_key("alt-right", cx);
-    started.press_key("alt-down", cx);
     assert_eq!(
         started.region(cx),
         Region::Slot {
@@ -738,25 +735,32 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     assert!(started.filter_focused(cx));
     assert_eq!(started.query(cx), "");
 
-    // Moved to the empty right side (its top slot) and split there,
-    // from the filter: FILES moves down into the empty slot, and the slot
-    // it left, empty now, closes (ADR-0054).
+    // Moved to the empty right side (its top slot) and split there, from
+    // the filter: the picked view (TAGS, the first row: FIND shows on the
+    // left) fills a new slot below and takes the keyboard; back in the
+    // filter, the swap chord trades the two.
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
     started.press_key("alt-shift-d", cx);
-    assert!(started.filter_focused(cx));
-    let split = cx.read(|cx| started.workspace.read(cx).side_slots(Side::Right)[1]);
-    started.press_key("alt-shift-down", cx);
-    let slots = cx.read(|cx| {
-        let w = started.workspace.read(cx);
-        w.side_slots(Side::Right)
-            .into_iter()
-            .map(|s| (s, w.layout.shown(s)))
-            .collect::<Vec<_>>()
-    });
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::ViewChooser));
+    started.press_key("enter", cx);
     assert_eq!(
-        slots,
-        [(split, Some(DrawerView::Files))],
+        started.views(Side::Right, cx),
+        [DrawerView::Files, DrawerView::Tags]
+    );
+    assert_eq!(
+        started.region(cx),
+        Region::Slot {
+            side: Side::Right,
+            index: 1
+        }
+    );
+    started.press_key("alt-up", cx);
+    assert!(started.filter_focused(cx));
+    started.press_key("alt-shift-down", cx);
+    assert_eq!(
+        started.views(Side::Right, cx),
+        [DrawerView::Tags, DrawerView::Files],
         "moved from the filter in the right slot"
     );
     assert!(started.filter_focused(cx));

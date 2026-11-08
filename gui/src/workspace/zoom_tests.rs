@@ -8,7 +8,7 @@
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, Bounds, Pixels, TestAppContext, Window};
 use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::layout_tree::{Focus, Leaf, SlotId};
+use kimun_notes::logic::layout_tree::{Axis, Focus, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::gui::GuiSettings;
 
@@ -165,8 +165,14 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
         window.render_frame(cx);
         // TAGS: it overlaps the editor most.
         window.press("alt-left", cx);
-        // A slot opened empty, and a side toggled off (its memory).
-        window.press("alt-shift-d", cx);
+        // A slot opened empty (split under TAGS by hand: no command opens
+        // one beside a view), and a side toggled off (its memory).
+        shell.workspace.update(cx, |w, cx| {
+            let tags = w.focused_slot().expect("TAGS has the keyboard");
+            let new = w.layout.split_slot(tags, Axis::Vertical).unwrap();
+            w.opened_empty.insert(new);
+            w.sync_slot_handles(cx);
+        });
         window.press("ctrl-shift-t", cx);
         let before = snapshot(window, cx);
         assert_eq!(before.1.len(), 1, "a slot opened empty");
