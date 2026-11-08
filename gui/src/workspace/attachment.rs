@@ -607,7 +607,7 @@ impl Workspace {
     /// The editor Panel's content changed under the keyboard: when it has
     /// the keyboard, give it to what shows now.
     pub(super) fn focus_shown_content(&mut self, cx: &mut Context<Self>) {
-        if self.layout.focused() == Panel::Editor {
+        if self.focused_panel() == Panel::Editor {
             self.with_window(cx, |workspace, window, cx| {
                 workspace.apply_focus(window, cx)
             });

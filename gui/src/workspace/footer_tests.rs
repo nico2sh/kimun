@@ -40,7 +40,7 @@ impl Started {
     }
 
     fn focused_panel(&self, cx: &TestAppContext) -> Panel {
-        cx.read(|cx| self.workspace.read(cx).layout.focused())
+        cx.read(|cx| self.workspace.read(cx).focused_panel())
     }
 }
 

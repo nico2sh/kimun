@@ -258,15 +258,8 @@ fn a_click_on_a_disabled_row_is_inert(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_click_runs_a_runnable_row(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
-    let right = |cx: &mut TestAppContext| {
-        cx.read(|cx| {
-            shell
-                .workspace
-                .read(cx)
-                .layout
-                .is_visible(Panel::Drawer(Side::Right))
-        })
-    };
+    let right =
+        |cx: &mut TestAppContext| cx.read(|cx| shell.workspace.read(cx).side_drawn(Side::Right));
     assert!(!right(cx));
     open_palette(&shell, cx);
     type_text(&shell, "toggle right drawer", cx);
@@ -338,15 +331,8 @@ fn formatting_runs_on_the_note_that_had_the_keyboard(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_gui_row_runs_its_chord(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
-    let right = |cx: &mut TestAppContext| {
-        cx.read(|cx| {
-            shell
-                .workspace
-                .read(cx)
-                .layout
-                .is_visible(Panel::Drawer(Side::Right))
-        })
-    };
+    let right =
+        |cx: &mut TestAppContext| cx.read(|cx| shell.workspace.read(cx).side_drawn(Side::Right));
     assert!(!right(cx));
     open_palette(&shell, cx);
     type_text(&shell, "toggle right drawer", cx);
@@ -387,7 +373,7 @@ fn async_focus_does_not_steal_from_the_palette(cx: &mut TestAppContext) {
     let workspace = shell.workspace.clone();
     cx.update_window(shell.handle, |_, window, cx| {
         workspace.update(cx, |w, cx| {
-            w.layout.focus(Panel::Rail);
+            w.set_focus_panel(Panel::Rail);
             w.apply_focus(window, cx);
         });
     })

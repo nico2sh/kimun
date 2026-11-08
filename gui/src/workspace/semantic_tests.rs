@@ -320,7 +320,7 @@ fn losing_search_drops_the_cell_and_keeps_the_placed_view(cx: &mut TestAppContex
     assert!(shown(&shell.workspace, DrawerView::Semantic, cx));
     assert!(drawn(shell.handle, slot_id(DrawerView::Semantic), cx));
     assert_eq!(
-        cx.read(|cx| shell.workspace.read(cx).layout.slot_views(Side::Left)),
+        cx.read(|cx| shell.workspace.read(cx).shown_on(Side::Left)),
         [DrawerView::Semantic]
     );
 }
@@ -355,16 +355,18 @@ fn the_rail_cursor_follows_its_view_across_a_flip(cx: &mut TestAppContext) {
 }
 
 /// A layout saved with SEM placed comes back with the server off: SEM in
-/// its drawer, no cell; and a save keeps its entry.
+/// its slot, no cell; and a save keeps it there.
 #[gpui_kit::test]
 fn a_persisted_sem_placement_survives_the_server_off(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
     let settings = gui(r#"
-[gui]
-drawer_right_visible = true
-[gui.views]
-files = { side = "left", slot = 0, shown = true }
-semantic = { side = "right", slot = 0, shown = true }
+[gui.layout]
+split = "horizontal"
+children = [
+    { weight = 0.2, views = ["files"], shown = "files" },
+    { weight = 0.6, editor = true },
+    { weight = 0.2, views = ["semantic"], shown = "semantic" },
+]
 "#);
     let shell = open_shell(
         cx,
@@ -377,7 +379,7 @@ semantic = { side = "right", slot = 0, shown = true }
     assert!(!rail_has_sem(shell.handle, cx));
     assert!(drawn(shell.handle, slot_id(DrawerView::Semantic), cx));
     assert!(shown(&shell.workspace, DrawerView::Semantic, cx));
-    // A save (the right drawer hidden, then shown again).
+    // A save (the right side hidden, then shown again).
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
             w.toggle_drawer(Side::Right, window, cx);
@@ -385,12 +387,9 @@ semantic = { side = "right", slot = 0, shown = true }
         })
     })
     .unwrap();
-    let written = saved(&config).view_entries().expect("[gui.views] written");
-    let entry = written
-        .iter()
-        .find(|(id, _)| id == "semantic")
-        .map(|(_, e)| (e.side, e.slot, e.shown));
-    assert_eq!(entry, Some((Side::Right, 0, true)));
+    let back = crate::shell_tree::restore(&saved(&config), crate::shell_tree::RESTORE_CAPS);
+    let right = *back.slots().last().unwrap();
+    assert_eq!(back.shown(right), Some(DrawerView::Semantic));
 }
 
 // ---- The sync's lifecycle ------------------------------------------------------
@@ -612,14 +611,14 @@ fn enter_opens_the_selected_note(cx: &mut TestAppContext) {
         open_note(&started, cx).is_some_and(|n| n.is_like(&path("beta.md")))
     });
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).layout.focused()),
+        cx.read(|cx| started.workspace.read(cx).focused_panel()),
         Panel::Editor
     );
     // Escape from the field: the editor.
     click(started.handle, SEMANTIC_INPUT_ID, cx);
     press(&started, "escape", cx);
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).layout.focused()),
+        cx.read(|cx| started.workspace.read(cx).focused_panel()),
         Panel::Editor
     );
 }

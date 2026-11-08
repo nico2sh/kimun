@@ -709,10 +709,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        use kimun_notes::logic::layout::Panel;
+        use kimun_notes::logic::layout_tree::Focus;
         use kimun_notes::logic::nav::DrawerView;
         let view = match self.layout.focused() {
-            Panel::Rail => self.rail_cursor_view(),
+            Focus::Rail => self.rail_cursor_view(),
             _ => self.focused_view(),
         };
         let target = match view {

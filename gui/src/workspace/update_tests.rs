@@ -40,7 +40,6 @@ use super::update::{
 use super::{FLASH_MESSAGE_ID, LayoutStore, TOAST_ACTION_ID, ToastAction, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
 use crate::startup::{FirstNote, Start};
 use crate::test_vault::{TestVault, test_vault};
 
@@ -60,7 +59,7 @@ fn open_with(
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(&Default::default());
+    let layout = crate::shell_tree::restore(&Default::default(), crate::shell_tree::RESTORE_CAPS);
     let (handle, workspace) = cx
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {

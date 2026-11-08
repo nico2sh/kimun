@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, Entity, Pixels, TestAppContext, WindowBounds,
-    WindowOptions, point, px, size,
+    WindowOptions, px, size,
 };
 use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout_tree::LayoutTree;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::gui::GuiSettings;
@@ -17,11 +18,11 @@ use kimun_notes::settings::themes::Theme;
 use super::{LayoutStore, Workspace, rail_cell_id};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
+use crate::{shell_layout, shell_tree};
 
 pub(super) const HEIGHT: f32 = 480.;
-const DRAWER: &str = "drawer-left";
-const DIVIDER: &str = "drawer-left-divider";
+/// The left slot in the default layout, showing FILES.
+const DRAWER: &str = "slot-files";
 
 pub(super) struct Shell {
     pub(super) handle: AnyWindowHandle,
@@ -38,18 +39,26 @@ impl Shell {
     }
 
     pub(super) fn focused(&self, cx: &gpui_kit::App) -> Panel {
-        self.workspace.read(cx).layout.focused()
+        self.workspace.read(cx).focused_panel()
     }
 
+    /// Whether a slot left of the editor is drawn.
     pub(super) fn drawer_shown(&self, cx: &gpui_kit::App) -> bool {
-        self.workspace
-            .read(cx)
-            .layout
-            .is_visible(Panel::Drawer(Side::Left))
+        let workspace = self.workspace.read(cx);
+        workspace
+            .side_slots(Side::Left)
+            .into_iter()
+            .any(|s| workspace.slot_drawn(s))
     }
 
+    /// The view the first slot left of the editor shows.
     pub(super) fn drawer_view(&self, cx: &gpui_kit::App) -> DrawerView {
-        self.workspace.read(cx).layout.slot_views(Side::Left)[0]
+        let workspace = self.workspace.read(cx);
+        let slot = workspace.side_slots(Side::Left)[0];
+        workspace
+            .layout
+            .shown(slot)
+            .expect("the left slot shows a view")
     }
 }
 
@@ -72,7 +81,7 @@ pub(super) fn open_shell(
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(gui);
+    let layout = shell_tree::restore(gui, shell_tree::RESTORE_CAPS);
     let text = text.to_string();
     let (handle, workspace) = cx
         .update(|cx| {
@@ -123,22 +132,36 @@ pub(super) fn saved(path: &Path) -> GuiSettings {
     toml::from_str::<AppSettings>(&body).unwrap().gui
 }
 
+/// The layout the saved `[gui]` table restores.
+fn saved_left(path: &Path) -> LayoutTree<DrawerView> {
+    shell_tree::restore(&saved(path), shell_tree::RESTORE_CAPS)
+}
+
+/// The saved layout's first slot (left of the editor in the default one).
+fn left_slot(path: &Path) -> kimun_notes::logic::layout_tree::SlotId {
+    saved_left(path).slots()[0]
+}
+
+/// Whether the saved layout's first slot shows a view.
+fn saved_left_shows(path: &Path) -> bool {
+    saved_left(path).shown(left_slot(path)).is_some()
+}
+
 pub(super) fn close(a: Pixels, b: f32) -> bool {
     (f32::from(a) - b).abs() < 0.5
 }
 
-/// Rail, drawer and editor sit side by side, filling the window: the rail
-/// at its rem width, the drawer at its preferred width clamped to the
-/// window, the editor taking the rest.
+/// Rail, left slot and editor sit side by side, filling the window: the
+/// rail at its rem width, the slot and the editor sharing the rest by the
+/// default layout's weights (0.2 : 0.6, the empty right slot's share given
+/// back).
 #[gpui_kit::test]
 fn the_shell_composes_at_several_window_widths(cx: &mut TestAppContext) {
-    // 600 preferred: kept at 1200, clamped to leave the editor its minimum
-    // at 800, and held at the drawer's own minimum at 420.
-    for (width, drawer) in [(1200., 600.), (800., 432.), (420., 160.)] {
+    for width in [1200., 800.] {
         let shell = open_shell(
             cx,
             width,
-            &gui("[gui]\ndrawer_left_width = 600\n"),
+            &GuiSettings::default(),
             "",
             false,
             LayoutStore::Off,
@@ -146,26 +169,22 @@ fn the_shell_composes_at_several_window_widths(cx: &mut TestAppContext) {
         cx.update_window(shell.handle, |_, window, cx| {
             window.render_frame(cx);
             let rem = f32::from(window.rem_size());
-            assert_eq!(rem, 16.0, "the floors below assume the default rem");
+            assert_eq!(rem, 16.0, "the widths below assume the default rem");
             let rail = window.find("rail").bounds();
             let drawer_b = window.find(DRAWER).bounds();
             let editor = window.find("editor-panel").bounds();
             assert!(close(rail.left(), 0.0));
             assert!(close(rail.size.width, shell_layout::RAIL_REMS * rem));
             assert!(close(drawer_b.left(), f32::from(rail.right())));
+            let rest = width - shell_layout::RAIL_REMS * rem;
             assert!(
-                close(drawer_b.size.width, drawer),
-                "{width}: drawer {:?}",
+                close(drawer_b.size.width, rest * 0.25),
+                "{width}: slot {:?}",
                 drawer_b.size.width
             );
             assert!(close(editor.left(), f32::from(drawer_b.right())));
             assert!(close(editor.right(), width), "{width}: editor {editor:?}");
             assert!(close(editor.size.height, HEIGHT));
-            // The preference survives a narrow window.
-            assert_eq!(
-                shell.workspace.read(cx).layout.drawer_width(Side::Left),
-                600.0
-            );
         })
         .unwrap();
     }
@@ -186,77 +205,8 @@ fn the_shell_starts_with_the_editor_focused(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Dragging the divider resizes the drawer, clamped to the drawer's and the
-/// editor's minimum, and the width is saved when the drag ends.
-#[gpui_kit::test]
-fn dragging_the_divider_clamps_and_saves_on_release(cx: &mut TestAppContext) {
-    let (_dir, path) = temp_config();
-    let shell = open_shell(
-        cx,
-        1000.,
-        &GuiSettings::default(),
-        "",
-        false,
-        LayoutStore::File(path.clone()),
-    );
-    cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        let width = |window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
-            window.render_frame(cx);
-            f32::from(window.find(DRAWER).bounds().size.width)
-        };
-        let grab = |window: &gpui_kit::Window| window.find(DIVIDER).bounds().center();
-        assert_eq!(width(window, cx), 260.0);
-
-        // 192px right: the edge follows the pointer exactly, wherever on
-        // the band the press landed (no jump to the pointer).
-        let from = grab(window);
-        window.drag(from, point(from.x + px(192.), from.y), cx);
-        assert_eq!(width(window, cx), 452.0);
-        assert_eq!(saved(&path).drawer_width(Side::Left), 452.0);
-
-        // Too narrow: held at 10rem.
-        let from = grab(window);
-        window.drag(from, point(px(60.), from.y), cx);
-        assert_eq!(width(window, cx), 160.0);
-        // Too wide: the editor keeps 20rem (1000 - 48 - 320).
-        let from = grab(window);
-        window.drag(from, point(px(990.), from.y), cx);
-        assert_eq!(width(window, cx), 632.0);
-        assert_eq!(saved(&path).drawer_width(Side::Left), 632.0);
-        let editor = window.find("editor-panel").bounds();
-        assert!(close(editor.size.width, 320.0), "{editor:?}");
-    })
-    .unwrap();
-}
-
-/// A drag released outside the window still ends, and is saved.
-#[gpui_kit::test]
-fn a_drag_released_outside_the_window_is_saved(cx: &mut TestAppContext) {
-    let (_dir, path) = temp_config();
-    let shell = open_shell(
-        cx,
-        1000.,
-        &GuiSettings::default(),
-        "",
-        false,
-        LayoutStore::File(path.clone()),
-    );
-    cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        let from = window.find(DIVIDER).bounds().center();
-        window.drag(from, point(px(1050.), from.y), cx);
-        window.render_frame(cx);
-        // Clamped so the editor keeps 20rem; saved on the release outside.
-        assert!(close(window.find(DRAWER).bounds().size.width, 632.0));
-        assert_eq!(saved(&path).drawer_width(Side::Left), 632.0);
-        assert!(!shell.workspace.read(cx).resizing);
-    })
-    .unwrap();
-}
-
-/// The drawer toggle hides the drawer, giving its width to the editor, and
-/// brings it back focused (the TUI's toggle); each change is saved.
+/// The left side's toggle hides its slot, giving its width to the editor,
+/// and brings it back focused (the TUI's toggle); each change is saved.
 #[gpui_kit::test]
 fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -277,17 +227,17 @@ fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
         let editor = window.find("editor-panel").bounds();
         assert!(close(editor.left(), f32::from(rail.right())));
         assert!(close(editor.size.width, 1000. - f32::from(rail.size.width)));
-        assert!(!saved(&path).drawer_visible(Side::Left));
+        assert!(!saved_left_shows(&path));
         // The editor kept the keyboard and its text.
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(shell.text(cx), "abc");
 
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert!(close(window.find(DRAWER).bounds().size.width, 260.0));
+        assert!(close(window.find(DRAWER).bounds().size.width, 952.0 * 0.25));
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
         assert_eq!(window.find(DRAWER).focused(), Some(true));
-        assert!(saved(&path).drawer_visible(Side::Left));
+        assert!(saved_left_shows(&path));
         // From the drawer the toggle works too (app chords win there), and
         // closing the focused drawer gives the keyboard to the editor, not
         // to the rail (the model's and the TUI's fallback).
@@ -328,7 +278,7 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
         window.click(rail_cell_id(DrawerView::Tags), cx);
         window.render_frame(cx);
         assert_eq!(shell.drawer_view(cx), DrawerView::Tags);
-        assert_eq!(window.find(DRAWER).label(), Some("Tags"));
+        assert_eq!(window.find("slot-tags").label(), Some("Tags"));
         assert_eq!(
             window.find(rail_cell_id(DrawerView::Tags)).selected(),
             Some(true)
@@ -339,8 +289,8 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
         );
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
         assert_eq!(
-            super::drawer_tests::saved_shown(&path, Side::Left),
-            [DrawerView::Tags]
+            saved_left(&path).shown(left_slot(&path)),
+            Some(DrawerView::Tags)
         );
 
         // The pinned settings cell, at the bottom of the rail.
@@ -349,15 +299,17 @@ fn a_rail_click_switches_the_drawer_view(cx: &mut TestAppContext) {
         window.click(rail_cell_id(DrawerView::Config), cx);
         assert_eq!(shell.drawer_view(cx), DrawerView::Config);
 
-        // The shown view again: the drawer closes, focus stays on the rail.
+        // The shown view again: its slot closes, focus stays on the rail;
+        // it stays placed there, hidden.
         window.click(rail_cell_id(DrawerView::Config), cx);
         window.render_frame(cx);
-        assert!(window.try_find(DRAWER).is_none());
+        assert!(window.try_find("slot-config").is_none());
         assert_eq!(shell.focused(cx), Panel::Rail);
-        assert!(!saved(&path).drawer_visible(Side::Left));
-        assert_eq!(
-            super::drawer_tests::saved_shown(&path, Side::Left),
-            [DrawerView::Config]
+        assert!(!saved_left_shows(&path));
+        let tree = saved_left(&path);
+        assert!(
+            tree.slot_views(left_slot(&path))
+                .contains(&DrawerView::Config)
         );
     })
     .unwrap();
@@ -500,7 +452,9 @@ fn alt_up_with_nothing_stacked_reaches_the_editor(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// What was saved is what the next start shows: width, visibility, view.
+/// What was saved is what the next start shows: the placements, and a view
+/// hidden by the toggle stays hidden. After a restart the toggle has no
+/// session memory: it shows the slot's first placed view.
 #[gpui_kit::test]
 fn the_saved_layout_is_restored(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -515,26 +469,28 @@ fn the_saved_layout_is_restored(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(rail_cell_id(DrawerView::Outline), cx);
-        let from = window.find(DIVIDER).bounds().center();
-        window.drag(from, point(from.x + px(92.), from.y), cx);
         window.press("ctrl-t", cx);
     })
     .unwrap();
 
-    let restored = shell_layout::restore(&saved(&path));
-    assert_eq!(restored.slot_views(Side::Left), [DrawerView::Outline]);
-    assert_eq!(restored.drawer_width(Side::Left), 352.0);
-    assert!(!restored.is_visible(Panel::Drawer(Side::Left)));
+    let restored = saved_left(&path);
+    let left = left_slot(&path);
+    assert_eq!(
+        restored.slot_views(left),
+        [DrawerView::Files, DrawerView::Outline]
+    );
+    assert_eq!(restored.shown(left), None);
 
-    // And through a real reopen: hidden; the toggle brings Outline back at 352.
+    // And through a real reopen: hidden; the toggle brings the slot back
+    // with its first view.
     let shell = open_shell(cx, 1000., &saved(&path), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
+        assert!(window.try_find("slot-outline").is_none());
         assert!(window.try_find(DRAWER).is_none());
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert_eq!(window.find(DRAWER).label(), Some("Outline"));
-        assert!(close(window.find(DRAWER).bounds().size.width, 352.0));
+        assert_eq!(window.find(DRAWER).label(), Some("Files"));
     })
     .unwrap();
 }

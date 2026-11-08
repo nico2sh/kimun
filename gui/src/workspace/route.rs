@@ -12,7 +12,7 @@
 use gpui_kit::{App, ClipboardItem, Context, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::keys::leader::LeaderAction;
-use kimun_notes::logic::layout::{Panel, Region, Side};
+use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::leader_route::{
     self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
 };
@@ -43,13 +43,6 @@ pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a drawer list focused";
 /// Saving a query needs FIND to have the keyboard (the search browser
 /// saves its own with the chord).
 pub(crate) const NEEDS_FIND_FOCUS: &str = "Needs FIND focused";
-/// Resizing a drawer with none shown.
-pub(crate) const NO_DRAWER: &str = "No drawer shown";
-
-/// How far one grow or shrink step moves a drawer's edge, in rems (the TUI
-/// moves it four columns).
-const DRAWER_STEP_REMS: f32 = 2.;
-
 impl Workspace {
     /// The facts a route reads: the open note (the vault root when none is
     /// open) and whether the Thread holds the editor Panel (then no note is
@@ -115,8 +108,9 @@ impl Workspace {
                 None => Some(NO_NOTE),
             },
             LeaderRoute::Layout(LayoutStep::Zen) => None,
-            LeaderRoute::Layout(_) if self.resized_drawer().is_some() => None,
-            LeaderRoute::Layout(_) => Some(NO_DRAWER),
+            // Grow and shrink resize a slot: that arrives with the layout
+            // tree's dividers.
+            LeaderRoute::Layout(_) => Some(NOT_YET),
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex)
                 if has_vault =>
@@ -181,17 +175,6 @@ impl Workspace {
             // recipes, the quick note: chords and buttons open those).
             LeaderRoute::Overlay(_) | LeaderRoute::GitStatus => Some(NOT_YET),
         }
-    }
-
-    /// The drawer a grow or shrink step resizes: the focused one, else the
-    /// left one when shown, else the right one when shown.
-    fn resized_drawer(&self) -> Option<Side> {
-        if let Panel::Drawer(side) = self.layout.focused() {
-            return Some(side);
-        }
-        [Side::Left, Side::Right]
-            .into_iter()
-            .find(|side| self.layout.is_visible(Panel::Drawer(*side)))
     }
 
     /// Run `route` with the window's surfaces. A blocked route does nothing:
@@ -288,40 +271,30 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.place_rail_cursor(Some(view));
-        let (side, index) = self.layout.open_view(view);
-        self.layout.focus_region(Region::Slot { side, index });
+        self.open_view_focused(view);
         self.ensure_files_listing(cx);
         self.apply_focus(window, cx);
         self.save_layout(cx);
     }
 
-    /// `+window`: zen hides both drawers and gives the note the keyboard;
-    /// grow and shrink move the resized drawer's edge by one step.
-    /// Persisted.
+    /// `+window`: zen hides every view beside the active group (both side
+    /// toggles off) and gives the note the keyboard. Grow and shrink are
+    /// blocked until slots resize ([`Self::route_block`]). Persisted.
     fn layout_step(&mut self, step: LayoutStep, window: &mut Window, cx: &mut Context<Self>) {
-        match step {
-            LayoutStep::Zen => {
-                for side in [Side::Left, Side::Right] {
-                    self.layout.hide(Panel::Drawer(side));
-                }
-                self.layout.focus(Panel::Editor);
-                self.apply_focus(window, cx);
-            }
-            LayoutStep::GrowDrawer | LayoutStep::ShrinkDrawer => {
-                let Some(side) = self.resized_drawer() else {
-                    return;
-                };
-                let limits = Self::limits(window);
-                let delta = f64::from(DRAWER_STEP_REMS * f32::from(window.rem_size()));
-                let delta = if step == LayoutStep::GrowDrawer {
-                    delta
-                } else {
-                    -delta
-                };
-                let width = shell_layout::shown_width(&self.layout, side, limits);
-                self.layout.set_drawer_width(side, width + delta, limits);
+        if step != LayoutStep::Zen {
+            return;
+        }
+        for side in [Side::Left, Side::Right] {
+            if self
+                .side_slots(side)
+                .into_iter()
+                .any(|s| self.slot_drawn(s))
+            {
+                self.toggle_side(side, window, cx);
             }
         }
+        self.set_focus_panel(Panel::Editor);
+        self.apply_focus(window, cx);
         self.save_layout(cx);
     }
 

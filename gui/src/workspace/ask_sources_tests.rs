@@ -289,12 +289,14 @@ fn open_note(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
     cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
 }
 
+/// The views the slots of `side` show.
 fn slot_views(s: &Started, side: Side, cx: &TestAppContext) -> Vec<DrawerView> {
-    cx.read(|cx| s.workspace.read(cx).layout.slot_views(side))
+    cx.read(|cx| s.workspace.read(cx).shown_on(side))
 }
 
+/// Whether a slot of `side` is drawn.
 fn drawer_visible(s: &Started, side: Side, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).layout.is_visible(Panel::Drawer(side)))
+    cx.read(|cx| s.workspace.read(cx).side_drawn(side))
 }
 
 fn press(s: &Started, key: &str, cx: &mut TestAppContext) {
@@ -469,7 +471,9 @@ fn the_ask_cell_follows_the_server_and_its_view_stays_on_loss(cx: &mut TestAppCo
     click(&started, rail_cell_id(DrawerView::Ask), cx);
     drive(&rt, cx, |cx| thread_shown(&started, cx));
     assert!(drawn(&started, slot_id(DrawerView::Ask), cx));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Ask]);
+    // ASK's home is the right slot; FILES stays on the left.
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
     assert!(focused(&started, COMPOSER_ID, cx));
     assert_eq!(empty_text(&started, cx), NO_SOURCES);
     ask(&started, &rt, "why?", cx);
@@ -1154,10 +1158,10 @@ fn the_copy_chord_copies_the_source_path(cx: &mut TestAppContext) {
 
 // ---- Leaving -----------------------------------------------------------------------
 
-/// Every door that opens a note takes the Thread down and the drawer off
-/// ASK to FILES, never revealing a drawer that was hidden: FILES (shown in
-/// the other drawer: ASK's slot closes), an open request, a followed link,
-/// the finder, and the finder's `Create:`.
+/// Every door that opens a note takes the Thread down and ASK out of its
+/// slot (the right one, its home), never revealing a slot that was hidden:
+/// FILES, an open request, a followed link, the finder, and the finder's
+/// `Create:`.
 #[gpui_kit::test]
 fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -1166,13 +1170,10 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     let enter = |cx: &mut TestAppContext| {
         press(&started, "f6", cx);
         drive(&rt, cx, |cx| thread_shown(&started, cx));
-        assert!(slot_views(&started, Side::Left, cx).contains(&DrawerView::Ask));
+        assert!(slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
     };
 
-    // FILES, shown in the right drawer.
-    started.workspace.update(cx, |w, _| {
-        w.layout.move_view(DrawerView::Files, Side::Right);
-    });
+    // FILES, shown on the left.
     enter(cx);
     let listed = |cx: &mut TestAppContext| {
         cx.read(|cx| {
@@ -1191,25 +1192,22 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     click(&started, SharedString::from(row), cx);
     drive(&rt, cx, |cx| !thread_shown(&started, cx));
     assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("b.md"))));
-    assert!(!slot_views(&started, Side::Left, cx).contains(&DrawerView::Ask));
+    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
     assert!(
-        !drawer_visible(&started, Side::Left, cx),
-        "ASK's slot closed"
+        !drawer_visible(&started, Side::Right, cx),
+        "ASK's slot is not drawn"
     );
-    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Files]);
+    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
 
-    // FILES back on the left; an open request (the follow / OpenPath door).
-    started.workspace.update(cx, |w, _| {
-        w.layout.move_view(DrawerView::Files, Side::Left);
-        w.layout.hide(Panel::Drawer(Side::Right));
-    });
+    // An open request (the follow / OpenPath door).
     enter(cx);
     send(&started, AppMessage::open(path("a.md")), cx);
     drive(&rt, cx, |cx| !thread_shown(&started, cx));
     assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
     assert!(drawer_visible(&started, Side::Left, cx));
+    assert!(!drawer_visible(&started, Side::Right, cx));
 
-    // A followed link, the drawer hidden first: it stays hidden.
+    // A followed link, the left side hidden first: it stays hidden.
     enter(cx);
     cx.update_window(started.handle, |_, window, cx| {
         started
@@ -1223,7 +1221,21 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     });
     drive(&rt, cx, |cx| !thread_shown(&started, cx));
     assert!(!drawer_visible(&started, Side::Left, cx), "not revealed");
+    assert!(!drawer_visible(&started, Side::Right, cx));
+    click(&started, rail_cell_id(DrawerView::Ask), cx);
+    drive(&rt, cx, |cx| thread_shown(&started, cx));
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+    assert!(focused(&started, COMPOSER_ID, cx));
+    // The left side back for the finder doors.
+    cx.update_window(started.handle, |_, window, cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.toggle_drawer(Side::Left, window, cx))
+    })
+    .unwrap();
     assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+    send(&started, AppMessage::open(path("a.md")), cx);
+    drive(&rt, cx, |cx| !thread_shown(&started, cx));
 
     // The finder.
     enter(cx);
@@ -1280,7 +1292,7 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
 }
 
-/// Another view shown in ASK's place (a rail click on FILES) takes the
+/// Another view shown in ASK's place (FILES moved into its slot) takes the
 /// Thread down too; the thread is kept, and a click on the ASK cell brings
 /// both back, the rows on the selected turn.
 #[gpui_kit::test]
@@ -1289,19 +1301,20 @@ fn another_view_in_asks_place_takes_the_thread_down(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
     ask(&started, &rt, "why?", cx);
-    click(&started, rail_cell_id(DrawerView::Files), cx);
+    click(&started, slot_id(DrawerView::Files), cx);
+    press(&started, "alt-shift-right", cx);
     assert!(!thread_shown(&started, cx));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Files]);
     assert_eq!(turn_ids(&started, cx).len(), 1);
     click(&started, rail_cell_id(DrawerView::Ask), cx);
     drive(&rt, cx, |cx| thread_shown(&started, cx));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Ask]);
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
     assert!(focused(&started, COMPOSER_ID, cx));
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
 }
 
 /// ASK is never persisted: the layout with the Sources view showing is
-/// recorded with the view it covers, and comes back without ASK.
+/// recorded without it, and comes back without ASK.
 #[gpui_kit::test]
 fn ask_is_not_persisted(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -1310,17 +1323,12 @@ fn ask_is_not_persisted(cx: &mut TestAppContext) {
     ask(&started, &rt, "why?", cx);
     assert!(!shell_layout::hosts(DrawerView::Ask));
     let mut gui = GuiSettings::default();
-    cx.read(|cx| shell_layout::record(&started.workspace.read(cx).layout, &mut gui));
-    let entries = gui.view_entries().expect("[gui.views] written");
-    assert!(entries.iter().all(|(id, _)| id != "ask"), "{entries:?}");
-    assert!(
-        entries
-            .iter()
-            .any(|(id, e)| id == "files" && e.side == Side::Left && e.shown)
-    );
-    let back = shell_layout::restore(&gui);
-    assert_eq!(back.placement(&DrawerView::Ask), None);
-    assert_eq!(back.slot_views(Side::Left), [DrawerView::Files]);
+    cx.read(|cx| crate::shell_tree::record(&started.workspace.read(cx).layout, &mut gui));
+    let written = toml::to_string(&gui).unwrap();
+    assert!(!written.contains("ask"), "{written}");
+    let back = crate::shell_tree::restore(&gui, crate::shell_tree::RESTORE_CAPS);
+    assert_eq!(back.view_slot(&DrawerView::Ask), None);
+    assert_eq!(back.shown(back.slots()[0]), Some(DrawerView::Files));
 }
 
 /// A click on a source only selects it (C1: the Sources view's selection

@@ -71,11 +71,12 @@ use kimun_notes::ask::{AskSource, Thread, Turn, TurnStatus, jobs, markdown, save
 #[cfg(test)]
 use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::layout::{Panel, Region};
+use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::message::{AppTx, AskData};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::{self, Caps};
+use kimun_notes::logic::view_registry;
 use kimun_notes::rag::RagStatus;
 use kimun_notes::server_client::RagClient;
 
@@ -83,7 +84,6 @@ use super::Workspace;
 use super::note::{Closing, LeavingFor, NoteLeft};
 use super::route::NO_WORKSPACE;
 use crate::input;
-use crate::shell_layout;
 use crate::tasks;
 use crate::theme;
 
@@ -890,7 +890,7 @@ impl Render for AskView {
             .id(ASK_ID)
             .test_support()
             .role(Role::Group)
-            .aria_label(shell_layout::view_name(DrawerView::Ask))
+            .aria_label(view_registry::spec(DrawerView::Ask).name)
             .flex()
             .flex_col()
             .flex_1()
@@ -1066,9 +1066,9 @@ impl Workspace {
             self.enter_ask(AskThen::Composer, window, cx);
             return;
         }
-        self.layout.open_view(DrawerView::Ask);
+        self.open_view(DrawerView::Ask);
         self.place_rail_cursor(Some(DrawerView::Ask));
-        self.layout.focus(Panel::Editor);
+        self.set_focus_panel(Panel::Editor);
         self.apply_focus(window, cx);
         self.save_layout(cx);
         cx.notify();
@@ -1110,7 +1110,7 @@ impl Workspace {
         }
         self.leave_note(
             LeavingFor::Ask,
-            shell_layout::view_name(DrawerView::Ask).into(),
+            view_registry::spec(DrawerView::Ask).name.into(),
             move |workspace, left, window, cx| match left {
                 NoteLeft::Now => workspace.show_ask(then, window, cx),
                 // The window began closing while the flush ran.
@@ -1137,10 +1137,10 @@ impl Workspace {
         self.ask_flow.enter();
         // The drawer shows the Sources view (revealed, the TUI's), pointed
         // at the selected turn whatever it listed before.
-        self.layout.open_view(DrawerView::Ask);
+        self.open_view(DrawerView::Ask);
         self.place_rail_cursor(Some(DrawerView::Ask));
         self.sync_sources(window, cx);
-        self.layout.focus(Panel::Editor);
+        self.set_focus_panel(Panel::Editor);
         // Persisted (never with ASK); LINKS and OUTLINE say "No note open".
         self.save_layout(cx);
         self.ask_then(then, window, cx);
@@ -1169,16 +1169,15 @@ impl Workspace {
                 if let Some(sources) = self.ask_sources.clone() {
                     sources.update(cx, |sources, cx| sources.open_reader(0, window, cx));
                 }
-                let (side, index) = self.layout.open_view(DrawerView::Ask);
+                self.open_view_focused(DrawerView::Ask);
                 self.place_rail_cursor(Some(DrawerView::Ask));
-                self.layout.focus_region(Region::Slot { side, index });
                 self.apply_focus(window, cx);
                 self.save_layout(cx);
                 cx.notify();
                 return;
             }
         }
-        self.layout.focus(Panel::Editor);
+        self.set_focus_panel(Panel::Editor);
         self.apply_focus(window, cx);
         cx.notify();
     }
@@ -1193,7 +1192,7 @@ impl Workspace {
         // The drawer goes from ASK to FILES, revealing nothing hidden (a
         // drawer left on ASK would hide on the next ASK click).
         match self.drawer_off_ask(cx) {
-            Some(side) if self.layout.focused() == Panel::Drawer(side) => {
+            Some(side) if self.focused_panel() == Panel::Drawer(side) => {
                 self.with_window(cx, |workspace, window, cx| {
                     workspace.apply_focus(window, cx)
                 });
@@ -1204,34 +1203,45 @@ impl Workspace {
         true
     }
 
-    /// Take the drawer view ASK out of its slot for FILES: FILES shows in
-    /// its place, or, FILES being shown already, the slot closes. The
-    /// drawer's visibility is unchanged. The side it was on, if it was in
-    /// a slot. Persisted.
-    pub(super) fn drawer_off_ask(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<kimun_notes::logic::layout::Side> {
-        let (side, index) = self.layout.view_location(&DrawerView::Ask)?;
-        if self.layout.view_location(&DrawerView::Files).is_none() {
-            self.layout
-                .set_slot_view(side, index, DrawerView::Files)
-                .ok()?;
+    /// Take the view ASK out of its slot for FILES: FILES shows in its
+    /// place when it is placed nowhere or hidden in that slot, else ASK is
+    /// just hidden (its slot is no longer drawn unless FILES shows there).
+    /// ASK stays placed, hidden. The side ASK was on, if it was shown.
+    /// Persisted.
+    pub(super) fn drawer_off_ask(&mut self, cx: &mut Context<Self>) -> Option<Side> {
+        let slot = self.layout.view_slot(&DrawerView::Ask)?;
+        if self.layout.shown(slot) != Some(DrawerView::Ask) {
+            return None;
+        }
+        let side = self.slot_side(slot);
+        let files = self.layout.view_slot(&DrawerView::Files);
+        if files.is_none() || files == Some(slot) {
+            self.layout.move_view(DrawerView::Files, slot);
             self.ensure_files_listing(cx);
         } else {
-            self.layout.close_slot(side, index).ok()?;
+            self.layout.hide_view(&DrawerView::Ask);
         }
         self.place_rail_cursor(Some(DrawerView::Files));
         self.save_layout(cx);
         Some(side)
     }
 
+    /// Whether ASK is still in the layout's view: shown in a slot, or
+    /// hidden by a side toggle that will bring it back.
+    pub(super) fn ask_in_layout(&self) -> bool {
+        self.is_shown(DrawerView::Ask)
+            || self
+                .side_memory
+                .iter()
+                .any(|views| views.contains(&DrawerView::Ask))
+    }
+
     /// The layout changed with the Thread showing: if ASK is in no slot
-    /// any more (another view shown in its place, its slot closed), the
-    /// Thread goes down, its conversation and the synced turn kept (the
-    /// TUI's drawer-view switch away from ASK, `AskFlow::leave`).
+    /// any more (another view shown in its place, hidden), the Thread goes
+    /// down, its conversation and the synced turn kept (the TUI's
+    /// drawer-view switch away from ASK, `AskFlow::leave`).
     pub(super) fn leave_ask_if_drawer_moved_on(&mut self, cx: &mut Context<Self>) {
-        if self.ask_flow.showing() && self.layout.view_location(&DrawerView::Ask).is_none() {
+        if self.ask_flow.showing() && !self.ask_in_layout() {
             self.ask_flow.leave();
             self.focus_shown_content(cx);
             cx.notify();
@@ -1239,17 +1249,18 @@ impl Workspace {
     }
 
     /// Escape on the turn list: the editor the Thread replaced is gone, so
-    /// the keyboard goes to the drawer beside it (the left one, else the
-    /// right one), else to the rail.
+    /// the keyboard goes to a drawn slot beside it (the left side first,
+    /// else the right), else to the rail.
     fn leave_ask_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = [
-            kimun_notes::logic::layout::Side::Left,
-            kimun_notes::logic::layout::Side::Right,
-        ]
-        .into_iter()
-        .map(Panel::Drawer)
-        .find(|panel| self.layout.is_visible(*panel))
-        .unwrap_or(Panel::Rail);
+        let panel = [Side::Left, Side::Right]
+            .into_iter()
+            .find(|side| {
+                self.side_slots(*side)
+                    .into_iter()
+                    .any(|s| self.slot_drawn(s))
+            })
+            .map(Panel::Drawer)
+            .unwrap_or(Panel::Rail);
         self.focus_panel(panel, window, cx);
     }
 

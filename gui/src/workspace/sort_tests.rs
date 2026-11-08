@@ -461,7 +461,7 @@ fn find_gets_the_order_directive_and_reads_edited(cx: &mut TestAppContext) {
     assert_eq!(started.shown_modal(cx), None);
     assert_eq!(find_names(&started, &rt, cx), ["a", "c", "b"]);
     assert!(
-        cx.read(|cx| started.workspace.read(cx).layout.focused()) != Panel::Editor,
+        cx.read(|cx| started.workspace.read(cx).focused_panel()) != Panel::Editor,
         "the drawer keeps the keyboard"
     );
 }
@@ -571,7 +571,7 @@ fn the_chord_is_inert_in_the_editor_and_works_from_the_rail(cx: &mut TestAppCont
     let _guard = rt.enter();
     let (_v, started) = started(cx, &rt);
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).layout.focused()),
+        cx.read(|cx| started.workspace.read(cx).focused_panel()),
         Panel::Editor
     );
     press(&started, "ctrl-r", cx);
@@ -580,7 +580,7 @@ fn the_chord_is_inert_in_the_editor_and_works_from_the_rail(cx: &mut TestAppCont
 
     on_workspace(&started, cx, |w, window, cx| {
         w.place_rail_cursor(Some(DrawerView::Files));
-        w.layout.focus(Panel::Rail);
+        w.set_focus_panel(Panel::Rail);
         w.apply_focus(window, cx);
     });
     press(&started, "ctrl-r", cx);

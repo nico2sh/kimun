@@ -319,7 +319,7 @@ impl Workspace {
         // The Thread gives the editor Panel back and ASK leaves its slot
         // (FILES takes it), as when a note opens.
         self.hide_ask(cx);
-        if self.layout.view_location(&DrawerView::Ask).is_some() {
+        if self.is_shown(DrawerView::Ask) {
             self.drawer_off_ask(cx);
         }
         // The open note (already flushed): no tick, no path, an empty clean

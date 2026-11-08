@@ -602,7 +602,7 @@ fn selection_keys_move_the_selected_turn(cx: &mut TestAppContext) {
     // Escape twice: the turns, then the drawer (the editor is gone).
     press(&started, "escape", cx);
     press(&started, "escape", cx);
-    let panel = cx.read(|cx| started.workspace.read(cx).layout.focused());
+    let panel = cx.read(|cx| started.workspace.read(cx).focused_panel());
     assert!(matches!(panel, Panel::Drawer(_) | Panel::Rail), "{panel:?}");
     assert!(shown(&started, cx), "the Thread stays shown");
 }
@@ -707,7 +707,7 @@ fn leader_a_a_flushes_the_note_and_shows_the_thread(cx: &mut TestAppContext) {
             w.route_of(LeaderAction::NoteRename),
             LeaderRoute::NoNoteOpen
         );
-        assert_eq!(w.layout.focused(), Panel::Editor);
+        assert_eq!(w.focused_panel(), Panel::Editor);
     });
 }
 
@@ -745,13 +745,7 @@ fn opening_a_note_takes_the_thread_down_and_keeps_it(cx: &mut TestAppContext) {
     let (v, started) = ready(cx, &rt, Stub::with(Vec::new()));
     rt.block_on(v.vault.save_attachment(&path("notes.txt"), b"text"))
         .unwrap();
-    // FILES in the right drawer: the Thread's Sources take the left one.
-    started.workspace.update(cx, |w, _| {
-        w.layout.move_view(
-            kimun_notes::logic::nav::DrawerView::Files,
-            kimun_notes::logic::layout::Side::Right,
-        );
-    });
+    // FILES stays on the left: the Thread's Sources take the right slot.
     ask(&started, &rt, "why?", cx);
     // FILES: double-click b.md.
     let row = cx.read(|cx| {

@@ -172,7 +172,7 @@ enum Click {
 }
 
 fn region(s: &Started, cx: &TestAppContext) -> Panel {
-    cx.read(|cx| s.workspace.read(cx).layout.focused())
+    cx.read(|cx| s.workspace.read(cx).focused_panel())
 }
 
 fn dirty(s: &Started, cx: &TestAppContext) -> bool {
@@ -812,32 +812,14 @@ fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
     // Hide the left drawer first.
-    let shown = cx.read(|cx| {
-        started
-            .workspace
-            .read(cx)
-            .layout
-            .is_visible(Panel::Drawer(Side::Left))
-    });
+    let shown = cx.read(|cx| started.workspace.read(cx).side_drawn(Side::Left));
     if shown {
         press(&started, "ctrl-t", cx);
     }
-    assert!(!cx.read(|cx| {
-        started
-            .workspace
-            .read(cx)
-            .layout
-            .is_visible(Panel::Drawer(Side::Left))
-    }));
+    assert!(!cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
     press(&started, "ctrl-shift-b", cx);
     type_in(&started, "nn", cx);
-    assert!(cx.read(|cx| {
-        started
-            .workspace
-            .read(cx)
-            .layout
-            .is_visible(Panel::Drawer(Side::Left))
-    }));
+    assert!(cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
     assert_eq!(region(&started, cx), Panel::Drawer(Side::Left));
     assert!(files_filter_focused(&started, cx));
     assert_eq!(started.text(cx), "alpha", "nn typed nothing into the note");

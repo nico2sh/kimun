@@ -120,7 +120,7 @@ impl Started {
     }
 
     fn focused(&self, cx: &TestAppContext) -> Panel {
-        cx.read(|cx| self.workspace.read(cx).layout.focused())
+        cx.read(|cx| self.workspace.read(cx).focused_panel())
     }
 
     fn press_key(&self, key: &str, cx: &mut TestAppContext) {
@@ -547,7 +547,7 @@ impl Started {
     /// Type `text` into the editor (it takes the keyboard first).
     fn type_text_in_editor(&self, text: &str, cx: &mut TestAppContext) {
         self.workspace.update(cx, |w, cx| {
-            w.layout.focus(Panel::Editor);
+            w.set_focus_panel(Panel::Editor);
             cx.notify();
         });
         cx.update_window(self.handle, |_, window, cx| {
@@ -562,12 +562,29 @@ impl Started {
 // ── arranging FILES: the shell chords win over the filter's keys ────────
 
 impl Started {
+    /// The views the slots of `side` show.
     fn views(&self, side: Side, cx: &TestAppContext) -> Vec<DrawerView> {
-        cx.read(|cx| self.workspace.read(cx).layout.slot_views(side))
+        cx.read(|cx| self.workspace.read(cx).shown_on(side))
     }
 
+    /// What has the keyboard, a slot named by its side and its position
+    /// among that side's slots.
     fn region(&self, cx: &TestAppContext) -> Region {
-        cx.read(|cx| self.workspace.read(cx).layout.focused_region())
+        cx.read(|cx| {
+            let w = self.workspace.read(cx);
+            match (w.focused_slot(), w.focused_panel()) {
+                (Some(slot), Panel::Drawer(side)) => Region::Slot {
+                    side,
+                    index: w
+                        .side_slots(side)
+                        .iter()
+                        .position(|s| *s == slot)
+                        .expect("a slot of its side"),
+                },
+                (_, Panel::Rail) => Region::Rail,
+                _ => Region::Group(w.layout.active_group()),
+            }
+        })
     }
 
     /// Whether the FILES filter has GPUI focus.
@@ -721,11 +738,17 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     started.press_key("alt-shift-s", cx);
     assert!(started.filter_focused(cx));
     started.press_key("alt-shift-down", cx);
-    let slots = cx.read(|cx| started.workspace.read(cx).layout.slots(Side::Right));
+    let slots = cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        w.side_slots(Side::Right)
+            .into_iter()
+            .map(|s| w.layout.shown(s))
+            .collect::<Vec<_>>()
+    });
     assert_eq!(
         slots,
         [None, Some(DrawerView::Files)],
-        "moved from the filter in the right drawer"
+        "moved from the filter in the right slot"
     );
     assert!(started.filter_focused(cx));
 }

@@ -492,7 +492,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let rows = self.keyboard_help_rows(self.layout.focused(), cx);
+        let rows = self.keyboard_help_rows(self.focused_panel(), cx);
         let gateway = self.keyboard_help_gateway(cx);
         let workspace = cx.entity().downgrade();
         let view = cx.new(|cx| KeyboardHelp::new(rows, gateway, workspace, window, cx));

@@ -1,37 +1,36 @@
-//! The **Workspace**: the window's root view, composing the editor screen's
-//! Panels left to right — the **Activity rail**, the left **Drawer**, the
-//! editor Panel (the [`EditorView`], unchanged inside) and the right
-//! **Drawer**. ADR-0050.
+//! The **Workspace**: the window's root view, composing the editor screen
+//! left to right — the **Activity rail**, then the **layout tree** of
+//! **slots** and **editor groups** (ADR-0052). The editor group is the
+//! [`EditorView`], unchanged inside.
 //!
-//! **State.** Which panels are shown, the views in each drawer's **drawer
-//! slots** (up to two, stacked), the drawers' widths and split ratios, and
-//! which region has the keyboard live in the logic [`PanelLayout`]; this
-//! view only renders it and keeps GPUI focus in step with it. A view
-//! without a GUI yet (CFG) shows a placeholder in its slot.
+//! **State.** The tree, the views placed in each slot (one shown), and
+//! which leaf has the keyboard live in the logic [`LayoutTree`]; this view
+//! only renders it ([`tree_view`]) and keeps GPUI focus in step with it. A
+//! slot with no shown view is not drawn, unless it was opened empty this
+//! session (a side toggled on with nothing placed, a split): then it shows
+//! a hint. Neither that nor which views a side toggle hid is persisted.
 //!
-//! **Arranging (M5b-3).** Each view keeps a placement (side and drawer
-//! slot) in the layout model, shown or hidden. The rail shows a view where
-//! it is placed, hiding the view sharing its slot, and a click on a shown
-//! view hides it (its slot closes while the drawer shows another view, else
-//! the drawer hides); the move, swap, split and unsplit chords rearrange
-//! the views from the rail or a drawer; each drawer has its own toggle. A
-//! view is shown in at most one slot, so FILES (one entity) renders
-//! wherever it is.
+//! **Arranging.** The rail shows a view where it is placed, hiding the
+//! view sharing its slot, and a click on a shown view hides it; the move,
+//! split and close chords rearrange the views from the rail or a slot; the
+//! side toggles hide or bring back every view left or right of the active
+//! group. A view is shown in at most one slot, so FILES (one entity)
+//! renders wherever it is.
 //!
-//! **Keys.** Keys go to the focused Panel only. A chord the GUI keymap binds
-//! to a workspace command (toggle the drawer, move or cycle focus) bubbles
-//! here from whichever panel has focus — the editor lets those pass by —
-//! and is resolved in that panel's context, as the editor resolves its own.
-//! With the rail or a drawer focused, the workspace resolves its chords
-//! before any key binding, so a field inside a drawer (the FILES filter)
+//! **Keys.** Keys go to the focused leaf only. A chord the GUI keymap binds
+//! to a workspace command (toggle a side, move or cycle focus) bubbles
+//! here from whichever leaf has focus — the editor lets those pass by —
+//! and is resolved in that leaf's context, as the editor resolves its own.
+//! With the rail or a slot focused, the workspace resolves its chords
+//! before any key binding, so a field inside a slot (the FILES filter)
 //! cannot swallow them.
 //! Alt+Up/Down with nothing stacked to move to is handed back to the editor
 //! (ADR-0050 §4: not swallowed).
 //!
-//! **Persistence.** Both drawers' widths, visibility, views and split
-//! ratios are written to the `[gui]` table when a divider drag ends, a
-//! drawer is toggled, or a view is opened, moved, split off or folded away,
-//! through the TUI's own settings save path.
+//! **Persistence.** The tree (weights and placements) is written to
+//! `[gui.layout]` whenever a view is opened, moved, hidden or its slot
+//! closed, and when a side is toggled, through the TUI's own settings save
+//! path ([`crate::shell_tree`]).
 //!
 //! **The vault and the app channel (M5b-2).** [`Workspace::start`] puts the
 //! window on what `main` decided ([`Start`]): an empty state in the editor
@@ -171,15 +170,14 @@
 //! whose keymap scope shadows `KeyboardHelp` there, rebindable like any
 //! other.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::ResizeHandleRenderer;
-use gpui_kit::base::{HandleEdge, ResizeHandleContext, TestSupportExt, resize_handle};
+use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
@@ -188,19 +186,19 @@ use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{Icon, WindowExt as _, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, AnyWindowHandle, App, AppContext, Axis, ClickEvent, ClipboardItem, Context,
-    DragMoveEvent, Entity, FocusHandle, Focusable, InputPreference, InteractiveElement,
-    IntoElement, KeyDownEvent, KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render,
-    Rgba, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity,
-    Window, div, px, relative, rems,
+    Anchor, AnyElement, AnyWindowHandle, App, AppContext, ClickEvent, ClipboardItem, Context,
+    Entity, FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
+    KeystrokeEvent, MouseDownEvent, ParentElement, Render, Role, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, rems,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::layout::{
-    FocusMove, LayoutError, Panel, PanelLayout, Region, Side, WidthLimits,
+use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout_tree::{
+    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, SlotId, TreeError, TreeFocusMove, UnitRect,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -208,6 +206,7 @@ use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::{NoteSession, SaveCompleted};
+use kimun_notes::logic::view_registry;
 use kimun_notes::rag::RagStatus;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
@@ -216,7 +215,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
 use crate::keymap::{self, KeyCtx};
-use crate::shell_layout::{self, RAIL_REMS, RAIL_SIDE};
+use crate::shell_layout::{self, RAIL_REMS};
+use crate::shell_tree;
 use crate::startup::{self, EmptyState, FirstNote, Start, VaultStart};
 use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
@@ -252,16 +252,16 @@ pub(crate) enum LayoutStore {
 impl LayoutStore {
     /// Write `layout` into the store's `[gui]` table. A failure is logged and
     /// otherwise ignored: the layout in the window is still right.
-    fn save(&self, layout: &PanelLayout<DrawerView>) {
+    fn save(&self, layout: &LayoutTree<DrawerView>) {
         let result = match self {
             #[cfg(test)]
             LayoutStore::Off => return,
             LayoutStore::UserConfig => {
-                AppSettings::update_gui(|gui| shell_layout::record(layout, gui))
+                AppSettings::update_gui(|gui| shell_tree::record(layout, gui))
             }
             #[cfg(test)]
             LayoutStore::File(path) => {
-                AppSettings::update_gui_at(path.clone(), |gui| shell_layout::record(layout, gui))
+                AppSettings::update_gui_at(path.clone(), |gui| shell_tree::record(layout, gui))
             }
         };
         if let Err(e) = result {
@@ -299,14 +299,6 @@ impl LayoutStore {
     }
 }
 
-/// The payload of a drawer-divider drag: which drawer it resizes.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DrawerResize(Side);
-
-/// The payload of a slot-divider drag: whose drawer's split it moves.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SlotResize(Side);
-
 /// Index of `side` in the per-side arrays.
 fn side_ix(side: Side) -> usize {
     match side {
@@ -315,15 +307,8 @@ fn side_ix(side: Side) -> usize {
     }
 }
 
-/// What a divider drag shows under the pointer: nothing, the drawer itself
-/// follows.
-struct DragGhost;
-
-impl Render for DragGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
+/// Tolerance for comparing unit-square coordinates.
+const EPS: f64 = 1e-4;
 
 /// The Lucide icon of a drawer view's rail cell.
 pub(crate) fn rail_icon(view: DrawerView) -> gpui_kit::assets::IconName {
@@ -345,65 +330,16 @@ pub(crate) fn rail_cell_id(view: DrawerView) -> SharedString {
     format!("rail-{}", view.id()).into()
 }
 
-/// The element id of `side`'s drawer (`drawer-left`).
-pub(crate) fn drawer_id(side: Side) -> &'static str {
-    match side {
-        Side::Left => "drawer-left",
-        Side::Right => "drawer-right",
-    }
-}
-
-/// The element id of `side`'s drawer divider.
-pub(crate) fn divider_id(side: Side) -> &'static str {
-    match side {
-        Side::Left => "drawer-left-divider",
-        Side::Right => "drawer-right-divider",
-    }
-}
-
-/// The element id of the divider between `side`'s two stacked slots.
-pub(crate) fn split_divider_id(side: Side) -> &'static str {
-    match side {
-        Side::Left => "drawer-left-split",
-        Side::Right => "drawer-right-split",
-    }
-}
-
-/// The element id of `side`'s placeholder: its empty slot, or the whole
-/// drawer while it shows no view (`drawer-left-empty`).
-pub(crate) fn empty_slot_id(side: Side) -> &'static str {
-    match side {
-        Side::Left => "drawer-left-empty",
-        Side::Right => "drawer-right-empty",
-    }
-}
-
 /// The element id of the slot showing `view` (`slot-files`, ...): a view
 /// is shown in at most one slot, so its id names the slot.
 pub(crate) fn slot_id(view: DrawerView) -> SharedString {
     format!("slot-{}", view.id()).into()
 }
 
-/// A divider's look: a one-pixel hairline (a physical boundary, not
-/// zoomed) along the band, in the divider colour at rest and the focus
-/// colour while hovered, pressed or dragged.
-fn hairline(axis: Axis, line: Rgba, active: Rgba) -> ResizeHandleRenderer {
-    Rc::new(move |handle: &ResizeHandleContext, _, _| {
-        let color = if handle.state() == gpui_kit::base::ResizeHandleState::Idle {
-            line
-        } else {
-            active
-        };
-        // The hairline fills the band's one-pixel content box.
-        let bar = div().flex_none().bg(color);
-        Some(
-            match axis {
-                Axis::Horizontal => bar.h_full().w(px(1.)),
-                Axis::Vertical => bar.w_full().h(px(1.)),
-            }
-            .into_any_element(),
-        )
-    })
+/// The element id of an empty slot that is drawn, by its position among
+/// the tree's slots in reading order (`slot-empty-1`).
+pub(crate) fn empty_slot_id(index: usize) -> SharedString {
+    format!("slot-empty-{index}").into()
 }
 
 /// The element id of the editor Panel's empty state.
@@ -411,24 +347,23 @@ pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 
 /// The window's root view. See the module docs.
 pub(crate) struct Workspace {
-    pub(crate) layout: PanelLayout<DrawerView>,
+    pub(crate) layout: LayoutTree<DrawerView>,
     pub(crate) editor: Entity<EditorView>,
     rail_focus: FocusHandle,
-    /// Each drawer's own scope (left, right): never focused itself, it holds
-    /// its slots' focus.
-    drawer_focus: [FocusHandle; 2],
-    /// Each drawer view's slot handle, the keyboard target of a slot whose
-    /// view has no focusable content of its own (all but FILES).
-    view_focus: Vec<(DrawerView, FocusHandle)>,
+    /// Each slot's handle: the slot's scope, and the keyboard target of a
+    /// slot whose view has no focusable content of its own (or that shows
+    /// no view).
+    slot_focus: HashMap<SlotId, FocusHandle>,
+    /// Slots drawn although they show no view (Ruling 12): a side toggled
+    /// on with nothing placed, a split's new slot. Session only; a slot
+    /// leaves the set when a view lands in it or it closes.
+    opened_empty: HashSet<SlotId>,
+    /// The views a side toggle hid (left, right), shown again when that
+    /// side is toggled back on. Session only.
+    side_memory: [Vec<DrawerView>; 2],
     /// The rail cell the keyboard is on (an index into
     /// [`Self::rail_views`]).
     rail_cursor: usize,
-    /// A divider drag is in progress (persisted when it ends).
-    resizing: bool,
-    /// Where the divider press landed (px along the drag's axis) and the
-    /// size it was resizing then (the drawn width, or the split ratio): a
-    /// drag moves the edge by the pointer's travel, without jumping to it.
-    press: (f64, f64),
     store: LayoutStore,
     /// Why the editor Panel shows no editor (no workspace, or it would not
     /// open). `None`: the editor.
@@ -655,7 +590,7 @@ impl Workspace {
     pub(crate) fn new(
         editor: Entity<EditorView>,
         theme: Theme,
-        layout: PanelLayout<DrawerView>,
+        layout: LayoutTree<DrawerView>,
         store: LayoutStore,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -663,12 +598,13 @@ impl Workspace {
         // The one theme every view of the window draws in.
         theme::set_current(cx, theme);
         let rail_cursor = layout
-            .slot_views(Side::Left)
-            .first()
+            .slots()
+            .into_iter()
+            .find_map(|s| layout.shown(s))
             .and_then(|v| {
                 shell_layout::rail_views(Caps::default())
                     .iter()
-                    .position(|r| r == v)
+                    .position(|r| *r == v)
             })
             .unwrap_or(0);
         // Every edit notifies the editor; the Footer only redraws when the
@@ -699,18 +635,14 @@ impl Workspace {
         });
         let config = cx.new(config::ConfigView::new);
         let config_events = cx.subscribe_in(&config, window, Self::on_config_event);
-        Self {
+        let mut this = Self {
             layout,
             editor,
             rail_focus: cx.focus_handle(),
-            drawer_focus: [cx.focus_handle(), cx.focus_handle()],
-            view_focus: DrawerView::ALL
-                .into_iter()
-                .map(|view| (view, cx.focus_handle()))
-                .collect(),
+            slot_focus: HashMap::new(),
+            opened_empty: HashSet::new(),
+            side_memory: [Vec::new(), Vec::new()],
             rail_cursor,
-            resizing: false,
-            press: (0.0, 0.0),
             store,
             empty: None,
             status: Status::default(),
@@ -797,7 +729,9 @@ impl Workspace {
             theme_picker: None,
             titlebar: titlebar::TitleBar::new(),
             updates: update::UpdateHost::new(update::default_backend()),
-        }
+        };
+        this.sync_slot_handles(cx);
+        this
     }
 
     /// A CFG launcher: its leader leaf, run (or refused, with the reason)
@@ -1222,6 +1156,41 @@ impl Workspace {
         });
     }
 
+    /// The views the slots of `side` show, in reading order (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_on(&self, side: Side) -> Vec<DrawerView> {
+        self.side_slots(side)
+            .into_iter()
+            .filter_map(|s| self.layout.shown(s))
+            .collect()
+    }
+
+    /// Whether a slot of `side` is drawn (tests).
+    #[cfg(test)]
+    pub(crate) fn side_drawn(&self, side: Side) -> bool {
+        self.side_slots(side)
+            .into_iter()
+            .any(|s| self.slot_drawn(s))
+    }
+
+    /// Move `view` into the first slot of `side`, shown there (tests).
+    #[cfg(test)]
+    pub(crate) fn move_to_side(&mut self, view: DrawerView, side: Side) {
+        let slot = self.side_slots(side)[0];
+        self.layout.move_view(view, slot);
+    }
+
+    /// Toggle `side` as its chord does (tests).
+    #[cfg(test)]
+    pub(crate) fn toggle_drawer(
+        &mut self,
+        side: Side,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_side(side, window, cx);
+    }
+
     /// The newest flash and whether it was an error (tests).
     #[cfg(test)]
     pub(crate) fn last_flash(&self) -> Option<(&str, bool)> {
@@ -1234,9 +1203,34 @@ impl Workspace {
     /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
     /// A change that took ASK out of every slot takes the Thread down.
     fn save_layout(&mut self, cx: &mut Context<Self>) {
+        self.tidy_layout(cx);
         self.leave_ask_if_drawer_moved_on(cx);
         self.store.save(&self.layout);
         self.refresh_views(cx);
+    }
+
+    /// Bring the session state in step with the tree: every slot has its
+    /// focus handle (and no closed slot keeps one), a slot opened empty
+    /// leaves that set once a view shows there or it closed, and focus
+    /// never rests on a slot that is not drawn.
+    fn tidy_layout(&mut self, cx: &mut Context<Self>) {
+        self.sync_slot_handles(cx);
+        let slots = self.layout.slots();
+        let layout = &self.layout;
+        self.opened_empty
+            .retain(|s| slots.contains(s) && layout.shown(*s).is_none());
+        self.fix_focus();
+    }
+
+    /// One focus handle per slot of the tree.
+    fn sync_slot_handles(&mut self, cx: &mut Context<Self>) {
+        let slots = self.layout.slots();
+        self.slot_focus.retain(|s, _| slots.contains(s));
+        for slot in slots {
+            self.slot_focus
+                .entry(slot)
+                .or_insert_with(|| cx.focus_handle());
+        }
     }
 
     /// Keep the drawer views in step with the layout and the open note:
@@ -1304,10 +1298,15 @@ impl Workspace {
         }
     }
 
-    /// The view in the focused drawer slot, if a slot has the keyboard.
+    /// The view in the focused slot, if a slot has the keyboard.
     fn focused_view(&self) -> Option<DrawerView> {
-        match self.layout.focused_region() {
-            Region::Slot { side, index } => self.slot_view(side, index),
+        self.focused_slot().and_then(|s| self.layout.shown(s))
+    }
+
+    /// The slot that has the keyboard, if one has.
+    pub(crate) fn focused_slot(&self) -> Option<SlotId> {
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Slot(s)) => Some(s),
             _ => None,
         }
     }
@@ -1374,33 +1373,157 @@ impl Workspace {
         true
     }
 
-    /// Whether `view` is in a slot of a drawer that is shown: its rail cell
-    /// reads as selected.
-    fn is_shown(&self, view: DrawerView) -> bool {
+    /// Whether `view` is shown in a slot: its rail cell reads as selected.
+    pub(crate) fn is_shown(&self, view: DrawerView) -> bool {
         self.layout
-            .view_location(&view)
-            .is_some_and(|(side, _)| self.layout.is_visible(Panel::Drawer(side)))
+            .view_slot(&view)
+            .is_some_and(|slot| self.layout.shown(slot) == Some(view))
     }
 
-    /// The view in `side`'s slot `index`.
-    fn slot_view(&self, side: Side, index: usize) -> Option<DrawerView> {
-        self.layout.slot_views(side).get(index).copied()
+    /// Whether `slot` is drawn: it shows a view, or it was opened empty
+    /// this session (Ruling 12).
+    pub(crate) fn slot_drawn(&self, slot: SlotId) -> bool {
+        self.layout.shown(slot).is_some() || self.opened_empty.contains(&slot)
     }
 
-    /// `view`'s slot handle.
-    fn slot_focus(&self, view: DrawerView) -> &FocusHandle {
-        self.view_focus
-            .iter()
-            .find(|(v, _)| *v == view)
-            .map(|(_, handle)| handle)
-            .expect("every drawer view has a slot handle")
+    /// Whether `leaf` is drawn: every editor group, and the drawn slots.
+    fn leaf_drawn(&self, leaf: Leaf) -> bool {
+        match leaf {
+            Leaf::Group(_) => true,
+            Leaf::Slot(slot) => self.slot_drawn(slot),
+        }
+    }
+
+    /// The active group's rectangle in the tree's unit square.
+    fn active_rect(&self) -> Option<UnitRect> {
+        let active = Leaf::Group(self.layout.active_group());
+        self.layout
+            .regions()
+            .into_iter()
+            .find(|(leaf, _)| *leaf == active)
+            .map(|(_, rect)| rect)
+    }
+
+    /// The slots of `side` in reading order: those lying entirely left
+    /// (right) of the active group (Ruling 13).
+    pub(crate) fn side_slots(&self, side: Side) -> Vec<SlotId> {
+        let Some(group) = self.active_rect() else {
+            return Vec::new();
+        };
+        self.layout
+            .regions()
+            .into_iter()
+            .filter_map(|(leaf, rect)| match leaf {
+                Leaf::Slot(slot) => {
+                    let beside = match side {
+                        Side::Left => rect.right() <= group.x() + EPS,
+                        Side::Right => rect.x() >= group.right() - EPS,
+                    };
+                    beside.then_some(slot)
+                }
+                Leaf::Group(_) => None,
+            })
+            .collect()
+    }
+
+    /// The side `slot` reads as for the key contexts and the palette: left
+    /// when its centre lies left of the active group's, else right.
+    fn slot_side(&self, slot: SlotId) -> Side {
+        let rect = self
+            .layout
+            .regions()
+            .into_iter()
+            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
+            .map(|(_, rect)| rect);
+        match (rect, self.active_rect()) {
+            (Some(rect), Some(group))
+                if rect.x() + rect.width() / 2.0 >= group.x() + group.width() / 2.0 =>
+            {
+                Side::Right
+            }
+            _ => Side::Left,
+        }
+    }
+
+    /// What has the keyboard, as the keymap and the palette read it: the
+    /// rail, a slot (on its side of the active group), or the editor.
+    pub(crate) fn focused_panel(&self) -> Panel {
+        match self.layout.focused() {
+            Focus::Rail => Panel::Rail,
+            Focus::Leaf(Leaf::Group(_)) => Panel::Editor,
+            Focus::Leaf(Leaf::Slot(slot)) => Panel::Drawer(self.slot_side(slot)),
+        }
+    }
+
+    /// Focus `panel` in the model: the rail, the active group, or the first
+    /// drawn slot of that side (nothing changes when it has none).
+    fn set_focus_panel(&mut self, panel: Panel) {
+        let focus = match panel {
+            Panel::Rail => Focus::Rail,
+            Panel::Editor => Focus::Leaf(Leaf::Group(self.layout.active_group())),
+            Panel::Drawer(side) => match self
+                .side_slots(side)
+                .into_iter()
+                .find(|s| self.slot_drawn(*s))
+            {
+                Some(slot) => Focus::Leaf(Leaf::Slot(slot)),
+                None => return,
+            },
+        };
+        self.layout.focus(focus);
+    }
+
+    /// Focus never rests on a slot that is not drawn: it goes to the first
+    /// drawn slot of that side, else to the editor.
+    fn fix_focus(&mut self) {
+        let Some(slot) = self.focused_slot() else {
+            return;
+        };
+        if self.slot_drawn(slot) {
+            return;
+        }
+        let side = self.slot_side(slot);
+        match self
+            .side_slots(side)
+            .into_iter()
+            .find(|s| self.slot_drawn(*s))
+        {
+            Some(other) => self.layout.focus(Focus::Leaf(Leaf::Slot(other))),
+            None => self
+                .layout
+                .focus(Focus::Leaf(Leaf::Group(self.layout.active_group()))),
+        };
+    }
+
+    /// Show `view` where it is placed (one placed nowhere: in its home
+    /// slot, `view_registry`'s `home_right`) and return its slot.
+    fn open_view(&mut self, view: DrawerView) -> Option<SlotId> {
+        let home_right = view_registry::spec(view).home_right;
+        self.layout.show_view(&view, home_right)
+    }
+
+    /// [`Self::open_view`], then give its slot the keyboard (in the model;
+    /// [`Self::apply_focus`] hands GPUI focus over).
+    pub(crate) fn open_view_focused(&mut self, view: DrawerView) -> Option<SlotId> {
+        let slot = self.open_view(view)?;
+        self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
+        Some(slot)
+    }
+
+    /// `slot`'s focus handle (the rail's while it has none yet: a slot is
+    /// given one as soon as the tree changes, [`Self::tidy_layout`]).
+    fn slot_handle(&self, slot: SlotId) -> FocusHandle {
+        self.slot_focus
+            .get(&slot)
+            .cloned()
+            .unwrap_or_else(|| self.rail_focus.clone())
     }
 
     /// Where the keyboard goes in `view`'s slot: FILES' and TAGS' filters,
     /// so typing filters; FIND's query field; LINKS' and OUTLINE's lists;
-    /// the CFG view itself; the slot itself for a view that needs a
-    /// workspace while none is open.
-    fn view_handle(&self, view: DrawerView, cx: &App) -> FocusHandle {
+    /// the CFG view itself; the slot itself (`slot`) for a view that needs
+    /// a workspace while none is open.
+    fn view_handle(&self, view: DrawerView, slot: SlotId, cx: &App) -> FocusHandle {
         let handle = match view {
             DrawerView::Files => self.files.as_ref().map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Links => self.links.as_ref().map(|v| v.read(cx).focus_handle(cx)),
@@ -1414,7 +1537,7 @@ impl Workspace {
                 .map(|v| v.read(cx).focus_handle(cx)),
             DrawerView::Config => Some(self.config.read(cx).focus_handle(cx)),
         };
-        handle.unwrap_or_else(|| self.slot_focus(view).clone())
+        handle.unwrap_or_else(|| self.slot_handle(slot))
     }
 
     /// The handle of a view that has the whole window (the setup assistant
@@ -1428,21 +1551,17 @@ impl Workspace {
             .map(|view| view.read(cx).focus_handle(cx))
     }
 
-    fn handle_for(&self, panel: Panel, cx: &App) -> FocusHandle {
-        match panel {
-            Panel::Rail => self.rail_focus.clone(),
-            // The drawer's focused slot.
-            Panel::Drawer(side) => match self
-                .layout
-                .focused_slot(side)
-                .and_then(|index| self.slot_view(side, index))
-            {
-                Some(view) => self.view_handle(view, cx),
-                None => self.drawer_focus[side_ix(side)].clone(),
+    fn handle_for(&self, focus: Focus, cx: &App) -> FocusHandle {
+        match focus {
+            Focus::Rail => self.rail_focus.clone(),
+            // The slot's shown view, else the slot itself.
+            Focus::Leaf(Leaf::Slot(slot)) => match self.layout.shown(slot) {
+                Some(view) => self.view_handle(view, slot, cx),
+                None => self.slot_handle(slot),
             },
             // The Thread or the attachment view while one shows, else the
             // editor.
-            Panel::Editor => match (self.ask.as_ref(), self.attachment.as_ref()) {
+            Focus::Leaf(Leaf::Group(_)) => match (self.ask.as_ref(), self.attachment.as_ref()) {
                 (Some(ask), _) if self.ask_shown() => ask.read(cx).focus_handle(cx),
                 (_, Some(view)) => view.read(cx).focus_handle(cx),
                 _ => self.editor.read(cx).focus_handle(cx),
@@ -1450,7 +1569,7 @@ impl Workspace {
         }
     }
 
-    /// Give the keyboard to the region the layout says is focused. Not
+    /// Give the keyboard to the leaf the layout says is focused. Not
     /// while a modal is open: it has the keyboard, and gives it back to its
     /// opener when it closes ([`modal`]).
     pub(crate) fn apply_focus(&self, window: &mut Window, cx: &mut App) {
@@ -1467,40 +1586,75 @@ impl Workspace {
         window.focus(&handle, cx);
     }
 
-    /// Focus `panel` (a press anywhere in it).
+    /// Focus `panel` (a press anywhere in the rail or the editor).
     fn focus_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
-        self.layout.focus(panel);
+        self.set_focus_panel(panel);
         self.apply_focus(window, cx);
         cx.notify();
     }
 
-    /// Focus `region` (a press anywhere in a drawer slot).
-    fn focus_region(&mut self, region: Region, window: &mut Window, cx: &mut Context<Self>) {
-        self.layout.focus_region(region);
+    /// Focus `slot` (a press anywhere in it).
+    fn focus_slot(&mut self, slot: SlotId, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
         self.apply_focus(window, cx);
         cx.notify();
     }
 
-    /// Show `side`'s drawer (and focus it, as the TUI does), or hide it and
-    /// give its width to the editor. The drawer comes back with the views it
-    /// showed; one showing nothing comes back with its top hidden view, and
-    /// one with no placed view at all opens **empty** (a hint in place of a
-    /// view; the keyboard stays where it was, there is nothing to focus).
-    /// Persisted, visible like any drawer.
-    ///
-    /// Hiding the focused drawer gives the keyboard back to the document,
-    /// not to the rail the model falls back to (the TUI keeps that).
-    fn toggle_drawer(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
-        let drawer = Panel::Drawer(side);
-        if self.layout.is_visible(drawer) {
-            let had_focus = self.layout.focused() == drawer;
-            self.layout.hide(drawer);
+    /// Toggle `side` (Ruling 13): the slots left (right) of the active
+    /// group. With any of them drawn, every view shown there is hidden and
+    /// remembered for this session, and a slot opened empty closes; the
+    /// keyboard, if it was there, goes back to the document. Otherwise the
+    /// remembered views show again (the first of them takes the keyboard,
+    /// as the TUI's toggle does); with none remembered, the first slot of
+    /// the side holding a placed view shows its first one; with nothing
+    /// placed there, the side's first slot opens **empty** (a hint in place
+    /// of a view; the keyboard stays where it was). Persisted: hidden views
+    /// keep their placement, no visibility flag is written.
+    fn toggle_side(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
+        let slots = self.side_slots(side);
+        if slots.iter().any(|s| self.slot_drawn(*s)) {
+            let had_focus = self.focused_slot().is_some_and(|s| slots.contains(&s));
+            let mut hidden = Vec::new();
+            for slot in &slots {
+                if let Some(view) = self.layout.shown(*slot) {
+                    self.layout.hide_view(&view);
+                    hidden.push(view);
+                }
+                self.opened_empty.remove(slot);
+            }
+            self.side_memory[side_ix(side)] = hidden;
             if had_focus {
-                self.layout.focus(Panel::Editor);
+                self.set_focus_panel(Panel::Editor);
             }
         } else {
-            if self.layout.open_drawer(side) {
-                self.layout.focus(drawer);
+            let remembered = std::mem::take(&mut self.side_memory[side_ix(side)]);
+            let mut first = None;
+            for view in remembered {
+                if let Some(slot) = self.layout.view_slot(&view)
+                    && slots.contains(&slot)
+                    && self.layout.shown(slot).is_none()
+                {
+                    self.layout.show_view(&view, false);
+                    first.get_or_insert(slot);
+                }
+            }
+            if first.is_none()
+                && let Some((slot, view)) = slots
+                    .iter()
+                    .find_map(|s| self.layout.slot_views(*s).first().map(|v| (*s, *v)))
+            {
+                self.layout.show_view(&view, false);
+                first = Some(slot);
+            }
+            match first {
+                Some(slot) => {
+                    self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
+                }
+                None => {
+                    if let Some(slot) = slots.first() {
+                        self.opened_empty.insert(*slot);
+                    }
+                }
             }
             self.ensure_files_listing(cx);
         }
@@ -1509,13 +1663,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A rail cell was activated. A shown view is hidden: in a split drawer
-    /// its slot closes and the other view fills the drawer and takes the
-    /// keyboard; as a drawer's only view, the drawer hides (the TUI's rail).
-    /// Either way the view stays placed (side and slot position). Any other
-    /// view is shown where it is placed (a view placed nowhere: in the left
-    /// drawer's focused slot), hiding the view sharing its slot position,
-    /// and takes the keyboard. Persisted.
+    /// A rail cell was activated. A shown view is hidden, keeping its
+    /// placement: its slot is no longer drawn, and another drawn slot on
+    /// its side takes the keyboard (the rail keeps it otherwise). Any other
+    /// view is shown where it is placed (a view placed nowhere: in its home
+    /// slot), hiding the view sharing its slot, and takes the keyboard.
+    /// Persisted.
     fn activate_rail_view(
         &mut self,
         view: DrawerView,
@@ -1528,21 +1681,22 @@ impl Workspace {
             return;
         }
         self.place_rail_cursor(Some(view));
-        match self.layout.view_location(&view) {
-            Some(_) if self.is_shown(view) => {
-                if let Some(side) = self.layout.hide_view(&view)
-                    && self.layout.is_visible(Panel::Drawer(side))
-                    && let Some(index) = self.layout.focused_slot(side)
+        if self.is_shown(view) {
+            if let Some(slot) = self.layout.hide_view(&view) {
+                let side = self.slot_side(slot);
+                if let Some(other) = self
+                    .side_slots(side)
+                    .into_iter()
+                    .find(|s| self.slot_drawn(*s))
                 {
-                    self.layout.focus_region(Region::Slot { side, index });
+                    self.layout.focus(Focus::Leaf(Leaf::Slot(other)));
                 }
             }
-            _ => {
-                let (side, index) = self.layout.open_view(view);
-                self.layout.focus_region(Region::Slot { side, index });
-                self.ensure_files_listing(cx);
-            }
+        } else {
+            self.open_view_focused(view);
+            self.ensure_files_listing(cx);
         }
+        self.tidy_layout(cx);
         self.apply_focus(window, cx);
         self.save_layout(cx);
         cx.notify();
@@ -1551,207 +1705,238 @@ impl Workspace {
     /// The view a move acts on: the focused slot's, or the one under the
     /// rail's cursor (placed or not). `None` from the editor.
     fn arranged_view(&self) -> Option<DrawerView> {
-        match self.layout.focused_region() {
-            Region::Slot { side, index } => self.slot_view(side, index),
-            Region::Rail => self.rail_cursor_view(),
-            Region::Group(_) => None,
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Slot(slot)) => self.layout.shown(slot),
+            Focus::Rail => self.rail_cursor_view(),
+            Focus::Leaf(Leaf::Group(_)) => None,
         }
     }
 
-    /// `MoveViewTo…Drawer`: move the focused view to the drawer on `to` and
-    /// show it; the keyboard follows it. It fits the target: one with an
-    /// empty slot takes it there, a split one keeps the view's slot
-    /// position, an unsplit or empty one takes it into its single slot,
-    /// replacing the view shown there — never a new split. The model moves,
-    /// it never duplicates. Persisted.
+    /// The first slot right of the rail (leftmost, then topmost): where a
+    /// move from the rail lands.
+    fn slot_beside_rail(&self) -> Option<SlotId> {
+        self.layout
+            .regions()
+            .into_iter()
+            .filter_map(|(leaf, rect)| match leaf {
+                Leaf::Slot(slot) => Some((slot, rect)),
+                Leaf::Group(_) => None,
+            })
+            .min_by(|a, b| {
+                let x = if (a.1.x() - b.1.x()).abs() <= EPS {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a.1.x().total_cmp(&b.1.x())
+                };
+                x.then(a.1.y().total_cmp(&b.1.y()))
+            })
+            .map(|(slot, _)| slot)
+    }
+
+    /// `MoveViewTo…Drawer` (Ruling 11): move the focused view to the
+    /// nearest slot toward `dir` ([`LayoutTree::move_view_dir`]) and show
+    /// it there, replacing the view shown there (which stays placed,
+    /// hidden); the keyboard follows it. Nothing that way: handled, nothing
+    /// moves. Persisted.
     ///
     /// From the rail the move is spatial: the rail sits at the window's
-    /// edge ([`RAIL_SIDE`]), so the chord away from that edge moves and
-    /// shows the cursor's view in the drawer beside the rail, and the chord
-    /// toward the edge is not handled ([`shell_layout::rail_move_target`]).
-    /// The rail keeps the keyboard.
-    fn move_view(&mut self, to: Side, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// left edge, so Right moves and shows the cursor's view in the slot
+    /// beside the rail, and Left is not handled. The rail keeps the
+    /// keyboard.
+    fn move_view(&mut self, dir: Dir, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(view) = self.arranged_view() else {
             return false;
         };
-        let to = match self.layout.focused_region() {
-            Region::Rail => match shell_layout::rail_move_target(to) {
-                Some(side) => side,
-                None => return false,
-            },
-            _ => to,
-        };
-        self.layout.move_view(view, to);
+        match self.layout.focused() {
+            Focus::Rail => {
+                let target = match dir {
+                    Dir::Right => self.slot_beside_rail(),
+                    _ => None,
+                };
+                let Some(target) = target else {
+                    return false;
+                };
+                self.layout.move_view(view, target);
+            }
+            _ => {
+                let from = self.layout.view_slot(&view);
+                if self.layout.move_view_dir(&view, dir)
+                    && self.focused_slot() == from
+                    && let Some(to) = self.layout.view_slot(&view)
+                {
+                    self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
+                }
+            }
+        }
         self.ensure_files_listing(cx);
+        self.tidy_layout(cx);
         self.apply_focus(window, cx);
         self.save_layout(cx);
         true
     }
 
-    /// `MoveViewUp` / `MoveViewDown`: in a split drawer, put the focused
-    /// view (or the rail cursor's) at the top (`up`) or bottom slot
-    /// position, trading places with the view shown there, or moving into
-    /// the drawer's empty slot (which takes the slot it left); a focused
-    /// view keeps the keyboard. Already there: handled, nothing moves. With
-    /// the rail cursor on a view no visible drawer shows, it goes into an
-    /// empty slot (the drawer beside the rail first), the rail keeping the
-    /// keyboard. In an unsplit drawer, and for a view placed nowhere with
-    /// no empty slot to go to, nothing changes and the key is not handled,
-    /// so it passes on. Persisted.
+    /// Whether another drawn slot shares `slot`'s column (stacked above or
+    /// below it).
+    fn stacked(&self, slot: SlotId) -> bool {
+        let regions = self.layout.regions();
+        let Some(rect) = regions
+            .iter()
+            .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
+            .map(|(_, rect)| *rect)
+        else {
+            return false;
+        };
+        regions.iter().any(|(leaf, other)| {
+            *leaf != Leaf::Slot(slot)
+                && matches!(leaf, Leaf::Slot(_))
+                && self.leaf_drawn(*leaf)
+                && other.right().min(rect.right()) - other.x().max(rect.x()) > EPS
+        })
+    }
+
+    /// `MoveViewUp` / `MoveViewDown`: move the focused view (or the rail
+    /// cursor's) to the nearest drawn slot above (`up`) or below it,
+    /// trading places with the view shown there; a focused view keeps the
+    /// keyboard. With the rail cursor on a view no
+    /// slot shows, it goes into a slot opened empty (the first in reading
+    /// order), the rail keeping the keyboard. Nothing that way: handled
+    /// when slots are stacked there, else not handled, so the key passes
+    /// on. Persisted.
     fn move_view_vertically(
         &mut self,
         up: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.layout.focused_region() == Region::Rail
+        if self.layout.focused() == Focus::Rail
             && let Some(view) = self.arranged_view()
             && !self.is_shown(view)
-            && let Some(side) = self.empty_slot_side()
+            && let Some(slot) = self
+                .layout
+                .slots()
+                .into_iter()
+                .find(|s| self.opened_empty.contains(s))
         {
-            self.layout.fill_empty_slot(side, view);
+            self.layout.move_view(view, slot);
             self.ensure_files_listing(cx);
             self.apply_focus(window, cx);
             self.save_layout(cx);
             return true;
         }
-        let Some((view, (side, _))) = self
+        let Some((view, from)) = self
             .arranged_view()
-            .and_then(|view| self.layout.placement(&view).map(|p| (view, p)))
+            .and_then(|view| self.layout.view_slot(&view).map(|s| (view, s)))
         else {
             return false;
         };
-        if self.layout.set_view_slot(&view, if up { 0 } else { 1 }) {
+        let dir = if up { Dir::Up } else { Dir::Down };
+        let before: Vec<(SlotId, Option<DrawerView>)> = self
+            .layout
+            .slots()
+            .into_iter()
+            .map(|s| (s, self.layout.shown(s)))
+            .collect();
+        let undo = self.layout.clone();
+        if self.layout.move_view_dir(&view, dir) {
+            let to = self.layout.view_slot(&view);
+            // Only onto a slot that is drawn: one taking no space is not
+            // stacked there.
+            if !to.is_some_and(|to| undo.shown(to).is_some() || self.opened_empty.contains(&to)) {
+                self.layout = undo;
+                return self.stacked(from);
+            }
+            // A swap: the view shown where it landed takes the slot it left.
+            if let Some(Some(other)) = before
+                .iter()
+                .find(|(s, _)| Some(*s) == to)
+                .map(|(_, shown)| *shown)
+            {
+                self.layout.move_view(other, from);
+            }
+            if self.focused_slot() == Some(from)
+                && let Some(to) = self.layout.view_slot(&view)
+            {
+                self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
+            }
+            self.tidy_layout(cx);
             self.apply_focus(window, cx);
             self.save_layout(cx);
             return true;
         }
-        self.layout.slots(side).len() > 1
+        self.stacked(from)
     }
 
-    /// The visible drawer with an empty slot a rail move fills: the one
-    /// beside the rail first.
-    fn empty_slot_side(&self) -> Option<Side> {
-        [RAIL_SIDE, RAIL_SIDE.opposite()].into_iter().find(|side| {
-            self.layout.is_visible(Panel::Drawer(*side)) && self.layout.empty_slot(*side).is_some()
-        })
-    }
-
-    /// `SplitDrawerSlot`: open an **empty slot** at the focused drawer's
-    /// free slot position, at the drawer's ratio; the keyboard stays on the
-    /// view. A view gets there only by a move (Move Up/Down, a move from
-    /// the other drawer, or the rail cursor's Move Up/Down). Session only:
-    /// nothing is saved. A full drawer says so.
+    /// `SplitDrawerSlot` (Ruling 11): split the focused slot vertically;
+    /// the new slot below opens **empty** (a hint in place of a view) and
+    /// the keyboard stays on the view. A view gets there only by a move.
+    /// Session only: nothing is saved.
     fn split_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Panel::Drawer(side) = self.layout.focused() else {
+        let Some(slot) = self.focused_slot() else {
             return false;
         };
-        match self.layout.split_empty(side) {
-            Ok(_) => self.apply_focus(window, cx),
-            Err(LayoutError::SlotCap) => self.flash("This drawer already holds two views", cx),
+        if let Ok(new) = self.layout.split_slot(slot, TreeAxis::Vertical) {
+            self.opened_empty.insert(new);
+            self.sync_slot_handles(cx);
+            self.apply_focus(window, cx);
+        }
+        true
+    }
+
+    /// `UnsplitDrawerSlot` (Ruling 11): close the focused slot. Its views
+    /// join the neighbouring slot that takes over its area, hidden, and the
+    /// keyboard goes there when that slot is drawn (else to the editor).
+    /// The only slot stays. Persisted.
+    fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(slot) = self.focused_slot() else {
+            return false;
+        };
+        match self.layout.close_slot(slot) {
+            Ok(_) => {
+                self.opened_empty.remove(&slot);
+                self.tidy_layout(cx);
+                self.apply_focus(window, cx);
+                self.save_layout(cx);
+            }
+            Err(TreeError::LastSlot) => self.flash("This is the only slot", cx),
             Err(_) => {}
         }
         true
     }
 
-    /// `UnsplitDrawerSlot`: close the focused slot, merging every view
-    /// placed there into the other slot (the closed view hidden), so the
-    /// drawer stays unsplit with the other view focused, and showing any of
-    /// its views later replaces the shown one. A drawer with an empty slot
-    /// just closes it. A drawer's only slot stays (the toggle hides a
-    /// drawer). Persisted.
-    fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Region::Slot { side, index } = self.layout.focused_region() else {
-            return false;
-        };
-        if self.layout.close_empty_slot(side) {
-            self.apply_focus(window, cx);
-            return true;
-        }
-        if self.layout.slot_views(side).len() < 2 {
-            self.flash("This drawer holds one view", cx);
-            return true;
-        }
-        if self.layout.close_slot(side, index).is_ok() {
-            self.apply_focus(window, cx);
-            self.save_layout(cx);
-        }
-        true
-    }
-
-    /// The model's sizing floors for this window.
-    fn limits(window: &Window) -> WidthLimits {
-        shell_layout::limits(
-            f64::from(window.viewport_size().width),
-            f64::from(window.rem_size()),
-        )
-    }
-
-    /// A press on `side`'s width divider at `x`: remember it with the width
-    /// drawn then.
-    fn grab_divider(&mut self, side: Side, x: f64, window: &Window) {
-        self.press = (
-            x,
-            shell_layout::shown_width(&self.layout, side, Self::limits(window)),
-        );
-    }
-
-    fn on_drag_move(
-        &mut self,
-        event: &DragMoveEvent<DrawerResize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let DrawerResize(side) = *event.drag(cx);
-        let (from, width) = self.press;
-        let travel = f64::from(event.event.position.x) - from;
-        // The left drawer's edge is its trailing one, the right's its
-        // leading one: dragging toward the editor widens either.
-        let width = match side {
-            Side::Left => width + travel,
-            Side::Right => width - travel,
-        };
+    /// `FocusRegion(dir)`: move focus geometrically over the drawn leaves
+    /// ([`LayoutTree::focus_dir_among`]).
+    fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
+        let drawn: HashSet<Leaf> = self
+            .layout
+            .regions()
+            .into_iter()
+            .map(|(leaf, _)| leaf)
+            .filter(|leaf| self.leaf_drawn(*leaf))
+            .collect();
         self.layout
-            .set_drawer_width(side, width, Self::limits(window));
-        self.resizing = true;
-        cx.notify();
+            .focus_dir_among(dir, &|leaf| drawn.contains(&leaf))
     }
 
-    /// A press on `side`'s split divider at `y`: remember it with the ratio
-    /// then.
-    fn grab_split(&mut self, side: Side, y: f64) {
-        self.press = (y, self.layout.split_ratio(side).unwrap_or(0.5));
-    }
-
-    /// A split-divider drag over `side`'s drawer (`event.bounds` is the
-    /// drawer): the first slot's share follows the pointer, clamped by the
-    /// model so both slots keep a usable share.
-    fn on_split_drag(
-        &mut self,
-        side: Side,
-        event: &DragMoveEvent<SlotResize>,
-        cx: &mut Context<Self>,
-    ) {
-        let SlotResize(dragged) = *event.drag(cx);
-        let height = f64::from(event.bounds.size.height);
-        if dragged != side || height <= 0.0 {
-            return;
-        }
-        let (from, ratio) = self.press;
-        let travel = f64::from(event.event.position.y) - from;
-        self.layout.set_split_ratio(side, ratio + travel / height);
-        self.resizing = true;
-        cx.notify();
-    }
-
-    /// The pointer came up (in the window or outside it): a divider drag in
-    /// progress ends and is persisted. Idempotent.
-    fn end_resize(&mut self, cx: &mut Context<Self>) {
-        self.press = (0.0, 0.0);
-        if std::mem::take(&mut self.resizing) {
-            self.save_layout(cx);
-            cx.notify();
-        }
+    /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail and
+    /// the drawn leaves in reading order, wrapping.
+    fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
+        let mut order = vec![Focus::Rail];
+        order.extend(
+            self.layout
+                .regions()
+                .into_iter()
+                .map(|(leaf, _)| leaf)
+                .filter(|leaf| self.leaf_drawn(*leaf))
+                .map(Focus::Leaf),
+        );
+        let at = order.iter().position(|f| *f == self.layout.focused())?;
+        let n = order.len();
+        let next = if forward {
+            (at + 1) % n
+        } else {
+            (at + n - 1) % n
+        };
+        Some(order[next])
     }
 
     /// The context `panel` resolves chords in; the editor's own (vim, an
@@ -1759,7 +1944,7 @@ impl Workspace {
     /// FIND has the keyboard (the search browser, a modal, says so itself:
     /// [`Self::intercept_modal_key`]).
     fn key_ctx(&self, cx: &App) -> KeyCtx {
-        match self.layout.focused() {
+        match self.focused_panel() {
             // The Thread and the attachment view read no vim keys.
             Panel::Editor if self.attachment.is_some() || self.ask_shown() => KeyCtx {
                 panel: Panel::Editor,
@@ -1777,8 +1962,7 @@ impl Workspace {
 
     /// Whether FIND (its field or its results) has the keyboard.
     fn find_has_keyboard(&self) -> bool {
-        matches!(self.layout.focused(), Panel::Drawer(_))
-            && self.focused_view() == Some(DrawerView::Find)
+        self.focused_view() == Some(DrawerView::Find)
     }
 
     /// A key while the rail or a drawer holds GPUI focus, seen before any
@@ -1827,10 +2011,10 @@ impl Workspace {
         }
         let in_shell = self.rail_focus.contains_focused(window, cx)
             || self
-                .drawer_focus
-                .iter()
+                .slot_focus
+                .values()
                 .any(|handle| handle.contains_focused(window, cx));
-        if !in_shell || self.layout.focused() == Panel::Editor {
+        if !in_shell || self.focused_panel() == Panel::Editor {
             return;
         }
         let Some(key) = input::key_input(&event.keystroke) else {
@@ -1852,7 +2036,7 @@ impl Workspace {
         let action = keymap::active(cx).resolve(key, self.key_ctx(cx)).cloned();
         let handled = match action {
             Some(action) => self.workspace_command(&action, Some(key), window, cx),
-            None => self.layout.focused() == Panel::Rail && self.rail_key(key, window, cx),
+            None => self.layout.focused() == Focus::Rail && self.rail_key(key, window, cx),
         };
         if handled {
             cx.stop_propagation();
@@ -1884,11 +2068,11 @@ impl Workspace {
                 self.start_leader(gateway, window, cx);
             }
             ActionShortcuts::Quit => self.request_close(window, cx),
-            ActionShortcuts::ToggleSidebar => self.toggle_drawer(Side::Left, window, cx),
-            ActionShortcuts::ToggleRightDrawer => self.toggle_drawer(Side::Right, window, cx),
-            ActionShortcuts::MoveViewToLeftDrawer => return self.move_view(Side::Left, window, cx),
+            ActionShortcuts::ToggleSidebar => self.toggle_side(Side::Left, window, cx),
+            ActionShortcuts::ToggleRightDrawer => self.toggle_side(Side::Right, window, cx),
+            ActionShortcuts::MoveViewToLeftDrawer => return self.move_view(Dir::Left, window, cx),
             ActionShortcuts::MoveViewToRightDrawer => {
-                return self.move_view(Side::Right, window, cx);
+                return self.move_view(Dir::Right, window, cx);
             }
             ActionShortcuts::MoveViewUp => return self.move_view_vertically(true, window, cx),
             ActionShortcuts::MoveViewDown => {
@@ -1960,18 +2144,18 @@ impl Workspace {
             ActionShortcuts::FollowLink => {
                 self.follow_at_cursor(cx);
             }
-            ActionShortcuts::FocusRegion(dir) => match self.layout.focus_dir(*dir) {
-                FocusMove::Moved(_) => self.apply_focus(window, cx),
-                FocusMove::AtEdge => {}
+            ActionShortcuts::FocusRegion(dir) => match self.focus_dir(*dir) {
+                TreeFocusMove::Moved(_) => self.apply_focus(window, cx),
+                TreeFocusMove::AtEdge => {}
                 // Nothing stacked above or below: the chord is the focused
                 // panel's own key, not a focus move (ADR-0050 §4). The
                 // editor already let it pass, so it is handed back; anywhere
                 // else it goes on unswallowed.
-                FocusMove::NotHandled => {
+                TreeFocusMove::NotHandled => {
                     let Some(key) = key else {
                         return true;
                     };
-                    if self.layout.focused() != Panel::Editor {
+                    if self.focused_panel() != Panel::Editor {
                         return false;
                     }
                     self.editor
@@ -1979,13 +2163,8 @@ impl Workspace {
                 }
             },
             ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
-                let next = if *action == ActionShortcuts::FocusEditor {
-                    self.layout.next_panel()
-                } else {
-                    self.layout.prev_panel()
-                };
-                if let Some(panel) = next {
-                    self.layout.focus(panel);
+                if let Some(next) = self.cycle_focus(*action == ActionShortcuts::FocusEditor) {
+                    self.layout.focus(next);
                     self.apply_focus(window, cx);
                 }
             }
@@ -2037,8 +2216,8 @@ impl Workspace {
     /// The focused region's marker: a thin bar in the focus colour across
     /// its top edge, laid over it so focusing never shifts content. Subtle,
     /// but always there (design guides: state must be visible).
-    fn focus_bar(&self, region: Region, cx: &gpui_kit::App) -> Option<impl IntoElement> {
-        (self.layout.focused_region() == region).then(|| {
+    fn focus_bar(&self, focus: Focus, cx: &gpui_kit::App) -> Option<impl IntoElement> {
+        (self.layout.focused() == focus).then(|| {
             div()
                 .absolute()
                 .top_0()
@@ -2051,7 +2230,7 @@ impl Workspace {
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&theme::current(cx));
-        let focused = self.layout.focused() == Panel::Rail;
+        let focused = self.layout.focused() == Focus::Rail;
         let views = self.rail_views();
         let (top, pinned) = views.split_at(views.len() - 1);
         let cell = |i: usize, view: DrawerView, cx: &mut Context<Self>| {
@@ -2092,7 +2271,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(pinned)
             // Last, so it paints over a highlighted cell.
-            .children(self.focus_bar(Region::Rail, cx))
+            .children(self.focus_bar(Focus::Rail, cx))
     }
 
     fn render_rail_cell(
@@ -2112,7 +2291,7 @@ impl Workspace {
         };
         let hover = theme::hover_background(&theme::current(cx));
         let selected = theme::selected_background(&theme::current(cx));
-        let name = shell_layout::view_name(view);
+        let name = view_registry::spec(view).name;
         div()
             .id(rail_cell_id(view))
             .test_support()
@@ -2151,218 +2330,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// `side`'s drawer, `width` px wide: its slots stacked top to bottom
-    /// (the first at the persisted share when there are two), and the width
-    /// divider on the edge it shares with the editor.
-    fn render_drawer(&self, side: Side, width: f64, cx: &mut Context<Self>) -> impl IntoElement {
-        let shown = self.layout.slots(side);
-        let split = (shown.len() > 1)
-            .then(|| self.layout.split_ratio(side))
-            .flatten();
-        let label = shown
-            .iter()
-            .flatten()
-            .map(|v| shell_layout::view_name(*v))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut index = 0;
-        let mut slots: Vec<AnyElement> = Vec::new();
-        for (row, view) in shown.iter().enumerate() {
-            let share = if row == 0 { split } else { None };
-            slots.push(match view {
-                Some(view) => {
-                    index += 1;
-                    self.render_slot(side, index - 1, *view, share, cx)
-                }
-                None => self.render_empty_slot(side, share, cx),
-            });
-        }
-        if shown.is_empty() {
-            slots.push(self.render_empty_slot(side, None, cx));
-        }
-        let edge = match side {
-            Side::Left => HandleEdge::Trailing,
-            Side::Right => HandleEdge::Leading,
-        };
-        div()
-            .id(drawer_id(side))
-            .test_support()
-            .track_focus(&self.drawer_focus[side_ix(side)])
-            .role(Role::Group)
-            .aria_label(SharedString::from(label))
-            .relative()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .h_full()
-            // Measured runtime geometry: the user's dragged width, in pixels.
-            .w(px(width as f32))
-            .bg(theme::panel_background(&theme::current(cx)))
-            // The split divider's drag, measured against this drawer.
-            .on_drag_move(
-                cx.listener(move |this, event: &DragMoveEvent<SlotResize>, _, cx| {
-                    this.on_split_drag(side, event, cx)
-                }),
-            )
-            .children(slots)
-            .child(
-                resize_handle::<DrawerResize, DragGhost>(divider_id(side), Axis::Horizontal)
-                    .inside(edge)
-                    .with_appearance(hairline(
-                        Axis::Horizontal,
-                        theme::divider(&theme::current(cx)),
-                        theme::focus_border(&theme::current(cx)),
-                    ))
-                    .on_drag(DrawerResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, _| {
-                            this.grab_divider(side, f64::from(event.position.x), window)
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.end_resize(cx)),
-                    ),
-            )
-    }
-
-    /// Slot `index` of `side`'s drawer, showing `view`: its title over the
-    /// view (FILES, or, for a view that needs a workspace while none is
-    /// open, a line saying so). `share` is
-    /// the first slot's part of a split drawer's height; that slot also
-    /// carries the divider between the two.
-    fn render_slot(
-        &self,
-        side: Side,
-        index: usize,
-        view: DrawerView,
-        share: Option<f64>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let region = Region::Slot { side, index };
-        div()
-            .id(slot_id(view))
-            .test_support()
-            .track_focus(self.slot_focus(view))
-            .role(Role::Group)
-            .aria_label(shell_layout::view_name(view))
-            .relative()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .map(|slot| match share {
-                Some(share) => slot.flex_none().h(relative(share as f32)),
-                None => slot.flex_1(),
-            })
-            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                this.focus_region(region, window, cx)
-            }))
-            .child(
-                div()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .text_sm()
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_color(theme::foreground(&theme::current(cx)))
-                    .child(shell_layout::slot_title(view)),
-            )
-            .map(|slot| match self.view_content(view) {
-                Some(content) => slot.child(content),
-                // Every view is built; one without content needs a vault.
-                None => slot.child(
-                    div()
-                        .px_3()
-                        .text_sm()
-                        .text_color(theme::muted(&theme::current(cx)))
-                        .child(route::NO_WORKSPACE),
-                ),
-            })
-            .children(self.focus_bar(region, cx))
-            .when(share.is_some(), |slot| {
-                slot.child(self.render_split_divider(side, cx))
-            })
-            .into_any_element()
-    }
-
-    /// What `view`'s slot shows, for the views built so far.
-    fn view_content(&self, view: DrawerView) -> Option<AnyElement> {
-        match view {
-            DrawerView::Files => self.files.clone().map(|v| v.into_any_element()),
-            DrawerView::Links => self.links.clone().map(|v| v.into_any_element()),
-            DrawerView::Outline => self.outline.clone().map(|v| v.into_any_element()),
-            DrawerView::Find => self.find.clone().map(|v| v.into_any_element()),
-            DrawerView::Tags => self.tags.clone().map(|v| v.into_any_element()),
-            DrawerView::Semantic => self.semantic.clone().map(|v| v.into_any_element()),
-            DrawerView::Ask => self.ask_sources.clone().map(|v| v.into_any_element()),
-            DrawerView::Config => Some(self.config.clone().into_any_element()),
-        }
-    }
-
-    /// The divider under the first of `side`'s two stacked slots: dragging
-    /// it moves the split.
-    fn render_split_divider(&self, side: Side, cx: &mut Context<Self>) -> impl IntoElement {
-        resize_handle::<SlotResize, DragGhost>(split_divider_id(side), Axis::Vertical)
-            .inside(HandleEdge::Trailing)
-            .with_appearance(hairline(
-                Axis::Vertical,
-                theme::divider(&theme::current(cx)),
-                theme::focus_border(&theme::current(cx)),
-            ))
-            .on_drag(SlotResize(side), |_, _, _, cx| cx.new(|_| DragGhost))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    this.grab_split(side, f64::from(event.position.y))
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_resize(cx)),
-            )
-    }
-
-    /// `side`'s placeholder: its empty slot (`share` as for a slot), or the
-    /// whole drawer while it shows no view. A quiet hint, not a target: a
-    /// view gets here only by a move; the hint names the move chords the
-    /// keymap binds ([`ChordLabels`]).
-    fn render_empty_slot(
-        &self,
-        side: Side,
-        share: Option<f64>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let hint = self.chord_labels.empty_slot_hint.clone();
-        div()
-            .id(empty_slot_id(side))
-            .test_support()
-            .role(Role::Group)
-            .aria_label(hint.clone())
-            .relative()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .min_h_0()
-            .px_4()
-            .map(|slot| match share {
-                Some(share) => slot.flex_none().h(relative(share as f32)),
-                None => slot.flex_1(),
-            })
-            .child(
-                div()
-                    .text_sm()
-                    .text_center()
-                    .text_color(theme::muted(&theme::current(cx)))
-                    .child(hint),
-            )
-            .when(share.is_some(), |slot| {
-                slot.child(self.render_split_divider(side, cx))
-            })
-            .into_any_element()
-    }
-
     /// What the editor Panel shows in place of the editor while a vault is
     /// open but no note is (yet): typing there could never be saved. `None`
     /// once a note is open, and without a vault (the fixture tests' editor).
@@ -2393,7 +2360,7 @@ impl Workspace {
 
     /// The editor Panel: the editor (or the attachment view, or the empty
     /// state) over the Footer.
-    fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ask = self
             .ask
             .clone()
@@ -2470,7 +2437,7 @@ impl Workspace {
                     this.open_properties_for_open_note(window, cx)
                 }),
             ))
-            .children(self.focus_bar(Region::Group(self.layout.active_group()), cx))
+            .children(self.focus_bar(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx))
     }
 
     /// What the Footer reads off the editor and the open note this frame.
@@ -2479,7 +2446,7 @@ impl Workspace {
     /// note's counts once loaded, while a note is open.
     pub(crate) fn doc_facts(&self, editor_shown: bool, cx: &App) -> DocFacts {
         let editor = &self.editor.read(cx).editor;
-        let focused = editor_shown && self.layout.focused() == Panel::Editor;
+        let focused = editor_shown && self.focused_panel() == Panel::Editor;
         let find_open = editor.find_open();
         let meta = self
             .notes
@@ -2599,27 +2566,10 @@ impl Workspace {
                 .child(view)
                 .into_any_element();
         }
-        let limits = Self::limits(window);
-        let drawer = |side: Side| {
-            self.layout
-                .is_visible(Panel::Drawer(side))
-                .then(|| shell_layout::shown_width(&self.layout, side, limits))
-        };
-        let (left, right) = (drawer(Side::Left), drawer(Side::Right));
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_drag_move(cx.listener(Self::on_drag_move))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_resize(cx)),
-            )
-            // A drag released outside the window ends there too.
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_resize(cx)),
-            )
             .flex()
             .flex_row()
             .items_stretch()
@@ -2628,13 +2578,7 @@ impl Workspace {
             .min_h_0()
             .bg(theme::background(&theme::current(cx)))
             .child(self.render_rail(cx))
-            .when_some(left, |row, width| {
-                row.child(self.render_drawer(Side::Left, width, cx))
-            })
-            .child(self.render_editor(cx))
-            .when_some(right, |row, width| {
-                row.child(self.render_drawer(Side::Right, width, cx))
-            })
+            .child(self.render_tree(window, cx))
             .into_any_element()
     }
 }
@@ -2798,6 +2742,7 @@ mod switcher;
 mod tags;
 mod theme_picker;
 pub(crate) mod titlebar;
+mod tree_view;
 mod update;
 #[cfg(feature = "fake-update")]
 pub(crate) use update::fake_backend_from_env as fake_update_backend_from_env;
@@ -2810,8 +2755,6 @@ mod ask_tests;
 mod attachment_tests;
 #[cfg(test)]
 mod cfg_tests;
-#[cfg(test)]
-mod drawer_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]
@@ -2850,6 +2793,8 @@ mod saved_searches_tests;
 mod search_tests;
 #[cfg(test)]
 mod semantic_tests;
+#[cfg(test)]
+mod slot_tests;
 #[cfg(test)]
 mod sort_tests;
 #[cfg(test)]

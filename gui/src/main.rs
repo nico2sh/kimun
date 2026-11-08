@@ -6,8 +6,8 @@
 //! it in the background and opens the last note of the history, or the note
 //! named on the command line. The open note is saved through core (G2): on
 //! the autosave tick, on the Save chord, before another note opens and
-//! before the window closes. The drawer's layout is saved to the `[gui]`
-//! table.
+//! before the window closes. The layout tree is saved to the `[gui]`
+//! table's `layout`.
 
 mod assets;
 mod editor_element;
@@ -22,6 +22,7 @@ mod keymap;
 mod row_cache;
 mod row_paint;
 mod shell_layout;
+mod shell_tree;
 mod startup;
 mod status_row;
 mod tasks;
@@ -137,7 +138,7 @@ fn main() {
     let theme = load_theme(&settings);
     let vim = uses_vim(settings.editor_backend);
     let keymap = load_keymap(&settings);
-    let layout = shell_layout::restore(&settings.gui);
+    let layout = shell_tree::restore(&settings.gui, shell_tree::RESTORE_CAPS);
     // Read once: changing who draws the title bar needs a restart.
     let chrome = titlebar::chrome_for(settings.gui.window_decorations(), Os::current());
     // The only `[gui]` scalar the app closure reads: captured alone, not the

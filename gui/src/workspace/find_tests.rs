@@ -282,7 +282,7 @@ fn backlinks_follow_the_open_note(cx: &mut TestAppContext) {
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
     // In the right drawer, so FILES stays where it is.
     started.workspace.update(cx, |w, cx| {
-        w.layout.move_view(DrawerView::Find, Side::Right);
+        w.move_to_side(DrawerView::Find, Side::Right);
         w.refresh_views(cx);
     });
     assert!(shown(&started, DrawerView::Find, cx));
@@ -747,26 +747,32 @@ fn the_leader_and_either_drawer(cx: &mut TestAppContext) {
     // FIND to the right drawer (the focused view moves).
     press(&started, "alt-shift-right", cx);
     let side = |view: DrawerView, cx: &TestAppContext| {
-        cx.read(|cx| started.workspace.read(cx).layout.view_location(&view))
-            .map(|(side, _)| side)
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.layout.view_slot(&view).map(|s| w.slot_side(s))
+        })
     };
     assert_eq!(side(DrawerView::Find, cx), Some(Side::Right));
     assert!(shown(&started, DrawerView::Find, cx));
     leader(&started, "ft", cx);
     assert!(shown(&started, DrawerView::Tags, cx));
     assert!(!tag_rows(&started, &rt, cx).is_empty());
-    // TAGS split under FILES in the left drawer.
+    // TAGS split under FILES on the left.
     cx.update_window(started.handle, |_, window, cx| {
         started.workspace.update(cx, |w, cx| {
             w.open_file_browser(window, cx);
-            w.layout.split_empty(Side::Left).expect("a free slot");
-            w.layout.fill_empty_slot(Side::Left, DrawerView::Tags);
+            let left = w.focused_slot().expect("FILES has the keyboard");
+            let low = w
+                .layout
+                .split_slot(left, kimun_notes::logic::layout_tree::Axis::Vertical)
+                .expect("a split");
+            w.layout.move_view(DrawerView::Tags, low);
             w.refresh_views(cx);
         })
     })
     .unwrap();
     cx.run_until_parked();
-    let slots = cx.read(|cx| started.workspace.read(cx).layout.slot_views(Side::Left));
+    let slots = cx.read(|cx| started.workspace.read(cx).shown_on(Side::Left));
     assert!(
         slots.contains(&DrawerView::Files) && slots.contains(&DrawerView::Tags),
         "{slots:?}"

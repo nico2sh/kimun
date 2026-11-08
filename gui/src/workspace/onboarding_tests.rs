@@ -36,7 +36,6 @@ use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
-use crate::shell_layout;
 use crate::startup::{FirstNote, Start, VaultStart};
 use crate::test_vault::{NAME, TestVault, test_vault};
 use crate::theme;
@@ -81,7 +80,8 @@ fn open(
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let layout = shell_layout::restore(&GuiSettings::default());
+    let layout =
+        crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
     let (handle, workspace) = cx
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
@@ -1126,14 +1126,7 @@ fn shell_chords_are_inert_while_it_shows(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let v = rt.block_on(test_vault(&[("a.md", "# A")], &["a.md"]));
     let s = rerun(cx, &rt, &v);
-    let left = |cx: &TestAppContext| {
-        cx.read(|cx| {
-            s.workspace
-                .read(cx)
-                .layout
-                .is_visible(Panel::Drawer(Side::Left))
-        })
-    };
+    let left = |cx: &TestAppContext| cx.read(|cx| s.workspace.read(cx).side_drawn(Side::Left));
     let before = left(cx);
     s.ob_press("ctrl-t", cx);
     assert_eq!(left(cx), before, "the drawer toggle is inert");
