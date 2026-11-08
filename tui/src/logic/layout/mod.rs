@@ -8,7 +8,7 @@
 //! drawer starts hidden and empty, so the default layout is the TUI's
 //! original fixed line.
 
-mod node;
+pub(crate) mod node;
 
 pub use node::{Axis, UnitRect};
 use node::{MIN_RATIO, Node};

@@ -65,6 +65,14 @@ pub(crate) struct Node<L> {
     kind: Kind<L>,
 }
 
+/// The result of [`Node::layout_fit`]: rectangles for the leaves that fit,
+/// and the leaves collapsed (given no rectangle) to make the rest fit.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fit<L> {
+    pub rects: Vec<(L, UnitRect)>,
+    pub collapsed: Vec<L>,
+}
+
 /// Smallest share a ratio setter leaves either side of a split.
 pub(crate) const MIN_RATIO: f64 = 0.1;
 
@@ -229,6 +237,164 @@ impl<L: Clone + PartialEq> Node<L> {
         true
     }
 
+    /// A split of `children` along `axis`, weights normalized to sum 1. Fewer
+    /// than two children collapse to the single child.
+    ///
+    /// # Panics
+    /// With no children (a layout node always holds a leaf).
+    pub(crate) fn split(axis: Axis, mut children: Vec<(f64, Node<L>)>) -> Self {
+        if children.len() == 1 {
+            return children.remove(0).1;
+        }
+        assert!(!children.is_empty(), "a split needs at least one child");
+        let total: f64 = children.iter().map(|(w, _)| *w).sum();
+        Self {
+            kind: Kind::Split {
+                axis,
+                children: children
+                    .into_iter()
+                    .map(|(w, node)| Child {
+                        weight: w / total,
+                        node,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    /// Move the boundary after the branch holding `leaf`: in the innermost
+    /// split where that branch has a following sibling, the branch takes
+    /// `share` of (branch + next sibling), clamped to [`MIN_RATIO`]. False
+    /// when no such split exists.
+    pub(crate) fn resize_after(&mut self, leaf: &L, share: f64) -> bool {
+        let Kind::Split { children, .. } = &mut self.kind else {
+            return false;
+        };
+        let Some(i) = children.iter().position(|c| c.node.contains(leaf)) else {
+            return false;
+        };
+        if children[i].node.resize_after(leaf, share) {
+            return true;
+        }
+        if i + 1 >= children.len() || !share.is_finite() {
+            return false;
+        }
+        let pair = children[i].weight + children[i + 1].weight;
+        let w = share.clamp(MIN_RATIO, 1.0 - MIN_RATIO) * pair;
+        children[i].weight = w;
+        children[i + 1].weight = pair - w;
+        true
+    }
+
+    /// The leaf that takes over `leaf`'s area if it closes: the nearest leaf
+    /// of the adjacent sibling subtree (the previous sibling when `leaf` is
+    /// last, else the next). `None` for the root leaf or an absent id.
+    pub(crate) fn absorber(&self, leaf: &L) -> Option<L> {
+        let Kind::Split { children, .. } = &self.kind else {
+            return None;
+        };
+        let i = children.iter().position(|c| c.node.contains(leaf))?;
+        if children[i].node.as_leaf().is_none() {
+            return children[i].node.absorber(leaf);
+        }
+        if i + 1 == children.len() {
+            children[i - 1].node.leaves().last().map(|l| (*l).clone())
+        } else {
+            children[i + 1].node.leaves().first().map(|l| (*l).clone())
+        }
+    }
+
+    /// Minimum (width, height) of this node when nothing collapses.
+    fn min_size(&self, min: &dyn Fn(&L) -> (f64, f64)) -> (f64, f64) {
+        match &self.kind {
+            Kind::Leaf(id) => min(id),
+            Kind::Split { axis, children } => {
+                let sizes = children.iter().map(|c| c.node.min_size(min));
+                match axis {
+                    Axis::Horizontal => {
+                        sizes.fold((0.0, 0.0), |(w, h), (cw, ch)| (w + cw, h.max(ch)))
+                    }
+                    Axis::Vertical => {
+                        sizes.fold((0.0, 0.0), |(w, h), (cw, ch)| (w.max(cw), h + ch))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Like [`Self::layout`], but honouring minimum sizes. A split whose
+    /// children's minimums along its own axis exceed its area collapses
+    /// children last → first until the rest fit, never collapsing a subtree
+    /// holding a `keep` leaf. Collapsed leaves get no rectangle and their
+    /// weight goes to the survivors. Nested splits are checked in turn.
+    pub(crate) fn layout_fit(
+        &self,
+        area: UnitRect,
+        min: &dyn Fn(&L) -> (f64, f64),
+        keep: &dyn Fn(&L) -> bool,
+    ) -> Fit<L> {
+        let mut fit = Fit {
+            rects: Vec::new(),
+            collapsed: Vec::new(),
+        };
+        self.fit_into(area, min, keep, &mut fit);
+        fit
+    }
+
+    fn fit_into(
+        &self,
+        area: UnitRect,
+        min: &dyn Fn(&L) -> (f64, f64),
+        keep: &dyn Fn(&L) -> bool,
+        fit: &mut Fit<L>,
+    ) {
+        let (axis, children) = match &self.kind {
+            Kind::Leaf(id) => {
+                fit.rects.push((id.clone(), area));
+                return;
+            }
+            Kind::Split { axis, children } => (*axis, children),
+        };
+        let along = |size: (f64, f64)| match axis {
+            Axis::Horizontal => size.0,
+            Axis::Vertical => size.1,
+        };
+        let len = along((area.w, area.h));
+        let needs: Vec<f64> = children
+            .iter()
+            .map(|c| along(c.node.min_size(min)))
+            .collect();
+        let mut active: Vec<usize> = (0..children.len()).collect();
+        let mut sum: f64 = needs.iter().sum();
+        while sum > len + 1e-9 {
+            let Some(pos) = active
+                .iter()
+                .rposition(|&i| !children[i].node.leaves().into_iter().any(|l| keep(l)))
+            else {
+                break;
+            };
+            let i = active.remove(pos);
+            sum -= needs[i];
+            fit.collapsed
+                .extend(children[i].node.leaves().into_iter().rev().cloned());
+        }
+        let total: f64 = active.iter().map(|&i| children[i].weight).sum();
+        let mut offset = 0.0;
+        for &i in &active {
+            let share = children[i].weight / total;
+            let rect = match axis {
+                Axis::Horizontal => {
+                    UnitRect::new(area.x + offset * area.w, area.y, share * area.w, area.h)
+                }
+                Axis::Vertical => {
+                    UnitRect::new(area.x, area.y + offset * area.h, area.w, share * area.h)
+                }
+            };
+            children[i].node.fit_into(rect, min, keep, fit);
+            offset += share;
+        }
+    }
+
     /// Lay the leaves out over `area`, splitting by weight along each axis.
     pub(crate) fn layout(&self, area: UnitRect) -> Vec<(L, UnitRect)> {
         let mut out = Vec::new();
@@ -353,5 +519,111 @@ mod tests {
         assert!((n.ratios()[0] - MIN_RATIO).abs() < 1e-5);
         n.set_first_ratio(1.0);
         assert!((n.ratios()[0] - (1.0 - MIN_RATIO)).abs() < 1e-5);
+    }
+
+    fn ids<L: Clone>(v: &[(L, UnitRect)]) -> Vec<L> {
+        v.iter().map(|(l, _)| l.clone()).collect()
+    }
+
+    #[test]
+    fn split_builds_normalized_weights() {
+        let n = Node::split(
+            Axis::Horizontal,
+            vec![(1.0, Node::leaf('a')), (3.0, Node::leaf('b'))],
+        );
+        assert_eq!(n.axis(), Some(Axis::Horizontal));
+        assert_eq!(n.ratios(), vec![0.25, 0.75]);
+        let one = Node::split(Axis::Vertical, vec![(5.0, Node::leaf('a'))]);
+        assert_eq!(one, Node::leaf('a'));
+    }
+
+    #[test]
+    fn resize_after_moves_nested_boundary() {
+        let col = Node::split(
+            Axis::Vertical,
+            vec![(1.0, Node::leaf('b')), (1.0, Node::leaf('c'))],
+        );
+        let mut n = Node::split(Axis::Horizontal, vec![(1.0, Node::leaf('a')), (1.0, col)]);
+        assert!(n.resize_after(&'b', 0.7));
+        let r = n.layout(unit());
+        assert_eq!(r[0].1, UnitRect::new(0.0, 0.0, 0.5, 1.0));
+        assert!((r[1].1.height() - 0.7).abs() < 1e-9);
+        assert!((r[2].1.height() - 0.3).abs() < 1e-9);
+        assert!(!n.resize_after(&'c', 0.5));
+        assert!(n.resize_after(&'a', 0.2));
+        assert!((n.layout(unit())[0].1.width() - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn absorber_prefers_previous_sibling_for_last_child_else_next() {
+        let col = Node::split(
+            Axis::Vertical,
+            vec![(1.0, Node::leaf('b')), (1.0, Node::leaf('c'))],
+        );
+        let n = Node::split(
+            Axis::Horizontal,
+            vec![(1.0, Node::leaf('a')), (1.0, col), (1.0, Node::leaf('d'))],
+        );
+        assert_eq!(n.absorber(&'d'), Some('c'));
+        assert_eq!(n.absorber(&'a'), Some('b'));
+        assert_eq!(n.absorber(&'b'), Some('c'));
+        assert_eq!(n.absorber(&'c'), Some('b'));
+    }
+
+    #[test]
+    fn absorber_of_root_leaf_is_none() {
+        assert_eq!(Node::leaf('a').absorber(&'a'), None);
+    }
+
+    fn row3() -> Node<char> {
+        Node::split(
+            Axis::Horizontal,
+            vec![
+                (1.0, Node::leaf('a')),
+                (1.0, Node::leaf('b')),
+                (1.0, Node::leaf('c')),
+            ],
+        )
+    }
+
+    #[test]
+    fn fit_without_overflow_matches_layout() {
+        let n = row3();
+        let area = UnitRect::new(0.0, 0.0, 60.0, 10.0);
+        let f = n.layout_fit(area, &|_| (12.0, 1.0), &|_| false);
+        assert!(f.collapsed.is_empty());
+        assert_eq!(f.rects, n.layout(area));
+    }
+
+    #[test]
+    fn fit_collapses_trailing_children_of_first_overflowing_split() {
+        let n = row3();
+        let area = UnitRect::new(0.0, 0.0, 30.0, 10.0);
+        let f = n.layout_fit(area, &|_| (12.0, 1.0), &|l| *l == 'a');
+        assert_eq!(f.collapsed, vec!['c']);
+        assert_eq!(ids(&f.rects), vec!['a', 'b']);
+        assert_eq!(f.rects[0].1, UnitRect::new(0.0, 0.0, 15.0, 10.0));
+        assert_eq!(f.rects[1].1, UnitRect::new(15.0, 0.0, 15.0, 10.0));
+        let area = UnitRect::new(0.0, 0.0, 20.0, 10.0);
+        let f = n.layout_fit(area, &|_| (12.0, 1.0), &|l| *l == 'a');
+        assert_eq!(f.collapsed, vec!['c', 'b']);
+        assert_eq!(f.rects, vec![('a', area)]);
+    }
+
+    #[test]
+    fn fit_never_collapses_kept_subtree() {
+        let col = Node::split(
+            Axis::Vertical,
+            vec![(1.0, Node::leaf('b')), (1.0, Node::leaf('c'))],
+        );
+        let n = Node::split(Axis::Horizontal, vec![(1.0, Node::leaf('a')), (1.0, col)]);
+        let area = UnitRect::new(0.0, 0.0, 20.0, 10.0);
+        let f = n.layout_fit(area, &|_| (12.0, 1.0), &|l| *l == 'c');
+        assert_eq!(f.collapsed, vec!['a']);
+        assert_eq!(ids(&f.rects), vec!['b', 'c']);
+        // Everything kept: nothing collapses even though it overflows.
+        let f = n.layout_fit(area, &|_| (12.0, 1.0), &|_| true);
+        assert!(f.collapsed.is_empty());
+        assert_eq!(f.rects.len(), 3);
     }
 }
