@@ -361,6 +361,13 @@ pub(crate) struct Workspace {
     /// The views a side toggle hid (left, right), shown again when that
     /// side is toggled back on. Session only.
     side_memory: [Vec<DrawerView>; 2],
+    /// The leaves the window had no room for at the last frame
+    /// ([`Self::fit`]): not drawn, not focusable. Session only, refitted
+    /// every frame; the tree is never changed by it.
+    collapsed: HashSet<Leaf>,
+    /// The title bar's height in px as last drawn (0 without one): what
+    /// the tree's height is fitted against.
+    title_bar_height: Rc<std::cell::Cell<f64>>,
     /// The drawn extent of the two cells each divider sits between, keyed
     /// by the divider's leaf ([`tree_view`]), measured as the tree is laid
     /// out: what a drag turns the pointer into a share of.
@@ -652,6 +659,8 @@ impl Workspace {
             slot_focus: HashMap::new(),
             opened_empty: HashSet::new(),
             side_memory: [Vec::new(), Vec::new()],
+            collapsed: HashSet::new(),
+            title_bar_height: Default::default(),
             divider_cells: Default::default(),
             resizing: false,
             press_offset: 0.0,
@@ -1466,7 +1475,7 @@ impl Workspace {
             Panel::Drawer(side) => match self
                 .side_slots(side)
                 .into_iter()
-                .find(|s| self.slot_drawn(*s))
+                .find(|s| self.leaf_visible(Leaf::Slot(*s)))
             {
                 Some(slot) => Focus::Leaf(Leaf::Slot(slot)),
                 None => return,
@@ -1475,20 +1484,21 @@ impl Workspace {
         self.layout.focus(focus);
     }
 
-    /// Focus never rests on a slot that is not drawn: it goes to the first
-    /// drawn slot of that side, else to the editor.
+    /// Focus never rests on a slot that is not on screen (not drawn, or
+    /// collapsed): it goes to the first visible slot of that side, else to
+    /// the editor.
     fn fix_focus(&mut self) {
         let Some(slot) = self.focused_slot() else {
             return;
         };
-        if self.slot_drawn(slot) {
+        if self.leaf_visible(Leaf::Slot(slot)) {
             return;
         }
         let side = self.slot_side(slot);
         match self
             .side_slots(side)
             .into_iter()
-            .find(|s| self.slot_drawn(*s))
+            .find(|s| self.leaf_visible(Leaf::Slot(*s)))
         {
             Some(other) => self.layout.focus(Focus::Leaf(Leaf::Slot(other))),
             None => self
@@ -1704,7 +1714,7 @@ impl Workspace {
                 if let Some(other) = self
                     .side_slots(side)
                     .into_iter()
-                    .find(|s| self.slot_drawn(*s))
+                    .find(|s| self.leaf_visible(Leaf::Slot(*s)))
                 {
                     self.layout.focus(Focus::Leaf(Leaf::Slot(other)));
                 }
@@ -1934,22 +1944,22 @@ impl Workspace {
         true
     }
 
-    /// `FocusRegion(dir)`: move focus geometrically over the drawn leaves
-    /// ([`LayoutTree::focus_dir_among`]).
+    /// `FocusRegion(dir)`: move focus geometrically over the visible
+    /// leaves (drawn, not collapsed: [`LayoutTree::focus_dir_among`]).
     fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
         let drawn: HashSet<Leaf> = self
             .layout
             .regions()
             .into_iter()
             .map(|(leaf, _)| leaf)
-            .filter(|leaf| self.leaf_drawn(*leaf))
+            .filter(|leaf| self.leaf_visible(*leaf))
             .collect();
         self.layout
             .focus_dir_among(dir, &|leaf| drawn.contains(&leaf))
     }
 
     /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail and
-    /// the drawn leaves in reading order, wrapping.
+    /// the visible leaves in reading order, wrapping.
     fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
         let mut order = vec![Focus::Rail];
         order.extend(
@@ -1957,7 +1967,7 @@ impl Workspace {
                 .regions()
                 .into_iter()
                 .map(|(leaf, _)| leaf)
-                .filter(|leaf| self.leaf_drawn(*leaf))
+                .filter(|leaf| self.leaf_visible(*leaf))
                 .map(Focus::Leaf),
         );
         let at = order.iter().position(|f| *f == self.layout.focused())?;
@@ -2564,7 +2574,21 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
+        // The tree is fitted to the height the bar leaves; a change in the
+        // bar's height (fullscreen, first frame) draws again.
+        let has_bar = bar.is_some();
+        let bar_height = self.title_bar_height.clone();
         div()
+            .on_children_prepainted(move |bounds, window, _| {
+                let height = match bounds.first() {
+                    Some(bar) if has_bar => f64::from(bar.size.height),
+                    _ => 0.0,
+                };
+                if (bar_height.get() - height).abs() > 0.5 {
+                    bar_height.set(height);
+                    window.refresh();
+                }
+            })
             .id("window-frame")
             .flex()
             .flex_col()
@@ -2625,7 +2649,10 @@ impl Workspace {
             .min_h_0()
             .bg(theme::background(&theme::current(cx)))
             .child(self.render_rail(cx))
-            .child(self.render_tree(window, cx))
+            .child({
+                self.refit(window, cx);
+                self.render_tree(window, cx)
+            })
             .into_any_element()
     }
 }

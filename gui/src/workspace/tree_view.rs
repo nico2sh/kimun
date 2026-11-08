@@ -6,9 +6,19 @@
 //!
 //! A slot that is not drawn ([`Workspace::slot_drawn`]: no shown view, not
 //! opened empty) takes no space: it is left out, its siblings share its
-//! weight, and a split left with no drawn child is left out too. In a row,
-//! a slot keeps the largest minimum width of the views it holds
-//! (`view_registry`, in rems) and the editor group its own floor.
+//! weight, and a split left with no drawn child is left out too.
+//!
+//! **Minimum sizes** (ADR-0052 §6). A slot's minimum is that of the view it
+//! shows (`view_registry`, 1 unit = 1 rem; an empty slot is
+//! [`DRAWER_MIN_REMS`] wide), an editor group's [`EDITOR_MIN_REMS`] wide;
+//! heights count only in vertical splits. Each frame [`Workspace::fit`]
+//! collapses what does not fit: in the first overflowing split, children
+//! last to first, never a subtree holding an editor group. A collapsed leaf
+//! is left out like an undrawn slot, takes no focus, and comes back when
+//! the window grows; the tree, its weights and the saved layout never
+//! change. Where the minimums fit, every cell keeps its own; a slot that
+//! still ends up under its view's minimum (inside the editor's subtree,
+//! which cannot collapse) shows [`TOO_SMALL`] under its header.
 //!
 //! **Dividers.** One pixel of window background separates drawn
 //! neighbours. Where the two are neighbours in the tree too, that pixel is
@@ -28,7 +38,7 @@
 //! [`resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::base::{
@@ -40,18 +50,66 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Rgba, Role, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
-use kimun_notes::logic::layout_tree::{Axis, Focus, Leaf, SlotId, TreeShape};
+use kimun_notes::logic::layout_tree::{Axis, Fit, Focus, Leaf, SlotId, TreeShape, UnitRect};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
 use super::{Workspace, empty_slot_id, route, slot_id};
-use crate::shell_layout::EDITOR_MIN_REMS;
+use crate::shell_layout::{DRAWER_MIN_REMS, EDITOR_MIN_REMS, RAIL_REMS};
 use crate::theme;
 
 /// What one leader grow or shrink step moves a divider by: this share of
 /// the two cells it sits between (5%), so a step feels the same in a
 /// narrow pair and a wide one.
 pub(super) const RESIZE_STEP: f64 = 0.05;
+
+/// What a slot shows in place of its view while smaller than the view's
+/// minimum.
+pub(crate) const TOO_SMALL: &str = "Too small";
+/// The element id of that placeholder.
+pub(crate) const TOO_SMALL_ID: &str = "slot-too-small";
+
+/// The window background between two drawn neighbours, in px.
+const GAP: f64 = 1.0;
+
+/// Share `len` px among cells of (weight, minimum px) the way flex does
+/// with those minimums set: by weight, a cell that would fall under its
+/// minimum held there and the rest shared again. When the minimums alone
+/// exceed `len` (only cells holding an editor group are left then) they
+/// are not set and the cells go by weight. The sizes, and whether the
+/// minimums hold.
+fn distribute(len: f64, cells: &[(f64, f64)]) -> (Vec<f64>, bool) {
+    let total: f64 = cells.iter().map(|(weight, _)| weight).sum();
+    let need: f64 = cells.iter().map(|(_, min)| min).sum();
+    if need > len + 0.01 {
+        let sizes = cells.iter().map(|(weight, _)| len * weight / total);
+        return (sizes.collect(), false);
+    }
+    let mut held: Vec<Option<f64>> = vec![None; cells.len()];
+    loop {
+        let free = len - held.iter().flatten().sum::<f64>();
+        let weight: f64 = cells
+            .iter()
+            .zip(&held)
+            .filter(|(_, held)| held.is_none())
+            .map(|((weight, _), _)| weight)
+            .sum();
+        let mut more = false;
+        for (i, (w, min)) in cells.iter().enumerate() {
+            if held[i].is_none() && free * w / weight < min - 1e-9 {
+                held[i] = Some(*min);
+                more = true;
+            }
+        }
+        if !more {
+            let sizes = cells
+                .iter()
+                .zip(held)
+                .map(|((w, _), held)| held.unwrap_or_else(|| free * w / weight));
+            return (sizes.collect(), true);
+        }
+    }
+}
 
 /// The two cells a divider sits between, as last drawn.
 #[derive(Debug, Clone, Copy)]
@@ -178,14 +236,112 @@ fn seam(axis: gpui_kit::Axis, active: Rgba) -> ResizeHandleRenderer {
 }
 
 impl Workspace {
+    /// The minimum (width, height) of `slot`, in rems: the shown view's
+    /// (`view_registry`), [`DRAWER_MIN_REMS`] wide for a slot opened empty.
+    /// Hidden views do not count.
+    pub(crate) fn slot_min(&self, slot: SlotId) -> (f64, f64) {
+        match self.layout.shown(slot) {
+            Some(view) => view_registry::spec(view).min,
+            None => (f64::from(DRAWER_MIN_REMS), 0.0),
+        }
+    }
+
+    /// The minimum (width, height) of `leaf`, in rems.
+    fn leaf_min(&self, leaf: Leaf) -> (f64, f64) {
+        match leaf {
+            Leaf::Group(_) => (f64::from(EDITOR_MIN_REMS), 0.0),
+            Leaf::Slot(slot) => self.slot_min(slot),
+        }
+    }
+
+    /// The px the tree has: the window's width less the rail, its height
+    /// less the title bar (as last drawn).
+    fn tree_area(&self, window: &Window) -> (f64, f64) {
+        let viewport = window.viewport_size();
+        let rem = f64::from(window.rem_size());
+        (
+            (f64::from(viewport.width) - f64::from(RAIL_REMS) * rem).max(0.0),
+            (f64::from(viewport.height) - self.title_bar_height.get()).max(0.0),
+        )
+    }
+
+    /// Which leaves the window has room for (ADR-0052 §6, Ruling 12):
+    /// slots that are not drawn are left out, then what overflows
+    /// collapses ([`LayoutTree::fit`], in rems; editor groups never).
+    /// Each leaf's minimum carries one px for the gap beside it.
+    ///
+    /// [`LayoutTree::fit`]: kimun_notes::logic::layout_tree::LayoutTree::fit
+    pub(crate) fn fit(&self, window: &Window) -> Fit<Leaf> {
+        let rem = f64::from(window.rem_size());
+        let (width, height) = self.tree_area(window);
+        let gap = GAP / rem;
+        self.layout.fit(
+            UnitRect::new(0.0, 0.0, width / rem, height / rem),
+            &|leaf| {
+                let (w, h) = self.leaf_min(leaf);
+                (w + gap, h + gap)
+            },
+            &|leaf| self.leaf_drawn(leaf),
+        )
+    }
+
+    /// Fit the tree to the window for this frame: remember what collapsed
+    /// (session only), and move the keyboard off a leaf that did.
+    pub(super) fn refit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.collapsed = self
+            .fit(window)
+            .collapsed
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if let Focus::Leaf(leaf) = self.layout.focused()
+            && self.collapsed.contains(&leaf)
+        {
+            self.fix_focus();
+            cx.defer_in(window, |this, window, cx| this.apply_focus(window, cx));
+        }
+    }
+
+    /// Whether `leaf` is on screen: drawn and not collapsed.
+    pub(super) fn leaf_visible(&self, leaf: Leaf) -> bool {
+        self.leaf_drawn(leaf) && !self.collapsed.contains(&leaf)
+    }
+
+    /// The minimum (width, height) of what is visible in `shape`, in px,
+    /// gaps included.
+    fn min_px(&self, shape: &TreeShape, rem: f64) -> (f64, f64) {
+        match shape {
+            TreeShape::Leaf(leaf) => {
+                let (w, h) = self.leaf_min(*leaf);
+                (w * rem, h * rem)
+            }
+            TreeShape::Split { axis, children } => {
+                let mins: Vec<(f64, f64)> = children
+                    .iter()
+                    .filter(|(_, c)| self.shape_visible(c))
+                    .map(|(_, c)| self.min_px(c, rem))
+                    .collect();
+                let gaps = mins.len().saturating_sub(1) as f64 * GAP;
+                match axis {
+                    Axis::Horizontal => mins
+                        .iter()
+                        .fold((gaps, 0.0), |(w, h), (cw, ch)| (w + cw, h.max(*ch))),
+                    Axis::Vertical => mins
+                        .iter()
+                        .fold((0.0, gaps), |(w, h), (cw, ch)| (w.max(*cw), h + ch)),
+                }
+            }
+        }
+    }
+
     /// The layout tree, right of the rail: it takes the width the rail
     /// leaves and the height under the title bar.
-    pub(super) fn render_tree(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_tree(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let shape = self.layout.shape();
         // Measured afresh as this tree is laid out.
         self.divider_cells.borrow_mut().clear();
+        let rem = f64::from(window.rem_size());
         let tree = self
-            .render_node(&shape, cx)
+            .render_node(&shape, self.tree_area(window), (false, false), rem, cx)
             // Every tree holds an editor group, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
             .unwrap_or_else(|| self.render_editor(cx).into_any_element());
@@ -199,35 +355,83 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// `shape`, or `None` when nothing in it is drawn.
-    fn render_node(&self, shape: &TreeShape, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// `shape`, drawn in `size` px, or `None` when nothing in it is
+    /// visible. `across` says whether a horizontal (vertical) split holds
+    /// it: only along those does a slot check its view's minimum.
+    fn render_node(
+        &self,
+        shape: &TreeShape,
+        size: (f64, f64),
+        across: (bool, bool),
+        rem: f64,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         match shape {
             TreeShape::Leaf(Leaf::Group(_)) => Some(self.render_editor(cx).into_any_element()),
             TreeShape::Leaf(Leaf::Slot(slot)) => {
-                if !self.slot_drawn(*slot) {
+                if !self.leaf_visible(Leaf::Slot(*slot)) {
                     return None;
                 }
                 Some(match self.layout.shown(*slot) {
-                    Some(view) => self.render_slot(*slot, view, cx),
+                    Some(view) => {
+                        let (w, h) = view_registry::spec(view).min;
+                        let small = (across.0 && size.0 < w * rem - 0.5)
+                            || (across.1 && size.1 < h * rem - 0.5);
+                        self.render_slot(*slot, view, small, cx)
+                    }
                     None => self.render_empty_slot(*slot, cx),
                 })
             }
             TreeShape::Split { axis, children } => {
                 let axis = *axis;
-                let drawn: Vec<(usize, f64, Option<f64>, Leaf, AnyElement)> = children
+                let visible: Vec<(usize, f64, &TreeShape)> = children
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, (weight, child))| {
-                        let element = self.render_node(child, cx)?;
-                        let min = self.min_width(child).filter(|_| axis == Axis::Horizontal);
-                        Some((index, *weight, min, last_leaf(child), element))
-                    })
+                    .filter(|(_, (_, child))| self.shape_visible(child))
+                    .map(|(index, (weight, child))| (index, *weight, child))
                     .collect();
-                if drawn.is_empty() {
+                if visible.is_empty() {
                     return None;
                 }
-                // The drawn children share the split by their weights: flex
-                // grow factors summing below one would leave space unused.
+                let (length, cross) = match axis {
+                    Axis::Horizontal => size,
+                    Axis::Vertical => (size.1, size.0),
+                };
+                let mins: Vec<f64> = visible
+                    .iter()
+                    .map(|(_, _, child)| {
+                        let (w, h) = self.min_px(child, rem);
+                        if axis == Axis::Horizontal { w } else { h }
+                    })
+                    .collect();
+                let gaps = (visible.len() - 1) as f64 * GAP;
+                let cells: Vec<(f64, f64)> = visible
+                    .iter()
+                    .zip(&mins)
+                    .map(|((_, weight, _), min)| (*weight, *min))
+                    .collect();
+                let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
+                let across = match axis {
+                    Axis::Horizontal => (true, across.1),
+                    Axis::Vertical => (across.0, true),
+                };
+                let drawn: Vec<(usize, f64, Option<f64>, Leaf, AnyElement)> = visible
+                    .iter()
+                    .zip(sizes.iter().zip(&mins))
+                    .filter_map(|((index, weight, child), (along, min))| {
+                        let size = match axis {
+                            Axis::Horizontal => (*along, cross),
+                            Axis::Vertical => (cross, *along),
+                        };
+                        let element = self.render_node(child, size, across, rem, cx)?;
+                        // Minimums are set only where they all fit.
+                        let min = held.then_some(*min);
+                        Some((*index, *weight, min, last_leaf(child), element))
+                    })
+                    .collect();
+                // The visible children share the split by their weights:
+                // flex grow factors summing below one would leave space
+                // unused.
                 let total: f64 = drawn.iter().map(|(_, weight, ..)| weight).sum();
                 let cell = |weight: f64, min: Option<f64>| {
                     div()
@@ -236,7 +440,10 @@ impl Workspace {
                         .flex_grow((weight / total) as f32)
                         .min_w_0()
                         .min_h_0()
-                        .when_some(min, |cell, min| cell.min_w(rems(min as f32)))
+                        .when_some(min, |cell, min| match axis {
+                            Axis::Horizontal => cell.min_w(px(min as f32)),
+                            Axis::Vertical => cell.min_h(px(min as f32)),
+                        })
                 };
                 let mut elements: Vec<AnyElement> = Vec::new();
                 // The same cells and gaps, empty, over the split: the
@@ -260,11 +467,11 @@ impl Workspace {
                                 elements.len(),
                                 prev_last,
                                 prev_min,
-                                min.unwrap_or(0.0),
+                                min.unwrap_or(0.0) / rem,
                             ));
                         }
                     }
-                    previous = Some((index, elements.len(), last, min.unwrap_or(0.0)));
+                    previous = Some((index, elements.len(), last, min.unwrap_or(0.0) / rem));
                     elements.push(cell(weight, min).child(element).into_any_element());
                     handles.push(cell(weight, min).into_any_element());
                 }
@@ -478,43 +685,35 @@ impl Workspace {
         if let Some(found) = self.divider_beside(&children[i].1, leaf) {
             return Some(found);
         }
-        if i + 1 < children.len() && self.shape_drawn(&children[i + 1].1) {
+        if i + 1 < children.len() && self.shape_visible(&children[i + 1].1) {
             return Some((last_leaf(&children[i].1), true));
         }
-        if i > 0 && self.shape_drawn(&children[i - 1].1) {
+        if i > 0 && self.shape_visible(&children[i - 1].1) {
             return Some((last_leaf(&children[i - 1].1), false));
         }
         None
     }
 
-    /// Whether anything in `shape` is drawn.
-    fn shape_drawn(&self, shape: &TreeShape) -> bool {
+    /// Whether anything in `shape` is visible (drawn and not collapsed).
+    fn shape_visible(&self, shape: &TreeShape) -> bool {
         match shape {
-            TreeShape::Leaf(Leaf::Group(_)) => true,
-            TreeShape::Leaf(Leaf::Slot(slot)) => self.slot_drawn(*slot),
-            TreeShape::Split { children, .. } => children.iter().any(|(_, c)| self.shape_drawn(c)),
-        }
-    }
-
-    /// The minimum width, in rems, of a leaf in a row: a slot's is the
-    /// largest registry minimum of the views placed in it, an editor
-    /// group's the editor's floor. `None` for a split.
-    fn min_width(&self, shape: &TreeShape) -> Option<f64> {
-        match shape {
-            TreeShape::Leaf(Leaf::Slot(slot)) => self
-                .layout
-                .slot_views(*slot)
-                .iter()
-                .map(|view| view_registry::spec(*view).min.0)
-                .reduce(f64::max),
-            TreeShape::Leaf(Leaf::Group(_)) => Some(f64::from(EDITOR_MIN_REMS)),
-            TreeShape::Split { .. } => None,
+            TreeShape::Leaf(leaf) => self.leaf_visible(*leaf),
+            TreeShape::Split { children, .. } => {
+                children.iter().any(|(_, c)| self.shape_visible(c))
+            }
         }
     }
 
     /// `slot`, showing `view`: its title over the view (FILES, or, for a
-    /// view that needs a workspace while none is open, a line saying so).
-    fn render_slot(&self, slot: SlotId, view: DrawerView, cx: &mut Context<Self>) -> AnyElement {
+    /// view that needs a workspace while none is open, a line saying so;
+    /// [`TOO_SMALL`] when `small`: under the view's minimum).
+    fn render_slot(
+        &self,
+        slot: SlotId,
+        view: DrawerView,
+        small: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let spec = view_registry::spec(view);
         div()
             .id(slot_id(view))
@@ -533,8 +732,19 @@ impl Workspace {
                 this.focus_slot(slot, window, cx)
             }))
             .child(self.render_slot_header(slot, Some(view), cx))
-            .map(|el| match self.view_content(view) {
+            .map(|el| match self.view_content(view).filter(|_| !small) {
                 Some(content) => el.child(content),
+                None if small => el.child(
+                    div()
+                        .id(TOO_SMALL_ID)
+                        .test_support()
+                        .role(Role::Label)
+                        .aria_label(TOO_SMALL)
+                        .px_3()
+                        .text_sm()
+                        .text_color(theme::muted(&theme::current(cx)))
+                        .child(TOO_SMALL),
+                ),
                 // Every view is built; one without content needs a vault.
                 None => el.child(
                     div()
