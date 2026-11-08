@@ -9,7 +9,9 @@
 use gpui_kit::component::IndexPath;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext};
-use kimun_notes::logic::layout::Side;
+use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::input::KeyInput;
+use kimun_notes::logic::layout::{Dir, Side};
 use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
@@ -868,6 +870,285 @@ fn a_slot_opened_empty_survives_a_vacating_move(cx: &mut TestAppContext) {
         assert!(!slots.contains(&below), "the vacated slot closed");
         assert!(slots.contains(&right), "{slots:?}");
         assert!(shell.workspace.read(cx).slot_drawn(right), "still drawn");
+    })
+    .unwrap();
+}
+
+// --- Move view to… (ADR-0054 §4) ---
+
+/// The `⋯` button in the header of the slot showing `view`.
+fn move_button(view: DrawerView) -> gpui_kit::SharedString {
+    super::tree_view::move_button_id(view)
+}
+
+/// The labels the open move chooser offers, in its order.
+fn move_rows(shell: &Shell, cx: &gpui_kit::App) -> Vec<String> {
+    shell
+        .workspace
+        .read(cx)
+        .move_chooser_rows(cx)
+        .unwrap_or_default()
+}
+
+fn into(view: DrawerView) -> String {
+    format!("Into {} slot", view_registry::spec(view).title)
+}
+
+const NEW_SIDES: [&str; 4] = [
+    "New slot above",
+    "New slot below",
+    "New slot to the left",
+    "New slot to the right",
+];
+
+/// The move chord toward `dir` in the active keymap.
+fn move_chord(dir: Dir, cx: &gpui_kit::App) -> Option<KeyInput> {
+    crate::keymap::active(cx).chord_for(&ActionShortcuts::MoveViewToNeighbour(dir))
+}
+
+/// FILES (FIND hidden with it) left, OUTLINE right: FILES' chooser offers
+/// OUTLINE's slot and a new slot on each side, every row drawn, and each
+/// row names the move chord that does the same: Right reaches OUTLINE's
+/// slot, the other three sides have nothing there, so their chords make
+/// the new slot.
+#[gpui_kit::test]
+fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_find_hidden_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        let before = layout(&shell, cx);
+        window.click(move_button(DrawerView::Files), cx);
+        window.render_frame(cx);
+        assert!(chooser_open(&shell, window, cx), "the chooser is open");
+        let mut want = vec![into(DrawerView::Outline)];
+        want.extend(NEW_SIDES.map(String::from));
+        assert_eq!(move_rows(&shell, cx), want);
+        for (i, label) in want.iter().enumerate() {
+            assert_eq!(
+                window.find(IndexPath::new(i)).label(),
+                Some(label.as_str()),
+                "row {i} is drawn"
+            );
+        }
+        assert_eq!(
+            shell.workspace.read(cx).move_chooser_hints(cx),
+            Some(vec![
+                move_chord(Dir::Right, cx),
+                move_chord(Dir::Up, cx),
+                move_chord(Dir::Down, cx),
+                move_chord(Dir::Left, cx),
+                None,
+            ])
+        );
+        assert!(move_chord(Dir::Up, cx).is_some(), "the chords are bound");
+        assert_eq!(layout(&shell, cx), before, "nothing moves yet");
+    })
+    .unwrap();
+}
+
+/// FILES over FIND, one view each: picking FIND's slot moves FILES there
+/// (shown, FIND stays placed there, hidden, as the move chord does), the
+/// slot FILES left closes, and the keyboard follows FILES. Saved.
+#[gpui_kit::test]
+fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    let (top, bottom) = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let left = left_slots(&shell, cx);
+            window.click(move_button(DrawerView::Files), cx);
+            window.render_frame(cx);
+            assert_eq!(move_rows(&shell, cx), [into(DrawerView::Find)]);
+            window.press("enter", cx);
+            (left[0], left[1])
+        })
+        .unwrap();
+    settle(&shell, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        assert!(!chooser_open(&shell, window, cx), "the chooser closed");
+        let slots = layout(&shell, cx).slots();
+        assert!(!slots.contains(&top), "the vacated slot closed");
+        assert_eq!(
+            views_of(&shell, bottom, cx),
+            [DrawerView::Find, DrawerView::Files]
+        );
+        assert_eq!(shown_in(&shell, bottom, cx), Some(DrawerView::Files));
+        assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(bottom)));
+        assert_eq!(
+            saved_placed(&path),
+            [vec![DrawerView::Find, DrawerView::Files]]
+        );
+    })
+    .unwrap();
+}
+
+/// FILES shares the only slot with FIND (hidden): picking "New slot to the
+/// right" puts FILES in a new slot right of it, FIND showing in its
+/// place, and the keyboard follows FILES.
+#[gpui_kit::test]
+fn picking_a_new_side_places_the_view_in_a_new_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_over_find_hidden(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let old = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(move_button(DrawerView::Files), cx);
+            window.render_frame(cx);
+            assert_eq!(move_rows(&shell, cx), NEW_SIDES);
+            for _ in 0..3 {
+                window.press("down", cx);
+            }
+            window.press("enter", cx);
+            layout(&shell, cx).slots()[0]
+        })
+        .unwrap();
+    settle(&shell, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        let slots = layout(&shell, cx).slots();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0], old);
+        assert_eq!(views_of(&shell, old, cx), [DrawerView::Find]);
+        assert_eq!(shown_in(&shell, old, cx), Some(DrawerView::Find));
+        assert_eq!(views_of(&shell, slots[1], cx), [DrawerView::Files]);
+        assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(slots[1])));
+        let find = window.find(slot_id(DrawerView::Find)).bounds();
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        assert!(files.left() > find.left(), "FILES drawn right of FIND");
+    })
+    .unwrap();
+}
+
+/// FILES has the keyboard; a click on OUTLINE's `⋯` focuses OUTLINE's slot
+/// and opens the chooser for OUTLINE: the two slots on the left.
+#[gpui_kit::test]
+fn the_header_button_opens_the_chooser_for_its_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1200.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let outline = layout(&shell, cx).slots()[2];
+        window.click(slot_id(DrawerView::Files), cx);
+        assert_ne!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(outline)));
+        assert!(window.try_find(move_button(DrawerView::Outline)).is_some());
+        window.click(move_button(DrawerView::Outline), cx);
+        window.render_frame(cx);
+        assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(outline)));
+        assert!(chooser_open(&shell, window, cx), "the chooser is open");
+        assert_eq!(
+            move_rows(&shell, cx),
+            [into(DrawerView::Files), into(DrawerView::Find)]
+        );
+    })
+    .unwrap();
+}
+
+/// A view alone in its slot leaves nothing behind: only the other slots
+/// are offered. Alone in the only slot, there is nowhere to go: the
+/// button says so and opens nothing.
+#[gpui_kit::test]
+fn a_slot_with_a_lone_view_offers_no_new_slot_rows(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(move_button(DrawerView::Find), cx);
+        window.render_frame(cx);
+        assert!(chooser_open(&shell, window, cx));
+        assert_eq!(move_rows(&shell, cx), [into(DrawerView::Files)]);
+    })
+    .unwrap();
+
+    let shell = open_shell(cx, 1000., &files_alone(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        let before = layout(&shell, cx);
+        window.click(move_button(DrawerView::Files), cx);
+        window.render_frame(cx);
+        assert!(!chooser_open(&shell, window, cx), "no chooser");
+        assert_eq!(
+            flash(&shell, cx).as_deref(),
+            Some("Nowhere else to move this view")
+        );
+        assert_eq!(layout(&shell, cx), before);
+    })
+    .unwrap();
+}
+
+/// While zoomed the other slots are not on screen: the button does
+/// nothing.
+#[gpui_kit::test]
+fn the_move_chooser_does_not_open_while_zoomed(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press(ZOOM, cx);
+        window.render_frame(cx);
+        window.click(move_button(DrawerView::Files), cx);
+        window.render_frame(cx);
+        assert!(!chooser_open(&shell, window, cx));
+    })
+    .unwrap();
+}
+
+/// A query narrows the chooser; Enter picks the row the query kept, not
+/// the row at that place in the full list: "outl" keeps OUTLINE alone,
+/// and the new slot shows OUTLINE.
+#[gpui_kit::test]
+fn a_filtered_pick_runs_the_row_the_query_kept(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-shift-d", cx);
+        window.render_frame(cx);
+        assert_eq!(chooser_views(&shell, cx)[0], DrawerView::Find);
+        window.input("outl", cx);
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    settle(&shell, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        assert!(!chooser_open(&shell, window, cx), "the chooser closed");
+        let left = left_slots(&shell, cx);
+        assert_eq!(left.len(), 2);
+        assert_eq!(shown_in(&shell, left[1], cx), Some(DrawerView::Outline));
     })
     .unwrap();
 }

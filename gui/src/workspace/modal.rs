@@ -264,6 +264,7 @@ impl Workspace {
         self.query_help = false;
         self.palette = None;
         self.split_chooser = None;
+        self.move_chooser = None;
         #[cfg(test)]
         {
             self.file_dialog = None;

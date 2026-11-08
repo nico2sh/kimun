@@ -59,16 +59,19 @@ use std::rc::Rc;
 use gpui_kit::base::{
     ResizeHandleContext, ResizeHandleRenderer, ResizeHandleState, TestSupportExt, resize_handle,
 };
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Bounds, Context, DragMoveEvent, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Rgba, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px, rems,
+    AnyElement, AppContext as _, Bounds, ClickEvent, Context, DragMoveEvent, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Rgba, Role,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use kimun_notes::logic::layout_tree::{Axis, Fit, Focus, Leaf, SlotId, TreeShape, UnitRect};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
+use super::view_chooser::EMPTY_TITLE;
 use super::{Workspace, empty_slot_id, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -83,6 +86,12 @@ pub(super) const RESIZE_STEP: f64 = 0.05;
 pub(crate) const TOO_SMALL: &str = "Too small";
 /// The element id of that placeholder.
 pub(crate) const TOO_SMALL_ID: &str = "slot-too-small";
+
+/// The element id of the `⋯` in the header of the slot showing `view`
+/// (`slot-move-files`).
+pub(crate) fn move_button_id(view: DrawerView) -> SharedString {
+    format!("slot-move-{}", view.id()).into()
+}
 
 /// The window background between two drawn neighbours, in px.
 const GAP: f64 = 1.0;
@@ -990,7 +999,10 @@ impl Workspace {
     /// The strip at the top of a drawn slot: the title of the view it shows
     /// (`Empty` for a slot opened with nothing in it) on the header
     /// background, a hairline under it, and the accent on the title while
-    /// the slot has the focus. No actions yet: the hook for a slot menu.
+    /// the slot has the focus. A slot showing a view ends it with a quiet
+    /// `⋯` (its own id, [`move_button_id`]): it gives the slot the keyboard
+    /// and asks where the view goes ([`Workspace::open_move_chooser`]). The
+    /// hook for further slot actions.
     fn render_slot_header(
         &self,
         slot: SlotId,
@@ -1000,10 +1012,10 @@ impl Workspace {
         let focused = self.layout.focused() == Focus::Leaf(Leaf::Slot(slot));
         let title: SharedString = match view {
             Some(view) => view_registry::spec(view).title.into(),
-            None => "Empty".into(),
+            None => EMPTY_TITLE.into(),
         };
         let theme = theme::current(cx);
-        div()
+        let header = div()
             .id(if focused {
                 "slot-header-focused"
             } else {
@@ -1013,12 +1025,13 @@ impl Workspace {
             .role(Role::Group)
             .aria_label(title.clone())
             .w_full()
-            .flex_none()
             // A slot narrower than its title clips it to one line.
             .overflow_hidden()
             .whitespace_nowrap()
             .text_ellipsis()
             .px_3()
+            // Room for the `⋯` laid over the strip's right end.
+            .when(view.is_some(), |header| header.pr(px(28.)))
             .py_1()
             .text_sm()
             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
@@ -1030,7 +1043,37 @@ impl Workspace {
             } else {
                 theme::foreground(&theme)
             })
-            .child(title)
+            .child(title);
+        // The button is the strip's sibling, not its child: the strip's id
+        // follows the focus, and a press that focuses the slot would
+        // otherwise lose the button's half-made click with it.
+        div()
+            .relative()
+            .w_full()
+            .flex_none()
+            .child(header)
+            .when_some(view, |strip, view| {
+                strip.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_1()
+                        .flex()
+                        .items_center()
+                        .child(
+                            Button::new(move_button_id(view))
+                                .ghost()
+                                .xsmall()
+                                .label("⋯")
+                                .tooltip("Move view…")
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.focus_slot(slot, window, cx);
+                                    this.open_move_chooser(slot, window, cx);
+                                })),
+                        ),
+                )
+            })
     }
 
     /// What `view`'s slot shows, for the views built so far.
