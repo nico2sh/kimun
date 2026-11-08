@@ -597,6 +597,32 @@ fn f1_shows_the_query_syntax(cx: &mut TestAppContext) {
     assert_eq!(started.shown_modal(cx), Some(ModalKind::QueryHelp));
 }
 
+/// The query syntax is the `QuerySyntax` action: rebound under
+/// `[gui.keys]` its new chord opens it from FIND, and F1 there is the
+/// keyboard reference again.
+#[gpui_kit::test]
+fn a_rebound_query_syntax_moves_off_f1(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    let overrides = [("QuerySyntax".to_string(), vec!["f9".to_string()])]
+        .into_iter()
+        .collect();
+    let (keymap, errors) =
+        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    cx.update(|cx| crate::keymap::init(cx, keymap));
+    open_find_on_backlinks(&started, cx);
+    press(&started, "f1", cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::KeyboardHelp));
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    open_find_on_backlinks(&started, cx);
+    press(&started, "f9", cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::QueryHelp));
+}
+
 // ── TAGS ─────────────────────────────────────────────────────────────────
 
 /// TAGS lists every label with its count, most-used first; the filter

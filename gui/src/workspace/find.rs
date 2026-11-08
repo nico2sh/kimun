@@ -22,7 +22,7 @@
 //! list; Full gives it the whole view (the list keeps the keyboard).
 //!
 //! **Keys.** In the field: Down or Enter go to the results, Escape back to
-//! the editor, F1 shows the query syntax. In the results: Up/Down/Home/End
+//! the editor, F1 (the `QuerySyntax` chord) shows the query syntax. In the results: Up/Down/Home/End
 //! move (Up from the first row returns to the field), Enter opens the note
 //! with the query's matches emphasised, Right grows the preview, Left
 //! shrinks it, Space cycles it; in Full, Up/Down scroll the preview.
@@ -177,7 +177,7 @@ impl DrawerRow for QueryHit {
 /// directly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FindEvent {
-    /// F1 or the `Syntax` button: the query syntax.
+    /// The `QuerySyntax` chord (F1) or the `Syntax` button: the query syntax.
     Help,
     /// `Save…`: save the query.
     Save,
@@ -596,17 +596,18 @@ impl FindView {
     }
 
     /// Keys the list left alone: the preview's, while the results have the
-    /// keyboard; F1 anywhere in the view.
+    /// keyboard; the `QuerySyntax` chord anywhere in the view (the workspace
+    /// usually runs it first, from the same keymap).
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(key) = input::key_down_input(event) else {
             return false;
         };
-        if key.mods != Mods::NONE {
-            return false;
-        }
-        if key.key == Key::F(1) {
+        if crate::keymap::active(cx).is_bound(key, &ActionShortcuts::QuerySyntax) {
             cx.emit(FindEvent::Help);
             return true;
+        }
+        if key.mods != Mods::NONE {
+            return false;
         }
         if !self.list_focused(window, cx) {
             return false;

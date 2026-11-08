@@ -82,10 +82,12 @@ pub(crate) const LOGO_ID: &str = "onboarding-logo";
 pub(crate) const WORDMARK_ID: &str = "onboarding-wordmark";
 /// The wordmark's bouncing letter.
 pub(crate) const WORDMARK_U_ID: &str = "onboarding-wordmark-u";
-/// The wordmark's text, also its accessible name.
+/// The wordmark's text, also its accessible name. What is painted is
+/// derived from it ([`wordmark_parts`]), so the two cannot drift.
 pub(crate) const WORDMARK: &str = "Kimün";
-/// The wordmark around its bouncing letter.
-const WORDMARK_PARTS: [&str; 3] = ["Kim", "u", "n"];
+/// The letter whose dots bounce, and the plain letter painted under them.
+const DOTTED: char = 'ü';
+const DOTTED_BASE: &str = "u";
 /// The font's own diaeresis, laid over the "u": the two dots that bounce.
 const DIAERESIS: &str = "\u{a8}";
 /// The wordmark's size, in rems.
@@ -96,6 +98,34 @@ const BOUNCE_PERIOD: std::time::Duration = std::time::Duration::from_millis(2400
 const BOUNCE_SHARE: f32 = 0.25;
 /// The spring's highest point, in ems of the wordmark (≈ 0.25 em).
 const BOUNCE_EMS: f32 = 0.25;
+
+/// The wordmark split around its first "ü".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WordmarkParts<'a> {
+    /// The text before the "ü"; the whole word when it has none.
+    pub(crate) before: &'a str,
+    /// The plain letter the bouncing dots sit over ("u"); `None` when the
+    /// word has no "ü": it is painted whole and nothing bounces.
+    pub(crate) base: Option<&'static str>,
+    /// The text after the "ü".
+    pub(crate) after: &'a str,
+}
+
+/// `word` split around its first "ü" (see [`WordmarkParts`]).
+pub(crate) fn wordmark_parts(word: &str) -> WordmarkParts<'_> {
+    match word.split_once(DOTTED) {
+        Some((before, after)) => WordmarkParts {
+            before,
+            base: Some(DOTTED_BASE),
+            after,
+        },
+        None => WordmarkParts {
+            before: word,
+            base: None,
+            after: "",
+        },
+    }
+}
 
 /// The ü's offset at `t` (0 to 1) of the spring, in ems (negative is up):
 /// a quick rise, a smaller dip, rest at both ends — a damped sine, so the
@@ -897,7 +927,25 @@ impl OnboardingView {
     /// keep their place.
     fn render_wordmark(&self, cx: &gpui_kit::App) -> AnyElement {
         let theme = theme::current(cx);
-        let [before, letter, after] = WORDMARK_PARTS;
+        let parts = wordmark_parts(WORDMARK);
+        let line = div()
+            .id(WORDMARK_ID)
+            .test_support()
+            .role(Role::Heading)
+            .aria_label(WORDMARK)
+            .flex()
+            .flex_row()
+            .flex_none()
+            .h(rems(WORDMARK_REMS * 1.25))
+            .line_height(rems(WORDMARK_REMS * 1.25))
+            .text_size(rems(WORDMARK_REMS))
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme::accent(&theme))
+            .child(parts.before);
+        let Some(letter) = parts.base else {
+            // No "ü": the word whole, nothing bounces.
+            return line.into_any_element();
+        };
         // A plain "u" with the font's "¨" over it, centred on it and on the
         // same line box; only the dots move.
         let dots = div()
@@ -923,23 +971,7 @@ impl OnboardingView {
             },
         );
         let glyph = div().relative().child(letter).child(dots);
-        div()
-            .id(WORDMARK_ID)
-            .test_support()
-            .role(Role::Heading)
-            .aria_label(WORDMARK)
-            .flex()
-            .flex_row()
-            .flex_none()
-            .h(rems(WORDMARK_REMS * 1.25))
-            .line_height(rems(WORDMARK_REMS * 1.25))
-            .text_size(rems(WORDMARK_REMS))
-            .font_weight(FontWeight::BOLD)
-            .text_color(theme::accent(&theme))
-            .child(before)
-            .child(glyph)
-            .child(after)
-            .into_any_element()
+        line.child(glyph).child(parts.after).into_any_element()
     }
 
     fn render_welcome(&self, cx: &gpui_kit::App) -> AnyElement {

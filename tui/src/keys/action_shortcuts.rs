@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use crate::logic::actions::ActionGroup;
 pub use crate::logic::actions::ActionShortcuts;
 use crate::logic::layout::Dir;
 use crate::logic::text_action::TextAction;
@@ -12,8 +13,10 @@ use crate::logic::text_action::TextAction;
 /// ignores them even if a user binds one. `SaveNote` is the leader's `w`
 /// (save now); the TUI has no free chord for it. `KeyboardHelp` is the
 /// desktop app's F1 reference; the TUI's F1 help is built in (the editor
-/// screen's F-key fallback), not a keymap action.
-pub const TUI_UNBOUND: [ActionShortcuts; 15] = [
+/// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
+/// desktop app's F1 in FIND and its search browser; the TUI's search views
+/// show their query help themselves.
+pub const TUI_UNBOUND: [ActionShortcuts; 16] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -31,10 +34,13 @@ pub const TUI_UNBOUND: [ActionShortcuts; 15] = [
     ActionShortcuts::MoveViewUp,
     ActionShortcuts::MoveViewDown,
     ActionShortcuts::KeyboardHelp,
+    ActionShortcuts::QuerySyntax,
 ];
 
-/// Groups an [`ActionShortcuts`] variant for display in the help modal.
-/// The `Ord` order determines the section render order.
+/// The TUI help modal's heading for an [`ActionShortcuts`] variant. The
+/// `Ord` order determines the section render order. Not a classification of
+/// its own: [`ActionShortcuts::category`] derives it from the one grouping,
+/// [`ActionShortcuts::group`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShortcutCategory {
     Navigation,
@@ -55,45 +61,39 @@ impl Display for ShortcutCategory {
 }
 
 impl ActionShortcuts {
+    /// The TUI help heading, derived from [`ActionShortcuts::group`] (the
+    /// desktop app's headings): Window & panels is Navigation; Editor, Files
+    /// & notes and Search & Ask are Notes, formatting aside (Text Editing);
+    /// Other stays Other.
+    ///
+    /// The one exception is the TUI's Navigation heading, which also holds
+    /// what moves you elsewhere in the app (the file browser, the sort
+    /// dialog, the saved searches and saving a query, the workspace switcher,
+    /// the palette and the leader) while the desktop app files those by
+    /// subject. Those actions are named here so the TUI help reads as it
+    /// always has; a new action needs no entry.
     pub fn category(&self) -> ShortcutCategory {
+        use ActionShortcuts as A;
         match self {
-            ActionShortcuts::Leader
-            | ActionShortcuts::OpenCommandPalette
-            | ActionShortcuts::ToggleSidebar
-            | ActionShortcuts::OpenFileBrowser
-            | ActionShortcuts::FocusSidebar
-            | ActionShortcuts::FocusEditor
-            | ActionShortcuts::OpenSortDialog
-            | ActionShortcuts::ToggleQueryPanel
-            | ActionShortcuts::OpenSavedSearches
-            | ActionShortcuts::SaveCurrentQuery
-            | ActionShortcuts::SwitchWorkspace
-            | ActionShortcuts::FocusRegion(_)
-            | ActionShortcuts::MoveViewToLeftDrawer
-            | ActionShortcuts::MoveViewToRightDrawer
-            | ActionShortcuts::SplitDrawerSlot
-            | ActionShortcuts::UnsplitDrawerSlot
-            | ActionShortcuts::ToggleRightDrawer
-            | ActionShortcuts::MoveViewUp
-            | ActionShortcuts::MoveViewDown => ShortcutCategory::Navigation,
-
-            ActionShortcuts::SearchNotes
-            | ActionShortcuts::OpenNote
-            | ActionShortcuts::NewJournal
-            | ActionShortcuts::FileOperations
-            | ActionShortcuts::FollowLink
-            | ActionShortcuts::QuickNote
-            | ActionShortcuts::FindInBuffer
-            | ActionShortcuts::ReplaceInBuffer
-            | ActionShortcuts::YankRow
-            | ActionShortcuts::OpenAsk
-            | ActionShortcuts::SaveNote => ShortcutCategory::Notes,
-
-            ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
-
-            ActionShortcuts::Quit
-            | ActionShortcuts::OpenPreferences
-            | ActionShortcuts::KeyboardHelp => ShortcutCategory::Other,
+            A::Text(_) => return ShortcutCategory::TextEditing,
+            A::OpenFileBrowser
+            | A::OpenSortDialog
+            | A::OpenSavedSearches
+            | A::SaveCurrentQuery
+            | A::SwitchWorkspace
+            | A::OpenCommandPalette
+            | A::Leader => return ShortcutCategory::Navigation,
+            _ => {}
+        }
+        match self.group() {
+            ActionGroup::WindowAndPanels => ShortcutCategory::Navigation,
+            ActionGroup::Editor | ActionGroup::FilesAndNotes | ActionGroup::SearchAndAsk => {
+                ShortcutCategory::Notes
+            }
+            // `group` never answers the two non-action headings.
+            ActionGroup::Other | ActionGroup::LeaderTree | ActionGroup::Unbound => {
+                ShortcutCategory::Other
+            }
         }
     }
 
@@ -135,6 +135,7 @@ impl ActionShortcuts {
             ActionShortcuts::MoveViewUp => "Move view up".into(),
             ActionShortcuts::MoveViewDown => "Move view down".into(),
             ActionShortcuts::KeyboardHelp => "Keyboard shortcuts".into(),
+            ActionShortcuts::QuerySyntax => "Query syntax".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -246,6 +247,55 @@ mod tests {
             ActionShortcuts::OpenPreferences.category(),
             ShortcutCategory::Other
         );
+    }
+
+    /// The derived categories are the ones the TUI help always showed: the
+    /// heading of every action that existed before the grouping was unified,
+    /// frozen here (new actions need no entry).
+    #[test]
+    fn derived_categories_match_the_tui_help() {
+        use ShortcutCategory::{Navigation as Nav, Notes, Other, TextEditing as Text};
+        let expected = [
+            (ActionShortcuts::Quit, Other),
+            (ActionShortcuts::OpenPreferences, Other),
+            (ActionShortcuts::SearchNotes, Notes),
+            (ActionShortcuts::OpenNote, Notes),
+            (ActionShortcuts::NewJournal, Notes),
+            (ActionShortcuts::Text(TextAction::Bold), Text),
+            (ActionShortcuts::Text(TextAction::Header(3)), Text),
+            (ActionShortcuts::ToggleSidebar, Nav),
+            (ActionShortcuts::OpenFileBrowser, Nav),
+            (ActionShortcuts::FocusEditor, Nav),
+            (ActionShortcuts::FocusSidebar, Nav),
+            (ActionShortcuts::OpenSortDialog, Nav),
+            (ActionShortcuts::FileOperations, Notes),
+            (ActionShortcuts::FollowLink, Notes),
+            (ActionShortcuts::QuickNote, Notes),
+            (ActionShortcuts::YankRow, Notes),
+            (ActionShortcuts::ToggleQueryPanel, Nav),
+            (ActionShortcuts::OpenSavedSearches, Nav),
+            (ActionShortcuts::SaveCurrentQuery, Nav),
+            (ActionShortcuts::OpenAsk, Notes),
+            (ActionShortcuts::SwitchWorkspace, Nav),
+            (ActionShortcuts::FindInBuffer, Notes),
+            (ActionShortcuts::ReplaceInBuffer, Notes),
+            (ActionShortcuts::Leader, Nav),
+            (ActionShortcuts::OpenCommandPalette, Nav),
+            (ActionShortcuts::FocusRegion(Dir::Left), Nav),
+            (ActionShortcuts::FocusRegion(Dir::Down), Nav),
+            (ActionShortcuts::MoveViewToLeftDrawer, Nav),
+            (ActionShortcuts::MoveViewToRightDrawer, Nav),
+            (ActionShortcuts::SplitDrawerSlot, Nav),
+            (ActionShortcuts::UnsplitDrawerSlot, Nav),
+            (ActionShortcuts::ToggleRightDrawer, Nav),
+            (ActionShortcuts::SaveNote, Notes),
+            (ActionShortcuts::MoveViewUp, Nav),
+            (ActionShortcuts::MoveViewDown, Nav),
+            (ActionShortcuts::KeyboardHelp, Other),
+        ];
+        for (action, category) in expected {
+            assert_eq!(action.category(), category, "{action:?}");
+        }
     }
 
     #[test]

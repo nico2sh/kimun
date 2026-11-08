@@ -7,7 +7,7 @@
 //!
 //! **Filter.** Fuzzy over each row's label and keys (the shared list engine's
 //! [`fuzzy_rank`]), the matches then kept under their headings: a heading's
-//! rows best first, the headings in [`HelpGroup`] order.
+//! rows best first, the headings in [`ActionGroup`] order.
 
 use crate::keys::leader::{LeaderAction, LeaderNode};
 use crate::logic::actions::{ActionGroup, ActionShortcuts};
@@ -15,59 +15,6 @@ use crate::logic::list::{ListRow, fuzzy_rank};
 
 /// What a row's keys say when its action has no chord.
 pub const NOT_BOUND: &str = "not bound";
-
-/// A heading of the reference, in display order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HelpGroup {
-    WindowAndPanels,
-    Editor,
-    FilesAndNotes,
-    SearchAndAsk,
-    /// The leader tree's sequences (keys after the gateway).
-    LeaderTree,
-    Other,
-    /// Actions the frontend could bind but has no chord for now (a
-    /// `[gui.keys]` override unbound them).
-    Unbound,
-}
-
-impl HelpGroup {
-    /// Every heading, in display order.
-    pub const ALL: [HelpGroup; 7] = [
-        HelpGroup::WindowAndPanels,
-        HelpGroup::Editor,
-        HelpGroup::FilesAndNotes,
-        HelpGroup::SearchAndAsk,
-        HelpGroup::LeaderTree,
-        HelpGroup::Other,
-        HelpGroup::Unbound,
-    ];
-
-    /// The heading's text.
-    pub fn title(self) -> &'static str {
-        match self {
-            HelpGroup::WindowAndPanels => "Window & panels",
-            HelpGroup::Editor => "Editor",
-            HelpGroup::FilesAndNotes => "Files & notes",
-            HelpGroup::SearchAndAsk => "Search & Ask",
-            HelpGroup::LeaderTree => "Leader tree",
-            HelpGroup::Other => "Other",
-            HelpGroup::Unbound => "Unbound",
-        }
-    }
-}
-
-impl From<ActionGroup> for HelpGroup {
-    fn from(group: ActionGroup) -> Self {
-        match group {
-            ActionGroup::WindowAndPanels => HelpGroup::WindowAndPanels,
-            ActionGroup::Editor => HelpGroup::Editor,
-            ActionGroup::FilesAndNotes => HelpGroup::FilesAndNotes,
-            ActionGroup::SearchAndAsk => HelpGroup::SearchAndAsk,
-            ActionGroup::Other => HelpGroup::Other,
-        }
-    }
-}
 
 /// What a row describes.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +28,7 @@ pub enum HelpTarget {
 /// One row of the reference: `label — keys`, under its heading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HelpRow {
-    pub group: HelpGroup,
+    pub group: ActionGroup,
     pub label: String,
     /// The chords joined with ` / `, a leader sequence (`v p`), or
     /// [`NOT_BOUND`].
@@ -101,7 +48,7 @@ impl ListRow for HelpRow {
 }
 
 impl HelpRow {
-    fn new(group: HelpGroup, label: String, keys: String, target: HelpTarget) -> Self {
+    fn new(group: ActionGroup, label: String, keys: String, target: HelpTarget) -> Self {
         Self {
             haystack: format!("{label} {keys}"),
             group,
@@ -113,13 +60,13 @@ impl HelpRow {
     }
 
     /// `action`'s row: under its heading with `chords` (each as the
-    /// frontend writes it), or under [`HelpGroup::Unbound`] saying
+    /// frontend writes it), or under [`ActionGroup::Unbound`] saying
     /// [`NOT_BOUND`] when there are none.
     pub fn action(action: ActionShortcuts, label: impl Into<String>, chords: &[String]) -> Self {
         let (group, keys) = if chords.is_empty() {
-            (HelpGroup::Unbound, NOT_BOUND.to_string())
+            (ActionGroup::Unbound, NOT_BOUND.to_string())
         } else {
-            (action.group().into(), chords.join(" / "))
+            (action.group(), chords.join(" / "))
         };
         Self::new(group, label.into(), keys, HelpTarget::Action(action))
     }
@@ -131,7 +78,7 @@ impl HelpRow {
     }
 }
 
-/// Every leaf of `tree` as a [`HelpGroup::LeaderTree`] row, in tree order:
+/// Every leaf of `tree` as a [`ActionGroup::LeaderTree`] row, in tree order:
 /// the keys after the gateway (`v p`; the gateway is the heading's, shown
 /// once) and the leaf's label under its group's (`+vault · preferences`, as
 /// the command palette writes it). Every leaf is listed, the palette's own
@@ -152,7 +99,7 @@ pub fn leader_rows(tree: &LeaderNode) -> Vec<HelpRow> {
                         format!("{group} · {label}")
                     };
                     out.push(HelpRow::new(
-                        HelpGroup::LeaderTree,
+                        ActionGroup::LeaderTree,
                         label,
                         child_keys,
                         HelpTarget::Leaf(*action),
@@ -169,7 +116,7 @@ pub fn leader_rows(tree: &LeaderNode) -> Vec<HelpRow> {
 
 /// The rows of `rows` that `query` keeps, as indices: every row in its
 /// heading for a blank query, else the fuzzy matches, each heading's best
-/// first, the headings in [`HelpGroup`] order.
+/// first, the headings in [`ActionGroup`] order.
 pub fn rank(rows: &[HelpRow], query: &str) -> Vec<usize> {
     let mut ranked = fuzzy_rank(rows, query.trim());
     // Stable: within a heading the fuzzy order (or the row order) stays.
@@ -189,14 +136,14 @@ mod tests {
             "Preferences",
             &["F4".to_string(), "Ctrl+,".to_string()],
         );
-        assert_eq!(row.group, HelpGroup::Other);
+        assert_eq!(row.group, ActionGroup::Other);
         assert_eq!(row.keys, "F4 / Ctrl+,");
         assert_eq!(
             row.target,
             HelpTarget::Action(ActionShortcuts::OpenPreferences)
         );
         let unbound = HelpRow::action(ActionShortcuts::FindInBuffer, "Find in note", &[]);
-        assert_eq!(unbound.group, HelpGroup::Unbound);
+        assert_eq!(unbound.group, ActionGroup::Unbound);
         assert_eq!(unbound.keys, NOT_BOUND);
     }
 
@@ -206,7 +153,7 @@ mod tests {
         let find = |keys: &str| rows.iter().find(|r| r.keys == keys).cloned();
         let prefs = find("v p").expect("v p is listed");
         assert_eq!(prefs.label, "+vault · preferences");
-        assert_eq!(prefs.group, HelpGroup::LeaderTree);
+        assert_eq!(prefs.group, ActionGroup::LeaderTree);
         assert_eq!(
             prefs.target,
             HelpTarget::Leaf(LeaderAction::VaultPreferences)
@@ -247,7 +194,7 @@ mod tests {
         rows.extend(leader_rows(&leader_tree()));
         let all = rank(&rows, "");
         assert_eq!(all.len(), rows.len());
-        let groups: Vec<HelpGroup> = all.iter().map(|&i| rows[i].group).collect();
+        let groups: Vec<ActionGroup> = all.iter().map(|&i| rows[i].group).collect();
         let mut sorted = groups.clone();
         sorted.sort();
         assert_eq!(groups, sorted, "headings in order");
@@ -263,22 +210,5 @@ mod tests {
         let by_keys = rank(&rows, "ctrl+t");
         assert_eq!(rows[by_keys[0]].label, "Toggle left drawer");
         assert!(rank(&rows, "zzzzqqq").is_empty());
-    }
-
-    #[test]
-    fn every_heading_has_a_title() {
-        let titles: Vec<&str> = HelpGroup::ALL.iter().map(|g| g.title()).collect();
-        assert_eq!(
-            titles,
-            [
-                "Window & panels",
-                "Editor",
-                "Files & notes",
-                "Search & Ask",
-                "Leader tree",
-                "Other",
-                "Unbound"
-            ]
-        );
     }
 }

@@ -110,9 +110,10 @@ fn load_keymap(settings: &AppSettings) -> Keymap {
 /// `[gui] reduce_motion` onto GPUI's own switch, which every
 /// `with_animation` (the Welcome wordmark's bounce, the kit's spinners)
 /// honours by drawing its end state. GPUI reads no OS hint for it, so the
-/// setting is the only source. Read once, at startup.
-pub(crate) fn apply_reduce_motion(gui: &kimun_notes::settings::gui::GuiSettings, cx: &mut App) {
-    cx.set_reduce_motion(gui.reduce_motion());
+/// setting is the only source. Applied at startup and again after every
+/// Preferences save (Display > Reduce motion), so a change needs no restart.
+pub(crate) fn apply_reduce_motion(reduce: bool, cx: &mut App) {
+    cx.set_reduce_motion(reduce);
 }
 
 /// Where kimün was started from, for a relative note on the command line.
@@ -138,7 +139,9 @@ fn main() {
     let layout = shell_layout::restore(&settings.gui);
     // Read once: changing who draws the title bar needs a restart.
     let chrome = titlebar::chrome_for(settings.gui.window_decorations(), Os::current());
-    let gui_settings = settings.gui.clone();
+    // The only `[gui]` scalar the app closure reads: captured alone, not the
+    // whole table.
+    let reduce_motion = settings.gui.reduce_motion();
     let name = settings.current_workspace_name();
     let settings: SharedSettings = Arc::new(RwLock::new(settings));
     // Opening the vault (the index file) is quick; indexing, which is not,
@@ -157,7 +160,7 @@ fn main() {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            apply_reduce_motion(&gui_settings, cx);
+            apply_reduce_motion(reduce_motion, cx);
             // The kit's components (the palette dialog, the FILES filter) read the
             // kit theme, which is not kimün's: hand them kimün's colours. The
             // dialog's fade is dropped: a palette should appear and go at once.

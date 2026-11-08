@@ -40,8 +40,8 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle,
     WeakEntity, Window, div, rems, uniform_list,
 };
-use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::keyboard_help::{self, HelpGroup, HelpRow, HelpTarget, leader_rows};
+use kimun_notes::logic::actions::{ActionGroup, ActionShortcuts};
+use kimun_notes::logic::keyboard_help::{self, HelpRow, HelpTarget, leader_rows};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListCore, ListSetup, StaticRowSource};
 
@@ -66,6 +66,9 @@ pub(crate) const TITLE: &str = "Keyboard shortcuts";
 pub(crate) const EMPTY_TEXT: &str = "Nothing matches.";
 /// What a row says after a chord the vim editor keeps.
 const VIM_NOTE: &str = "not in the vim editor";
+/// What the query syntax's row says: where its chord is live (elsewhere the
+/// same F1 is this reference's).
+pub(crate) const QUERY_NOTE: &str = "in FIND and search";
 
 /// A row's element id: the action's config name, or the leader sequence
 /// (unique in the tree; one leaf may sit under two sequences).
@@ -77,7 +80,7 @@ pub(crate) fn help_row_id(row: &HelpRow) -> SharedString {
 }
 
 /// A heading's element id.
-pub(crate) fn help_heading_id(group: HelpGroup) -> SharedString {
+pub(crate) fn help_heading_id(group: ActionGroup) -> SharedString {
     format!("keyboard-help:heading:{}", group.title()).into()
 }
 
@@ -104,7 +107,7 @@ fn action_label(action: &ActionShortcuts) -> String {
 /// One line of the list: a heading, or the row at a visible position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
-    Heading(HelpGroup),
+    Heading(ActionGroup),
     Row(usize),
 }
 
@@ -171,7 +174,7 @@ impl KeyboardHelp {
 
     /// The headings shown, top first.
     #[cfg(test)]
-    pub(crate) fn headings(&self) -> Vec<HelpGroup> {
+    pub(crate) fn headings(&self) -> Vec<ActionGroup> {
         self.lines
             .iter()
             .filter_map(|line| match line {
@@ -254,10 +257,10 @@ impl KeyboardHelp {
             .ok();
     }
 
-    fn render_heading(&self, group: HelpGroup, cx: &gpui_kit::App) -> AnyElement {
+    fn render_heading(&self, group: ActionGroup, cx: &gpui_kit::App) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let text: SharedString = if group == HelpGroup::LeaderTree {
+        let text: SharedString = if group == ActionGroup::LeaderTree {
             format!("{} · {}", group.title(), self.gateway).into()
         } else {
             group.title().into()
@@ -280,7 +283,10 @@ impl KeyboardHelp {
             .into_any_element()
     }
 
-    fn render_row(&self, pos: usize, row: &HelpRow, cx: &mut Context<Self>) -> AnyElement {
+    /// The row at visible position `pos`, borrowed from the list (nothing
+    /// is cloned but the strings the elements keep). `None` past the end.
+    fn render_row(&self, pos: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let row = self.list.visible_row(pos)?;
         let theme = theme::current(cx);
         let t = &*theme;
         let mono = cx.theme().mono_font_family.clone();
@@ -320,12 +326,14 @@ impl KeyboardHelp {
                 .text_color(theme::bright(t))
                 .child(row.keys.clone()),
         );
-        with_click_cursor(frame, ClickPolicy::Select, true)
-            .test_support()
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                ClickPolicy::Select.apply(event, this, pos, window, cx)
-            }))
-            .into_any_element()
+        Some(
+            with_click_cursor(frame, ClickPolicy::Select, true)
+                .test_support()
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    ClickPolicy::Select.apply(event, this, pos, window, cx)
+                }))
+                .into_any_element(),
+        )
     }
 }
 
@@ -353,10 +361,7 @@ impl Render for KeyboardHelp {
                     range
                         .filter_map(|ix| match *this.lines.get(ix)? {
                             Line::Heading(group) => Some(this.render_heading(group, cx)),
-                            Line::Row(pos) => {
-                                let row = this.list.visible_row(pos)?.clone();
-                                Some(this.render_row(pos, &row, cx))
-                            }
+                            Line::Row(pos) => this.render_row(pos, cx),
                         })
                         .collect::<Vec<_>>()
                 }),
@@ -439,6 +444,8 @@ impl Workspace {
                 let row = HelpRow::action(action.clone(), action_label(&action), &labels);
                 Some(if shadowed {
                     row.with_note(VIM_NOTE)
+                } else if action == ActionShortcuts::QuerySyntax && !labels.is_empty() {
+                    row.with_note(QUERY_NOTE)
                 } else {
                     row
                 })
@@ -489,7 +496,6 @@ impl Workspace {
         let gateway = self.keyboard_help_gateway(cx);
         let workspace = cx.entity().downgrade();
         let view = cx.new(|cx| KeyboardHelp::new(rows, gateway, workspace, window, cx));
-        self.keyboard_help = Some(view.downgrade());
         let input = view.read(cx).input.clone();
         self.show_modal(
             Slot::Own(ModalKind::KeyboardHelp),
@@ -498,19 +504,13 @@ impl Workspace {
                 let handle = gpui_kit::Focusable::focus_handle(input.read(cx), cx);
                 window.focus(&handle, cx);
             },
-            move |dialog, _, cx| {
+            move |dialog, _, _| {
                 let cancel = view.downgrade();
-                let workspace = view.read(cx).workspace.clone();
                 dialog
                     .title(TITLE)
                     // Help to read, nothing to confirm: the kit's close
                     // button stays (the query syntax's rule).
                     .close_button(true)
-                    .on_close(move |_, _, cx| {
-                        workspace
-                            .update(cx, |workspace, _| workspace.keyboard_help = None)
-                            .ok();
-                    })
                     // Escape and a click outside.
                     .on_cancel(move |_, window, cx| {
                         cancel.update(cx, |help, cx| help.close(window, cx)).ok();

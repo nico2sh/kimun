@@ -366,11 +366,12 @@ fn dirty_tracks_each_field() {
     let s = with_workspaces(&["main"], "main");
     let base = PreferencesModel::new(&s);
     assert!(!base.dirty(&s));
-    let edits: [Edit; 12] = [
+    let edits: [Edit; 13] = [
         ("theme", |m| m.theme_name = "Gruvbox Light".to_string()),
         ("nerd fonts", |m| m.use_nerd_fonts = !m.use_nerd_fonts),
         ("update check", |m| m.update_check = !m.update_check),
         ("mouse", |m| m.mouse = !m.mouse),
+        ("reduce motion", |m| m.reduce_motion = !m.reduce_motion),
         ("leader delay", |m| m.step_leader_delay(true)),
         ("default field", |m| m.cycle_sort(SortSlot::DefaultField)),
         ("default order", |m| m.cycle_sort(SortSlot::DefaultOrder)),
@@ -405,6 +406,7 @@ fn apply_writes_every_section() {
     m.use_nerd_fonts = true;
     m.update_check = false;
     m.mouse = false;
+    m.reduce_motion = true;
     m.leader_timeout_ms = 100;
     m.default_sort_field = SortFieldSetting::Title;
     m.default_sort_order = SortOrderSetting::Descending;
@@ -420,6 +422,7 @@ fn apply_writes_every_section() {
     assert!(out.use_nerd_fonts);
     assert!(!out.update_check());
     assert!(!out.mouse());
+    assert!(out.gui.reduce_motion());
     assert_eq!(out.leader_timeout_ms, 100);
     assert_eq!(out.default_sort_field, SortFieldSetting::Title);
     assert_eq!(out.default_sort_order, SortOrderSetting::Descending);
@@ -986,4 +989,33 @@ fn prepare_workspace_folder_makes_a_missing_folder() {
 #[test]
 fn indexed_in_reads_as_a_short_duration() {
     assert_eq!(indexed_in(Duration::from_millis(1234)), "Indexed in 1.2s");
+}
+
+/// `[gui] reduce_motion` is desktop-only: read into the draft, written back
+/// only when it changed, so a save that did not touch it (every TUI save)
+/// never adds the key, and the rest of `[gui]` is kept.
+#[test]
+fn reduce_motion_is_written_only_when_changed() {
+    let s = with_workspaces(&["main"], "main");
+    let m = PreferencesModel::new(&s);
+    assert!(!m.reduce_motion);
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(out.gui, s.gui, "an untouched draft adds no [gui] key");
+
+    let mut s = s;
+    s.gui.set_reduce_motion(true);
+    s.gui
+        .set_window_decorations(crate::settings::gui::WindowDecorations::System);
+    let mut m = PreferencesModel::new(&s);
+    assert!(m.reduce_motion, "read from the config");
+    m.reduce_motion = false;
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert!(!out.gui.reduce_motion());
+    assert_eq!(
+        out.gui.window_decorations(),
+        crate::settings::gui::WindowDecorations::System,
+        "the rest of [gui] is kept"
+    );
 }

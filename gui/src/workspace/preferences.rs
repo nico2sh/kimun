@@ -24,7 +24,9 @@
 //! thread (it reads the theme folder), without the nvim backend (the
 //! desktop app has no nvim engine: a configured nvim survives untouched
 //! until another backend is chosen). Nerd Fonts and mouse capture are
-//! terminal-only and not shown; the draft carries them unchanged.
+//! terminal-only and not shown; the draft carries them unchanged. Display's
+//! `Reduce motion` is the desktop app's own (`[gui] reduce_motion`, which the
+//! TUI never shows): applied as soon as it is saved, no restart.
 //!
 //! **Save** is disabled while the draft is clean or invalid (a server
 //! address that is not `http://` / `https://`). It writes the settings with
@@ -95,6 +97,12 @@ pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
 pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
 pub(crate) const UPDATE_CHECK_HELP: &str =
     "Checks GitHub for a newer release on startup. Check now looks right away.";
+/// Display's `Reduce motion` (`[gui] reduce_motion`), its help text and the
+/// help's element. GPUI reads no system hint, hence the second sentence.
+pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
+pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
+pub(crate) const REDUCE_MOTION_HELP: &str =
+    "Stops the bouncing logo and loading spinners. Not read from your system settings.";
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -540,6 +548,14 @@ impl PreferencesView {
     pub(crate) fn set_update_check(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(model) = self.model_mut() {
             model.update_check = on;
+        }
+        cx.notify();
+    }
+
+    /// Display's `Reduce motion`.
+    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(model) = self.model_mut() {
+            model.reduce_motion = on;
         }
         cx.notify();
     }
@@ -1271,6 +1287,29 @@ impl PreferencesView {
                             .child(note(UPDATE_CHECK_HELP, t)),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        Checkbox::new(REDUCE_MOTION_ID)
+                            .label("Reduce motion")
+                            .checked(model.reduce_motion)
+                            .disabled(self.saving.is_some())
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.set_reduce_motion(*checked, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(REDUCE_MOTION_HELP_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(REDUCE_MOTION_HELP)
+                            .child(note(REDUCE_MOTION_HELP, t)),
+                    ),
+            )
             .child(field(
                 "Which-key delay",
                 delay,
@@ -1894,6 +1933,9 @@ impl Workspace {
     /// - sort defaults: FILES takes them (its folder re-sorts unless sorted
     ///   by hand);
     /// - update check: read by the next launch's startup check ([`super::update`]);
+    /// - reduce motion: GPUI's switch is set at once
+    ///   ([`crate::apply_reduce_motion`]), every animation honours it on the
+    ///   next frame;
     /// - server address, editor engine: `reopen` ([`needs_reopen`]) sends
     ///   `PreferencesSaved`, so the vault is entered again (M8b). Nothing else
     ///   reopens.
@@ -1903,6 +1945,7 @@ impl Workspace {
         };
         let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.leader.set_tree(snapshot.leader_tree());
+        crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }

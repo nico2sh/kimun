@@ -459,9 +459,10 @@ impl Render for ThemePicker {
                 count,
                 cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                     range
+                        // Borrowed: no row is cloned per frame.
                         .filter_map(|pos| {
-                            let row = this.list.visible_row(pos)?.clone();
-                            Some(this.render_row(pos, &row, cx))
+                            let row = this.list.visible_row(pos)?;
+                            Some(this.render_row(pos, row, cx))
                         })
                         .collect::<Vec<_>>()
                 }),

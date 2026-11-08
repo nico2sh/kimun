@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, Context, Entity, TestAppContext, Window};
 use kimun_notes::keys::leader::LeaderAction;
-use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::keyboard_help::{HelpGroup, HelpRow, HelpTarget, NOT_BOUND};
+use kimun_notes::logic::actions::{ActionGroup, ActionShortcuts};
+use kimun_notes::logic::keyboard_help::{HelpRow, HelpTarget, NOT_BOUND};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::overlay_open::OverlayOpen;
@@ -19,8 +19,8 @@ use kimun_notes::logic::text_action::TextAction;
 
 use super::config::CONFIG_KEYS_ID;
 use super::keyboard_help::{
-    EMPTY_TEXT, KEYBOARD_HELP_EMPTY_ID, KEYBOARD_HELP_ID, KeyboardHelp, TITLE, help_heading_id,
-    help_row_id,
+    EMPTY_TEXT, KEYBOARD_HELP_EMPTY_ID, KEYBOARD_HELP_ID, KeyboardHelp, QUERY_NOTE, TITLE,
+    help_heading_id, help_row_id,
 };
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
@@ -31,13 +31,37 @@ use super::{LayoutStore, Workspace};
 use crate::keymap::{self, Keymap, Platform};
 use crate::startup::Start;
 
+/// The last keyboard reference view built in this app: the window keeps no
+/// handle on it (the modal slot says whether it is open), so the tests watch
+/// for it being built.
+struct SeenKeyboardHelp(Option<gpui_kit::WeakEntity<KeyboardHelp>>);
+
+impl gpui_kit::Global for SeenKeyboardHelp {}
+
+/// Start watching for keyboard reference views (once per app).
+fn kh_track(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        if cx.has_global::<SeenKeyboardHelp>() {
+            return;
+        }
+        cx.set_global(SeenKeyboardHelp(None));
+        cx.observe_new(|_: &mut KeyboardHelp, _, cx: &mut Context<KeyboardHelp>| {
+            let view = cx.entity().downgrade();
+            cx.set_global(SeenKeyboardHelp(Some(view)));
+        })
+        .detach();
+    });
+}
+
 impl Started {
     fn kh_view(&self, cx: &TestAppContext) -> Entity<KeyboardHelp> {
+        assert!(
+            cx.read(|cx| self.workspace.read(cx).modal) == Some(ModalKind::KeyboardHelp),
+            "the keyboard reference is the open modal"
+        );
         cx.read(|cx| {
-            self.workspace
-                .read(cx)
-                .keyboard_help
-                .as_ref()
+            cx.try_global::<SeenKeyboardHelp>()
+                .and_then(|seen| seen.0.as_ref())
                 .and_then(|view| view.upgrade())
         })
         .expect("the keyboard reference is open")
@@ -61,6 +85,7 @@ impl Started {
         cx: &mut TestAppContext,
         f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
     ) -> R {
+        kh_track(cx);
         let workspace = self.workspace.clone();
         let r = cx
             .update_window(self.handle, |_, window, cx| {
@@ -72,6 +97,7 @@ impl Started {
     }
 
     fn kh_press(&self, key: &str, cx: &mut TestAppContext) {
+        kh_track(cx);
         cx.update_window(self.handle, |_, window, cx| window.press(key, cx))
             .unwrap();
         cx.run_until_parked();
@@ -84,6 +110,7 @@ impl Started {
     }
 
     fn kh_click(&self, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
+        kh_track(cx);
         let id = id.into();
         cx.update_window(self.handle, |_, window, cx| {
             window.render_frame(cx);
@@ -230,7 +257,7 @@ fn refused_over_modals_and_takeovers(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| s.workspace.read(cx).preferences.is_some()));
     s.kh_press("f1", cx);
     s.kh_on_window(cx, |w, window, cx| w.open_keyboard_help(window, cx));
-    assert!(cx.read(|cx| s.workspace.read(cx).keyboard_help.is_none()));
+    assert_ne!(s.shown_modal(cx), Some(ModalKind::KeyboardHelp));
     assert_eq!(s.shown_modal(cx), None);
     s.pf_loaded(&rt, cx);
     s.kh_press("escape", cx);
@@ -240,7 +267,7 @@ fn refused_over_modals_and_takeovers(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| s.workspace.read(cx).onboarding.is_some()));
     s.kh_press("f1", cx);
     s.kh_on_window(cx, |w, window, cx| w.open_keyboard_help(window, cx));
-    assert!(cx.read(|cx| s.workspace.read(cx).keyboard_help.is_none()));
+    assert_ne!(s.shown_modal(cx), Some(ModalKind::KeyboardHelp));
     assert_eq!(s.shown_modal(cx), None);
     settle(&rt, cx);
 }
@@ -263,7 +290,7 @@ fn it_works_without_a_vault(cx: &mut TestAppContext) {
     assert!(s.kh_is_open(cx));
     let rows = s.kh_rows(cx);
     assert!(action_row(&rows, ActionShortcuts::OpenPreferences).is_some());
-    assert!(rows.iter().any(|r| r.group == HelpGroup::LeaderTree));
+    assert!(rows.iter().any(|r| r.group == ActionGroup::LeaderTree));
     s.kh_escape(cx);
     assert_eq!(s.shown_modal(cx), None);
 }
@@ -286,7 +313,7 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
     let prefs = action_row(&rows, ActionShortcuts::OpenPreferences).unwrap();
     assert_eq!(prefs.keys, "F4 / Ctrl+,");
     assert_eq!(prefs.label, "Preferences");
-    assert_eq!(prefs.group, HelpGroup::Other);
+    assert_eq!(prefs.group, ActionGroup::Other);
     assert_eq!(
         action_row(&rows, ActionShortcuts::KeyboardHelp)
             .unwrap()
@@ -297,8 +324,15 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
         action_row(&rows, ActionShortcuts::ToggleSidebar)
             .unwrap()
             .group,
-        HelpGroup::WindowAndPanels
+        ActionGroup::WindowAndPanels
     );
+    // The query syntax: once, with its chord and where it applies (F1 is
+    // the reference's everywhere else).
+    let syntax = action_row(&rows, ActionShortcuts::QuerySyntax).unwrap();
+    assert_eq!(syntax.label, "Query syntax");
+    assert_eq!(syntax.keys, "F1");
+    assert_eq!(syntax.group, ActionGroup::SearchAndAsk);
+    assert_eq!(syntax.note.as_deref(), Some(QUERY_NOTE));
 
     let keymap = cx.read(keymap::active);
     for action in ActionShortcuts::ALL {
@@ -319,20 +353,20 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
     assert_eq!(
         headings,
         [
-            HelpGroup::WindowAndPanels,
-            HelpGroup::Editor,
-            HelpGroup::FilesAndNotes,
-            HelpGroup::SearchAndAsk,
-            HelpGroup::LeaderTree,
-            HelpGroup::Other,
+            ActionGroup::WindowAndPanels,
+            ActionGroup::Editor,
+            ActionGroup::FilesAndNotes,
+            ActionGroup::SearchAndAsk,
+            ActionGroup::LeaderTree,
+            ActionGroup::Other,
         ],
         "no Unbound heading by default"
     );
-    assert!(s.kh_shows(help_heading_id(HelpGroup::WindowAndPanels), cx));
+    assert!(s.kh_shows(help_heading_id(ActionGroup::WindowAndPanels), cx));
 
     let leader = |keys: &str| {
         rows.iter()
-            .find(|r| r.group == HelpGroup::LeaderTree && r.keys == keys)
+            .find(|r| r.group == ActionGroup::LeaderTree && r.keys == keys)
             .cloned()
             .unwrap_or_else(|| panic!("leader {keys} is listed"))
     };
@@ -374,11 +408,11 @@ fn overrides_show_the_effective_chords(cx: &mut TestAppContext) {
         "F9 / Ctrl+Alt+P"
     );
     let quick = action_row(&rows, ActionShortcuts::QuickNote).unwrap();
-    assert_eq!(quick.group, HelpGroup::Unbound);
+    assert_eq!(quick.group, ActionGroup::Unbound);
     assert_eq!(quick.keys, NOT_BOUND);
     assert_eq!(
         s.kh_read(cx, |h| h.headings()).last(),
-        Some(&HelpGroup::Unbound)
+        Some(&ActionGroup::Unbound)
     );
     assert_eq!(
         s.kh_read(cx, |h| h.gateway().to_string()),
@@ -443,7 +477,7 @@ fn the_filter_narrows_and_the_keys_move(cx: &mut TestAppContext) {
     );
     assert_eq!(s.kh_read(cx, |h| h.selected()), Some(narrowed[0].clone()));
     // Grouped still: the headings in order.
-    let groups: Vec<HelpGroup> = narrowed.iter().map(|r| r.group).collect();
+    let groups: Vec<ActionGroup> = narrowed.iter().map(|r| r.group).collect();
     let mut sorted = groups.clone();
     sorted.sort();
     assert_eq!(groups, sorted);

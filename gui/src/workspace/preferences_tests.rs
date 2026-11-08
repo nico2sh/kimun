@@ -31,8 +31,9 @@ use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::preferences::{
     AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_ID, DISCARD_ID, KEEP_EDITING_ID, MESSAGE_ID,
-    PREFERENCES_ID, PreferencesView, SAVE_ID, SERVER_ERROR_ID, SERVER_ID, Section, UPDATE_CHECK_ID,
-    needs_reopen, section_id, theme_row_id,
+    PREFERENCES_ID, PreferencesView, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID, REDUCE_MOTION_ID,
+    SAVE_ID, SERVER_ERROR_ID, SERVER_ID, Section, UPDATE_CHECK_ID, needs_reopen, section_id,
+    theme_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -889,6 +890,52 @@ fn nvim_nerd_fonts_and_mouse_survive_a_save(cx: &mut TestAppContext) {
         assert_eq!(settings.mouse(), mouse);
         assert_eq!(settings.theme, next);
     }
+    settle(&rt, cx);
+}
+
+/// Display > Reduce motion: part of the draft (dirty enables Save, toggling
+/// back is clean), saved as `[gui] reduce_motion` with the rest of `[gui]`
+/// kept, and applied to GPUI's switch at once, without a restart or reopen.
+#[gpui_kit::test]
+fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    // Another `[gui]` key, on disk and in memory: kept by the save.
+    let system = kimun_notes::settings::gui::WindowDecorations::System;
+    AppSettings::update_gui_at(config(&v), |gui| gui.set_window_decorations(system)).unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_window_decorations(system);
+    let s = with_prefs(cx, &rt, &v);
+    let files = s.files_id(cx);
+    assert!(!cx.read(|cx| cx.reduce_motion()));
+    s.pf_section(cx, Section::Display);
+    assert!(s.pf_shows(REDUCE_MOTION_HELP_ID, cx));
+    assert!(REDUCE_MOTION_HELP.contains("Not read from your system settings"));
+    assert!(s.pf_disabled(SAVE_ID, cx), "clean: Save is off");
+
+    s.pf_click(REDUCE_MOTION_ID, cx);
+    assert!(s.pf_model(cx, |m| m.reduce_motion));
+    assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
+    assert!(!cx.read(|cx| cx.reduce_motion()), "not applied before Save");
+    s.pf_click(REDUCE_MOTION_ID, cx);
+    assert!(s.pf_disabled(SAVE_ID, cx), "toggled back: clean");
+
+    s.pf_click(REDUCE_MOTION_ID, cx);
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert!(settings.gui.reduce_motion());
+        assert_eq!(
+            settings.gui.window_decorations(),
+            system,
+            "the rest of [gui] is kept"
+        );
+    }
+    assert!(cx.read(|cx| cx.reduce_motion()), "applied at once");
+    assert_eq!(s.files_id(cx), files, "no reopen");
     settle(&rt, cx);
 }
 
