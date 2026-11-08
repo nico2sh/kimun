@@ -14,7 +14,10 @@
 //! neighbours. Where the two are neighbours in the tree too, that pixel is
 //! a divider: a [`resize_handle`] straddling it, whose drag moves only that
 //! boundary ([`Workspace::on_divider_drag`], the tree's
-//! [`resize_after`]) and is saved when it ends. A drawn cell and an
+//! [`resize_after`]) and is saved when it ends. The handles sit in an
+//! empty copy of the split's cells and gaps laid over it, so they paint
+//! above both neighbours. A drag or step stops at either cell's drawn
+//! minimum (Ruling 16). A drawn cell and an
 //! undrawn slot have no divider (Ruling 12), and neither do two drawn cells
 //! with an undrawn slot between them in the tree: `resize_after` moves the
 //! boundary between tree siblings, which there is not the one drawn. The
@@ -50,10 +53,51 @@ use crate::theme;
 /// narrow pair and a wide one.
 pub(super) const RESIZE_STEP: f64 = 0.05;
 
-/// Each divider's axis and the drawn bounds of the cells before and after
-/// it, keyed by the divider's leaf (the last leaf of the cell before it),
-/// written as the tree is prepainted.
-pub(super) type DividerCells = Rc<RefCell<HashMap<Leaf, (Axis, Bounds<Pixels>, Bounds<Pixels>)>>>;
+/// The two cells a divider sits between, as last drawn.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DividerCell {
+    axis: Axis,
+    before: Bounds<Pixels>,
+    after: Bounds<Pixels>,
+    /// The cells' drawn minimums along `axis`, in rems (zero where none).
+    min_before: f64,
+    min_after: f64,
+}
+
+impl DividerCell {
+    /// The share of the pair that puts the boundary `size` px after the
+    /// start of the cell before, kept so both cells stay at or above their
+    /// drawn minimums (Ruling 16; a cell already below its floor does not
+    /// shrink further). `None` when that leaves the boundary where it is.
+    fn share_at(&self, size: f64, rem: f64) -> Option<f64> {
+        let (_, first) = extent(self.axis, self.before);
+        let (_, second) = extent(self.axis, self.after);
+        let pair = first + second;
+        if pair <= 0.0 {
+            return None;
+        }
+        let low = (self.min_before * rem).min(first);
+        let high = (pair - self.min_after * rem).max(first);
+        let size = size.clamp(low, high);
+        ((size - first).abs() > 0.01).then_some(size / pair)
+    }
+
+    fn start(&self) -> f64 {
+        extent(self.axis, self.before).0
+    }
+
+    fn first(&self) -> f64 {
+        extent(self.axis, self.before).1
+    }
+
+    fn pair(&self) -> f64 {
+        self.first() + extent(self.axis, self.after).1
+    }
+}
+
+/// Each divider's cells, keyed by the divider's leaf (the last leaf of the
+/// cell before it), written as the tree is prepainted.
+pub(super) type DividerCells = Rc<RefCell<HashMap<Leaf, DividerCell>>>;
 
 /// The payload of a divider drag: the leaf whose following boundary it
 /// moves ([`LayoutTree::resize_after`]).
@@ -185,28 +229,53 @@ impl Workspace {
                 // The drawn children share the split by their weights: flex
                 // grow factors summing below one would leave space unused.
                 let total: f64 = drawn.iter().map(|(_, weight, ..)| weight).sum();
+                let cell = |weight: f64, min: Option<f64>| {
+                    div()
+                        .flex()
+                        .flex_basis(rems(0.))
+                        .flex_grow((weight / total) as f32)
+                        .min_w_0()
+                        .min_h_0()
+                        .when_some(min, |cell, min| cell.min_w(rems(min as f32)))
+                };
                 let mut elements: Vec<AnyElement> = Vec::new();
-                // (element before, element after, divider leaf) per divider.
-                let mut pairs: Vec<(usize, usize, Leaf)> = Vec::new();
-                let mut previous: Option<(usize, usize, Leaf)> = None;
+                // The same cells and gaps, empty, over the split: the
+                // handles live in its gaps, so they paint (and take the
+                // pointer) above both neighbours, their whole band grabbable.
+                let mut handles: Vec<AnyElement> = Vec::new();
+                // (element before, element after, divider leaf, minimums)
+                // per divider.
+                let mut pairs: Vec<(usize, usize, Leaf, f64, f64)> = Vec::new();
+                let mut previous: Option<(usize, usize, Leaf, f64)> = None;
+                let mut any_divider = false;
                 for (index, weight, min, last, element) in drawn {
-                    if let Some((prev_index, prev_element, prev_last)) = previous {
+                    if let Some((prev_index, prev_element, prev_last, prev_min)) = previous {
                         let adjacent = prev_index + 1 == index;
-                        elements.push(self.render_gap(axis, adjacent.then_some(prev_last), cx));
+                        elements.push(self.render_gap(axis, None, cx));
+                        handles.push(self.render_gap(axis, adjacent.then_some(prev_last), cx));
                         if adjacent {
-                            pairs.push((prev_element, elements.len(), prev_last));
+                            any_divider = true;
+                            pairs.push((
+                                prev_element,
+                                elements.len(),
+                                prev_last,
+                                prev_min,
+                                min.unwrap_or(0.0),
+                            ));
                         }
                     }
-                    previous = Some((index, elements.len(), last));
+                    previous = Some((index, elements.len(), last, min.unwrap_or(0.0)));
+                    elements.push(cell(weight, min).child(element).into_any_element());
+                    handles.push(cell(weight, min).into_any_element());
+                }
+                let direction = |row: gpui_kit::Div| match axis {
+                    Axis::Horizontal => row.flex_row(),
+                    Axis::Vertical => row.flex_col(),
+                };
+                if any_divider {
                     elements.push(
-                        div()
-                            .flex()
-                            .flex_basis(rems(0.))
-                            .flex_grow((weight / total) as f32)
-                            .min_w_0()
-                            .min_h_0()
-                            .when_some(min, |cell, min| cell.min_w(rems(min as f32)))
-                            .child(element)
+                        direction(div().absolute().top_0().left_0().size_full().flex())
+                            .children(handles)
                             .into_any_element(),
                     );
                 }
@@ -215,14 +284,24 @@ impl Workspace {
                     div()
                         .on_children_prepainted(move |bounds, _, _| {
                             let mut cells = cells.borrow_mut();
-                            for (before, after, leaf) in &pairs {
+                            for (before, after, leaf, min_before, min_after) in &pairs {
                                 if let (Some(b), Some(a)) =
                                     (bounds.get(*before), bounds.get(*after))
                                 {
-                                    cells.insert(*leaf, (axis, *b, *a));
+                                    cells.insert(
+                                        *leaf,
+                                        DividerCell {
+                                            axis,
+                                            before: *b,
+                                            after: *a,
+                                            min_before: *min_before,
+                                            min_after: *min_after,
+                                        },
+                                    );
                                 }
                             }
                         })
+                        .relative()
                         .flex()
                         .map(|row| match axis {
                             Axis::Horizontal => row.flex_row(),
@@ -292,10 +371,7 @@ impl Workspace {
     /// the boundary it landed.
     fn grab_divider(&mut self, leaf: Leaf, at: Point<Pixels>) {
         self.press_offset = match self.divider_cells.borrow().get(&leaf) {
-            Some((axis, before, _)) => {
-                let (start, size) = extent(*axis, *before);
-                along(*axis, at) - (start + size)
-            }
+            Some(cell) => along(cell.axis, at) - (cell.start() + cell.first()),
             None => 0.0,
         };
     }
@@ -308,7 +384,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let DividerDrag(leaf) = *event.drag(cx);
-        let Some(axis) = self.divider_cells.borrow().get(&leaf).map(|c| c.0) else {
+        let Some(axis) = self.divider_cells.borrow().get(&leaf).map(|c| c.axis) else {
             return;
         };
         let pixel = along(axis, event.event.position) - self.press_offset;
@@ -317,28 +393,28 @@ impl Workspace {
 
     /// The divider after `leaf` dragged to `pixel` (window px along its
     /// axis): the cell before it takes the share of the two cells' combined
-    /// drawn extent that ends there ([`LayoutTree::resize_after`], which
-    /// clamps it). Only those two cells' weights change. Saved when the
-    /// drag ends ([`Self::end_resize`]), not on every move.
+    /// drawn extent that ends there ([`LayoutTree::resize_after`]), held so
+    /// neither cell goes under its drawn minimum (Ruling 16: past a floor
+    /// flex would take the difference from a third cell). Only those two
+    /// cells' weights change. Saved when the drag ends
+    /// ([`Self::end_resize`]), not on every move.
     ///
     /// [`LayoutTree::resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
     pub(crate) fn on_divider_drag(
         &mut self,
         leaf: Leaf,
         pixel: f64,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((axis, before, after)) = self.divider_cells.borrow().get(&leaf).copied() else {
+        let Some(cell) = self.divider_cells.borrow().get(&leaf).copied() else {
             return;
         };
-        let (start, first) = extent(axis, before);
-        let (_, second) = extent(axis, after);
-        let pair = first + second;
-        if pair <= 0.0 {
+        let rem = f64::from(window.rem_size());
+        let Some(share) = cell.share_at(pixel - cell.start(), rem) else {
             return;
-        }
-        if self.layout.resize_after(leaf, (pixel - start) / pair) {
+        };
+        if self.layout.resize_after(leaf, share) {
             self.resizing = true;
             cx.notify();
         }
@@ -355,16 +431,25 @@ impl Workspace {
     }
 
     /// Leader grow (`grow`) or shrink: move a divider of the focused leaf
-    /// by [`RESIZE_STEP`] of its pair, through the drag's path, and save.
-    /// The divider is the one after the leaf's branch in the innermost
-    /// split where that neighbour is drawn, else the one before it. Nothing
-    /// with the rail focused or no divider beside the leaf.
-    pub(super) fn step_focused_leaf(&mut self, grow: bool, cx: &mut Context<Self>) {
+    /// by [`RESIZE_STEP`] of its pair's drawn extent, held at both cells'
+    /// drawn minimums like a drag, and save. The divider is the one after
+    /// the leaf's branch in the innermost split where that neighbour is
+    /// drawn, else the one before it. Nothing with the rail focused, no
+    /// divider beside the leaf, or the boundary already at a floor (no
+    /// save either).
+    pub(super) fn step_focused_leaf(
+        &mut self,
+        grow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Focus::Leaf(leaf) = self.layout.focused() else {
             return;
         };
-        let Some((divider, share, leaf_before)) = self.divider_beside(&self.layout.shape(), leaf)
-        else {
+        let Some((divider, leaf_before)) = self.divider_beside(&self.layout.shape(), leaf) else {
+            return;
+        };
+        let Some(cell) = self.divider_cells.borrow().get(&divider).copied() else {
             return;
         };
         let step = if grow == leaf_before {
@@ -372,16 +457,20 @@ impl Workspace {
         } else {
             -RESIZE_STEP
         };
-        if self.layout.resize_after(divider, share + step) {
+        let rem = f64::from(window.rem_size());
+        let Some(share) = cell.share_at(cell.first() + step * cell.pair(), rem) else {
+            return;
+        };
+        if self.layout.resize_after(divider, share) {
             self.save_layout(cx);
             cx.notify();
         }
     }
 
     /// The divider beside `leaf` in `shape` (see
-    /// [`Self::step_focused_leaf`]): its leaf, the share of the cell before
-    /// it, and whether `leaf` is in that cell.
-    fn divider_beside(&self, shape: &TreeShape, leaf: Leaf) -> Option<(Leaf, f64, bool)> {
+    /// [`Self::step_focused_leaf`]): its leaf, and whether `leaf` is in the
+    /// cell before it.
+    fn divider_beside(&self, shape: &TreeShape, leaf: Leaf) -> Option<(Leaf, bool)> {
         let TreeShape::Split { children, .. } = shape else {
             return None;
         };
@@ -389,15 +478,11 @@ impl Workspace {
         if let Some(found) = self.divider_beside(&children[i].1, leaf) {
             return Some(found);
         }
-        let share = |a: usize| {
-            let (wa, wb) = (children[a].0, children[a + 1].0);
-            wa / (wa + wb)
-        };
         if i + 1 < children.len() && self.shape_drawn(&children[i + 1].1) {
-            return Some((last_leaf(&children[i].1), share(i), true));
+            return Some((last_leaf(&children[i].1), true));
         }
         if i > 0 && self.shape_drawn(&children[i - 1].1) {
-            return Some((last_leaf(&children[i - 1].1), share(i - 1), false));
+            return Some((last_leaf(&children[i - 1].1), false));
         }
         None
     }

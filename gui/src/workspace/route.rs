@@ -282,8 +282,8 @@ impl Workspace {
     fn layout_step(&mut self, step: LayoutStep, window: &mut Window, cx: &mut Context<Self>) {
         match step {
             LayoutStep::Zen => {}
-            LayoutStep::GrowDrawer => return self.step_focused_leaf(true, cx),
-            LayoutStep::ShrinkDrawer => return self.step_focused_leaf(false, cx),
+            LayoutStep::GrowDrawer => return self.step_focused_leaf(true, window, cx),
+            LayoutStep::ShrinkDrawer => return self.step_focused_leaf(false, window, cx),
         }
         for side in [Side::Left, Side::Right] {
             if self

@@ -1368,3 +1368,156 @@ fn a_narrow_slot_header_does_not_wrap(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// The three drawn cells' widths: FILES, editor, OUTLINE.
+fn widths3(window: &mut gpui_kit::Window) -> (f32, f32, f32) {
+    let w = |window: &mut gpui_kit::Window, id: SharedString| {
+        f32::from(window.find(id).bounds().size.width)
+    };
+    let files = w(window, slot_id(DrawerView::Files));
+    let editor = w(window, "editor-panel".into());
+    let outline = w(window, slot_id(DrawerView::Outline));
+    (files, editor, outline)
+}
+
+/// Ruling 16: a drag past a cell's drawn minimum stops at it, on either
+/// side. The third cell keeps its width and its saved weight.
+#[gpui_kit::test]
+fn dragging_past_a_floor_leaves_the_third_cell_alone(cx: &mut TestAppContext) {
+    for travel in [600f32, -400.] {
+        let (_dir, path) = temp_config();
+        let shell = open_shell(
+            cx,
+            1000.,
+            &three(
+                "views = [\"files\"], shown = \"files\"",
+                "views = [\"outline\"], shown = \"outline\"",
+            ),
+            "",
+            false,
+            LayoutStore::File(path.clone()),
+        );
+        cx.update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let (files, editor, outline) = widths3(window);
+            let from = window.find("divider-slot-0").bounds().center();
+            window.drag(
+                from,
+                gpui_kit::point(from.x + gpui_kit::px(travel), from.y),
+                cx,
+            );
+            window.render_frame(cx);
+            let (files2, editor2, outline2) = widths3(window);
+            assert!(
+                (outline2 - outline).abs() < 0.5,
+                "{travel}: {outline} -> {outline2}"
+            );
+            assert!(
+                (files2 + editor2 - files - editor).abs() < 1.0,
+                "{travel}: the pair keeps its extent"
+            );
+            if travel > 0. {
+                assert!(
+                    (editor2 - 320.).abs() < 0.5,
+                    "editor at its floor: {editor2}"
+                );
+            } else {
+                assert!((files2 - 160.).abs() < 0.5, "FILES at its floor: {files2}");
+            }
+            let w = top_weights(&saved_tree(&path));
+            assert!(near(w[2], 0.2), "{travel}: {w:?}");
+            assert!(near(w[0] + w[1], 0.8), "{travel}: {w:?}");
+        })
+        .unwrap();
+    }
+}
+
+/// Grow and shrink stop at a floor: a step there changes nothing, saved
+/// weights included.
+#[gpui_kit::test]
+fn grow_and_shrink_at_a_floor_are_no_ops(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        let leader = |window: &mut gpui_kit::Window, key: &str, cx: &mut gpui_kit::App| {
+            window.press("ctrl-shift-b", cx);
+            window.input("w", cx);
+            window.input(key, cx);
+            window.render_frame(cx);
+        };
+        let files = |window: &mut gpui_kit::Window| {
+            f32::from(window.find(slot_id(DrawerView::Files)).bounds().size.width)
+        };
+        window.render_frame(cx);
+        window.press("alt-left", cx);
+        window.render_frame(cx);
+        // Shrink to FILES' 10rem floor, then once more.
+        for _ in 0..4 {
+            leader(window, "h", cx);
+        }
+        assert!((files(window) - 160.).abs() < 0.5, "{}", files(window));
+        let bytes = std::fs::read(&path).unwrap();
+        leader(window, "h", cx);
+        assert!((files(window) - 160.).abs() < 0.5);
+        assert!(
+            std::fs::read(&path).unwrap() == bytes,
+            "no save at the floor"
+        );
+        // Grow until the editor is at its 20rem floor, then once more.
+        for _ in 0..12 {
+            leader(window, "l", cx);
+        }
+        let editor = f32::from(window.find("editor-panel").bounds().size.width);
+        assert!((editor - 320.).abs() < 0.5, "{editor}");
+        let bytes = std::fs::read(&path).unwrap();
+        let weights = top_weights(&saved_tree(&path));
+        leader(window, "l", cx);
+        assert!(
+            std::fs::read(&path).unwrap() == bytes,
+            "no save at the floor"
+        );
+        assert_eq!(top_weights(&saved_tree(&path)), weights);
+    })
+    .unwrap();
+}
+
+/// A drag move resizes without saving; only its end saves.
+#[gpui_kit::test]
+fn a_divider_move_does_not_save_until_the_drag_ends(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let before = std::fs::read(&path).ok();
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        let pixel = f64::from(files.right()) + 50.;
+        let left = Leaf::Slot(shell.slots(cx)[0]);
+        shell
+            .workspace
+            .update(cx, |w, cx| w.on_divider_drag(left, pixel, window, cx));
+        assert!(shell.workspace.read(cx).resizing);
+        assert!(std::fs::read(&path).ok() == before, "not saved per move");
+        shell.workspace.update(cx, |w, cx| w.end_resize(cx));
+        assert!(!shell.workspace.read(cx).resizing);
+        let w = top_weights(&saved_tree(&path));
+        assert!(
+            near(w[0], 0.8 * (f64::from(files.size.width) + 50.) / 951.),
+            "{w:?}"
+        );
+    })
+    .unwrap();
+}
