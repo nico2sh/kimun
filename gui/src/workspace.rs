@@ -170,7 +170,7 @@
 //! whose keymap scope shadows `KeyboardHelp` there, rebindable like any
 //! other.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -197,6 +197,7 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
     Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, SlotId, TreeError, TreeFocusMove, UnitRect,
 };
@@ -250,19 +251,23 @@ pub(crate) enum LayoutStore {
 }
 
 impl LayoutStore {
-    /// Write `layout` into the store's `[gui]` table. A failure is logged and
-    /// otherwise ignored: the layout in the window is still right.
-    fn save(&self, layout: &LayoutTree<DrawerView>) {
+    /// Write `layout` into the store's `[gui]` table, and with `preset`
+    /// the name of the preset it was applied from (`layout_preset`). A
+    /// failure is logged and otherwise ignored: the layout in the window is
+    /// still right.
+    fn save(&self, layout: &LayoutTree<DrawerView>, preset: Option<&str>) {
+        let edit = |gui: &mut kimun_notes::settings::gui::GuiSettings| {
+            shell_tree::record(layout, gui);
+            if let Some(name) = preset {
+                gui.set_layout_preset(Some(name));
+            }
+        };
         let result = match self {
             #[cfg(test)]
             LayoutStore::Off => return,
-            LayoutStore::UserConfig => {
-                AppSettings::update_gui(|gui| shell_tree::record(layout, gui))
-            }
+            LayoutStore::UserConfig => AppSettings::update_gui(edit),
             #[cfg(test)]
-            LayoutStore::File(path) => {
-                AppSettings::update_gui_at(path.clone(), |gui| shell_tree::record(layout, gui))
-            }
+            LayoutStore::File(path) => AppSettings::update_gui_at(path.clone(), edit),
         };
         if let Err(e) = result {
             tracing::warn!("could not save the [gui] layout: {e}");
@@ -382,6 +387,11 @@ pub(crate) struct Workspace {
     /// [`Self::rail_views`]).
     rail_cursor: usize,
     store: LayoutStore,
+    /// The layout presets as `layouts.toml` last loaded ([`presets`]).
+    presets: BTreeMap<String, ChildSpec>,
+    /// The preset the live layout was last applied from, as `[gui]`
+    /// records it: what "Reset to preset" applies again.
+    layout_preset: Option<String>,
     /// Why the editor Panel shows no editor (no workspace, or it would not
     /// open). `None`: the editor.
     empty: Option<EmptyState>,
@@ -666,6 +676,8 @@ impl Workspace {
             press_offset: 0.0,
             rail_cursor,
             store,
+            presets: BTreeMap::new(),
+            layout_preset: None,
             empty: None,
             status: Status::default(),
             notes: None,
@@ -753,6 +765,7 @@ impl Workspace {
             updates: update::UpdateHost::new(update::default_backend()),
         };
         this.sync_slot_handles(cx);
+        this.load_presets(cx);
         this
     }
 
@@ -1214,9 +1227,19 @@ impl Workspace {
     /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
     /// A change that took ASK out of every slot takes the Thread down.
     fn save_layout(&mut self, cx: &mut Context<Self>) {
+        self.save_layout_with(None, cx);
+    }
+
+    /// [`Self::save_layout`], recording `name` as the preset the layout
+    /// was applied from ([`presets`]).
+    fn save_layout_as_preset(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.save_layout_with(Some(name), cx);
+    }
+
+    fn save_layout_with(&mut self, preset: Option<&str>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
         self.leave_ask_if_drawer_moved_on(cx);
-        self.store.save(&self.layout);
+        self.store.save(&self.layout, preset);
         self.refresh_views(cx);
     }
 
@@ -2803,6 +2826,7 @@ mod palette;
 mod picker;
 mod pinned;
 mod preferences;
+mod presets;
 mod properties;
 mod query_field;
 mod reopen;
@@ -2857,6 +2881,8 @@ mod pinned_tests;
 mod preferences_tests;
 #[cfg(test)]
 mod preferences_workspaces_tests;
+#[cfg(test)]
+mod preset_tests;
 #[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
