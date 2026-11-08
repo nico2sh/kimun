@@ -582,8 +582,8 @@ impl ChordLabels {
         let chord = |action: ActionShortcuts| keymap::chord_label(cx, &action);
         Self {
             empty_slot_hint: shell_layout::empty_slot_hint(
-                chord(ActionShortcuts::MoveViewToRightDrawer).as_deref(),
-                chord(ActionShortcuts::MoveViewToLeftDrawer).as_deref(),
+                chord(ActionShortcuts::MoveViewToNeighbour(Dir::Right)).as_deref(),
+                chord(ActionShortcuts::MoveViewToNeighbour(Dir::Left)).as_deref(),
             )
             .into(),
             leader: leader::gateway_label(chord(ActionShortcuts::Leader)),
@@ -1750,7 +1750,7 @@ impl Workspace {
             .map(|(slot, _)| slot)
     }
 
-    /// `MoveViewTo…Drawer` (Ruling 11): move the focused view to the
+    /// `MoveViewToNeighbour(Left / Right)`: move the focused view to the
     /// nearest slot toward `dir` ([`LayoutTree::move_view_dir`]) and show
     /// it there, replacing the view shown there (which stays placed,
     /// hidden); the keyboard follows it. Nothing that way: handled, nothing
@@ -1811,7 +1811,8 @@ impl Workspace {
         })
     }
 
-    /// `MoveViewUp` / `MoveViewDown`: move the focused view (or the rail
+    /// `MoveViewToNeighbour(Up / Down)` (and the unbound `MoveViewUp` /
+    /// `MoveViewDown`): move the focused view (or the rail
     /// cursor's) to the nearest drawn slot above (`up`) or below it,
     /// trading places with the view shown there; a focused view keeps the
     /// keyboard. With the rail cursor on a view no
@@ -1883,15 +1884,21 @@ impl Workspace {
         self.stacked(from)
     }
 
-    /// `SplitDrawerSlot` (Ruling 11): split the focused slot vertically;
-    /// the new slot below opens **empty** (a hint in place of a view) and
+    /// `SplitSlotRight` / `SplitSlotDown`: split the focused slot along
+    /// `axis` ([`LayoutTree::split_slot`]); the new slot, right of it or
+    /// below, opens **empty** (a hint in place of a view; Ruling 12) and
     /// the keyboard stays on the view. A view gets there only by a move.
     /// Session only: nothing is saved.
-    fn split_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn split_focused_slot(
+        &mut self,
+        axis: TreeAxis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(slot) = self.focused_slot() else {
             return false;
         };
-        if let Ok(new) = self.layout.split_slot(slot, TreeAxis::Vertical) {
+        if let Ok(new) = self.layout.split_slot(slot, axis) {
             self.opened_empty.insert(new);
             self.sync_slot_handles(cx);
             self.apply_focus(window, cx);
@@ -1899,13 +1906,13 @@ impl Workspace {
         true
     }
 
-    /// `UnsplitDrawerSlot` (Rulings 11, 15): with a slot opened empty
+    /// `CloseSlot` (Ruling 15): with a slot opened empty
     /// somewhere, close that one (the keyboard stays where it is);
     /// otherwise close the focused slot. Its views join the neighbouring
     /// slot that takes over its area, hidden, and the keyboard goes there
     /// when that slot is drawn (else to the editor). The only slot stays.
     /// Persisted.
-    fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn close_focused_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(focused) = self.focused_slot() else {
             return false;
         };
@@ -2095,16 +2102,22 @@ impl Workspace {
             ActionShortcuts::Quit => self.request_close(window, cx),
             ActionShortcuts::ToggleSidebar => self.toggle_side(Side::Left, window, cx),
             ActionShortcuts::ToggleRightDrawer => self.toggle_side(Side::Right, window, cx),
-            ActionShortcuts::MoveViewToLeftDrawer => return self.move_view(Dir::Left, window, cx),
-            ActionShortcuts::MoveViewToRightDrawer => {
-                return self.move_view(Dir::Right, window, cx);
+            ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {
+                return self.move_view(*dir, window, cx);
             }
-            ActionShortcuts::MoveViewUp => return self.move_view_vertically(true, window, cx),
-            ActionShortcuts::MoveViewDown => {
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up) | ActionShortcuts::MoveViewUp => {
+                return self.move_view_vertically(true, window, cx);
+            }
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down) | ActionShortcuts::MoveViewDown => {
                 return self.move_view_vertically(false, window, cx);
             }
-            ActionShortcuts::SplitDrawerSlot => return self.split_drawer(window, cx),
-            ActionShortcuts::UnsplitDrawerSlot => return self.unsplit_drawer(window, cx),
+            ActionShortcuts::SplitSlotRight => {
+                return self.split_focused_slot(TreeAxis::Horizontal, window, cx);
+            }
+            ActionShortcuts::SplitSlotDown => {
+                return self.split_focused_slot(TreeAxis::Vertical, window, cx);
+            }
+            ActionShortcuts::CloseSlot => return self.close_focused_slot(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenNote => {

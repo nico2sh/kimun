@@ -98,10 +98,6 @@ fn action_label(action: &ActionShortcuts) -> String {
     match action {
         A::ToggleSidebar => "Toggle left side".into(),
         A::ToggleRightDrawer => "Toggle right side".into(),
-        A::MoveViewToLeftDrawer => "Move view to left slot".into(),
-        A::MoveViewToRightDrawer => "Move view to right slot".into(),
-        A::SplitDrawerSlot => "Split slot".into(),
-        A::UnsplitDrawerSlot => "Close slot".into(),
         A::FocusEditor => "Next panel".into(),
         A::FocusSidebar => "Previous panel".into(),
         A::Leader => "Leader (start a sequence)".into(),

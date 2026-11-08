@@ -98,10 +98,10 @@ impl Scope {
             | ActionShortcuts::ReplaceInBuffer
             | ActionShortcuts::FollowLink
             | ActionShortcuts::Text(_) => Scope::Editor,
-            ActionShortcuts::MoveViewToLeftDrawer
-            | ActionShortcuts::MoveViewToRightDrawer
-            | ActionShortcuts::SplitDrawerSlot
-            | ActionShortcuts::UnsplitDrawerSlot
+            ActionShortcuts::MoveViewToNeighbour(_)
+            | ActionShortcuts::SplitSlotRight
+            | ActionShortcuts::SplitSlotDown
+            | ActionShortcuts::CloseSlot
             | ActionShortcuts::MoveViewUp
             | ActionShortcuts::MoveViewDown
             | ActionShortcuts::YankRow
@@ -183,23 +183,29 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // for a chord another default holds); Ctrl+T needs none, as vim
         // reads no Ctrl+T.
         A::ToggleRightDrawer => &["primary+shift+t"],
-        // Arranging drawer views, only from the rail or a drawer: the
-        // directional-focus chord plus Shift carries the focused view.
-        // Left/Right move it to that drawer, Up/Down swap it with the slot
-        // above or below. Splitting and unsplitting are the same modifiers
-        // with S and U.
-        A::MoveViewToLeftDrawer if mac => &["cmd+alt+shift+left"],
-        A::MoveViewToLeftDrawer => &["alt+shift+left"],
-        A::MoveViewToRightDrawer if mac => &["cmd+alt+shift+right"],
-        A::MoveViewToRightDrawer => &["alt+shift+right"],
-        A::MoveViewUp if mac => &["cmd+alt+shift+up"],
-        A::MoveViewUp => &["alt+shift+up"],
-        A::MoveViewDown if mac => &["cmd+alt+shift+down"],
-        A::MoveViewDown => &["alt+shift+down"],
-        A::SplitDrawerSlot if mac => &["cmd+alt+shift+s"],
-        A::SplitDrawerSlot => &["alt+shift+s"],
-        A::UnsplitDrawerSlot if mac => &["cmd+alt+shift+u"],
-        A::UnsplitDrawerSlot => &["alt+shift+u"],
+        // Arranging the layout tree (ADR-0052), only from the rail or a
+        // slot, so the editor keeps these chords (Option+Shift+Arrow and
+        // Alt+Shift+letter are text keys there). The directional-focus
+        // chord plus Shift carries the focused view to the neighbouring
+        // slot that way. Splitting and closing are the same modifiers with
+        // a letter: R splits right, D splits down, W closes (the desktop's
+        // close). Not Ctrl+letter, so the vim rule never meets them.
+        A::MoveViewToNeighbour(dir) => match (mac, dir) {
+            (true, Dir::Left) => &["cmd+alt+shift+left"],
+            (true, Dir::Right) => &["cmd+alt+shift+right"],
+            (true, Dir::Up) => &["cmd+alt+shift+up"],
+            (true, Dir::Down) => &["cmd+alt+shift+down"],
+            (false, Dir::Left) => &["alt+shift+left"],
+            (false, Dir::Right) => &["alt+shift+right"],
+            (false, Dir::Up) => &["alt+shift+up"],
+            (false, Dir::Down) => &["alt+shift+down"],
+        },
+        A::SplitSlotRight if mac => &["cmd+alt+shift+r"],
+        A::SplitSlotRight => &["alt+shift+r"],
+        A::SplitSlotDown if mac => &["cmd+alt+shift+d"],
+        A::SplitSlotDown => &["alt+shift+d"],
+        A::CloseSlot if mac => &["cmd+alt+shift+w"],
+        A::CloseSlot => &["alt+shift+w"],
         // The command palette (M6): VS Code's chord. Primary+P stays free for
         // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
         A::OpenCommandPalette => &["primary+shift+p"],
@@ -268,6 +274,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
+        // The slot swaps: `MoveViewToNeighbour(Up / Down)` took their
+        // chords and does the same thing. A user may still bind them.
+        A::MoveViewUp | A::MoveViewDown => return None,
     })
 }
 

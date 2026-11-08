@@ -98,6 +98,37 @@ fn open_palette(shell: &Shell, cx: &mut TestAppContext) {
     assert!(dialog_open(shell, cx), "the chord opens the palette");
 }
 
+/// The layout-tree commands are palette rows; the drawer-era ones are
+/// gone.
+#[gpui_kit::test]
+fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "hello");
+    open_palette(&shell, cx);
+    let rows = visible(&shell, cx);
+    for row in [
+        "+window · split slot right",
+        "+window · split slot down",
+        "+window · close slot",
+        "+window · move view left",
+        "+window · move view right",
+        "+window · move view up",
+        "+window · move view down",
+    ] {
+        assert_eq!(
+            rows.iter().filter(|r| *r == row).count(),
+            1,
+            "{row}: {rows:?}"
+        );
+    }
+    for gone in [
+        "+window · move view to left slot",
+        "+window · move view to right slot",
+        "+window · split slot",
+    ] {
+        assert!(!rows.iter().any(|r| r == gone), "{gone}");
+    }
+}
+
 /// The chord opens the palette over the editor with its query field
 /// focused; every leader leaf and the GUI's own rows are listed.
 #[gpui_kit::test]

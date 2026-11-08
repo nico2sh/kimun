@@ -185,17 +185,18 @@ fn default_tables() {
             lw("alt+right", A::FocusRegion(Dir::Right)),
             lw("alt+up", A::FocusRegion(Dir::Up)),
             lw("alt+down", A::FocusRegion(Dir::Down)),
-            lw("alt+shift+left", A::MoveViewToLeftDrawer),
-            lw("alt+shift+right", A::MoveViewToRightDrawer),
-            lw("alt+shift+s", A::SplitDrawerSlot),
-            lw("alt+shift+u", A::UnsplitDrawerSlot),
             lw("ctrl+shift+t", A::ToggleRightDrawer),
             lw("ctrl+s", A::SaveNote),
             lw("ctrl+shift+s", A::SaveNote),
-            lw("alt+shift+up", A::MoveViewUp),
-            lw("alt+shift+down", A::MoveViewDown),
             lw("f(1)", A::KeyboardHelp),
             lw("f(1)", A::QuerySyntax),
+            lw("alt+shift+r", A::SplitSlotRight),
+            lw("alt+shift+d", A::SplitSlotDown),
+            lw("alt+shift+w", A::CloseSlot),
+            lw("alt+shift+left", A::MoveViewToNeighbour(Dir::Left)),
+            lw("alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
+            lw("alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
+            lw("alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
         ]
     );
     assert_eq!(
@@ -228,16 +229,17 @@ fn default_tables() {
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
             lw("cmd+alt+up", A::FocusRegion(Dir::Up)),
             lw("cmd+alt+down", A::FocusRegion(Dir::Down)),
-            lw("cmd+alt+shift+left", A::MoveViewToLeftDrawer),
-            lw("cmd+alt+shift+right", A::MoveViewToRightDrawer),
-            lw("cmd+alt+shift+s", A::SplitDrawerSlot),
-            lw("cmd+alt+shift+u", A::UnsplitDrawerSlot),
             lw("cmd+shift+t", A::ToggleRightDrawer),
             lw("cmd+s", A::SaveNote),
-            lw("cmd+alt+shift+up", A::MoveViewUp),
-            lw("cmd+alt+shift+down", A::MoveViewDown),
             lw("f(1)", A::KeyboardHelp),
             lw("f(1)", A::QuerySyntax),
+            lw("cmd+alt+shift+r", A::SplitSlotRight),
+            lw("cmd+alt+shift+d", A::SplitSlotDown),
+            lw("cmd+alt+shift+w", A::CloseSlot),
+            lw("cmd+alt+shift+left", A::MoveViewToNeighbour(Dir::Left)),
+            lw("cmd+alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
+            lw("cmd+alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
+            lw("cmd+alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
         ]
     );
 }
@@ -772,9 +774,29 @@ fn the_defaults_load_without_errors() {
 /// ADR-0050 consequence: a shared action added later needs a GUI default or
 /// an explicit "unbound" mark. The mark is `default_chords` returning `None`
 /// (its match has no wildcard, so the compiler asks first); this pins that a
-/// marked-bound action really holds a chord.
+/// marked-bound action really holds a chord, and that the layout-tree
+/// commands (ADR-0052) are bound while the slot swaps they took the chords
+/// of are not.
 #[test]
-fn every_shared_action_is_bound_or_marked_unbound() {
+fn every_shared_action_has_a_gui_binding_or_is_marked_unbound() {
+    let tree_commands = [
+        A::SplitSlotRight,
+        A::SplitSlotDown,
+        A::CloseSlot,
+        A::MoveViewToNeighbour(Dir::Left),
+        A::MoveViewToNeighbour(Dir::Right),
+        A::MoveViewToNeighbour(Dir::Up),
+        A::MoveViewToNeighbour(Dir::Down),
+    ];
+    for p in PLATFORMS {
+        for action in &tree_commands {
+            assert!(ActionShortcuts::ALL.contains(action), "{action}");
+            assert!(default_chords(action, p).is_some(), "{p:?} {action}");
+        }
+        for action in [A::MoveViewUp, A::MoveViewDown] {
+            assert!(default_chords(&action, p).is_none(), "{p:?} {action}");
+        }
+    }
     for p in PLATFORMS {
         let keymap = Keymap::defaults(p);
         for action in ActionShortcuts::ALL {
@@ -790,6 +812,90 @@ fn every_shared_action_is_bound_or_marked_unbound() {
                 None => assert!(!bound, "{p:?} {action}: marked unbound but bound"),
             }
         }
+    }
+}
+
+/// The drawer-era arrangement actions are gone from the shared vocabulary
+/// (the TUI never bound them), so no GUI default, override or palette row
+/// can name them: `[gui.keys]` reports them as unknown actions, and their
+/// old split / unsplit chords hold nothing.
+#[test]
+fn retired_drawer_actions_are_gone_from_the_gui_keymap() {
+    let retired = [
+        "MoveViewToLeftDrawer",
+        "MoveViewToRightDrawer",
+        "SplitDrawerSlot",
+        "UnsplitDrawerSlot",
+    ];
+    for name in retired {
+        assert!(
+            ActionShortcuts::try_from(name.to_string()).is_err(),
+            "{name}"
+        );
+        assert!(
+            ActionShortcuts::ALL.iter().all(|a| a.to_string() != name),
+            "{name}"
+        );
+        let (_, errors) = Keymap::load(LinuxWindows, &overrides(&[(name, &["alt+shift+s"])]));
+        assert_eq!(
+            errors,
+            vec![KeymapError::UnknownAction { name: name.into() }]
+        );
+    }
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        let pre = if p == MacOs { "cmd+" } else { "" };
+        for key in ["s", "u"] {
+            let written = format!("{pre}alt+shift+{key}");
+            for panel in PANELS {
+                assert_eq!(
+                    keymap.resolve(chord(&written), ctx(panel, false)),
+                    None,
+                    "{p:?} {written} {panel:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The layout-tree commands' defaults (ADR-0052) are unique: each chord
+/// resolves to its command from the rail and every slot, no other default
+/// holds it in an overlapping scope, and the editor keeps it.
+#[test]
+fn layout_tree_defaults_hold_unique_chords() {
+    let expected = [
+        ("alt+shift+r", A::SplitSlotRight),
+        ("alt+shift+d", A::SplitSlotDown),
+        ("alt+shift+w", A::CloseSlot),
+        ("alt+shift+left", A::MoveViewToNeighbour(Dir::Left)),
+        ("alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
+        ("alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
+        ("alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
+    ];
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        let pre = if p == MacOs { "cmd+" } else { "" };
+        for (written, action) in &expected {
+            let written = format!("{pre}{written}");
+            let key = chord(&written);
+            let holders: Vec<&ActionShortcuts> = keymap
+                .bindings
+                .iter()
+                .filter(|b| b.chord == key)
+                .map(|b| &b.action)
+                .collect();
+            assert_eq!(holders, [action], "{p:?} {written}");
+            for panel in PANELS {
+                let want = (panel != Panel::Editor).then_some(action);
+                assert_eq!(
+                    keymap.resolve(key, ctx(panel, false)),
+                    want,
+                    "{p:?} {written} {panel:?}"
+                );
+            }
+        }
+        let (_, errors) = Keymap::load(p, &BTreeMap::new());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
     }
 }
 
@@ -880,13 +986,14 @@ fn linux_windows_resolution_table() {
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
-    let to_left = Some(A::MoveViewToLeftDrawer);
-    let to_right = Some(A::MoveViewToRightDrawer);
-    let split = Some(A::SplitDrawerSlot);
-    let unsplit = Some(A::UnsplitDrawerSlot);
+    let to_left = Some(A::MoveViewToNeighbour(Dir::Left));
+    let to_right = Some(A::MoveViewToNeighbour(Dir::Right));
+    let split_right = Some(A::SplitSlotRight);
+    let split_down = Some(A::SplitSlotDown);
+    let close_slot = Some(A::CloseSlot);
     let right_drawer = Some(A::ToggleRightDrawer);
-    let view_up = Some(A::MoveViewUp);
-    let view_down = Some(A::MoveViewDown);
+    let view_up = Some(A::MoveViewToNeighbour(Dir::Up));
+    let view_down = Some(A::MoveViewToNeighbour(Dir::Down));
     resolution(
         LinuxWindows,
         &[
@@ -922,8 +1029,12 @@ fn linux_windows_resolution_table() {
             ("alt+shift+right", [None, None, to_right]),
             ("alt+shift+up", [None, None, view_up]),
             ("alt+shift+down", [None, None, view_down]),
-            ("alt+shift+s", [None, None, split]),
-            ("alt+shift+u", [None, None, unsplit]),
+            ("alt+shift+r", [None, None, split_right]),
+            ("alt+shift+d", [None, None, split_down]),
+            ("alt+shift+w", [None, None, close_slot]),
+            // The retired drawer split / unsplit chords are free.
+            ("alt+shift+s", [None, None, None]),
+            ("alt+shift+u", [None, None, None]),
             // Saving FIND's query: the drawers' only; the editor (vim's
             // half-page down) keeps Ctrl+D.
             ("ctrl+d", [None, None, Some(A::SaveCurrentQuery)]),
@@ -952,13 +1063,14 @@ fn macos_resolution_table() {
     let prev = Some(A::FocusSidebar);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
-    let to_left = Some(A::MoveViewToLeftDrawer);
-    let to_right = Some(A::MoveViewToRightDrawer);
-    let split = Some(A::SplitDrawerSlot);
-    let unsplit = Some(A::UnsplitDrawerSlot);
+    let to_left = Some(A::MoveViewToNeighbour(Dir::Left));
+    let to_right = Some(A::MoveViewToNeighbour(Dir::Right));
+    let split_right = Some(A::SplitSlotRight);
+    let split_down = Some(A::SplitSlotDown);
+    let close_slot = Some(A::CloseSlot);
     let right_drawer = Some(A::ToggleRightDrawer);
-    let view_up = Some(A::MoveViewUp);
-    let view_down = Some(A::MoveViewDown);
+    let view_up = Some(A::MoveViewToNeighbour(Dir::Up));
+    let view_down = Some(A::MoveViewToNeighbour(Dir::Down));
     resolution(
         MacOs,
         &[
@@ -979,8 +1091,12 @@ fn macos_resolution_table() {
             ("cmd+alt+shift+right", [None, None, to_right]),
             ("cmd+alt+shift+up", [None, None, view_up]),
             ("cmd+alt+shift+down", [None, None, view_down]),
-            ("cmd+alt+shift+s", [None, None, split]),
-            ("cmd+alt+shift+u", [None, None, unsplit]),
+            ("cmd+alt+shift+r", [None, None, split_right]),
+            ("cmd+alt+shift+d", [None, None, split_down]),
+            ("cmd+alt+shift+w", [None, None, close_slot]),
+            // The retired drawer split / unsplit chords are free.
+            ("cmd+alt+shift+s", [None, None, None]),
+            ("cmd+alt+shift+u", [None, None, None]),
             (
                 "cmd+shift+t",
                 [right_drawer.clone(), right_drawer.clone(), right_drawer],
@@ -1115,23 +1231,20 @@ fn a_chord_held_by_another_action_is_rejected_not_stolen() {
 
 #[test]
 fn two_overrides_on_one_chord_keep_the_first_in_action_order() {
-    let o = overrides(&[
-        ("SplitDrawerSlot", &["alt+s"]),
-        ("MoveViewToLeftDrawer", &["alt+s"]),
-    ]);
+    let o = overrides(&[("CloseSlot", &["alt+s"]), ("SplitSlotRight", &["alt+s"])]);
     let (keymap, errors) = Keymap::load(MacOs, &o);
-    // MoveViewToLeftDrawer sorts before SplitDrawerSlot.
+    // SplitSlotRight sorts before CloseSlot.
     assert_eq!(
         errors,
         vec![KeymapError::Collision {
-            action: A::SplitDrawerSlot,
+            action: A::CloseSlot,
             chord: "alt+s".into(),
-            taken_by: A::MoveViewToLeftDrawer,
+            taken_by: A::SplitSlotRight,
         }]
     );
     assert_eq!(
         keymap.resolve(chord("alt+s"), ctx(Panel::Rail, false)),
-        Some(&A::MoveViewToLeftDrawer)
+        Some(&A::SplitSlotRight)
     );
 }
 
