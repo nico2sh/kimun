@@ -326,7 +326,9 @@ impl Workspace {
         match self.leader.engine.key(key) {
             LeaderOutcome::Cancelled => {
                 self.leader.end();
-                if key.key == Key::Esc {
+                // Esc never leaves zoom: with a slot zoomed the editor is
+                // not on screen, so the keyboard stays.
+                if key.key == Key::Esc && !self.zoom_keeps_keyboard() {
                     self.set_focus_panel(Panel::Editor);
                     self.apply_focus(window, cx);
                 }

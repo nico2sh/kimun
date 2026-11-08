@@ -55,6 +55,8 @@ pub(crate) const MATCHES_ID: &str = "status-matches";
 pub(crate) const BACKLINKS_ID: &str = "status-backlinks";
 pub(crate) const PROPERTIES_ID: &str = "status-properties";
 pub(crate) const RAG_ID: &str = "status-rag";
+pub(crate) const ZOOM_ID: &str = "status-zoom";
+pub(crate) const ZOOM_RESTORE_ID: &str = "status-zoom-restore";
 
 /// How much faster than the other shrinking segments the server's state
 /// gives up its room in a narrow window: by far the most, so it goes first.
@@ -128,14 +130,26 @@ pub(crate) fn counted(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// While the window is zoomed (ADR-0053): the footer's hint (`Zoomed · {chord}
+/// to restore`) and what its restore button runs.
+pub(crate) struct ZoomSegment<F> {
+    pub(crate) hint: SharedString,
+    pub(crate) on_restore: F,
+}
+
+/// The restore button's label.
+pub(crate) const RESTORE: &str = "Restore";
+
 /// The footer for `status` and `facts`; a click on the backlink count runs
-/// `on_backlinks`, one on the property count `on_properties`.
+/// `on_backlinks`, one on the property count `on_properties`. With `zoom`,
+/// the zoom hint and its restore button lead the row.
 pub(crate) fn render(
     status: &Status,
     facts: &DocFacts,
     theme: &Theme,
     on_backlinks: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_properties: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    zoom: Option<ZoomSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 ) -> impl IntoElement {
     // Tabular figures: the caret's line and column, the match index and the
     // counts change in place, and should not jitter as their digits do.
@@ -164,6 +178,7 @@ pub(crate) fn render(
     // The path shrinks (cut short with an ellipsis) rather than pushing the
     // pinned labels out.
     let bar = StatusBar::new()
+        .when_some(zoom, |bar, zoom| bar.child(zoom_segment(zoom, theme)))
         .when_some(
             status.note.as_ref().or(status.attachment.as_ref()),
             |bar, path| bar.child(breadcrumb(path, theme)),
@@ -229,6 +244,45 @@ pub(crate) fn render(
         .flex_none()
         .w_full()
         .child(bar)
+}
+
+/// The zoom hint, in the foreground colour so it reads as the window's
+/// state, then the restore button (the pointer's way out; Esc never is).
+fn zoom_segment(
+    zoom: ZoomSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let hover = theme::foreground(theme);
+    div()
+        .flex()
+        .flex_none()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .id(ZOOM_ID)
+                .test_support()
+                .role(Role::Status)
+                .aria_label(zoom.hint.clone())
+                .whitespace_nowrap()
+                .text_color(theme::foreground(theme))
+                .child(zoom.hint),
+        )
+        .child(
+            div()
+                .id(ZOOM_RESTORE_ID)
+                .test_support()
+                .role(Role::Button)
+                .aria_label(RESTORE)
+                .whitespace_nowrap()
+                .text_color(theme::accent(theme))
+                .cursor_pointer()
+                .hover(move |style| style.text_color(hover))
+                .tooltip(|window, cx| Tooltip::new("Leave zoom").build(window, cx))
+                .on_click(zoom.on_restore)
+                .child(RESTORE),
+        )
 }
 
 /// The breadcrumb's parts for `slices` (`VaultPath::get_slices`): every

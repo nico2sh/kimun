@@ -185,6 +185,7 @@ fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
         ("+window · split slot right", A::SplitSlotRight),
         ("+window · split slot down", A::SplitSlotDown),
         ("+window · close slot", A::CloseSlot),
+        ("+window · toggle zoom", A::ToggleZoom),
         ("+text · find in note", A::FindInBuffer),
         ("+text · replace in note", A::ReplaceInBuffer),
         ("+links · follow link at caret", A::FollowLink),

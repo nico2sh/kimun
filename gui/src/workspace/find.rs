@@ -880,7 +880,7 @@ impl Workspace {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
             DrawerListEvent::Verb(..) => {}
-            DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
     }
 
@@ -895,7 +895,7 @@ impl Workspace {
             FindEvent::Help => self.open_query_help(window, cx),
             FindEvent::Save => self.save_find_query(window, cx),
             FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
-            FindEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            FindEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
     }
 

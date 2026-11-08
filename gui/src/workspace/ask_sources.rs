@@ -846,7 +846,11 @@ impl Workspace {
 
     /// Escape on the Sources list: the Thread's composer has the keyboard
     /// (the editor Panel, whatever shows there, when the Thread does not).
+    /// Esc never leaves zoom: with a slot zoomed the keyboard stays.
     fn focus_ask_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoom_keeps_keyboard() {
+            return;
+        }
         if let Some(view) = self.ask.clone().filter(|_| self.ask_shown()) {
             view.update(cx, |view, _| view.want_composer());
         }

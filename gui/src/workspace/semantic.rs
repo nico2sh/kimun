@@ -343,7 +343,7 @@ impl Workspace {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }
             DrawerListEvent::Verb(..) => {}
-            DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
     }
 
@@ -355,7 +355,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
-            SemanticEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            SemanticEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
     }
 

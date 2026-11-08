@@ -113,6 +113,7 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
         "+window · move view right",
         "+window · move view up",
         "+window · move view down",
+        "+window · toggle zoom",
     ] {
         assert_eq!(
             rows.iter().filter(|r| *r == row).count(),
@@ -126,6 +127,25 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
         "+window · split slot",
     ] {
         assert!(!rows.iter().any(|r| r == gone), "{gone}");
+    }
+}
+
+/// The palette's zoom row zooms the editor that opened it, and leaves zoom
+/// again.
+#[gpui_kit::test]
+fn the_palette_toggles_zoom(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "hello");
+    for zoomed in [true, false] {
+        open_palette(&shell, cx);
+        type_text(&shell, "toggle zoom", cx);
+        assert_eq!(
+            visible(&shell, cx).first().map(String::as_str),
+            Some("+window · toggle zoom")
+        );
+        press(&shell, "enter", cx);
+        settle(&shell, cx);
+        let now = cx.read(|cx| shell.workspace.read(cx).layout.zoomed());
+        assert_eq!(now.is_some(), zoomed);
     }
 }
 

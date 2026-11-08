@@ -592,6 +592,8 @@ struct ChordLabels {
     no_note_hint: String,
     /// The `FollowLink` chord: the attachment view's `Open externally`.
     follow_link: Option<KeyInput>,
+    /// What the Footer says while zoomed: `Zoomed · {chord} to restore`.
+    zoom_hint: SharedString,
 }
 
 impl ChordLabels {
@@ -609,6 +611,10 @@ impl ChordLabels {
                 None => "Open one from FILES.".to_string(),
             },
             follow_link: keymap::active(cx).chord_for(&ActionShortcuts::FollowLink),
+            zoom_hint: match chord(ActionShortcuts::ToggleZoom) {
+                Some(zoom) => format!("Zoomed · {zoom} to restore").into(),
+                None => "Zoomed".into(),
+            },
         }
     }
 }
@@ -1731,6 +1737,19 @@ impl Workspace {
             return;
         }
         self.place_rail_cursor(Some(view));
+        // A view shown in a slot the zoom hides: the user asked to see it,
+        // so zoom ends and its slot takes the keyboard (it is not hidden).
+        if let Some(zoomed) = self.layout.zoomed()
+            && let Some(slot) = self.layout.view_slot(&view)
+            && self.is_shown(view)
+            && zoomed != Leaf::Slot(slot)
+        {
+            self.layout.zoom(None);
+            self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
+            self.apply_focus(window, cx);
+            cx.notify();
+            return;
+        }
         if self.is_shown(view) {
             if let Some(slot) = self.layout.hide_view(&view) {
                 let side = self.slot_side(slot);
@@ -1940,7 +1959,8 @@ impl Workspace {
 
     /// `CloseSlot` (Ruling 15): with a slot opened empty
     /// somewhere, close that one (the keyboard stays where it is);
-    /// otherwise close the focused slot. Its views join the neighbouring
+    /// otherwise close the focused slot. While zoomed only the zoomed slot
+    /// is on screen, so that is the one that closes (and zoom ends). Its views join the neighbouring
     /// slot that takes over its area, hidden, and the keyboard goes there
     /// when that slot is drawn (else to the editor). The only slot stays.
     /// Persisted.
@@ -1952,7 +1972,8 @@ impl Workspace {
             .layout
             .slots()
             .into_iter()
-            .find(|s| *s != focused && self.opened_empty.contains(s));
+            .find(|s| *s != focused && self.opened_empty.contains(s))
+            .filter(|_| self.layout.zoomed().is_none());
         let slot = empty.unwrap_or(focused);
         match self.layout.close_slot(slot) {
             Ok(_) => {
@@ -1965,6 +1986,50 @@ impl Workspace {
             Err(_) => {}
         }
         true
+    }
+
+    /// `ToggleZoom` (ADR-0053): zoom the focused leaf, a slot or the
+    /// editor group, over everything right of the rail; while zoomed, leave
+    /// zoom. Nothing in the layout changes, nothing is saved. From the rail
+    /// (not zoomed) there is nothing to zoom.
+    pub(crate) fn toggle_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.zoomed().is_some() {
+            self.leave_zoom(window, cx);
+            return;
+        }
+        if let Focus::Leaf(leaf) = self.layout.focused() {
+            self.layout.zoom(Some(leaf));
+            self.apply_focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Leave zoom: the arrangement is drawn again as it was. The footer's
+    /// restore button.
+    pub(crate) fn leave_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout.zoom(None);
+        self.apply_focus(window, cx);
+        cx.notify();
+    }
+
+    /// Whether a list's or field's Esc, which hands the keyboard back to
+    /// the editor, must keep it where it is: a slot is zoomed, so the
+    /// editor is not on screen. Esc never leaves zoom (ADR-0053 decision
+    /// 3).
+    pub(crate) fn zoom_keeps_keyboard(&self) -> bool {
+        self.layout
+            .zoomed()
+            .is_some_and(|leaf| matches!(leaf, Leaf::Slot(_)))
+    }
+
+    /// A list or field in a slot was dismissed (Esc): the keyboard goes
+    /// back to the editor, unless a slot is zoomed
+    /// ([`Self::zoom_keeps_keyboard`]).
+    pub(crate) fn dismiss_to_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zoom_keeps_keyboard() {
+            return;
+        }
+        self.focus_panel(Panel::Editor, window, cx);
     }
 
     /// `FocusRegion(dir)`: move focus geometrically over the visible
@@ -2150,6 +2215,7 @@ impl Workspace {
                 return self.split_focused_slot(TreeAxis::Vertical, window, cx);
             }
             ActionShortcuts::CloseSlot => return self.close_focused_slot(window, cx),
+            ActionShortcuts::ToggleZoom => self.toggle_zoom(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenNote => {
@@ -2496,18 +2562,30 @@ impl Workspace {
                 this.focus_panel(Panel::Editor, window, cx)
             }))
             .child(document)
-            .child(status_row::render(
-                &self.status,
-                &self.doc_facts(editor_shown, cx),
-                &theme::current(cx),
-                cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.show_links_tab(LinksTab::Backlinks, window, cx)
-                }),
-                cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_properties_for_open_note(window, cx)
-                }),
-            ))
+            .child(self.render_footer(editor_shown, cx))
             .children(self.focus_bar(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx))
+    }
+
+    /// The Footer: under the editor Panel, or under the zoomed slot while
+    /// one is zoomed (with the zoom hint and restore button then).
+    pub(super) fn render_footer(&self, editor_shown: bool, cx: &mut Context<Self>) -> AnyElement {
+        let zoom = self.layout.zoomed().map(|_| status_row::ZoomSegment {
+            hint: self.chord_labels.zoom_hint.clone(),
+            on_restore: cx.listener(|this, _: &ClickEvent, window, cx| this.leave_zoom(window, cx)),
+        });
+        status_row::render(
+            &self.status,
+            &self.doc_facts(editor_shown, cx),
+            &theme::current(cx),
+            cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.show_links_tab(LinksTab::Backlinks, window, cx)
+            }),
+            cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_properties_for_open_note(window, cx)
+            }),
+            zoom,
+        )
+        .into_any_element()
     }
 
     /// What the Footer reads off the editor and the open note this frame.
@@ -2911,3 +2989,5 @@ mod titlebar_tests;
 mod update_tests;
 #[cfg(test)]
 mod views_tests;
+#[cfg(test)]
+mod zoom_tests;
