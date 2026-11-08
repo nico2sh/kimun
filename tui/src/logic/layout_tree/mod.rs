@@ -1,4 +1,4 @@
-//! The GUI's **layout tree** (ADR-0052): one recursive [`Node`] whose leaves
+//! The GUI's **layout tree** (ADR-0052): one recursive `Node` whose leaves
 //! are **slots** (holding **drawer views**) and **editor groups**, to the
 //! right of the Activity rail. This module owns the structure and placement
 //! rules — which views a slot holds, which one is shown, splitting and
@@ -91,7 +91,7 @@ impl TreeShape {
     }
 }
 
-/// Why a tree operation (or [`LayoutTree::from_parts`]) was refused.
+/// Why a tree operation (or `LayoutTree::from_parts`) was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeError {
     /// The only editor group cannot close.
@@ -365,7 +365,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     }
 
     /// Move focus geometrically to the nearest leaf in `dir` (see
-    /// [`Self::nearest`]). No wrap: with no candidate, Left/Right report
+    /// `Self::nearest`). No wrap: with no candidate, Left/Right report
     /// [`TreeFocusMove::AtEdge`], and so do Up/Down when something is
     /// stacked in the same column — otherwise [`TreeFocusMove::NotHandled`].
     /// The rail sits at the far left: Left from a leaf with nothing to its
@@ -633,7 +633,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
 
     /// Close `slot` and return the slot that absorbed its views, which
     /// join it hidden (its own shown view is unchanged). That is
-    /// [`Node::absorber`] when it is a slot; when the leaf taking over the
+    /// `Node::absorber` when it is a slot; when the leaf taking over the
     /// area is a group, the nearest remaining slot in reading order on the
     /// absorber's side, else on the other side. Focus on the closed slot
     /// moves to the absorbing slot. Refused for the only slot
@@ -751,7 +751,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     // ── Sizes ─────────────────────────────────────────────────────────
 
     /// Move the boundary after `leaf`'s branch so it takes `share` of the
-    /// pair (see [`Node::resize_after`]). False when there is none.
+    /// pair (see `Node::resize_after`). False when there is none.
     pub fn resize_after(&mut self, leaf: Leaf, share: f64) -> bool {
         self.root.resize_after(&leaf, share)
     }

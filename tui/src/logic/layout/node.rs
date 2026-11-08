@@ -65,7 +65,7 @@ pub(crate) struct Node<L> {
     kind: Kind<L>,
 }
 
-/// The result of [`Node::layout_fit`]: rectangles for the leaves that fit,
+/// The result of `Node::layout_fit`: rectangles for the leaves that fit,
 /// and the leaves collapsed (given no rectangle) to make the rest fit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fit<L> {

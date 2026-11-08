@@ -8,7 +8,7 @@
 //! parser's message, or the node path and key of a malformed node), no
 //! presets, and the layout on screen stays.
 //!
-//! A preset is a starting point. "Apply layout preset: <name>" builds it
+//! A preset is a starting point. `Apply layout preset: <name>` builds it
 //! as the startup restore builds the saved layout (a view the server does
 //! not offer yet keeps its place, SEM and ASK included) and copies it
 //! into the live layout
@@ -76,7 +76,7 @@ pub(crate) fn load(dir: &Path) -> PresetLoad {
 /// A preset command, run from its palette row.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PresetCommand {
-    /// "Apply layout preset: <name>".
+    /// `Apply layout preset: <name>`.
     Apply(String),
     /// "Reload layout presets".
     Reload,
