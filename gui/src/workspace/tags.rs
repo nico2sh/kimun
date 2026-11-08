@@ -7,7 +7,7 @@
 //! over the label); nothing is loaded again per keystroke.
 //!
 //! **Keys.** The filter has the keyboard: Up/Down move the selection, Enter
-//! runs the selected tag's query in FIND (quoted, as the TUI's
+//! runs the selected tag's query in the search browser (quoted, as the TUI's
 //! `RunTagQuery`), Escape clears the filter, then gives the keyboard back to
 //! the editor. A click on a row runs it too.
 //!

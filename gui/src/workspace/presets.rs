@@ -217,7 +217,7 @@ impl Workspace {
     /// Copy the preset `name` into the live layout: built against the
     /// startup restore's caps (`shell_tree::RESTORE_CAPS`: every view,
     /// whatever the server says now), it replaces the tree, the session-only state is
-    /// dropped (slots opened empty, the side toggles' memory, collapse and
+    /// dropped (the side toggles' memory, collapse and
     /// zoom), the editor gets the keyboard, and the layout and the preset's
     /// name are saved. A preset that does not build changes nothing; one
     /// flash lists its errors. Views left out because the layout cannot hold
@@ -259,7 +259,7 @@ impl Workspace {
 
     /// Replace the live layout with `tree`, applied from the preset
     /// `preset` (`None`: from no preset, as "Reset layout to default"):
-    /// the session-only state is dropped (slots opened empty, the side
+    /// the session-only state is dropped (the side
     /// toggles' memory, collapse and zoom, which lives in the old tree),
     /// the editor gets the keyboard, and the layout is saved with the
     /// preset's name recorded, or the recorded name cleared.
@@ -271,7 +271,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.layout = tree;
-        self.opened_empty.clear();
         self.side_memory = Default::default();
         self.collapsed.clear();
         self.resizing = false;

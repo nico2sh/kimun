@@ -4,13 +4,13 @@
 //! a slot shows its view, an editor group the editor Panel
 //! ([`Workspace::render_editor`]).
 //!
-//! A slot that is not drawn ([`Workspace::slot_drawn`]: no shown view, not
-//! opened empty) takes no space: it is left out, its siblings share its
+//! A slot that is not drawn ([`Workspace::slot_drawn`]: no shown view)
+//! takes no space: it is left out, its siblings share its
 //! weight, and a split left with no drawn child is left out too.
 //!
 //! **Minimum sizes** (ADR-0052 §6). A slot's minimum is that of the view it
-//! shows (`view_registry`, 1 unit = 1 rem; an empty slot is
-//! [`SLOT_MIN_REMS`] wide), an editor group's [`EDITOR_MIN_REMS`] wide;
+//! shows (`view_registry`, 1 unit = 1 rem), an editor group
+//! [`EDITOR_MIN_REMS`] wide;
 //! heights count only in vertical splits. Each frame [`Workspace::fit`]
 //! collapses what does not fit: in the first overflowing split, children
 //! last to first, never a subtree holding an editor group. A collapsed leaf
@@ -71,8 +71,7 @@ use kimun_notes::logic::layout_tree::{Axis, Fit, Focus, Leaf, SlotId, TreeShape,
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
-use super::view_chooser::EMPTY_TITLE;
-use super::{Workspace, empty_slot_id, route, slot_id};
+use super::{Workspace, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
 
@@ -295,8 +294,8 @@ fn seam(axis: gpui_kit::Axis, active: Rgba) -> ResizeHandleRenderer {
 
 impl Workspace {
     /// The minimum (width, height) of `slot`, in rems: the shown view's
-    /// (`view_registry`), [`SLOT_MIN_REMS`] wide for a slot opened empty.
-    /// Hidden views do not count.
+    /// (`view_registry`), [`SLOT_MIN_REMS`] wide for a slot showing none (not
+    /// drawn, so never laid out). Hidden views do not count.
     pub(crate) fn slot_min(&self, slot: SlotId) -> (f64, f64) {
         match self.layout.shown(slot) {
             Some(view) => view_registry::spec(view).min,
@@ -504,15 +503,11 @@ impl Workspace {
                 if !self.leaf_visible(Leaf::Slot(*slot)) {
                     return None;
                 }
-                Some(match self.layout.shown(*slot) {
-                    Some(view) => {
-                        let (w, h) = view_registry::spec(view).min;
-                        let small = (across.0 && size.0 < w * rem - 0.5)
-                            || (across.1 && size.1 < h * rem - 0.5);
-                        self.render_slot(*slot, view, small, size.0, rem, cx)
-                    }
-                    None => self.render_empty_slot(*slot, cx),
-                })
+                let view = self.layout.shown(*slot)?;
+                let (w, h) = view_registry::spec(view).min;
+                let small =
+                    (across.0 && size.0 < w * rem - 0.5) || (across.1 && size.1 < h * rem - 0.5);
+                Some(self.render_slot(*slot, view, small, size.0, rem, cx))
             }
             TreeShape::Split { axis, children } => {
                 let axis = *axis;
@@ -960,7 +955,7 @@ impl Workspace {
                 .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                     this.focus_slot(slot, window, cx)
                 }))
-                .child(self.render_slot_header(slot, Some(view), cx))
+                .child(self.render_slot_header(slot, view, cx))
                 .map(|el| match self.view_content(view).filter(|_| !small) {
                     Some(content) => el.child(
                         div()
@@ -997,23 +992,19 @@ impl Workspace {
     }
 
     /// The strip at the top of a drawn slot: the title of the view it shows
-    /// (`Empty` for a slot opened with nothing in it) on the header
-    /// background, a hairline under it, and the accent on the title while
-    /// the slot has the focus. A slot showing a view ends it with a quiet
+    /// on the header background, a hairline under it, and the accent on the title while
+    /// the slot has the focus. It ends with a quiet
     /// `⋯` (its own id, [`move_button_id`]): it gives the slot the keyboard
     /// and asks where the view goes ([`Workspace::open_move_chooser`]). The
     /// hook for further slot actions.
     fn render_slot_header(
         &self,
         slot: SlotId,
-        view: Option<DrawerView>,
+        view: DrawerView,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let focused = self.layout.focused() == Focus::Leaf(Leaf::Slot(slot));
-        let title: SharedString = match view {
-            Some(view) => view_registry::spec(view).title.into(),
-            None => EMPTY_TITLE.into(),
-        };
+        let title: SharedString = view_registry::spec(view).title.into();
         let theme = theme::current(cx);
         let header = div()
             .id(if focused {
@@ -1031,7 +1022,7 @@ impl Workspace {
             .text_ellipsis()
             .px_3()
             // Room for the `⋯` laid over the strip's right end.
-            .when(view.is_some(), |header| header.pr(px(28.)))
+            .pr(px(28.))
             .py_1()
             .text_sm()
             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
@@ -1047,33 +1038,26 @@ impl Workspace {
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.
-        div()
-            .relative()
-            .w_full()
-            .flex_none()
-            .child(header)
-            .when_some(view, |strip, view| {
-                strip.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right_1()
-                        .flex()
-                        .items_center()
-                        .child(
-                            Button::new(move_button_id(view))
-                                .ghost()
-                                .xsmall()
-                                .label("⋯")
-                                .tooltip("Move view…")
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    this.focus_slot(slot, window, cx);
-                                    this.open_move_chooser(slot, window, cx);
-                                })),
-                        ),
-                )
-            })
+        div().relative().w_full().flex_none().child(header).child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_1()
+                .flex()
+                .items_center()
+                .child(
+                    Button::new(move_button_id(view))
+                        .ghost()
+                        .xsmall()
+                        .label("⋯")
+                        .tooltip("Move view…")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.focus_slot(slot, window, cx);
+                            this.open_move_chooser(slot, window, cx);
+                        })),
+                ),
+        )
     }
 
     /// What `view`'s slot shows, for the views built so far.
@@ -1088,61 +1072,5 @@ impl Workspace {
             DrawerView::Ask => self.ask.clone().map(|v| v.into_any_element()),
             DrawerView::Config => Some(self.config.clone().into_any_element()),
         }
-    }
-
-    /// An empty slot that is drawn (opened empty this session): a quiet
-    /// hint, not a target. A view gets here only by a move or the rail; the
-    /// hint names the move chords the keymap binds.
-    fn render_empty_slot(&self, slot: SlotId, cx: &mut Context<Self>) -> AnyElement {
-        let hint: SharedString = self.chord_labels.empty_slot_hint.clone();
-        let index = self
-            .layout
-            .slots()
-            .iter()
-            .position(|s| *s == slot)
-            .unwrap_or_default();
-        div()
-            .id(empty_slot_id(index))
-            .test_support()
-            .track_focus(&self.slot_handle(slot))
-            .role(Role::Group)
-            .aria_label(hint.clone())
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .p(LEAF_MARGIN)
-            .child(
-                Self::leaf_surface(
-                    theme::panel_background(&theme::current(cx)),
-                    self.leaf_border(Focus::Leaf(Leaf::Slot(slot)), cx),
-                )
-                .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    this.focus_slot(slot, window, cx)
-                }))
-                .child(self.render_slot_header(slot, None, cx))
-                .child(
-                    // A column, so the hint stretches to the slot's width
-                    // (a row would size it to its text and never wrap).
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .w_full()
-                        .min_w_0()
-                        .justify_center()
-                        .p(CONTENT_PADDING)
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .text_sm()
-                                .text_center()
-                                .text_color(theme::muted(&theme::current(cx)))
-                                .child(hint),
-                        ),
-                ),
-            )
-            .into_any_element()
     }
 }

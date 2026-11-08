@@ -11,9 +11,8 @@ use kimun_notes::logic::view_registry;
 
 /// The rail's width, in rems: one icon cell plus its inset.
 pub const RAIL_REMS: f32 = 3.0;
-/// The width of a slot opened empty, in rems (a slot showing a view takes
-/// the view's minimum, `view_registry`): room for a short label and its
-/// icon.
+/// The width of a slot showing no view, in rems (a slot showing a view takes
+/// the view's minimum, `view_registry`); such a slot is not drawn.
 pub const SLOT_MIN_REMS: f32 = 10.0;
 /// An editor group's minimum width, in rems: a readable line of text. The
 /// editor never collapses; the slots beside it do first.
@@ -45,21 +44,6 @@ pub fn rail_views(caps: Caps) -> &'static [DrawerView] {
     &lists[usize::from(caps.semantic) + 2 * usize::from(caps.ask)]
 }
 
-/// The hint an empty slot shows: how a view gets there.
-/// `right` and `left` are the move chords as the keymap binds them (`None`
-/// when unbound, and then left out).
-pub fn empty_slot_hint(right: Option<&str>, left: Option<&str>) -> String {
-    let chords: Vec<&str> = [right, left].into_iter().flatten().collect();
-    if chords.is_empty() {
-        "No view here. Pick one from the rail.".to_string()
-    } else {
-        format!(
-            "No view here. Move one with {}, or pick one from the rail.",
-            chords.join(" / ")
-        )
-    }
-}
-
 /// Whether the window hosts `view` as a slot view the leader may open:
 /// every view the rail can offer, whether or not its cell shows right now.
 pub fn hosts(view: DrawerView) -> bool {
@@ -72,23 +56,6 @@ mod tests {
 
     fn caps(semantic: bool, ask: bool) -> Caps {
         Caps { semantic, ask }
-    }
-
-    #[test]
-    fn the_empty_slot_hint_names_the_bound_chords() {
-        assert_eq!(
-            empty_slot_hint(Some("Alt+Shift+Right"), Some("Alt+Shift+Left")),
-            "No view here. Move one with Alt+Shift+Right / Alt+Shift+Left, \
-             or pick one from the rail."
-        );
-        assert_eq!(
-            empty_slot_hint(None, Some("Alt+Shift+Left")),
-            "No view here. Move one with Alt+Shift+Left, or pick one from the rail."
-        );
-        assert_eq!(
-            empty_slot_hint(None, None),
-            "No view here. Pick one from the rail."
-        );
     }
 
     #[test]

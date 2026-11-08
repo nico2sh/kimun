@@ -46,6 +46,7 @@ fn ctx(panel: Panel, vim: bool) -> KeyCtx {
         panel,
         vim,
         query: false,
+        browser: false,
     }
 }
 
@@ -54,6 +55,14 @@ fn query_ctx(panel: Panel) -> KeyCtx {
     KeyCtx {
         query: true,
         ..ctx(panel, false)
+    }
+}
+
+/// The search browser open over `panel`: a query is typed, in the browser.
+fn browser_ctx(panel: Panel) -> KeyCtx {
+    KeyCtx {
+        browser: true,
+        ..query_ctx(panel)
     }
 }
 
@@ -198,6 +207,7 @@ fn default_tables() {
             lw("alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
             lw("ctrl+shift+m", A::ToggleZoom),
+            lw("ctrl+shift+enter", A::OpenQueryInSidebar),
         ]
     );
     assert_eq!(
@@ -242,6 +252,7 @@ fn default_tables() {
             lw("cmd+alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("cmd+alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
             lw("cmd+shift+m", A::ToggleZoom),
+            lw("cmd+shift+enter", A::OpenQueryInSidebar),
         ]
     );
 }
@@ -933,7 +944,15 @@ fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
             for vim in [false, true] {
                 for query in [false, true] {
                     assert_eq!(
-                        keymap.resolve(key, KeyCtx { panel, vim, query }),
+                        keymap.resolve(
+                            key,
+                            KeyCtx {
+                                panel,
+                                vim,
+                                query,
+                                browser: query,
+                            }
+                        ),
                         Some(&A::ToggleZoom),
                         "{p:?} {written} {panel:?} vim={vim} query={query}"
                     );
@@ -961,7 +980,12 @@ fn every_default_action_is_reachable_in_every_context() {
             for panel in PANELS {
                 for vim in [false, true] {
                     for query in [false, true] {
-                        let at = KeyCtx { panel, vim, query };
+                        let at = KeyCtx {
+                            panel,
+                            vim,
+                            query,
+                            browser: query,
+                        };
                         if !Scope::of(&action).applies(at) {
                             continue;
                         }
@@ -973,7 +997,7 @@ fn every_default_action_is_reachable_in_every_context() {
                             && chords.all(|b| {
                                 keymap
                                     .resolve(b.chord, at)
-                                    .is_some_and(|got| Scope::of(got) == Scope::Query)
+                                    .is_some_and(|got| Scope::of(got).shadows())
                             });
                         assert!(
                             reachable || shadowed,
@@ -1395,4 +1419,22 @@ fn the_sort_chord_is_scoped_to_lists() {
     }
     assert!(mac.is_bound(chord("cmd+r"), &A::OpenSortDialog));
     assert_eq!(lw.chord_for(&A::OpenSortDialog), Some(chord("ctrl+r")));
+}
+
+/// The browser's "open in FIND" chord is live only with the search browser
+/// open, never where FIND merely has the keyboard (the query is already
+/// there), nor elsewhere.
+#[test]
+fn the_open_in_find_chord_is_scoped_to_the_browser() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let key = chord("ctrl+shift+enter");
+    for panel in PANELS {
+        assert_eq!(
+            lw.resolve(key, browser_ctx(panel)),
+            Some(&A::OpenQueryInSidebar),
+            "{panel:?}"
+        );
+        assert_eq!(lw.resolve(key, query_ctx(panel)), None, "{panel:?} FIND");
+        assert_eq!(lw.resolve(key, ctx(panel, false)), None, "{panel:?}");
+    }
 }

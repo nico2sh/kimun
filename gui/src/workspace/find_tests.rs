@@ -24,6 +24,7 @@ use super::find::{
     FIND_MORE_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
 };
 use super::modal::ModalKind;
+use super::picker::TO_FIND_BUTTON_ID;
 use super::rail_cell_id;
 use super::search::{PREVIEW_DEBOUNCE, SearchPreview};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
@@ -625,8 +626,19 @@ fn a_rebound_query_syntax_moves_off_f1(cx: &mut TestAppContext) {
 
 // ── TAGS ─────────────────────────────────────────────────────────────────
 
+/// The query typed in the open search browser.
+fn browser_query(started: &Started, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| {
+        let picker = started.workspace.read(cx).picker.as_ref()?.upgrade()?;
+        let query = picker.read(cx).input.read(cx).value().to_string();
+        Some(query)
+    })
+}
+
 /// TAGS lists every label with its count, most-used first; the filter
-/// narrows it; Enter runs the selected tag in FIND, quoted, and shows FIND.
+/// narrows it; Enter runs the selected tag in the search browser, quoted,
+/// over the layout: FIND is not shown. The browser's `Open in FIND`
+/// carries the query to FIND.
 #[gpui_kit::test]
 fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -647,21 +659,40 @@ fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     type_in(&started, "solo", cx);
     assert_eq!(tag_rows(&started, &rt, cx), [("solo tag".to_string(), 2)]);
     press(&started, "enter", cx);
-    assert!(shown(&started, DrawerView::Find, cx));
-    assert_eq!(query(&started, cx), "#\"solo tag\"");
-    assert_eq!(find_names(&started, &rt, cx), ["delta", "gamma"]);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    assert_eq!(
+        browser_query(&started, cx).as_deref(),
+        Some("#\"solo tag\"")
+    );
+    assert!(!shown(&started, DrawerView::Find, cx), "no view replaced");
+    assert!(shown(&started, DrawerView::Tags, cx));
+
+    // Escape closes it: TAGS is as it was.
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert!(shown(&started, DrawerView::Tags, cx));
 
     // A click on a row runs it too (C1); Escape clears, then leaves.
     leader(&started, "ft", cx);
     press(&started, "escape", cx);
     assert_eq!(tag_rows(&started, &rt, cx).len(), 3, "the filter cleared");
     click(&started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+
+    // `Open in FIND`: the browser closes, FIND shows the query.
+    click(&started, TO_FIND_BUTTON_ID, cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert!(shown(&started, DrawerView::Find, cx));
     assert_eq!(query(&started, cx), "#go");
     assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
 }
 
-/// A double-click on a tag runs it once: its second press lands on FIND,
-/// which took TAGS' place, and must not open the result under it.
+/// A double-click on a tag opens the browser once and opens no note: its
+/// second press lands on the browser's modal, not under it.
 #[gpui_kit::test]
 fn a_double_click_on_a_tag_runs_it_and_opens_nothing(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -675,24 +706,52 @@ fn a_double_click_on_a_tag_runs_it_and_opens_nothing(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert!(shown(&started, DrawerView::Find, cx));
-    assert_eq!(query(&started, cx), "#rust");
-    find_names(&started, &rt, cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    assert_eq!(browser_query(&started, cx).as_deref(), Some("#rust"));
     drive(&rt, cx, |_| true);
     assert!(on(&started, "alpha.md", cx), "no result opened");
 }
 
-/// The channel's `RunTagQuery` runs the label in FIND too.
+/// The channel's `RunTagQuery` opens the browser on the label too.
 #[gpui_kit::test]
-fn run_tag_query_shows_find(cx: &mut TestAppContext) {
+fn run_tag_query_opens_the_browser(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
     send(&started, AppMessage::RunTagQuery("Solo Tag".into()), cx);
     cx.run_until_parked();
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    assert_eq!(
+        browser_query(&started, cx).as_deref(),
+        Some("#\"Solo Tag\"")
+    );
+    assert!(!shown(&started, DrawerView::Find, cx));
+}
+
+/// The browser's `OpenQueryInSidebar` chord does what its button does: the
+/// browser closes and FIND shows the typed query. With nothing typed it
+/// says so and keeps the browser.
+#[gpui_kit::test]
+fn the_browser_chord_opens_its_query_in_find(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    press(&started, "ctrl-k", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    press(&started, "ctrl-shift-enter", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search), "blank");
+    assert!(!shown(&started, DrawerView::Find, cx));
+
+    type_in(&started, "#rust", cx);
+    press(&started, "ctrl-shift-enter", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
     assert!(shown(&started, DrawerView::Find, cx));
-    assert_eq!(query(&started, cx), "#\"Solo Tag\"");
-    assert_eq!(find_names(&started, &rt, cx), ["delta", "gamma"]);
+    assert_eq!(query(&started, cx), "#rust");
 }
 
 /// FIND on the open note's backlinks query, as the old leader `f b` did

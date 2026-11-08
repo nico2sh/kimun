@@ -264,6 +264,7 @@ impl Workspace {
         self.query_help = false;
         self.palette = None;
         self.split_chooser = None;
+        self.side_chooser = None;
         self.move_chooser = None;
         #[cfg(test)]
         {
@@ -368,6 +369,7 @@ impl Workspace {
         // search browser does (FIND behind it no longer has the keyboard).
         let ctx = keymap::KeyCtx {
             query: open == ModalKind::Search,
+            browser: open == ModalKind::Search,
             ..self.key_ctx(cx)
         };
         let action = keymap.resolve(key, ctx).cloned();
@@ -375,6 +377,11 @@ impl Workspace {
             // The open modal's own chord closes it.
             (open, Some(action)) if open.chord().as_ref() == Some(&action) => {
                 self.close_by_chord(open, window, cx);
+                true
+            }
+            // The browser's query in the FIND view (`Open in FIND`).
+            (ModalKind::Search, Some(ActionShortcuts::OpenQueryInSidebar)) => {
+                self.promote_browser_query(window, cx);
                 true
             }
             // The browser's query syntax (F1 by default, the keymap's

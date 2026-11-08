@@ -69,6 +69,9 @@ pub struct KeyCtx {
     /// A query is typed here: FIND has the keyboard, or the search browser
     /// is the open modal. [`Scope::Query`] chords are live only then.
     pub query: bool,
+    /// The search browser is the open modal. [`Scope::Browser`] chords are
+    /// live only then (never in FIND, which is a query without a browser).
+    pub browser: bool,
 }
 
 /// Where an action's chord is live. Two actions may share a chord only when
@@ -89,6 +92,10 @@ enum Scope {
     /// Only where a query is typed ([`KeyCtx::query`]: FIND with the
     /// keyboard, the search browser), ahead of an `Everywhere` chord.
     Query,
+    /// Only while the search browser is the open modal
+    /// ([`KeyCtx::browser`]), over any panel. Shadows an `Everywhere`
+    /// chord there, as [`Scope::Query`] does.
+    Browser,
 }
 
 impl Scope {
@@ -106,6 +113,7 @@ impl Scope {
             | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
             ActionShortcuts::QuerySyntax => Scope::Query,
+            ActionShortcuts::OpenQueryInSidebar => Scope::Browser,
             _ => Scope::Everywhere,
         }
     }
@@ -113,11 +121,13 @@ impl Scope {
     fn overlaps(self, other: Scope) -> bool {
         match (self, other) {
             // The query chord shadows, see the type's docs.
-            (Scope::Query, Scope::Everywhere) | (Scope::Everywhere, Scope::Query) => false,
+            (Scope::Query | Scope::Browser, Scope::Everywhere)
+            | (Scope::Everywhere, Scope::Query | Scope::Browser) => false,
             (Scope::Everywhere, _) | (_, Scope::Everywhere) => true,
             // A query is typed in a slot (FIND) or over any panel (the
-            // browser): it meets both of the panel scopes.
-            (Scope::Query, _) | (_, Scope::Query) => true,
+            // browser): it meets both of the panel scopes. The browser's
+            // query is one too, so the two meet.
+            (Scope::Query | Scope::Browser, _) | (_, Scope::Query | Scope::Browser) => true,
             (a, b) => a == b,
         }
     }
@@ -128,7 +138,14 @@ impl Scope {
             Scope::Editor => ctx.panel == Panel::Editor,
             Scope::Shell => ctx.panel != Panel::Editor,
             Scope::Query => ctx.query,
+            Scope::Browser => ctx.browser,
         }
+    }
+
+    /// Whether the chord of this scope shadows an `Everywhere` one where it
+    /// applies.
+    fn shadows(self) -> bool {
+        matches!(self, Scope::Query | Scope::Browser)
     }
 }
 
@@ -273,6 +290,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The query syntax, where a query is typed (FIND with the keyboard,
         // the search browser): F1 there, as in the TUI's search views.
         A::QuerySyntax => &["f1"],
+        // The search browser's query shown in the FIND view, as VS Code's
+        // "open in sidebar" does for its search: where a query is typed.
+        A::OpenQueryInSidebar => &["primary+shift+enter"],
         // The TUI's FIND toggle: here FIND is a drawer view, shown from the
         // rail, the leader (`o q`) and the palette. Nothing acts on it.
         A::ToggleQueryPanel => return None,
@@ -590,6 +610,7 @@ impl Keymap {
                 panel: Panel::Editor,
                 vim: true,
                 query: false,
+                browser: false,
             })
     }
 
@@ -608,7 +629,7 @@ impl Keymap {
         self.bindings
             .iter()
             .filter(live)
-            .find(|b| Scope::of(&b.action) == Scope::Query)
+            .find(|b| Scope::of(&b.action).shadows())
             .or_else(|| self.bindings.iter().find(live))
             .map(|b| &b.action)
     }

@@ -11,7 +11,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, TestAppContext};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::layout_tree::spec::{self, ChildSpec};
-use kimun_notes::logic::layout_tree::{Axis, LayoutTree, Leaf};
+use kimun_notes::logic::layout_tree::{LayoutTree, Leaf};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::settings::gui::GuiSettings;
@@ -561,11 +561,8 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
     let shell = open_with(cx, &config, Some(&two_presets()));
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
-            // A side toggled off, a split's empty slot, a zoomed leaf.
+            // A side toggled off, a zoomed leaf.
             w.toggle_side(kimun_notes::logic::layout::Side::Left, window, cx);
-            let left = w.layout.slots()[0];
-            let new = w.layout.split_slot(left, Axis::Vertical).unwrap();
-            w.opened_empty.insert(new);
             w.layout.zoom(Some(Leaf::Group(w.layout.active_group())));
         });
         window.render_frame(cx);
@@ -574,14 +571,12 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let w = shell.workspace.read(cx);
         assert!(w.side_memory.iter().any(|m| !m.is_empty()));
-        assert!(!w.opened_empty.is_empty());
         assert!(w.layout.zoomed().is_some());
     });
 
     apply(&shell, cx, "research");
     cx.read(|cx| {
         let w = shell.workspace.read(cx);
-        assert!(w.opened_empty.is_empty());
         assert!(w.side_memory.iter().all(Vec::is_empty));
         // Zoom lives in the tree, which the preset replaced.
         assert_eq!(w.layout.zoomed(), None);

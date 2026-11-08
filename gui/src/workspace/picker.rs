@@ -63,6 +63,7 @@ use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListCore, ListRow, ListSetup, RowSource};
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::redraw_callback;
+use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::pickers::{
     FileFinderProvider, LinkResultsProvider, PickerOpen, picker_open,
 };
@@ -85,6 +86,8 @@ pub(crate) const PICKER_LIST_ID: &str = "note-picker-list";
 pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
+/// The search browser's button carrying its query to the FIND view.
+pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
 pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
 pub(crate) const BROWSER_SORT_ID: &str = "note-picker-sort";
 
@@ -109,6 +112,20 @@ const SEARCH_MAX_BODY_REMS: f32 = 44.;
 /// The results' share of the body when the preview is under them (narrow
 /// window).
 const SEARCH_STACKED_LIST_SHARE: f32 = 0.4;
+
+/// The `Open in FIND` button's tooltip: what it does (FIND's own title, as
+/// the registry has it: the view may sit on either side), and the chord that
+/// does it.
+fn to_find_tooltip(cx: &gpui_kit::App) -> SharedString {
+    let title = kimun_notes::logic::view_registry::spec(DrawerView::Find).title;
+    match crate::keymap::chord_label(
+        cx,
+        &kimun_notes::logic::actions::ActionShortcuts::OpenQueryInSidebar,
+    ) {
+        Some(chord) => format!("Open in {title} ({chord})").into(),
+        None => format!("Open in {title}").into(),
+    }
+}
 
 /// The search browser's body height, in rems, in a window whose usable
 /// height is `window_rems`: all of it but the dialog's chrome, within
@@ -665,6 +682,20 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(input))
                     .child(self.render_sort_chip(cx))
+                    .child(
+                        Button::new(TO_FIND_BUTTON_ID)
+                            .ghost()
+                            .icon(crate::workspace::rail_icon(DrawerView::Find))
+                            .tooltip(to_find_tooltip(cx))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                let query = this.input.read(cx).value().to_string();
+                                this.workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.open_browser_query_in_find(query, window, cx)
+                                    })
+                                    .ok();
+                            })),
+                    )
                     .child(
                         Button::new(HELP_BUTTON_ID)
                             .ghost()
