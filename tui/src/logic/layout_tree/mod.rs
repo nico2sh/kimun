@@ -63,6 +63,33 @@ pub enum TreeFocusMove {
     NotHandled,
 }
 
+/// A read-only picture of the tree's structure, for a frontend that draws
+/// it: each split with its axis and its children's weights (normalized per
+/// split), each leaf by id, in reading order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TreeShape {
+    Leaf(Leaf),
+    Split {
+        axis: Axis,
+        children: Vec<(f64, TreeShape)>,
+    },
+}
+
+impl TreeShape {
+    fn of(node: &Node<Leaf>) -> TreeShape {
+        match node.split_children() {
+            Some((axis, children)) => TreeShape::Split {
+                axis,
+                children: children
+                    .into_iter()
+                    .map(|(w, child)| (w, TreeShape::of(child)))
+                    .collect(),
+            },
+            None => TreeShape::Leaf(*node.as_leaf().expect("a node is a leaf or a split")),
+        }
+    }
+}
+
 /// Why a tree operation (or [`LayoutTree::from_parts`]) was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeError {
@@ -236,6 +263,11 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         &self.root
     }
 
+    /// The tree's structure, for drawing it.
+    pub fn shape(&self) -> TreeShape {
+        TreeShape::of(&self.root)
+    }
+
     // ── Focus ─────────────────────────────────────────────────────────
 
     /// What holds focus.
@@ -341,9 +373,21 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// handled. While a leaf is zoomed, only it and the rail are visible:
     /// the zoomed leaf covers the unit square and is the only candidate.
     pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
+        self.focus_dir_among(dir, &|_| true)
+    }
+
+    /// [`Self::focus_dir`] over only the leaves `visible` accepts (a
+    /// frontend that leaves some leaves undrawn, such as a slot with no
+    /// shown view): the others are neither targets nor obstacles, and keep
+    /// their place in the geometry. The zoomed leaf ignores `visible`.
+    pub fn focus_dir_among(&mut self, dir: Dir, visible: &dyn Fn(Leaf) -> bool) -> TreeFocusMove {
         let regions = match self.zoomed {
             Some(z) => vec![(z, UnitRect::new(0.0, 0.0, 1.0, 1.0))],
-            None => self.regions(),
+            None => self
+                .regions()
+                .into_iter()
+                .filter(|(l, _)| visible(*l))
+                .collect(),
         };
         let current = match self.focus {
             Focus::Leaf(l) => l,
