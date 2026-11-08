@@ -850,6 +850,65 @@ editor = true
         assert!(parse_presets("[preset.x]\nviews = []\neditor = true\n").is_err());
     }
 
+    /// A typo in a nested leaf names the preset, the node's path and the
+    /// key, not serde's "did not match any variant of untagged enum".
+    #[test]
+    fn a_typo_in_a_nested_leaf_names_the_preset_path_and_key() {
+        let text = "[preset.research]\nsplit = \"horizontal\"\nchildren = [\n\
+                    { editor = true },\n\
+                    { split = \"vertical\", children = [\n\
+                    { views = [\"tags\"] },\n\
+                    { veiws = [\"outline\"] },\n\
+                    ] },\n]\n";
+        let err = parse_presets(text).expect_err("a typo does not parse");
+        assert!(!err.contains("untagged"), "{err}");
+        assert!(err.contains("\"research\""), "{err}");
+        assert!(err.contains("children[1].children[1]"), "{err}");
+        assert!(err.contains("\"veiws\""), "{err}");
+    }
+
+    /// The other shapes serde only calls "no variant": mixed kinds, no
+    /// kind, `editor = false`, values of the wrong type. Each problem is
+    /// named with its preset and path; several are all counted.
+    #[test]
+    fn malformed_nodes_are_named_with_their_path() {
+        let err = |text: &str| parse_presets(text).expect_err(text);
+        let mixed = err("[preset.a]\nviews = []\neditor = true\n");
+        assert!(mixed.contains("\"a\"") && mixed.contains("root"), "{mixed}");
+        assert!(
+            mixed.contains("editor") && mixed.contains("views"),
+            "{mixed}"
+        );
+        let none = err("[preset.a]\nweight = 1\n");
+        assert!(none.contains("\"a\""), "{none}");
+        let off = err("[preset.a]\neditor = false\n");
+        assert!(off.contains("must be true"), "{off}");
+        let not_list = err("[preset.a]\nviews = \"files\"\n");
+        assert!(not_list.contains("\"views\""), "{not_list}");
+        let not_text =
+            err("[preset.a]\nsplit = 3\nchildren = [{ editor = true }, { editor = true }]\n");
+        assert!(not_text.contains("\"split\""), "{not_text}");
+        // Two bad leaves in two presets: both named.
+        let two = err("[preset.a]\nview = []\n\n[preset.b]\nedtor = true\n");
+        assert!(
+            two.contains("\"view\"") && two.contains("\"edtor\""),
+            "{two}"
+        );
+        // TOML that is not even TOML keeps the parser's line and column.
+        let syntax = err("[preset.a\n");
+        // What the check allows, serde reads: an integer weight is fine.
+        assert!(parse_presets("[preset.a]\nweight = 2\neditor = true\n").is_ok());
+        assert!(syntax.contains("line 1"), "{syntax}");
+    }
+
+    #[test]
+    fn problem_lists_show_the_first_few_and_count_the_rest() {
+        let items: Vec<String> = (1..=5).map(|i| format!("P{i}.")).collect();
+        assert_eq!(list_problems(&items[..2], 3), "P1. P2.");
+        assert_eq!(list_problems(&items, 3), "P1. P2. P3. (and 2 more)");
+        assert_eq!(list_problems(&items[..4], 3), "P1. P2. P3. (and 1 more)");
+    }
+
     #[test]
     fn missing_weight_defaults_to_one() {
         let spec = split(
