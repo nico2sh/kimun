@@ -6,8 +6,8 @@
 //!
 //! **Rows.** The leaves come from the configured leader tree
 //! (`logic::palette::palette_rows`, labelled `+group · leaf`); the GUI-only
-//! rows (`+window · toggle right drawer`, moving and splitting drawer views,
-//! directional focus, find and replace, following a link) follow them. A
+//! rows (`+window · toggle right side`, moving views, splitting and
+//! closing slots, directional focus, find and replace, following a link) follow them. A
 //! row the window cannot run is shown disabled with the reason in its
 //! trailing slot; a runnable one shows there its leader sequence (a leaf,
 //! from the gateway that works where the keyboard was: `Space` in vim
@@ -164,15 +164,22 @@ fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
         ("+window · focus right", A::FocusRegion(Dir::Right)),
         ("+window · focus up", A::FocusRegion(Dir::Up)),
         ("+window · focus down", A::FocusRegion(Dir::Down)),
-        ("+window · move view to left slot", A::MoveViewToLeftDrawer),
         (
-            "+window · move view to right slot",
-            A::MoveViewToRightDrawer,
+            "+window · move view left",
+            A::MoveViewToNeighbour(Dir::Left),
         ),
-        ("+window · move view up", A::MoveViewUp),
-        ("+window · move view down", A::MoveViewDown),
-        ("+window · split slot", A::SplitDrawerSlot),
-        ("+window · close slot", A::UnsplitDrawerSlot),
+        (
+            "+window · move view right",
+            A::MoveViewToNeighbour(Dir::Right),
+        ),
+        ("+window · move view up", A::MoveViewToNeighbour(Dir::Up)),
+        (
+            "+window · move view down",
+            A::MoveViewToNeighbour(Dir::Down),
+        ),
+        ("+window · split slot right", A::SplitSlotRight),
+        ("+window · split slot down", A::SplitSlotDown),
+        ("+window · close slot", A::CloseSlot),
         ("+text · find in note", A::FindInBuffer),
         ("+text · replace in note", A::ReplaceInBuffer),
         ("+links · follow link at caret", A::FollowLink),
@@ -342,11 +349,10 @@ impl Workspace {
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink => {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
-            A::MoveViewToLeftDrawer
-            | A::MoveViewToRightDrawer
-            | A::MoveViewUp
-            | A::MoveViewDown => (opener == Panel::Editor).then_some(NEEDS_DRAWER_FOCUS),
-            A::SplitDrawerSlot | A::UnsplitDrawerSlot => {
+            A::MoveViewToNeighbour(_) | A::MoveViewUp | A::MoveViewDown => {
+                (opener == Panel::Editor).then_some(NEEDS_DRAWER_FOCUS)
+            }
+            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => {
                 (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_DRAWER_FOCUS)
             }
             A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),

@@ -673,7 +673,7 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     let (_v, started) = started_on(cx, &rt, "top.md");
     focus_files(&started, cx);
     // Split opens an empty slot below; the rail cursor's Find goes there.
-    started.press_key("alt-shift-s", cx);
+    started.press_key("alt-shift-d", cx);
     assert_eq!(started.views(Side::Left, cx), [DrawerView::Files]);
     cx.update_window(started.handle, |_, window, cx| window.click("rail", cx))
         .unwrap();
@@ -735,7 +735,7 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     // from the filter: FILES moves down into the empty slot.
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
-    started.press_key("alt-shift-s", cx);
+    started.press_key("alt-shift-d", cx);
     assert!(started.filter_focused(cx));
     started.press_key("alt-shift-down", cx);
     let slots = cx.read(|cx| {

@@ -16,7 +16,7 @@ use crate::logic::text_action::TextAction;
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 16] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 19] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -25,16 +25,19 @@ pub const TUI_UNBOUND: [ActionShortcuts; 16] = [
     ActionShortcuts::FocusRegion(Dir::Right),
     ActionShortcuts::FocusRegion(Dir::Up),
     ActionShortcuts::FocusRegion(Dir::Down),
-    ActionShortcuts::MoveViewToLeftDrawer,
-    ActionShortcuts::MoveViewToRightDrawer,
-    ActionShortcuts::SplitDrawerSlot,
-    ActionShortcuts::UnsplitDrawerSlot,
     ActionShortcuts::ToggleRightDrawer,
     ActionShortcuts::SaveNote,
     ActionShortcuts::MoveViewUp,
     ActionShortcuts::MoveViewDown,
     ActionShortcuts::KeyboardHelp,
     ActionShortcuts::QuerySyntax,
+    ActionShortcuts::SplitSlotRight,
+    ActionShortcuts::SplitSlotDown,
+    ActionShortcuts::CloseSlot,
+    ActionShortcuts::MoveViewToNeighbour(Dir::Left),
+    ActionShortcuts::MoveViewToNeighbour(Dir::Right),
+    ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+    ActionShortcuts::MoveViewToNeighbour(Dir::Down),
 ];
 
 /// The TUI help modal's heading for an [`ActionShortcuts`] variant. The
@@ -126,16 +129,19 @@ impl ActionShortcuts {
             ActionShortcuts::FocusRegion(Dir::Right) => "Focus region right".into(),
             ActionShortcuts::FocusRegion(Dir::Up) => "Focus region up".into(),
             ActionShortcuts::FocusRegion(Dir::Down) => "Focus region down".into(),
-            ActionShortcuts::MoveViewToLeftDrawer => "Move view to left drawer".into(),
-            ActionShortcuts::MoveViewToRightDrawer => "Move view to right drawer".into(),
-            ActionShortcuts::SplitDrawerSlot => "Split drawer".into(),
-            ActionShortcuts::UnsplitDrawerSlot => "Unsplit drawer".into(),
             ActionShortcuts::ToggleRightDrawer => "Toggle right drawer".into(),
             ActionShortcuts::SaveNote => "Save note".into(),
             ActionShortcuts::MoveViewUp => "Move view up".into(),
             ActionShortcuts::MoveViewDown => "Move view down".into(),
             ActionShortcuts::KeyboardHelp => "Keyboard shortcuts".into(),
             ActionShortcuts::QuerySyntax => "Query syntax".into(),
+            ActionShortcuts::SplitSlotRight => "Split slot right".into(),
+            ActionShortcuts::SplitSlotDown => "Split slot down".into(),
+            ActionShortcuts::CloseSlot => "Close slot".into(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Left) => "Move view left".into(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Right) => "Move view right".into(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up) => "Move view up".into(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down) => "Move view down".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -283,10 +289,10 @@ mod tests {
             (ActionShortcuts::OpenCommandPalette, Nav),
             (ActionShortcuts::FocusRegion(Dir::Left), Nav),
             (ActionShortcuts::FocusRegion(Dir::Down), Nav),
-            (ActionShortcuts::MoveViewToLeftDrawer, Nav),
-            (ActionShortcuts::MoveViewToRightDrawer, Nav),
-            (ActionShortcuts::SplitDrawerSlot, Nav),
-            (ActionShortcuts::UnsplitDrawerSlot, Nav),
+            (ActionShortcuts::SplitSlotRight, Nav),
+            (ActionShortcuts::SplitSlotDown, Nav),
+            (ActionShortcuts::CloseSlot, Nav),
+            (ActionShortcuts::MoveViewToNeighbour(Dir::Left), Nav),
             (ActionShortcuts::ToggleRightDrawer, Nav),
             (ActionShortcuts::SaveNote, Notes),
             (ActionShortcuts::MoveViewUp, Nav),

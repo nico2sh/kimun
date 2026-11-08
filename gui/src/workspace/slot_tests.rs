@@ -8,7 +8,7 @@
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, SharedString, TestAppContext};
 use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout::{Dir, Panel, Side};
 use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId, TreeShape};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
@@ -464,7 +464,7 @@ fn the_rail_move_toward_the_edge_passes_on(cx: &mut TestAppContext) {
             ws.update(cx, |workspace, _| workspace.rail_cursor = cursor);
             let handled = ws.update(cx, |workspace, cx| {
                 workspace.workspace_command(
-                    &ActionShortcuts::MoveViewToLeftDrawer,
+                    &ActionShortcuts::MoveViewToNeighbour(Dir::Left),
                     Some(key),
                     window,
                     cx,
@@ -479,9 +479,9 @@ fn the_rail_move_toward_the_edge_passes_on(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// The split chord splits the focused slot: an empty slot opens under it,
+/// Split slot down (Alt+Shift+D) splits the focused slot: an empty slot opens under it,
 /// at half the height, with the hint; the keyboard stays on the view and
-/// nothing is saved. The close chord on the empty slot closes it; on a slot
+/// nothing is saved. Close slot (Alt+Shift+W) on the empty slot closes it; on a slot
 /// with views it merges them, hidden, into the slot taking over its area.
 /// The only slot stays, and says so.
 #[gpui_kit::test]
@@ -503,11 +503,11 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         let before = std::fs::read_to_string(&path).unwrap();
         let left = shell.slots(cx)[0];
         // Not from the editor: the chord is the editor's there.
-        window.press("alt-shift-s", cx);
+        window.press("alt-shift-d", cx);
         assert_eq!(shell.slots(cx).len(), 2);
 
         window.press("alt-left", cx);
-        window.press("alt-shift-s", cx);
+        window.press("alt-shift-d", cx);
         window.render_frame(cx);
         let slots = shell.slots(cx);
         assert_eq!(slots.len(), 3);
@@ -534,7 +534,7 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         // Closing the empty slot gives FILES its height back.
         window.click(empty_slot_id(1), cx);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(slots[1])));
-        window.press("alt-shift-u", cx);
+        window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.slots(cx).len(), 2);
         assert!(close(
@@ -544,7 +544,7 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
 
         // Two views stacked: closing the bottom one merges it into FILES'.
-        window.press("alt-shift-s", cx);
+        window.press("alt-shift-d", cx);
         window.click("rail", cx);
         window.press("down", cx);
         window.press("alt-shift-down", cx);
@@ -553,7 +553,7 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
             [DrawerView::Files, DrawerView::Find]
         );
         window.click(slot_id(DrawerView::Find), cx);
-        window.press("alt-shift-u", cx);
+        window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
@@ -568,7 +568,7 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         window.press("alt-shift-right", cx);
         let right = shell.slots(cx)[1];
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(right)));
-        window.press("alt-shift-u", cx);
+        window.press("alt-shift-w", cx);
         assert_eq!(shell.slots(cx), [left]);
         assert_eq!(
             shell.placed_on(Side::Left, cx),
@@ -581,14 +581,14 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         );
         // The last slot stays.
         window.click(rail_cell_id(DrawerView::Files), cx);
-        window.press("alt-shift-u", cx);
+        window.press("alt-shift-w", cx);
         assert_eq!(shell.slots(cx), [left]);
         assert_eq!(shell.flash(cx).as_deref(), Some("This is the only slot"));
     })
     .unwrap();
 }
 
-/// The swap chords trade the focused view with the one shown in the slot
+/// Move view up / down (Alt+Shift+Up / Down) trade the focused view with the one shown in the slot
 /// above or below, the keyboard following the view; at the end of the
 /// column nothing moves. In a slot with nothing stacked they pass on.
 #[gpui_kit::test]
@@ -649,7 +649,12 @@ fn the_swap_chords_trade_stacked_views(cx: &mut TestAppContext) {
         let key = crate::keymap::parse_chord("alt+shift+up", crate::keymap::Platform::LinuxWindows)
             .unwrap();
         let ws = shell.workspace.clone();
-        for action in [ActionShortcuts::MoveViewUp, ActionShortcuts::MoveViewDown] {
+        for action in [
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+            ActionShortcuts::MoveViewUp,
+            ActionShortcuts::MoveViewDown,
+        ] {
             let handled = ws.update(cx, |workspace, cx| {
                 workspace.workspace_command(&action, Some(key), window, cx)
             });
@@ -740,8 +745,8 @@ fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
     .unwrap();
     cx.update(|cx| {
         let overrides = [
-            ("MoveViewToRightDrawer", vec![]),
-            ("MoveViewToLeftDrawer", vec![]),
+            ("MoveViewToNeighbourRight", vec![]),
+            ("MoveViewToNeighbourLeft", vec![]),
             ("Leader", vec![]),
         ]
         .into_iter()
@@ -967,9 +972,9 @@ fn closing_right_after_a_split_closes_the_empty_slot(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("alt-left", cx);
-        window.press("alt-shift-s", cx);
+        window.press("alt-shift-d", cx);
         assert_eq!(shell.slots(cx).len(), 3);
-        window.press("alt-shift-u", cx);
+        window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.slots(cx).len(), 2);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
@@ -1019,7 +1024,7 @@ fn every_slot_has_a_header_with_its_view_title(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("alt-left", cx);
-        window.press("alt-shift-s", cx);
+        window.press("alt-shift-d", cx);
         window.click("rail", cx);
         window.press("down", cx);
         window.press("alt-shift-down", cx);
@@ -1518,6 +1523,261 @@ fn a_divider_move_does_not_save_until_the_drag_ends(cx: &mut TestAppContext) {
             near(w[0], 0.8 * (f64::from(files.size.width) + 50.) / 951.),
             "{w:?}"
         );
+    })
+    .unwrap();
+}
+
+/// Split slot right (Alt+Shift+R): an empty slot opens beside the focused
+/// one, the two sharing its width at full height, with the hint; the
+/// keyboard stays on the view and nothing is saved. Split slot down
+/// (Alt+Shift+D) opens one under it.
+#[gpui_kit::test]
+fn split_slot_right_adds_an_empty_slot_beside_the_focused_one(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let before = std::fs::read_to_string(&path).ok();
+        let width = window.find(slot_id(DrawerView::Files)).bounds().size.width;
+        // Not from the editor: the chord is the editor's there.
+        window.press("alt-shift-r", cx);
+        assert_eq!(shell.slots(cx).len(), 2);
+
+        window.press("alt-left", cx);
+        let left = shell.slots(cx)[0];
+        window.press("alt-shift-r", cx);
+        window.render_frame(cx);
+        let slots = shell.slots(cx);
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots[0], left);
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
+        assert_eq!(
+            window.find(slot_id(DrawerView::Files)).focused(),
+            Some(true)
+        );
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        let empty = window.find(empty_slot_id(1));
+        assert_eq!(empty.label(), Some(HINT));
+        let beside = empty.bounds();
+        assert!(close(beside.left(), f32::from(files.right()) + 1.));
+        assert!(close(beside.top(), f32::from(files.top())));
+        assert!(close(beside.size.height, f32::from(files.size.height)));
+        assert!(close(beside.size.height, HEIGHT));
+        // FILES gave up width to it.
+        assert!(files.size.width < width, "{files:?} {width:?}");
+        assert_eq!(std::fs::read_to_string(&path).ok(), before, "session only");
+
+        // Split slot down: an empty slot under FILES, same width.
+        window.press("alt-shift-d", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.slots(cx).len(), 4);
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
+        let files = window.find(slot_id(DrawerView::Files)).bounds();
+        let under = window.find(empty_slot_id(1)).bounds();
+        assert!(close(under.top(), f32::from(files.bottom()) + 1.));
+        assert!(close(under.left(), f32::from(files.left())));
+        assert!(close(under.size.width, f32::from(files.size.width)));
+    })
+    .unwrap();
+}
+
+/// Close slot (Alt+Shift+W) closes the focused slot: its views join the
+/// slot that takes over its area (its stacked sibling), hidden there, and
+/// the keyboard goes to that slot. Saved.
+#[gpui_kit::test]
+fn close_slot_merges_views_and_focuses_the_absorber(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1200.,
+        &two_stacks(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slots = shell.slots(cx);
+        let (files_s, outline_s) = (slots[0], slots[2]);
+
+        window.click(slot_id(DrawerView::Find), cx);
+        window.press("alt-shift-w", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.slots(cx), [files_s, slots[2], slots[3]]);
+        assert_eq!(
+            shell.workspace.read(cx).layout.slot_views(files_s),
+            [DrawerView::Files, DrawerView::Find]
+        );
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(files_s)));
+        assert_eq!(
+            window.find(slot_id(DrawerView::Files)).focused(),
+            Some(true)
+        );
+        assert!(close(
+            window.find(slot_id(DrawerView::Files)).bounds().size.height,
+            HEIGHT
+        ));
+
+        // The upper slot of a stack closes into the lower one too.
+        window.click(slot_id(DrawerView::Outline), cx);
+        window.press("alt-shift-w", cx);
+        window.render_frame(cx);
+        let tags_s = slots[3];
+        assert_eq!(shell.slots(cx), [files_s, tags_s]);
+        assert_eq!(
+            shell.workspace.read(cx).layout.slot_views(tags_s),
+            [DrawerView::Tags, DrawerView::Outline]
+        );
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(tags_s)));
+        assert_eq!(window.find(slot_id(DrawerView::Tags)).focused(), Some(true));
+        assert_ne!(outline_s, tags_s);
+        assert_eq!(
+            saved_placed(&path),
+            [
+                vec![DrawerView::Files, DrawerView::Find],
+                vec![DrawerView::Tags, DrawerView::Outline]
+            ]
+        );
+    })
+    .unwrap();
+}
+
+/// Move view (Alt+Shift+Arrow) goes by geometry, not by side or reading
+/// order: from the bottom of the left column Right lands in the right
+/// column's slot that overlaps it most (TAGS', not OUTLINE's, the first
+/// in reading order), and from the top of the column in OUTLINE's. The
+/// keyboard follows the view; every move is saved.
+#[gpui_kit::test]
+fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1200.,
+        &two_stacks(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slots = shell.slots(cx);
+        let (files_s, find_s, outline_s, tags_s) = (slots[0], slots[1], slots[2], slots[3]);
+        let layout = |cx: &gpui_kit::App| shell.workspace.read(cx).layout.clone();
+
+        // FIND (0.3..1.0 of the height) overlaps TAGS (0.6..1.0) more
+        // than OUTLINE (0..0.6).
+        window.click(slot_id(DrawerView::Find), cx);
+        window.press("alt-shift-right", cx);
+        window.render_frame(cx);
+        assert_eq!(layout(cx).shown(tags_s), Some(DrawerView::Find));
+        assert_eq!(layout(cx).shown(outline_s), Some(DrawerView::Outline));
+        assert!(layout(cx).slot_views(find_s).is_empty());
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(tags_s)));
+        assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
+        assert_eq!(
+            saved_shown(&path),
+            [
+                Some(DrawerView::Files),
+                None,
+                Some(DrawerView::Outline),
+                Some(DrawerView::Find)
+            ]
+        );
+
+        // FILES (0..0.3) overlaps only OUTLINE.
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-shift-right", cx);
+        assert_eq!(layout(cx).shown(outline_s), Some(DrawerView::Files));
+        assert!(layout(cx).slot_views(files_s).is_empty());
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(outline_s)));
+
+        // Down from OUTLINE's slot: the slot under it.
+        window.press("alt-shift-down", cx);
+        assert_eq!(layout(cx).view_slot(&DrawerView::Files), Some(tags_s));
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(tags_s)));
+
+        // Left from TAGS' slot (0.6..1.0): FIND's old slot (0.3..1.0)
+        // overlaps it, FILES' (0..0.3) does not.
+        window.press("alt-shift-left", cx);
+        assert_eq!(layout(cx).view_slot(&DrawerView::Files), Some(find_s));
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(find_s)));
+        assert_eq!(
+            saved_placed(&path),
+            [
+                vec![],
+                vec![DrawerView::Files],
+                vec![DrawerView::Outline, DrawerView::Find],
+                vec![DrawerView::Tags]
+            ]
+        );
+    })
+    .unwrap();
+}
+
+/// Alt+Arrow walks a nested arrangement by geometry: a slot split down
+/// whose lower half is split again side by side. Ties go to the leaf
+/// focused last, then the top-left one; Left from the leftmost slot
+/// reaches the rail, and Right from the rail the top-left slot.
+#[gpui_kit::test]
+fn focus_region_walks_nested_slots_and_reaches_the_rail(cx: &mut TestAppContext) {
+    let layout = [
+        "[gui.layout]",
+        "split = \"horizontal\"",
+        "children = [",
+        "{ weight = 0.3, split = \"vertical\", children = [",
+        "  { views = [\"files\"], shown = \"files\" },",
+        "  { split = \"horizontal\", children = [",
+        "    { views = [\"find\"], shown = \"find\" },",
+        "    { views = [\"tags\"], shown = \"tags\" },",
+        "  ] },",
+        "] },",
+        "{ weight = 0.7, editor = true },",
+        "]",
+    ]
+    .join("\n");
+    let shell = open_shell(cx, 1200., &gui(&layout), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slots = shell.slots(cx);
+        let (files_s, find_s, tags_s) = (slots[0], slots[1], slots[2]);
+        let editor = shell.focus(cx);
+        assert!(matches!(editor, Focus::Leaf(Leaf::Group(_))));
+        let slot = |s| Focus::Leaf(Leaf::Slot(s));
+        let files = slot_id(DrawerView::Files);
+        let find = slot_id(DrawerView::Find);
+        let tags = slot_id(DrawerView::Tags);
+        let (editor_id, rail) = (SharedString::from("editor"), SharedString::from("rail"));
+        let mut step = |key: &str, expected: Focus, focused: &SharedString| {
+            window.press(key, cx);
+            assert_eq!(shell.focus(cx), expected, "{key}");
+            assert_eq!(window.find(focused.clone()).focused(), Some(true), "{key}");
+        };
+
+        // FILES and TAGS both touch the editor, overlapping it equally:
+        // the top-left one wins.
+        step("alt-left", slot(files_s), &files);
+        // FIND and TAGS both lie under FILES: the left one.
+        step("alt-down", slot(find_s), &find);
+        step("alt-right", slot(tags_s), &tags);
+        step("alt-up", slot(files_s), &files);
+        // Down again: the top-left one again.
+        step("alt-down", slot(find_s), &find);
+        step("alt-right", slot(tags_s), &tags);
+        step("alt-right", editor, &editor_id);
+        // Back to the slot it came from: the tie goes to the last focused.
+        step("alt-left", slot(tags_s), &tags);
+        step("alt-left", slot(find_s), &find);
+        step("alt-left", Focus::Rail, &rail);
+        step("alt-left", Focus::Rail, &rail);
+        step("alt-right", slot(files_s), &files);
     })
     .unwrap();
 }

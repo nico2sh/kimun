@@ -62,21 +62,13 @@ pub enum ActionShortcuts {
     /// The command palette (Ctrl+Shift+P by default): every leader command
     /// as a fuzzy list.
     OpenCommandPalette,
-    // Layout (ADR-0050). Geometric focus between visible regions, drawer view
+    // Layout (ADR-0050). Geometric focus between visible regions, view
     // placement and slot splitting. The TUI binds none of these by default.
     /// Move focus to the neighbouring region in that direction (no wrap;
     /// Up/Down only between stacked slots or groups). On disk it is one name
     /// per direction, `FocusRegionLeft` … `FocusRegionDown`, the way `Text`
     /// spells each `TextAction`; `Dir`'s order keeps the sort unchanged.
     FocusRegion(Dir),
-    /// Move the focused drawer view into the left drawer.
-    MoveViewToLeftDrawer,
-    /// Move the focused drawer view into the right drawer.
-    MoveViewToRightDrawer,
-    /// Split the focused drawer into two stacked slots.
-    SplitDrawerSlot,
-    /// Close the focused drawer slot, leaving the drawer unsplit.
-    UnsplitDrawerSlot,
     /// Show or hide the right drawer.
     ToggleRightDrawer,
     /// Save the open note now (the leader's `w` in the TUI, which binds no
@@ -95,6 +87,20 @@ pub enum ActionShortcuts {
     /// keyboard reference everywhere else). The TUI binds no chord to it: its
     /// query help is built into its search views.
     QuerySyntax,
+    /// Split the focused slot side by side: a new, empty slot opens right of
+    /// it (ADR-0052).
+    SplitSlotRight,
+    /// Split the focused slot into two stacked slots: a new, empty slot
+    /// opens below it (ADR-0052).
+    SplitSlotDown,
+    /// Close the focused slot (or a slot opened empty elsewhere); its views
+    /// join the neighbouring slot taking over its area (ADR-0052).
+    CloseSlot,
+    /// Move the focused view to the nearest slot in that direction
+    /// (ADR-0052 geometry). On disk it is one name per direction,
+    /// `MoveViewToNeighbourLeft` … `MoveViewToNeighbourDown`, as
+    /// `FocusRegion` spells each `Dir`.
+    MoveViewToNeighbour(Dir),
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -156,7 +162,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 50] = [
+    pub const ALL: [ActionShortcuts; 53] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -197,16 +203,19 @@ impl ActionShortcuts {
         ActionShortcuts::FocusRegion(Dir::Right),
         ActionShortcuts::FocusRegion(Dir::Up),
         ActionShortcuts::FocusRegion(Dir::Down),
-        ActionShortcuts::MoveViewToLeftDrawer,
-        ActionShortcuts::MoveViewToRightDrawer,
-        ActionShortcuts::SplitDrawerSlot,
-        ActionShortcuts::UnsplitDrawerSlot,
         ActionShortcuts::ToggleRightDrawer,
         ActionShortcuts::SaveNote,
         ActionShortcuts::MoveViewUp,
         ActionShortcuts::MoveViewDown,
         ActionShortcuts::KeyboardHelp,
         ActionShortcuts::QuerySyntax,
+        ActionShortcuts::SplitSlotRight,
+        ActionShortcuts::SplitSlotDown,
+        ActionShortcuts::CloseSlot,
+        ActionShortcuts::MoveViewToNeighbour(Dir::Left),
+        ActionShortcuts::MoveViewToNeighbour(Dir::Right),
+        ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+        ActionShortcuts::MoveViewToNeighbour(Dir::Down),
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -221,12 +230,12 @@ impl ActionShortcuts {
             | A::FocusEditor
             | A::FocusSidebar
             | A::FocusRegion(_)
-            | A::MoveViewToLeftDrawer
-            | A::MoveViewToRightDrawer
+            | A::MoveViewToNeighbour(_)
             | A::MoveViewUp
             | A::MoveViewDown
-            | A::SplitDrawerSlot
-            | A::UnsplitDrawerSlot => ActionGroup::WindowAndPanels,
+            | A::SplitSlotRight
+            | A::SplitSlotDown
+            | A::CloseSlot => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
             }
@@ -291,16 +300,25 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FocusRegion(Dir::Right) => "FocusRegionRight".to_string(),
             ActionShortcuts::FocusRegion(Dir::Up) => "FocusRegionUp".to_string(),
             ActionShortcuts::FocusRegion(Dir::Down) => "FocusRegionDown".to_string(),
-            ActionShortcuts::MoveViewToLeftDrawer => "MoveViewToLeftDrawer".to_string(),
-            ActionShortcuts::MoveViewToRightDrawer => "MoveViewToRightDrawer".to_string(),
-            ActionShortcuts::SplitDrawerSlot => "SplitDrawerSlot".to_string(),
-            ActionShortcuts::UnsplitDrawerSlot => "UnsplitDrawerSlot".to_string(),
             ActionShortcuts::ToggleRightDrawer => "ToggleRightDrawer".to_string(),
             ActionShortcuts::SaveNote => "SaveNote".to_string(),
             ActionShortcuts::MoveViewUp => "MoveViewUp".to_string(),
             ActionShortcuts::MoveViewDown => "MoveViewDown".to_string(),
             ActionShortcuts::KeyboardHelp => "KeyboardHelp".to_string(),
             ActionShortcuts::QuerySyntax => "QuerySyntax".to_string(),
+            ActionShortcuts::SplitSlotRight => "SplitSlotRight".to_string(),
+            ActionShortcuts::SplitSlotDown => "SplitSlotDown".to_string(),
+            ActionShortcuts::CloseSlot => "CloseSlot".to_string(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Left) => {
+                "MoveViewToNeighbourLeft".to_string()
+            }
+            ActionShortcuts::MoveViewToNeighbour(Dir::Right) => {
+                "MoveViewToNeighbourRight".to_string()
+            }
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up) => "MoveViewToNeighbourUp".to_string(),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down) => {
+                "MoveViewToNeighbourDown".to_string()
+            }
         };
         write!(f, "{}", action)
     }
@@ -346,16 +364,19 @@ impl TryFrom<String> for ActionShortcuts {
             "FocusRegionRight" => ActionShortcuts::FocusRegion(Dir::Right),
             "FocusRegionUp" => ActionShortcuts::FocusRegion(Dir::Up),
             "FocusRegionDown" => ActionShortcuts::FocusRegion(Dir::Down),
-            "MoveViewToLeftDrawer" => ActionShortcuts::MoveViewToLeftDrawer,
-            "MoveViewToRightDrawer" => ActionShortcuts::MoveViewToRightDrawer,
-            "SplitDrawerSlot" => ActionShortcuts::SplitDrawerSlot,
-            "UnsplitDrawerSlot" => ActionShortcuts::UnsplitDrawerSlot,
             "ToggleRightDrawer" => ActionShortcuts::ToggleRightDrawer,
             "SaveNote" => ActionShortcuts::SaveNote,
             "MoveViewUp" => ActionShortcuts::MoveViewUp,
             "MoveViewDown" => ActionShortcuts::MoveViewDown,
             "KeyboardHelp" => ActionShortcuts::KeyboardHelp,
             "QuerySyntax" => ActionShortcuts::QuerySyntax,
+            "SplitSlotRight" => ActionShortcuts::SplitSlotRight,
+            "SplitSlotDown" => ActionShortcuts::SplitSlotDown,
+            "CloseSlot" => ActionShortcuts::CloseSlot,
+            "MoveViewToNeighbourLeft" => ActionShortcuts::MoveViewToNeighbour(Dir::Left),
+            "MoveViewToNeighbourRight" => ActionShortcuts::MoveViewToNeighbour(Dir::Right),
+            "MoveViewToNeighbourUp" => ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+            "MoveViewToNeighbourDown" => ActionShortcuts::MoveViewToNeighbour(Dir::Down),
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -411,16 +432,16 @@ mod tests {
             ActionShortcuts::Leader => 22,
             ActionShortcuts::OpenCommandPalette => 23,
             ActionShortcuts::FocusRegion(_) => 24,
-            ActionShortcuts::MoveViewToLeftDrawer => 25,
-            ActionShortcuts::MoveViewToRightDrawer => 26,
-            ActionShortcuts::SplitDrawerSlot => 27,
-            ActionShortcuts::UnsplitDrawerSlot => 28,
-            ActionShortcuts::ToggleRightDrawer => 29,
-            ActionShortcuts::SaveNote => 30,
-            ActionShortcuts::MoveViewUp => 31,
-            ActionShortcuts::MoveViewDown => 32,
-            ActionShortcuts::KeyboardHelp => 33,
-            ActionShortcuts::QuerySyntax => 34,
+            ActionShortcuts::ToggleRightDrawer => 25,
+            ActionShortcuts::SaveNote => 26,
+            ActionShortcuts::MoveViewUp => 27,
+            ActionShortcuts::MoveViewDown => 28,
+            ActionShortcuts::KeyboardHelp => 29,
+            ActionShortcuts::QuerySyntax => 30,
+            ActionShortcuts::SplitSlotRight => 31,
+            ActionShortcuts::SplitSlotDown => 32,
+            ActionShortcuts::CloseSlot => 33,
+            ActionShortcuts::MoveViewToNeighbour(_) => 34,
         }
     }
     const VARIANTS: usize = 35;
@@ -460,13 +481,16 @@ mod tests {
             ActionShortcuts::FocusRegion(Dir::Right),
             ActionShortcuts::FocusRegion(Dir::Up),
             ActionShortcuts::FocusRegion(Dir::Down),
-            ActionShortcuts::MoveViewToLeftDrawer,
-            ActionShortcuts::MoveViewToRightDrawer,
-            ActionShortcuts::SplitDrawerSlot,
-            ActionShortcuts::UnsplitDrawerSlot,
             ActionShortcuts::ToggleRightDrawer,
             ActionShortcuts::MoveViewUp,
             ActionShortcuts::MoveViewDown,
+            ActionShortcuts::SplitSlotRight,
+            ActionShortcuts::SplitSlotDown,
+            ActionShortcuts::CloseSlot,
+            ActionShortcuts::MoveViewToNeighbour(Dir::Left),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Right),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+            ActionShortcuts::MoveViewToNeighbour(Dir::Down),
         ]
         .iter()
         .map(ToString::to_string)
@@ -478,13 +502,16 @@ mod tests {
                 "FocusRegionRight",
                 "FocusRegionUp",
                 "FocusRegionDown",
-                "MoveViewToLeftDrawer",
-                "MoveViewToRightDrawer",
-                "SplitDrawerSlot",
-                "UnsplitDrawerSlot",
                 "ToggleRightDrawer",
                 "MoveViewUp",
                 "MoveViewDown",
+                "SplitSlotRight",
+                "SplitSlotDown",
+                "CloseSlot",
+                "MoveViewToNeighbourLeft",
+                "MoveViewToNeighbourRight",
+                "MoveViewToNeighbourUp",
+                "MoveViewToNeighbourDown",
             ]
         );
     }
@@ -511,9 +538,9 @@ mod tests {
             assert_eq!(action.to_string(), name);
             assert_eq!(ActionShortcuts::try_from(name.to_string()), Ok(action));
         }
-        let n = ActionShortcuts::ALL.len();
+        let q = query_syntax_at();
         assert_eq!(
-            ActionShortcuts::ALL[n - 3..n - 1],
+            ActionShortcuts::ALL[q - 2..q],
             [ActionShortcuts::MoveViewDown, ActionShortcuts::KeyboardHelp]
         );
     }
@@ -528,12 +555,24 @@ mod tests {
             ActionShortcuts::try_from("KeyboardHelp".to_string()),
             Ok(ActionShortcuts::KeyboardHelp)
         );
-        let n = ActionShortcuts::ALL.len();
-        assert_eq!(ActionShortcuts::ALL[n - 2], ActionShortcuts::KeyboardHelp);
+        assert_eq!(
+            ActionShortcuts::ALL[query_syntax_at() - 1],
+            ActionShortcuts::KeyboardHelp
+        );
+    }
+
+    /// Where `QuerySyntax` sits in [`ActionShortcuts::ALL`]: the last action
+    /// before the layout-tree commands (ADR-0052), which came after it.
+    fn query_syntax_at() -> usize {
+        ActionShortcuts::ALL
+            .iter()
+            .position(|a| *a == ActionShortcuts::QuerySyntax)
+            .unwrap()
     }
 
     /// `QuerySyntax`'s on-disk name is permanent (`[gui.keys]` writes it),
-    /// and it comes last, so the serialized keymap's order is unchanged.
+    /// and only the layout-tree commands (ADR-0052), added after it, follow
+    /// it, so the serialized keymap's order is unchanged.
     #[test]
     fn query_syntax_name() {
         assert_eq!(ActionShortcuts::QuerySyntax.to_string(), "QuerySyntax");
@@ -542,8 +581,16 @@ mod tests {
             Ok(ActionShortcuts::QuerySyntax)
         );
         assert_eq!(
-            ActionShortcuts::ALL.last(),
-            Some(&ActionShortcuts::QuerySyntax)
+            ActionShortcuts::ALL[query_syntax_at() + 1..],
+            [
+                ActionShortcuts::SplitSlotRight,
+                ActionShortcuts::SplitSlotDown,
+                ActionShortcuts::CloseSlot,
+                ActionShortcuts::MoveViewToNeighbour(Dir::Left),
+                ActionShortcuts::MoveViewToNeighbour(Dir::Right),
+                ActionShortcuts::MoveViewToNeighbour(Dir::Up),
+                ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+            ]
         );
         assert_eq!(
             ActionShortcuts::QuerySyntax.group(),
