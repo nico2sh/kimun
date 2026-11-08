@@ -864,3 +864,62 @@ editor = true
         }
     }
 }
+
+#[test]
+fn shape_mirrors_the_tree_with_weights_in_reading_order() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let g = GroupId::new(0);
+    let low = t.split_slot(left, Axis::Vertical).unwrap();
+    let TreeShape::Split { axis, children } = t.shape() else {
+        panic!("the default root is a split");
+    };
+    assert_eq!(axis, Axis::Horizontal);
+    let weights: Vec<f64> = children.iter().map(|(w, _)| *w).collect();
+    for (w, want) in weights.iter().zip([0.2, 0.6, 0.2]) {
+        assert!((w - want).abs() < 1e-9, "{weights:?}");
+    }
+    assert_eq!(
+        children[0].1,
+        TreeShape::Split {
+            axis: Axis::Vertical,
+            children: vec![
+                (0.5, TreeShape::Leaf(Leaf::Slot(left))),
+                (0.5, TreeShape::Leaf(Leaf::Slot(low))),
+            ],
+        }
+    );
+    assert_eq!(children[1].1, TreeShape::Leaf(Leaf::Group(g)));
+    assert_eq!(children[2].1, TreeShape::Leaf(Leaf::Slot(right)));
+}
+
+#[test]
+fn focus_dir_among_skips_leaves_that_are_not_visible() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let g = Leaf::Group(GroupId::new(0));
+    let not_right = move |l: Leaf| l != Leaf::Slot(right);
+    // The hidden right slot is no target: Right from the editor is the edge.
+    assert_eq!(
+        t.focus_dir_among(Dir::Right, &not_right),
+        TreeFocusMove::AtEdge
+    );
+    assert_eq!(t.focused(), Focus::Leaf(g));
+    // Every leaf visible: the plain rule reaches it.
+    assert_eq!(
+        t.focus_dir_among(Dir::Right, &|_| true),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(right)))
+    );
+    // A hidden left slot: Left from the editor reaches the rail.
+    t.focus(Focus::Leaf(g));
+    let not_left = move |l: Leaf| l != Leaf::Slot(left);
+    assert_eq!(
+        t.focus_dir_among(Dir::Left, &not_left),
+        TreeFocusMove::Moved(Focus::Rail)
+    );
+    // And Right from the rail skips it too.
+    assert_eq!(
+        t.focus_dir_among(Dir::Right, &not_left),
+        TreeFocusMove::Moved(Focus::Leaf(g))
+    );
+}
