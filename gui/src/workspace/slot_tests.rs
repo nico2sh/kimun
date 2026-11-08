@@ -530,6 +530,15 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
             before,
             "session only"
         );
+        // A later save (any toggle) does not persist the empty slot.
+        window.press("ctrl-shift-t", cx);
+        window.press("ctrl-shift-t", cx);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a later save leaves the empty slot out"
+        );
+        assert_eq!(shell.slots(cx).len(), 3);
 
         // Closing the empty slot gives FILES its height back.
         window.click(empty_slot_id(1), cx);
@@ -1295,6 +1304,65 @@ fn grow_and_shrink_resize_the_focused_leaf(cx: &mut TestAppContext) {
         );
         // The hidden right slot kept its weight.
         assert!(near(top_weights(&saved_tree(&path))[2], 0.2));
+    })
+    .unwrap();
+}
+
+/// Leader grow / shrink say why when they cannot act: the rail has no
+/// divider, a zoom shows one leaf, and a divider at its floor stops. The
+/// palette rows are blocked for the structural cases.
+#[gpui_kit::test]
+fn grow_and_shrink_say_why_they_cannot_act(cx: &mut TestAppContext) {
+    use super::tree_view::{AT_MINIMUM_SIZE, FOCUS_TO_RESIZE, ZOOMED_NO_RESIZE};
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let grow_row = |cx: &gpui_kit::App| {
+        shell
+            .workspace
+            .read(cx)
+            .palette_entries(Panel::Editor, cx)
+            .iter()
+            .find(|e| e.label().to_lowercase().contains("grow drawer"))
+            .map(|e| e.blocked())
+            .expect("the grow row is listed")
+    };
+    cx.update_window(shell.handle, |_, window, cx| {
+        let leader = |window: &mut gpui_kit::Window, key: &str, cx: &mut gpui_kit::App| {
+            window.press("ctrl-shift-b", cx);
+            window.input("w", cx);
+            window.input(key, cx);
+            window.render_frame(cx);
+        };
+        window.render_frame(cx);
+        // The rail has the keyboard.
+        window.press("alt-left", cx);
+        window.press("alt-left", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.focus(cx), Focus::Rail);
+        leader(window, "l", cx);
+        assert_eq!(shell.flash(cx).as_deref(), Some(FOCUS_TO_RESIZE));
+        assert_eq!(grow_row(cx), Some(FOCUS_TO_RESIZE));
+        // Zoomed.
+        window.press("alt-right", cx);
+        window.press("ctrl-shift-m", cx);
+        window.render_frame(cx);
+        leader(window, "l", cx);
+        assert_eq!(shell.flash(cx).as_deref(), Some(ZOOMED_NO_RESIZE));
+        assert_eq!(grow_row(cx), Some(ZOOMED_NO_RESIZE));
+        window.press("ctrl-shift-m", cx);
+        window.render_frame(cx);
+        assert_eq!(grow_row(cx), None);
+        // Shrunk to the floor: the step says so.
+        for _ in 0..40 {
+            leader(window, "h", cx);
+        }
+        assert_eq!(shell.flash(cx).as_deref(), Some(AT_MINIMUM_SIZE));
     })
     .unwrap();
 }

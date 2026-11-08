@@ -58,7 +58,7 @@ use crate::status_row::Status;
 /// One settings write at a time, process-wide: each reads the settings as
 /// they are when it runs and puts its change in them before the next one
 /// runs ([`write_settings`]), so the last one to run writes the newest.
-static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+pub(super) static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
 
 impl Workspace {
     /// Whether a vault change is under way.

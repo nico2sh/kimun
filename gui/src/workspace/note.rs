@@ -722,7 +722,9 @@ impl Workspace {
                 tracing::warn!("quitting with unsaved edits to {note}");
                 eprintln!("kimun-gui: quitting with unsaved edits to {note}");
             }
-            async {}
+            // The layout's last write lands before the app goes.
+            let layout_writer = workspace.layout_writer.clone();
+            async move { layout_writer.flush() }
         }));
     }
 

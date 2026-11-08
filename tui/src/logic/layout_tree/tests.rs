@@ -1065,3 +1065,65 @@ fn fit_collapses_trailing_slots_skips_undrawn_and_keeps_groups() {
     assert_eq!(fit.rects[0].0, g);
     assert!((fit.rects[0].1.width() - 15.0).abs() < 1e-9);
 }
+
+#[test]
+fn side_queries_follow_the_active_group() {
+    let t = tree();
+    let (left, right) = sides(&t);
+    assert_eq!(t.side_slots(Side::Left), vec![left]);
+    assert_eq!(t.side_slots(Side::Right), vec![right]);
+    assert_eq!(t.slot_side(left), Side::Left);
+    assert_eq!(t.slot_side(right), Side::Right);
+    assert_eq!(t.slot_beside_rail(), Some(left));
+    assert!(!t.slot_stacked(left, &|_| true));
+}
+
+#[test]
+fn slot_stacked_sees_a_slot_in_the_same_column_that_is_drawn() {
+    let mut t = tree();
+    let (left, _) = sides(&t);
+    let below = t.split_slot(left, Axis::Vertical).unwrap();
+    assert!(t.slot_stacked(left, &|_| true));
+    assert!(!t.slot_stacked(left, &|s| s != below));
+    assert_eq!(t.slot_beside_rail(), Some(left));
+}
+
+#[test]
+fn focus_dir_among_measures_the_layout_as_drawn() {
+    // Editor | X over Y | P (1) over Q (2). Y hidden: X is drawn full
+    // height, so Q (two thirds of it) is the larger overlap. Measured on
+    // the full tree X is the top half and P would win.
+    let s: Vec<SlotId> = (0..5).map(SlotId::new).collect();
+    let (x, y, p, q) = (s[1], s[2], s[3], s[4]);
+    let g = GroupId::new(0);
+    let col = |a, wa, b, wb| {
+        Node::split(
+            Axis::Vertical,
+            vec![
+                (wa, Node::leaf(Leaf::Slot(a))),
+                (wb, Node::leaf(Leaf::Slot(b))),
+            ],
+        )
+    };
+    let root = Node::split(
+        Axis::Horizontal,
+        vec![
+            (1.0, Node::leaf(Leaf::Group(g))),
+            (1.0, col(x, 1.0, y, 1.0)),
+            (1.0, col(p, 1.0, q, 2.0)),
+        ],
+    );
+    let slots = BTreeMap::from([
+        (x, (vec!["x"], Some("x"))),
+        (y, (vec!["y"], None)),
+        (p, (vec!["p"], Some("p"))),
+        (q, (vec!["q"], Some("q"))),
+    ]);
+    let mut t = Tree::from_parts(root, slots).unwrap();
+    assert!(t.focus(leaf(Leaf::Slot(x))));
+    let visible = move |l: Leaf| l != Leaf::Slot(y);
+    assert_eq!(
+        t.focus_dir_among(Dir::Right, &visible),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(q)))
+    );
+}

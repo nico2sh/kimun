@@ -43,6 +43,15 @@
 //! [shape]: kimun_notes::logic::layout_tree::LayoutTree::shape
 //! [`resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
 
+/// Why leader grow / shrink does nothing: the keyboard is on the rail.
+pub(crate) const FOCUS_TO_RESIZE: &str = "Focus a view or the editor to resize it";
+/// ... zoom shows one leaf, with no divider.
+pub(crate) const ZOOMED_NO_RESIZE: &str = "Leave zoom to resize";
+/// ... the focused leaf has no divider beside it on screen.
+pub(crate) const NOTHING_TO_RESIZE: &str = "Nothing to resize here";
+/// ... the divider is already at both sides' minimum.
+pub(crate) const AT_MINIMUM_SIZE: &str = "Already at the minimum size";
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -730,14 +739,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Focus::Leaf(leaf) = self.layout.focused() else {
-            return;
-        };
-        let Some((divider, leaf_before)) = self.divider_beside(&self.layout.shape(), leaf) else {
-            return;
+        let (divider, leaf_before) = match self.resize_target() {
+            Ok(target) => target,
+            Err(reason) => return self.flash(reason, cx),
         };
         let Some(cell) = self.divider_cells.borrow().get(&divider).copied() else {
-            return;
+            return self.flash(NOTHING_TO_RESIZE, cx);
         };
         let step = if grow == leaf_before {
             RESIZE_STEP
@@ -746,12 +753,36 @@ impl Workspace {
         };
         let rem = f64::from(window.rem_size());
         let Some(share) = cell.share_at(cell.first() + step * cell.pair(), rem) else {
-            return;
+            return self.flash(AT_MINIMUM_SIZE, cx);
         };
         if self.resize_after_visible(divider, share) {
             self.save_layout(cx);
             cx.notify();
+        } else {
+            self.flash(AT_MINIMUM_SIZE, cx);
         }
+    }
+
+    /// Why leader grow / shrink cannot act now, from what the focused leaf
+    /// and the drawn layout are (the palette greys the rows with it): the
+    /// rail or a zoom has no divider to move, nor a leaf alone on screen.
+    /// The floors are not checked here: they depend on the window's size
+    /// and the step says so when it hits one.
+    pub(super) fn resize_block(&self) -> Option<&'static str> {
+        self.resize_target().err()
+    }
+
+    /// The divider the focused leaf's grow / shrink moves (see
+    /// [`Self::step_focused_leaf`]), or why there is none.
+    fn resize_target(&self) -> Result<(Leaf, bool), &'static str> {
+        let Focus::Leaf(leaf) = self.layout.focused() else {
+            return Err(FOCUS_TO_RESIZE);
+        };
+        if self.layout.zoomed().is_some() {
+            return Err(ZOOMED_NO_RESIZE);
+        }
+        self.divider_beside(&self.layout.shape(), leaf)
+            .ok_or(NOTHING_TO_RESIZE)
     }
 
     /// The divider beside `leaf` in `shape` (see

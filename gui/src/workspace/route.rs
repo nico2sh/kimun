@@ -107,8 +107,12 @@ impl Workspace {
                 Some(_) => None,
                 None => Some(NO_NOTE),
             },
-            // Zen; grow and shrink resize the focused leaf.
-            LeaderRoute::Layout(_) => None,
+            // Zen always runs; grow and shrink need a divider beside the
+            // focused leaf (its floors are said when the step hits one).
+            LeaderRoute::Layout(LayoutStep::Zen) => None,
+            LeaderRoute::Layout(LayoutStep::GrowDrawer | LayoutStep::ShrinkDrawer) => {
+                self.resize_block()
+            }
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex)
                 if has_vault =>
