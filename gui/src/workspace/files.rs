@@ -1004,7 +1004,7 @@ impl Workspace {
                 self.focus_panel(Panel::Editor, window, cx);
                 self.open_attachment(path, cx);
             }
-            FilesEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            FilesEvent::Dismiss => self.dismiss_to_editor(window, cx),
             FilesEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
             }

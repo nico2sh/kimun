@@ -27,7 +27,6 @@ use gpui_kit::{
     Styled as _, Subscription, Window, div,
 };
 use kimun_core::NoteVault;
-use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListSetup};
 use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::nav::DrawerView;
@@ -270,7 +269,7 @@ impl Workspace {
         match event {
             DrawerListEvent::Activate(row) => self.run_tag_query(&row.label, window, cx),
             DrawerListEvent::Verb(..) => {}
-            DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
             // Tags are not vault entries: no menu.
             DrawerListEvent::FileOp(..) => {}
         }
@@ -285,7 +284,7 @@ impl Workspace {
     ) {
         match event {
             TagsEvent::Run(label) => self.run_tag_query(label, window, cx),
-            TagsEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            TagsEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
     }
 

@@ -34,6 +34,13 @@
 //! leader's grow and shrink steps move a divider of the focused leaf by
 //! [`RESIZE_STEP`] ([`Workspace::step_focused_leaf`]).
 //!
+//! **Zoom** (ADR-0053). While a leaf is zoomed only it is drawn, filling
+//! the whole area with the Footer under it (an editor group's own), and
+//! only it counts as visible: no fit, nothing collapsed, no divider. Zoom
+//! ends when its leaf is no longer drawn or the keyboard goes to another
+//! leaf ([`Workspace::settle_zoom`]); the tree never changes, so leaving
+//! zoom draws the arrangement as it was.
+//!
 //! [shape]: kimun_notes::logic::layout_tree::LayoutTree::shape
 //! [`resize_after`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after
 
@@ -286,24 +293,49 @@ impl Workspace {
     }
 
     /// Fit the tree to the window for this frame: remember what collapsed
-    /// (session only), and move the keyboard off a leaf that did.
+    /// (session only), and move the keyboard off a leaf that did. While
+    /// zoomed the zoomed leaf alone fills the area, so nothing collapses
+    /// ([`Self::settle_zoom`] first ends a zoom that no longer holds).
     pub(super) fn refit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.collapsed = self
-            .fit(window)
-            .collapsed
-            .into_iter()
-            .collect::<HashSet<_>>();
+        let unzoomed = self.settle_zoom();
+        self.collapsed = if self.layout.zoomed().is_some() {
+            HashSet::new()
+        } else {
+            self.fit(window).collapsed.into_iter().collect()
+        };
         if let Focus::Leaf(leaf) = self.layout.focused()
-            && self.collapsed.contains(&leaf)
+            && (self.collapsed.contains(&leaf) || (unzoomed && !self.leaf_visible(leaf)))
         {
             self.fix_focus();
             cx.defer_in(window, |this, window, cx| this.apply_focus(window, cx));
         }
     }
 
-    /// Whether `leaf` is on screen: drawn and not collapsed.
+    /// End zoom when it no longer holds (ADR-0053): its leaf is no longer
+    /// drawn (a toggle or move hid its view), or a command gave another
+    /// leaf the keyboard (the rail click, opening a view or a note: the
+    /// user asked to see something else; the rail itself does not count).
+    /// Closing the zoomed leaf already ended it in the model. Whether it
+    /// ended now.
+    fn settle_zoom(&mut self) -> bool {
+        let Some(zoomed) = self.layout.zoomed() else {
+            return false;
+        };
+        let elsewhere = matches!(self.layout.focused(), Focus::Leaf(leaf) if leaf != zoomed);
+        if self.leaf_drawn(zoomed) && !elsewhere {
+            return false;
+        }
+        self.layout.zoom(None);
+        true
+    }
+
+    /// Whether `leaf` is on screen: while zoomed only the zoomed leaf;
+    /// otherwise drawn and not collapsed.
     pub(super) fn leaf_visible(&self, leaf: Leaf) -> bool {
-        self.leaf_drawn(leaf) && !self.collapsed.contains(&leaf)
+        match self.layout.zoomed() {
+            Some(zoomed) => leaf == zoomed && self.leaf_drawn(leaf),
+            None => self.leaf_drawn(leaf) && !self.collapsed.contains(&leaf),
+        }
     }
 
     /// The minimum (width, height) of what is visible in `shape`, in px,
@@ -334,12 +366,18 @@ impl Workspace {
     }
 
     /// The layout tree, right of the rail: it takes the width the rail
-    /// leaves and the height under the title bar.
+    /// leaves and the height under the title bar. While zoomed (ADR-0053)
+    /// only the zoomed leaf is drawn there, no other slot, group or
+    /// divider; a zoomed slot has the Footer under it (an editor group
+    /// carries its own).
     pub(super) fn render_tree(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let shape = self.layout.shape();
         // Measured afresh as this tree is laid out.
         self.divider_cells.borrow_mut().clear();
         let rem = f64::from(window.rem_size());
+        if let Some(zoomed) = self.layout.zoomed() {
+            return self.render_zoomed(zoomed, window, rem, cx);
+        }
+        let shape = self.layout.shape();
         let tree = self
             .render_node(&shape, self.tree_area(window), (false, false), rem, cx)
             // Every tree holds an editor group, which is always drawn; a
@@ -352,6 +390,49 @@ impl Workspace {
             .min_w_0()
             .h_full()
             .child(tree)
+            .into_any_element()
+    }
+
+    /// The zoomed `leaf` filling the tree's area: an editor group is the
+    /// editor Panel, Footer included; a slot is drawn over the Footer. No
+    /// minimum applies: the leaf has the whole area.
+    fn render_zoomed(
+        &self,
+        leaf: Leaf,
+        window: &mut Window,
+        rem: f64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let content = match leaf {
+            Leaf::Group(_) => self.render_editor(cx).into_any_element(),
+            Leaf::Slot(_) => {
+                let slot = self
+                    .render_node(
+                        &TreeShape::Leaf(leaf),
+                        self.tree_area(window),
+                        (false, false),
+                        rem,
+                        cx,
+                    )
+                    .unwrap_or_else(|| div().flex_1().into_any_element());
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(div().flex().flex_1().min_h_0().child(slot))
+                    .child(self.render_footer(false, cx))
+                    .into_any_element()
+            }
+        };
+        div()
+            .id("layout-tree")
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(content)
             .into_any_element()
     }
 

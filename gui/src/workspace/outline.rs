@@ -241,7 +241,7 @@ impl Workspace {
         match event {
             DrawerListEvent::Activate(row) => self.jump_to_heading(&row.target, window, cx),
             DrawerListEvent::Verb(..) => {}
-            DrawerListEvent::Dismiss => self.focus_panel(Panel::Editor, window, cx),
+            DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
             // OUTLINE rows have no menu.
             DrawerListEvent::FileOp(..) => {}
         }
