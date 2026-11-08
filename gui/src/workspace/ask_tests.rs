@@ -859,7 +859,18 @@ fn ask_toggles_like_any_view_and_never_replaces_the_editor(cx: &mut TestAppConte
         Some("Alpha says hi [1].")
     );
 
-    // A note opened from FILES: it opens in the editor, ASK stays.
+    // A note opened from FILES: it opens in the editor, ASK stays. The
+    // listing arrives in batches: wait for the row, not for any row.
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            let files = started.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).model().core().is_some_and(|core| {
+                core.visible_rows()
+                    .into_iter()
+                    .any(|r| r.path().is_like(&path("b.md")))
+            })
+        })
+    });
     let row = cx.read(|cx| {
         let files = started.workspace.read(cx).files.clone().unwrap();
         let pane = files.read(cx);

@@ -406,7 +406,11 @@ fn a_switch_leaves_nothing_of_the_old_vault(cx: &mut TestAppContext) {
         assert!(!after.contains(id), "a view of A survived the switch");
     }
     started.sw_reveal(DrawerView::Files, cx);
-    drive(&rt, cx, |cx| !files_rows(&started, cx).is_empty());
+    // The listing arrives in batches: wait for the row asserted below, not
+    // for any row.
+    drive(&rt, cx, |cx| {
+        files_rows(&started, cx).contains(&"beta.md".to_string())
+    });
     let files = files_rows(&started, cx);
     assert!(files.contains(&"beta.md".to_string()), "{files:?}");
     assert!(!files.iter().any(|r| r.contains("alpha")), "{files:?}");

@@ -7,7 +7,8 @@
 //! **Rows.** The leaves come from the configured leader tree
 //! (`logic::palette::palette_rows`, labelled `+group · leaf`); the GUI-only
 //! rows (`+window · toggle right side`, moving views and `move view to…`
-//! (the move chooser), splitting and closing slots, directional focus, find and replace, following a link) follow them,
+//! (the move chooser), splitting and closing slots, directional focus,
+//! find and replace, following a link) follow them,
 //! then the layout preset rows (`Apply layout preset: <name>` per loaded
 //! preset, `Reload layout presets`, `Reset to preset`). A
 //! row the window cannot run is shown disabled with the reason in its
@@ -48,6 +49,7 @@ use kimun_notes::logic::palette::palette_rows;
 
 use super::Workspace;
 use super::files::ClickPolicy;
+use super::keyboard_help::action_label;
 use super::modal::{ModalKind, Slot};
 use super::presets::PresetCommand;
 use super::route::{
@@ -74,7 +76,8 @@ pub(crate) enum PaletteRun {
     MoveViewTo,
 }
 
-/// The move chooser's row: after the move rows, before splitting.
+/// The move chooser's row: after the move rows, before splitting (its
+/// place in [`chord_rows`]).
 const MOVE_VIEW_TO: &str = "+window · move view to…";
 
 /// One row of the palette.
@@ -166,47 +169,87 @@ impl PaletteEntry {
 /// The GUI's own commands the palette offers next to the leader leaves:
 /// what the GUI keymap binds that no leaf reaches (ADR-0050 §6: under vim the
 /// palette is the route to every app command).
-fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
+fn chord_rows() -> Vec<(String, PaletteRun)> {
     use ActionShortcuts as A;
     vec![
-        ("+window · toggle left side", A::ToggleSidebar),
-        ("+window · toggle right side", A::ToggleRightDrawer),
-        ("+window · focus left", A::FocusRegion(Dir::Left)),
-        ("+window · focus right", A::FocusRegion(Dir::Right)),
-        ("+window · focus up", A::FocusRegion(Dir::Up)),
-        ("+window · focus down", A::FocusRegion(Dir::Down)),
+        window_row(A::ToggleSidebar),
+        window_row(A::ToggleRightDrawer),
         (
-            "+window · move view left (new slot if none)",
-            A::MoveViewToNeighbour(Dir::Left),
+            "+window · focus left".into(),
+            PaletteRun::Chord(A::FocusRegion(Dir::Left)),
         ),
         (
-            "+window · move view right (new slot if none)",
-            A::MoveViewToNeighbour(Dir::Right),
+            "+window · focus right".into(),
+            PaletteRun::Chord(A::FocusRegion(Dir::Right)),
         ),
         (
-            "+window · move view up (new slot if none)",
-            A::MoveViewToNeighbour(Dir::Up),
+            "+window · focus up".into(),
+            PaletteRun::Chord(A::FocusRegion(Dir::Up)),
         ),
         (
-            "+window · move view down (new slot if none)",
-            A::MoveViewToNeighbour(Dir::Down),
+            "+window · focus down".into(),
+            PaletteRun::Chord(A::FocusRegion(Dir::Down)),
+        ),
+        window_row(A::MoveViewToNeighbour(Dir::Left)),
+        window_row(A::MoveViewToNeighbour(Dir::Right)),
+        window_row(A::MoveViewToNeighbour(Dir::Up)),
+        window_row(A::MoveViewToNeighbour(Dir::Down)),
+        (MOVE_VIEW_TO.into(), PaletteRun::MoveViewTo),
+        window_row(A::SplitSlotRight),
+        window_row(A::SplitSlotDown),
+        (
+            "+window · close slot".into(),
+            PaletteRun::Chord(A::CloseSlot),
         ),
         (
-            "+window · split slot right (pick a view)",
-            A::SplitSlotRight,
+            "+window · toggle zoom".into(),
+            PaletteRun::Chord(A::ToggleZoom),
         ),
-        ("+window · split slot down (pick a view)", A::SplitSlotDown),
-        ("+window · close slot", A::CloseSlot),
-        ("+window · toggle zoom", A::ToggleZoom),
-        ("+text · find in note", A::FindInBuffer),
-        ("+text · replace in note", A::ReplaceInBuffer),
-        ("+links · follow link at caret", A::FollowLink),
-        ("+links · copy selected row", A::YankRow),
-        ("+note · quick note…", A::QuickNote),
-        ("+find · save query…", A::SaveCurrentQuery),
+        (
+            "+text · find in note".into(),
+            PaletteRun::Chord(A::FindInBuffer),
+        ),
+        (
+            "+text · replace in note".into(),
+            PaletteRun::Chord(A::ReplaceInBuffer),
+        ),
+        (
+            "+links · follow link at caret".into(),
+            PaletteRun::Chord(A::FollowLink),
+        ),
+        (
+            "+links · copy selected row".into(),
+            PaletteRun::Chord(A::YankRow),
+        ),
+        (
+            "+note · quick note…".into(),
+            PaletteRun::Chord(A::QuickNote),
+        ),
+        (
+            "+find · save query…".into(),
+            PaletteRun::Chord(A::SaveCurrentQuery),
+        ),
         // The focused list (FILES or FIND); FILES when none is focused.
-        ("+view · sort…", A::OpenSortDialog),
+        ("+view · sort…".into(), PaletteRun::Chord(A::OpenSortDialog)),
     ]
+}
+
+/// Why a command on the focused slot cannot run from the palette: only
+/// a slot (a drawer panel) has the keyboard for it.
+fn slot_focus_block(opener: Panel) -> Option<&'static str> {
+    (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_SLOT_FOCUS)
+}
+
+/// A `+window` palette row for `action`, labelled as the keyboard
+/// reference labels it ([`action_label`]), so the two cannot disagree.
+fn window_row(action: ActionShortcuts) -> (String, PaletteRun) {
+    let label = action_label(&action);
+    let mut chars = label.chars();
+    let lowered = chars
+        .next()
+        .map(|c| c.to_lowercase().chain(chars).collect::<String>())
+        .unwrap_or_default();
+    (format!("+window · {lowered}"), PaletteRun::Chord(action))
 }
 
 /// The chord a leaf shares its effect with, for the hint.
@@ -364,30 +407,22 @@ impl Workspace {
                     run: PaletteRun::Leaf(row.action),
                 }
             });
-        let mut chords: Vec<PaletteEntry> = chord_rows()
-            .into_iter()
-            .map(|(label, action)| PaletteEntry {
-                label: label.into(),
-                hint: keymap.chord_for(&action),
-                sequence: None,
-                blocked: self.chord_block(&action, opener, cx),
-                run: PaletteRun::Chord(action),
-            })
-            .collect();
-        let after_moves = chords
-            .iter()
-            .position(|e| e.run == PaletteRun::Chord(ActionShortcuts::SplitSlotRight))
-            .unwrap_or(chords.len());
-        chords.insert(
-            after_moves,
+        let chords = chord_rows().into_iter().map(|(label, run)| {
+            let (hint, blocked) = match &run {
+                PaletteRun::Chord(action) => (
+                    keymap.chord_for(action),
+                    self.chord_block(action, opener, cx),
+                ),
+                _ => (None, slot_focus_block(opener)),
+            };
             PaletteEntry {
-                label: MOVE_VIEW_TO.into(),
-                hint: None,
+                label: label.into(),
+                hint,
                 sequence: None,
-                blocked: (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_SLOT_FOCUS),
-                run: PaletteRun::MoveViewTo,
-            },
-        );
+                blocked,
+                run,
+            }
+        });
         let presets = self
             .preset_rows()
             .into_iter()
@@ -414,9 +449,7 @@ impl Workspace {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
             A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
-            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => {
-                (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_SLOT_FOCUS)
-            }
+            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => slot_focus_block(opener),
             A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
             A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
@@ -474,11 +507,10 @@ impl Workspace {
                 self.workspace_command(&action, None, window, cx);
             }
             PaletteRun::Preset(command) => self.run_preset_command(command, window, cx),
-            PaletteRun::MoveViewTo => {
-                if let Some(slot) = self.focused_slot() {
-                    self.open_move_chooser(slot, window, cx);
-                }
-            }
+            PaletteRun::MoveViewTo => match self.focused_slot() {
+                Some(slot) => self.open_move_chooser(slot, window, cx),
+                None => self.flash("Focus a slot to move its view", cx),
+            },
         }
         cx.notify();
     }

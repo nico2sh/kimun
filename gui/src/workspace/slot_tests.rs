@@ -543,7 +543,8 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
 
         // Closing the right slot merges its views, hidden, into the
         // nearest slot (the left one: the editor takes the area over); the
-        // keyboard goes to the editor, since that slot shows nothing.
+        // keyboard goes there, since FIND, promoted when FILES left it,
+        // is shown.
         window.press("alt-shift-right", cx);
         let right = shell.slots(cx)[1];
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(right)));
@@ -555,8 +556,8 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         );
         assert_eq!(
             shell.focused(cx),
-            Panel::Editor,
-            "its absorber is not drawn"
+            Panel::Drawer(Side::Left),
+            "its absorber is drawn"
         );
         // The last slot stays.
         window.click(rail_cell_id(DrawerView::Files), cx);
@@ -1752,7 +1753,7 @@ fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
             saved_shown(&path),
             [
                 Some(DrawerView::Files),
-                None,
+                Some(DrawerView::Semantic),
                 Some(DrawerView::Outline),
                 Some(DrawerView::Find)
             ]
