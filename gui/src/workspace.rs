@@ -249,16 +249,29 @@ pub(crate) enum LayoutStore {
     File(PathBuf),
 }
 
+/// What a layout save does with the recorded `layout_preset`.
+#[derive(Clone, Copy)]
+enum PresetRecord<'a> {
+    /// Leave it as it is (a drag, a toggle, a moved view).
+    Keep,
+    /// Record this preset (it was just applied).
+    Set(&'a str),
+    /// Remove it (the default layout was installed).
+    Clear,
+}
+
 impl LayoutStore {
-    /// Write `layout` into the store's `[gui]` table, and with `preset`
+    /// Write `layout` into the store's `[gui]` table, and per `preset`
     /// the name of the preset it was applied from (`layout_preset`). A
     /// failure is logged and otherwise ignored: the layout in the window is
     /// still right.
-    fn save(&self, layout: &LayoutTree<DrawerView>, preset: Option<&str>) {
+    fn save(&self, layout: &LayoutTree<DrawerView>, preset: PresetRecord<'_>) {
         let edit = |gui: &mut kimun_notes::settings::gui::GuiSettings| {
             shell_tree::record(layout, gui);
-            if let Some(name) = preset {
-                gui.set_layout_preset(Some(name));
+            match preset {
+                PresetRecord::Keep => {}
+                PresetRecord::Set(name) => gui.set_layout_preset(Some(name)),
+                PresetRecord::Clear => gui.set_layout_preset(None),
             }
         };
         let result = match self {
@@ -1227,16 +1240,22 @@ impl Workspace {
     /// Persist the layout, and bring the views it shows (or stopped
     /// showing) up to date: a reveal refreshes LINKS and OUTLINE.
     fn save_layout(&mut self, cx: &mut Context<Self>) {
-        self.save_layout_with(None, cx);
+        self.save_layout_with(PresetRecord::Keep, cx);
     }
 
     /// [`Self::save_layout`], recording `name` as the preset the layout
     /// was applied from ([`presets`]).
     fn save_layout_as_preset(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.save_layout_with(Some(name), cx);
+        self.save_layout_with(PresetRecord::Set(name), cx);
     }
 
-    fn save_layout_with(&mut self, preset: Option<&str>, cx: &mut Context<Self>) {
+    /// [`Self::save_layout`], removing the recorded preset: the layout
+    /// comes from none ("Reset layout to default").
+    fn save_layout_clearing_preset(&mut self, cx: &mut Context<Self>) {
+        self.save_layout_with(PresetRecord::Clear, cx);
+    }
+
+    fn save_layout_with(&mut self, preset: PresetRecord<'_>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
         self.store.save(&self.layout, preset);
         self.refresh_views(cx);
