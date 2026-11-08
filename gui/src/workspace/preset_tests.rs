@@ -16,10 +16,12 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::settings::gui::GuiSettings;
 
-use super::LayoutStore;
+use kimun_notes::rag::RagStatus;
+
 use super::palette::PaletteRun;
 use super::presets::{self, PRESETS_FILE, PresetCommand};
 use super::tests::{Shell, open_shell, saved, temp_config};
+use super::{LayoutStore, rail_cell_id, slot_id};
 use crate::shell_tree;
 
 /// A TOML document, one line per entry.
@@ -254,10 +256,13 @@ fn apply_preset_copies_into_live_state_and_saves(cx: &mut TestAppContext) {
     assert!(rows(&shell, cx).contains(&("Reset to preset".to_string(), None)));
 }
 
-/// A view the server does not offer now is left out, the preset still
-/// applies, and one notice says which.
+/// A preset naming SEM, applied before the server reports (caps still
+/// the default, SEM not offered), keeps SEM where the preset puts it, live
+/// and in the saved `[gui.layout]`, with no notice: availability is the
+/// rail's concern, as for the startup restore (Ruling 18). When the server
+/// then says it can search, SEM's cell comes and the view stays shown.
 #[gpui_kit::test]
-fn apply_preset_skips_unavailable_views_with_one_notice(cx: &mut TestAppContext) {
+fn apply_preset_keeps_a_view_the_server_does_not_offer_yet(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
     let text = lines(&[
         "[preset.sem]",
@@ -268,15 +273,87 @@ fn apply_preset_skips_unavailable_views_with_one_notice(cx: &mut TestAppContext)
         "]",
     ]);
     let shell = open_with(cx, &config, Some(&text));
+    assert!(!cx.read(|cx| shell.workspace.read(cx).rag_caps().semantic));
     apply(&shell, cx, "sem");
     let got = live(&shell, cx);
-    assert_eq!(got.slot_views(got.slots()[0]), [DrawerView::Files]);
+    let left = got.slots()[0];
+    assert_eq!(
+        got.slot_views(left),
+        [DrawerView::Files, DrawerView::Semantic]
+    );
+    assert_eq!(got.shown(left), Some(DrawerView::Semantic));
+    assert!(flashes(&shell, cx).is_empty(), "{:?}", flashes(&shell, cx));
+    let back = saved_tree(&config);
+    assert_eq!(
+        back.slot_views(back.slots()[0]),
+        [DrawerView::Files, DrawerView::Semantic]
+    );
+    assert_eq!(back.shown(back.slots()[0]), Some(DrawerView::Semantic));
+    assert_eq!(saved(&config).layout_preset().as_deref(), Some("sem"));
+
+    // The server comes up: SEM is offered on the rail and still shown.
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell.workspace.update(cx, |w, cx| {
+            w.on_rag_status(
+                RagStatus::Online {
+                    llm_available: false,
+                },
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(rail_cell_id(DrawerView::Semantic))
+                .is_some()
+        );
+        assert!(window.try_find(slot_id(DrawerView::Semantic)).is_some());
+    })
+    .unwrap();
+    assert_eq!(live(&shell, cx).shown(left), Some(DrawerView::Semantic));
+}
+
+/// Before the server reports, a preset placing SEM and ASK keeps SEM's
+/// placement (live and saved). ASK follows the rule the startup restore
+/// and `record` already have: it is never part of a restored or saved
+/// layout (it shows only beside its Thread), so it is skipped under the
+/// restore caps with one notice naming it, and the saved layout has no ASK.
+#[gpui_kit::test]
+fn applying_a_preset_before_the_server_reports_keeps_sem_and_ask_placement(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, config) = temp_config();
+    let text = lines(&[
+        "[preset.rag]",
+        "split = \"horizontal\"",
+        "children = [",
+        "    { views = [\"files\"], shown = \"files\" },",
+        "    { editor = true },",
+        "    { split = \"vertical\", children = [",
+        "        { views = [\"semantic\"], shown = \"semantic\" },",
+        "        { views = [\"ask\", \"links\"], shown = \"ask\" },",
+        "    ] },",
+        "]",
+    ]);
+    let shell = open_with(cx, &config, Some(&text));
+    apply(&shell, cx, "rag");
+    let got = live(&shell, cx);
+    let slots = got.slots();
+    assert_eq!(slots.len(), 3);
+    assert_eq!(got.shown(slots[1]), Some(DrawerView::Semantic));
+    assert_eq!(got.view_slot(&DrawerView::Ask), None);
+    assert_eq!(got.slot_views(slots[2]), [DrawerView::Links]);
     let shown = flashes(&shell, cx);
     assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(!shown[0].1, "a warning, not an error");
-    assert!(shown[0].0.contains("\"sem\""), "{shown:?}");
-    assert!(shown[0].0.contains("\"semantic\""), "{shown:?}");
-    assert_eq!(saved(&config).layout_preset().as_deref(), Some("sem"));
+    assert!(!shown[0].1, "a notice, not an error");
+    assert!(shown[0].0.contains("\"rag\""), "{shown:?}");
+    assert!(shown[0].0.contains("\"ask\""), "{shown:?}");
+    assert!(!shown[0].0.contains("\"semantic\""), "{shown:?}");
+    // Saved as the startup restore would read it back: SEM kept, no ASK.
+    let back = saved_tree(&config);
+    assert_eq!(back.shown(back.slots()[1]), Some(DrawerView::Semantic));
+    assert_eq!(back.view_slot(&DrawerView::Ask), None);
+    assert_eq!(spec::to_spec(&back), spec::to_spec(&got));
 }
 
 #[gpui_kit::test]
@@ -418,13 +495,12 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
     let shell = open_with(cx, &config, Some(&two_presets()));
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
-            // A split's empty slot, a side toggled off, a zoomed leaf.
+            // A side toggled off, a split's empty slot, a zoomed leaf.
+            w.toggle_side(kimun_notes::logic::layout::Side::Left, window, cx);
             let left = w.layout.slots()[0];
             let new = w.layout.split_slot(left, Axis::Vertical).unwrap();
             w.opened_empty.insert(new);
-            w.toggle_side(kimun_notes::logic::layout::Side::Left, window, cx);
             w.layout.zoom(Some(Leaf::Group(w.layout.active_group())));
-            w.collapsed.insert(Leaf::Slot(left));
         });
         window.render_frame(cx);
     })
@@ -432,6 +508,8 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
     cx.read(|cx| {
         let w = shell.workspace.read(cx);
         assert!(w.side_memory.iter().any(|m| !m.is_empty()));
+        assert!(!w.opened_empty.is_empty());
+        assert!(w.layout.zoomed().is_some());
     });
 
     apply(&shell, cx, "research");
@@ -439,8 +517,8 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
         let w = shell.workspace.read(cx);
         assert!(w.opened_empty.is_empty());
         assert!(w.side_memory.iter().all(Vec::is_empty));
+        // Zoom lives in the tree, which the preset replaced.
         assert_eq!(w.layout.zoomed(), None);
-        assert!(w.collapsed.is_empty(), "{:?}", w.collapsed);
     });
 }
 
