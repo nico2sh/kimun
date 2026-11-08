@@ -42,7 +42,19 @@ fn describe(chord: KeyInput) -> String {
 }
 
 fn ctx(panel: Panel, vim: bool) -> KeyCtx {
-    KeyCtx { panel, vim }
+    KeyCtx {
+        panel,
+        vim,
+        query: false,
+    }
+}
+
+/// Where a query is typed (FIND, the search browser) over `panel`.
+fn query_ctx(panel: Panel) -> KeyCtx {
+    KeyCtx {
+        query: true,
+        ..ctx(panel, false)
+    }
 }
 
 fn table(keymap: &Keymap) -> Vec<(String, ActionShortcuts)> {
@@ -183,6 +195,7 @@ fn default_tables() {
             lw("alt+shift+up", A::MoveViewUp),
             lw("alt+shift+down", A::MoveViewDown),
             lw("f(1)", A::KeyboardHelp),
+            lw("f(1)", A::QuerySyntax),
         ]
     );
     assert_eq!(
@@ -224,6 +237,7 @@ fn default_tables() {
             lw("cmd+alt+shift+up", A::MoveViewUp),
             lw("cmd+alt+shift+down", A::MoveViewDown),
             lw("f(1)", A::KeyboardHelp),
+            lw("f(1)", A::QuerySyntax),
         ]
     );
 }
@@ -256,8 +270,9 @@ fn preferences_are_f4_and_primary_comma_from_every_panel() {
 }
 
 /// The keyboard reference (M10d) is a bare F1 on both platforms, from every
-/// panel, under vim too (no letter: no twin, nothing for the vim rule), and
-/// nothing else holds F1. An override moves it like any other action.
+/// panel, under vim too (no letter: no twin, nothing for the vim rule),
+/// wherever no query is typed; the query syntax holds F1 only where one is.
+/// An override moves it like any other action.
 #[test]
 fn keyboard_help_is_f1_from_every_panel_on_both_platforms() {
     let f1 = KeyInput::plain(Key::F(1));
@@ -276,8 +291,13 @@ fn keyboard_help_is_f1_from_every_panel_on_both_platforms() {
         let holders: Vec<_> = table(&keymap)
             .into_iter()
             .filter(|(c, _)| c == "f(1)")
+            .map(|(_, a)| a)
             .collect();
-        assert_eq!(holders.len(), 1, "{platform:?}: F1 is the reference's only");
+        assert_eq!(
+            holders,
+            [A::KeyboardHelp, A::QuerySyntax],
+            "{platform:?}: F1 is the reference's, and the query syntax's where a query is typed"
+        );
     }
     let (moved, errors) = Keymap::load(
         LinuxWindows,
@@ -296,6 +316,64 @@ fn keyboard_help_is_f1_from_every_panel_on_both_platforms() {
         [KeyInput::plain(Key::F(12))]
     );
     assert_eq!(moved.resolve(f1, ctx(Panel::Editor, false)), None);
+}
+
+/// The query syntax is F1 where a query is typed (FIND, the search browser,
+/// over any panel), shadowing the keyboard reference only there. Rebound
+/// under `[gui.keys]` it moves: F1 is the reference everywhere again. It
+/// still collides with a panel-scoped chord, and with another query chord.
+#[test]
+fn query_syntax_is_f1_only_where_a_query_is_typed() {
+    let f1 = KeyInput::plain(Key::F(1));
+    for platform in [LinuxWindows, MacOs] {
+        let keymap = Keymap::defaults(platform);
+        assert_eq!(keymap.chords_for(&A::QuerySyntax), [f1]);
+        for panel in PANELS {
+            assert_eq!(
+                keymap.resolve(f1, query_ctx(panel)),
+                Some(&A::QuerySyntax),
+                "{platform:?} {panel:?}"
+            );
+            assert_eq!(
+                keymap.resolve(f1, ctx(panel, false)),
+                Some(&A::KeyboardHelp)
+            );
+        }
+        // Other chords resolve as usual where a query is typed.
+        assert_eq!(
+            keymap.resolve(
+                KeyInput::plain(Key::F(4)),
+                query_ctx(Panel::Drawer(Side::Left))
+            ),
+            Some(&A::OpenPreferences)
+        );
+    }
+
+    let (moved, errors) = Keymap::load(LinuxWindows, &overrides(&[("QuerySyntax", &["f9"])]));
+    assert!(errors.is_empty(), "{errors:?}");
+    let f9 = KeyInput::plain(Key::F(9));
+    assert_eq!(moved.chords_for(&A::QuerySyntax), [f9]);
+    assert_eq!(
+        moved.resolve(f9, query_ctx(Panel::Editor)),
+        Some(&A::QuerySyntax)
+    );
+    assert_eq!(moved.resolve(f9, ctx(Panel::Editor, false)), None);
+    assert_eq!(
+        moved.resolve(f1, query_ctx(Panel::Drawer(Side::Left))),
+        Some(&A::KeyboardHelp),
+        "F1 is the reference's again where a query is typed"
+    );
+
+    // A drawer-scoped chord (the sort dialog's) is not free for it.
+    let (_, errors) = Keymap::load(LinuxWindows, &overrides(&[("QuerySyntax", &["ctrl+r"])]));
+    assert_eq!(
+        errors,
+        [KeymapError::Collision {
+            action: A::QuerySyntax,
+            chord: "ctrl+r".into(),
+            taken_by: A::OpenSortDialog,
+        }]
+    );
 }
 
 /// The vim rule's shadow, for a keyboard reference: only a Ctrl+letter the
@@ -715,9 +793,10 @@ fn every_shared_action_is_bound_or_marked_unbound() {
     }
 }
 
-/// Every bound action can be triggered from every panel its scope covers, in
-/// plain and in vim mode — the vim twins are what keep the editor-scoped
-/// ones reachable under vim on Linux/Windows.
+/// Every bound action can be triggered from every context its scope covers,
+/// in plain and in vim mode — the vim twins are what keep the editor-scoped
+/// ones reachable under vim on Linux/Windows. Where a query is typed, an
+/// everywhere chord may be shadowed by the query scope's (F1), and only so.
 #[test]
 fn every_default_action_is_reachable_in_every_context() {
     for p in PLATFORMS {
@@ -727,19 +806,27 @@ fn every_default_action_is_reachable_in_every_context() {
                 continue;
             }
             for panel in PANELS {
-                if !Scope::of(&action).applies(panel) {
-                    continue;
-                }
                 for vim in [false, true] {
-                    let reachable = keymap
-                        .bindings
-                        .iter()
-                        .filter(|b| b.action == action)
-                        .any(|b| keymap.resolve(b.chord, ctx(panel, vim)) == Some(&action));
-                    assert!(
-                        reachable,
-                        "{p:?} {action} unreachable in {panel:?} vim={vim}"
-                    );
+                    for query in [false, true] {
+                        let at = KeyCtx { panel, vim, query };
+                        if !Scope::of(&action).applies(at) {
+                            continue;
+                        }
+                        let mut chords = keymap.bindings.iter().filter(|b| b.action == action);
+                        let reachable = chords
+                            .clone()
+                            .any(|b| keymap.resolve(b.chord, at) == Some(&action));
+                        let shadowed = query
+                            && chords.all(|b| {
+                                keymap
+                                    .resolve(b.chord, at)
+                                    .is_some_and(|got| Scope::of(got) == Scope::Query)
+                            });
+                        assert!(
+                            reachable || shadowed,
+                            "{p:?} {action} unreachable in {at:?}"
+                        );
+                    }
                 }
             }
         }

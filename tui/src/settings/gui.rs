@@ -21,6 +21,13 @@
 //! lenient — a value of the wrong type or out of range reads as its default,
 //! never as a parse error, so a typo in `[gui]` cannot send the whole config
 //! down the corrupt-file path.
+//!
+//! `reduce_motion = true` keeps the desktop app's decorative motion still (the
+//! Welcome wordmark's bounce, loading spinners). It is the desktop app's
+//! Preferences > Display > Reduce motion, applied as soon as it is saved; the
+//! TUI never shows it. Missing means `false`: the system's own reduced-motion
+//! setting is not read (GPUI offers no query for it). There is no desktop-app
+//! page in the user docs yet, so this is where the key is described.
 
 use std::collections::BTreeMap;
 
@@ -397,9 +404,9 @@ impl GuiSettings {
     }
 
     /// `reduce_motion`: `true` keeps the GUI's decorative motion still (the
-    /// Welcome wordmark's bounce, the kit's spinners). Read once, when the
-    /// app starts. Missing reads as `false`; any other value than a boolean
-    /// is logged and reads as `false` too.
+    /// Welcome wordmark's bounce, the kit's spinners). Read when the app
+    /// starts and after every Preferences save. Missing reads as `false`;
+    /// any other value than a boolean is logged and reads as `false` too.
     pub fn reduce_motion(&self) -> bool {
         match self.table.get(REDUCE_MOTION) {
             None => false,
@@ -417,6 +424,24 @@ impl GuiSettings {
     pub fn set_reduce_motion(&mut self, reduce: bool) {
         self.table
             .insert(REDUCE_MOTION.into(), Value::Boolean(reduce));
+    }
+
+    /// Apply to this table the top-level keys `after` changed from `before`
+    /// (set where changed or added, removed where removed); every other key
+    /// is kept as it is here. For a write that edits a few `[gui]` keys of a
+    /// copy over the table as it is on disk now, so the edit lands and
+    /// nothing else the copy holds (an older layout) reverts the file.
+    pub fn apply_changes(&mut self, before: &GuiSettings, after: &GuiSettings) {
+        for (key, value) in &after.table {
+            if before.table.get(key) != Some(value) {
+                self.table.insert(key.clone(), value.clone());
+            }
+        }
+        for key in before.table.keys() {
+            if !after.table.contains_key(key) {
+                self.table.remove(key);
+            }
+        }
     }
 
     /// The `[gui.keys]` overrides: action name → chords, as written. A single
@@ -814,6 +839,28 @@ kept = 1
         both.set_window_decorations(WindowDecorations::System);
         assert!(both.reduce_motion());
         assert_eq!(both.window_decorations(), WindowDecorations::System);
+    }
+
+    /// Only the keys the edit changed (set or removed) move onto the target;
+    /// the target's other keys stay.
+    #[test]
+    fn apply_changes_moves_only_the_changed_keys() {
+        let before = gui("[gui]\nreduce_motion = false\nwindow_decorations = \"system\"\n");
+        let mut after = before.clone();
+        after.set_reduce_motion(true);
+        after.table.remove(WINDOW_DECORATIONS);
+        let mut target = gui("[gui]\ndrawer_left_width = 300.0\nwindow_decorations = \"system\"\n");
+        target.apply_changes(&before, &after);
+        assert!(target.reduce_motion());
+        assert_eq!(
+            target.window_decorations(),
+            WindowDecorations::Client,
+            "removed"
+        );
+        assert_eq!(target.drawer_width(Side::Left), 300.0, "kept");
+        let mut untouched = target.clone();
+        untouched.apply_changes(&after, &after);
+        assert_eq!(untouched, target, "no change, nothing moves");
     }
 
     #[test]

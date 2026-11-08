@@ -29,8 +29,8 @@ use tokio::runtime::Runtime;
 use super::folder_chooser::{FolderChooser, Listing};
 use super::onboarding::{
     BACK_ID, CANCEL_ID, CHOOSE_FOLDER_FIRST, CHOOSE_FOLDER_ID, CONFIRM_NO_ID, Confirm, LOGO_ID,
-    NEXT_ID, ONBOARDING_ID, OnboardingView, WORDMARK, WORDMARK_ID, WORDMARK_U_ID, bounce_offset,
-    chooser_row_id,
+    NEXT_ID, ONBOARDING_ID, OnboardingView, WORDMARK, WORDMARK_ID, WORDMARK_U_ID, WordmarkParts,
+    bounce_offset, chooser_row_id, wordmark_parts,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -491,14 +491,39 @@ fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
     let f = fresh();
     let mut gui = GuiSettings::default();
     gui.set_reduce_motion(true);
-    cx.update(|cx| crate::apply_reduce_motion(&gui, cx));
+    cx.update(|cx| crate::apply_reduce_motion(gui.reduce_motion(), cx));
     assert!(cx.read(|cx| cx.reduce_motion()));
     let s = first_run(cx, &rt, &f);
     assert!(!bounces(&s, cx));
     assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
     // Unset again, the default: motion.
-    cx.update(|cx| crate::apply_reduce_motion(&GuiSettings::default(), cx));
+    cx.update(|cx| crate::apply_reduce_motion(GuiSettings::default().reduce_motion(), cx));
     assert!(!cx.read(|cx| cx.reduce_motion()));
+}
+
+/// The painted wordmark is the label split around its "ü": the text before,
+/// the plain "u" under the dots, the text after, which put together with the
+/// "ü" again is the label.
+#[test]
+fn the_painted_wordmark_is_derived_from_the_label() {
+    let parts = wordmark_parts(WORDMARK);
+    assert_eq!(parts.base, Some("u"));
+    assert_eq!(format!("{}ü{}", parts.before, parts.after), WORDMARK);
+    assert_eq!((parts.before, parts.after), ("Kim", "n"));
+}
+
+/// A word without "ü" is painted whole, with nothing to bounce.
+#[test]
+fn a_wordmark_without_an_umlaut_is_painted_whole() {
+    assert_eq!(
+        wordmark_parts("Kimun"),
+        WordmarkParts {
+            before: "Kimun",
+            base: None,
+            after: "",
+        }
+    );
+    assert_eq!(wordmark_parts("").base, None);
 }
 
 /// The spring rests at both ends (what reduced motion draws is the glyph

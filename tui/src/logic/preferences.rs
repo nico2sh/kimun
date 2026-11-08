@@ -340,6 +340,11 @@ pub struct PreferencesModel {
     pub update_check: bool,
     /// Whether the TUI captures the mouse (read at startup only).
     pub mouse: bool,
+    /// `[gui] reduce_motion`: the desktop app keeps its decorative motion
+    /// still. Desktop-only: the TUI does not show it and carries it
+    /// unchanged; it is written only when it differs from the config's
+    /// value, so a save that did not touch it never adds the key.
+    pub reduce_motion: bool,
     /// Which-key reveal delay, see [`step_leader_delay`].
     pub leader_timeout_ms: u64,
     pub default_sort_field: SortFieldSetting,
@@ -367,6 +372,7 @@ impl PreferencesModel {
             use_nerd_fonts: s.use_nerd_fonts,
             update_check: s.update_check(),
             mouse: s.mouse(),
+            reduce_motion: s.gui.reduce_motion(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -559,6 +565,7 @@ impl PreferencesModel {
             || self.use_nerd_fonts != initial.use_nerd_fonts
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
+            || self.reduce_motion != initial.gui.reduce_motion()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -594,9 +601,14 @@ impl PreferencesModel {
     }
 
     /// Write the Display draft. The update check and mouse capture live in
-    /// the global workspace config, created empty when there is none yet.
+    /// the global workspace config, created empty when there is none yet;
+    /// reduced motion in `[gui]`, only when it changed (the rest of `[gui]`
+    /// is kept).
     pub fn apply_display(&self, s: &mut AppSettings) {
         s.use_nerd_fonts = self.use_nerd_fonts;
+        if s.gui.reduce_motion() != self.reduce_motion {
+            s.gui.set_reduce_motion(self.reduce_motion);
+        }
         let global = &mut s
             .workspace_config
             .get_or_insert_with(WorkspaceConfig::new_empty)

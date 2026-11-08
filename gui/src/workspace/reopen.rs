@@ -402,7 +402,9 @@ impl Workspace {
 /// memory, so a change the UI thread made to memory meanwhile (a switch's
 /// workspace, `report_indexed`) is not undone. A failed write leaves memory
 /// as it was (and the disk: an unparsable config is never replaced, the
-/// `[gui]` table on disk is kept), so the next write does not carry it.
+/// `[gui]` table on disk is kept but for the keys `change` itself set,
+/// such as Preferences' `reduce_motion`), so the next write does not carry
+/// it.
 /// Callers must not apply the change to memory themselves.
 ///
 /// Must be called with the tokio runtime entered (the write starts at once).
@@ -416,8 +418,9 @@ pub(super) fn write_settings<R: Send + 'static>(
     let write = crate::tasks::blocking(move || {
         let _one_at_a_time = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
         let mut candidate = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let gui_before = candidate.gui.clone();
         change(&mut candidate);
-        store.save_settings(&candidate)?;
+        store.save_settings(&candidate, &gui_before)?;
         Ok(change(
             &mut settings.write().unwrap_or_else(|e| e.into_inner()),
         ))

@@ -375,6 +375,7 @@ impl EditorView {
         KeyCtx {
             panel: Panel::Editor,
             vim: self.editor.is_vim() && !self.editor.find_open(),
+            query: false,
         }
     }
 

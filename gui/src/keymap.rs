@@ -58,17 +58,24 @@ impl Platform {
     }
 }
 
-/// Where a key arrives: the focused panel, and whether the editor runs vim.
+/// Where a key arrives: the focused panel, whether the editor runs vim, and
+/// whether the keyboard is where a search query is typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyCtx {
     pub panel: Panel,
     /// The editor's keys go to the vim engine (vim backend, and no find bar
     /// open: the bar is a plain field whatever the backend).
     pub vim: bool,
+    /// A query is typed here: FIND has the keyboard, or the search browser
+    /// is the open modal. [`Scope::Query`] chords are live only then.
+    pub query: bool,
 }
 
 /// Where an action's chord is live. Two actions may share a chord only when
-/// their scopes are disjoint.
+/// their scopes are disjoint, or when one is [`Scope::Query`] and the other
+/// [`Scope::Everywhere`]: the query chord then shadows the other one where a
+/// query is typed (F1 is the query syntax there, the keyboard reference
+/// everywhere else).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
     /// Whatever panel is focused.
@@ -79,6 +86,9 @@ enum Scope {
     /// which acts on the focused slot (or the rail's cell). The editor keeps
     /// these chords for itself.
     Shell,
+    /// Only where a query is typed ([`KeyCtx::query`]: FIND with the
+    /// keyboard, the search browser), ahead of an `Everywhere` chord.
+    Query,
 }
 
 impl Scope {
@@ -97,19 +107,29 @@ impl Scope {
             | ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
+            ActionShortcuts::QuerySyntax => Scope::Query,
             _ => Scope::Everywhere,
         }
     }
 
     fn overlaps(self, other: Scope) -> bool {
-        self == Scope::Everywhere || other == Scope::Everywhere || self == other
+        match (self, other) {
+            // The query chord shadows, see the type's docs.
+            (Scope::Query, Scope::Everywhere) | (Scope::Everywhere, Scope::Query) => false,
+            (Scope::Everywhere, _) | (_, Scope::Everywhere) => true,
+            // A query is typed in a drawer (FIND) or over any panel (the
+            // browser): it meets both of the panel scopes.
+            (Scope::Query, _) | (_, Scope::Query) => true,
+            (a, b) => a == b,
+        }
     }
 
-    fn applies(self, panel: Panel) -> bool {
+    fn applies(self, ctx: KeyCtx) -> bool {
         match self {
             Scope::Everywhere => true,
-            Scope::Editor => panel == Panel::Editor,
-            Scope::Shell => panel != Panel::Editor,
+            Scope::Editor => ctx.panel == Panel::Editor,
+            Scope::Shell => ctx.panel != Panel::Editor,
+            Scope::Query => ctx.query,
         }
     }
 }
@@ -237,9 +257,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::OpenPreferences => &["f4", "primary+,"],
         // The keyboard reference (M10d): the TUI's F1 help, the desktop's
         // help key. Everywhere, on both platforms; no editor or vim key is
-        // F1. Where F1 already means the query syntax (the search browser,
-        // FIND with the keyboard) that stays: the workspace hands it on there.
+        // F1. Where a query is typed F1 is the query syntax instead
+        // (`QuerySyntax`, whose scope shadows this chord there).
         A::KeyboardHelp => &["f1"],
+        // The query syntax, where a query is typed (FIND with the keyboard,
+        // the search browser): F1 there, as in the TUI's search views.
+        A::QuerySyntax => &["f1"],
         // The TUI's FIND toggle: here FIND is a drawer view, shown from the
         // rail, the leader (`o q`) and the palette. Nothing acts on it.
         A::ToggleQueryPanel => return None,
@@ -553,11 +576,16 @@ impl Keymap {
     pub fn vim_shadows(&self, action: &ActionShortcuts, chord: KeyInput) -> bool {
         self.platform == Platform::LinuxWindows
             && is_vim_ctrl_chord(chord)
-            && Scope::of(action).applies(Panel::Editor)
+            && Scope::of(action).applies(KeyCtx {
+                panel: Panel::Editor,
+                vim: true,
+                query: false,
+            })
     }
 
-    /// The action `chord` triggers in `ctx`, if any. `None` also when the vim
-    /// rule gives the chord to the editor.
+    /// The action `chord` triggers in `ctx`, if any: a [`Scope::Query`]
+    /// binding first where a query is typed. `None` also when the vim rule
+    /// gives the chord to the editor.
     pub fn resolve(&self, chord: KeyInput, ctx: KeyCtx) -> Option<&ActionShortcuts> {
         if self.platform == Platform::LinuxWindows
             && ctx.vim
@@ -566,9 +594,12 @@ impl Keymap {
         {
             return None;
         }
+        let live = |b: &&Binding| b.chord == chord && Scope::of(&b.action).applies(ctx);
         self.bindings
             .iter()
-            .find(|b| b.chord == chord && Scope::of(&b.action).applies(ctx.panel))
+            .filter(live)
+            .find(|b| Scope::of(&b.action) == Scope::Query)
+            .or_else(|| self.bindings.iter().find(live))
             .map(|b| &b.action)
     }
 }

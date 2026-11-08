@@ -40,16 +40,9 @@ use gpui_kit::{App, Context, Entity, Focusable, KeystrokeEvent, Window};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::message::FileOp;
 
-use kimun_notes::logic::input::{Key, KeyInput, Mods};
-
 use super::Workspace;
 use crate::input;
 
-/// The search browser's and FIND's query-syntax key.
-pub(super) const QUERY_HELP_KEY: KeyInput = KeyInput {
-    key: Key::F(1),
-    mods: Mods::NONE,
-};
 use crate::keymap;
 
 /// The row of buttons under a dialog's body, right-aligned: the one shape
@@ -285,7 +278,6 @@ impl Workspace {
         self.switcher = None;
         self.forget_theme_picker(cx);
         self.forget_update_dialog();
-        self.keyboard_help = None;
     }
 
     /// Run `step` with the window, once the current update is done. For
@@ -368,19 +360,22 @@ impl Workspace {
             self.save_browser_query(window, cx);
             return true;
         }
-        let action = keymap.resolve(key, self.key_ctx(cx)).cloned();
+        // Under a modal only the modal says whether a query is typed: the
+        // search browser does (FIND behind it no longer has the keyboard).
+        let ctx = keymap::KeyCtx {
+            query: open == ModalKind::Search,
+            ..self.key_ctx(cx)
+        };
+        let action = keymap.resolve(key, ctx).cloned();
         match (open, action) {
             // The open modal's own chord closes it.
             (open, Some(action)) if open.chord().as_ref() == Some(&action) => {
                 self.close_by_chord(open, window, cx);
                 true
             }
-            // F1 in the browser: its query syntax (once), not the keyboard
-            // reference F1 is bound to elsewhere. A rebound F1 stays the
-            // user's.
-            (ModalKind::Search, None | Some(ActionShortcuts::KeyboardHelp))
-                if key == QUERY_HELP_KEY =>
-            {
+            // The browser's query syntax (F1 by default, the keymap's
+            // `Query` scope), shown over it once.
+            (ModalKind::Search, Some(ActionShortcuts::QuerySyntax)) => {
                 self.open_query_help(window, cx);
                 true
             }

@@ -166,8 +166,10 @@
 //! **The keyboard reference (M10d).** F1 (`KeyboardHelp`), leader `?`, the
 //! palette and the CFG view list every chord of the active keymap under its
 //! heading and every leader sequence, filtered as you type; it runs nothing
-//! ([`keyboard_help`]). Where F1 already means the query syntax (FIND with
-//! the keyboard, the search browser) it keeps meaning that.
+//! ([`keyboard_help`]). Where a query is typed (FIND with the keyboard, the
+//! search browser) F1 is the query syntax instead: the `QuerySyntax` action,
+//! whose keymap scope shadows `KeyboardHelp` there, rebindable like any
+//! other.
 
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
@@ -269,19 +271,28 @@ impl LayoutStore {
     }
 
     /// Write `settings` to the store as the TUI saves its preferences, the
-    /// `[gui]` table on disk kept (`AppSettings::save_to_disk`); a config
-    /// that exists but does not parse is left alone and reported. Blocking:
-    /// run it off the UI thread ([`Workspace::persist_settings`]).
-    fn save_settings(&self, settings: &AppSettings) -> Result<(), String> {
+    /// `[gui]` table on disk kept (`AppSettings::save_to_disk`) but for the
+    /// keys `settings` changed from `gui_before` (a desktop-only preference
+    /// such as `reduce_motion`), which land; a config that exists but does
+    /// not parse is left alone and reported. Blocking: run it off the UI
+    /// thread ([`Workspace::persist_settings`]).
+    fn save_settings(
+        &self,
+        settings: &AppSettings,
+        gui_before: &kimun_notes::settings::gui::GuiSettings,
+    ) -> Result<(), String> {
+        let edit = |gui: &mut kimun_notes::settings::gui::GuiSettings| {
+            gui.apply_changes(gui_before, &settings.gui)
+        };
         let result = match self {
             #[cfg(test)]
             LayoutStore::Off => return Ok(()),
-            LayoutStore::UserConfig => settings.save_to_disk_if_parsable(),
+            LayoutStore::UserConfig => settings.save_to_disk_if_parsable_with_gui(edit),
             #[cfg(test)]
             LayoutStore::File(path) => {
                 let mut settings = settings.clone();
                 settings.config_file = Some(path.clone());
-                settings.save_to_disk_if_parsable()
+                settings.save_to_disk_if_parsable_with_gui(edit)
             }
         };
         result.map_err(|e| e.to_string())
@@ -602,8 +613,6 @@ pub(crate) struct Workspace {
     _config_events: Subscription,
     /// The theme picker, while open ([`theme_picker`]).
     pub(crate) theme_picker: Option<theme_picker::ThemePickerOpen>,
-    /// The keyboard reference, while open ([`keyboard_help`]).
-    pub(crate) keyboard_help: Option<WeakEntity<keyboard_help::KeyboardHelp>>,
     /// The window's title bar and its title ([`titlebar`]).
     pub(crate) titlebar: titlebar::TitleBar,
     /// The update flow: its checks, its dialog, an install ([`update`]).
@@ -786,7 +795,6 @@ impl Workspace {
             config,
             _config_events: config_events,
             theme_picker: None,
-            keyboard_help: None,
             titlebar: titlebar::TitleBar::new(),
             updates: update::UpdateHost::new(update::default_backend()),
         }
@@ -1747,17 +1755,30 @@ impl Workspace {
     }
 
     /// The context `panel` resolves chords in; the editor's own (vim, an
-    /// open find bar) when it is the editor.
+    /// open find bar) when it is the editor. A query is typed there when
+    /// FIND has the keyboard (the search browser, a modal, says so itself:
+    /// [`Self::intercept_modal_key`]).
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.layout.focused() {
             // The Thread and the attachment view read no vim keys.
             Panel::Editor if self.attachment.is_some() || self.ask_shown() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
+                query: false,
             },
             Panel::Editor => self.editor.read(cx).key_ctx(),
-            panel => KeyCtx { panel, vim: false },
+            panel => KeyCtx {
+                panel,
+                vim: false,
+                query: self.find_has_keyboard(),
+            },
         }
+    }
+
+    /// Whether FIND (its field or its results) has the keyboard.
+    fn find_has_keyboard(&self) -> bool {
+        matches!(self.layout.focused(), Panel::Drawer(_))
+            && self.focused_view() == Some(DrawerView::Find)
     }
 
     /// A key while the rail or a drawer holds GPUI focus, seen before any
@@ -1917,22 +1938,22 @@ impl Workspace {
                 window,
                 cx,
             ),
-            // The keyboard reference (M10d), in every window state. FIND's
-            // own F1 (the query syntax) wins while FIND has the keyboard, as
-            // in the TUI: the key goes on to it.
-            ActionShortcuts::KeyboardHelp => {
-                if key == Some(modal::QUERY_HELP_KEY)
-                    && matches!(self.layout.focused(), Panel::Drawer(_))
-                    && self.focused_view() == Some(DrawerView::Find)
-                {
+            // The keyboard reference (M10d), in every window state. Where a
+            // query is typed its F1 is the query syntax's (the keymap's
+            // `Query` scope), so it never arrives here from FIND.
+            ActionShortcuts::KeyboardHelp => self.toggle_modal(
+                ModalKind::KeyboardHelp,
+                Self::open_keyboard_help,
+                window,
+                cx,
+            ),
+            // FIND's query syntax (the search browser's is the modal's own
+            // key); elsewhere the chord goes on.
+            ActionShortcuts::QuerySyntax => {
+                if !self.find_has_keyboard() {
                     return false;
                 }
-                self.toggle_modal(
-                    ModalKind::KeyboardHelp,
-                    Self::open_keyboard_help,
-                    window,
-                    cx,
-                )
+                self.open_query_help(window, cx);
             }
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.

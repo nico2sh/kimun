@@ -651,6 +651,17 @@ impl AppSettings {
     /// it is never overwritten (nor renamed to `.corrupt`) on its behalf. A
     /// missing file is written.
     pub fn save_to_disk_if_parsable(&self) -> Result<(), SettingsError> {
+        self.save_to_disk_if_parsable_with_gui(|_| {})
+    }
+
+    /// [`Self::save_to_disk_if_parsable`] with `edit` applied to the `[gui]`
+    /// table written (the one on disk, as [`Self::save_to_disk`] keeps it;
+    /// this copy's when the file is missing): for a desktop-app setting
+    /// that lives in `[gui]` and is saved with the preferences. One write.
+    pub fn save_to_disk_if_parsable_with_gui(
+        &self,
+        edit: impl FnOnce(&mut gui::GuiSettings),
+    ) -> Result<(), SettingsError> {
         let path = self.get_config_file_path()?;
         if path.exists() {
             let body = std::fs::read_to_string(&path)?;
@@ -661,7 +672,12 @@ impl AppSettings {
                 )));
             }
         }
-        self.save_to_disk()
+        let mut fresh = self.clone();
+        if let Some(gui) = Self::gui_on_disk(&path) {
+            fresh.gui = gui;
+        }
+        edit(&mut fresh.gui);
+        fresh.write_to_disk()
     }
 
     /// The `[gui]` table of the config at `path`, when it exists and parses.
@@ -1987,6 +2003,36 @@ created = "2026-01-01T00:00:00Z"
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         assert_eq!(back.theme, "Gruvbox Dark");
+        assert_eq!(back.gui.drawer_width(Side::Left), 321.0);
+    }
+
+    /// The `[gui]` edit a preferences save carries lands over the table on
+    /// disk, whose other keys (a newer layout) are kept, in the same write.
+    #[test]
+    fn save_with_a_gui_edit_lands_it_and_keeps_the_rest_of_the_gui_on_disk() {
+        use crate::logic::layout::Side;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("config.toml");
+        let current = config_migration::CURRENT_CONFIG_VERSION;
+        std::fs::write(
+            &path,
+            format!(
+                "config_version = {current}
+"
+            ),
+        )
+        .unwrap();
+        let mut copy = AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| gui.set_drawer_width(Side::Left, 321.0))
+            .unwrap();
+        let before = copy.gui.clone();
+        copy.gui.set_reduce_motion(true);
+
+        copy.save_to_disk_if_parsable_with_gui(|gui| gui.apply_changes(&before, &copy.gui))
+            .unwrap();
+
+        let back = AppSettings::load_read_only_from(path).unwrap();
+        assert!(back.gui.reduce_motion());
         assert_eq!(back.gui.drawer_width(Side::Left), 321.0);
     }
 

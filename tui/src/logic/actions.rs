@@ -90,12 +90,24 @@ pub enum ActionShortcuts {
     /// (F1 in the desktop app). The TUI binds no chord to it: its F1 help is
     /// built in.
     KeyboardHelp,
+    /// The search query syntax: where a query is typed (FIND, the desktop
+    /// app's search browser; F1 there in the desktop app, which keeps F1 the
+    /// keyboard reference everywhere else). The TUI binds no chord to it: its
+    /// query help is built into its search views.
+    QuerySyntax,
 }
 
-/// Where an action is listed in a keyboard reference (the desktop app's F1
-/// dialog), next to the action definitions so a new action cannot go
-/// ungrouped: [`ActionShortcuts::group`] has no wildcard. The order is the
+/// Where an action is listed in a keyboard reference, next to the action
+/// definitions so a new action cannot go ungrouped: [`ActionShortcuts::group`]
+/// has no wildcard. This is the **one** classification of the actions: the
+/// desktop app's F1 reference shows these headings, and the TUI's help
+/// derives its own coarser categories from them
+/// (`crate::keys::action_shortcuts::ShortcutCategory`). The order is the
 /// reference's heading order.
+///
+/// [`ActionGroup::LeaderTree`] and [`ActionGroup::Unbound`] are headings of
+/// the reference that no action is classified under: the leader tree's
+/// sequences, and the actions a `[gui.keys]` override left without a chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActionGroup {
     /// Drawers, focus and the arrangement of drawer views.
@@ -106,14 +118,45 @@ pub enum ActionGroup {
     FilesAndNotes,
     /// Searching, saved queries and Ask.
     SearchAndAsk,
+    /// The leader tree's sequences (keys after the gateway). No action.
+    LeaderTree,
     /// The app itself: preferences, workspaces, the palette, quitting.
     Other,
+    /// Actions the frontend could bind but has no chord for now (a
+    /// `[gui.keys]` override unbound them). No action is classified here.
+    Unbound,
+}
+
+impl ActionGroup {
+    /// Every heading, in display order.
+    pub const ALL: [ActionGroup; 7] = [
+        ActionGroup::WindowAndPanels,
+        ActionGroup::Editor,
+        ActionGroup::FilesAndNotes,
+        ActionGroup::SearchAndAsk,
+        ActionGroup::LeaderTree,
+        ActionGroup::Other,
+        ActionGroup::Unbound,
+    ];
+
+    /// The heading's text.
+    pub fn title(self) -> &'static str {
+        match self {
+            ActionGroup::WindowAndPanels => "Window & panels",
+            ActionGroup::Editor => "Editor",
+            ActionGroup::FilesAndNotes => "Files & notes",
+            ActionGroup::SearchAndAsk => "Search & Ask",
+            ActionGroup::LeaderTree => "Leader tree",
+            ActionGroup::Other => "Other",
+            ActionGroup::Unbound => "Unbound",
+        }
+    }
 }
 
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 49] = [
+    pub const ALL: [ActionShortcuts; 50] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -163,9 +206,12 @@ impl ActionShortcuts {
         ActionShortcuts::MoveViewUp,
         ActionShortcuts::MoveViewDown,
         ActionShortcuts::KeyboardHelp,
+        ActionShortcuts::QuerySyntax,
     ];
 
-    /// The heading `self` is listed under in a keyboard reference.
+    /// The heading `self` is listed under in a keyboard reference: the one
+    /// place an action is classified. Never [`ActionGroup::LeaderTree`] or
+    /// [`ActionGroup::Unbound`].
     pub fn group(&self) -> ActionGroup {
         use ActionShortcuts as A;
         match self {
@@ -191,9 +237,11 @@ impl ActionShortcuts {
             | A::OpenFileBrowser
             | A::OpenSortDialog
             | A::YankRow => ActionGroup::FilesAndNotes,
-            A::SearchNotes | A::OpenSavedSearches | A::SaveCurrentQuery | A::OpenAsk => {
-                ActionGroup::SearchAndAsk
-            }
+            A::SearchNotes
+            | A::OpenSavedSearches
+            | A::SaveCurrentQuery
+            | A::OpenAsk
+            | A::QuerySyntax => ActionGroup::SearchAndAsk,
             A::Quit
             | A::OpenPreferences
             | A::SwitchWorkspace
@@ -252,6 +300,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::MoveViewUp => "MoveViewUp".to_string(),
             ActionShortcuts::MoveViewDown => "MoveViewDown".to_string(),
             ActionShortcuts::KeyboardHelp => "KeyboardHelp".to_string(),
+            ActionShortcuts::QuerySyntax => "QuerySyntax".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -306,6 +355,7 @@ impl TryFrom<String> for ActionShortcuts {
             "MoveViewUp" => ActionShortcuts::MoveViewUp,
             "MoveViewDown" => ActionShortcuts::MoveViewDown,
             "KeyboardHelp" => ActionShortcuts::KeyboardHelp,
+            "QuerySyntax" => ActionShortcuts::QuerySyntax,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -370,9 +420,10 @@ mod tests {
             ActionShortcuts::MoveViewUp => 31,
             ActionShortcuts::MoveViewDown => 32,
             ActionShortcuts::KeyboardHelp => 33,
+            ActionShortcuts::QuerySyntax => 34,
         }
     }
-    const VARIANTS: usize = 34;
+    const VARIANTS: usize = 35;
 
     #[test]
     fn all_lists_every_variant() {
@@ -462,13 +513,14 @@ mod tests {
         }
         let n = ActionShortcuts::ALL.len();
         assert_eq!(
-            ActionShortcuts::ALL[n - 2..],
+            ActionShortcuts::ALL[n - 3..n - 1],
             [ActionShortcuts::MoveViewDown, ActionShortcuts::KeyboardHelp]
         );
     }
 
     /// `KeyboardHelp`'s on-disk name is permanent (`[gui.keys]` writes it),
-    /// and it comes last, so the serialized keymap's order is unchanged.
+    /// and it comes after every older action, so the serialized keymap's
+    /// order is unchanged.
     #[test]
     fn keyboard_help_name() {
         assert_eq!(ActionShortcuts::KeyboardHelp.to_string(), "KeyboardHelp");
@@ -476,32 +528,62 @@ mod tests {
             ActionShortcuts::try_from("KeyboardHelp".to_string()),
             Ok(ActionShortcuts::KeyboardHelp)
         );
+        let n = ActionShortcuts::ALL.len();
+        assert_eq!(ActionShortcuts::ALL[n - 2], ActionShortcuts::KeyboardHelp);
+    }
+
+    /// `QuerySyntax`'s on-disk name is permanent (`[gui.keys]` writes it),
+    /// and it comes last, so the serialized keymap's order is unchanged.
+    #[test]
+    fn query_syntax_name() {
+        assert_eq!(ActionShortcuts::QuerySyntax.to_string(), "QuerySyntax");
+        assert_eq!(
+            ActionShortcuts::try_from("QuerySyntax".to_string()),
+            Ok(ActionShortcuts::QuerySyntax)
+        );
         assert_eq!(
             ActionShortcuts::ALL.last(),
-            Some(&ActionShortcuts::KeyboardHelp)
+            Some(&ActionShortcuts::QuerySyntax)
+        );
+        assert_eq!(
+            ActionShortcuts::QuerySyntax.group(),
+            ActionGroup::SearchAndAsk
         );
     }
 
-    /// Every heading holds at least one action, and the headings keep the
-    /// reference's order.
+    /// Every action heading holds at least one action, the two non-action
+    /// headings none, and the headings keep the reference's order.
     #[test]
     fn every_group_holds_an_action() {
-        for group in [
-            ActionGroup::WindowAndPanels,
-            ActionGroup::Editor,
-            ActionGroup::FilesAndNotes,
-            ActionGroup::SearchAndAsk,
-            ActionGroup::Other,
-        ] {
-            assert!(
-                ActionShortcuts::ALL.iter().any(|a| a.group() == group),
-                "{group:?} is empty"
-            );
+        for group in ActionGroup::ALL {
+            let holds = ActionShortcuts::ALL.iter().any(|a| a.group() == group);
+            let action_heading = !matches!(group, ActionGroup::LeaderTree | ActionGroup::Unbound);
+            assert_eq!(holds, action_heading, "{group:?}");
+        }
+        for pair in ActionGroup::ALL.windows(2) {
+            assert!(pair[0] < pair[1], "{:?} !< {:?}", pair[0], pair[1]);
         }
         assert!(ActionGroup::WindowAndPanels < ActionGroup::Editor);
         assert!(ActionGroup::SearchAndAsk < ActionGroup::Other);
         assert_eq!(ActionShortcuts::KeyboardHelp.group(), ActionGroup::Other);
         assert_eq!(ActionShortcuts::FindInBuffer.group(), ActionGroup::Editor);
+    }
+
+    #[test]
+    fn every_heading_has_a_title() {
+        let titles: Vec<&str> = ActionGroup::ALL.iter().map(|g| g.title()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Window & panels",
+                "Editor",
+                "Files & notes",
+                "Search & Ask",
+                "Leader tree",
+                "Other",
+                "Unbound"
+            ]
+        );
     }
 
     #[test]
