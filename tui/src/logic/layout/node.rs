@@ -73,6 +73,9 @@ pub(crate) struct Fit<L> {
     pub collapsed: Vec<L>,
 }
 
+/// A split's children with their normalized weights, in order.
+pub(crate) type WeightedChildren<'a, L> = Vec<(f64, &'a Node<L>)>;
+
 /// Smallest share a ratio setter leaves either side of a split.
 pub(crate) const MIN_RATIO: f64 = 0.1;
 
@@ -115,6 +118,24 @@ impl<L: Clone + PartialEq> Node<L> {
                 for c in children {
                     c.node.collect_leaves(out);
                 }
+            }
+        }
+    }
+
+    /// A split's axis and its children with their weights (normalized to
+    /// sum 1), in order; `None` for a leaf. Read-only, for spec export.
+    pub(crate) fn split_children(&self) -> Option<(Axis, WeightedChildren<'_, L>)> {
+        match &self.kind {
+            Kind::Leaf(_) => None,
+            Kind::Split { axis, children } => {
+                let total: f64 = children.iter().map(|c| c.weight).sum();
+                Some((
+                    *axis,
+                    children
+                        .iter()
+                        .map(|c| (c.weight / total, &c.node))
+                        .collect(),
+                ))
             }
         }
     }
