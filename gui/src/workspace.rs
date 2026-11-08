@@ -188,7 +188,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, AnyWindowHandle, App, AppContext, ClickEvent, ClipboardItem, Context,
     Entity, FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
-    KeystrokeEvent, MouseDownEvent, ParentElement, Render, Role, SharedString,
+    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Role, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, rems,
 };
 use kimun_core::NoteVault;
@@ -361,6 +361,16 @@ pub(crate) struct Workspace {
     /// The views a side toggle hid (left, right), shown again when that
     /// side is toggled back on. Session only.
     side_memory: [Vec<DrawerView>; 2],
+    /// The drawn extent of the two cells each divider sits between, keyed
+    /// by the divider's leaf ([`tree_view`]), measured as the tree is laid
+    /// out: what a drag turns the pointer into a share of.
+    divider_cells: tree_view::DividerCells,
+    /// A divider drag is in progress (saved when it ends).
+    resizing: bool,
+    /// How far from its boundary the divider press landed (px along the
+    /// drag's axis): a drag moves the boundary by the pointer's travel,
+    /// without jumping to it.
+    press_offset: f64,
     /// The rail cell the keyboard is on (an index into
     /// [`Self::rail_views`]).
     rail_cursor: usize,
@@ -642,6 +652,9 @@ impl Workspace {
             slot_focus: HashMap::new(),
             opened_empty: HashSet::new(),
             side_memory: [Vec::new(), Vec::new()],
+            divider_cells: Default::default(),
+            resizing: false,
+            press_offset: 0.0,
             rail_cursor,
             store,
             empty: None,
@@ -2582,6 +2595,16 @@ impl Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_drag_move(cx.listener(Self::on_divider_move))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_resize(cx)),
+            )
+            // A drag released outside the window ends there too.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_resize(cx)),
+            )
             .flex()
             .flex_row()
             .items_stretch()

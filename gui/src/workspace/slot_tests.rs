@@ -9,7 +9,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, SharedString, TestAppContext};
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::layout::{Panel, Side};
-use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId};
+use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId, TreeShape};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 use kimun_notes::settings::gui::GuiSettings;
@@ -1119,6 +1119,252 @@ fn editor_group_has_no_slot_header(cx: &mut TestAppContext) {
         // Only FILES' header: none sits within the editor's bounds.
         assert_eq!(headers.len(), 1);
         assert!(headers.iter().all(|h| !editor.contains(&h.bounds().origin)));
+    })
+    .unwrap();
+}
+
+/// The top-level split's weights of `tree`, in reading order.
+fn top_weights(tree: &LayoutTree<DrawerView>) -> Vec<f64> {
+    match tree.shape() {
+        TreeShape::Split { children, .. } => children.into_iter().map(|(w, _)| w).collect(),
+        TreeShape::Leaf(_) => vec![1.0],
+    }
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-3
+}
+
+/// Three drawn cells (FILES, editor, OUTLINE): dragging the divider after
+/// FILES moves that one boundary by the pointer's travel. FILES and the
+/// editor trade width; OUTLINE keeps its own, and its saved weight is the
+/// same. Saved when the drag ends.
+#[gpui_kit::test]
+fn dragging_a_divider_changes_the_two_neighbours_only(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &three(
+            "views = [\"files\"], shown = \"files\"",
+            "views = [\"outline\"], shown = \"outline\"",
+        ),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let width = |window: &mut gpui_kit::Window, id: SharedString| {
+            f32::from(window.find(id).bounds().size.width)
+        };
+        let files = width(window, slot_id(DrawerView::Files));
+        let editor = f32::from(window.find("editor-panel").bounds().size.width);
+        let outline = width(window, slot_id(DrawerView::Outline));
+        // 0.2 : 0.6 : 0.2 of the 950px left by the rail and two gaps.
+        assert!((files - 190.).abs() < 0.5, "{files}");
+        assert!(window.try_find("divider-slot-0").is_some());
+        let from = window.find("divider-slot-0").bounds().center();
+        window.drag(
+            from,
+            gpui_kit::point(from.x + gpui_kit::px(100.), from.y),
+            cx,
+        );
+        window.render_frame(cx);
+        let files2 = width(window, slot_id(DrawerView::Files));
+        let editor2 = f32::from(window.find("editor-panel").bounds().size.width);
+        let outline2 = width(window, slot_id(DrawerView::Outline));
+        assert!((files2 - (files + 100.)).abs() < 1.0, "{files} -> {files2}");
+        assert!(
+            (editor2 - (editor - 100.)).abs() < 1.0,
+            "{editor} -> {editor2}"
+        );
+        assert!((outline2 - outline).abs() < 0.5, "{outline} -> {outline2}");
+        // Saved on release: only the dragged pair's weights changed.
+        let w = top_weights(&saved_tree(&path));
+        assert_eq!(w.len(), 3);
+        assert!(near(w[0] + w[1], 0.8), "{w:?}");
+        assert!(near(w[2], 0.2), "{w:?}");
+        assert!(near(w[0], 290. / 950.), "{w:?}");
+        assert!(!shell.workspace.read(cx).resizing);
+    })
+    .unwrap();
+}
+
+/// A dragged boundary and a placement change survive a restart: a new
+/// window over the saved `[gui]` table draws the same widths and views.
+#[gpui_kit::test]
+fn restart_restores_dragged_weights_and_placements(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    let before = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find("divider-slot-0").bounds().center();
+            window.drag(
+                from,
+                gpui_kit::point(from.x + gpui_kit::px(150.), from.y),
+                cx,
+            );
+            // A placement change: FIND takes FILES' slot.
+            window.click(rail_cell_id(DrawerView::Find), cx);
+            window.render_frame(cx);
+            f32::from(window.find(slot_id(DrawerView::Find)).bounds().size.width)
+        })
+        .unwrap();
+    assert!((before - (951. * 0.25 + 150.)).abs() < 1.0, "{before}");
+    let again = open_shell(cx, 1000., &saved(&path), "", false, LayoutStore::Off);
+    cx.update_window(again.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let find = f32::from(window.find(slot_id(DrawerView::Find)).bounds().size.width);
+        assert!((find - before).abs() < 0.5, "{before} -> {find}");
+        let left = again.slots(cx)[0];
+        let layout = &again.workspace.read(cx).layout;
+        assert_eq!(layout.shown(left), Some(DrawerView::Find));
+        assert_eq!(
+            layout.slot_views(left),
+            [DrawerView::Files, DrawerView::Find]
+        );
+    })
+    .unwrap();
+}
+
+/// Leader `w l` / `w h` grow and shrink the focused leaf by 5% of the pair
+/// it shares a divider with, and each step is saved. The editor, with the
+/// hidden right slot after it, grows against FILES before it.
+#[gpui_kit::test]
+fn grow_and_shrink_resize_the_focused_leaf(cx: &mut TestAppContext) {
+    let (_dir, path) = temp_config();
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::File(path.clone()),
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        let leader = |window: &mut gpui_kit::Window, key: &str, cx: &mut gpui_kit::App| {
+            window.press("ctrl-shift-b", cx);
+            window.input("w", cx);
+            window.input(key, cx);
+            window.render_frame(cx);
+        };
+        let files = |window: &mut gpui_kit::Window| {
+            f32::from(window.find(slot_id(DrawerView::Files)).bounds().size.width)
+        };
+        window.render_frame(cx);
+        // FILES: 0.25 of the pair (FILES + editor, 951px).
+        window.press("alt-left", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
+        leader(window, "l", cx);
+        assert!(
+            (files(window) - 951. * 0.30).abs() < 0.5,
+            "{}",
+            files(window)
+        );
+        assert!(near(top_weights(&saved_tree(&path))[0], 0.8 * 0.30));
+        leader(window, "h", cx);
+        assert!(
+            (files(window) - 951. * 0.25).abs() < 0.5,
+            "{}",
+            files(window)
+        );
+        assert!(near(top_weights(&saved_tree(&path))[0], 0.8 * 0.25));
+        assert!(shell.flash(cx).is_none(), "{:?}", shell.flash(cx));
+        // The editor grows: FILES gives way.
+        window.press("alt-right", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.focused(cx), Panel::Editor);
+        leader(window, "l", cx);
+        assert!(
+            (files(window) - 951. * 0.20).abs() < 0.5,
+            "{}",
+            files(window)
+        );
+        // The hidden right slot kept its weight.
+        assert!(near(top_weights(&saved_tree(&path))[2], 0.2));
+    })
+    .unwrap();
+}
+
+/// Ruling 12: a slot that is not drawn has no divider. The default
+/// layout's hidden right slot leaves the editor without one; opened empty,
+/// it is drawn and the divider between it and the editor appears.
+#[gpui_kit::test]
+fn divider_between_a_drawn_slot_and_an_undrawn_empty_slot_does_not_exist(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("divider-slot-0").is_some());
+        assert!(window.try_find("divider-group-0").is_none());
+        window.press("ctrl-shift-t", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_some());
+        assert!(window.try_find("divider-group-0").is_some());
+    })
+    .unwrap();
+}
+
+/// A slot narrower than its title keeps a one-line header: the title is
+/// clipped, never wrapped.
+#[gpui_kit::test]
+fn a_narrow_slot_header_does_not_wrap(cx: &mut TestAppContext) {
+    let narrow = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.01, split = \"vertical\", children = [\n\
+         { views = [\"semantic\"], shown = \"semantic\" },\n\
+         { views = [\"tags\"], shown = \"tags\" },\n] },\n\
+         { weight = 0.99, editor = true },\n]\n");
+    let shell = open_shell(cx, 1000., &narrow, "", false, LayoutStore::Off);
+    let wide = open_shell(
+        cx,
+        1000.,
+        &three(
+            "views = [\"semantic\"], shown = \"semantic\"",
+            "views = [\"tags\"]",
+        ),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let one_line = cx
+        .update_window(wide.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let mut slot = window.within(slot_id(DrawerView::Semantic));
+            f32::from(slot.find("slot-header").bounds().size.height)
+        })
+        .unwrap();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let width = f32::from(
+            window
+                .find(slot_id(DrawerView::Semantic))
+                .bounds()
+                .size
+                .width,
+        );
+        assert!(width < 40., "the slot is narrow: {width}");
+        let mut slot = window.within(slot_id(DrawerView::Semantic));
+        let header = slot.find("slot-header").bounds();
+        assert!(
+            (f32::from(header.size.height) - one_line).abs() < 0.5,
+            "{header:?} vs {one_line}"
+        );
     })
     .unwrap();
 }
