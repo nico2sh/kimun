@@ -23,7 +23,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::{Context, Window};
+use kimun_notes::logic::layout_tree::LayoutTree;
 use kimun_notes::logic::layout_tree::spec::{self, ChildSpec};
+use kimun_notes::logic::nav::DrawerView;
 
 use super::{LayoutStore, Workspace};
 use crate::shell_tree;
@@ -82,6 +84,9 @@ pub(crate) enum PresetCommand {
     Reload,
     /// "Reset to preset": the recorded preset, applied again.
     Reset,
+    /// "Reset layout to default": the built-in default layout, always
+    /// offered, the way back from any arrangement (Ruling 23).
+    ResetDefault,
 }
 
 impl PresetCommand {
@@ -91,6 +96,7 @@ impl PresetCommand {
             PresetCommand::Apply(name) => format!("Apply layout preset: {name}"),
             PresetCommand::Reload => "Reload layout presets".to_string(),
             PresetCommand::Reset => "Reset to preset".to_string(),
+            PresetCommand::ResetDefault => "Reset layout to default".to_string(),
         }
     }
 }
@@ -173,6 +179,7 @@ impl Workspace {
             .collect();
         rows.push((PresetCommand::Reload, None));
         rows.push((PresetCommand::Reset, self.reset_block()));
+        rows.push((PresetCommand::ResetDefault, None));
         rows
     }
 
@@ -193,6 +200,12 @@ impl Workspace {
                     }
                 }
             },
+            PresetCommand::ResetDefault => self.install_layout(
+                LayoutTree::default_layout(DrawerView::Files),
+                None,
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -228,16 +241,7 @@ impl Workspace {
                 return;
             }
         };
-        self.layout = tree;
-        self.opened_empty.clear();
-        self.side_memory = Default::default();
-        self.collapsed.clear();
-        self.resizing = false;
-        self.divider_cells.borrow_mut().clear();
-        self.layout_preset = Some(name.to_string());
-        self.tidy_layout(cx);
-        self.apply_focus(window, cx);
-        self.save_layout_as_preset(name, cx);
+        self.install_layout(tree, Some(name), window, cx);
         if !warnings.is_empty() {
             self.flash(
                 format!(
@@ -246,6 +250,34 @@ impl Workspace {
                 ),
                 cx,
             );
+        }
+    }
+
+    /// Replace the live layout with `tree`, applied from the preset
+    /// `preset` (`None`: from no preset, as "Reset layout to default"):
+    /// the session-only state is dropped (slots opened empty, the side
+    /// toggles' memory, collapse and zoom, which lives in the old tree),
+    /// the editor gets the keyboard, and the layout is saved with the
+    /// preset's name recorded, or the recorded name cleared.
+    fn install_layout(
+        &mut self,
+        tree: LayoutTree<DrawerView>,
+        preset: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.layout = tree;
+        self.opened_empty.clear();
+        self.side_memory = Default::default();
+        self.collapsed.clear();
+        self.resizing = false;
+        self.divider_cells.borrow_mut().clear();
+        self.layout_preset = preset.map(str::to_string);
+        self.tidy_layout(cx);
+        self.apply_focus(window, cx);
+        match preset {
+            Some(name) => self.save_layout_as_preset(name, cx),
+            None => self.save_layout_clearing_preset(cx),
         }
     }
 }

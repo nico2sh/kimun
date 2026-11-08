@@ -464,6 +464,44 @@ fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut Te
     assert!(message.contains("group splitting"), "{message}");
 }
 
+/// "Reset layout to default" is always offered, with or without a presets
+/// file: after the default left slot was closed (no slot left of the
+/// editor, nothing to toggle back), it brings the default structure back,
+/// saves it and clears the recorded preset (Ruling 23).
+#[gpui_kit::test]
+fn reset_layout_to_default_undoes_a_closed_left_slot(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    std::fs::write(&config, "[gui]\nlayout_preset = \"focus\"\n").unwrap();
+    let shell = open_with(cx, &config, None);
+    let default = spec::to_spec(&LayoutTree::default_layout(DrawerView::Files));
+    assert!(rows(&shell, cx).contains(&("Reset layout to default".to_string(), None)));
+
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell.workspace.update(cx, |w, cx| {
+            let left = w.layout.slots()[0];
+            w.layout
+                .focus(kimun_notes::logic::layout_tree::Focus::Leaf(Leaf::Slot(
+                    left,
+                )));
+            w.close_focused_slot(window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_ne!(spec::to_spec(&live(&shell, cx)), default);
+    assert_ne!(spec::to_spec(&saved_tree(&config)), default);
+
+    run(&shell, cx, PresetCommand::ResetDefault);
+    assert_eq!(spec::to_spec(&live(&shell, cx)), default);
+    assert_eq!(spec::to_spec(&saved_tree(&config)), default);
+    assert_eq!(saved(&config).layout_preset(), None);
+    assert!(flashes(&shell, cx).is_empty(), "{:?}", flashes(&shell, cx));
+    assert_eq!(
+        cx.read(|cx| shell.workspace.read(cx).focused_panel()),
+        Panel::Editor
+    );
+}
+
 #[gpui_kit::test]
 fn reset_to_preset_discards_dragged_weights(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
