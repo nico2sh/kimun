@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod input;
 pub mod keyboard_help;
 pub mod layout;
+pub mod layout_tree;
 pub mod list;
 
 pub mod attachment;
@@ -19,9 +20,9 @@ pub mod follow;
 pub mod leader_route;
 pub mod pickers;
 pub mod preview;
-pub mod view_registry;
 pub mod query;
 pub mod saved_search;
+pub mod view_registry;
 pub mod views;
 
 pub mod message;
