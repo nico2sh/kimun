@@ -87,6 +87,40 @@ pub(crate) const TOO_SMALL_ID: &str = "slot-too-small";
 /// The window background between two drawn neighbours, in px.
 const GAP: f64 = 1.0;
 
+/// Window background around each leaf's border.
+pub(super) const LEAF_MARGIN: Pixels = px(4.);
+
+/// Space between a slot header (or the border) and the view under it.
+const CONTENT_PADDING: Pixels = px(8.);
+/// The hairline border of a leaf's surface (`border_1`).
+const LEAF_BORDER: Pixels = px(1.);
+
+/// Width a view gets inside a leaf cell `cell` px wide: the cell less the
+/// margin, the border and the content padding on both sides.
+fn view_width(cell: f64) -> f64 {
+    let inset = f64::from(f32::from(LEAF_MARGIN + LEAF_BORDER + CONTENT_PADDING));
+    cell - 2.0 * inset
+}
+
+/// What a slot tells the view it holds about its own place: the facts a
+/// view cannot see from inside and may lay itself out by.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct SlotContext {
+    /// The slot's leaf is the zoomed one.
+    pub zoomed: bool,
+    /// Width the view gets, in px (the cell less the leaf's insets).
+    pub width: f64,
+    /// One rem, in px.
+    pub rem: f64,
+}
+
+/// A view that lays itself out by its slot ([`SlotContext`]). The workspace
+/// pushes the context each render; an implementation redraws only on a
+/// change. A view opts in here and in [`Workspace::push_slot_context`].
+pub(super) trait SlotAware: Sized {
+    fn set_slot(&mut self, slot: SlotContext, cx: &mut Context<Self>);
+}
+
 /// Share `len` px among cells of (weight, minimum px) the way flex does
 /// with those minimums set: by weight, a cell that would fall under its
 /// minimum held there and the rest shared again. When the minimums alone
@@ -466,7 +500,7 @@ impl Workspace {
                         let (w, h) = view_registry::spec(view).min;
                         let small = (across.0 && size.0 < w * rem - 0.5)
                             || (across.1 && size.1 < h * rem - 0.5);
-                        self.render_slot(*slot, view, small, cx)
+                        self.render_slot(*slot, view, small, size.0, rem, cx)
                     }
                     None => self.render_empty_slot(*slot, cx),
                 })
@@ -829,6 +863,56 @@ impl Workspace {
         }
     }
 
+    /// The border of `focus`'s surface: the accent while it has the
+    /// keyboard (it follows the rounded corners, as a bar would not), the
+    /// hairline otherwise.
+    pub(super) fn leaf_border(&self, focus: Focus, cx: &gpui_kit::App) -> Rgba {
+        let theme = theme::current(cx);
+        if self.layout.focused() == focus {
+            theme::focus_border(&theme)
+        } else {
+            theme::divider(&theme)
+        }
+    }
+
+    /// The surface of a leaf, inside the margin its root element keeps
+    /// (`p(LEAF_MARGIN)` on the root: padding, so the root's bounds stay the
+    /// layout cell and every minimum and divider position stays what the
+    /// weights say): rounded, hairline-bordered, on `background`.
+    pub(super) fn leaf_surface(background: Rgba, border: Rgba) -> gpui_kit::Div {
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .bg(background)
+    }
+
+    /// Tell `view` about its slot, if it lays itself out by it
+    /// ([`SlotAware`]). Views that do not are untouched.
+    fn push_slot_context(&self, view: DrawerView, context: SlotContext, cx: &mut Context<Self>) {
+        match view {
+            DrawerView::Ask => {
+                if let Some(ask) = self.ask.clone() {
+                    ask.update(cx, |ask, cx| ask.set_slot(context, cx));
+                }
+            }
+            DrawerView::Files
+            | DrawerView::Links
+            | DrawerView::Outline
+            | DrawerView::Find
+            | DrawerView::Tags
+            | DrawerView::Semantic
+            | DrawerView::Config => {}
+        }
+    }
+
     /// `slot`, showing `view`: its title over the view (FILES, or, for a
     /// view that needs a workspace while none is open, a line saying so;
     /// [`TOO_SMALL`] when `small`: under the view's minimum).
@@ -837,49 +921,69 @@ impl Workspace {
         slot: SlotId,
         view: DrawerView,
         small: bool,
+        width: f64,
+        rem: f64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let spec = view_registry::spec(view);
+        let context = SlotContext {
+            zoomed: self.layout.zoomed() == Some(Leaf::Slot(slot)),
+            width: view_width(width),
+            rem,
+        };
+        self.push_slot_context(view, context, cx);
         div()
             .id(slot_id(view))
             .test_support()
             .track_focus(&self.slot_handle(slot))
             .role(Role::Group)
             .aria_label(spec.name)
-            .relative()
             .flex()
-            .flex_col()
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .bg(theme::panel_background(&theme::current(cx)))
-            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                this.focus_slot(slot, window, cx)
-            }))
-            .child(self.render_slot_header(slot, Some(view), cx))
-            .map(|el| match self.view_content(view).filter(|_| !small) {
-                Some(content) => el.child(content),
-                None if small => el.child(
-                    div()
-                        .id(TOO_SMALL_ID)
-                        .test_support()
-                        .role(Role::Label)
-                        .aria_label(TOO_SMALL)
-                        .px_3()
-                        .text_sm()
-                        .text_color(theme::muted(&theme::current(cx)))
-                        .child(TOO_SMALL),
-                ),
-                // Every view is built; one without content needs a vault.
-                None => el.child(
-                    div()
-                        .px_3()
-                        .text_sm()
-                        .text_color(theme::muted(&theme::current(cx)))
-                        .child(route::NO_WORKSPACE),
-                ),
-            })
-            .children(self.focus_bar(Focus::Leaf(Leaf::Slot(slot)), cx))
+            .p(LEAF_MARGIN)
+            .child(
+                Self::leaf_surface(
+                    theme::panel_background(&theme::current(cx)),
+                    self.leaf_border(Focus::Leaf(Leaf::Slot(slot)), cx),
+                )
+                .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.focus_slot(slot, window, cx)
+                }))
+                .child(self.render_slot_header(slot, Some(view), cx))
+                .map(|el| match self.view_content(view).filter(|_| !small) {
+                    Some(content) => el.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .p(CONTENT_PADDING)
+                            .child(content),
+                    ),
+                    None if small => el.child(
+                        div()
+                            .id(TOO_SMALL_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(TOO_SMALL)
+                            .p(CONTENT_PADDING)
+                            .text_sm()
+                            .text_color(theme::muted(&theme::current(cx)))
+                            .child(TOO_SMALL),
+                    ),
+                    // Every view is built; one without content needs a vault.
+                    None => el.child(
+                        div()
+                            .p(CONTENT_PADDING)
+                            .text_sm()
+                            .text_color(theme::muted(&theme::current(cx)))
+                            .child(route::NO_WORKSPACE),
+                    ),
+                }),
+            )
             .into_any_element()
     }
 
@@ -960,32 +1064,42 @@ impl Workspace {
             .track_focus(&self.slot_handle(slot))
             .role(Role::Group)
             .aria_label(hint.clone())
-            .relative()
             .flex()
-            .flex_col()
             .flex_1()
-            .items_center()
-            .justify_center()
             .min_w_0()
             .min_h_0()
-            .bg(theme::panel_background(&theme::current(cx)))
-            .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                this.focus_slot(slot, window, cx)
-            }))
-            .child(self.render_slot_header(slot, None, cx))
+            .p(LEAF_MARGIN)
             .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .px_4()
-                    .text_sm()
-                    .text_center()
-                    .text_color(theme::muted(&theme::current(cx)))
-                    .child(hint),
+                Self::leaf_surface(
+                    theme::panel_background(&theme::current(cx)),
+                    self.leaf_border(Focus::Leaf(Leaf::Slot(slot)), cx),
+                )
+                .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.focus_slot(slot, window, cx)
+                }))
+                .child(self.render_slot_header(slot, None, cx))
+                .child(
+                    // A column, so the hint stretches to the slot's width
+                    // (a row would size it to its text and never wrap).
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .w_full()
+                        .min_w_0()
+                        .justify_center()
+                        .p(CONTENT_PADDING)
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .text_sm()
+                                .text_center()
+                                .text_color(theme::muted(&theme::current(cx)))
+                                .child(hint),
+                        ),
+                ),
             )
-            .children(self.focus_bar(Focus::Leaf(Leaf::Slot(slot)), cx))
             .into_any_element()
     }
 }

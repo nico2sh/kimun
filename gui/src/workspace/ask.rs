@@ -16,14 +16,14 @@
 //! needs a server and a question, the turn actions a turn; Regenerate and
 //! New also need the server (the leader gates them so).
 //!
-//! **Sources, in place.** The toggle (or `s` on the turn list, leader
-//! `a s`, a citation) expands the selected turn's sources right under it,
-//! in the turn column: the [`super::ask_sources`] list and its reader, in a
-//! box of fixed height (taller while the reader is open), so the list and
-//! the reader keep their own scroll inside the thread's. The part follows
+//! **Sources, beside or instead.** The toggle (or `s` on the turn list,
+//! leader `a s`, a citation) opens the selected turn's sources: the
+//! [`super::ask_sources`] list and its reader. In a wide slot (zoomed, or
+//! [`WIDE_REMS`] and up) they are a pane at the view's right, the Thread
+//! beside them. In a narrow slot they replace the Thread (drill-in): a
+//! back header, and Esc once the reader is back, go up. The part follows
 //! the selected turn (`AskFlow`, the one record) and stays open across
-//! selection moves until toggled shut. **Zoom** gives the whole view, the
-//! reader included, the width right of the rail.
+//! selection moves until toggled shut.
 //!
 //! **Answers** are drawn by the shared answer rules (`kimun_notes::ask::
 //! markdown`, the TUI's too, over the editor's markdown model; mapped by
@@ -95,6 +95,7 @@ use super::Workspace;
 use super::ask_sources::SourcesView;
 use super::note::Closing;
 use super::route::NO_WORKSPACE;
+use super::tree_view::{SlotAware, SlotContext};
 use crate::input;
 use crate::tasks;
 use crate::theme;
@@ -109,6 +110,8 @@ pub(crate) const COPY_ID: &str = "ask-copy";
 pub(crate) const SAVE_ID: &str = "ask-save";
 pub(crate) const REGENERATE_ID: &str = "ask-regenerate";
 pub(crate) const NEW_ID: &str = "ask-new";
+/// The zoom / restore button: one id, its label follows the state.
+pub(crate) const ZOOM_ID: &str = "ask-zoom";
 /// The selected turn's `Sources (n)` toggle, and the part it expands.
 pub(crate) const SOURCES_TOGGLE_ID: &str = "ask-sources-toggle";
 pub(crate) const SOURCES_PART_ID: &str = "ask-sources-part";
@@ -147,10 +150,13 @@ pub(crate) const COPIED: &str = "answer copied";
 
 /// The turn list's accessible name (the TUI's hint word for it).
 const TURNS_LABEL: &str = "Turns";
-/// The sources part's height, in rems: the list alone (about five rows
-/// and the filter), and with the reader open under (or instead of) it.
-const SOURCES_LIST_REMS: f32 = 17.0;
-const SOURCES_READER_REMS: f32 = 30.0;
+/// The sources pane's width beside the Thread (wide layout).
+const SOURCES_PANE_REMS: f32 = 26.0;
+/// The slot width from which the sources sit beside the Thread; under it
+/// they take the whole view (drill-in).
+pub(crate) const WIDE_REMS: f32 = 48.0;
+/// The drill-in header's back button.
+pub(crate) const BACK_ID: &str = "ask-sources-back";
 /// The key that expands the sources (the toggle's hint).
 const SOURCES_KEY: &str = "s";
 /// How much of a page a PageUp/PageDown keeps in view, in rems (two lines).
@@ -262,6 +268,8 @@ pub(crate) enum AskEvent {
     Save,
     /// Start over.
     New,
+    /// The zoom button: zoom the Thread's slot, or leave zoom.
+    ToggleZoom,
     /// Escape on the turn list: the composer gets the keyboard back
     /// (the workspace's one door for it, `focus_ask_composer`).
     Dismiss,
@@ -303,16 +311,18 @@ pub(crate) struct AskView {
     /// the vault), drawn in place under the selected turn while open.
     sources: Option<Entity<SourcesView>>,
     sources_open: bool,
-    /// Whether the reader was open at the last look: the part's height
-    /// follows it, so only that flipping redraws the view.
-    reader_open: bool,
+    /// Whether this view's slot is zoomed (the workspace says, each time
+    /// it draws the slot): the zoom button's label.
+    zoomed: bool,
+    /// Whether the slot is wide enough for the sources beside the Thread
+    /// (the workspace says, as for `zoomed`).
+    wide: bool,
     /// Each done turn's answer as drawn, by turn id: made once when the
     /// answer landed, dropped when the turn is asked again or the thread
     /// cleared.
     answers: HashMap<u64, DrawnAnswer>,
     tx: AppTx,
     _composer_events: Subscription,
-    _sources_events: Option<Subscription>,
 }
 
 impl EventEmitter<AskEvent> for AskView {}
@@ -343,24 +353,17 @@ impl AskView {
             scroll: ScrollHandle::new(),
             sources: None,
             sources_open: false,
-            reader_open: false,
+            zoomed: false,
+            wide: false,
             answers: HashMap::new(),
             tx,
             _composer_events: composer_events,
-            _sources_events: None,
         }
     }
 
-    /// Fold `sources` (the workspace's, over the vault) in: drawn under
-    /// the selected turn while open. Its reader opening or collapsing
-    /// redraws the view (the part's height follows).
+    /// Fold `sources` (the workspace's, over the vault) in: drawn beside
+    /// the Thread, or in place of it, while open.
     pub(crate) fn set_sources(&mut self, sources: Entity<SourcesView>, cx: &mut Context<Self>) {
-        self._sources_events = Some(cx.observe(&sources, |this, sources, cx| {
-            let open = !sources.read(cx).reader_collapsed();
-            if std::mem::replace(&mut this.reader_open, open) != open {
-                cx.notify();
-            }
-        }));
         self.sources = Some(sources);
         cx.notify();
     }
@@ -459,8 +462,20 @@ impl AskView {
 
     /// The composer gets the keyboard when the view does (leader `a a`,
     /// F6, New, Escape on the turn list or the sources list).
-    pub(crate) fn want_composer(&mut self) {
+    pub(crate) fn want_composer(&mut self, cx: &mut Context<Self>) {
         self.want = Want::Composer;
+        cx.notify();
+    }
+
+    /// Escape up from the turn list or the sources list: the composer is
+    /// wanted, and drilled into the sources (the composer behind them)
+    /// going up is leaving them. Only this path closes them: focus cycling
+    /// through [`Self::want_composer`] leaves the reader as it is.
+    pub(crate) fn dismiss_to_composer(&mut self, cx: &mut Context<Self>) {
+        if self.drilled() {
+            self.sources_open = false;
+        }
+        self.want_composer(cx);
     }
 
     /// The selected turn's id.
@@ -819,9 +834,30 @@ impl AskView {
             .into_any_element()
     }
 
-    /// The sources part, in place under the selected turn: the list and
-    /// the reader at a fixed height (their own scroll), the reader's open
-    /// height while it is open. A press in it is the part's (the list or
+    /// The drill-in header: back to the Thread, and the zoom toggle.
+    fn render_back_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_none()
+            .flex_row()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .child(
+                Button::new(BACK_ID)
+                    .small()
+                    .label("← Thread")
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.sources_open = false;
+                        this.focus_turns(window, cx);
+                    })),
+            )
+            .child(self.render_zoom_button(cx))
+            .into_any_element()
+    }
+
+    /// The sources part: the list and the reader, beside the Thread when
+    /// the slot is wide, else in place of it (with a back header). A press in it is the part's (the list or
     /// the filter takes the keyboard), never the turn list's.
     fn render_sources_part(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.sources_drawn() {
@@ -830,11 +866,6 @@ impl AskView {
         let sources = self.sources.clone()?;
         let theme = theme::current(cx);
         let t = &*theme;
-        let height = if self.reader_open {
-            SOURCES_READER_REMS
-        } else {
-            SOURCES_LIST_REMS
-        };
         Some(
             div()
                 .id(SOURCES_PART_ID)
@@ -843,12 +874,13 @@ impl AskView {
                 .aria_label("Sources")
                 .flex()
                 .flex_col()
-                .flex_none()
-                .h(rems(height))
-                .mx_3()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
                 .py_1()
-                .border_1()
-                .rounded_md()
+                .when(self.wide, |part| {
+                    part.flex_none().w(rems(SOURCES_PANE_REMS)).border_l_1()
+                })
                 .border_color(theme::divider(t))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -951,6 +983,29 @@ impl AskView {
             .into_any_element()
     }
 
+    /// Whether the sources replace the Thread (drilled in): drawn, in a
+    /// slot too narrow to hold both.
+    fn drilled(&self) -> bool {
+        self.sources_drawn() && !self.wide
+    }
+
+    /// Drilling in unmounts the Thread column (turn list and composer):
+    /// a keyboard on either would be on a handle no longer in the tree and
+    /// keys would stop arriving. It goes to the sources list instead.
+    /// Keyboard elsewhere (the editor, say) is left alone.
+    fn rehome_focus_when_drilled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.drilled() {
+            return;
+        }
+        let in_thread = self.turns_focus.is_focused(window) || self.composer_focused(window, cx);
+        if !in_thread {
+            return;
+        }
+        self.want = Want::Sources;
+        let handle = self.focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
     fn render_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.actions(cx);
         let reason = self.unavailable;
@@ -980,6 +1035,17 @@ impl AskView {
                     .when_some(reason, |b, why| b.tooltip(why))
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AskEvent::New))),
             )
+            .child(self.render_zoom_button(cx))
+    }
+
+    /// The slot's zoom toggle. Drawn in the Thread's actions row and, with
+    /// the Thread gone, in the drill-in header (never both): zooming is how
+    /// a narrow slot gets the sources beside the Thread.
+    fn render_zoom_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new(ZOOM_ID)
+            .small()
+            .label(if self.zoomed { "Zoom out" } else { "Zoom" })
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AskEvent::ToggleZoom)))
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1058,6 +1124,19 @@ fn has_sources(turn: &Turn) -> bool {
     matches!(turn.status, TurnStatus::Done) && !turn.sources.is_empty()
 }
 
+impl SlotAware for AskView {
+    /// Zoomed (the button's label) and wide enough for the sources beside
+    /// the Thread ([`WIDE_REMS`]); redraws only on a change.
+    fn set_slot(&mut self, slot: SlotContext, cx: &mut Context<Self>) {
+        let wide = slot.width >= f64::from(WIDE_REMS) * slot.rem;
+        if self.zoomed != slot.zoomed || self.wide != wide {
+            self.zoomed = slot.zoomed;
+            self.wide = wide;
+            cx.notify();
+        }
+    }
+}
+
 impl Focusable for AskView {
     /// The sources list while it is wanted and drawn; the composer while it
     /// is wanted and a server can answer; else the turn list.
@@ -1072,8 +1151,10 @@ impl Focusable for AskView {
     }
 }
 
-impl Render for AskView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl AskView {
+    /// The Thread column: the turn list, then the actions and the composer.
+    /// Not drawn while the sources are drilled into, so not built then.
+    fn render_thread(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
         let selected = self.thread.selected().map(|turn| turn.id);
@@ -1081,62 +1162,13 @@ impl Render for AskView {
         for turn in self.thread.turns() {
             let is_selected = Some(turn.id) == selected;
             turns.push(self.render_turn(turn, is_selected, cx));
-            // The part sits right after the selected turn, so the turns
-            // before it keep their child index (`follow_selected`).
-            if is_selected {
-                turns.extend(self.render_sources_part(cx));
-            }
         }
         div()
-            .id(ASK_ID)
-            .test_support()
-            .role(Role::Group)
-            .aria_label(view_registry::spec(DrawerView::Ask).name)
             .flex()
             .flex_col()
             .flex_1()
-            .min_h_0()
             .min_w_0()
-            // The composer's keys that mean something else here (only the
-            // composer's: the sources filter under a turn has its own).
-            .capture_action(cx.listener(|this, _: &Enter, window, cx| {
-                if this.composer_focused(window, cx) {
-                    this.send(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                if this.composer_focused(window, cx) {
-                    this.focus_turns(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
-                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
-                    this.select_step(true, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
-                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
-                    this.select_step(false, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &MovePageUp, window, cx| {
-                if this.composer_focused(window, cx) {
-                    this.scroll_by_key(Key::PageUp, window);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &MovePageDown, window, cx| {
-                if this.composer_focused(window, cx) {
-                    this.scroll_by_key(Key::PageDown, window);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }))
+            .min_h_0()
             .child(
                 div()
                     .id(TURNS_ID)
@@ -1181,6 +1213,76 @@ impl Render for AskView {
                     .child(self.render_actions(cx))
                     .child(self.render_composer(cx)),
             )
+            .into_any_element()
+    }
+}
+
+impl Render for AskView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rehome_focus_when_drilled(window, cx);
+        let drilled = self.drilled();
+        let wide_pane = self.sources_drawn() && self.wide;
+        // Drawn only when drilled in or beside the Thread, never else.
+        let part = self.render_sources_part(cx);
+        let (drilled_part, pane_part) = if drilled { (part, None) } else { (None, part) };
+        let thread = (!drilled).then(|| self.render_thread(cx));
+        let root = if wide_pane {
+            div().flex_row()
+        } else {
+            div().flex_col()
+        };
+        root.id(ASK_ID)
+            .test_support()
+            .role(Role::Group)
+            .aria_label(view_registry::spec(DrawerView::Ask).name)
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            // The composer's keys that mean something else here (only the
+            // composer's: the sources filter under a turn has its own).
+            .capture_action(cx.listener(|this, _: &Enter, window, cx| {
+                if this.composer_focused(window, cx) {
+                    this.send(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.composer_focused(window, cx) {
+                    this.focus_turns(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
+                    this.select_step(true, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
+                    this.select_step(false, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageUp, window, cx| {
+                if this.composer_focused(window, cx) {
+                    this.scroll_by_key(Key::PageUp, window);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageDown, window, cx| {
+                if this.composer_focused(window, cx) {
+                    this.scroll_by_key(Key::PageDown, window);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .when(drilled, |root| root.child(self.render_back_header(cx)))
+            .when_some(drilled_part, |root, part| root.child(part))
+            .children(thread)
+            .when_some(pane_part, |root, part| root.child(part))
     }
 }
 
@@ -1223,6 +1325,7 @@ impl Workspace {
             AskEvent::Copy => self.copy_answer(cx),
             AskEvent::Save => self.save_answer(cx),
             AskEvent::New => self.ask_step(AskStep::New, window, cx),
+            AskEvent::ToggleZoom => self.toggle_zoom(window, cx),
             AskEvent::Dismiss => self.focus_ask_composer(window, cx),
             AskEvent::Input(citation) => self.after_ask_input(*citation, window, cx),
         }
@@ -1312,7 +1415,7 @@ impl Workspace {
             return;
         }
         match then {
-            AskThen::Composer => view.update(cx, |view, _| view.want_composer()),
+            AskThen::Composer => view.update(cx, |view, cx| view.want_composer(cx)),
             AskThen::New => {
                 view.update(cx, |view, cx| view.clear(cx));
                 if let Some(sources) = self.ask_sources.clone() {
@@ -1360,7 +1463,7 @@ impl Workspace {
         {
             return;
         }
-        view.update(cx, |view, _| view.want_composer());
+        view.update(cx, |view, cx| view.dismiss_to_composer(cx));
         self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
         self.apply_focus(window, cx);
         cx.notify();

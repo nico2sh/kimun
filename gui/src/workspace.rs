@@ -2351,7 +2351,7 @@ impl Workspace {
             .h_full()
             .w(rems(RAIL_REMS))
             .gap_1()
-            .pb_1()
+            .py_1()
             .relative()
             .bg(panel_bg)
             .border_r_1()
@@ -2493,19 +2493,22 @@ impl Workspace {
         div()
             .id("editor-panel")
             .test_support()
-            .relative()
             .flex()
-            .flex_col()
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(theme::background(&theme::current(cx)))
-            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                this.focus_panel(Panel::Editor, window, cx)
-            }))
-            .child(document)
-            .child(self.render_footer(editor_shown, cx))
-            .children(self.focus_bar(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx))
+            .p(tree_view::LEAF_MARGIN)
+            .child(
+                Self::leaf_surface(
+                    theme::background(&theme::current(cx)),
+                    self.leaf_border(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx),
+                )
+                .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.focus_panel(Panel::Editor, window, cx)
+                }))
+                .child(document)
+                .child(self.render_footer(editor_shown, cx)),
+            )
     }
 
     /// The Footer: under the editor Panel, or under the zoomed slot while
