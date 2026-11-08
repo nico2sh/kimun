@@ -349,14 +349,19 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
 /// moved, never copied — and the keyboard goes with it; a slot left with no
 /// shown view is not drawn. From the rail the move is spatial: Right moves
 /// the cursor's view into the slot beside the rail; the rail keeps the
-/// keyboard. Every move is saved and restored.
+/// keyboard. Every move is saved and restored. Each slot keeps a hidden
+/// view (FIND left, TAGS right), so no move empties a slot (which would
+/// close it, ADR-0054).
 #[gpui_kit::test]
 fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
         1000.,
-        &GuiSettings::default(),
+        &three(
+            "views = [\"files\", \"find\"], shown = \"files\"",
+            "views = [\"tags\"]",
+        ),
         "",
         false,
         LayoutStore::File(path.clone()),
@@ -369,7 +374,8 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
 
         window.press("alt-shift-right", cx);
         window.render_frame(cx);
-        assert!(shell.placed_on(Side::Left, cx).is_empty());
+        assert_eq!(shell.placed_on(Side::Left, cx), [DrawerView::Find]);
+        assert!(shell.shown_on(Side::Left, cx).is_empty());
         assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Files]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(right)));
         assert_eq!(
@@ -383,18 +389,26 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
         let editor = window.find("editor-panel").bounds();
         let rail = window.find("rail").bounds();
         assert!(close(editor.left(), f32::from(rail.right())));
-        assert_eq!(saved_placed(&path), [vec![], vec![DrawerView::Files]]);
-
-        // Nothing further right: handled, nothing moves.
-        window.press("alt-shift-right", cx);
-        assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Files]);
+        assert_eq!(
+            saved_placed(&path),
+            [
+                vec![DrawerView::Find],
+                vec![DrawerView::Tags, DrawerView::Files]
+            ]
+        );
 
         // And back.
         window.press("alt-shift-left", cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
-        assert!(shell.placed_on(Side::Right, cx).is_empty());
+        assert_eq!(shell.placed_on(Side::Right, cx), [DrawerView::Tags]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
-        assert_eq!(saved_placed(&path), [vec![DrawerView::Files], vec![]]);
+        assert_eq!(
+            saved_placed(&path),
+            [
+                vec![DrawerView::Find, DrawerView::Files],
+                vec![DrawerView::Tags]
+            ]
+        );
 
         // Files to the right again, for the rail moves below.
         window.press("alt-shift-right", cx);
@@ -1723,14 +1737,32 @@ fn close_slot_merges_views_and_focuses_the_absorber(cx: &mut TestAppContext) {
 /// order: from the bottom of the left column Right lands in the right
 /// column's slot that overlaps it most (TAGS', not OUTLINE's, the first
 /// in reading order), and from the top of the column in OUTLINE's. The
-/// keyboard follows the view; every move is saved.
+/// keyboard follows the view; every move is saved. Each left slot keeps a
+/// hidden view (LINKS, SEMANTIC), so no move empties a slot (which would
+/// close it, ADR-0054).
 #[gpui_kit::test]
 fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
+    let stacks = gui(&[
+        "[gui.layout]",
+        "split = \"horizontal\"",
+        "children = [",
+        "{ weight = 0.2, split = \"vertical\", children = [",
+        "  { weight = 0.3, views = [\"files\", \"links\"], shown = \"files\" },",
+        "  { weight = 0.7, views = [\"find\", \"semantic\"], shown = \"find\" },",
+        "] },",
+        "{ weight = 0.6, editor = true },",
+        "{ weight = 0.2, split = \"vertical\", children = [",
+        "  { weight = 0.6, views = [\"outline\"], shown = \"outline\" },",
+        "  { weight = 0.4, views = [\"tags\"], shown = \"tags\" },",
+        "] },",
+        "]",
+    ]
+    .join("\n"));
     let shell = open_shell(
         cx,
         1200.,
-        &two_stacks(),
+        &stacks,
         "",
         false,
         LayoutStore::File(path.clone()),
@@ -1748,7 +1780,7 @@ fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(layout(cx).shown(tags_s), Some(DrawerView::Find));
         assert_eq!(layout(cx).shown(outline_s), Some(DrawerView::Outline));
-        assert!(layout(cx).slot_views(find_s).is_empty());
+        assert_eq!(layout(cx).slot_views(find_s), [DrawerView::Semantic]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(tags_s)));
         assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
         assert_eq!(
@@ -1765,7 +1797,7 @@ fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
         window.click(slot_id(DrawerView::Files), cx);
         window.press("alt-shift-right", cx);
         assert_eq!(layout(cx).shown(outline_s), Some(DrawerView::Files));
-        assert!(layout(cx).slot_views(files_s).is_empty());
+        assert_eq!(layout(cx).slot_views(files_s), [DrawerView::Links]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(outline_s)));
 
         // Down from OUTLINE's slot: the slot under it.
@@ -1781,8 +1813,8 @@ fn move_view_to_neighbour_uses_geometry(cx: &mut TestAppContext) {
         assert_eq!(
             saved_placed(&path),
             [
-                vec![],
-                vec![DrawerView::Files],
+                vec![DrawerView::Links],
+                vec![DrawerView::Semantic, DrawerView::Files],
                 vec![DrawerView::Outline, DrawerView::Find],
                 vec![DrawerView::Tags]
             ]
@@ -2169,7 +2201,7 @@ fn a_slot_below_its_minimum_shows_too_small(cx: &mut TestAppContext) {
 
 /// Two drawn cells with a hidden slot between them in the tree still share
 /// a divider (Ruling 23): FILES split right gives `[A, B, editor, right]`,
-/// FILES moved into B, TAGS shown in A from the rail, FILES hidden from the
+/// TAGS placed in A, FILES moved into B, TAGS shown in A from the rail, FILES hidden from the
 /// rail: TAGS and the editor are drawn side by side across hidden B. A drag
 /// of that divider changes only those two weights (B and the right slot
 /// keep theirs), and the leader's grow step resizes TAGS.
@@ -2194,6 +2226,11 @@ fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppCon
         window.render_frame(cx);
         window.press("alt-left", cx);
         window.press("alt-shift-r", cx);
+        window.render_frame(cx);
+        // TAGS placed in A first, so FILES' move does not vacate A (a slot
+        // a move empties closes, ADR-0054).
+        window.click(rail_cell_id(DrawerView::Tags), cx);
+        window.click(rail_cell_id(DrawerView::Files), cx);
         window.render_frame(cx);
         window.press("alt-shift-right", cx);
         window.render_frame(cx);
