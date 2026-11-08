@@ -12,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+pub mod spec;
+
 pub(crate) use crate::logic::layout::node::Node;
 pub use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
 

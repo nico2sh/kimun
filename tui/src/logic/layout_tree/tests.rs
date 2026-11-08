@@ -536,3 +536,331 @@ fn leaving_zoom_restores_normal_geometry() {
     assert!(t.move_view_dir(&"tags", Dir::Down));
     assert_eq!(t.view_slot(&"tags"), Some(s[2]));
 }
+
+// ── Layout specs (Task 5) ──────────────────────────────────────────────
+
+mod spec_tests {
+    use super::super::spec::*;
+    use super::super::*;
+    use crate::logic::nav::DrawerView;
+    use crate::logic::rag_caps::Caps;
+
+    const ALL: Caps = Caps {
+        semantic: true,
+        ask: true,
+    };
+
+    fn slot(views: &[&str], shown: Option<&str>) -> ChildSpec {
+        ChildSpec {
+            weight: None,
+            node: NodeSpec::Slot {
+                views: views.iter().map(|v| v.to_string()).collect(),
+                shown: shown.map(str::to_string),
+            },
+        }
+    }
+
+    fn editor() -> ChildSpec {
+        ChildSpec {
+            weight: None,
+            node: NodeSpec::Editor { editor: true },
+        }
+    }
+
+    fn split(axis: &str, children: Vec<ChildSpec>) -> ChildSpec {
+        ChildSpec {
+            weight: None,
+            node: NodeSpec::Split {
+                split: AxisName(axis.to_string()),
+                children,
+            },
+        }
+    }
+
+    fn w(mut c: ChildSpec, weight: f64) -> ChildSpec {
+        c.weight = Some(weight);
+        c
+    }
+
+    /// The arrangement as a comparable string: axes, weights (rounded),
+    /// leaf kinds and slot contents, ignoring ids and session state.
+    fn shape(t: &LayoutTree<DrawerView>) -> String {
+        fn go(t: &LayoutTree<DrawerView>, n: &Node<Leaf>, out: &mut String) {
+            match n.split_children() {
+                Some((axis, children)) => {
+                    out.push_str(&format!("{axis:?}("));
+                    for (wt, c) in children {
+                        out.push_str(&format!("{:.6}:", wt));
+                        go(t, c, out);
+                        out.push(',');
+                    }
+                    out.push(')');
+                }
+                None => match n.as_leaf().expect("leaf") {
+                    Leaf::Group(_) => out.push('E'),
+                    Leaf::Slot(s) => {
+                        out.push_str(&format!("S{:?}/{:?}", t.slot_views(*s), t.shown(*s)))
+                    }
+                },
+            }
+        }
+        let mut out = String::new();
+        go(t, t.node(), &mut out);
+        out
+    }
+
+    fn ok(spec: &ChildSpec) -> LayoutTree<DrawerView> {
+        let (t, warnings) = build(spec, ALL).expect("valid spec");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        t
+    }
+
+    fn errs(spec: &ChildSpec) -> Vec<SpecError> {
+        build(spec, ALL).expect_err("invalid spec")
+    }
+
+    #[test]
+    fn round_trips_the_default_layout_through_toml() {
+        let tree = LayoutTree::default_layout(DrawerView::Files);
+        let file = PresetFile {
+            preset: [("default".to_string(), to_spec(&tree))].into(),
+        };
+        let text = toml::to_string(&file).expect("serializes");
+        let back = parse_presets(&text).expect("parses");
+        assert_eq!(back, file, "{text}");
+        let rebuilt = ok(&back.preset["default"]);
+        assert_eq!(shape(&rebuilt), shape(&tree));
+        assert_eq!(rebuilt, tree, "fresh trees compare equal, ids included");
+
+        // A tree rearranged by operations round-trips too.
+        let mut t = tree.clone();
+        let (left, right) = (t.slots()[0], t.slots()[1]);
+        let below = t.split_slot(right, Axis::Vertical).unwrap();
+        assert!(t.move_view(DrawerView::Ask, below));
+        assert!(t.place(DrawerView::Links, right, false));
+        t.split_group(t.groups()[0], Axis::Vertical).unwrap();
+        t.close_slot(left).unwrap();
+        let text = toml::to_string(&to_spec(&t)).expect("serializes");
+        let spec: ChildSpec = toml::from_str(&text).expect("parses");
+        assert_eq!(shape(&ok(&spec)), shape(&t), "{text}");
+    }
+
+    #[test]
+    fn unknown_view_id_is_reported_with_its_path() {
+        let spec = split(
+            "horizontal",
+            vec![
+                editor(),
+                split(
+                    "vertical",
+                    vec![slot(&["nope"], None), slot(&["files", "bogus"], None)],
+                ),
+            ],
+        );
+        let e = errs(&spec);
+        assert_eq!(
+            e,
+            vec![
+                SpecError::UnknownView {
+                    path: "children[1].children[0]".into(),
+                    id: "nope".into()
+                },
+                SpecError::UnknownView {
+                    path: "children[1].children[1]".into(),
+                    id: "bogus".into()
+                },
+            ]
+        );
+        assert_eq!(e[0].path(), Some("children[1].children[0]"));
+        assert_eq!(
+            e[0].to_string(),
+            "Unknown view \"nope\" in the node at children[1].children[0]."
+        );
+    }
+
+    #[test]
+    fn view_in_two_slots_is_duplicate() {
+        let spec = split(
+            "horizontal",
+            vec![
+                slot(&["files"], None),
+                editor(),
+                slot(&["tags", "files"], None),
+            ],
+        );
+        assert_eq!(
+            errs(&spec),
+            vec![SpecError::DuplicateView {
+                path: "children[2]".into(),
+                id: "files".into()
+            }]
+        );
+        let twice_in_one = split("horizontal", vec![slot(&["tags", "tags"], None), editor()]);
+        assert_eq!(
+            errs(&twice_in_one),
+            vec![SpecError::DuplicateView {
+                path: "children[0]".into(),
+                id: "tags".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn shown_not_in_views_is_rejected() {
+        let spec = split("horizontal", vec![slot(&["files"], Some("tags")), editor()]);
+        let e = errs(&spec);
+        assert_eq!(
+            e,
+            vec![SpecError::ShownNotInViews {
+                path: "children[0]".into(),
+                shown: "tags".into()
+            }]
+        );
+        assert!(!e[0].to_string().is_empty());
+    }
+
+    #[test]
+    fn tree_without_editor_is_rejected() {
+        let spec = split("horizontal", vec![slot(&["files"], None), slot(&[], None)]);
+        let e = errs(&spec);
+        assert_eq!(e, vec![SpecError::NoEditorGroup]);
+        assert_eq!(e[0].path(), None);
+        // Every problem is reported, not just the first.
+        let many = split(
+            "diagonal",
+            vec![
+                w(slot(&["nope"], None), 0.0),
+                split("vertical", vec![slot(&[], None)]),
+            ],
+        );
+        let e = errs(&many);
+        assert!(e.contains(&SpecError::UnknownAxis {
+            path: "".into(),
+            axis: "diagonal".into()
+        }));
+        assert!(e.contains(&SpecError::BadWeight {
+            path: "children[0]".into(),
+            weight: 0.0
+        }));
+        assert!(e.contains(&SpecError::UnknownView {
+            path: "children[0]".into(),
+            id: "nope".into()
+        }));
+        assert!(e.contains(&SpecError::EmptySplit {
+            path: "children[1]".into()
+        }));
+        assert!(e.contains(&SpecError::NoEditorGroup));
+        assert_eq!(e.len(), 5, "{e:?}");
+        // An editor-only tree is valid.
+        let t = ok(&editor());
+        assert!(t.slots().is_empty());
+        assert_eq!(t.groups().len(), 1);
+    }
+
+    #[test]
+    fn weight_zero_negative_or_nan_is_rejected() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let spec = split("horizontal", vec![w(editor(), bad), slot(&[], None)]);
+            let e = errs(&spec);
+            assert_eq!(e.len(), 1, "{bad}: {e:?}");
+            match &e[0] {
+                SpecError::BadWeight { path, weight } => {
+                    assert_eq!(path, "children[0]");
+                    assert!(weight.to_bits() == bad.to_bits(), "{bad}");
+                }
+                other => panic!("{bad}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_view_is_skipped_with_a_warning_not_an_error() {
+        let spec = split(
+            "horizontal",
+            vec![
+                slot(&["files", "semantic"], Some("files")),
+                editor(),
+                slot(&["ask", "outline"], Some("ask")),
+            ],
+        );
+        let caps = Caps {
+            semantic: false,
+            ask: false,
+        };
+        let (t, warnings) = build(&spec, caps).expect("skips, does not fail");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("semantic")));
+        assert!(warnings.iter().any(|w| w.contains("ask")));
+        let s = t.slots();
+        assert_eq!(t.slot_views(s[0]), vec![DrawerView::Files]);
+        assert_eq!(t.shown(s[0]), Some(DrawerView::Files));
+        assert_eq!(t.slot_views(s[1]), vec![DrawerView::Outline]);
+        assert_eq!(t.shown(s[1]), None, "shown named a skipped view");
+    }
+
+    #[test]
+    fn parse_presets_reads_nested_children() {
+        let text = r#"
+[preset.research]
+split = "horizontal"
+children = [
+    { weight = 0.2, views = ["files"], shown = "files" },
+    { weight = 0.6, editor = true },
+    { weight = 0.2, split = "vertical", children = [
+        { views = ["ask"], shown = "ask" },
+        { views = ["outline", "links"] },
+    ] },
+]
+
+[preset.focus]
+editor = true
+"#;
+        let file = parse_presets(text).expect("parses");
+        assert_eq!(file.preset.len(), 2);
+        let expected = split(
+            "horizontal",
+            vec![
+                w(slot(&["files"], Some("files")), 0.2),
+                w(editor(), 0.6),
+                w(
+                    split(
+                        "vertical",
+                        vec![
+                            slot(&["ask"], Some("ask")),
+                            slot(&["outline", "links"], None),
+                        ],
+                    ),
+                    0.2,
+                ),
+            ],
+        );
+        assert_eq!(file.preset["research"], expected);
+        assert_eq!(file.preset["focus"], editor());
+        let t = ok(&file.preset["research"]);
+        let s = t.slots();
+        assert_eq!(s.len(), 3);
+        assert_eq!(t.shown(s[1]), Some(DrawerView::Ask));
+        assert_eq!(
+            t.slot_views(s[2]),
+            vec![DrawerView::Outline, DrawerView::Links]
+        );
+        // Ids are small and sequential in reading order.
+        assert_eq!(s, vec![SlotId::new(0), SlotId::new(1), SlotId::new(2)]);
+        assert!(parse_presets("[preset.x]\neditor = false\n").is_err());
+        assert!(parse_presets("[preset.x]\nviews = []\neditor = true\n").is_err());
+    }
+
+    #[test]
+    fn missing_weight_defaults_to_one() {
+        let spec = split(
+            "horizontal",
+            vec![slot(&[], None), w(editor(), 2.0), slot(&[], None)],
+        );
+        let t = ok(&spec);
+        let (_, children) = t.node().split_children().expect("split");
+        let weights: Vec<f64> = children.iter().map(|(wt, _)| *wt).collect();
+        for (got, want) in weights.iter().zip([0.25, 0.5, 0.25]) {
+            assert!((got - want).abs() < 1e-9, "{weights:?}");
+        }
+    }
+}
