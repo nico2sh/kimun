@@ -74,9 +74,16 @@ impl Workspace {
                 let total: f64 = drawn.iter().map(|(weight, ..)| weight).sum();
                 let drawn: Vec<AnyElement> = drawn
                     .into_iter()
-                    .map(|(weight, min, element)| {
+                    .enumerate()
+                    .map(|(index, (weight, min, element))| {
                         div()
                             .flex()
+                            // One pixel of window background between
+                            // neighbours, so touching slots never merge.
+                            .when(index > 0, |cell| match axis {
+                                Axis::Horizontal => cell.ml_px(),
+                                Axis::Vertical => cell.mt_px(),
+                            })
                             .flex_basis(rems(0.))
                             .flex_grow((weight / total) as f32)
                             .min_w_0()
@@ -142,16 +149,7 @@ impl Workspace {
             .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                 this.focus_slot(slot, window, cx)
             }))
-            .child(
-                div()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .text_sm()
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_color(theme::foreground(&theme::current(cx)))
-                    .child(spec.title),
-            )
+            .child(self.render_slot_header(slot, Some(view), cx))
             .map(|el| match self.view_content(view) {
                 Some(content) => el.child(content),
                 // Every view is built; one without content needs a vault.
@@ -165,6 +163,48 @@ impl Workspace {
             })
             .children(self.focus_bar(Focus::Leaf(Leaf::Slot(slot)), cx))
             .into_any_element()
+    }
+
+    /// The strip at the top of a drawn slot: the title of the view it shows
+    /// (`Empty` for a slot opened with nothing in it) on the header
+    /// background, a hairline under it, and the accent on the title while
+    /// the slot has the focus. No actions yet: the hook for a slot menu.
+    fn render_slot_header(
+        &self,
+        slot: SlotId,
+        view: Option<DrawerView>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let focused = self.layout.focused() == Focus::Leaf(Leaf::Slot(slot));
+        let title: SharedString = match view {
+            Some(view) => view_registry::spec(view).title.into(),
+            None => "Empty".into(),
+        };
+        let theme = theme::current(cx);
+        div()
+            .id(if focused {
+                "slot-header-focused"
+            } else {
+                "slot-header"
+            })
+            .test_support()
+            .role(Role::Group)
+            .aria_label(title.clone())
+            .w_full()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .text_sm()
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .bg(theme::slot_header_background(&theme))
+            .border_b_1()
+            .border_color(theme::divider(&theme))
+            .text_color(if focused {
+                theme::focus_border(&theme)
+            } else {
+                theme::foreground(&theme)
+            })
+            .child(title)
     }
 
     /// What `view`'s slot shows, for the views built so far.
@@ -206,13 +246,18 @@ impl Workspace {
             .justify_center()
             .min_w_0()
             .min_h_0()
-            .px_4()
             .bg(theme::panel_background(&theme::current(cx)))
             .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                 this.focus_slot(slot, window, cx)
             }))
+            .child(self.render_slot_header(slot, None, cx))
             .child(
                 div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .px_4()
                     .text_sm()
                     .text_center()
                     .text_color(theme::muted(&theme::current(cx)))
