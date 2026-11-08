@@ -433,6 +433,37 @@ fn invalid_preset_reports_each_error_and_keeps_current_layout(cx: &mut TestAppCo
     )));
 }
 
+/// A preset with two editor groups cannot be drawn (the editor renders
+/// once) and is refused until group splitting exists: the layout stays and
+/// one flash names the second editor's path (Ruling 23).
+#[gpui_kit::test]
+fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let text = lines(&[
+        "[preset.twins]",
+        "split = \"horizontal\"",
+        "children = [",
+        "    { editor = true },",
+        "    { views = [\"files\"], shown = \"files\" },",
+        "    { editor = true },",
+        "]",
+    ]);
+    let shell = open_with(cx, &config, Some(&text));
+    let before = live(&shell, cx);
+
+    apply(&shell, cx, "twins");
+    assert_eq!(live(&shell, cx), before);
+    assert_eq!(live(&shell, cx).groups().len(), 1);
+    assert!(!config.exists(), "nothing saved");
+    let shown = flashes(&shell, cx);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    let (message, error) = &shown[0];
+    assert!(*error);
+    assert!(message.contains("\"twins\""), "{message}");
+    assert!(message.contains("children[2]"), "{message}");
+    assert!(message.contains("group splitting"), "{message}");
+}
+
 #[gpui_kit::test]
 fn reset_to_preset_discards_dragged_weights(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();

@@ -638,11 +638,58 @@ mod spec_tests {
         let below = t.split_slot(right, Axis::Vertical).unwrap();
         assert!(t.move_view(DrawerView::Ask, below));
         assert!(t.place(DrawerView::Links, right, false));
-        t.split_group(t.groups()[0], Axis::Vertical).unwrap();
         t.close_slot(left).unwrap();
         let text = toml::to_string(&to_spec(&t)).expect("serializes");
         let spec: ChildSpec = toml::from_str(&text).expect("parses");
         assert_eq!(shape(&ok(&spec)), shape(&t), "{text}");
+    }
+
+    /// The model supports several editor groups, but nothing can draw a
+    /// second one until group splitting exists: a spec naming two is refused
+    /// with the second leaf's path (Ruling 23).
+    #[test]
+    fn a_second_editor_group_is_rejected_with_its_path() {
+        let spec = split(
+            "horizontal",
+            vec![
+                slot(&["files"], None),
+                editor(),
+                split("vertical", vec![slot(&["tags"], None), editor()]),
+            ],
+        );
+        let e = errs(&spec);
+        assert_eq!(
+            e,
+            vec![SpecError::MultipleEditorGroups {
+                path: "children[2].children[1]".into()
+            }]
+        );
+        assert_eq!(e[0].path(), Some("children[2].children[1]"));
+        let text = e[0].to_string();
+        assert!(text.contains("children[2].children[1]"), "{text}");
+        assert!(text.contains("until group splitting exists"), "{text}");
+        // A tree split into two groups by the model does not save as a preset
+        // that builds either.
+        let mut t = LayoutTree::default_layout(DrawerView::Files);
+        t.split_group(t.groups()[0], Axis::Vertical).unwrap();
+        assert!(matches!(
+            errs(&to_spec(&t)).as_slice(),
+            [SpecError::MultipleEditorGroups { .. }]
+        ));
+    }
+
+    /// Finite weights whose sum is not finite would lay out NaN rectangles:
+    /// refused with the split's path.
+    #[test]
+    fn weights_summing_to_infinity_are_rejected() {
+        let spec = split(
+            "horizontal",
+            vec![w(editor(), 1e308), w(slot(&["files"], None), 1e308)],
+        );
+        let e = errs(&spec);
+        assert_eq!(e, vec![SpecError::WeightSumOverflow { path: "".into() }]);
+        assert_eq!(e[0].path(), Some(""));
+        assert!(!e[0].to_string().is_empty());
     }
 
     #[test]

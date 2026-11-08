@@ -268,16 +268,14 @@ impl<L: Clone + PartialEq> Node<L> {
             return children.remove(0).1;
         }
         assert!(!children.is_empty(), "a split needs at least one child");
-        let total: f64 = children.iter().map(|(w, _)| *w).sum();
+        let weights = normalized(children.iter().map(|(w, _)| *w).collect());
         Self {
             kind: Kind::Split {
                 axis,
                 children: children
                     .into_iter()
-                    .map(|(w, node)| Child {
-                        weight: w / total,
-                        node,
-                    })
+                    .zip(weights)
+                    .map(|((_, node), weight)| Child { weight, node })
                     .collect(),
             },
         }
@@ -447,9 +445,43 @@ impl<L: Clone + PartialEq> Node<L> {
     }
 }
 
+/// `weights` scaled to sum 1. Positive finite weights whose sum overflows
+/// are scaled down first; any zero, negative or non-finite weight gives
+/// equal shares, so a split never lays out NaN rectangles.
+fn normalized(weights: Vec<f64>) -> Vec<f64> {
+    let n = weights.len() as f64;
+    if !weights.iter().all(|w| w.is_finite() && *w > 0.0) {
+        return vec![1.0 / n; weights.len()];
+    }
+    let total: f64 = weights.iter().sum();
+    if total.is_finite() {
+        return weights.iter().map(|w| w / total).collect();
+    }
+    let max = weights.iter().copied().fold(0.0, f64::max);
+    let total: f64 = weights.iter().map(|w| w / max).sum();
+    weights.iter().map(|w| w / max / total).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_split_with_bad_or_overflowing_weights_still_lays_out() {
+        let huge = Node::split(
+            Axis::Horizontal,
+            vec![(1e308, Node::leaf('a')), (1e308, Node::leaf('b'))],
+        );
+        assert_eq!(huge.ratios(), vec![0.5, 0.5]);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let n = Node::split(
+                Axis::Horizontal,
+                vec![(bad, Node::leaf('a')), (1.0, Node::leaf('b'))],
+            );
+            assert_eq!(n.ratios(), vec![0.5, 0.5], "{bad}");
+            assert!(n.layout(unit()).iter().all(|(_, r)| r.w.is_finite()));
+        }
+    }
 
     fn unit() -> UnitRect {
         UnitRect::new(0.0, 0.0, 1.0, 1.0)
