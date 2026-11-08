@@ -34,8 +34,8 @@ pub struct ViewSpec {
 const MIN: (f64, f64) = (10.0, 6.0);
 const ASK_MIN: (f64, f64) = (18.0, 12.0);
 
-// Titles and names copied from gui/src/shell_layout.rs `slot_title` and
-// `view_name`; Task 7 deletes the gui copies.
+// The one source of every view's slot-header title and interface name;
+// the GUI reads them from here.
 const fn s(
     id: &'static str,
     view: DrawerView,
@@ -67,7 +67,7 @@ static TABLE: [ViewSpec; 8] = [
     ViewSpec {
         id: "ask",
         view: DrawerView::Ask,
-        title: "Sources",
+        title: "Ask",
         name: "Ask",
         needs: Needs::Ask,
         min: ASK_MIN,

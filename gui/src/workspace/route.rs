@@ -35,10 +35,10 @@ pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 /// The command edits or searches the note and the note did not have the
 /// keyboard when the palette opened.
 pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
-/// The command arranges the focused drawer view (or the rail's).
+/// The command arranges the view of the focused slot (or the rail's).
 pub(crate) const NEEDS_SLOT_FOCUS: &str = "Needs a slot focused";
-/// Copying a row needs a drawer list (LINKS, OUTLINE, FIND, TAGS) to have
-/// the keyboard.
+/// Copying a row needs the list of a slot's view (LINKS, OUTLINE, FIND,
+/// TAGS) to have the keyboard.
 pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a slot list focused";
 /// Saving a query needs FIND to have the keyboard (the search browser
 /// saves its own with the chord).
