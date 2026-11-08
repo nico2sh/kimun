@@ -192,9 +192,173 @@ impl fmt::Display for SpecError {
 
 impl std::error::Error for SpecError {}
 
-/// Parse a presets file. The error is the TOML parser's message.
+/// Parse a presets file. Text that is not TOML gives the TOML parser's
+/// message (with its line and column). TOML whose nodes are not nodes (a
+/// misspelt key, a leaf that is two kinds at once, a value of the wrong
+/// type) names each problem with its preset and node path instead of
+/// serde's "did not match any variant".
 pub fn parse_presets(toml: &str) -> Result<PresetFile, String> {
-    toml::from_str(toml).map_err(|e| e.to_string())
+    toml::from_str(toml).map_err(|e: toml::de::Error| {
+        let Ok(value) = toml::from_str::<toml::Table>(toml) else {
+            return e.to_string();
+        };
+        let problems = shape_problems(&value);
+        if problems.is_empty() {
+            e.to_string()
+        } else {
+            format!("{} {NODE_HELP}", list_problems(&problems, MAX_LISTED))
+        }
+    })
+}
+
+/// How many problems a message lists before it counts the rest.
+pub const MAX_LISTED: usize = 3;
+
+/// `problems` as one message: the first `max`, then how many more.
+pub fn list_problems(problems: &[String], max: usize) -> String {
+    let mut text = problems
+        .iter()
+        .take(max)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if problems.len() > max {
+        text.push_str(&format!(" (and {} more)", problems.len() - max));
+    }
+    text
+}
+
+/// The keys a node may hold.
+const NODE_KEYS: [&str; 6] = ["split", "children", "editor", "views", "shown", "weight"];
+
+/// What a node is, for the messages.
+const NODE_HELP: &str = "(A node is a `split` with `children`, `editor = true`, or `views` \
+                         with an optional `shown`; any node may carry a `weight`.)";
+
+/// Every structural problem of a parsed presets file, in reading order.
+fn shape_problems(file: &toml::Table) -> Vec<String> {
+    let mut problems = Vec::new();
+    match file.get("preset") {
+        None => {}
+        Some(toml::Value::Table(presets)) => {
+            for (name, node) in presets {
+                node_problems(name, node, "", &mut problems);
+            }
+        }
+        Some(_) => problems.push("`preset` must be a table of named presets.".to_string()),
+    }
+    problems
+}
+
+/// `text` with its first letter in upper case.
+fn capitalized(text: String) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => text,
+    }
+}
+
+/// `the root node of preset "x"` or `the node at <path> of preset "x"`.
+fn where_in(name: &str, path: &str) -> String {
+    format!("{} of preset \"{name}\"", at(path))
+}
+
+fn node_problems(name: &str, node: &toml::Value, path: &str, out: &mut Vec<String>) {
+    use toml::Value;
+    let here = || where_in(name, path);
+    let Value::Table(table) = node else {
+        out.push(format!("{} is not a table.", here()));
+        return;
+    };
+    for key in table.keys() {
+        if !NODE_KEYS.contains(&key.as_str()) {
+            out.push(format!("Unknown key \"{key}\" in {}.", here()));
+        }
+    }
+    let kinds: Vec<&str> = ["split", "editor", "views"]
+        .into_iter()
+        .filter(|k| table.contains_key(*k))
+        .collect();
+    match kinds.as_slice() {
+        // An unknown key already says what is wrong with such a node.
+        [] if table.keys().all(|k| NODE_KEYS.contains(&k.as_str())) => out.push(format!(
+            "{} has no `split`, `editor` or `views`.",
+            capitalized(here())
+        )),
+        [] | [_] => {}
+        many => out.push(format!(
+            "{} mixes {}.",
+            capitalized(here()),
+            many.iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        )),
+    }
+    let misplaced = |key: &str, owner: &str, out: &mut Vec<String>| {
+        if table.contains_key(key) && !table.contains_key(owner) {
+            out.push(format!("\"{key}\" in {} needs `{owner}`.", here()));
+        }
+    };
+    if kinds.len() == 1 {
+        misplaced("children", "split", out);
+        misplaced("shown", "views", out);
+    }
+    if let Some(split) = table.get("split")
+        && !split.is_str()
+    {
+        out.push(format!(
+            "\"split\" in {} must be \"horizontal\" or \"vertical\".",
+            here()
+        ));
+    }
+    match table.get("editor") {
+        None | Some(Value::Boolean(true)) => {}
+        Some(_) => out.push(format!("`editor` in {} must be true.", here())),
+    }
+    match table.get("views") {
+        None => {}
+        Some(Value::Array(ids)) if ids.iter().all(Value::is_str) => {}
+        Some(_) => out.push(format!(
+            "\"views\" in {} must be a list of view ids.",
+            here()
+        )),
+    }
+    if let Some(shown) = table.get("shown")
+        && !shown.is_str()
+    {
+        out.push(format!("\"shown\" in {} must be a view id.", here()));
+    }
+    if let Some(weight) = table.get("weight")
+        && !(weight.is_float() || weight.is_integer())
+    {
+        out.push(format!("\"weight\" in {} must be a number.", here()));
+    }
+    match table.get("children") {
+        None => {
+            if table.contains_key("split") {
+                out.push(format!(
+                    "{} is a split with no `children`.",
+                    capitalized(here())
+                ));
+            }
+        }
+        Some(Value::Array(children)) => {
+            for (i, child) in children.iter().enumerate() {
+                let child_path = if path.is_empty() {
+                    format!("children[{i}]")
+                } else {
+                    format!("{path}.children[{i}]")
+                };
+                node_problems(name, child, &child_path, out);
+            }
+        }
+        Some(_) => out.push(format!(
+            "\"children\" in {} must be a list of nodes.",
+            here()
+        )),
+    }
 }
 
 /// Validate `spec` and build its tree. Views the registry says are
