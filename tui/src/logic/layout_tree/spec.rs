@@ -122,6 +122,12 @@ pub enum SpecError {
     NoEditorGroup,
     /// A weight that is zero, negative, NaN or infinite.
     BadWeight { path: String, weight: f64 },
+    /// A split whose children's weights add up to more than a finite
+    /// number (each finite, e.g. `1e308` twice); `path` is the split.
+    WeightSumOverflow { path: String },
+    /// An `editor = true` leaf after the first (`path` is the later one):
+    /// a layout holds one editor group until group splitting exists.
+    MultipleEditorGroups { path: String },
     /// A split with fewer than two children.
     EmptySplit { path: String },
     /// A split axis other than `horizontal` / `vertical`.
@@ -136,6 +142,8 @@ impl SpecError {
             | SpecError::DuplicateView { path, .. }
             | SpecError::ShownNotInViews { path, .. }
             | SpecError::BadWeight { path, .. }
+            | SpecError::WeightSumOverflow { path }
+            | SpecError::MultipleEditorGroups { path }
             | SpecError::EmptySplit { path }
             | SpecError::UnknownAxis { path, .. } => Some(path),
             SpecError::NoEditorGroup => None,
@@ -174,6 +182,16 @@ impl fmt::Display for SpecError {
             SpecError::BadWeight { path, weight } => write!(
                 f,
                 "Weight {weight} of {} must be a positive finite number.",
+                at(path)
+            ),
+            SpecError::WeightSumOverflow { path } => write!(
+                f,
+                "The weights of the split at {} add up to more than a finite number.",
+                if path.is_empty() { "the root" } else { path }
+            ),
+            SpecError::MultipleEditorGroups { path } => write!(
+                f,
+                "The editor group in {} is a second one; a layout holds one editor group until group splitting exists.",
                 at(path)
             ),
             SpecError::EmptySplit { path } => write!(
@@ -412,6 +430,12 @@ impl Builder {
     fn node(&mut self, spec: &NodeSpec, path: &str) -> Option<Node<Leaf>> {
         match spec {
             NodeSpec::Editor { .. } => {
+                if self.next_group > 0 {
+                    self.errors.push(SpecError::MultipleEditorGroups {
+                        path: path.to_string(),
+                    });
+                    return None;
+                }
                 let g = GroupId::new(self.next_group);
                 self.next_group += 1;
                 Some(Node::leaf(Leaf::Group(g)))
@@ -450,6 +474,12 @@ impl Builder {
                         Some(n) => built.push((weight, n)),
                         None => failed = true,
                     }
+                }
+                if !failed && !built.iter().map(|(w, _)| w).sum::<f64>().is_finite() {
+                    self.errors.push(SpecError::WeightSumOverflow {
+                        path: path.to_string(),
+                    });
+                    failed = true;
                 }
                 match axis {
                     Some(axis) if !failed && built.len() >= 2 => Some(Node::split(axis, built)),
