@@ -212,6 +212,17 @@ pub fn panel_background(theme: &Theme) -> Rgba {
     to_gpui(&theme.bg_panel, Token::Background, theme)
 }
 
+/// How far the foreground is mixed into the panel for a slot's header strip.
+const SLOT_HEADER_MIX: f32 = 0.05;
+
+/// A slot's header strip: the panel nudged toward the text colour, so it
+/// sits slightly off the view below it in light and dark themes alike.
+pub fn slot_header_background(theme: &Theme) -> Rgba {
+    let panel = resolve(&theme.bg_panel, Token::Background, theme);
+    let (_, fg) = base(theme);
+    rgba(mix(panel, fg, SLOT_HEADER_MIX))
+}
+
 /// The focused panel's edge and the active rail view's marker: the TUI's
 /// focused-border colour.
 pub fn focus_border(theme: &Theme) -> Rgba {

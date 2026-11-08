@@ -178,11 +178,11 @@ fn the_shell_composes_at_several_window_widths(cx: &mut TestAppContext) {
             assert!(close(drawer_b.left(), f32::from(rail.right())));
             let rest = width - shell_layout::RAIL_REMS * rem;
             assert!(
-                close(drawer_b.size.width, rest * 0.25),
+                close(drawer_b.size.width, (rest - 1.) * 0.25),
                 "{width}: slot {:?}",
                 drawer_b.size.width
             );
-            assert!(close(editor.left(), f32::from(drawer_b.right())));
+            assert!(close(editor.left(), f32::from(drawer_b.right()) + 1.));
             assert!(close(editor.right(), width), "{width}: editor {editor:?}");
             assert!(close(editor.size.height, HEIGHT));
         })
@@ -234,7 +234,7 @@ fn the_toggle_gives_the_drawer_width_to_the_editor(cx: &mut TestAppContext) {
 
         window.press("ctrl-t", cx);
         window.render_frame(cx);
-        assert!(close(window.find(DRAWER).bounds().size.width, 952.0 * 0.25));
+        assert!(close(window.find(DRAWER).bounds().size.width, 951.0 * 0.25));
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
         assert_eq!(window.find(DRAWER).focused(), Some(true));
         assert!(saved_left_shows(&path));

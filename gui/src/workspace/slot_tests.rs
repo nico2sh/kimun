@@ -11,6 +11,7 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::view_registry;
 use kimun_notes::settings::gui::GuiSettings;
 
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, saved, temp_config};
@@ -118,12 +119,12 @@ fn default_window_has_left_files_slot_editor_and_empty_right_slot(cx: &mut TestA
         let files = window.find(slot_id(DrawerView::Files)).bounds();
         let editor = window.find("editor-panel").bounds();
         assert!(close(files.left(), f32::from(rail.right())));
-        assert!(close(editor.left(), f32::from(files.right())));
+        assert!(close(editor.left(), f32::from(files.right()) + 1.));
         assert!(close(editor.right(), 1000.));
         assert!(close(files.size.height, HEIGHT));
         // 0.2 : 0.6 of the 952px right of the rail, the empty right
         // slot's share given back.
-        assert!(close(files.size.width, 952. * 0.25), "{files:?}");
+        assert!(close(files.size.width, 951. * 0.25), "{files:?}");
         assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_none());
         assert_eq!(window.find("slot-files").label(), Some("Files"));
     })
@@ -206,7 +207,7 @@ fn rail_click_shows_view_in_its_slot(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let editor = window.find("editor-panel").bounds();
         let outline = window.find(slot_id(DrawerView::Outline)).bounds();
-        assert!(close(outline.left(), f32::from(editor.right())));
+        assert!(close(outline.left(), f32::from(editor.right()) + 1.));
         assert!(close(outline.right(), 1200.));
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Right));
         assert_eq!(
@@ -261,7 +262,7 @@ fn toggle_right_side_with_no_view_shows_hint(cx: &mut TestAppContext) {
         assert_eq!(empty.label(), Some(HINT));
         let empty = empty.bounds();
         let editor = window.find("editor-panel").bounds();
-        assert!(close(empty.left(), f32::from(editor.right())));
+        assert!(close(empty.left(), f32::from(editor.right()) + 1.));
         assert!(close(empty.right(), 1000.));
         assert!(close(empty.size.height, HEIGHT));
         assert_eq!(shell.focused(cx), Panel::Editor);
@@ -520,8 +521,8 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         let empty = window.find(empty_slot_id(1));
         assert_eq!(empty.label(), Some(HINT));
         let bottom = empty.bounds();
-        assert!(close(top.size.height, HEIGHT / 2.));
-        assert!(close(bottom.top(), f32::from(top.bottom())));
+        assert!(close(top.size.height, (HEIGHT - 1.) / 2.));
+        assert!(close(bottom.top(), f32::from(top.bottom()) + 1.));
         assert!(close(bottom.bottom(), HEIGHT));
         assert!(close(bottom.left(), f32::from(top.left())));
         assert_eq!(
@@ -630,7 +631,7 @@ fn the_swap_chords_trade_stacked_views(cx: &mut TestAppContext) {
         );
         // Each slot keeps its size: Find is now the 30% top slot.
         let find = window.find(slot_id(DrawerView::Find)).bounds();
-        assert!(close(find.size.height, HEIGHT * 0.3));
+        assert!(close(find.size.height, (HEIGHT - 1.) * 0.3));
         assert_eq!(
             saved_placed(&path),
             [vec![DrawerView::Find], vec![DrawerView::Files]]
@@ -778,14 +779,14 @@ fn the_saved_layout_is_restored_and_a_bad_one_falls_back(cx: &mut TestAppContext
     let shell = open_shell(cx, 1248., &gui(layout), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        // 1200px right of the rail: 300 / 600 / 300.
+        // 1200px right of the rail less two 1px gaps: 299.5 / 599 / 299.5.
         let files = window.find(slot_id(DrawerView::Files)).bounds();
         let tags = window.find(slot_id(DrawerView::Tags)).bounds();
         let outline = window.find(slot_id(DrawerView::Outline)).bounds();
-        assert!(close(files.size.width, 300.), "{files:?}");
-        assert!(close(files.size.height, HEIGHT * 0.3));
-        assert!(close(tags.top(), HEIGHT * 0.3));
-        assert!(close(outline.size.width, 300.));
+        assert!(close(files.size.width, 299.5), "{files:?}");
+        assert!(close(files.size.height, (HEIGHT - 1.) * 0.3));
+        assert!(close(tags.top(), (HEIGHT - 1.) * 0.3 + 1.));
+        assert!(close(outline.size.width, 299.5));
         assert!(close(outline.right(), 1248.));
         assert_eq!(shell.focused(cx), Panel::Editor);
     })
@@ -896,7 +897,7 @@ fn the_rail_hides_and_shows_one_view_of_a_stacked_pair(cx: &mut TestAppContext) 
         window.click(rail_cell_id(DrawerView::Files), cx);
         assert!(close(
             gpui_kit::px(height(window, cx, DrawerView::Files)),
-            HEIGHT * 0.3
+            (HEIGHT - 1.) * 0.3
         ));
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(files_s)));
 
@@ -908,7 +909,7 @@ fn the_rail_hides_and_shows_one_view_of_a_stacked_pair(cx: &mut TestAppContext) 
         window.click(rail_cell_id(DrawerView::Tags), cx);
         assert!(close(
             gpui_kit::px(height(window, cx, DrawerView::Outline)),
-            HEIGHT * 0.6
+            (HEIGHT - 1.) * 0.6
         ));
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(tags_s)));
 
@@ -944,9 +945,9 @@ fn the_rail_hides_and_shows_one_view_of_a_stacked_pair(cx: &mut TestAppContext) 
         );
         window.render_frame(cx);
         let files = window.find(slot_id(DrawerView::Files)).bounds();
-        assert!(close(files.size.height, HEIGHT * 0.3));
+        assert!(close(files.size.height, (HEIGHT - 1.) * 0.3));
         let outline = window.find(slot_id(DrawerView::Outline)).bounds();
-        assert!(close(outline.size.height, HEIGHT * 0.6));
+        assert!(close(outline.size.height, (HEIGHT - 1.) * 0.6));
     })
     .unwrap();
 }
@@ -1000,6 +1001,124 @@ fn toggling_a_side_without_a_slot_says_so(cx: &mut TestAppContext) {
         window.press("ctrl-shift-t", cx);
         assert_eq!(shell.flash(cx).as_deref(), Some("No slot on that side"));
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+    })
+    .unwrap();
+}
+
+/// Every drawn slot carries a header with the title of the view it shows.
+#[gpui_kit::test]
+fn every_slot_has_a_header_with_its_view_title(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("alt-left", cx);
+        window.press("alt-shift-s", cx);
+        window.click("rail", cx);
+        window.press("down", cx);
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            shell.shown_on(Side::Left, cx),
+            [DrawerView::Files, DrawerView::Find]
+        );
+        let mut headers = window.find_all("slot-header");
+        headers.extend(window.find_all("slot-header-focused"));
+        assert_eq!(headers.len(), 2, "one header per slot");
+        headers.sort_by(|a, b| f32::from(a.bounds().top()).total_cmp(&f32::from(b.bounds().top())));
+        let titles: Vec<_> = headers
+            .iter()
+            .map(|h| h.label().map(str::to_owned))
+            .collect();
+        let expect = |v| Some(view_registry::spec(v).title.to_string());
+        assert_eq!(
+            titles,
+            [expect(DrawerView::Files), expect(DrawerView::Find)]
+        );
+    })
+    .unwrap();
+}
+
+/// A slot drawn through `opened_empty` shows `Empty` in its header.
+#[gpui_kit::test]
+fn empty_slot_header_says_empty(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let before =
+            window.find_all("slot-header").len() + window.find_all("slot-header-focused").len();
+        window.press("ctrl-shift-t", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_some());
+        let all: Vec<_> = window
+            .find_all("slot-header")
+            .into_iter()
+            .chain(window.find_all("slot-header-focused"))
+            .collect();
+        assert_eq!(all.len(), before + 1);
+        assert!(all.iter().any(|h| h.label() == Some("Empty")));
+    })
+    .unwrap();
+}
+
+/// Exactly the focused slot's header is marked focused.
+#[gpui_kit::test]
+fn focused_slot_header_is_marked_focused(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("slot-header-focused").is_none());
+        assert_eq!(window.find_all("slot-header").len(), 1);
+        window.press("alt-left", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find_all("slot-header-focused").len(), 1);
+        assert_eq!(window.find_all("slot-header").len(), 0);
+    })
+    .unwrap();
+}
+
+/// The editor group is not a slot: no header, only its focus bar.
+#[gpui_kit::test]
+fn editor_group_has_no_slot_header(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let editor = window.find("editor-panel").bounds();
+        let headers: Vec<_> = window
+            .find_all("slot-header")
+            .into_iter()
+            .chain(window.find_all("slot-header-focused"))
+            .collect();
+        // Only FILES' header: none sits within the editor's bounds.
+        assert_eq!(headers.len(), 1);
+        assert!(headers.iter().all(|h| !editor.contains(&h.bounds().origin)));
     })
     .unwrap();
 }
