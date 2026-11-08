@@ -107,10 +107,8 @@ impl Workspace {
                 Some(_) => None,
                 None => Some(NO_NOTE),
             },
-            LeaderRoute::Layout(LayoutStep::Zen) => None,
-            // Grow and shrink resize a slot: that arrives with the layout
-            // tree's dividers.
-            LeaderRoute::Layout(_) => Some(NOT_YET),
+            // Zen; grow and shrink resize the focused leaf.
+            LeaderRoute::Layout(_) => None,
             LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
             | LeaderRoute::Job(LeaderJob::Reindex)
                 if has_vault =>
@@ -278,11 +276,14 @@ impl Workspace {
     }
 
     /// `+window`: zen hides every view beside the active group (both side
-    /// toggles off) and gives the note the keyboard. Grow and shrink are
-    /// blocked until slots resize ([`Self::route_block`]). Persisted.
+    /// toggles off) and gives the note the keyboard; grow and shrink move a
+    /// divider of the focused leaf ([`Self::step_focused_leaf`]).
+    /// Persisted.
     fn layout_step(&mut self, step: LayoutStep, window: &mut Window, cx: &mut Context<Self>) {
-        if step != LayoutStep::Zen {
-            return;
+        match step {
+            LayoutStep::Zen => {}
+            LayoutStep::GrowDrawer => return self.step_focused_leaf(true, cx),
+            LayoutStep::ShrinkDrawer => return self.step_focused_leaf(false, cx),
         }
         for side in [Side::Left, Side::Right] {
             if self
