@@ -269,6 +269,7 @@ pub fn key_group(theme: &Theme) -> Rgba {
 /// the roles the GUI's kit-drawn surfaces read are set; the rest keep the
 /// kit's values.
 pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
+    apply_ui_family(kit, crate::ui_font::family());
     let surface = panel_background(theme);
     let text = foreground(theme);
     let hover = hover_background(theme);
@@ -375,6 +376,19 @@ pub fn apply_to_kit(theme: &Theme, kit: &mut gpui_kit::component::Theme) {
     // The kit Spinner (Preferences' reindex progress panel, and every
     // Button's `loading`) is an Icon drawn in the text colour it is given,
     // else the kit `foreground`: mapped above.
+}
+
+/// The UI family (Inter, [`crate::ui_font`]) on the kit theme, which the
+/// kit's window root sets on the whole window. `None` (not registered) keeps
+/// the kit's own family, the system UI font. The monospace family is left
+/// alone: the Edit surface and code-like runs keep it.
+pub fn apply_ui_family(
+    kit: &mut gpui_kit::component::Theme,
+    family: Option<gpui_kit::SharedString>,
+) {
+    if let Some(family) = family {
+        kit.font_family = family;
+    }
 }
 
 // ---- FILES rows --------------------------------------------------------------
@@ -685,6 +699,34 @@ mod tests {
             // The Spinner (Preferences' reindex progress): its icon falls
             // back to the kit's `foreground`.
             assert_eq!(kit.foreground, hsla(foreground(&t)));
+            // No UI font registered in a test process (the stub text system
+            // installs nothing): the kit keeps its own family.
+            assert_eq!(crate::ui_font::family(), None);
+            assert_ne!(kit.font_family.as_ref(), crate::ui_font::FAMILY);
+        });
+    }
+
+    /// A registered UI family is named on the kit theme (the window root
+    /// sets it on every view); the monospace family is never touched, and
+    /// no family keeps the kit's own.
+    #[gpui_kit::test]
+    fn the_kit_takes_the_ui_family_once_registered(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let before = gpui_kit::component::Theme::global(cx).clone();
+            gpui_kit::component::Theme::update(cx, |kit| apply_ui_family(kit, None));
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert_eq!(kit.font_family, before.font_family);
+            gpui_kit::component::Theme::update(cx, |kit| {
+                apply_ui_family(kit, Some(crate::ui_font::FAMILY.into()))
+            });
+            let kit = gpui_kit::component::Theme::global(cx);
+            assert_eq!(kit.font_family.as_ref(), crate::ui_font::FAMILY);
+            assert_eq!(kit.mono_font_family, before.mono_font_family);
+            assert_eq!(
+                kit.typography_tokens().sans.as_ref(),
+                crate::ui_font::FAMILY
+            );
         });
     }
 

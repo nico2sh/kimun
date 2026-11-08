@@ -33,3 +33,9 @@ async-trait = "0.1"
 gpui-kit = { version = "0.9.0", features = ["test-support"] }
 tempfile = "3"
 toml = { workspace = true }
+
+# A real text system for the UI font's tests (`ui_font`): Linux's
+# cosmic-text backend, built without system fonts. Already in the tree
+# through `gpui-pre-linux`; the same pinned version.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui-pre-wgpu = "=0.3.11"
