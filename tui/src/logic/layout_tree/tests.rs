@@ -294,3 +294,195 @@ fn new_ids_never_collide_with_given_ones() {
     assert_ne!(s, SlotId::new(5));
     assert!(t.resize_after(Leaf::Group(GroupId::new(3)), 0.3));
 }
+
+// ── Regions, geometric focus and zoom ─────────────────────────────────
+
+/// slot0 (0.2) | group0 (0.6) | [slot1 over slot2] (0.2)
+fn nested() -> (Tree, [SlotId; 3], GroupId) {
+    let s = [SlotId::new(0), SlotId::new(1), SlotId::new(2)];
+    let g = GroupId::new(0);
+    let root = Node::split(
+        Axis::Horizontal,
+        vec![
+            (0.2, Node::leaf(Leaf::Slot(s[0]))),
+            (0.6, Node::leaf(Leaf::Group(g))),
+            (
+                0.2,
+                Node::split(
+                    Axis::Vertical,
+                    vec![
+                        (1.0, Node::leaf(Leaf::Slot(s[1]))),
+                        (1.0, Node::leaf(Leaf::Slot(s[2]))),
+                    ],
+                ),
+            ),
+        ],
+    );
+    let slots = BTreeMap::from([
+        (s[0], (vec!["files"], Some("files"))),
+        (s[1], (Vec::new(), None)),
+        (s[2], (Vec::new(), None)),
+    ]);
+    (Tree::from_parts(root, slots).unwrap(), s, g)
+}
+
+fn leaf(l: Leaf) -> Focus {
+    Focus::Leaf(l)
+}
+
+#[test]
+fn regions_cover_the_unit_square_without_the_rail() {
+    let (t, s, g) = nested();
+    let r = t.regions();
+    let leaves: Vec<Leaf> = r.iter().map(|(l, _)| *l).collect();
+    assert_eq!(
+        leaves,
+        vec![
+            Leaf::Slot(s[0]),
+            Leaf::Group(g),
+            Leaf::Slot(s[1]),
+            Leaf::Slot(s[2])
+        ]
+    );
+    let area: f64 = r.iter().map(|(_, c)| c.width() * c.height()).sum();
+    assert!((area - 1.0).abs() < 1e-9);
+    assert!((r[3].1.y() - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn focus_dir_follows_geometry_between_nested_leaves() {
+    let (mut t, s, g) = nested();
+    let m = |l| TreeFocusMove::Moved(leaf(l));
+    // Two equal candidates on the right: the top-left one wins.
+    assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Slot(s[1])));
+    assert_eq!(t.focus_dir(Dir::Down), m(Leaf::Slot(s[2])));
+    assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Group(g)));
+    // The remembered leaf (last focused slot) breaks the tie.
+    assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Slot(s[2])));
+    assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Group(g)));
+    assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Slot(s[0])));
+    assert_eq!(t.focused(), leaf(Leaf::Slot(s[0])));
+    // Back right into the group, which stays active.
+    assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Group(g)));
+    assert_eq!(t.active_group(), g);
+}
+
+#[test]
+fn focus_dir_does_not_wrap_at_edges() {
+    let (mut t, s, _) = nested();
+    assert!(t.focus(leaf(Leaf::Slot(s[2]))));
+    assert_eq!(t.focus_dir(Dir::Right), TreeFocusMove::AtEdge);
+    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::AtEdge);
+    assert!(t.focus(leaf(Leaf::Slot(s[1]))));
+    // slot2 is stacked in the same column: Up is handled, no wrap.
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::AtEdge);
+    assert_eq!(t.focused(), leaf(Leaf::Slot(s[1])));
+    // From the rail, Left is the edge.
+    assert!(t.focus(Focus::Rail));
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::AtEdge);
+    assert_eq!(t.focused(), Focus::Rail);
+}
+
+#[test]
+fn up_down_with_nothing_stacked_is_not_handled() {
+    let mut t = tree();
+    let g = t.active_group();
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
+    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
+    assert_eq!(t.focused(), leaf(Leaf::Group(g)));
+    assert!(t.focus(Focus::Rail));
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
+    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
+}
+
+#[test]
+fn left_from_leftmost_leaf_reaches_the_rail() {
+    let mut t = tree();
+    let (left, _) = sides(&t);
+    assert_eq!(
+        t.focus_dir(Dir::Left),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(left)))
+    );
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
+    assert_eq!(t.focused(), Focus::Rail);
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(left)))
+    );
+
+    // The first leaf is leftmost, then topmost.
+    let (mut t, s, _) = nested();
+    let new = t.split_slot(s[0], Axis::Vertical).unwrap();
+    assert!(t.focus(leaf(Leaf::Slot(new))));
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(leaf(Leaf::Slot(s[0])))
+    );
+}
+
+#[test]
+fn zoom_keeps_every_placement() {
+    let (mut t, s, g) = nested();
+    assert!(t.place("tags", s[1], true));
+    let before = t.clone();
+    assert_eq!(t.zoomed(), None);
+    t.zoom(Some(Leaf::Slot(s[1])));
+    assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
+    assert_eq!(t.regions(), before.regions());
+    for slot in t.slots() {
+        assert_eq!(t.slot_views(slot), before.slot_views(slot));
+        assert_eq!(t.shown(slot), before.shown(slot));
+    }
+    // Focusing elsewhere keeps the zoom; a missing leaf is ignored.
+    assert!(t.focus(leaf(Leaf::Group(g))));
+    assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
+    t.zoom(Some(Leaf::Slot(SlotId::new(99))));
+    assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
+    t.zoom(None);
+    assert_eq!(t.zoomed(), None);
+    assert_eq!(t, before);
+}
+
+#[test]
+fn zoom_clears_when_zoomed_slot_closes() {
+    let (mut t, s, g) = nested();
+    t.zoom(Some(Leaf::Slot(s[1])));
+    t.close_slot(s[2]).unwrap();
+    assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
+    t.close_slot(s[1]).unwrap();
+    assert_eq!(t.zoomed(), None);
+
+    let g2 = t.split_group(g, Axis::Horizontal).unwrap();
+    t.zoom(Some(Leaf::Group(g2)));
+    t.close_group(g2).unwrap();
+    assert_eq!(t.zoomed(), None);
+}
+
+#[test]
+fn closing_focused_slot_moves_focus_to_absorber() {
+    let (mut t, s, _) = nested();
+    assert!(t.focus(leaf(Leaf::Slot(s[2]))));
+    assert_eq!(t.close_slot(s[2]), Ok(s[1]));
+    assert_eq!(t.focused(), leaf(Leaf::Slot(s[1])));
+}
+
+#[test]
+fn move_view_dir_targets_the_neighbour_slot() {
+    let (mut t, s, _) = nested();
+    assert!(t.place("tags", s[1], true));
+    assert!(t.place("links", s[2], true));
+    assert!(t.move_view_dir(&"tags", Dir::Down));
+    assert_eq!(t.shown(s[2]), Some("tags"));
+    assert_eq!(t.slot_views(s[2]), vec!["links", "tags"]);
+    assert_eq!(t.view_slot(&"tags"), Some(s[2]));
+    assert!(t.slot_views(s[1]).is_empty());
+    // Groups are not candidates: Left skips the editor to slot0.
+    assert!(t.move_view_dir(&"tags", Dir::Left));
+    assert_eq!(t.shown(s[0]), Some("tags"));
+    assert_eq!(t.slot_views(s[0]), vec!["files", "tags"]);
+    // No slot further left; an unplaced view does not move.
+    assert!(!t.move_view_dir(&"tags", Dir::Left));
+    assert!(!t.move_view_dir(&"outline", Dir::Right));
+    assert_eq!(t.view_slot(&"tags"), Some(s[0]));
+}
