@@ -204,6 +204,12 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::SplitSlotDown => &["alt+shift+d"],
         A::CloseSlot if mac => &["cmd+alt+shift+w"],
         A::CloseSlot => &["alt+shift+w"],
+        // Zoom (ADR-0053): the focused view or editor group takes over
+        // everything right of the rail, and the same chord restores; Esc
+        // never does. M for maximize. Everywhere, so the editor can zoom
+        // too: Ctrl+Shift+letter is no vim chord (no twin needed) and
+        // Cmd+Shift+M is no macOS default.
+        A::ToggleZoom => &["primary+shift+m"],
         // The command palette (M6): VS Code's chord. Primary+P stays free for
         // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
         A::OpenCommandPalette => &["primary+shift+p"],

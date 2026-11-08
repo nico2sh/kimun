@@ -197,6 +197,7 @@ fn default_tables() {
             lw("alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
             lw("alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
+            lw("ctrl+shift+m", A::ToggleZoom),
         ]
     );
     assert_eq!(
@@ -240,6 +241,7 @@ fn default_tables() {
             lw("cmd+alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
             lw("cmd+alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("cmd+alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
+            lw("cmd+shift+m", A::ToggleZoom),
         ]
     );
 }
@@ -786,6 +788,7 @@ fn every_shared_action_has_a_gui_binding_or_is_marked_unbound() {
         A::MoveViewToNeighbour(Dir::Right),
         A::MoveViewToNeighbour(Dir::Up),
         A::MoveViewToNeighbour(Dir::Down),
+        A::ToggleZoom,
     ];
     for p in PLATFORMS {
         for action in &tree_commands {
@@ -893,6 +896,51 @@ fn layout_tree_defaults_hold_unique_chords() {
                 );
             }
         }
+        let (_, errors) = Keymap::load(p, &BTreeMap::new());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
+    }
+}
+
+/// Zoom (ADR-0053) has exactly one holder of its default chord on every
+/// platform (primary+shift+M: Ctrl+Shift+M, Cmd+Shift+M), live from every
+/// panel in plain and vim mode (vim reads no Ctrl+Shift chord), with no vim
+/// twin and no load error.
+#[test]
+fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        let written = if p == MacOs {
+            "cmd+shift+m"
+        } else {
+            "ctrl+shift+m"
+        };
+        let key = chord(written);
+        let mine: Vec<KeyInput> = keymap
+            .bindings
+            .iter()
+            .filter(|b| b.action == A::ToggleZoom)
+            .map(|b| b.chord)
+            .collect();
+        assert_eq!(mine, [key], "{p:?}: ToggleZoom's chords");
+        let holders: Vec<&ActionShortcuts> = keymap
+            .bindings
+            .iter()
+            .filter(|b| b.chord == key)
+            .map(|b| &b.action)
+            .collect();
+        assert_eq!(holders, [&A::ToggleZoom], "{p:?} {written}");
+        for panel in PANELS {
+            for vim in [false, true] {
+                for query in [false, true] {
+                    assert_eq!(
+                        keymap.resolve(key, KeyCtx { panel, vim, query }),
+                        Some(&A::ToggleZoom),
+                        "{p:?} {written} {panel:?} vim={vim} query={query}"
+                    );
+                }
+            }
+        }
+        assert!(!keymap.vim_shadows(&A::ToggleZoom, key), "{p:?}");
         let (_, errors) = Keymap::load(p, &BTreeMap::new());
         assert!(errors.is_empty(), "{p:?}: {errors:?}");
     }

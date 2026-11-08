@@ -97,6 +97,9 @@ pub enum ActionShortcuts {
     /// `MoveViewToNeighbourLeft` … `MoveViewToNeighbourDown`, as
     /// `FocusRegion` spells each `Dir`.
     MoveViewToNeighbour(Dir),
+    /// Zoom the focused view (or editor group) over everything right of the
+    /// rail, or leave zoom (ADR-0053). Session only; Esc never leaves it.
+    ToggleZoom,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -159,7 +162,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 51] = [
+    pub const ALL: [ActionShortcuts; 52] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -211,6 +214,7 @@ impl ActionShortcuts {
         ActionShortcuts::MoveViewToNeighbour(Dir::Right),
         ActionShortcuts::MoveViewToNeighbour(Dir::Up),
         ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+        ActionShortcuts::ToggleZoom,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -228,7 +232,8 @@ impl ActionShortcuts {
             | A::MoveViewToNeighbour(_)
             | A::SplitSlotRight
             | A::SplitSlotDown
-            | A::CloseSlot => ActionGroup::WindowAndPanels,
+            | A::CloseSlot
+            | A::ToggleZoom => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
             }
@@ -310,6 +315,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::MoveViewToNeighbour(Dir::Down) => {
                 "MoveViewToNeighbourDown".to_string()
             }
+            ActionShortcuts::ToggleZoom => "ToggleZoom".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -366,6 +372,7 @@ impl TryFrom<String> for ActionShortcuts {
             "MoveViewToNeighbourRight" => ActionShortcuts::MoveViewToNeighbour(Dir::Right),
             "MoveViewToNeighbourUp" => ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             "MoveViewToNeighbourDown" => ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+            "ToggleZoom" => ActionShortcuts::ToggleZoom,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -429,9 +436,10 @@ mod tests {
             ActionShortcuts::SplitSlotDown => 30,
             ActionShortcuts::CloseSlot => 31,
             ActionShortcuts::MoveViewToNeighbour(_) => 32,
+            ActionShortcuts::ToggleZoom => 33,
         }
     }
-    const VARIANTS: usize = 33;
+    const VARIANTS: usize = 34;
 
     #[test]
     fn all_lists_every_variant() {
@@ -476,6 +484,7 @@ mod tests {
             ActionShortcuts::MoveViewToNeighbour(Dir::Right),
             ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+            ActionShortcuts::ToggleZoom,
         ]
         .iter()
         .map(ToString::to_string)
@@ -495,6 +504,7 @@ mod tests {
                 "MoveViewToNeighbourRight",
                 "MoveViewToNeighbourUp",
                 "MoveViewToNeighbourDown",
+                "ToggleZoom",
             ]
         );
     }
@@ -535,8 +545,8 @@ mod tests {
     }
 
     /// `QuerySyntax`'s on-disk name is permanent (`[gui.keys]` writes it),
-    /// and only the layout-tree commands (ADR-0052), added after it, follow
-    /// it, so the serialized keymap's order is unchanged.
+    /// and only the layout-tree commands (ADR-0052) and `ToggleZoom` (ADR-0053),
+    /// added after it, follow it, so the serialized keymap's order is unchanged.
     #[test]
     fn query_syntax_name() {
         assert_eq!(ActionShortcuts::QuerySyntax.to_string(), "QuerySyntax");
@@ -554,6 +564,7 @@ mod tests {
                 ActionShortcuts::MoveViewToNeighbour(Dir::Right),
                 ActionShortcuts::MoveViewToNeighbour(Dir::Up),
                 ActionShortcuts::MoveViewToNeighbour(Dir::Down),
+                ActionShortcuts::ToggleZoom,
             ]
         );
         assert_eq!(
