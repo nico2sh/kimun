@@ -6,8 +6,8 @@
 //!
 //! **Rows.** The leaves come from the configured leader tree
 //! (`logic::palette::palette_rows`, labelled `+group · leaf`); the GUI-only
-//! rows (`+window · toggle right side`, moving views, splitting and
-//! closing slots, directional focus, find and replace, following a link) follow them,
+//! rows (`+window · toggle right side`, moving views and `move view to…`
+//! (the move chooser), splitting and closing slots, directional focus, find and replace, following a link) follow them,
 //! then the layout preset rows (`Apply layout preset: <name>` per loaded
 //! preset, `Reload layout presets`, `Reset to preset`). A
 //! row the window cannot run is shown disabled with the reason in its
@@ -69,7 +69,13 @@ pub(crate) enum PaletteRun {
     Chord(ActionShortcuts),
     /// A layout preset command ([`super::presets`]).
     Preset(PresetCommand),
+    /// "Move view to…" for the focused slot
+    /// ([`Workspace::open_move_chooser`]); no chord does it.
+    MoveViewTo,
 }
+
+/// The move chooser's row: after the move rows, before splitting.
+const MOVE_VIEW_TO: &str = "+window · move view to…";
 
 /// One row of the palette.
 #[derive(Debug, Clone)]
@@ -331,7 +337,7 @@ impl Workspace {
                     run: PaletteRun::Leaf(row.action),
                 }
             });
-        let chords = chord_rows()
+        let mut chords: Vec<PaletteEntry> = chord_rows()
             .into_iter()
             .map(|(label, action)| PaletteEntry {
                 label: label.into(),
@@ -339,7 +345,22 @@ impl Workspace {
                 sequence: None,
                 blocked: self.chord_block(&action, opener, cx),
                 run: PaletteRun::Chord(action),
-            });
+            })
+            .collect();
+        let after_moves = chords
+            .iter()
+            .position(|e| e.run == PaletteRun::Chord(ActionShortcuts::SplitSlotRight))
+            .unwrap_or(chords.len());
+        chords.insert(
+            after_moves,
+            PaletteEntry {
+                label: MOVE_VIEW_TO.into(),
+                hint: None,
+                sequence: None,
+                blocked: (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_SLOT_FOCUS),
+                run: PaletteRun::MoveViewTo,
+            },
+        );
         let presets = self
             .preset_rows()
             .into_iter()
@@ -426,6 +447,11 @@ impl Workspace {
                 self.workspace_command(&action, None, window, cx);
             }
             PaletteRun::Preset(command) => self.run_preset_command(command, window, cx),
+            PaletteRun::MoveViewTo => {
+                if let Some(slot) = self.focused_slot() {
+                    self.open_move_chooser(slot, window, cx);
+                }
+            }
         }
         cx.notify();
     }

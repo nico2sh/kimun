@@ -18,7 +18,7 @@ use kimun_notes::settings::gui::GuiSettings;
 
 use super::modal::ModalKind;
 use super::palette::{Palette, PaletteRun};
-use super::route::{NEEDS_NOTE_FOCUS, NO_NOTE, NO_WORKSPACE};
+use super::route::{NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS, NO_NOTE, NO_WORKSPACE};
 use super::start_tests::{drive, open_started, runtime, send, vault_start};
 use super::tests::{Shell, open_default, open_shell};
 use super::{LayoutStore, Workspace, rail_cell_id};
@@ -589,4 +589,55 @@ fn the_yank_row_copies_the_note_path(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(copied, Some(note.to_string()));
     assert_eq!(started.flash(cx).as_deref(), Some("note path copied"));
+}
+
+/// `+window · move view to…` opens the move chooser for the slot that had
+/// the keyboard (FILES, over FIND); from the editor it says a slot needs
+/// the keyboard.
+#[gpui_kit::test]
+fn the_palette_row_opens_the_move_chooser(cx: &mut TestAppContext) {
+    const ROW: &str = "+window · move view to…";
+    let settings = super::tests::gui(
+        "[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+         { weight = 0.8, editor = true },\n]\n",
+    );
+    let shell = open_shell(cx, 1000., &settings, "", false, LayoutStore::Off);
+    let blocked = |shell: &Shell, cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            palette(&shell.workspace, cx)
+                .unwrap()
+                .read(cx)
+                .entries()
+                .iter()
+                .find(|e| e.label() == ROW)
+                .map(|e| e.blocked())
+        })
+    };
+    open_palette(&shell, cx);
+    assert_eq!(blocked(&shell, cx), Some(Some(NEEDS_SLOT_FOCUS)));
+    press(&shell, "escape", cx);
+    settle(&shell, cx);
+
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.click(super::slot_id(DrawerView::Files), cx)
+    })
+    .unwrap();
+    open_palette(&shell, cx);
+    assert_eq!(blocked(&shell, cx), Some(None));
+    type_text(&shell, "move view to", cx);
+    assert_eq!(visible(&shell, cx).first().map(String::as_str), Some(ROW));
+    press(&shell, "enter", cx);
+    settle(&shell, cx);
+    assert!(dialog_open(&shell, cx), "the chooser is open");
+    cx.read(|cx| {
+        let workspace = shell.workspace.read(cx);
+        assert_eq!(workspace.modal, Some(ModalKind::ViewChooser));
+        assert_eq!(
+            workspace.move_chooser_rows(cx),
+            Some(vec!["Into Find slot".to_string()])
+        );
+    });
 }

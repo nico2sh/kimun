@@ -478,6 +478,8 @@ pub(crate) struct Workspace {
     pub(crate) palette: Option<WeakEntity<Palette>>,
     /// The split chooser while it is open ([`view_chooser`]).
     split_chooser: Option<view_chooser::SplitChooser>,
+    /// The move chooser while it is open ([`view_chooser`]).
+    move_chooser: Option<view_chooser::MoveChooser>,
     /// The shared settings (the leader tree, the vault to open, what
     /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
     /// that never call it.
@@ -734,6 +736,7 @@ impl Workspace {
             modal: None,
             palette: None,
             split_chooser: None,
+            move_chooser: None,
             settings: None,
             _editor_events: editor_events,
             leader: LeaderState::default(),
