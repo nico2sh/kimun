@@ -1206,9 +1206,14 @@ impl Workspace {
     /// Take the view ASK out of its slot for FILES: FILES shows in its
     /// place when it is placed nowhere or hidden in that slot, else ASK is
     /// just hidden (its slot is no longer drawn unless FILES shows there).
-    /// ASK stays placed, hidden. The side ASK was on, if it was shown.
-    /// Persisted.
+    /// ASK stays placed, hidden, and is forgotten by the side toggles. The
+    /// side ASK was on, if it was shown. Persisted.
     pub(super) fn drawer_off_ask(&mut self, cx: &mut Context<Self>) -> Option<Side> {
+        // A side toggle must not bring ASK back without its Thread
+        // (Ruling 14).
+        for views in &mut self.side_memory {
+            views.retain(|v| *v != DrawerView::Ask);
+        }
         let slot = self.layout.view_slot(&DrawerView::Ask)?;
         if self.layout.shown(slot) != Some(DrawerView::Ask) {
             return None;

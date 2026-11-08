@@ -382,8 +382,8 @@ children = [
     // A save (the right side hidden, then shown again).
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
-            w.toggle_drawer(Side::Right, window, cx);
-            w.toggle_drawer(Side::Right, window, cx);
+            w.toggle_side(Side::Right, window, cx);
+            w.toggle_side(Side::Right, window, cx);
         })
     })
     .unwrap();

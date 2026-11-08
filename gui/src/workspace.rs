@@ -1180,17 +1180,6 @@ impl Workspace {
         self.layout.move_view(view, slot);
     }
 
-    /// Toggle `side` as its chord does (tests).
-    #[cfg(test)]
-    pub(crate) fn toggle_drawer(
-        &mut self,
-        side: Side,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_side(side, window, cx);
-    }
-
     /// The newest flash and whether it was an error (tests).
     #[cfg(test)]
     pub(crate) fn last_flash(&self) -> Option<(&str, bool)> {
@@ -1612,6 +1601,10 @@ impl Workspace {
     /// keep their placement, no visibility flag is written.
     fn toggle_side(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
         let slots = self.side_slots(side);
+        if slots.is_empty() {
+            self.flash("No slot on that side", cx);
+            return;
+        }
         if slots.iter().any(|s| self.slot_drawn(*s)) {
             let had_focus = self.focused_slot().is_some_and(|s| slots.contains(&s));
             let mut hidden = Vec::new();
@@ -1633,15 +1626,20 @@ impl Workspace {
                 if let Some(slot) = self.layout.view_slot(&view)
                     && slots.contains(&slot)
                     && self.layout.shown(slot).is_none()
+                    && self.can_show(view)
                 {
                     self.layout.show_view(&view, false);
                     first.get_or_insert(slot);
                 }
             }
             if first.is_none()
-                && let Some((slot, view)) = slots
-                    .iter()
-                    .find_map(|s| self.layout.slot_views(*s).first().map(|v| (*s, *v)))
+                && let Some((slot, view)) = slots.iter().find_map(|s| {
+                    self.layout
+                        .slot_views(*s)
+                        .into_iter()
+                        .find(|v| self.can_show(*v))
+                        .map(|v| (*s, v))
+                })
             {
                 self.layout.show_view(&view, false);
                 first = Some(slot);
@@ -1661,6 +1659,12 @@ impl Workspace {
         self.apply_focus(window, cx);
         self.save_layout(cx);
         cx.notify();
+    }
+
+    /// Whether a side toggle may show `view` on its own: ASK only while its
+    /// Thread shows (Ruling 14; Task 13 removes the coupling).
+    fn can_show(&self, view: DrawerView) -> bool {
+        view != DrawerView::Ask || self.ask_flow.showing()
     }
 
     /// A rail cell was activated. A shown view is hidden, keeping its
@@ -1882,14 +1886,22 @@ impl Workspace {
         true
     }
 
-    /// `UnsplitDrawerSlot` (Ruling 11): close the focused slot. Its views
-    /// join the neighbouring slot that takes over its area, hidden, and the
-    /// keyboard goes there when that slot is drawn (else to the editor).
-    /// The only slot stays. Persisted.
+    /// `UnsplitDrawerSlot` (Rulings 11, 15): with a slot opened empty
+    /// somewhere, close that one (the keyboard stays where it is);
+    /// otherwise close the focused slot. Its views join the neighbouring
+    /// slot that takes over its area, hidden, and the keyboard goes there
+    /// when that slot is drawn (else to the editor). The only slot stays.
+    /// Persisted.
     fn unsplit_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(slot) = self.focused_slot() else {
+        let Some(focused) = self.focused_slot() else {
             return false;
         };
+        let empty = self
+            .layout
+            .slots()
+            .into_iter()
+            .find(|s| *s != focused && self.opened_empty.contains(s));
+        let slot = empty.unwrap_or(focused);
         match self.layout.close_slot(slot) {
             Ok(_) => {
                 self.opened_empty.remove(&slot);

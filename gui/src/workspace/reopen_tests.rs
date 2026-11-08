@@ -719,7 +719,7 @@ fn the_gui_table_survives_a_settings_write(cx: &mut TestAppContext) {
     cx.update_window(started.handle, |_, window, cx| {
         started
             .workspace
-            .update(cx, |w, cx| w.toggle_drawer(Side::Left, window, cx))
+            .update(cx, |w, cx| w.toggle_side(Side::Left, window, cx))
     })
     .unwrap();
     let toggled = on_disk_gui(&p.config).layout();

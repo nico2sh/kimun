@@ -1212,7 +1212,7 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     cx.update_window(started.handle, |_, window, cx| {
         started
             .workspace
-            .update(cx, |w, cx| w.toggle_drawer(Side::Left, window, cx))
+            .update(cx, |w, cx| w.toggle_side(Side::Left, window, cx))
     })
     .unwrap();
     assert!(!drawer_visible(&started, Side::Left, cx));
@@ -1230,7 +1230,7 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     cx.update_window(started.handle, |_, window, cx| {
         started
             .workspace
-            .update(cx, |w, cx| w.toggle_drawer(Side::Left, window, cx))
+            .update(cx, |w, cx| w.toggle_side(Side::Left, window, cx))
     })
     .unwrap();
     assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
@@ -1428,5 +1428,56 @@ fn a_source_opens_its_note_by_key_and_menu(cx: &mut TestAppContext) {
     let row = cx.read(|cx| list.read(cx).selected_row().cloned()).unwrap();
     list.update(cx, |_, cx| cx.emit(DrawerListEvent::Verb(row, OPEN_NOTE)));
     drive(&rt, cx, |cx| open_note(&started, cx) == Some(path("b.md")));
+    assert!(!thread_shown(&started, cx));
+}
+
+/// The Thread gone (a note opened), the right side's toggle never brings
+/// ASK back on its own: with nothing else placed there, the slot opens
+/// empty (Ruling 14).
+#[gpui_kit::test]
+fn toggling_asks_side_after_the_thread_left_does_not_revive_ask(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "why?", cx);
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+    send(&started, AppMessage::open(path("a.md")), cx);
+    drive(&rt, cx, |cx| !thread_shown(&started, cx));
+    assert!(!drawer_visible(&started, Side::Right, cx));
+    cx.update_window(started.handle, |_, window, cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.toggle_side(Side::Right, window, cx))
+    })
+    .unwrap();
+    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
+    assert!(!thread_shown(&started, cx));
+    assert!(drawer_visible(&started, Side::Right, cx), "opened empty");
+}
+
+/// ASK's side toggled off while the Thread shows, then the Thread leaves:
+/// ASK is dropped from what the toggle remembers, so toggling the side on
+/// again does not revive it (Ruling 14).
+#[gpui_kit::test]
+fn the_thread_leaving_forgets_ask_in_a_toggled_off_side(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    ask(&started, &rt, "why?", cx);
+    let toggle = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            started
+                .workspace
+                .update(cx, |w, cx| w.toggle_side(Side::Right, window, cx))
+        })
+        .unwrap();
+    };
+    toggle(cx);
+    assert!(!drawer_visible(&started, Side::Right, cx));
+    assert!(thread_shown(&started, cx), "the toggle keeps the Thread");
+    send(&started, AppMessage::open(path("a.md")), cx);
+    drive(&rt, cx, |cx| !thread_shown(&started, cx));
+    toggle(cx);
+    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
     assert!(!thread_shown(&started, cx));
 }
