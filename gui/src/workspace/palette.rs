@@ -349,9 +349,7 @@ impl Workspace {
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink => {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
-            A::MoveViewToNeighbour(_) | A::MoveViewUp | A::MoveViewDown => {
-                (opener == Panel::Editor).then_some(NEEDS_DRAWER_FOCUS)
-            }
+            A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_DRAWER_FOCUS),
             A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => {
                 (!matches!(opener, Panel::Drawer(_))).then_some(NEEDS_DRAWER_FOCUS)
             }

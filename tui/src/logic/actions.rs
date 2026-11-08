@@ -74,10 +74,6 @@ pub enum ActionShortcuts {
     /// Save the open note now (the leader's `w` in the TUI, which binds no
     /// chord to it).
     SaveNote,
-    /// Swap the focused drawer view with the slot above it in a split drawer.
-    MoveViewUp,
-    /// Swap the focused drawer view with the slot below it in a split drawer.
-    MoveViewDown,
     /// The keyboard reference: every chord and leader sequence in effect
     /// (F1 in the desktop app). The TUI binds no chord to it: its F1 help is
     /// built in.
@@ -116,7 +112,8 @@ pub enum ActionShortcuts {
 /// sequences, and the actions a `[gui.keys]` override left without a chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActionGroup {
-    /// Drawers, focus and the arrangement of drawer views.
+    /// Panels, focus and the arrangement of views (drawers in the TUI,
+    /// slots in the desktop app).
     WindowAndPanels,
     /// What acts on the note being edited.
     Editor,
@@ -162,7 +159,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 53] = [
+    pub const ALL: [ActionShortcuts; 51] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -205,8 +202,6 @@ impl ActionShortcuts {
         ActionShortcuts::FocusRegion(Dir::Down),
         ActionShortcuts::ToggleRightDrawer,
         ActionShortcuts::SaveNote,
-        ActionShortcuts::MoveViewUp,
-        ActionShortcuts::MoveViewDown,
         ActionShortcuts::KeyboardHelp,
         ActionShortcuts::QuerySyntax,
         ActionShortcuts::SplitSlotRight,
@@ -231,8 +226,6 @@ impl ActionShortcuts {
             | A::FocusSidebar
             | A::FocusRegion(_)
             | A::MoveViewToNeighbour(_)
-            | A::MoveViewUp
-            | A::MoveViewDown
             | A::SplitSlotRight
             | A::SplitSlotDown
             | A::CloseSlot => ActionGroup::WindowAndPanels,
@@ -302,8 +295,6 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FocusRegion(Dir::Down) => "FocusRegionDown".to_string(),
             ActionShortcuts::ToggleRightDrawer => "ToggleRightDrawer".to_string(),
             ActionShortcuts::SaveNote => "SaveNote".to_string(),
-            ActionShortcuts::MoveViewUp => "MoveViewUp".to_string(),
-            ActionShortcuts::MoveViewDown => "MoveViewDown".to_string(),
             ActionShortcuts::KeyboardHelp => "KeyboardHelp".to_string(),
             ActionShortcuts::QuerySyntax => "QuerySyntax".to_string(),
             ActionShortcuts::SplitSlotRight => "SplitSlotRight".to_string(),
@@ -366,8 +357,6 @@ impl TryFrom<String> for ActionShortcuts {
             "FocusRegionDown" => ActionShortcuts::FocusRegion(Dir::Down),
             "ToggleRightDrawer" => ActionShortcuts::ToggleRightDrawer,
             "SaveNote" => ActionShortcuts::SaveNote,
-            "MoveViewUp" => ActionShortcuts::MoveViewUp,
-            "MoveViewDown" => ActionShortcuts::MoveViewDown,
             "KeyboardHelp" => ActionShortcuts::KeyboardHelp,
             "QuerySyntax" => ActionShortcuts::QuerySyntax,
             "SplitSlotRight" => ActionShortcuts::SplitSlotRight,
@@ -434,17 +423,15 @@ mod tests {
             ActionShortcuts::FocusRegion(_) => 24,
             ActionShortcuts::ToggleRightDrawer => 25,
             ActionShortcuts::SaveNote => 26,
-            ActionShortcuts::MoveViewUp => 27,
-            ActionShortcuts::MoveViewDown => 28,
-            ActionShortcuts::KeyboardHelp => 29,
-            ActionShortcuts::QuerySyntax => 30,
-            ActionShortcuts::SplitSlotRight => 31,
-            ActionShortcuts::SplitSlotDown => 32,
-            ActionShortcuts::CloseSlot => 33,
-            ActionShortcuts::MoveViewToNeighbour(_) => 34,
+            ActionShortcuts::KeyboardHelp => 27,
+            ActionShortcuts::QuerySyntax => 28,
+            ActionShortcuts::SplitSlotRight => 29,
+            ActionShortcuts::SplitSlotDown => 30,
+            ActionShortcuts::CloseSlot => 31,
+            ActionShortcuts::MoveViewToNeighbour(_) => 32,
         }
     }
-    const VARIANTS: usize = 35;
+    const VARIANTS: usize = 33;
 
     #[test]
     fn all_lists_every_variant() {
@@ -482,8 +469,6 @@ mod tests {
             ActionShortcuts::FocusRegion(Dir::Up),
             ActionShortcuts::FocusRegion(Dir::Down),
             ActionShortcuts::ToggleRightDrawer,
-            ActionShortcuts::MoveViewUp,
-            ActionShortcuts::MoveViewDown,
             ActionShortcuts::SplitSlotRight,
             ActionShortcuts::SplitSlotDown,
             ActionShortcuts::CloseSlot,
@@ -503,8 +488,6 @@ mod tests {
                 "FocusRegionUp",
                 "FocusRegionDown",
                 "ToggleRightDrawer",
-                "MoveViewUp",
-                "MoveViewDown",
                 "SplitSlotRight",
                 "SplitSlotDown",
                 "CloseSlot",
@@ -523,25 +506,6 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("SaveNote".to_string()),
             Ok(ActionShortcuts::SaveNote)
-        );
-    }
-
-    /// The slot-swap actions keep their on-disk names (GUI keymaps write
-    /// them) and stay after every older action, so the serialized keymap's
-    /// order is unchanged.
-    #[test]
-    fn move_view_up_down_names() {
-        for (action, name) in [
-            (ActionShortcuts::MoveViewUp, "MoveViewUp"),
-            (ActionShortcuts::MoveViewDown, "MoveViewDown"),
-        ] {
-            assert_eq!(action.to_string(), name);
-            assert_eq!(ActionShortcuts::try_from(name.to_string()), Ok(action));
-        }
-        let q = query_syntax_at();
-        assert_eq!(
-            ActionShortcuts::ALL[q - 2..q],
-            [ActionShortcuts::MoveViewDown, ActionShortcuts::KeyboardHelp]
         );
     }
 

@@ -775,8 +775,7 @@ fn the_defaults_load_without_errors() {
 /// an explicit "unbound" mark. The mark is `default_chords` returning `None`
 /// (its match has no wildcard, so the compiler asks first); this pins that a
 /// marked-bound action really holds a chord, and that the layout-tree
-/// commands (ADR-0052) are bound while the slot swaps they took the chords
-/// of are not.
+/// commands (ADR-0052) are bound.
 #[test]
 fn every_shared_action_has_a_gui_binding_or_is_marked_unbound() {
     let tree_commands = [
@@ -792,9 +791,6 @@ fn every_shared_action_has_a_gui_binding_or_is_marked_unbound() {
         for action in &tree_commands {
             assert!(ActionShortcuts::ALL.contains(action), "{action}");
             assert!(default_chords(action, p).is_some(), "{p:?} {action}");
-        }
-        for action in [A::MoveViewUp, A::MoveViewDown] {
-            assert!(default_chords(&action, p).is_none(), "{p:?} {action}");
         }
     }
     for p in PLATFORMS {
@@ -815,8 +811,9 @@ fn every_shared_action_has_a_gui_binding_or_is_marked_unbound() {
     }
 }
 
-/// The drawer-era arrangement actions are gone from the shared vocabulary
-/// (the TUI never bound them), so no GUI default, override or palette row
+/// The drawer-era arrangement actions (the move-to-drawer, split / unsplit
+/// and slot-swap ones) are gone from the shared vocabulary (the TUI never
+/// bound them), so no GUI default, override or palette row
 /// can name them: `[gui.keys]` reports them as unknown actions, and their
 /// old split / unsplit chords hold nothing.
 #[test]
@@ -826,6 +823,8 @@ fn retired_drawer_actions_are_gone_from_the_gui_keymap() {
         "MoveViewToRightDrawer",
         "SplitDrawerSlot",
         "UnsplitDrawerSlot",
+        "MoveViewUp",
+        "MoveViewDown",
     ];
     for name in retired {
         assert!(

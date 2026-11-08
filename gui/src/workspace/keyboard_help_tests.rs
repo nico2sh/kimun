@@ -20,7 +20,7 @@ use kimun_notes::logic::text_action::TextAction;
 use super::config::CONFIG_KEYS_ID;
 use super::keyboard_help::{
     EMPTY_TEXT, KEYBOARD_HELP_EMPTY_ID, KEYBOARD_HELP_ID, KeyboardHelp, QUERY_NOTE, TITLE,
-    help_heading_id, help_row_id,
+    action_label, help_heading_id, help_row_id,
 };
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
@@ -379,6 +379,20 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
     assert_eq!(first, rows[0]);
     assert!(s.kh_shows(help_row_id(&first), cx));
     settle(&rt, cx);
+}
+
+/// No two actions share a row label, bound or not: an action a user binds
+/// under `[gui.keys]` (or unbinds, landing under "Unbound") never shows
+/// the same text as another row.
+#[test]
+fn every_action_row_label_is_unique() {
+    let mut seen: BTreeMap<String, ActionShortcuts> = BTreeMap::new();
+    for action in ActionShortcuts::ALL {
+        let label = action_label(&action);
+        if let Some(other) = seen.insert(label.clone(), action.clone()) {
+            panic!("{action:?} and {other:?} both label as {label:?}");
+        }
+    }
 }
 
 /// `[gui.keys]` overrides show as they are in effect: a moved chord, an

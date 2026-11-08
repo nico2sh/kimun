@@ -652,8 +652,6 @@ fn the_swap_chords_trade_stacked_views(cx: &mut TestAppContext) {
         for action in [
             ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             ActionShortcuts::MoveViewToNeighbour(Dir::Down),
-            ActionShortcuts::MoveViewUp,
-            ActionShortcuts::MoveViewDown,
         ] {
             let handled = ws.update(cx, |workspace, cx| {
                 workspace.workspace_command(&action, Some(key), window, cx)
