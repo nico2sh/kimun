@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 pub mod spec;
 
+pub use crate::logic::layout::node::Fit;
 pub(crate) use crate::logic::layout::node::Node;
 pub use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
 
@@ -753,6 +754,32 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// pair (see [`Node::resize_after`]). False when there is none.
     pub fn resize_after(&mut self, leaf: Leaf, share: f64) -> bool {
         self.root.resize_after(&leaf, share)
+    }
+
+    /// Which leaves fit in `area` (ADR-0052 §6): the leaves `drawn` rejects
+    /// are left out first (their siblings share their weight; they are not
+    /// reported as collapsed), then each overflowing split collapses its
+    /// children last → first by `min` (width, height; heights count only
+    /// in vertical splits), never a subtree holding an editor group. Units
+    /// are the caller's (rems in the GUI). The tree itself, its weights
+    /// and placements are untouched: collapse is the caller's session
+    /// state.
+    pub fn fit(
+        &self,
+        area: UnitRect,
+        min: &dyn Fn(Leaf) -> (f64, f64),
+        drawn: &dyn Fn(Leaf) -> bool,
+    ) -> Fit<Leaf> {
+        let mut root = self.root.clone();
+        for leaf in self.root.leaves() {
+            // Groups are always drawn, so the root never empties.
+            if !matches!(leaf, Leaf::Group(_)) && !drawn(*leaf) {
+                root.remove_leaf(leaf);
+            }
+        }
+        root.layout_fit(area, &|leaf: &Leaf| min(*leaf), &|leaf: &Leaf| {
+            matches!(leaf, Leaf::Group(_))
+        })
     }
 }
 
