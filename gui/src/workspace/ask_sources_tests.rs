@@ -1595,3 +1595,30 @@ fn toggling_asks_side_hides_and_restores_it(cx: &mut TestAppContext) {
     assert_eq!(turn_ids(&started, cx).len(), 1);
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
 }
+
+/// ASK's slot header names the view, "Ask"; "Sources" is the accessible
+/// name of the sources part inside it, not of the slot.
+#[gpui_kit::test]
+fn the_ask_slot_header_says_ask_and_the_part_says_sources(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = ready(cx, &rt, Stub::with(vec![("one [1]", a_and_b())]));
+    ask(&started, &rt, "first", cx);
+    assert!(sources_open(&started, cx));
+    let headers: Vec<String> = cx
+        .update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let mut all = window.find_all("slot-header");
+            all.extend(window.find_all("slot-header-focused"));
+            all.iter()
+                .filter_map(|h| h.label().map(str::to_string))
+                .collect()
+        })
+        .unwrap();
+    assert!(headers.iter().any(|h| h == "Ask"), "{headers:?}");
+    assert!(!headers.iter().any(|h| h == "Sources"), "{headers:?}");
+    assert_eq!(
+        label_of(&started, SOURCES_PART_ID, cx).as_deref(),
+        Some("Sources")
+    );
+}

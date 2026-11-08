@@ -367,7 +367,8 @@ impl Workspace {
         }
     }
 
-    /// Leader `drawer.semantic`, the palette's row: SEM shown and given the
+    /// Leader `drawer.semantic` (the id is the TUI's, shared by both
+    /// frontends' leader trees), the palette's row: SEM shown and given the
     /// keyboard, or, while the server cannot search, the flash that says
     /// why (the TUI's words) and nothing opens.
     pub(crate) fn open_semantic(&mut self, window: &mut Window, cx: &mut Context<Self>) {

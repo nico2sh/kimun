@@ -1256,7 +1256,8 @@ impl Workspace {
         }
     }
 
-    /// Why the leader's `drawer.ask` cannot show the view now: the rail's
+    /// Why the leader's `drawer.ask` (a leader id shared with the TUI, hence
+    /// "drawer") cannot show the view now: the rail's
     /// rule, a server that can answer; a view already shown just takes
     /// the keyboard.
     pub(crate) fn ask_view_block(&self) -> Option<&'static str> {
