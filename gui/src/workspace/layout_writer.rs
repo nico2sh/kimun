@@ -8,7 +8,7 @@
 //! for the writes in flight (the app's quit does).
 //!
 //! In tests the write is inline, so a test reads the file right after the
-//! key that changed the layout; [`LayoutWriter::threaded`] opts a test into
+//! key that changed the layout; `LayoutWriter::threaded` opts a test into
 //! the real thing.
 
 use std::sync::{Arc, Condvar, Mutex};

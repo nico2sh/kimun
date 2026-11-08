@@ -106,13 +106,13 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
     open_palette(&shell, cx);
     let rows = visible(&shell, cx);
     for row in [
-        "+window · split slot right",
-        "+window · split slot down",
+        "+window · split slot right (pick a view)",
+        "+window · split slot down (pick a view)",
         "+window · close slot",
-        "+window · move view left",
-        "+window · move view right",
-        "+window · move view up",
-        "+window · move view down",
+        "+window · move view left (new slot if none)",
+        "+window · move view right (new slot if none)",
+        "+window · move view up (new slot if none)",
+        "+window · move view down (new slot if none)",
         "+window · toggle zoom",
     ] {
         assert_eq!(
@@ -627,7 +627,7 @@ fn the_palette_row_opens_the_move_chooser(cx: &mut TestAppContext) {
     .unwrap();
     open_palette(&shell, cx);
     assert_eq!(blocked(&shell, cx), Some(None));
-    type_text(&shell, "move view to", cx);
+    type_text(&shell, "move view to…", cx);
     assert_eq!(visible(&shell, cx).first().map(String::as_str), Some(ROW));
     press(&shell, "enter", cx);
     settle(&shell, cx);
