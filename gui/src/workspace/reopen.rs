@@ -42,7 +42,6 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Context, Window};
 use kimun_core::NoteVault;
 use kimun_notes::logic::ask_flow::AskFlow;
-use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
@@ -319,9 +318,7 @@ impl Workspace {
         // The Thread gives the editor Panel back and ASK leaves its slot
         // (FILES takes it), as when a note opens.
         self.hide_ask(cx);
-        if self.is_shown(DrawerView::Ask) {
-            self.drawer_off_ask(cx);
-        }
+        self.drawer_off_ask(cx);
         // The open note (already flushed): no tick, no path, an empty clean
         // buffer, no search emphasis or find bar from the old text.
         self.release_note(cx);

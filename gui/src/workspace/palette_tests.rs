@@ -111,7 +111,7 @@ fn the_chord_opens_the_palette_with_the_query_focused(cx: &mut TestAppContext) {
     );
     let rows = visible(&shell, cx);
     assert!(rows.iter().any(|r| r == SAVE), "{rows:?}");
-    assert!(rows.iter().any(|r| r == "+window · toggle right drawer"));
+    assert!(rows.iter().any(|r| r == "+window · toggle right side"));
     assert!(
         !rows.iter().any(|r| r == "command palette"),
         "the palette never lists itself"
@@ -262,10 +262,10 @@ fn a_click_runs_a_runnable_row(cx: &mut TestAppContext) {
         |cx: &mut TestAppContext| cx.read(|cx| shell.workspace.read(cx).side_drawn(Side::Right));
     assert!(!right(cx));
     open_palette(&shell, cx);
-    type_text(&shell, "toggle right drawer", cx);
+    type_text(&shell, "toggle right side", cx);
     assert_eq!(
         visible(&shell, cx).first().map(String::as_str),
-        Some("+window · toggle right drawer")
+        Some("+window · toggle right side")
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -335,7 +335,7 @@ fn a_gui_row_runs_its_chord(cx: &mut TestAppContext) {
         |cx: &mut TestAppContext| cx.read(|cx| shell.workspace.read(cx).side_drawn(Side::Right));
     assert!(!right(cx));
     open_palette(&shell, cx);
-    type_text(&shell, "toggle right drawer", cx);
+    type_text(&shell, "toggle right side", cx);
     press(&shell, "enter", cx);
     settle(&shell, cx);
     assert!(!dialog_open(&shell, cx));

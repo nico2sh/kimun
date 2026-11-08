@@ -950,3 +950,56 @@ fn the_rail_hides_and_shows_one_view_of_a_stacked_pair(cx: &mut TestAppContext) 
     })
     .unwrap();
 }
+
+/// Close right after Split, the keyboard still on FILES: the new empty slot
+/// closes, not FILES' (Ruling 15). FILES stays shown, no hint is left.
+#[gpui_kit::test]
+fn closing_right_after_a_split_closes_the_empty_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("alt-left", cx);
+        window.press("alt-shift-s", cx);
+        assert_eq!(shell.slots(cx).len(), 3);
+        window.press("alt-shift-u", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.slots(cx).len(), 2);
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+        assert!(window.try_find(empty_slot_id(1)).is_none());
+        assert!(close(
+            window.find(slot_id(DrawerView::Files)).bounds().size.height,
+            HEIGHT
+        ));
+        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
+    })
+    .unwrap();
+}
+
+/// A side with no slot at all: its toggle says so.
+#[gpui_kit::test]
+fn toggling_a_side_without_a_slot_says_so(cx: &mut TestAppContext) {
+    let layout = [
+        "[gui.layout]",
+        "split = \"horizontal\"",
+        "children = [",
+        "{ weight = 0.2, views = [\"files\"], shown = \"files\" },",
+        "{ weight = 0.8, editor = true },",
+        "]",
+    ]
+    .join("\n");
+    let shell = open_shell(cx, 1000., &gui(&layout), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-shift-t", cx);
+        assert_eq!(shell.flash(cx).as_deref(), Some("No slot on that side"));
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+    })
+    .unwrap();
+}

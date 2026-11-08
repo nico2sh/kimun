@@ -158,24 +158,21 @@ impl PaletteEntry {
 fn chord_rows() -> Vec<(&'static str, ActionShortcuts)> {
     use ActionShortcuts as A;
     vec![
-        ("+window · toggle left drawer", A::ToggleSidebar),
-        ("+window · toggle right drawer", A::ToggleRightDrawer),
+        ("+window · toggle left side", A::ToggleSidebar),
+        ("+window · toggle right side", A::ToggleRightDrawer),
         ("+window · focus left", A::FocusRegion(Dir::Left)),
         ("+window · focus right", A::FocusRegion(Dir::Right)),
         ("+window · focus up", A::FocusRegion(Dir::Up)),
         ("+window · focus down", A::FocusRegion(Dir::Down)),
+        ("+window · move view to left slot", A::MoveViewToLeftDrawer),
         (
-            "+window · move view to left drawer",
-            A::MoveViewToLeftDrawer,
-        ),
-        (
-            "+window · move view to right drawer",
+            "+window · move view to right slot",
             A::MoveViewToRightDrawer,
         ),
         ("+window · move view up", A::MoveViewUp),
         ("+window · move view down", A::MoveViewDown),
-        ("+window · split drawer", A::SplitDrawerSlot),
-        ("+window · unsplit drawer", A::UnsplitDrawerSlot),
+        ("+window · split slot", A::SplitDrawerSlot),
+        ("+window · close slot", A::UnsplitDrawerSlot),
         ("+text · find in note", A::FindInBuffer),
         ("+text · replace in note", A::ReplaceInBuffer),
         ("+links · follow link at caret", A::FollowLink),
