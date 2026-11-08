@@ -137,6 +137,8 @@ pub(crate) fn render(
     on_backlinks: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_properties: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    // Tabular figures: the caret's line and column, the match index and the
+    // counts change in place, and should not jitter as their digits do.
     let label = |id: &'static str, text: SharedString, spoken: SharedString| {
         div()
             .id(id)
@@ -144,6 +146,7 @@ pub(crate) fn render(
             .role(Role::Status)
             .aria_label(spoken)
             .whitespace_nowrap()
+            .font_features(crate::ui_font::tabular_figures())
             .child(text)
     };
     let fixed = |id: &'static str, (text, spoken): (String, String)| {

@@ -1117,6 +1117,8 @@ impl PreferencesView {
                     .bg(theme::background(t))
                     .text_sm()
                     .text_color(theme::foreground(t))
+                    // The value changes in place: tabular figures hold it still.
+                    .font_features(crate::ui_font::tabular_figures())
                     .child(text),
             )
             .child(

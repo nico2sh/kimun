@@ -1174,3 +1174,162 @@ fn the_u_moves_mid_spring(cx: &mut TestAppContext) {
     cx.executor().advance_clock(ms(2400 - 1200 + 120));
     assert!(top(cx) < start, "and rises again on the next round");
 }
+
+// ── the wordmark's dots against Inter's own "ü" ─────────────────────────────
+
+/// Where a glyph's ink sits, in pixels from its pen origin on the baseline
+/// (y grows down), measured on the real face through Linux's text backend.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy)]
+struct Ink {
+    /// The glyph's advance.
+    advance: f32,
+    /// The ink's top and bottom.
+    top: f32,
+    bottom: f32,
+    /// The ink's centroid (alpha-weighted).
+    cx: f32,
+    cy: f32,
+}
+
+/// The ink of `ch` in Inter at `weight` and `size` px; with `above`, only
+/// the rows above that y (the dots of "ü", over the "u").
+#[cfg(target_os = "linux")]
+fn inter_ink(ch: char, weight: gpui_kit::FontWeight, size: f32, above: Option<f32>) -> Ink {
+    use gpui_kit::{DevicePixels, PlatformTextSystem as _, RenderGlyphParams, point, px};
+    let (ts, platform) = crate::ui_font::cosmic_tests::bare_text_system();
+    crate::ui_font::register(&ts, crate::ui_font::FACES).unwrap();
+    let font_id = ts.resolve_font(&gpui_kit::Font {
+        weight,
+        ..gpui_kit::font(crate::ui_font::FAMILY)
+    });
+    let glyph_id = platform.glyph_for_char(font_id, ch).expect("Inter has it");
+    let params = RenderGlyphParams {
+        font_id,
+        glyph_id,
+        font_size: px(size),
+        subpixel_variant: point(0, 0),
+        scale_factor: 1.,
+        is_emoji: false,
+        subpixel_rendering: false,
+        dilation: 0,
+    };
+    let bounds = platform.glyph_raster_bounds(&params).unwrap();
+    let (raster_size, mask) = platform.rasterize_glyph(&params, bounds).unwrap();
+    let (w, h) = (raster_size.width.0 as usize, raster_size.height.0 as usize);
+    assert_eq!(mask.len(), w * h, "an alpha mask");
+    let (ox, oy) = (bounds.origin.x.0 as f32, bounds.origin.y.0 as f32);
+    let (mut sum, mut sx, mut sy) = (0f64, 0f64, 0f64);
+    let (mut top, mut bottom) = (f32::MAX, f32::MIN);
+    for row in 0..h {
+        let y = oy + row as f32 + 0.5;
+        if above.is_some_and(|limit| y >= limit) {
+            continue;
+        }
+        for col in 0..w {
+            let a = mask[row * w + col] as f64;
+            if a == 0. {
+                continue;
+            }
+            sum += a;
+            sx += a * (ox + col as f32 + 0.5) as f64;
+            sy += a * y as f64;
+            top = top.min(oy + row as f32);
+            bottom = bottom.max(oy + row as f32 + 1.);
+        }
+    }
+    let _ = DevicePixels(0);
+    Ink {
+        advance: f32::from(ts.advance(font_id, px(size), ch).unwrap().width),
+        top,
+        bottom,
+        cx: (sx / sum) as f32,
+        cy: (sy / sum) as f32,
+    }
+}
+
+/// The resting dots sit like the dots of Inter's own "ü", in the face the
+/// wordmark paints (Bold): the "¨" laid out as `render_wordmark` lays it
+/// (its box centred on the "u", shifted by the spring's end state) is
+/// compared with the ü's ink above the u's top, on the rasterized faces at
+/// 1000 px. Above the "u", centred on it, and level with the real dots.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_resting_dots_sit_like_the_dots_of_inters_u() {
+    use super::onboarding::{DIAERESIS, DOTTED_BASE, WORDMARK_WEIGHT};
+    let size = 1000.;
+    let ch = |s: &str| s.chars().next().unwrap();
+    let u = inter_ink(ch(DOTTED_BASE), WORDMARK_WEIGHT, size, None);
+    let real = inter_ink('ü', WORDMARK_WEIGHT, size, Some(u.top));
+    let d = inter_ink(ch(DIAERESIS), WORDMARK_WEIGHT, size, None);
+    // `justify_center` over the u's box, `top` = the spring at rest.
+    let left = (u.advance - d.advance) / 2.;
+    let drop = bounce_offset(1.) * size;
+    let (cx, cy) = (left + d.cx, drop + d.cy);
+    let (top, bottom) = (drop + d.top, drop + d.bottom);
+    let em = |px: f32| px / size;
+    assert!(bottom < u.top, "above the u: {bottom} vs {}", u.top);
+    assert!(
+        em((cx - u.advance / 2.).abs()) < 0.01,
+        "centred on the u: {cx} vs {}",
+        u.advance / 2.
+    );
+    assert!(
+        em((cx - real.cx).abs()) < 0.005,
+        "where the ü has them: {cx} vs {}",
+        real.cx
+    );
+    assert!(
+        em((cy - real.cy).abs()) < 0.005,
+        "level with the ü's dots: {cy} vs {}",
+        real.cy
+    );
+    assert!(
+        em((top - real.top).abs()) < 0.005 && em((bottom - real.bottom).abs()) < 0.005,
+        "the same size as the ü's dots: {top}..{bottom} vs {}..{}",
+        real.top,
+        real.bottom
+    );
+}
+
+/// The structure the bounce depends on: the dots are their own element,
+/// one letter wide, over the "u" (after "Kim", before "n"), so moving them
+/// moves nothing else. The test platform's stub font gives every letter one
+/// width, so the cells are exact.
+#[gpui_kit::test]
+fn the_dots_are_their_own_element_over_the_u(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let f = fresh();
+    let mut gui = GuiSettings::default();
+    gui.set_reduce_motion(true);
+    cx.update(|cx| crate::apply_reduce_motion(gui.reduce_motion(), cx));
+    let s = first_run(cx, &rt, &f);
+    let (word, dots) = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(WORDMARK_ID).bounds(),
+                window.find(WORDMARK_U_ID).bounds(),
+            )
+        })
+        .unwrap();
+    let parts = wordmark_parts(WORDMARK);
+    // The stub font: every letter 0.6 em; the wordmark is 3 rem (48 px).
+    // Layout snaps to whole pixels, hence the pixel of slack.
+    let cell = 0.6 * 48.;
+    let near = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() <= 1.;
+    assert!(
+        near(dots.size.width, cell),
+        "one letter wide: {dots:?} in {word:?}"
+    );
+    assert!(
+        near(
+            dots.origin.x - word.origin.x,
+            cell * parts.before.chars().count() as f32
+        ),
+        "over the u, after {:?}: {dots:?} in {word:?}",
+        parts.before
+    );
+    assert_eq!(dots.origin.y, word.origin.y, "at rest, in the line box");
+}

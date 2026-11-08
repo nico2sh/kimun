@@ -28,6 +28,7 @@ mod tasks;
 #[cfg(test)]
 mod test_vault;
 mod theme;
+mod ui_font;
 #[cfg(test)]
 mod ui_tests;
 mod workspace;
@@ -160,6 +161,9 @@ fn main() {
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // Inter, before the kit theme names it and before any window
+            // renders; on failure the kit keeps the system font.
+            ui_font::install(cx);
             apply_reduce_motion(reduce_motion, cx);
             // The kit's components (the palette dialog, the FILES filter) read the
             // kit theme, which is not kimün's: hand them kimün's colours. The

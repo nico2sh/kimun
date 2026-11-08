@@ -80,18 +80,27 @@ pub(crate) const MESSAGE_ID: &str = "onboarding-message";
 pub(crate) const LOGO_ID: &str = "onboarding-logo";
 /// The wordmark under it.
 pub(crate) const WORDMARK_ID: &str = "onboarding-wordmark";
-/// The wordmark's bouncing letter.
+/// The wordmark's bouncing dots (the "¨" over the "u", its own element).
 pub(crate) const WORDMARK_U_ID: &str = "onboarding-wordmark-u";
 /// The wordmark's text, also its accessible name. What is painted is
 /// derived from it ([`wordmark_parts`]), so the two cannot drift.
 pub(crate) const WORDMARK: &str = "Kimün";
 /// The letter whose dots bounce, and the plain letter painted under them.
 const DOTTED: char = 'ü';
-const DOTTED_BASE: &str = "u";
+pub(crate) const DOTTED_BASE: &str = "u";
 /// The font's own diaeresis, laid over the "u": the two dots that bounce.
-const DIAERESIS: &str = "\u{a8}";
+/// At rest it sits exactly where Inter's own "ü" has its dots, with no
+/// correction: in Inter Bold, U+00A8 is the ü's dots (same ink box, the
+/// centroids 0.0000001 em apart vertically and 0.0005 em horizontally,
+/// measured on the rasterized faces by
+/// `onboarding_tests::the_resting_dots_sit_like_the_dots_of_inters_u`), and
+/// its advance equals the "u"'s, so centring its box on the "u" centres the
+/// dots.
+pub(crate) const DIAERESIS: &str = "\u{a8}";
 /// The wordmark's size, in rems.
 const WORDMARK_REMS: f32 = 3.;
+/// The wordmark's weight: Inter's real Bold face.
+pub(crate) const WORDMARK_WEIGHT: FontWeight = FontWeight::BOLD;
 /// One round of the loop: the spring, then a rest.
 const BOUNCE_PERIOD: std::time::Duration = std::time::Duration::from_millis(2400);
 /// The share of the period the spring takes (≈ 600 ms).
@@ -939,7 +948,7 @@ impl OnboardingView {
             .h(rems(WORDMARK_REMS * 1.25))
             .line_height(rems(WORDMARK_REMS * 1.25))
             .text_size(rems(WORDMARK_REMS))
-            .font_weight(FontWeight::BOLD)
+            .font_weight(WORDMARK_WEIGHT)
             .text_color(theme::accent(&theme))
             .child(parts.before);
         let Some(letter) = parts.base else {
