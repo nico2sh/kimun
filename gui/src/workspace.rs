@@ -6,9 +6,8 @@
 //! **State.** The tree, the views placed in each slot (one shown), and
 //! which leaf has the keyboard live in the logic [`LayoutTree`]; this view
 //! only renders it ([`tree_view`]) and keeps GPUI focus in step with it. A
-//! slot with no shown view is not drawn, unless it was opened empty this
-//! session (a side toggled on with nothing placed): then it shows a hint.
-//! Neither that nor which views a side toggle hid is persisted.
+//! slot with no shown view is not drawn. Which views a side toggle hid is
+//! not persisted.
 //!
 //! **Arranging.** The rail shows a view where it is placed, hiding the
 //! view sharing its slot, and a click on a shown view hides it; the move,
@@ -351,12 +350,6 @@ pub(crate) fn slot_id(view: DrawerView) -> SharedString {
     format!("slot-{}", view.id()).into()
 }
 
-/// The element id of an empty slot that is drawn, by its position among
-/// the tree's slots in reading order (`slot-empty-1`).
-pub(crate) fn empty_slot_id(index: usize) -> SharedString {
-    format!("slot-empty-{index}").into()
-}
-
 /// The element id of the editor Panel's empty state.
 pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 
@@ -369,10 +362,6 @@ pub(crate) struct Workspace {
     /// slot whose view has no focusable content of its own (or that shows
     /// no view).
     slot_focus: HashMap<SlotId, FocusHandle>,
-    /// Slots drawn although they show no view (Ruling 12): a side toggled
-    /// on with nothing placed. Session only; a slot leaves the set when a
-    /// view lands in it or it closes.
-    opened_empty: HashSet<SlotId>,
     /// The slot that last held the keyboard ([`Self::apply_focus`]),
     /// where the rail places a view (ADR-0054 §3). Session only; cleared
     /// when that slot closes.
@@ -479,6 +468,9 @@ pub(crate) struct Workspace {
     pub(crate) palette: Option<WeakEntity<Palette>>,
     /// The split chooser while it is open ([`view_chooser`]).
     split_chooser: Option<view_chooser::SplitChooser>,
+    /// The chooser a side toggle opens when nothing is placed there
+    /// ([`view_chooser`]).
+    side_chooser: Option<view_chooser::SideChooser>,
     /// The move chooser while it is open ([`view_chooser`]).
     move_chooser: Option<view_chooser::MoveChooser>,
     /// The shared settings (the leader tree, the vault to open, what
@@ -600,9 +592,6 @@ pub(crate) struct Workspace {
 
 /// The labels the window derives from the active keymap's chords.
 struct ChordLabels {
-    /// What an empty slot says
-    /// ([`shell_layout::empty_slot_hint`]).
-    empty_slot_hint: SharedString,
     /// The `Leader` chord (`Ctrl+Shift+B`), or a stand-in when unbound.
     leader: SharedString,
     /// What the editor Panel says with no note open: how to find one.
@@ -617,11 +606,6 @@ impl ChordLabels {
     fn new(cx: &App) -> Self {
         let chord = |action: ActionShortcuts| keymap::chord_label(cx, &action);
         Self {
-            empty_slot_hint: shell_layout::empty_slot_hint(
-                chord(ActionShortcuts::MoveViewToNeighbour(Dir::Right)).as_deref(),
-                chord(ActionShortcuts::MoveViewToNeighbour(Dir::Left)).as_deref(),
-            )
-            .into(),
             leader: leader::gateway_label(chord(ActionShortcuts::Leader)),
             no_note_hint: match chord(ActionShortcuts::OpenNote) {
                 Some(finder) => format!("Press {finder} to find or create one."),
@@ -690,7 +674,6 @@ impl Workspace {
             editor,
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
-            opened_empty: HashSet::new(),
             last_slot: None,
             side_memory: [Vec::new(), Vec::new()],
             collapsed: HashSet::new(),
@@ -737,6 +720,7 @@ impl Workspace {
             modal: None,
             palette: None,
             split_chooser: None,
+            side_chooser: None,
             move_chooser: None,
             settings: None,
             _editor_events: editor_events,
@@ -1274,15 +1258,11 @@ impl Workspace {
     }
 
     /// Bring the session state in step with the tree: every slot has its
-    /// focus handle (and no closed slot keeps one), a slot opened empty
-    /// leaves that set once a view shows there or it closed, and focus
-    /// never rests on a slot that is not drawn.
+    /// focus handle (and no closed slot keeps one), and focus never rests
+    /// on a slot that is not drawn.
     fn tidy_layout(&mut self, cx: &mut Context<Self>) {
         self.sync_slot_handles(cx);
         let slots = self.layout.slots();
-        let layout = &self.layout;
-        self.opened_empty
-            .retain(|s| slots.contains(s) && layout.shown(*s).is_none());
         self.last_slot = self.last_slot.filter(|s| slots.contains(s));
         self.fix_focus();
     }
@@ -1446,10 +1426,9 @@ impl Workspace {
             .is_some_and(|slot| self.layout.shown(slot) == Some(view))
     }
 
-    /// Whether `slot` is drawn: it shows a view, or it was opened empty
-    /// this session (Ruling 12).
+    /// Whether `slot` is drawn: it shows a view.
     pub(crate) fn slot_drawn(&self, slot: SlotId) -> bool {
-        self.layout.shown(slot).is_some() || self.opened_empty.contains(&slot)
+        self.layout.shown(slot).is_some()
     }
 
     /// Whether `leaf` is drawn: every editor group, and the drawn slots.
@@ -1638,14 +1617,15 @@ impl Workspace {
 
     /// Toggle `side` (Ruling 13): the slots left (right) of the active
     /// group. With any of them drawn, every view shown there is hidden and
-    /// remembered for this session, and a slot opened empty closes; the
-    /// keyboard, if it was there, goes back to the document. Otherwise the
+    /// remembered for this session; the keyboard, if it was there, goes
+    /// back to the document. Otherwise the
     /// remembered views show again (the first of them takes the keyboard,
     /// as the TUI's toggle does); with none remembered, the first slot of
     /// the side holding a placed view shows its first one; with nothing
-    /// placed there, the side's first slot opens **empty** (a hint in place
-    /// of a view; the keyboard stays where it was). Persisted: hidden views
-    /// keep their placement, no visibility flag is written.
+    /// placed there, a chooser asks which view the side's first slot shows
+    /// ([`Self::open_side_chooser`], ADR-0054 §5): nothing opens until one
+    /// is picked. Persisted: hidden views keep their placement, no
+    /// visibility flag is written.
     fn toggle_side(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
         let slots = self.side_slots(side);
         if slots.is_empty() {
@@ -1660,14 +1640,13 @@ impl Workspace {
                     self.layout.hide_view(&view);
                     hidden.push(view);
                 }
-                self.opened_empty.remove(slot);
             }
             self.side_memory[side_ix(side)] = hidden;
             if had_focus {
                 self.set_focus_panel(Panel::Editor);
             }
         } else {
-            let remembered = std::mem::take(&mut self.side_memory[side_ix(side)]);
+            let remembered = self.side_memory[side_ix(side)].clone();
             let mut first = None;
             for view in remembered {
                 if let Some(slot) = self.layout.view_slot(&view)
@@ -1691,11 +1670,21 @@ impl Workspace {
                 first = Some(slot);
             }
             match first {
-                Some(slot) => self.focus_slot_ending_zoom(slot),
+                Some(slot) => {
+                    self.side_memory[side_ix(side)].clear();
+                    self.focus_slot_ending_zoom(slot)
+                }
                 None => {
-                    if let Some(slot) = slots.first() {
-                        self.opened_empty.insert(*slot);
+                    // Nothing to show: the chooser has the keyboard, and
+                    // nothing changes until it picks. Under a dialog it
+                    // cannot open: say so, keeping the side's memory.
+                    if modal::dialog_open(window, cx) {
+                        self.flash("Close the dialog first", cx);
+                    } else if let Some(slot) = slots.first() {
+                        self.side_memory[side_ix(side)].clear();
+                        self.open_side_chooser(*slot, window, cx);
                     }
+                    return;
                 }
             }
             self.ensure_files_listing(cx);
@@ -1856,13 +1845,9 @@ impl Workspace {
 
     /// After a move of `view` out of `slot` (ADR-0054 §1): close `slot`
     /// when it holds no views any more and is not the last slot on its
-    /// side of the editor ([`LayoutTree::vacate_close`]), never a slot
-    /// opened empty, which is not vacated. A zoom on it moves
+    /// side of the editor ([`LayoutTree::vacate_close`]). A zoom on it moves
     /// to `view`'s new slot. True when it closed.
     fn close_if_vacated(&mut self, slot: SlotId, view: DrawerView) -> bool {
-        if self.opened_empty.contains(&slot) {
-            return false;
-        }
         let zoomed = self.layout.zoomed() == Some(Leaf::Slot(slot));
         if self.layout.vacate_close(slot).is_none() {
             // Kept: holding other views, the first shows in the place of
@@ -1921,7 +1906,7 @@ impl Workspace {
             let to = self.layout.view_slot(&view);
             // Only onto a slot that is drawn: one taking no space is not
             // stacked there.
-            if !to.is_some_and(|to| undo.shown(to).is_some() || self.opened_empty.contains(&to)) {
+            if !to.is_some_and(|to| undo.shown(to).is_some()) {
                 self.layout = undo;
                 return self.spawn_beside(view, from, dir, window, cx) || self.stacked(from);
             }
@@ -1947,13 +1932,11 @@ impl Workspace {
         self.spawn_beside(view, from, dir, window, cx) || self.stacked(from)
     }
 
-    /// Up / Down from the rail (ADR-0054 §3), on the cursor's view: a view
-    /// no slot shows goes into a slot opened empty when there is one (the
-    /// first in reading order). Otherwise the view is placed in a new slot
-    /// above (`Dir::Up`) or below the slot that last held the keyboard,
-    /// while it exists and is drawn, else the slot beside the rail
-    /// ([`LayoutTree::place_beside`]); it leaves the slot it was in, which
-    /// closes when emptied. Handled, with a flash and nothing changed, while
+    /// Up / Down from the rail (ADR-0054 §3), on the cursor's view: the view
+    /// is placed in a new slot above (`Dir::Up`) or below the slot that last
+    /// held the keyboard, while it exists and is drawn, else the slot beside
+    /// the rail ([`LayoutTree::place_beside`]); it leaves the slot it was
+    /// in, which closes when emptied. Handled, with a flash and nothing changed, while
     /// zoomed (the new slot would not be on screen), with no drawn slot to
     /// place beside, or when the view is alone in that slot already. The rail
     /// keeps the keyboard. Persisted.
@@ -1962,37 +1945,25 @@ impl Workspace {
             return false;
         };
         let from = self.layout.view_slot(&view);
-        let empty = self
-            .layout
-            .slots()
-            .into_iter()
-            .find(|s| self.opened_empty.contains(s));
-        match empty.filter(|_| !self.is_shown(view)) {
-            Some(slot) => {
-                self.layout.move_view(view, slot);
-            }
-            None => {
-                let Some(target) = self
-                    .last_slot
-                    .filter(|s| self.slot_drawn(*s))
-                    .or_else(|| self.slot_beside_rail().filter(|s| self.slot_drawn(*s)))
-                else {
-                    self.flash("No slot to place this view beside", cx);
-                    return true;
-                };
-                if self.layout.zoomed().is_some() {
-                    self.flash("Leave zoom to place a view", cx);
-                    return true;
-                }
-                let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
-                if alone || self.layout.place_beside(view, target, dir).is_err() {
-                    self.flash("Nowhere to place this view", cx);
-                    return true;
-                }
-                // Out of the slot it is placed beside: the first view left
-                // there shows in its place ([`Self::close_if_vacated`]).
-            }
+        let Some(target) = self
+            .last_slot
+            .filter(|s| self.slot_drawn(*s))
+            .or_else(|| self.slot_beside_rail().filter(|s| self.slot_drawn(*s)))
+        else {
+            self.flash("No slot to place this view beside", cx);
+            return true;
+        };
+        if self.layout.zoomed().is_some() {
+            self.flash("Leave zoom to place a view", cx);
+            return true;
         }
+        let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
+        if alone || self.layout.place_beside(view, target, dir).is_err() {
+            self.flash("Nowhere to place this view", cx);
+            return true;
+        }
+        // Out of the slot it is placed beside: the first view left there
+        // shows in its place ([`Self::close_if_vacated`]).
         if let Some(from) = from {
             self.close_if_vacated(from, view);
         }
@@ -2029,10 +2000,9 @@ impl Workspace {
         self.open_split_chooser(slot, dir, window, cx)
     }
 
-    /// `CloseSlot` (Ruling 15): with a slot opened empty
-    /// somewhere, close that one (the keyboard stays where it is);
-    /// otherwise close the focused slot. While zoomed only the zoomed slot
-    /// is on screen, so that is the one that closes (and zoom ends). Its
+    /// `CloseSlot` (Ruling 15): close the focused slot. While zoomed only
+    /// the zoomed slot is on screen, so that is the one that closes (and
+    /// zoom ends). Its
     /// views join the neighbouring slot that takes over its area, hidden,
     /// and the keyboard goes there when that slot is drawn (else to the
     /// editor). The only slot stays. Persisted.
@@ -2040,16 +2010,8 @@ impl Workspace {
         let Some(focused) = self.focused_slot() else {
             return false;
         };
-        let empty = self
-            .layout
-            .slots()
-            .into_iter()
-            .find(|s| *s != focused && self.opened_empty.contains(s))
-            .filter(|_| self.layout.zoomed().is_none());
-        let slot = empty.unwrap_or(focused);
-        match self.layout.close_slot(slot) {
+        match self.layout.close_slot(focused) {
             Ok(_) => {
-                self.opened_empty.remove(&slot);
                 self.tidy_layout(cx);
                 self.apply_focus(window, cx);
                 self.save_layout(cx);
@@ -2151,12 +2113,14 @@ impl Workspace {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
+                browser: false,
             },
             Panel::Editor => self.editor.read(cx).key_ctx(),
             panel => KeyCtx {
                 panel,
                 vim: false,
                 query: self.find_has_keyboard(),
+                browser: false,
             },
         }
     }
@@ -2347,6 +2311,9 @@ impl Workspace {
                 }
                 self.open_query_help(window, cx);
             }
+            // The search browser's own chord (handled by the modal); with
+            // no browser open there is no query to carry, so it goes on.
+            ActionShortcuts::OpenQueryInSidebar => return false,
             // Nothing followable under the caret: the chord does nothing.
             // On an attachment it opens it externally.
             ActionShortcuts::FollowLink => {
@@ -2477,9 +2444,73 @@ impl Workspace {
             }))
             .children(top)
             .child(div().flex_1())
+            .child(self.render_side_toggle(Side::Left, cx))
+            .child(self.render_side_toggle(Side::Right, cx))
             .child(pinned)
             // Last, so it paints over a highlighted cell.
             .children(self.focus_bar(Focus::Rail, cx))
+    }
+
+    /// The rail's button for `side` (the pointer's way to the toggle chords,
+    /// ADR-0052 Ruling 13): lit while a slot on that side is drawn, it
+    /// runs [`Self::toggle_side`]. Not a rail cell: it takes no cursor.
+    fn render_side_toggle(&self, side: Side, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::assets::IconName;
+        let theme = theme::current(cx);
+        let open = self.side_slots(side).iter().any(|s| self.slot_drawn(*s));
+        let (id, name, icon, action) = match side {
+            Side::Left => (
+                "rail-toggle-left",
+                "Toggle left side",
+                if open {
+                    IconName::PanelLeftOpen
+                } else {
+                    IconName::PanelLeft
+                },
+                ActionShortcuts::ToggleSidebar,
+            ),
+            Side::Right => (
+                "rail-toggle-right",
+                "Toggle right side",
+                if open {
+                    IconName::PanelRightOpen
+                } else {
+                    IconName::PanelRight
+                },
+                ActionShortcuts::ToggleRightDrawer,
+            ),
+        };
+        let chord = keymap::chord_label(cx, &action);
+        let tip: SharedString = match chord {
+            Some(chord) => format!("{name} ({chord})").into(),
+            None => name.into(),
+        };
+        let glyph = if open {
+            theme::focus_border(&theme)
+        } else {
+            theme::muted(&theme)
+        };
+        let hover = theme::hover_background(&theme);
+        div()
+            .id(id)
+            .test_support()
+            .role(Role::Button)
+            .aria_label(name)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .mx_1()
+            .h_8()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child(Icon::new(icon).size_4().text_color(glyph))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.toggle_side(side, window, cx)
+            }))
+            .into_any_element()
     }
 
     fn render_rail_cell(

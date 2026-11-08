@@ -83,13 +83,13 @@ pub enum ActionShortcuts {
     /// keyboard reference everywhere else). The TUI binds no chord to it: its
     /// query help is built into its search views.
     QuerySyntax,
-    /// Split the focused slot side by side: a new, empty slot opens right of
+    /// Split the focused slot side by side: a new slot opens right of
     /// it (ADR-0052).
     SplitSlotRight,
-    /// Split the focused slot into two stacked slots: a new, empty slot
+    /// Split the focused slot into two stacked slots: a new slot
     /// opens below it (ADR-0052).
     SplitSlotDown,
-    /// Close the focused slot (or a slot opened empty elsewhere); its views
+    /// Close the focused slot; its views
     /// join the neighbouring slot taking over its area (ADR-0052).
     CloseSlot,
     /// Move the focused view to the nearest slot in that direction
@@ -100,6 +100,9 @@ pub enum ActionShortcuts {
     /// Zoom the focused view (or editor group) over everything right of the
     /// rail, or leave zoom (ADR-0053). Session only; Esc never leaves it.
     ToggleZoom,
+    /// The desktop app's search browser: close it and show its query in the
+    /// FIND view (ADR-0054). The TUI binds no chord to it.
+    OpenQueryInSidebar,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -162,7 +165,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 52] = [
+    pub const ALL: [ActionShortcuts; 53] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -215,6 +218,7 @@ impl ActionShortcuts {
         ActionShortcuts::MoveViewToNeighbour(Dir::Up),
         ActionShortcuts::MoveViewToNeighbour(Dir::Down),
         ActionShortcuts::ToggleZoom,
+        ActionShortcuts::OpenQueryInSidebar,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -248,7 +252,8 @@ impl ActionShortcuts {
             | A::OpenSavedSearches
             | A::SaveCurrentQuery
             | A::OpenAsk
-            | A::QuerySyntax => ActionGroup::SearchAndAsk,
+            | A::QuerySyntax
+            | A::OpenQueryInSidebar => ActionGroup::SearchAndAsk,
             A::Quit
             | A::OpenPreferences
             | A::SwitchWorkspace
@@ -316,6 +321,7 @@ impl Display for ActionShortcuts {
                 "MoveViewToNeighbourDown".to_string()
             }
             ActionShortcuts::ToggleZoom => "ToggleZoom".to_string(),
+            ActionShortcuts::OpenQueryInSidebar => "OpenQueryInSidebar".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -373,6 +379,7 @@ impl TryFrom<String> for ActionShortcuts {
             "MoveViewToNeighbourUp" => ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             "MoveViewToNeighbourDown" => ActionShortcuts::MoveViewToNeighbour(Dir::Down),
             "ToggleZoom" => ActionShortcuts::ToggleZoom,
+            "OpenQueryInSidebar" => ActionShortcuts::OpenQueryInSidebar,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -437,9 +444,10 @@ mod tests {
             ActionShortcuts::CloseSlot => 31,
             ActionShortcuts::MoveViewToNeighbour(_) => 32,
             ActionShortcuts::ToggleZoom => 33,
+            ActionShortcuts::OpenQueryInSidebar => 34,
         }
     }
-    const VARIANTS: usize = 34;
+    const VARIANTS: usize = 35;
 
     #[test]
     fn all_lists_every_variant() {
@@ -485,6 +493,7 @@ mod tests {
             ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             ActionShortcuts::MoveViewToNeighbour(Dir::Down),
             ActionShortcuts::ToggleZoom,
+            ActionShortcuts::OpenQueryInSidebar,
         ]
         .iter()
         .map(ToString::to_string)
@@ -505,6 +514,7 @@ mod tests {
                 "MoveViewToNeighbourUp",
                 "MoveViewToNeighbourDown",
                 "ToggleZoom",
+                "OpenQueryInSidebar",
             ]
         );
     }
@@ -545,8 +555,8 @@ mod tests {
     }
 
     /// `QuerySyntax`'s on-disk name is permanent (`[gui.keys]` writes it),
-    /// and only the layout-tree commands (ADR-0052) and `ToggleZoom` (ADR-0053),
-    /// added after it, follow it, so the serialized keymap's order is unchanged.
+    /// and only the layout-tree commands (ADR-0052), `ToggleZoom` (ADR-0053)
+    /// and `OpenQueryInSidebar` (ADR-0054), added after it, follow it, so the serialized keymap's order is unchanged.
     #[test]
     fn query_syntax_name() {
         assert_eq!(ActionShortcuts::QuerySyntax.to_string(), "QuerySyntax");
@@ -565,6 +575,7 @@ mod tests {
                 ActionShortcuts::MoveViewToNeighbour(Dir::Up),
                 ActionShortcuts::MoveViewToNeighbour(Dir::Down),
                 ActionShortcuts::ToggleZoom,
+                ActionShortcuts::OpenQueryInSidebar,
             ]
         );
         assert_eq!(

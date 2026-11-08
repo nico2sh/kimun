@@ -325,6 +325,10 @@ fn a_click_runs_a_runnable_row(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     settle(&shell, cx);
+    // Nothing placed on the right: the toggle asks which view to show.
+    assert!(!right(cx));
+    press(&shell, "enter", cx);
+    settle(&shell, cx);
     assert!(!dialog_open(&shell, cx));
     assert!(right(cx));
 }
@@ -387,6 +391,10 @@ fn a_gui_row_runs_its_chord(cx: &mut TestAppContext) {
     assert!(!right(cx));
     open_palette(&shell, cx);
     type_text(&shell, "toggle right side", cx);
+    press(&shell, "enter", cx);
+    settle(&shell, cx);
+    // Nothing placed on the right: the toggle asks which view to show.
+    assert!(!right(cx));
     press(&shell, "enter", cx);
     settle(&shell, cx);
     assert!(!dialog_open(&shell, cx));

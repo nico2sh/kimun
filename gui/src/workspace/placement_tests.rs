@@ -836,44 +836,6 @@ fn rail_down_on_the_last_slots_view_shows_the_next_one_there(cx: &mut TestAppCon
     .unwrap();
 }
 
-/// A slot opened empty (the right side toggled on with nothing placed) is
-/// not closed by the vacate rule when a move empties another slot.
-#[gpui_kit::test]
-fn a_slot_opened_empty_survives_a_vacating_move(cx: &mut TestAppContext) {
-    let shell = open_shell(
-        cx,
-        1000.,
-        &GuiSettings::default(),
-        "",
-        false,
-        LayoutStore::Off,
-    );
-    cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        let right = layout(&shell, cx).slots()[1];
-        assert!(views_of(&shell, right, cx).is_empty());
-        window.press("ctrl-shift-t", cx);
-        assert!(shell.workspace.read(cx).slot_drawn(right), "opened empty");
-        // FIND shows in FILES' slot, then moves down into a slot of its own.
-        window.click(super::rail_cell_id(DrawerView::Find), cx);
-        window.click(slot_id(DrawerView::Find), cx);
-        window.press("alt-shift-down", cx);
-        let below = left_slots(&shell, cx)[1];
-        assert_eq!(views_of(&shell, below, cx), [DrawerView::Find]);
-        // The rail moves FIND back beside it, vacating its slot.
-        window.click("rail", cx);
-        rail_cursor_on(&shell, DrawerView::Find, cx);
-        window.press("alt-shift-right", cx);
-        window.render_frame(cx);
-
-        let slots = layout(&shell, cx).slots();
-        assert!(!slots.contains(&below), "the vacated slot closed");
-        assert!(slots.contains(&right), "{slots:?}");
-        assert!(shell.workspace.read(cx).slot_drawn(right), "still drawn");
-    })
-    .unwrap();
-}
-
 // --- Move view to… (ADR-0054 §4) ---
 
 /// The `⋯` button in the header of the slot showing `view`.

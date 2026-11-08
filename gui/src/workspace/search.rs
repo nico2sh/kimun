@@ -1002,6 +1002,12 @@ fn query_help_body(t: &Theme) -> AnyElement {
 /// The query-syntax dialog's width, in rems.
 const HELP_REMS: f32 = 30.;
 
+/// The search query for a label: `#label`, quoted as one term (a
+/// frontmatter label may hold spaces).
+pub(crate) fn label_query(label: &str) -> String {
+    format!("#{}", kimun_core::quote_query_term(label))
+}
+
 impl Workspace {
     /// Open the search browser on `query` (empty: the recent notes).
     /// Refused while a modal is open; says so without a workspace.
@@ -1041,7 +1047,7 @@ impl Workspace {
 
     /// A followed label (`#tag`): the search browser on that label.
     pub(crate) fn search_label(&mut self, name: &str, cx: &mut Context<Self>) {
-        let query = format!("#{}", kimun_core::quote_query_term(name));
+        let query = label_query(name);
         self.with_window(cx, move |workspace, window, cx| {
             workspace.open_search(Some(query), window, cx)
         });

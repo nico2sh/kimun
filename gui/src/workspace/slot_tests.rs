@@ -1,6 +1,6 @@
 //! UI integration tests for the layout tree in the window (ADR-0052):
 //! slots beside the editor, the rail showing views in their slots, the side
-//! toggles (Ruling 13), empty slots (Ruling 12), moving views between
+//! toggles (Ruling 13) moving views between
 //! slots, splitting and closing slots (Ruling 11), directional focus, and
 //! the `[gui.layout]` round trip. A real `Workspace` in a headless window,
 //! driven by GPUI keyboard and pointer events.
@@ -15,15 +15,8 @@ use kimun_notes::logic::view_registry;
 use kimun_notes::settings::gui::GuiSettings;
 
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, saved, temp_config};
-use super::{LayoutStore, empty_slot_id, rail_cell_id, slot_id};
+use super::{LayoutStore, rail_cell_id, slot_id};
 use crate::shell_tree;
-
-/// The hint an empty slot shows with the default keymap.
-const HINT: &str =
-    "No view here. Move one with Alt+Shift+Right / Alt+Shift+Left, or pick one from the rail.";
-
-/// The default layout's slots by reading order: 0 left, 1 right.
-const RIGHT_EMPTY: usize = 1;
 
 impl Shell {
     /// The views the slots of `side` show, in reading order.
@@ -125,7 +118,6 @@ fn default_window_has_left_files_slot_editor_and_empty_right_slot(cx: &mut TestA
         // 0.2 : 0.6 of the 952px right of the rail, the empty right
         // slot's share given back.
         assert!(close(files.size.width, 951. * 0.25), "{files:?}");
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_none());
         assert_eq!(window.find("slot-files").label(), Some("Files"));
     })
     .unwrap();
@@ -239,12 +231,13 @@ fn rail_click_shows_view_in_its_slot(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// The right side's toggle with nothing placed there opens the right slot
-/// empty, with the hint, right of the editor; the keyboard stays in the
-/// editor. Again closes it. A view moved there fills it and takes the
-/// keyboard.
+/// The right side's toggle with nothing placed there asks which view the
+/// right slot shows (ADR-0054 §5): nothing opens, and the keyboard is the
+/// chooser's, until a pick. Escape opens nothing. A pick shows the view in
+/// the right slot, right of the editor, and gives it the keyboard; the
+/// toggle again hides it.
 #[gpui_kit::test]
-fn toggle_right_side_with_no_view_shows_hint(cx: &mut TestAppContext) {
+fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
@@ -258,41 +251,57 @@ fn toggle_right_side_with_no_view_shows_hint(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("ctrl-shift-t", cx);
         window.render_frame(cx);
-        let empty = window.find(empty_slot_id(RIGHT_EMPTY));
-        assert_eq!(empty.label(), Some(HINT));
-        let empty = empty.bounds();
-        let editor = window.find("editor-panel").bounds();
-        assert!(close(empty.left(), f32::from(editor.right()) + 1.));
-        assert!(close(empty.right(), 1000.));
-        assert!(close(empty.size.height, HEIGHT));
+        let offered = shell.workspace.read(cx).side_chooser_views(cx);
+        let offered = offered.expect("the chooser is open");
+        assert!(!offered.contains(&DrawerView::Files), "{offered:?}");
+        assert!(shell.shown_on(Side::Right, cx).is_empty());
+
+        // Cancel: still nothing, the editor has the keyboard back.
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shell.workspace.read(cx).side_chooser_views(cx).is_none());
+        assert!(shell.shown_on(Side::Right, cx).is_empty());
+        assert!(close(window.find("editor-panel").bounds().right(), 1000.));
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.input("x", cx);
         assert_eq!(shell.text(cx), "xabc");
-        // Nothing placed: nothing to save there.
-        assert_eq!(saved_placed(&path)[1], Vec::<DrawerView>::new());
+    })
+    .unwrap();
+    cx.update_window(shell.handle, |_, window, cx| {
+        // Open again and pick the first row.
+        window.press("ctrl-shift-t", cx);
+        assert!(shell.workspace.read(cx).side_chooser_views(cx).is_some());
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let shown = shell.shown_on(Side::Right, cx);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Right));
+        let bounds = window.find(slot_id(shown[0])).bounds();
+        let editor = window.find("editor-panel").bounds();
+        assert!(close(bounds.left(), f32::from(editor.right()) + 1.));
+        assert!(close(bounds.right(), 1000.));
+        assert_eq!(saved_placed(&path)[1], shown);
 
-        // Again: gone, the editor gets the width back.
+        // Again: hidden, the editor gets the width back.
         window.press("ctrl-shift-t", cx);
         window.render_frame(cx);
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_none());
+        assert!(shell.shown_on(Side::Right, cx).is_empty());
         assert!(close(window.find("editor-panel").bounds().right(), 1000.));
         assert_eq!(shell.focused(cx), Panel::Editor);
 
-        // Open, then FILES moved over fills it and has the keyboard.
+        // Again: the remembered view comes back, no chooser.
         window.press("ctrl-shift-t", cx);
-        window.press("alt-left", cx);
-        window.press("alt-shift-right", cx);
         window.render_frame(cx);
-        assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Files]);
-        assert!(shell.shown_on(Side::Left, cx).is_empty());
-        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Right));
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_none());
-        let files = window.find(slot_id(DrawerView::Files)).bounds();
-        assert!(close(files.right(), 1000.));
-        assert!(close(
-            window.find("editor-panel").bounds().left(),
-            f32::from(window.find("rail").bounds().right())
-        ));
+        assert!(shell.workspace.read(cx).side_chooser_views(cx).is_none());
+        assert_eq!(shell.shown_on(Side::Right, cx), shown);
     })
     .unwrap();
 }
@@ -697,11 +706,10 @@ fn directional_focus_crosses_slots(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// The hint is built from the keymap once, not per frame, and rebuilt when
-/// the keymap is replaced: with the move chords unbound it stops naming them,
-/// and the leader gateway's label follows too.
+/// The leader gateway's label is built from the keymap once, not per
+/// frame, and rebuilt when the keymap is replaced.
 #[gpui_kit::test]
-fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
+fn the_leader_label_follows_a_replaced_keymap(cx: &mut TestAppContext) {
     use crate::keymap::{self, Keymap, Platform};
     let shell = open_shell(
         cx,
@@ -712,9 +720,7 @@ fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
         LayoutStore::Off,
     );
     cx.update_window(shell.handle, |_, window, cx| {
-        window.press("ctrl-shift-t", cx);
         window.render_frame(cx);
-        assert_eq!(window.find(empty_slot_id(RIGHT_EMPTY)).label(), Some(HINT));
         assert_eq!(
             shell.workspace.read(cx).leader_chord_label().as_ref(),
             "Ctrl+Shift+B"
@@ -722,14 +728,10 @@ fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.update(|cx| {
-        let overrides = [
-            ("MoveViewToNeighbourRight", vec![]),
-            ("MoveViewToNeighbourLeft", vec![]),
-            ("Leader", vec![]),
-        ]
-        .into_iter()
-        .map(|(name, chords)| (name.to_string(), chords))
-        .collect();
+        let overrides = [("Leader", vec![])]
+            .into_iter()
+            .map(|(name, chords)| (name.to_string(), chords))
+            .collect();
         let (unbound, errors) = Keymap::load(Platform::LinuxWindows, &overrides);
         assert!(errors.is_empty(), "{errors:?}");
         keymap::init(cx, unbound);
@@ -737,10 +739,6 @@ fn the_empty_slot_hint_follows_a_replaced_keymap(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find(empty_slot_id(RIGHT_EMPTY)).label(),
-            Some("No view here. Pick one from the rail.")
-        );
         assert_eq!(
             shell.workspace.read(cx).leader_chord_label().as_ref(),
             "Leader"
@@ -785,32 +783,6 @@ fn the_saved_layout_is_restored_and_a_bad_one_falls_back(cx: &mut TestAppContext
             LayoutTree::default_layout(DrawerView::Files)
         );
         assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
-    })
-    .unwrap();
-}
-
-/// With a slot opened empty, the rail cursor's Move Down puts the cursor's
-/// view (shown nowhere) there; the rail keeps the keyboard.
-#[gpui_kit::test]
-fn the_rail_cursor_moves_a_view_into_an_empty_slot(cx: &mut TestAppContext) {
-    let shell = open_shell(
-        cx,
-        1000.,
-        &GuiSettings::default(),
-        "",
-        false,
-        LayoutStore::Off,
-    );
-    cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-shift-t", cx);
-        window.click("rail", cx);
-        window.press("down", cx);
-        window.press("alt-shift-down", cx);
-        window.render_frame(cx);
-        assert_eq!(shell.shown_on(Side::Right, cx), [DrawerView::Find]);
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_none());
-        assert_eq!(shell.focused(cx), Panel::Rail);
     })
     .unwrap();
 }
@@ -1030,35 +1002,6 @@ fn every_slot_has_a_header_with_its_view_title(cx: &mut TestAppContext) {
             titles,
             [expect(DrawerView::Files), expect(DrawerView::Find)]
         );
-    })
-    .unwrap();
-}
-
-/// A slot drawn through `opened_empty` shows `Empty` in its header.
-#[gpui_kit::test]
-fn empty_slot_header_says_empty(cx: &mut TestAppContext) {
-    let shell = open_shell(
-        cx,
-        1000.,
-        &GuiSettings::default(),
-        "",
-        false,
-        LayoutStore::Off,
-    );
-    cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        let before =
-            window.find_all("slot-header").len() + window.find_all("slot-header-focused").len();
-        window.press("ctrl-shift-t", cx);
-        window.render_frame(cx);
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_some());
-        let all: Vec<_> = window
-            .find_all("slot-header")
-            .into_iter()
-            .chain(window.find_all("slot-header-focused"))
-            .collect();
-        assert_eq!(all.len(), before + 1);
-        assert!(all.iter().any(|h| h.label() == Some("Empty")));
     })
     .unwrap();
 }
@@ -1345,10 +1288,11 @@ fn grow_and_shrink_say_why_they_cannot_act(cx: &mut TestAppContext) {
 }
 
 /// Ruling 12: a slot that is not drawn has no divider. The default
-/// layout's hidden right slot leaves the editor without one; opened empty,
-/// it is drawn and the divider between it and the editor appears.
+/// layout's hidden right slot leaves the editor without one; once a view
+/// is picked into it, it is drawn and the divider between it and the
+/// editor appears.
 #[gpui_kit::test]
-fn divider_between_a_drawn_slot_and_an_undrawn_empty_slot_does_not_exist(cx: &mut TestAppContext) {
+fn a_slot_not_drawn_has_no_divider_until_a_view_shows_there(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
@@ -1362,8 +1306,13 @@ fn divider_between_a_drawn_slot_and_an_undrawn_empty_slot_does_not_exist(cx: &mu
         assert!(window.try_find("divider-slot-0").is_some());
         assert!(window.try_find("divider-group-0").is_none());
         window.press("ctrl-shift-t", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(empty_slot_id(RIGHT_EMPTY)).is_some());
+        assert_eq!(shell.shown_on(Side::Right, cx).len(), 1);
         assert!(window.try_find("divider-group-0").is_some());
     })
     .unwrap();
@@ -2259,6 +2208,38 @@ fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppCon
             near(stepped[1], before[1]) && near(stepped[3], before[3]),
             "{stepped:?}"
         );
+    })
+    .unwrap();
+}
+
+/// The rail's two side buttons are the pointer's way to the toggle chords:
+/// the left one hides and shows the left side, and the right one, with
+/// nothing placed there, asks which view to show (ADR-0054 §5).
+#[gpui_kit::test]
+fn the_rail_side_buttons_toggle_their_sides(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+        window.click("rail-toggle-left", cx);
+        window.render_frame(cx);
+        assert!(shell.shown_on(Side::Left, cx).is_empty());
+        window.click("rail-toggle-left", cx);
+        window.render_frame(cx);
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
+
+        window.click("rail-toggle-right", cx);
+        window.render_frame(cx);
+        assert!(shell.workspace.read(cx).side_chooser_views(cx).is_some());
+        window.press("escape", cx);
+        assert!(shell.shown_on(Side::Right, cx).is_empty());
     })
     .unwrap();
 }

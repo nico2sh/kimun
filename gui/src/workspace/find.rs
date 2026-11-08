@@ -82,6 +82,7 @@ use super::files::{display_title, ellipsis, lane_row};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
 use super::search::SearchPreview;
+use super::search::label_query;
 use super::sort::{chip_label, sort_chip};
 use crate::input;
 use crate::keymap;
@@ -943,15 +944,48 @@ impl Workspace {
         self.show_view(DrawerView::Find, window, cx);
     }
 
-    /// `RunTagQuery` (a TAGS row): FIND on the label, quoted as one term
-    /// (a frontmatter label may hold spaces).
+    /// `RunTagQuery` (a TAGS row): the search browser on the label, quoted
+    /// as one term (a frontmatter label may hold spaces), as a `#tag`
+    /// followed in the editor does. It is a modal, so no view is hidden or
+    /// moved; [`Self::open_browser_query_in_find`] carries the query to FIND.
     pub(crate) fn run_tag_query(
         &mut self,
         label: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let query = format!("#{}", kimun_core::quote_query_term(label));
+        self.open_search(Some(label_query(label)), window, cx);
+    }
+
+    /// The `OpenQueryInSidebar` chord in the browser: its typed query goes
+    /// to [`Self::open_browser_query_in_find`].
+    pub(crate) fn promote_browser_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
+            return;
+        };
+        let query = picker.read(cx).input.read(cx).value().to_string();
+        self.open_browser_query_in_find(query, window, cx);
+    }
+
+    /// The browser's `Open in FIND` button, with the query typed in it:
+    /// the browser closes and FIND shows the query
+    /// ([`Self::open_find_with_query`]). A blank query says so and keeps the
+    /// browser.
+    pub(crate) fn open_browser_query_in_find(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if query.trim().is_empty() {
+            self.flash("No query to open", cx);
+            return;
+        }
+        if self.find.is_none() {
+            self.flash(super::route::NO_WORKSPACE, cx);
+            return;
+        }
+        self.close_modal(window, cx);
         self.open_find_with_query(query, window, cx);
     }
 

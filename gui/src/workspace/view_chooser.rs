@@ -191,6 +191,10 @@ impl<P: Clone + 'static, C> OpenChooser<P, C> {
 /// split and the new slot's side of it.
 pub(crate) type SplitChooser = OpenChooser<DrawerView, (SlotId, Dir)>;
 
+/// The side chooser: which view the opened side's first slot shows.
+/// Context: that slot.
+pub(crate) type SideChooser = OpenChooser<DrawerView, SlotId>;
+
 /// Where a move chooser row sends the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MoveTarget {
@@ -207,9 +211,6 @@ const NEW_SIDES: [(Dir, &str); 4] = [
     (Dir::Left, "New slot to the left"),
     (Dir::Right, "New slot to the right"),
 ];
-
-/// What a slot opened empty is called in its header and in the rows.
-pub(crate) const EMPTY_TITLE: &str = "Empty";
 
 /// The move chooser: where the view goes. Context: the slot the view is
 /// moved out of and the view it showed when the chooser opened.
@@ -270,12 +271,7 @@ impl Workspace {
         if super::modal::dialog_open(window, cx) {
             return false;
         }
-        let rows: Vec<ChooserRow<DrawerView>> = self
-            .rail_views()
-            .iter()
-            .filter(|view| !self.is_shown(**view))
-            .map(|view| ChooserRow::new(view_registry::spec(*view).name, *view))
-            .collect();
+        let rows = self.unshown_rows();
         if rows.is_empty() {
             self.flash("Every view is already shown", cx);
             return true;
@@ -345,10 +341,106 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A side toggled on with nothing placed there (ADR-0054 §5): ask which
+    /// view `slot`, the side's first, shows. The rows are the views not
+    /// shown now, as the split chooser's; with none, the toggle says so and
+    /// opens nothing. Cancelling opens nothing. Not under another modal.
+    pub(crate) fn open_side_chooser(
+        &mut self,
+        slot: SlotId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if super::modal::dialog_open(window, cx) {
+            return;
+        }
+        let rows = self.unshown_rows();
+        if rows.is_empty() {
+            self.flash("Every view is already shown", cx);
+            return;
+        }
+        self.side_chooser = Some(self.open_chooser(
+            rows,
+            "Show in this side",
+            slot,
+            Self::on_side_chooser,
+            window,
+            cx,
+        ));
+    }
+
+    /// The side chooser answered: on a pick, close it and show the view in
+    /// the side's slot ([`Self::show_picked`]).
+    fn on_side_chooser(
+        &mut self,
+        _: &Entity<ViewChooser<DrawerView>>,
+        event: &ChooserEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.side_chooser.take() else {
+            return;
+        };
+        let Some((slot, view)) = open.answer(event, cx) else {
+            return;
+        };
+        self.close_modal(window, cx);
+        self.show_picked(view, slot, window, cx);
+    }
+
+    /// Show `view` in `slot`, moving it there ([`LayoutTree::move_view`]);
+    /// the slot it leaves closes if that emptied it
+    /// ([`Self::close_if_vacated`]). The keyboard goes to `slot`. Persisted.
+    /// Nothing changes when `slot` went away meanwhile or the view got
+    /// shown elsewhere.
+    ///
+    /// [`LayoutTree::move_view`]: kimun_notes::logic::layout_tree::LayoutTree::move_view
+    fn show_picked(
+        &mut self,
+        view: DrawerView,
+        slot: SlotId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_shown(view) || !self.layout.slots().contains(&slot) {
+            return;
+        }
+        let from = self.layout.view_slot(&view);
+        if !self.layout.move_view(view, slot) {
+            return;
+        }
+        if let Some(from) = from.filter(|from| *from != slot) {
+            self.close_if_vacated(from, view);
+        }
+        self.focus_slot_ending_zoom(slot);
+        self.ensure_files_listing(cx);
+        self.tidy_layout(cx);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+        cx.notify();
+    }
+
+    /// The rows of the views the rail offers that no slot shows, in
+    /// registry order.
+    fn unshown_rows(&self) -> Vec<ChooserRow<DrawerView>> {
+        self.rail_views()
+            .iter()
+            .filter(|view| !self.is_shown(**view))
+            .map(|view| ChooserRow::new(view_registry::spec(*view).name, *view))
+            .collect()
+    }
+
     /// The views the open split chooser offers, in its order.
     #[cfg(test)]
     pub(crate) fn split_chooser_views(&self, cx: &gpui_kit::App) -> Option<Vec<DrawerView>> {
         let open = self.split_chooser.as_ref()?;
+        Some(open.chooser.read(cx).payloads().copied().collect())
+    }
+
+    /// The views the open side chooser offers, in its order.
+    #[cfg(test)]
+    pub(crate) fn side_chooser_views(&self, cx: &gpui_kit::App) -> Option<Vec<DrawerView>> {
+        let open = self.side_chooser.as_ref()?;
         Some(open.chooser.read(cx).payloads().copied().collect())
     }
 
@@ -432,12 +524,10 @@ impl Workspace {
             .layout
             .slots()
             .into_iter()
-            .filter(|other| *other != slot && self.slot_drawn(*other))
-            .map(|other| {
-                let title = self
-                    .layout
-                    .shown(other)
-                    .map_or(EMPTY_TITLE, |shown| view_registry::spec(shown).title);
+            .filter(|other| *other != slot)
+            .filter_map(|other| Some((other, self.layout.shown(other)?)))
+            .map(|(other, shown)| {
+                let title = view_registry::spec(shown).title;
                 // Only Left and Right join the slot they reach, as the
                 // pick does; Up and Down trade places there instead.
                 let hint = [Dir::Left, Dir::Right]

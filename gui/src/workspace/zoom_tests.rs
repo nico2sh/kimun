@@ -8,7 +8,7 @@
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, Bounds, Pixels, TestAppContext, Window};
 use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::layout_tree::{Axis, Focus, Leaf, SlotId};
+use kimun_notes::logic::layout_tree::{Focus, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::gui::GuiSettings;
 
@@ -16,7 +16,7 @@ use kimun_core::nfs::VaultPath;
 
 use super::start_tests::{drive, open_started, runtime, vault_start};
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, temp_config};
-use super::{LayoutStore, Workspace, empty_slot_id, slot_id};
+use super::{LayoutStore, Workspace, slot_id};
 use crate::startup::FirstNote;
 use crate::status_row;
 use crate::test_vault::test_vault;
@@ -64,13 +64,9 @@ fn drawn(
         .layout
         .slots()
         .into_iter()
-        .enumerate()
-        .map(|(i, slot)| {
-            let id = match workspace.layout.shown(slot) {
-                Some(view) => slot_id(view),
-                None => empty_slot_id(i),
-            };
-            window.try_find(id).map(|el| el.bounds())
+        .map(|slot| {
+            let view = workspace.layout.shown(slot)?;
+            window.try_find(slot_id(view)).map(|el| el.bounds())
         })
         .collect();
     let editor = window.try_find("editor-panel").map(|el| el.bounds());
@@ -138,7 +134,7 @@ fn toggle_zoom_covers_everything_right_of_the_rail_and_keeps_footer(cx: &mut Tes
 }
 
 /// Zoom changes nothing in the layout: after leaving it every placement,
-/// weight, slot opened empty, side memory and drawn size is what it was,
+/// weight, side memory and drawn size is what it was,
 /// and what collapsed in a narrow window collapses again (while zoomed
 /// nothing is collapsed).
 #[gpui_kit::test]
@@ -155,7 +151,6 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
         let w = shell.workspace.read(cx);
         (
             w.layout.clone(),
-            w.opened_empty.clone(),
             w.side_memory.clone(),
             w.collapsed.clone(),
             drawn(w, window),
@@ -165,18 +160,10 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
         window.render_frame(cx);
         // TAGS: it overlaps the editor most.
         window.press("alt-left", cx);
-        // A slot opened empty (split under TAGS by hand: no command opens
-        // one beside a view), and a side toggled off (its memory).
-        shell.workspace.update(cx, |w, cx| {
-            let tags = w.focused_slot().expect("TAGS has the keyboard");
-            let new = w.layout.split_slot(tags, Axis::Vertical).unwrap();
-            w.opened_empty.insert(new);
-            w.sync_slot_handles(cx);
-        });
+        // A side toggled off (its memory).
         window.press("ctrl-shift-t", cx);
         let before = snapshot(window, cx);
-        assert_eq!(before.1.len(), 1, "a slot opened empty");
-        assert_eq!(before.2[1], [DrawerView::Outline]);
+        assert_eq!(before.1[1], [DrawerView::Outline]);
         let tags = Leaf::Slot(shell.slot_of(DrawerView::Tags, cx));
         assert_eq!(shell.tree_focus(cx), Focus::Leaf(tags));
 
@@ -197,7 +184,7 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         let before = snapshot(window, cx);
-        assert!(!before.3.is_empty(), "something collapsed");
+        assert!(!before.2.is_empty(), "something collapsed");
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.press(ZOOM, cx);
         window.render_frame(cx);
