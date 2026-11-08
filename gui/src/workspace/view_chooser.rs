@@ -184,9 +184,6 @@ pub(crate) enum MoveTarget {
     New(Dir),
 }
 
-/// The four sides a move chord points to, in the order the rows name them.
-const DIRS: [Dir; 4] = [Dir::Up, Dir::Down, Dir::Left, Dir::Right];
-
 /// The move chooser's new-slot rows, one per side.
 const NEW_SIDES: [(Dir, &str); 4] = [
     (Dir::Up, "New slot above"),
@@ -364,8 +361,9 @@ impl Workspace {
     /// other drawn slot in reading order (titled by the view it shows),
     /// then a new slot above, below, left and right of `slot` when `slot`
     /// holds other views (alone there, there is nothing to leave behind).
-    /// A row names the move chord that does the same: the slot a chord
-    /// reaches, or the new slot on a side with nothing there.
+    /// A row names the move chord that does the same: the slot a Left or
+    /// Right chord reaches (Up and Down trade places, which a pick does
+    /// not), or the new slot on a side with nothing there.
     fn move_rows(
         &self,
         view: DrawerView,
@@ -398,7 +396,9 @@ impl Workspace {
                     .layout
                     .shown(other)
                     .map_or(EMPTY_TITLE, |shown| view_registry::spec(shown).title);
-                let hint = DIRS
+                // Only Left and Right join the slot they reach, as the
+                // pick does; Up and Down trade places there instead.
+                let hint = [Dir::Left, Dir::Right]
                     .into_iter()
                     .find(|dir| reach(*dir) == Some(other))
                     .and_then(chord);

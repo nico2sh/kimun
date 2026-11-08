@@ -1152,3 +1152,63 @@ fn a_filtered_pick_runs_the_row_the_query_kept(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// FILES over FIND, one view each: the Up chord reaches FILES' slot from
+/// FIND, but it trades places there, which picking "Into Files slot" does
+/// not: that row names no chord.
+#[gpui_kit::test]
+fn an_into_row_above_names_no_chord(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(move_button(DrawerView::Find), cx);
+        window.render_frame(cx);
+        assert_eq!(move_rows(&shell, cx), [into(DrawerView::Files)]);
+        assert_eq!(
+            shell.workspace.read(cx).move_chooser_hints(cx),
+            Some(vec![None])
+        );
+    })
+    .unwrap();
+}
+
+/// The rows' chords are the keymap's: with the move chords unbound, no
+/// row names one.
+#[gpui_kit::test]
+fn the_move_chooser_hints_follow_a_replaced_keymap(cx: &mut TestAppContext) {
+    use crate::keymap::{self, Keymap, Platform};
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_find_hidden_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update(|cx| {
+        let overrides = [
+            "MoveViewToNeighbourRight",
+            "MoveViewToNeighbourLeft",
+            "MoveViewToNeighbourUp",
+            "MoveViewToNeighbourDown",
+        ]
+        .into_iter()
+        .map(|name| (name.to_string(), vec![]))
+        .collect();
+        let (unbound, errors) = Keymap::load(Platform::LinuxWindows, &overrides);
+        assert!(errors.is_empty(), "{errors:?}");
+        keymap::init(cx, unbound);
+    });
+    cx.run_until_parked();
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(move_button(DrawerView::Files), cx);
+        window.render_frame(cx);
+        assert_eq!(move_rows(&shell, cx).len(), 5);
+        assert_eq!(
+            shell.workspace.read(cx).move_chooser_hints(cx),
+            Some(vec![None; 5])
+        );
+    })
+    .unwrap();
+}
