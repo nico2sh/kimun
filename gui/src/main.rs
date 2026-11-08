@@ -1,5 +1,5 @@
 //! Native GPUI frontend for kimün (ADR-0049). The editor screen's shell
-//! (M5b-1, ADR-0050): the activity rail, the left drawer (placeholder views)
+//! (M5b-1, ADR-0050): the activity rail, the left slot (placeholder views)
 //! and one editor pane, plain or vim as the TUI's `editor_backend` setting
 //! says, in the user's theme, with the TUI's markdown rendering and
 //! find/replace bar. It starts on the configured vault (M5b-2 G1), indexes

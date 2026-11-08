@@ -1,8 +1,8 @@
 //! The **setup assistant** (M8c): the TUI's guided setup
 //! (`app_screen/onboarding.rs`) as a full-window view that takes the
-//! Workspace body over while it shows. The rail, the drawers and the editor
+//! Workspace body over while it shows. The rail, the slots and the editor
 //! are not drawn, so nothing of theirs can be focused, and the workspace's
-//! chords (leader, palette, drawer toggles) do nothing.
+//! chords (leader, palette, side toggles) do nothing.
 //!
 //! **Entry.** It opens on its own when the window enters `Start::NoWorkspace`
 //! (a first run: leaving it quits the app), and from the leader / palette

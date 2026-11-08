@@ -13,7 +13,7 @@ pub const RAIL_REMS: f32 = 3.0;
 /// The width of a slot opened empty, in rems (a slot showing a view takes
 /// the view's minimum, `view_registry`): room for a short label and its
 /// icon.
-pub const DRAWER_MIN_REMS: f32 = 10.0;
+pub const SLOT_MIN_REMS: f32 = 10.0;
 /// An editor group's minimum width, in rems: a readable line of text. The
 /// editor never collapses; the slots beside it do first.
 pub const EDITOR_MIN_REMS: f32 = 20.0;

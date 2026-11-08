@@ -190,12 +190,12 @@ fn the_which_key_shows_after_a_hesitation(cx: &mut TestAppContext) {
     let (pressed, rows) = which_key(&shell, cx).unwrap();
     assert_eq!(pressed, "Ctrl+Shift+B w");
     assert_eq!(rows, 4, "the +window group's leaves");
-    // `z` (zen) fires: the popup goes, and the drawer with it.
+    // `z` (zen) fires: the popup goes, and the slot with it.
     type_text(&shell, "z", cx);
     assert!(!pending(&shell, cx));
     assert!(!revealed(&shell, cx));
     assert!(!which_key_drawn(&shell, cx));
-    assert!(!cx.read(|cx| shell.drawer_shown(cx)));
+    assert!(!cx.read(|cx| shell.left_side_shown(cx)));
     assert_eq!(cx.read(|cx| shell.text(cx)), "hello");
 }
 
@@ -332,7 +332,7 @@ fn a_drawer_leaf_shows_its_view(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
     press(&shell, CHORD, cx);
     type_text(&shell, "ot", cx);
-    assert_eq!(cx.read(|cx| shell.drawer_view(cx)), DrawerView::Tags);
+    assert_eq!(cx.read(|cx| shell.left_slot_view(cx)), DrawerView::Tags);
     assert_eq!(cx.read(|cx| shell.focused(cx)), Panel::Drawer(Side::Left));
 }
 

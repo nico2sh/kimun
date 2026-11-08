@@ -212,7 +212,7 @@ impl TitleBar {
 /// are the kit theme's ([`theme::apply_to_kit`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BarColors {
-    /// The bar: the rail's and the drawers' surface, so the chrome reads as
+    /// The bar: the rail's and the slots' surface, so the chrome reads as
     /// one band with them.
     pub(crate) surface: Rgba,
     /// The title: the text colour, muted while the window is inactive.

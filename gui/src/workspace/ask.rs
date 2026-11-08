@@ -1259,7 +1259,7 @@ impl Workspace {
     /// Why the leader's `drawer.ask` cannot show the view now: the rail's
     /// rule, a server that can answer; a view already shown just takes
     /// the keyboard.
-    pub(crate) fn ask_drawer_block(&self) -> Option<&'static str> {
+    pub(crate) fn ask_view_block(&self) -> Option<&'static str> {
         if self.ask.is_none() {
             return Some(NO_WORKSPACE);
         }
@@ -1273,8 +1273,8 @@ impl Workspace {
     /// home, the right slot, when placed nowhere) with the keyboard, as any
     /// view the leader opens. Gated here too: a leaf sent on the channel
     /// skips the route block.
-    pub(crate) fn open_ask_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(why) = self.ask_drawer_block() {
+    pub(crate) fn open_ask_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(why) = self.ask_view_block() {
             self.flash(why, cx);
             return;
         }

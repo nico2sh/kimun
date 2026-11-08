@@ -462,7 +462,7 @@ fn find_gets_the_order_directive_and_reads_edited(cx: &mut TestAppContext) {
     assert_eq!(find_names(&started, &rt, cx), ["a", "c", "b"]);
     assert!(
         cx.read(|cx| started.workspace.read(cx).focused_panel()) != Panel::Editor,
-        "the drawer keeps the keyboard"
+        "the slot keeps the keyboard"
     );
 }
 

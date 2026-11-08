@@ -307,7 +307,7 @@ fn slot_views(s: &Started, side: Side, cx: &TestAppContext) -> Vec<DrawerView> {
 }
 
 /// Whether a slot of `side` is drawn.
-fn drawer_visible(s: &Started, side: Side, cx: &TestAppContext) -> bool {
+fn side_visible(s: &Started, side: Side, cx: &TestAppContext) -> bool {
     cx.read(|cx| s.workspace.read(cx).side_drawn(side))
 }
 
@@ -1587,7 +1587,7 @@ fn toggling_asks_side_hides_and_restores_it(cx: &mut TestAppContext) {
         .unwrap();
     };
     toggle(cx);
-    assert!(!drawer_visible(&started, Side::Right, cx));
+    assert!(!side_visible(&started, Side::Right, cx));
     assert!(!thread_shown(&started, cx));
     toggle(cx);
     assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);

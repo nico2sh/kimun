@@ -297,7 +297,7 @@ impl Workspace {
     /// note session and the editor's text, every drawer view over the vault
     /// and the Thread, the server sync and what it reported, the attachment,
     /// every task under way, the modals, a pending leader sequence and the
-    /// Footer's state. Kept: the layout (the views' places and the drawers'
+    /// Footer's state. Kept: the layout (the views' places and the slots'
     /// sizes), the theme, the keymap, the focus handles, the window.
     pub(super) fn leave_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Preferences over the old vault: their draft goes, and the theme

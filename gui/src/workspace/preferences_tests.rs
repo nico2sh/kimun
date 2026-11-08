@@ -417,7 +417,7 @@ fn shell_chords_are_inert_while_they_show(cx: &mut TestAppContext) {
     let left = |cx: &TestAppContext| cx.read(|cx| s.workspace.read(cx).side_drawn(Side::Left));
     let before = left(cx);
     s.pf_press("ctrl-t", cx);
-    assert_eq!(left(cx), before, "the drawer toggle is inert");
+    assert_eq!(left(cx), before, "the side toggle is inert");
     s.pf_press("ctrl-shift-p", cx);
     assert_eq!(s.shown_modal(cx), None, "no palette");
     s.pf_press("ctrl-shift-b", cx);

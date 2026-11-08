@@ -280,7 +280,7 @@ fn backlinks_follow_the_open_note(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
-    // In the right drawer, so FILES stays where it is.
+    // In the right slot, so FILES stays where it is.
     started.workspace.update(cx, |w, cx| {
         w.move_to_side(DrawerView::Find, Side::Right);
         w.refresh_views(cx);
@@ -710,9 +710,9 @@ fn open_find_on_backlinks(started: &Started, cx: &mut TestAppContext) {
 // ── Both views ───────────────────────────────────────────────────────────
 
 /// Leader `f b` shows LINKS on its Backlinks tab (not FIND on a query), `f t`
-/// shows TAGS; FIND and TAGS work in the right drawer and split under FILES.
+/// shows TAGS; FIND and TAGS work in the right slot and split under FILES.
 #[gpui_kit::test]
-fn the_leader_and_either_drawer(cx: &mut TestAppContext) {
+fn the_leader_and_either_side(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
@@ -733,7 +733,7 @@ fn the_leader_and_either_drawer(cx: &mut TestAppContext) {
         "no FIND query is opened for backlinks"
     );
     assert_eq!(runs(&started, cx), 0, "FIND ran nothing");
-    // FIND on a query, then to the right drawer (the focused view moves).
+    // FIND on a query, then to the right slot (the focused view moves).
     cx.update_window(started.handle, |_, window, cx| {
         started.workspace.update(cx, |w, cx| {
             w.open_find_with_query("<{note}".to_string(), window, cx)
@@ -744,7 +744,7 @@ fn the_leader_and_either_drawer(cx: &mut TestAppContext) {
     assert_eq!(query(&started, cx), "<{note}");
     assert_eq!(find_names(&started, &rt, cx), ["beta", "epsilon"]);
     assert_eq!(runs(&started, cx), 1, "the query ran once");
-    // FIND to the right drawer (the focused view moves).
+    // FIND to the right slot (the focused view moves).
     press(&started, "alt-shift-right", cx);
     let side = |view: DrawerView, cx: &TestAppContext| {
         cx.read(|cx| {

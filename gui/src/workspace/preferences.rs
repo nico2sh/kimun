@@ -1,8 +1,8 @@
 //! **Preferences** (M9b): the TUI's Preferences screen
 //! (`app_screen/preferences.rs`) as a full-window view that takes the
 //! Workspace body over while it shows, as the setup assistant does
-//! ([`onboarding`](super::onboarding)): the rail, the drawers and the editor
-//! are not drawn, and the window's chords (leader, palette, drawer toggles)
+//! ([`onboarding`](super::onboarding)): the rail, the slots and the editor
+//! are not drawn, and the window's chords (leader, palette, side toggles)
 //! do nothing.
 //!
 //! **Layout.** A section list on the left (Workspaces, Appearance, Display,

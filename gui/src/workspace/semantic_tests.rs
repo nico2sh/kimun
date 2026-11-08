@@ -307,7 +307,7 @@ fn the_rail_offers_sem_only_while_the_server_can_search(cx: &mut TestAppContext)
     }
 }
 
-/// A SEM view opened while the server could search stays in its drawer
+/// A SEM view opened while the server could search stays in its slot
 /// when the server goes away: only the rail cell goes.
 #[gpui_kit::test]
 fn losing_search_drops_the_cell_and_keeps_the_placed_view(cx: &mut TestAppContext) {
