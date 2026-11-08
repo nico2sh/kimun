@@ -7,12 +7,12 @@
 //! which leaf has the keyboard live in the logic [`LayoutTree`]; this view
 //! only renders it ([`tree_view`]) and keeps GPUI focus in step with it. A
 //! slot with no shown view is not drawn, unless it was opened empty this
-//! session (a side toggled on with nothing placed, a split): then it shows
-//! a hint. Neither that nor which views a side toggle hid is persisted.
+//! session (a side toggled on with nothing placed): then it shows a hint. Neither that nor which views a side toggle hid is persisted.
 //!
 //! **Arranging.** The rail shows a view where it is placed, hiding the
 //! view sharing its slot, and a click on a shown view hides it; the move,
-//! split and close chords rearrange the views from the rail or a slot; the
+//! split and close chords rearrange the views from the rail or a slot (a
+//! split asks which view the new slot holds, [`view_chooser`]); the
 //! side toggles hide or bring back every view left or right of the active
 //! group. A view is shown in at most one slot, so FILES (one entity)
 //! renders wherever it is.
@@ -369,12 +369,9 @@ pub(crate) struct Workspace {
     /// no view).
     slot_focus: HashMap<SlotId, FocusHandle>,
     /// Slots drawn although they show no view (Ruling 12): a side toggled
-    /// on with nothing placed, a split's new slot. Session only; a slot
-    /// leaves the set when a view lands in it or it closes.
+    /// on with nothing placed. Session only; a slot leaves the set when a
+    /// view lands in it or it closes.
     opened_empty: HashSet<SlotId>,
-    /// Slots a split created this session: left out of every layout save
-    /// while they hold no view ([`Self::persisted_layout`]).
-    split_slots: HashSet<SlotId>,
     /// The views a side toggle hid (left, right), shown again when that
     /// side is toggled back on. Session only.
     side_memory: [Vec<DrawerView>; 2],
@@ -475,6 +472,8 @@ pub(crate) struct Workspace {
     pub(crate) modal: Option<ModalKind>,
     /// The command palette's view while it is open (tests read its rows).
     pub(crate) palette: Option<WeakEntity<Palette>>,
+    /// The split chooser while it is open ([`view_chooser`]).
+    split_chooser: Option<view_chooser::SplitChooser>,
     /// The shared settings (the leader tree, the vault to open, what
     /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
     /// that never call it.
@@ -685,7 +684,6 @@ impl Workspace {
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
             opened_empty: HashSet::new(),
-            split_slots: HashSet::new(),
             side_memory: [Vec::new(), Vec::new()],
             collapsed: HashSet::new(),
             title_bar_height: Default::default(),
@@ -730,6 +728,7 @@ impl Workspace {
             _shell_keys: shell_keys,
             modal: None,
             palette: None,
+            split_chooser: None,
             settings: None,
             _editor_events: editor_events,
             leader: LeaderState::default(),
@@ -1261,21 +1260,8 @@ impl Workspace {
 
     fn save_layout_with(&mut self, preset: PresetRecord<'_>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
-        self.layout_writer.submit(self.persisted_layout(), preset);
+        self.layout_writer.submit(self.layout.clone(), preset);
         self.refresh_views(cx);
-    }
-
-    /// The layout as saved: a slot split open this session while it holds no
-    /// view ([`Self::split_slots`]) stays out, so a restart does
-    /// not bring back a slot that cannot be focused or closed.
-    fn persisted_layout(&self) -> LayoutTree<DrawerView> {
-        let mut layout = self.layout.clone();
-        for slot in &self.split_slots {
-            if layout.slot_views(*slot).is_empty() {
-                let _ = layout.close_slot(*slot);
-            }
-        }
-        layout
     }
 
     /// Bring the session state in step with the tree: every slot has its
@@ -1288,7 +1274,6 @@ impl Workspace {
         let layout = &self.layout;
         self.opened_empty
             .retain(|s| slots.contains(s) && layout.shown(*s).is_none());
-        self.split_slots.retain(|s| slots.contains(s));
         self.fix_focus();
     }
 
@@ -1972,12 +1957,11 @@ impl Workspace {
         self.focused_slot() == Some(from) && self.spawn_beside(view, from, dir, window, cx)
     }
 
-    /// `SplitSlotRight` / `SplitSlotDown`: split the focused slot along
-    /// `axis` ([`LayoutTree::split_slot`]); the new slot, right of it or
-    /// below, opens **empty** (a hint in place of a view; Ruling 12) and
-    /// the keyboard stays on the view. A view gets there only by a move.
-    /// Session only: the slot is left out of every later layout save
-    /// ([`Self::persisted_layout`]) until a view moves in.
+    /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view
+    /// the new slot, right of the focused slot (`axis` horizontal) or below
+    /// it, holds ([`Self::open_split_chooser`]); the slot arrives filled.
+    /// Handled whenever a slot has the keyboard; nothing splits while
+    /// zoomed (the new slot would not be drawn).
     fn split_focused_slot(
         &mut self,
         axis: TreeAxis,
@@ -1987,11 +1971,12 @@ impl Workspace {
         let Some(slot) = self.focused_slot() else {
             return false;
         };
-        if let Ok(new) = self.layout.split_slot(slot, axis) {
-            self.opened_empty.insert(new);
-            self.split_slots.insert(new);
-            self.sync_slot_handles(cx);
-            self.apply_focus(window, cx);
+        if self.layout.zoomed().is_none() {
+            let dir = match axis {
+                TreeAxis::Horizontal => Dir::Right,
+                TreeAxis::Vertical => Dir::Down,
+            };
+            self.open_split_chooser(slot, dir, window, cx);
         }
         true
     }
@@ -2949,6 +2934,7 @@ mod theme_picker;
 pub(crate) mod titlebar;
 mod tree_view;
 mod update;
+mod view_chooser;
 #[cfg(feature = "fake-update")]
 pub(crate) use update::fake_backend_from_env as fake_update_backend_from_env;
 

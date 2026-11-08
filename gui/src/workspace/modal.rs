@@ -116,6 +116,8 @@ pub(crate) enum ModalKind {
     Update,
     /// The keyboard reference (F1, leader `?`, the palette, the CFG view).
     KeyboardHelp,
+    /// The split chooser: which view a split's new slot holds.
+    ViewChooser,
 }
 
 /// Where [`Workspace::show_modal`] puts a dialog.
@@ -261,6 +263,7 @@ impl Workspace {
         self.modal = None;
         self.query_help = false;
         self.palette = None;
+        self.split_chooser = None;
         #[cfg(test)]
         {
             self.file_dialog = None;

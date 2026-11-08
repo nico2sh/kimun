@@ -51,6 +51,33 @@ impl Shell {
             .any(|s| workspace.slot_drawn(s))
     }
 
+    /// Split the focused slot with `chord` and pick `view` in the chooser
+    /// that asks what the new slot holds (ADR-0054 §1), from the keyboard;
+    /// returns once the pick has landed (the kit confirms deferred).
+    pub(super) fn split_pick(&self, chord: &str, view: DrawerView, cx: &mut TestAppContext) {
+        let workspace = self.workspace.clone();
+        cx.update_window(self.handle, |_, window, cx| {
+            window.press(chord, cx);
+            window.render_frame(cx);
+            let views = workspace
+                .read(cx)
+                .split_chooser_views(cx)
+                .expect("the split chooser is open");
+            let row = views
+                .iter()
+                .position(|v| *v == view)
+                .unwrap_or_else(|| panic!("{view:?} is offered: {views:?}"));
+            for _ in 0..row {
+                window.press("down", cx);
+            }
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
     /// The view the first slot left of the editor shows.
     pub(super) fn left_slot_view(&self, cx: &gpui_kit::App) -> DrawerView {
         let workspace = self.workspace.read(cx);

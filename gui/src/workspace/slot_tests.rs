@@ -493,11 +493,11 @@ fn the_rail_move_toward_the_edge_passes_on(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Split slot down (Alt+Shift+D) splits the focused slot: an empty slot opens under it,
-/// at half the height, with the hint; the keyboard stays on the view and
-/// nothing is saved. Close slot (Alt+Shift+W) on the empty slot closes it; on a slot
-/// with views it merges them, hidden, into the slot taking over its area.
-/// The only slot stays, and says so.
+/// Split slot down (Alt+Shift+D) splits the focused slot: the view picked
+/// in the chooser (ADR-0054 §1) shows in a new slot under it, at half the
+/// height, and takes the keyboard; saved. Close slot (Alt+Shift+W) on it
+/// merges its view, hidden, into the slot taking over its area. The only
+/// slot stays, and says so.
 #[gpui_kit::test]
 fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -509,76 +509,46 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
         false,
         LayoutStore::File(path.clone()),
     );
+    let left = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let left = shell.slots(cx)[0];
+            // Not from the editor: the chord is the editor's there.
+            window.press("alt-shift-d", cx);
+            assert_eq!(shell.slots(cx).len(), 2);
+            assert!(shell.workspace.read(cx).split_chooser_views(cx).is_none());
+            window.press("alt-left", cx);
+            left
+        })
+        .unwrap();
+    shell.split_pick("alt-shift-d", DrawerView::Find, cx);
     cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        // Something saved first, to compare against.
-        window.press("ctrl-shift-t", cx);
-        window.press("ctrl-shift-t", cx);
-        let before = std::fs::read_to_string(&path).unwrap();
-        let left = shell.slots(cx)[0];
-        // Not from the editor: the chord is the editor's there.
-        window.press("alt-shift-d", cx);
-        assert_eq!(shell.slots(cx).len(), 2);
-
-        window.press("alt-left", cx);
-        window.press("alt-shift-d", cx);
-        window.render_frame(cx);
         let slots = shell.slots(cx);
         assert_eq!(slots.len(), 3);
         assert_eq!(slots[0], left);
-        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
-        assert_eq!(
-            window.find(slot_id(DrawerView::Files)).focused(),
-            Some(true)
-        );
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(slots[1])));
+        assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
         let top = window.find(slot_id(DrawerView::Files)).bounds();
-        let empty = window.find(empty_slot_id(1));
-        assert_eq!(empty.label(), Some(HINT));
-        let bottom = empty.bounds();
+        let bottom = window.find(slot_id(DrawerView::Find)).bounds();
         assert!(close(top.size.height, (HEIGHT - 1.) / 2.));
         assert!(close(bottom.top(), f32::from(top.bottom()) + 1.));
         assert!(close(bottom.bottom(), HEIGHT));
         assert!(close(bottom.left(), f32::from(top.left())));
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            before,
-            "session only"
+            saved_placed(&path),
+            [vec![DrawerView::Files], vec![DrawerView::Find], vec![]]
         );
-        // A later save (any toggle) does not persist the empty slot.
-        window.press("ctrl-shift-t", cx);
-        window.press("ctrl-shift-t", cx);
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            before,
-            "a later save leaves the empty slot out"
-        );
-        assert_eq!(shell.slots(cx).len(), 3);
 
-        // Closing the empty slot gives FILES its height back.
-        window.click(empty_slot_id(1), cx);
-        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(slots[1])));
+        // Closing it merges FIND, hidden, into FILES' slot, which gets its
+        // height back and the keyboard.
         window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.slots(cx).len(), 2);
+        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
         assert!(close(
             window.find(slot_id(DrawerView::Files)).bounds().size.height,
             HEIGHT
         ));
-        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
-
-        // Two views stacked: closing the bottom one merges it into FILES'.
-        window.press("alt-shift-d", cx);
-        window.click("rail", cx);
-        window.press("down", cx);
-        window.press("alt-shift-down", cx);
-        assert_eq!(
-            shell.shown_on(Side::Left, cx),
-            [DrawerView::Files, DrawerView::Find]
-        );
-        window.click(slot_id(DrawerView::Find), cx);
-        window.press("alt-shift-w", cx);
-        window.render_frame(cx);
-        assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
         assert_eq!(
             saved_placed(&path),
@@ -978,10 +948,11 @@ fn the_rail_hides_and_shows_one_view_of_a_stacked_pair(cx: &mut TestAppContext) 
     .unwrap();
 }
 
-/// Close right after Split, the keyboard still on FILES: the new empty slot
-/// closes, not FILES' (Ruling 15). FILES stays shown, no hint is left.
+/// Close right after Split, the keyboard on the new slot: that slot
+/// closes, not FILES' (Ruling 15). FILES stays shown at full height with the
+/// picked view hidden beside it, and takes the keyboard.
 #[gpui_kit::test]
-fn closing_right_after_a_split_closes_the_empty_slot(cx: &mut TestAppContext) {
+fn closing_right_after_a_split_closes_the_new_slot(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
@@ -993,13 +964,19 @@ fn closing_right_after_a_split_closes_the_empty_slot(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("alt-left", cx);
-        window.press("alt-shift-d", cx);
+    })
+    .unwrap();
+    shell.split_pick("alt-shift-d", DrawerView::Find, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
         assert_eq!(shell.slots(cx).len(), 3);
         window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.slots(cx).len(), 2);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
-        assert!(window.try_find(empty_slot_id(1)).is_none());
+        assert_eq!(
+            shell.placed_on(Side::Left, cx),
+            [DrawerView::Files, DrawerView::Find]
+        );
         assert!(close(
             window.find(slot_id(DrawerView::Files)).bounds().size.height,
             HEIGHT
@@ -1045,11 +1022,10 @@ fn every_slot_has_a_header_with_its_view_title(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.press("alt-left", cx);
-        window.press("alt-shift-d", cx);
-        window.click("rail", cx);
-        window.press("down", cx);
-        window.press("alt-shift-down", cx);
-        window.render_frame(cx);
+    })
+    .unwrap();
+    shell.split_pick("alt-shift-d", DrawerView::Find, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
         assert_eq!(
             shell.shown_on(Side::Left, cx),
             [DrawerView::Files, DrawerView::Find]
@@ -1610,12 +1586,12 @@ fn a_divider_move_does_not_save_until_the_drag_ends(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Split slot right (Alt+Shift+R): an empty slot opens beside the focused
-/// one, the two sharing its width at full height, with the hint; the
-/// keyboard stays on the view and nothing is saved. Split slot down
-/// (Alt+Shift+D) opens one under it.
+/// Split slot right (Alt+Shift+R): the view picked in the chooser shows in
+/// a new slot beside the focused one, the two sharing its width at full
+/// height, and takes the keyboard; saved. Split slot down (Alt+Shift+D)
+/// puts one under it.
 #[gpui_kit::test]
-fn split_slot_right_adds_an_empty_slot_beside_the_focused_one(cx: &mut TestAppContext) {
+fn split_slot_right_places_the_pick_beside_the_focused_one(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
     let shell = open_shell(
         cx,
@@ -1625,45 +1601,48 @@ fn split_slot_right_adds_an_empty_slot_beside_the_focused_one(cx: &mut TestAppCo
         false,
         LayoutStore::File(path.clone()),
     );
+    let (left, width) = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let width = window.find(slot_id(DrawerView::Files)).bounds().size.width;
+            // Not from the editor: the chord is the editor's there.
+            window.press("alt-shift-r", cx);
+            assert_eq!(shell.slots(cx).len(), 2);
+            assert!(shell.workspace.read(cx).split_chooser_views(cx).is_none());
+            window.press("alt-left", cx);
+            (shell.slots(cx)[0], width)
+        })
+        .unwrap();
+    shell.split_pick("alt-shift-r", DrawerView::Find, cx);
     cx.update_window(shell.handle, |_, window, cx| {
-        window.render_frame(cx);
-        let before = std::fs::read_to_string(&path).ok();
-        let width = window.find(slot_id(DrawerView::Files)).bounds().size.width;
-        // Not from the editor: the chord is the editor's there.
-        window.press("alt-shift-r", cx);
-        assert_eq!(shell.slots(cx).len(), 2);
-
-        window.press("alt-left", cx);
-        let left = shell.slots(cx)[0];
-        window.press("alt-shift-r", cx);
-        window.render_frame(cx);
         let slots = shell.slots(cx);
         assert_eq!(slots.len(), 3);
         assert_eq!(slots[0], left);
-        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
-        assert_eq!(
-            window.find(slot_id(DrawerView::Files)).focused(),
-            Some(true)
-        );
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(slots[1])));
+        assert_eq!(window.find(slot_id(DrawerView::Find)).focused(), Some(true));
         let files = window.find(slot_id(DrawerView::Files)).bounds();
-        let empty = window.find(empty_slot_id(1));
-        assert_eq!(empty.label(), Some(HINT));
-        let beside = empty.bounds();
+        let beside = window.find(slot_id(DrawerView::Find)).bounds();
         assert!(close(beside.left(), f32::from(files.right()) + 1.));
         assert!(close(beside.top(), f32::from(files.top())));
         assert!(close(beside.size.height, f32::from(files.size.height)));
         assert!(close(beside.size.height, HEIGHT));
         // FILES gave up width to it.
         assert!(files.size.width < width, "{files:?} {width:?}");
-        assert_eq!(std::fs::read_to_string(&path).ok(), before, "session only");
+        assert_eq!(
+            saved_placed(&path),
+            [vec![DrawerView::Files], vec![DrawerView::Find], vec![]]
+        );
+        window.click(slot_id(DrawerView::Files), cx);
+    })
+    .unwrap();
 
-        // Split slot down: an empty slot under FILES, same width.
-        window.press("alt-shift-d", cx);
-        window.render_frame(cx);
+    // Split slot down: TAGS under FILES, same width.
+    shell.split_pick("alt-shift-d", DrawerView::Tags, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
         assert_eq!(shell.slots(cx).len(), 4);
-        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(left)));
+        assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(shell.slots(cx)[1])));
         let files = window.find(slot_id(DrawerView::Files)).bounds();
-        let under = window.find(empty_slot_id(1)).bounds();
+        let under = window.find(slot_id(DrawerView::Tags)).bounds();
         assert!(close(under.top(), f32::from(files.bottom()) + 1.));
         assert!(close(under.left(), f32::from(files.left())));
         assert!(close(under.size.width, f32::from(files.size.width)));
@@ -2200,11 +2179,11 @@ fn a_slot_below_its_minimum_shows_too_small(cx: &mut TestAppContext) {
 }
 
 /// Two drawn cells with a hidden slot between them in the tree still share
-/// a divider (Ruling 23): FILES split right gives `[A, B, editor, right]`,
-/// TAGS placed in A, FILES moved into B, TAGS shown in A from the rail, FILES hidden from the
-/// rail: TAGS and the editor are drawn side by side across hidden B. A drag
-/// of that divider changes only those two weights (B and the right slot
-/// keep theirs), and the leader's grow step resizes TAGS.
+/// a divider (Ruling 23): FILES split right with TAGS picked gives
+/// `[A, B, editor, right]`, TAGS (in B) hidden from the rail: FILES and the
+/// editor are drawn side by side across hidden B. A drag of that divider
+/// changes only those two weights (B and the right slot keep theirs), and
+/// the leader's grow step resizes FILES.
 #[gpui_kit::test]
 fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -2217,42 +2196,35 @@ fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppCon
         LayoutStore::File(path.clone()),
     );
     cx.update_window(shell.handle, |_, window, cx| {
-        let tags = |window: &mut gpui_kit::Window| {
-            f32::from(window.find(slot_id(DrawerView::Tags)).bounds().size.width)
+        window.render_frame(cx);
+        window.press("alt-left", cx);
+    })
+    .unwrap();
+    shell.split_pick("alt-shift-r", DrawerView::Tags, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        let files = |window: &mut gpui_kit::Window| {
+            f32::from(window.find(slot_id(DrawerView::Files)).bounds().size.width)
         };
         let editor = |window: &mut gpui_kit::Window| {
             f32::from(window.find("editor-panel").bounds().size.width)
         };
-        window.render_frame(cx);
-        window.press("alt-left", cx);
-        window.press("alt-shift-r", cx);
-        window.render_frame(cx);
-        // TAGS placed in A first, so FILES' move does not vacate A (a slot
-        // a move empties closes, ADR-0054).
         window.click(rail_cell_id(DrawerView::Tags), cx);
-        window.click(rail_cell_id(DrawerView::Files), cx);
-        window.render_frame(cx);
-        window.press("alt-shift-right", cx);
-        window.render_frame(cx);
-        window.click(rail_cell_id(DrawerView::Tags), cx);
-        window.render_frame(cx);
-        window.click(rail_cell_id(DrawerView::Files), cx);
         window.render_frame(cx);
         {
             let w = shell.workspace.read(cx);
             let slots = w.layout.slots();
             assert_eq!(slots.len(), 3, "A, B and the right slot");
-            assert_eq!(w.layout.shown(slots[0]), Some(DrawerView::Tags));
-            assert_eq!(w.layout.slot_views(slots[1]), [DrawerView::Files]);
+            assert_eq!(w.layout.shown(slots[0]), Some(DrawerView::Files));
+            assert_eq!(w.layout.slot_views(slots[1]), [DrawerView::Tags]);
             assert_eq!(w.layout.shown(slots[1]), None);
             assert_eq!(top_weights(&w.layout).len(), 4, "[A, B, editor, right]");
         }
         assert!(
             window.try_find("divider-slot-0").is_some(),
-            "a divider between TAGS and the editor"
+            "a divider between FILES and the editor"
         );
         let before = top_weights(&shell.workspace.read(cx).layout);
-        let (t, e) = (tags(window), editor(window));
+        let (t, e) = (files(window), editor(window));
         let from = window.find("divider-slot-0").bounds().center();
         window.drag(
             from,
@@ -2261,9 +2233,9 @@ fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppCon
         );
         window.render_frame(cx);
         assert!(
-            (tags(window) - (t + 100.)).abs() < 1.0,
+            (files(window) - (t + 100.)).abs() < 1.0,
             "{t} -> {}",
-            tags(window)
+            files(window)
         );
         assert!(
             (editor(window) - (e - 100.)).abs() < 1.0,
@@ -2285,16 +2257,16 @@ fn a_hidden_slot_between_two_drawn_cells_keeps_their_divider(cx: &mut TestAppCon
         );
         assert!(after[0] > before[0], "{before:?} -> {after:?}");
 
-        // The leader's grow step on TAGS moves the same divider.
-        window.click(slot_id(DrawerView::Tags), cx);
+        // The leader's grow step on FILES moves the same divider.
+        window.click(slot_id(DrawerView::Files), cx);
         window.render_frame(cx);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        let t = tags(window);
+        let t = files(window);
         window.press("ctrl-shift-b", cx);
         window.input("w", cx);
         window.input("l", cx);
         window.render_frame(cx);
-        assert!(tags(window) > t + 1.0, "{t} -> {}", tags(window));
+        assert!(files(window) > t + 1.0, "{t} -> {}", files(window));
         let stepped = top_weights(&saved_tree(&path));
         assert!(
             near(stepped[1], before[1]) && near(stepped[3], before[3]),
