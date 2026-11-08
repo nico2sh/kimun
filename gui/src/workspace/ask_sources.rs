@@ -13,8 +13,9 @@
 //!
 //! **The reader** is FIND's preview ([`SearchPreview`]) marking a section
 //! instead of needles, driven by the same `PreviewModel`: Collapsed (the
-//! list only) → Context (under the list) → Full (the whole view, the list
-//! keeping the keyboard). While Collapsed each row shows `Expand →` at its
+//! list only) → Context (under the list) → Full (the whole part, at its
+//! fixed open height under the turn; the list keeps the keyboard out of
+//! sight). While Collapsed each row shows `Expand →` at its
 //! right end under the pointer (the list's row action): a click selects
 //! that row and grows the reader to Context, as Right does, and the list
 //! has the keyboard after. Open, a one-line **header** sits on top of the
@@ -875,6 +876,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The part can go under the keyboard (a regenerate leaves the turn
+        // pending, without sources): never leave it on the undrawn list,
+        // hand it over again through the layout (the view then answers
+        // with its turn list).
+        if let Some(view) = self.ask.clone()
+            && !view.read(cx).sources_drawn()
+            && self.sources_list_focused(window, cx)
+        {
+            self.apply_focus(window, cx);
+        }
         let selected = self.ask.as_ref().and_then(|v| v.read(cx).selected_id());
         let step = self.ask_flow.after_input(selected, citation);
         if step.sync_sources {
