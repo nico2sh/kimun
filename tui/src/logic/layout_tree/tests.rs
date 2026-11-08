@@ -923,3 +923,39 @@ fn focus_dir_among_skips_leaves_that_are_not_visible() {
         TreeFocusMove::Moved(Focus::Leaf(g))
     );
 }
+
+// ── Fit ───────────────────────────────────────────────────────────────
+
+/// The default layout at 35 units wide with every leaf 10 wide and the
+/// group 20: the trailing slot collapses, the group never does, and a leaf
+/// that is not drawn is left out before fitting (its weight goes to the
+/// others, it is not reported as collapsed).
+#[test]
+fn fit_collapses_trailing_slots_skips_undrawn_and_keeps_groups() {
+    let t = tree();
+    let (left, right) = sides(&t);
+    let g = Leaf::Group(GroupId::new(0));
+    let min = |leaf: Leaf| match leaf {
+        Leaf::Group(_) => (20.0, 0.0),
+        Leaf::Slot(_) => (10.0, 6.0),
+    };
+    let area = UnitRect::new(0.0, 0.0, 35.0, 30.0);
+    let fit = t.fit(area, &min, &|_| true);
+    assert_eq!(fit.collapsed, vec![Leaf::Slot(right)]);
+    let ids: Vec<Leaf> = fit.rects.iter().map(|(l, _)| *l).collect();
+    assert_eq!(ids, vec![Leaf::Slot(left), g]);
+    // The survivors fill the area by weight (0.2 : 0.6).
+    assert!((fit.rects[0].1.width() - 8.75).abs() < 1e-9);
+
+    // Undrawn right slot: nothing collapses, it simply has no rectangle.
+    let fit = t.fit(area, &min, &|leaf| leaf != Leaf::Slot(right));
+    assert!(fit.collapsed.is_empty());
+    assert_eq!(fit.rects.len(), 2);
+
+    // Narrower than every minimum: only the group is left.
+    let fit = t.fit(UnitRect::new(0.0, 0.0, 15.0, 30.0), &min, &|_| true);
+    assert_eq!(fit.collapsed, vec![Leaf::Slot(right), Leaf::Slot(left)]);
+    assert_eq!(fit.rects.len(), 1);
+    assert_eq!(fit.rects[0].0, g);
+    assert!((fit.rects[0].1.width() - 15.0).abs() < 1e-9);
+}
