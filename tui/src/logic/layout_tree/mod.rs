@@ -2,7 +2,7 @@
 //! are **slots** (holding **drawer views**) and **editor groups**, to the
 //! right of the Activity rail. This module owns the structure and placement
 //! rules — which views a slot holds, which one is shown, splitting and
-//! closing leaves — plus the stored focus. Toolkit-free; the TUI does not
+//! closing leaves — plus the stored focus, geometric focus moves and zoom. Toolkit-free; the TUI does not
 //! use it.
 //!
 //! Placement rules: a view is in at most one slot; a slot shows at most one
@@ -13,7 +13,15 @@
 use std::collections::BTreeMap;
 
 pub(crate) use crate::logic::layout::node::Node;
-pub use crate::logic::layout::{Axis, GroupId, UnitRect};
+pub use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
+
+/// Tolerance for comparing unit-square coordinates.
+const EPS: f64 = 1e-4;
+
+/// Length of the overlap of `[a0, a1]` and `[b0, b1]` (0 when disjoint).
+fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
 
 /// Identifies one slot. Stable across splits and closes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -38,6 +46,19 @@ pub enum Leaf {
 pub enum Focus {
     Rail,
     Leaf(Leaf),
+}
+
+/// What [`LayoutTree::focus_dir`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeFocusMove {
+    /// Focus moved here.
+    Moved(Focus),
+    /// A neighbour could exist in that direction but focus is at the edge;
+    /// focus is unchanged and the key is handled (no wrap).
+    AtEdge,
+    /// Up/Down with nothing stacked in the focused column (or from the
+    /// rail): focus is unchanged and the caller should let the key through.
+    NotHandled,
 }
 
 /// Why a tree operation (or [`LayoutTree::from_parts`]) was refused.
@@ -91,14 +112,19 @@ impl<V: Clone + PartialEq> SlotState<V> {
 }
 
 /// The GUI layout: a tree of slots and editor groups, the views placed in
-/// each slot, the active group and the stored focus. At least one editor
-/// group always exists.
+/// each slot, the active group, the stored focus and the zoomed leaf. At
+/// least one editor group always exists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutTree<V> {
     root: Node<Leaf>,
     slots: BTreeMap<SlotId, SlotState<V>>,
     active_group: GroupId,
     focus: Focus,
+    /// The slot focused last, the tie-breaker for geometric moves.
+    last_slot: Option<SlotId>,
+    /// The leaf taking over the area right of the rail (session-only; not
+    /// a placement).
+    zoomed: Option<Leaf>,
     next_slot: u32,
     next_group: u32,
 }
@@ -196,6 +222,8 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             slots: states,
             active_group: first,
             focus: Focus::Leaf(Leaf::Group(first)),
+            last_slot: None,
+            zoomed: None,
             next_slot,
             next_group: next_group_after(&groups),
         })
@@ -220,12 +248,172 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             if !self.root.contains(&leaf) {
                 return false;
             }
-            if let Leaf::Group(g) = leaf {
-                self.active_group = g;
+            match leaf {
+                Leaf::Group(g) => self.active_group = g,
+                Leaf::Slot(s) => self.last_slot = Some(s),
             }
         }
         self.focus = focus;
         true
+    }
+
+    // ── Geometry ──────────────────────────────────────────────────────
+
+    /// Every leaf with its rectangle in the unit square (the area right of
+    /// the rail; the rail itself is not a region), in reading order.
+    pub fn regions(&self) -> Vec<(Leaf, UnitRect)> {
+        self.root.layout(UnitRect::new(0.0, 0.0, 1.0, 1.0))
+    }
+
+    /// Whether `leaf` is the one focus last rested on: the active group or
+    /// the slot focused last.
+    fn is_remembered(&self, leaf: Leaf) -> bool {
+        match leaf {
+            Leaf::Group(g) => g == self.active_group,
+            Leaf::Slot(s) => self.last_slot == Some(s),
+        }
+    }
+
+    /// The nearest region among `regions` in `dir` from `cur`, skipping
+    /// `from`. Candidates lie wholly on that side and overlap `cur` across
+    /// the axis. The nearest wins; ties go to the largest overlap, then the
+    /// remembered leaf, then the top-left one.
+    fn nearest(
+        &self,
+        regions: &[(Leaf, UnitRect)],
+        from: Leaf,
+        cur: UnitRect,
+        dir: Dir,
+    ) -> Option<Leaf> {
+        let across_x = |c: &UnitRect| overlap(c.x(), c.right(), cur.x(), cur.right());
+        let across_y = |c: &UnitRect| overlap(c.y(), c.bottom(), cur.y(), cur.bottom());
+        let candidates: Vec<(Leaf, f64, f64, UnitRect)> = regions
+            .iter()
+            .filter(|(l, _)| *l != from)
+            .filter_map(|(l, c)| {
+                let (beyond, gap, ov) = match dir {
+                    Dir::Left => (c.right() <= cur.x() + EPS, cur.x() - c.right(), across_y(c)),
+                    Dir::Right => (c.x() >= cur.right() - EPS, c.x() - cur.right(), across_y(c)),
+                    Dir::Up => (
+                        c.bottom() <= cur.y() + EPS,
+                        cur.y() - c.bottom(),
+                        across_x(c),
+                    ),
+                    Dir::Down => (
+                        c.y() >= cur.bottom() - EPS,
+                        c.y() - cur.bottom(),
+                        across_x(c),
+                    ),
+                };
+                (beyond && ov > EPS).then_some((*l, gap, ov, *c))
+            })
+            .collect();
+        let nearest = candidates
+            .iter()
+            .map(|(_, gap, _, _)| *gap)
+            .fold(f64::INFINITY, f64::min);
+        candidates
+            .iter()
+            .filter(|(_, gap, _, _)| *gap <= nearest + EPS)
+            .max_by(|a, b| {
+                let overlap = if (a.2 - b.2).abs() <= EPS {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a.2.total_cmp(&b.2)
+                };
+                overlap
+                    .then(self.is_remembered(a.0).cmp(&self.is_remembered(b.0)))
+                    .then(b.3.y().total_cmp(&a.3.y()))
+                    .then(b.3.x().total_cmp(&a.3.x()))
+            })
+            .map(|(l, ..)| *l)
+    }
+
+    /// Move focus geometrically to the nearest leaf in `dir` (see
+    /// [`Self::nearest`]). No wrap: with no candidate, Left/Right report
+    /// [`TreeFocusMove::AtEdge`], and so do Up/Down when something is
+    /// stacked in the same column — otherwise [`TreeFocusMove::NotHandled`].
+    /// The rail sits at the far left: Left from a leaf with nothing to its
+    /// left reaches [`Focus::Rail`], and Right from the rail reaches the
+    /// first leaf (leftmost, then topmost); Up/Down from the rail are not
+    /// handled.
+    pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
+        let regions = self.regions();
+        let current = match self.focus {
+            Focus::Leaf(l) => l,
+            Focus::Rail => {
+                return match dir {
+                    Dir::Right => {
+                        let first = regions
+                            .iter()
+                            .min_by(|a, b| {
+                                let x = if (a.1.x() - b.1.x()).abs() <= EPS {
+                                    std::cmp::Ordering::Equal
+                                } else {
+                                    a.1.x().total_cmp(&b.1.x())
+                                };
+                                x.then(a.1.y().total_cmp(&b.1.y()))
+                            })
+                            .map(|(l, _)| *l);
+                        match first {
+                            Some(l) => {
+                                self.focus(Focus::Leaf(l));
+                                TreeFocusMove::Moved(Focus::Leaf(l))
+                            }
+                            None => TreeFocusMove::AtEdge,
+                        }
+                    }
+                    Dir::Left => TreeFocusMove::AtEdge,
+                    Dir::Up | Dir::Down => TreeFocusMove::NotHandled,
+                };
+            }
+        };
+        let Some(cur) = regions
+            .iter()
+            .find(|(l, _)| *l == current)
+            .map(|(_, rect)| *rect)
+        else {
+            return TreeFocusMove::NotHandled;
+        };
+        match self.nearest(&regions, current, cur, dir) {
+            Some(l) => {
+                self.focus(Focus::Leaf(l));
+                TreeFocusMove::Moved(Focus::Leaf(l))
+            }
+            None => match dir {
+                Dir::Left => {
+                    self.focus = Focus::Rail;
+                    TreeFocusMove::Moved(Focus::Rail)
+                }
+                Dir::Right => TreeFocusMove::AtEdge,
+                Dir::Up | Dir::Down => {
+                    let stacked = regions.iter().any(|(l, c)| {
+                        *l != current && overlap(c.x(), c.right(), cur.x(), cur.right()) > EPS
+                    });
+                    if stacked {
+                        TreeFocusMove::AtEdge
+                    } else {
+                        TreeFocusMove::NotHandled
+                    }
+                }
+            },
+        }
+    }
+
+    // ── Zoom ──────────────────────────────────────────────────────────
+
+    /// Zoom `leaf` over the area right of the rail, or leave zoom with
+    /// `None`. Placements are untouched. A leaf not in the tree is ignored.
+    pub fn zoom(&mut self, leaf: Option<Leaf>) {
+        match leaf {
+            Some(l) if !self.root.contains(&l) => {}
+            other => self.zoomed = other,
+        }
+    }
+
+    /// The zoomed leaf, if any. Cleared when that leaf closes.
+    pub fn zoomed(&self) -> Option<Leaf> {
+        self.zoomed
     }
 
     // ── Slots and views ───────────────────────────────────────────────
@@ -306,6 +494,29 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let state = self.slots.get_mut(&slot)?;
         state.shown = state.position(view);
         Some(slot)
+    }
+
+    /// Move `view` to the nearest slot in `dir` from its slot (the
+    /// geometric rule of [`Self::focus_dir`], with only slots as
+    /// candidates), shown there as by [`Self::move_view`]. False when
+    /// `view` is unplaced or no slot lies that way.
+    pub fn move_view_dir(&mut self, view: &V, dir: Dir) -> bool {
+        let Some(from) = self.view_slot(view) else {
+            return false;
+        };
+        let from = Leaf::Slot(from);
+        let regions: Vec<(Leaf, UnitRect)> = self.regions();
+        let Some(cur) = regions.iter().find(|(l, _)| *l == from).map(|(_, r)| *r) else {
+            return false;
+        };
+        let slots: Vec<(Leaf, UnitRect)> = regions
+            .into_iter()
+            .filter(|(l, _)| matches!(l, Leaf::Slot(_)))
+            .collect();
+        match self.nearest(&slots, from, cur, dir) {
+            Some(Leaf::Slot(target)) => self.move_view(view.clone(), target),
+            _ => false,
+        }
     }
 
     /// Hide `view`: clear its shown flag, keeping its placement. Returns
@@ -414,6 +625,12 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         if self.focus == Focus::Leaf(leaf) {
             self.focus = Focus::Leaf(Leaf::Slot(target));
         }
+        if self.last_slot == Some(slot) {
+            self.last_slot = Some(target);
+        }
+        if self.zoomed == Some(leaf) {
+            self.zoomed = None;
+        }
         Ok(target)
     }
 
@@ -469,6 +686,9 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         }
         if self.focus == Focus::Leaf(leaf) {
             self.focus = Focus::Leaf(Leaf::Group(self.active_group));
+        }
+        if self.zoomed == Some(leaf) {
+            self.zoomed = None;
         }
         Ok(())
     }
