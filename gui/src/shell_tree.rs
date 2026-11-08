@@ -3,23 +3,22 @@
 //! reads and writes ([`spec::build`], [`spec::to_spec`]). Toolkit-free and
 //! tested without a window.
 //!
-//! ASK is never written (the TUI's rule, kept from the drawer era): it shows
-//! only beside a Thread, and a layout restored onto it would open with no
-//! conversation. A slot showing it is written as showing the first other
-//! view placed there.
+//! Every view is written where it is placed, ASK included (ADR-0053: Ask
+//! is one regular view; its rail entry, not its placement, waits for the
+//! server).
 
 use kimun_notes::logic::layout_tree::LayoutTree;
-use kimun_notes::logic::layout_tree::spec::{self, ChildSpec, NodeSpec};
+use kimun_notes::logic::layout_tree::spec::{self, ChildSpec};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::settings::gui::GuiSettings;
 
 /// What the window restores against: every view the layout may hold
-/// whatever the server says now (a SEM view placed by a session with the
-/// server on is kept), but never ASK.
+/// whatever the server says now (a SEM or ASK view placed by a session
+/// with the server on is kept).
 pub const RESTORE_CAPS: Caps = Caps {
     semantic: true,
-    ask: false,
+    ask: true,
 };
 
 /// The layout `[gui.layout]` describes, built against `caps` (views it
@@ -53,34 +52,13 @@ pub fn restore(gui: &GuiSettings, caps: Caps) -> LayoutTree<DrawerView> {
     }
 }
 
-/// Write `layout` into `gui` as `[gui.layout]`, without ASK. Every other
-/// `[gui]` key is left alone.
+/// Write `layout` into `gui` as `[gui.layout]`. Every other `[gui]` key
+/// is left alone.
 pub fn record(layout: &LayoutTree<DrawerView>, gui: &mut GuiSettings) {
-    let mut spec = spec::to_spec(layout);
-    drop_ask(&mut spec.node);
+    let spec = spec::to_spec(layout);
     match toml::Value::try_from(&spec) {
         Ok(value) => gui.set_layout(value),
         Err(e) => tracing::warn!("could not write [gui.layout]: {e}"),
-    }
-}
-
-/// Take ASK out of every slot of `node`; a slot that showed it shows its
-/// first other view instead.
-fn drop_ask(node: &mut NodeSpec) {
-    let ask = DrawerView::Ask.id();
-    match node {
-        NodeSpec::Split { children, .. } => {
-            for child in children {
-                drop_ask(&mut child.node);
-            }
-        }
-        NodeSpec::Editor { .. } => {}
-        NodeSpec::Slot { views, shown } => {
-            views.retain(|v| v != ask);
-            if shown.as_deref() == Some(ask) {
-                *shown = views.first().cloned();
-            }
-        }
     }
 }
 
@@ -158,31 +136,24 @@ mod tests {
         assert_eq!(again, settings);
     }
 
+    /// ASK is a regular view (ADR-0053): recorded where it is placed and
+    /// shown, and restored there whatever the server says at startup (its
+    /// rail entry waits for the server, its placement does not).
     #[test]
-    fn ask_is_never_recorded() {
+    fn a_saved_layout_keeps_ask() {
         let mut tree = default();
-        let left = tree.slots()[0];
-        tree.show_view(&DrawerView::Ask, false);
-        assert_eq!(tree.shown(left), Some(DrawerView::Ask));
+        let right = *tree.slots().last().unwrap();
+        tree.move_view(DrawerView::Ask, right);
+        tree.show_view(&DrawerView::Ask, true);
+        assert_eq!(tree.shown(right), Some(DrawerView::Ask));
         let mut settings = GuiSettings::default();
         record(&tree, &mut settings);
         let written = toml::to_string(&settings).unwrap();
-        assert!(!written.contains("ask"), "{written}");
+        assert!(written.contains("\"ask\""), "{written}");
         let back = restore(&settings, RESTORE_CAPS);
-        assert_eq!(back.slot_views(left), [DrawerView::Files]);
-        assert_eq!(back.shown(left), Some(DrawerView::Files));
-        // A written `ask` (another build's) is skipped on restore.
-        let foreign = lines(&[
-            "[gui.layout]",
-            "split = \"horizontal\"",
-            "children = [",
-            "{ views = [\"files\", \"ask\"], shown = \"ask\" },",
-            "{ editor = true },",
-            "]",
-        ]);
-        let back = restore(&gui(&foreign), RESTORE_CAPS);
-        assert_eq!(back.view_slot(&DrawerView::Ask), None);
-        assert_eq!(back.slot_views(back.slots()[0]), [DrawerView::Files]);
+        assert_eq!(back.view_slot(&DrawerView::Ask), Some(right));
+        assert_eq!(back.shown(right), Some(DrawerView::Ask));
+        assert_eq!(spec::to_spec(&back), spec::to_spec(&tree));
     }
 
     #[test]

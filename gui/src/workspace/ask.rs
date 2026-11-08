@@ -1,17 +1,29 @@
-//! The **Thread** (M7c G10a): the Ask workspace's conversation, shown in the
-//! editor Panel in place of the editor (CONTEXT.md: **Ask workspace**,
-//! **Thread**, **Turn**). The thread model and its rules are the logic's
-//! (`kimun_notes::ask::Thread`, `ask::jobs`, `ask::save`,
+//! The **Ask workspace** (M7c G10a/b, ADR-0053): the view ASK, one
+//! view in a slot (right by default, `view_registry`'s `home_right`) that
+//! shows the **Thread** with the selected turn's sources and the **Source
+//! reader** folded in (CONTEXT.md: **Ask workspace**, **Thread**, **Turn**,
+//! **Sources view**, **Source reader**). The thread model and its rules are
+//! the logic's (`kimun_notes::ask::Thread`, `ask::jobs`, `ask::save`,
 //! `logic::ask_flow::AskFlow`); this file draws it and drives it.
 //!
 //! **The view.** The turns, oldest first, in one scrolling column: each
 //! turn's question, then its answer, or a status line while it is pending
 //! (`… thinking`) or failed (`✗ {message}` and the retry hint). The selected
 //! turn (the one Copy, Save as note and Regenerate act on) has the selected
-//! fill. Under the turns: the turn actions, then the composer (one line, the
-//! TUI's) with Send. The actions are enabled by the TUI's rule
-//! (`sync_actions`): Send needs a server and a question, the turn actions a
-//! turn; Regenerate and New also need the server (the leader gates them so).
+//! fill and, once answered with sources, a `Sources (n)` toggle. Under the
+//! turns: the turn actions, then the composer (one line, the TUI's) with
+//! Send. The actions are enabled by the TUI's rule (`sync_actions`): Send
+//! needs a server and a question, the turn actions a turn; Regenerate and
+//! New also need the server (the leader gates them so).
+//!
+//! **Sources, in place.** The toggle (or `s` on the turn list, leader
+//! `a s`, a citation) expands the selected turn's sources right under it,
+//! in the turn column: the [`super::ask_sources`] list and its reader, in a
+//! box of fixed height (taller while the reader is open), so the list and
+//! the reader keep their own scroll inside the thread's. The part follows
+//! the selected turn (`AskFlow`, the one record) and stays open across
+//! selection moves until toggled shut. **Zoom** gives the whole view, the
+//! reader included, the width right of the rail.
 //!
 //! **Answers** are drawn by the shared answer rules (`kimun_notes::ask::
 //! markdown`, the TUI's too, over the editor's markdown model; mapped by
@@ -20,15 +32,17 @@
 //! struck-through runs with their sigils hidden and inline code verbatim on
 //! a tint; the `[n]` citations in the accent colour. A citation that names
 //! one of the turn's sources is a link (a pointing hand over it): a click
-//! selects the turn and that source in the Sources view (the TUI's
-//! `click_turns`; the reader is leader `a s` or Enter there).
+//! selects the turn, expands its sources and opens the reader on that
+//! source (the TUI's `click_turns`, the reader entered from a citation).
 //!
 //! **Keys** (the TUI's). The composer: Enter sends; Escape gives the turn
 //! list the keyboard; with the composer empty, Up/Down move the selection;
 //! PageUp/PageDown scroll the turns. The turn list: Up/Down (k/j) move the
 //! selection, PageUp/PageDown/Home/End scroll, i or / go back to the
-//! composer, y copies, e saves as a note, r regenerates; Escape leaves the
-//! Thread for the drawer (or the rail): the editor it replaced is gone.
+//! composer, s expands (or shuts) the sources and gives their list the
+//! keyboard, y copies, e saves as a note, r regenerates; Escape gives the
+//! composer the keyboard back (never leaving the slot, so never a zoom).
+//! The sources list's own keys are [`super::ask_sources`]'.
 //!
 //! **Asking.** Send pushes a pending turn and spawns the logic's ask job on
 //! tokio; its `AppMessage::Ask(AnswerReady)` completes or fails the turn
@@ -36,14 +50,13 @@
 //! turn and asks again. Both follow the bottom: a new turn, and an answer
 //! that lands on the selected turn, scroll into view.
 //!
-//! **The workspace's side** (below): entering the Thread leaves the open
-//! note the way the attachment view does (`Workspace::leave_note`: flushed
-//! first; a failed flush refuses), and while it shows there is no open note. It shows with the
-//! drawer view ASK, the turn's Sources ([`super::ask_sources`]), which
-//! follows the selected turn (`AskFlow`, the one record). Any note opening,
-//! and any attachment shown, takes it down and puts the drawer back on
-//! FILES; another view shown in place of ASK takes it down too. The thread
-//! itself stays, and comes back as it was.
+//! **The workspace's side** (below): ASK is shown and hidden like any view
+//! (rail, leader, side toggles, presets, the saved layout); it never
+//! replaces the editor area, so the open note stays open and untouched
+//! while Ask shows. The rail entry is capability-gated (server reachable
+//! with an LLM); losing the capability keeps the view readable, asking
+//! disabled. The thread lives in memory for the vault session, one at a
+//! time, shown or not.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -64,14 +77,12 @@ use gpui_kit::{
     InteractiveElement as _, InteractiveText, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, ParentElement as _, Render, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, StrikethroughStyle, Styled as _, StyledText, Subscription,
-    Window, div, point, px,
+    Window, div, point, px, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::ask::{AskSource, Thread, Turn, TurnStatus, jobs, markdown, save};
-#[cfg(test)]
-use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::layout_tree::{Focus, Leaf};
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::message::{AppTx, AskData};
 use kimun_notes::logic::nav::DrawerView;
@@ -81,7 +92,8 @@ use kimun_notes::rag::RagStatus;
 use kimun_notes::server_client::RagClient;
 
 use super::Workspace;
-use super::note::{Closing, LeavingFor, NoteLeft};
+use super::ask_sources::SourcesView;
+use super::note::Closing;
 use super::route::NO_WORKSPACE;
 use crate::input;
 use crate::tasks;
@@ -97,6 +109,9 @@ pub(crate) const COPY_ID: &str = "ask-copy";
 pub(crate) const SAVE_ID: &str = "ask-save";
 pub(crate) const REGENERATE_ID: &str = "ask-regenerate";
 pub(crate) const NEW_ID: &str = "ask-new";
+/// The selected turn's `Sources (n)` toggle, and the part it expands.
+pub(crate) const SOURCES_TOGGLE_ID: &str = "ask-sources-toggle";
+pub(crate) const SOURCES_PART_ID: &str = "ask-sources-part";
 
 /// The element id of the turn `id`.
 pub(crate) fn turn_element_id(id: u64) -> SharedString {
@@ -132,6 +147,12 @@ pub(crate) const COPIED: &str = "answer copied";
 
 /// The turn list's accessible name (the TUI's hint word for it).
 const TURNS_LABEL: &str = "Turns";
+/// The sources part's height, in rems: the list alone (about five rows
+/// and the filter), and with the reader open under (or instead of) it.
+const SOURCES_LIST_REMS: f32 = 17.0;
+const SOURCES_READER_REMS: f32 = 30.0;
+/// The key that expands the sources (the toggle's hint).
+const SOURCES_KEY: &str = "s";
 /// How much of a page a PageUp/PageDown keeps in view, in rems (two lines).
 const PAGE_OVERLAP_REMS: f32 = 2.75;
 
@@ -241,7 +262,8 @@ pub(crate) enum AskEvent {
     Save,
     /// Start over.
     New,
-    /// Escape on the turn list: leave the Thread for the drawer.
+    /// Escape on the turn list: the composer gets the keyboard back
+    /// (the workspace's one door for it, `focus_ask_composer`).
     Dismiss,
     /// The selection may have moved (a key, a click, a question sent, a
     /// regenerate), and a click on a citation names the source `[n]` of
@@ -249,7 +271,16 @@ pub(crate) enum AskEvent {
     Input(Option<usize>),
 }
 
-/// The Thread. See the module docs.
+/// Where the keyboard goes when the view gets it (the TUI's
+/// `ThreadFocus`, plus the sources part).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Want {
+    Composer,
+    Turns,
+    Sources,
+}
+
+/// The Ask view. See the module docs.
 pub(crate) struct AskView {
     thread: Thread,
     /// The live client while the server can answer questions; `None`
@@ -263,21 +294,28 @@ pub(crate) struct AskView {
     /// thing of its text the Thread draws (Send's state).
     composer_has_text: bool,
     turns_focus: FocusHandle,
-    /// The composer, not the turn list, takes the keyboard when the Thread
-    /// gets it (the TUI's `ThreadFocus`).
-    wants_composer: bool,
+    /// What takes the keyboard when the view gets it: the composer (while
+    /// a server can answer), the turn list, or the sources part (while it
+    /// is drawn).
+    want: Want,
     scroll: ScrollHandle,
+    /// The selected turn's sources and reader (the workspace makes it over
+    /// the vault), drawn in place under the selected turn while open.
+    sources: Option<Entity<SourcesView>>,
+    sources_open: bool,
+    /// Whether the reader was open at the last look: the part's height
+    /// follows it, so only that flipping redraws the view.
+    reader_open: bool,
     /// Each done turn's answer as drawn, by turn id: made once when the
     /// answer landed, dropped when the turn is asked again or the thread
     /// cleared.
     answers: HashMap<u64, DrawnAnswer>,
     tx: AppTx,
     _composer_events: Subscription,
+    _sources_events: Option<Subscription>,
 }
 
 impl EventEmitter<AskEvent> for AskView {}
-
-impl AskView {}
 
 impl AskView {
     pub(crate) fn new(tx: AppTx, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -301,11 +339,71 @@ impl AskView {
             composer,
             composer_has_text: false,
             turns_focus: cx.focus_handle(),
-            wants_composer: true,
+            want: Want::Composer,
             scroll: ScrollHandle::new(),
+            sources: None,
+            sources_open: false,
+            reader_open: false,
             answers: HashMap::new(),
             tx,
             _composer_events: composer_events,
+            _sources_events: None,
+        }
+    }
+
+    /// Fold `sources` (the workspace's, over the vault) in: drawn under
+    /// the selected turn while open. Its reader opening or collapsing
+    /// redraws the view (the part's height follows).
+    pub(crate) fn set_sources(&mut self, sources: Entity<SourcesView>, cx: &mut Context<Self>) {
+        self._sources_events = Some(cx.observe(&sources, |this, sources, cx| {
+            let open = !sources.read(cx).reader_collapsed();
+            if std::mem::replace(&mut this.reader_open, open) != open {
+                cx.notify();
+            }
+        }));
+        self.sources = Some(sources);
+        cx.notify();
+    }
+
+    /// Whether the sources part is expanded (drawn when the selected turn
+    /// has sources). Tests.
+    #[cfg(test)]
+    pub(crate) fn sources_open(&self) -> bool {
+        self.sources_open
+    }
+
+    /// Whether the sources part is drawn: expanded, and the selected turn
+    /// answered with sources.
+    pub(crate) fn sources_drawn(&self) -> bool {
+        self.sources_open
+            && self.sources.is_some()
+            && self.thread.selected().is_some_and(has_sources)
+    }
+
+    /// Expand the sources part, its list to get the keyboard when the view
+    /// does (leader `a s`).
+    pub(crate) fn open_sources(&mut self, cx: &mut Context<Self>) {
+        self.sources_open = true;
+        self.want = Want::Sources;
+        cx.notify();
+    }
+
+    /// Expand the sources part without moving the keyboard (a citation).
+    fn reveal_sources(&mut self, cx: &mut Context<Self>) {
+        self.sources_open = true;
+        cx.notify();
+    }
+
+    /// The toggle, `s` on the turn list: expand the part and give its list
+    /// the keyboard, or shut it (the turn list keeps or gets the keyboard).
+    fn toggle_sources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sources_open {
+            self.sources_open = false;
+            self.focus_turns(window, cx);
+        } else if self.thread.selected().is_some_and(has_sources) {
+            self.open_sources(cx);
+            let handle = self.focus_handle(cx);
+            window.focus(&handle, cx);
         }
     }
 
@@ -359,10 +457,10 @@ impl AskView {
         }
     }
 
-    /// The composer gets the keyboard when the Thread does (leader `a a`,
-    /// F6, New).
+    /// The composer gets the keyboard when the view does (leader `a a`,
+    /// F6, New, Escape on the turn list or the sources list).
     pub(crate) fn want_composer(&mut self) {
-        self.wants_composer = true;
+        self.want = Want::Composer;
     }
 
     /// The selected turn's id.
@@ -463,11 +561,12 @@ impl AskView {
         ));
     }
 
-    /// Start over: no turns, the composer wanted.
+    /// Start over: no turns, the sources shut, the composer wanted.
     pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
         self.thread.clear();
         self.answers.clear();
-        self.wants_composer = true;
+        self.sources_open = false;
+        self.want = Want::Composer;
         cx.notify();
     }
 
@@ -525,8 +624,8 @@ impl AskView {
 
     /// A click on the citation `[n]` in the turn `id`'s answer (the TUI's
     /// `click_turns`): that turn is selected, and when one of its sources
-    /// answers to `n` (by ordinal), the Sources view selects it. An unknown
-    /// `[n]` only selects the turn.
+    /// answers to `n` (by ordinal), the sources part expands and the
+    /// workspace opens the reader on it. An unknown `[n]` is no link.
     fn click_citation(&mut self, id: u64, n: usize, cx: &mut Context<Self>) {
         let Some(ix) = self.thread.turns().iter().position(|t| t.id == id) else {
             return;
@@ -536,6 +635,9 @@ impl AskView {
             .thread
             .selected()
             .is_some_and(|turn| turn.source_for_citation(n).is_some());
+        if known {
+            self.reveal_sources(cx);
+        }
         cx.emit(AskEvent::Input(known.then_some(n)));
         cx.notify();
     }
@@ -573,14 +675,19 @@ impl AskView {
     }
 
     fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.wants_composer = true;
+        self.want = Want::Composer;
         let handle = self.focus_handle(cx);
         window.focus(&handle, cx);
         cx.notify();
     }
 
+    /// Whether the composer has the keyboard.
+    fn composer_focused(&self, window: &Window, cx: &App) -> bool {
+        self.composer.read(cx).focus_handle(cx).is_focused(window)
+    }
+
     fn focus_turns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.wants_composer = false;
+        self.want = Want::Turns;
         window.focus(&self.turns_focus, cx);
         cx.notify();
     }
@@ -599,6 +706,7 @@ impl AskView {
                 cx.notify();
             }
             Key::Char('i' | '/') => self.focus_composer(window, cx),
+            Key::Char('s') => self.toggle_sources(window, cx),
             Key::Char('y') => cx.emit(AskEvent::Copy),
             Key::Char('e') => cx.emit(AskEvent::Save),
             Key::Char('r') => self.regenerate(cx),
@@ -641,6 +749,7 @@ impl AskView {
             }
             TurnStatus::Done => self.render_answer(turn, cx),
         };
+        let toggle = (selected && has_sources(turn)).then(|| self.render_sources_toggle(turn, cx));
         div()
             .id(turn_element_id(id))
             .test_support()
@@ -669,7 +778,82 @@ impl AskView {
                     .child(turn.question.clone()),
             )
             .child(body)
+            .children(toggle)
             .into_any_element()
+    }
+
+    /// The selected turn's `Sources (n)` toggle: expands the part under the
+    /// turn (its list then has the keyboard), or shuts it.
+    fn render_sources_toggle(&self, turn: &Turn, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let label: SharedString = format!("Sources ({})", turn.sources.len()).into();
+        let hover = theme::foreground(t);
+        div()
+            .id(SOURCES_TOGGLE_ID)
+            .test_support()
+            .role(Role::Button)
+            .aria_label(label.clone())
+            .aria_expanded(self.sources_open)
+            .flex()
+            .flex_none()
+            .gap_1()
+            .text_xs()
+            .whitespace_nowrap()
+            .cursor_pointer()
+            .text_color(theme::secondary(t))
+            .hover(move |style| style.text_color(hover))
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                if event.standard_click() {
+                    this.toggle_sources(window, cx);
+                }
+            }))
+            .child(label)
+            .child(div().text_color(theme::muted(t)).child(SOURCES_KEY))
+            .into_any_element()
+    }
+
+    /// The sources part, in place under the selected turn: the list and
+    /// the reader at a fixed height (their own scroll), the reader's open
+    /// height while it is open. A press in it is the part's (the list or
+    /// the filter takes the keyboard), never the turn list's.
+    fn render_sources_part(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.sources_drawn() {
+            return None;
+        }
+        let sources = self.sources.clone()?;
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let height = if self.reader_open {
+            SOURCES_READER_REMS
+        } else {
+            SOURCES_LIST_REMS
+        };
+        Some(
+            div()
+                .id(SOURCES_PART_ID)
+                .test_support()
+                .role(Role::Group)
+                .aria_label("Sources")
+                .flex()
+                .flex_col()
+                .flex_none()
+                .h(rems(height))
+                .mx_3()
+                .py_1()
+                .border_1()
+                .rounded_md()
+                .border_color(theme::divider(t))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.want = Want::Sources;
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(sources)
+                .into_any_element(),
+        )
     }
 
     /// A done turn's answer, line by line, as [`DrawnAnswer`] made it when
@@ -829,7 +1013,7 @@ impl AskView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseDownEvent, _, _| {
-                                    this.wants_composer = true;
+                                    this.want = Want::Composer;
                                 }),
                             )
                             .child(
@@ -863,14 +1047,21 @@ fn is_pending(turn: &Turn) -> bool {
     matches!(turn.status, TurnStatus::Thinking | TurnStatus::Streaming)
 }
 
+/// Whether `turn` is answered with sources to list.
+fn has_sources(turn: &Turn) -> bool {
+    matches!(turn.status, TurnStatus::Done) && !turn.sources.is_empty()
+}
+
 impl Focusable for AskView {
-    /// The composer while it is wanted and a server can answer; else the
-    /// turn list.
+    /// The sources list while it is wanted and drawn; the composer while it
+    /// is wanted and a server can answer; else the turn list.
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        if self.wants_composer && self.client.is_some() {
-            self.composer.read(cx).focus_handle(cx)
-        } else {
-            self.turns_focus.clone()
+        match (self.want, self.sources.as_ref()) {
+            (Want::Sources, Some(sources)) if self.sources_drawn() => {
+                sources.read(cx).focus_handle(cx)
+            }
+            (Want::Composer, _) if self.client.is_some() => self.composer.read(cx).focus_handle(cx),
+            _ => self.turns_focus.clone(),
         }
     }
 }
@@ -880,12 +1071,16 @@ impl Render for AskView {
         let theme = theme::current(cx);
         let t = &*theme;
         let selected = self.thread.selected().map(|turn| turn.id);
-        let turns: Vec<AnyElement> = self
-            .thread
-            .turns()
-            .iter()
-            .map(|turn| self.render_turn(turn, Some(turn.id) == selected, cx))
-            .collect();
+        let mut turns: Vec<AnyElement> = Vec::with_capacity(self.thread.turns().len() + 1);
+        for turn in self.thread.turns() {
+            let is_selected = Some(turn.id) == selected;
+            turns.push(self.render_turn(turn, is_selected, cx));
+            // The part sits right after the selected turn, so the turns
+            // before it keep their child index (`follow_selected`).
+            if is_selected {
+                turns.extend(self.render_sources_part(cx));
+            }
+        }
         div()
             .id(ASK_ID)
             .test_support()
@@ -896,36 +1091,45 @@ impl Render for AskView {
             .flex_1()
             .min_h_0()
             .min_w_0()
-            // The composer's keys that mean something else here.
+            // The composer's keys that mean something else here (only the
+            // composer's: the sources filter under a turn has its own).
             .capture_action(cx.listener(|this, _: &Enter, window, cx| {
-                this.send(window, cx);
-                cx.stop_propagation();
+                if this.composer_focused(window, cx) {
+                    this.send(window, cx);
+                    cx.stop_propagation();
+                }
             }))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                this.focus_turns(window, cx);
-                cx.stop_propagation();
+                if this.composer_focused(window, cx) {
+                    this.focus_turns(window, cx);
+                    cx.stop_propagation();
+                }
             }))
-            .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
-                if this.composer_text(cx).is_empty() {
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
                     this.select_step(true, cx);
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
-                if this.composer_text(cx).is_empty() {
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if this.composer_focused(window, cx) && this.composer_text(cx).is_empty() {
                     this.select_step(false, cx);
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|this, _: &MovePageUp, window, cx| {
-                this.scroll_by_key(Key::PageUp, window);
-                cx.notify();
-                cx.stop_propagation();
+                if this.composer_focused(window, cx) {
+                    this.scroll_by_key(Key::PageUp, window);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
             }))
             .capture_action(cx.listener(|this, _: &MovePageDown, window, cx| {
-                this.scroll_by_key(Key::PageDown, window);
-                cx.notify();
-                cx.stop_propagation();
+                if this.composer_focused(window, cx) {
+                    this.scroll_by_key(Key::PageDown, window);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
             }))
             .child(
                 div()
@@ -976,7 +1180,7 @@ impl Render for AskView {
 
 // ---- The workspace's side ----------------------------------------------------
 
-/// What entering the Thread goes on to do once it shows.
+/// What showing the view goes on to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AskThen {
     /// Give the composer the keyboard (leader `a a`, F6).
@@ -985,18 +1189,21 @@ pub(crate) enum AskThen {
     New,
     /// Regenerate the selected turn (leader `a r`).
     Regenerate,
-    /// Read the selected turn's top source, the Sources view given the
-    /// keyboard (leader `a s`).
+    /// Read the selected turn's top source, the sources part expanded and
+    /// its list given the keyboard (leader `a s`).
     Source,
 }
 
 impl Workspace {
     /// Build the Thread for the vault the window opened (empty, no server
-    /// until the status says one can answer).
+    /// until the status says one can answer). The sources part follows the
+    /// selected turn whether the view shows or not (`AskFlow` held showing:
+    /// the part is the view's own, never a second surface to enter).
     pub(super) fn start_ask(&mut self, tx: AppTx, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.new(|cx| AskView::new(tx, window, cx));
         self._ask_events = Some(cx.subscribe_in(&view, window, Self::on_ask_event));
         self.ask = Some(view);
+        self.ask_flow.enter();
     }
 
     fn on_ask_event(
@@ -1010,14 +1217,14 @@ impl Workspace {
             AskEvent::Copy => self.copy_answer(cx),
             AskEvent::Save => self.save_answer(cx),
             AskEvent::New => self.ask_step(AskStep::New, window, cx),
-            AskEvent::Dismiss => self.leave_ask_focus(window, cx),
+            AskEvent::Dismiss => self.focus_ask_composer(window, cx),
             AskEvent::Input(citation) => self.after_ask_input(*citation, window, cx),
         }
     }
 
-    /// Whether the Thread holds the editor Panel.
+    /// Whether the view ASK is shown in a slot (with a vault to ask about).
     pub(crate) fn ask_shown(&self) -> bool {
-        self.ask_flow.showing() && self.ask.is_some()
+        self.ask.is_some() && self.is_shown(DrawerView::Ask)
     }
 
     /// Why the server cannot answer questions now, in the TUI's words.
@@ -1026,9 +1233,9 @@ impl Workspace {
     }
 
     /// Why the leader's `+ask` `step` cannot run now, or `None` when it
-    /// can. Copy and Save only read the thread; focusing the Thread or
+    /// can. Copy and Save only read the thread; focusing the view or
     /// reading a source while it already shows needs nothing (the TUI's
-    /// `open_ask_workspace`); New and Regenerate, and entering it, need a
+    /// `open_ask_workspace`); New and Regenerate, and showing it, need a
     /// server that can answer.
     pub(crate) fn ask_block(&self, step: AskStep) -> Option<&'static str> {
         if self.ask.is_none() {
@@ -1043,38 +1250,33 @@ impl Workspace {
         }
     }
 
-    /// Why the drawer view ASK cannot be opened now (the TUI gates every
-    /// route into it on the server being able to answer).
+    /// Why the leader's `drawer.ask` cannot show the view now: the rail's
+    /// rule, a server that can answer; a view already shown just takes
+    /// the keyboard.
     pub(crate) fn ask_drawer_block(&self) -> Option<&'static str> {
         if self.ask.is_none() {
             return Some(NO_WORKSPACE);
         }
+        if self.ask_shown() {
+            return None;
+        }
         self.ask_unavailable()
     }
 
-    /// The ASK rail cell (when not shown) and the `drawer.ask` leaf: the
-    /// Thread entered (its rules: flush, refuse) with the Sources view
-    /// beside it, or, the Thread already showing, the Sources view shown
-    /// again; the Thread has the keyboard (the TUI's). Gated here too: a
-    /// leaf sent on the channel skips the route block.
+    /// The leader's `drawer.ask`: the view shown where it is placed (its
+    /// home, the right slot, when placed nowhere) with the keyboard, as any
+    /// view the leader opens. Gated here too: a leaf sent on the channel
+    /// skips the route block.
     pub(crate) fn open_ask_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(why) = self.ask_drawer_block() {
             self.flash(why, cx);
             return;
         }
-        if !self.ask_shown() {
-            self.enter_ask(AskThen::Composer, window, cx);
-            return;
-        }
-        self.open_view(DrawerView::Ask);
-        self.place_rail_cursor(Some(DrawerView::Ask));
-        self.set_focus_panel(Panel::Editor);
-        self.apply_focus(window, cx);
-        self.save_layout(cx);
+        self.show_view(DrawerView::Ask, window, cx);
         cx.notify();
     }
 
-    /// Run the leader's `+ask` `step` (also F6 = Focus, and the Thread's
+    /// Run the leader's `+ask` `step` (also F6 = Focus, and the view's
     /// New): checked again here, since a leaf sent on the app channel skips
     /// the route block; a refused step flashes why.
     pub(crate) fn ask_step(&mut self, step: AskStep, window: &mut Window, cx: &mut Context<Self>) {
@@ -1092,67 +1294,16 @@ impl Workspace {
         }
     }
 
-    /// Show the Thread in the editor Panel, then do `then`. The open note
-    /// is left first, as for an attachment ([`Workspace::leave_note`]):
-    /// flushed (the tick stopped, the editor taking no input), and a flush
-    /// that fails refuses — the note stays with its edits, its tick and the
-    /// keyboard. Already showing: `then` runs now.
+    /// Show the view in its slot (where it is placed, else its home on the
+    /// right) with the keyboard, then do `then`. The open note is not
+    /// touched: Ask sits beside it.
     pub(crate) fn enter_ask(&mut self, then: AskThen, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closing != Closing::Open || self.ask.is_none() {
-            return;
-        }
-        if self.ask_shown() {
-            self.ask_then(then, window, cx);
-            return;
-        }
-        if self.ask_flushing.is_some() {
-            return;
-        }
-        self.leave_note(
-            LeavingFor::Ask,
-            view_registry::spec(DrawerView::Ask).name.into(),
-            move |workspace, left, window, cx| match left {
-                NoteLeft::Now => workspace.show_ask(then, window, cx),
-                // The window began closing while the flush ran.
-                NoteLeft::Flushed if workspace.closing != Closing::Open => {
-                    workspace.restart_tick_unless_read_only();
-                }
-                NoteLeft::Flushed => workspace.show_ask(then, window, cx),
-                NoteLeft::Stays => {}
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// Put the Thread in the editor Panel, the note (already flushed) let
-    /// go ([`Workspace::release_note`]), so nothing can save while the
-    /// Thread shows; an attachment shown gives way too.
-    fn show_ask(&mut self, then: AskThen, window: &mut Window, cx: &mut Context<Self>) {
-        self.release_note(cx);
-        self.drop_attachment();
-        if let Some(files) = self.files.as_ref() {
-            files.update(cx, |pane, cx| pane.set_open_note(None, cx));
-        }
-        self.ask_flow.enter();
-        // The drawer shows the Sources view (revealed, the TUI's), pointed
-        // at the selected turn whatever it listed before.
-        self.open_view(DrawerView::Ask);
-        self.place_rail_cursor(Some(DrawerView::Ask));
-        self.sync_sources(window, cx);
-        self.set_focus_panel(Panel::Editor);
-        // Persisted (never with ASK); LINKS and OUTLINE say "No note open".
-        self.save_layout(cx);
-        self.ask_then(then, window, cx);
-        cx.notify();
-    }
-
-    /// The Thread shows: do `then`, and give it the keyboard (the Sources
-    /// view, for a source read).
-    fn ask_then(&mut self, then: AskThen, window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.ask.clone() else {
             return;
         };
+        if self.closing != Closing::Open {
+            return;
+        }
         match then {
             AskThen::Composer => view.update(cx, |view, _| view.want_composer()),
             AskThen::New => {
@@ -1163,110 +1314,49 @@ impl Workspace {
             }
             AskThen::Regenerate => view.update(cx, |view, cx| view.regenerate(cx)),
             AskThen::Source => {
-                // The TUI's `a s`: the drawer on the selected turn, its top
-                // source in the reader, the drawer focused.
+                // The TUI's `a s`: the part on the selected turn, its top
+                // source in the reader, its list with the keyboard.
                 self.sync_sources(window, cx);
                 if let Some(sources) = self.ask_sources.clone() {
                     sources.update(cx, |sources, cx| sources.open_reader(0, window, cx));
                 }
-                self.open_view_focused(DrawerView::Ask);
-                self.place_rail_cursor(Some(DrawerView::Ask));
-                self.apply_focus(window, cx);
-                self.save_layout(cx);
-                cx.notify();
-                return;
+                view.update(cx, |view, cx| view.open_sources(cx));
             }
         }
-        self.set_focus_panel(Panel::Editor);
+        self.place_rail_cursor(Some(DrawerView::Ask));
+        self.open_view_focused(DrawerView::Ask);
+        self.tidy_layout(cx);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+        cx.notify();
+    }
+
+    /// Escape on the turn list or the sources list: the composer gets the
+    /// keyboard. The one door for it: the keyboard stays in ASK's slot, so
+    /// a zoom on it never ends (Esc never leaves zoom, ADR-0053), and with
+    /// another leaf zoomed (ASK out of sight) nothing moves.
+    pub(super) fn focus_ask_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.ask.clone() else {
+            return;
+        };
+        let Some(slot) = self
+            .layout
+            .view_slot(&DrawerView::Ask)
+            .filter(|slot| self.layout.shown(*slot) == Some(DrawerView::Ask))
+        else {
+            return;
+        };
+        if self
+            .layout
+            .zoomed()
+            .is_some_and(|leaf| leaf != Leaf::Slot(slot))
+        {
+            return;
+        }
+        view.update(cx, |view, _| view.want_composer());
+        self.layout.focus(Focus::Leaf(Leaf::Slot(slot)));
         self.apply_focus(window, cx);
         cx.notify();
-    }
-
-    /// Something else takes the editor Panel (a note opened, an attachment
-    /// shows): the Thread goes down, its conversation kept for next time.
-    /// True when it was showing.
-    pub(super) fn hide_ask(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.ask_flow.hide_if_shown() {
-            return false;
-        }
-        // The drawer goes from ASK to FILES, revealing nothing hidden (a
-        // drawer left on ASK would hide on the next ASK click).
-        match self.drawer_off_ask(cx) {
-            Some(side) if self.focused_panel() == Panel::Drawer(side) => {
-                self.with_window(cx, |workspace, window, cx| {
-                    workspace.apply_focus(window, cx)
-                });
-            }
-            _ => self.focus_shown_content(cx),
-        }
-        cx.notify();
-        true
-    }
-
-    /// Take the view ASK out of its slot for FILES: FILES shows in its
-    /// place when it is placed nowhere or hidden in that slot, else ASK is
-    /// just hidden (its slot is no longer drawn unless FILES shows there).
-    /// ASK stays placed, hidden, and is forgotten by the side toggles. The
-    /// side ASK was on, if it was shown. Persisted.
-    pub(super) fn drawer_off_ask(&mut self, cx: &mut Context<Self>) -> Option<Side> {
-        // A side toggle must not bring ASK back without its Thread
-        // (Ruling 14).
-        for views in &mut self.side_memory {
-            views.retain(|v| *v != DrawerView::Ask);
-        }
-        let slot = self.layout.view_slot(&DrawerView::Ask)?;
-        if self.layout.shown(slot) != Some(DrawerView::Ask) {
-            return None;
-        }
-        let side = self.slot_side(slot);
-        let files = self.layout.view_slot(&DrawerView::Files);
-        if files.is_none() || files == Some(slot) {
-            self.layout.move_view(DrawerView::Files, slot);
-            self.ensure_files_listing(cx);
-        } else {
-            self.layout.hide_view(&DrawerView::Ask);
-        }
-        self.place_rail_cursor(Some(DrawerView::Files));
-        self.save_layout(cx);
-        Some(side)
-    }
-
-    /// Whether ASK is still in the layout's view: shown in a slot, or
-    /// hidden by a side toggle that will bring it back.
-    pub(super) fn ask_in_layout(&self) -> bool {
-        self.is_shown(DrawerView::Ask)
-            || self
-                .side_memory
-                .iter()
-                .any(|views| views.contains(&DrawerView::Ask))
-    }
-
-    /// The layout changed with the Thread showing: if ASK is in no slot
-    /// any more (another view shown in its place, hidden), the Thread goes
-    /// down, its conversation and the synced turn kept (the TUI's
-    /// drawer-view switch away from ASK, `AskFlow::leave`).
-    pub(super) fn leave_ask_if_drawer_moved_on(&mut self, cx: &mut Context<Self>) {
-        if self.ask_flow.showing() && !self.ask_in_layout() {
-            self.ask_flow.leave();
-            self.focus_shown_content(cx);
-            cx.notify();
-        }
-    }
-
-    /// Escape on the turn list: the editor the Thread replaced is gone, so
-    /// the keyboard goes to a drawn slot beside it (the left side first,
-    /// else the right), else to the rail.
-    fn leave_ask_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = [Side::Left, Side::Right]
-            .into_iter()
-            .find(|side| {
-                self.side_slots(*side)
-                    .into_iter()
-                    .any(|s| self.slot_drawn(s))
-            })
-            .map(Panel::Drawer)
-            .unwrap_or(Panel::Rail);
-        self.focus_panel(panel, window, cx);
     }
 
     /// Copy the selected turn's answer, citations stripped (the TUI's
@@ -1365,8 +1455,8 @@ impl Workspace {
     }
 
     /// An Ask result from the app channel: an answer goes to the thread,
-    /// shown or not; when it is the selected turn's and the Thread shows,
-    /// the Sources view lists its new sources (`AskFlow::answer_ready`).
+    /// shown or not; when it is the selected turn's, the sources part
+    /// lists its new sources (`AskFlow::answer_ready`).
     pub(super) fn ask_data(&mut self, data: AskData, cx: &mut Context<Self>) {
         match data {
             AskData::AnswerReady { turn_id, result } => {
@@ -1387,7 +1477,7 @@ impl Workspace {
         }
     }
 
-    /// List `turn_id`'s sources in the Sources view even when it lists
+    /// List `turn_id`'s sources in the sources part even when it lists
     /// that turn already (its answer landed), and record the sync.
     fn refresh_sources(&mut self, turn_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sources) = self
@@ -1401,11 +1491,5 @@ impl Workspace {
             view.update(cx, |view, cx| view.refresh(turn_id, sources, window, cx));
         }
         self.ask_flow.synced(turn_id);
-    }
-
-    /// The flow that says whether the Thread shows (tests).
-    #[cfg(test)]
-    pub(crate) fn ask_flow(&self) -> &AskFlow {
-        &self.ask_flow
     }
 }

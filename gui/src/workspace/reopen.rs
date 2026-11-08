@@ -315,10 +315,6 @@ impl Workspace {
         self.reset_modal_state(cx);
         self.file_status = None;
         self.cancel_leader(cx);
-        // The Thread gives the editor Panel back and ASK leaves its slot
-        // (FILES takes it), as when a note opens.
-        self.hide_ask(cx);
-        self.drawer_off_ask(cx);
         // The open note (already flushed): no tick, no path, an empty clean
         // buffer, no search emphasis or find bar from the old text.
         self.release_note(cx);
@@ -347,7 +343,6 @@ impl Workspace {
         self.attachment_loading = None;
         self.attachment_flushing = None;
         self.attachment_wanted = None;
-        self.ask_flushing = None;
         self.ask_client_task = None;
         self.ask_saving = None;
         // The attachment view and the views over the vault, with their

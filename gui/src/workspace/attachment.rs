@@ -584,8 +584,6 @@ impl Workspace {
     /// ([`Workspace::release_note`]), so nothing can save while the
     /// attachment shows.
     fn show_attachment(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        // The Thread gives way (its conversation is kept).
-        self.hide_ask(cx);
         self.release_note(cx);
         let path = loaded.path.clone();
         self.status.attachment = Some(path.clone());

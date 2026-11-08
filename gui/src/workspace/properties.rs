@@ -1177,7 +1177,6 @@ impl Workspace {
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
             || self.attachment_flushing.is_some()
-            || self.ask_flushing.is_some()
             || self.search_flush.is_some()
             || self.updates.flushing.is_some()
             || self.reopen_running()

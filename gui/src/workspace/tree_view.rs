@@ -894,7 +894,7 @@ impl Workspace {
             DrawerView::Find => self.find.clone().map(|v| v.into_any_element()),
             DrawerView::Tags => self.tags.clone().map(|v| v.into_any_element()),
             DrawerView::Semantic => self.semantic.clone().map(|v| v.into_any_element()),
-            DrawerView::Ask => self.ask_sources.clone().map(|v| v.into_any_element()),
+            DrawerView::Ask => self.ask.clone().map(|v| v.into_any_element()),
             DrawerView::Config => Some(self.config.clone().into_any_element()),
         }
     }

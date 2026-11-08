@@ -21,8 +21,8 @@ pub const EDITOR_MIN_REMS: f32 = 20.0;
 /// The views the rail offers when the kimün server can do `caps`, top to
 /// bottom, in the TUI rail's order; the last (settings) is pinned to the
 /// bottom, as in the TUI. SEM is offered only while the server can search
-/// (`caps.semantic`), ASK (the Sources view beside the Thread) only while it
-/// can answer (`caps.ask`); the rail is rebuilt from this list whenever a
+/// (`caps.semantic`), ASK (the Thread, ADR-0053) only while it can answer
+/// (`caps.ask`); the rail is rebuilt from this list whenever a
 /// capability flips. A view shown in a slot stays there when its cell
 /// goes.
 pub fn rail_views(caps: Caps) -> &'static [DrawerView] {
@@ -57,16 +57,13 @@ pub fn empty_slot_hint(right: Option<&str>, left: Option<&str>) -> String {
 }
 
 /// Whether the window hosts `view` as a slot view the leader may open:
-/// every view the rail can offer, whether or not its cell shows right now,
-/// except ASK, which shows only beside a Thread (see
-/// [`crate::shell_tree`]).
+/// every view the rail can offer, whether or not its cell shows right now.
 pub fn hosts(view: DrawerView) -> bool {
-    view != DrawerView::Ask
-        && rail_views(Caps {
-            semantic: true,
-            ask: true,
-        })
-        .contains(&view)
+    rail_views(Caps {
+        semantic: true,
+        ask: true,
+    })
+    .contains(&view)
 }
 
 #[cfg(test)]
@@ -112,9 +109,8 @@ mod tests {
         );
         // Settings stays pinned last either way.
         assert_eq!(rail_views(caps(true, true)).last(), Some(&Config));
-        // SEM is hosted with its cell gone; ASK is never restored nor
-        // recorded.
+        // SEM and ASK are hosted with their cells gone.
         assert!(hosts(Semantic));
-        assert!(!hosts(Ask));
+        assert!(hosts(Ask));
     }
 }

@@ -1,5 +1,7 @@
 //! UI integration tests for the Sources view and the Source reader (M7c
-//! G10b): a real `Workspace` on a real, indexed temp vault, the server's
+//! G10b), the part of the Ask view that expands in place under the
+//! selected turn (ADR-0053): a real `Workspace` on a real, indexed temp
+//! vault, the server's
 //! status fed as the sync reports it, the questions answered by a stub
 //! transport whose answers carry the sources each test needs. Nothing here
 //! talks to a network.
@@ -31,7 +33,10 @@ use kimun_notes::server_client::{
 use kimun_notes::settings::gui::GuiSettings;
 use tokio::runtime::Runtime;
 
-use super::ask::{COMPOSER_ID, NEW_ID, REGENERATE_ID, answer_line_id};
+use super::ask::{
+    COMPOSER_ID, NEW_ID, REGENERATE_ID, SOURCES_PART_ID, SOURCES_TOGGLE_ID, answer_line_id,
+    turn_element_id,
+};
 use super::ask_sources::{
     COLLAPSE, EXPAND, NO_RESULTS, NO_SOURCES, READER_ACTION_ID, READER_HEADER_ID,
     SOURCES_FILTER_ID, SourcesView, source_row_expand_id, source_row_id,
@@ -40,7 +45,6 @@ use super::files::row_id;
 use super::search::{PREVIEW_DEBOUNCE, READER_FAILED};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::{rail_cell_id, slot_id};
-use crate::shell_layout;
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
@@ -262,6 +266,14 @@ fn thread_shown(s: &Started, cx: &TestAppContext) -> bool {
     cx.read(|cx| s.workspace.read(cx).ask_shown())
 }
 
+/// Whether the sources part is expanded.
+fn sources_open(s: &Started, cx: &TestAppContext) -> bool {
+    cx.read(|cx| {
+        let view = s.workspace.read(cx).ask.clone().unwrap();
+        view.read(cx).sources_open()
+    })
+}
+
 fn turn_ids(s: &Started, cx: &TestAppContext) -> Vec<u64> {
     cx.read(|cx| {
         let view = s.workspace.read(cx).ask.clone().unwrap();
@@ -398,16 +410,20 @@ fn leader(s: &Started, action: LeaderAction, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-/// Show the Thread (F6) if it is not showing, then ask `question` and drive
-/// until it is answered (and the Sources view has its rows).
+/// Show the view with the composer focused (F6), ask `question` and drive
+/// until it is answered; then the sources part is expanded under the
+/// selected turn (its toggle, the first time), the composer keeping the
+/// keyboard.
 fn ask(s: &Started, rt: &Runtime, question: &str, cx: &mut TestAppContext) {
-    if !thread_shown(s, cx) {
-        press(s, "f6", cx);
-        drive(rt, cx, |cx| thread_shown(s, cx));
-    }
+    press(s, "f6", cx);
+    drive(rt, cx, |cx| thread_shown(s, cx));
     type_in(s, question, cx);
     press(s, "enter", cx);
     drive(rt, cx, |cx| !pending(s, cx));
+    if !sources_open(s, cx) && drawn(s, SOURCES_TOGGLE_ID, cx) {
+        click(s, SOURCES_TOGGLE_ID, cx);
+        press(s, "f6", cx);
+    }
 }
 
 /// [`drive`], the test clock moved past the reader's read debounce each
@@ -456,9 +472,9 @@ fn with_sources(
 // ---- The rail ------------------------------------------------------------------
 
 /// ASK's cell is on the rail while the server can answer; a click on it
-/// enters the Thread with the Sources view in the drawer (the composer has
-/// the keyboard); losing the server takes the cell away and leaves the
-/// Sources view and the thread as they are.
+/// shows the view in its slot (the composer has the keyboard); losing the
+/// server takes the cell away and leaves the view, its sources and the
+/// thread as they are.
 #[gpui_kit::test]
 fn the_ask_cell_follows_the_server_and_its_view_stays_on_loss(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -607,6 +623,67 @@ fn new_resets_the_sources(cx: &mut TestAppContext) {
     click(&started, NEW_ID, cx);
     assert!(rows(&started, cx).is_empty());
     assert_eq!(listed_turn(&started, cx), None);
+}
+
+/// The selected turn's sources expand in place, right under it: the
+/// `Sources (n)` toggle (only on the selected, answered turn) draws the
+/// part between that turn and the next one, its list with the keyboard; a
+/// selection move takes the part to the newly selected turn, listing that
+/// turn's sources; `s` on the turn list shuts it and opens it again.
+#[gpui_kit::test]
+fn sources_list_expands_in_place_under_the_selected_turn(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let stub = Stub::with(vec![
+        ("one [1]", a_and_b()),
+        ("two [1]", vec![chunk("c.md", "", "plain note", 1)]),
+    ]);
+    let (_v, started) = ready(cx, &rt, stub);
+    press(&started, "f6", cx);
+    for q in ["first", "second"] {
+        type_in(&started, q, cx);
+        press(&started, "enter", cx);
+        drive(&rt, cx, |cx| !pending(&started, cx));
+    }
+    let ids = turn_ids(&started, cx);
+    assert!(!drawn(&started, SOURCES_PART_ID, cx), "shut at first");
+    assert_eq!(
+        label_of(&started, SOURCES_TOGGLE_ID, cx).as_deref(),
+        Some("Sources (1)")
+    );
+    // Up: the first turn selected, its toggle names its two sources.
+    press(&started, "up", cx);
+    assert_eq!(
+        label_of(&started, SOURCES_TOGGLE_ID, cx).as_deref(),
+        Some("Sources (2)")
+    );
+    click(&started, SOURCES_TOGGLE_ID, cx);
+    assert!(drawn(&started, SOURCES_PART_ID, cx));
+    assert!(focused(&started, LIST_ROWS_ID, cx));
+    assert!(drawn(&started, source_row_id(2), cx));
+    let first = bounds_of(&started, turn_element_id(ids[0]), cx);
+    let second = bounds_of(&started, turn_element_id(ids[1]), cx);
+    let part = bounds_of(&started, SOURCES_PART_ID, cx);
+    assert!(part.top() >= first.bottom(), "{part:?} under {first:?}");
+    assert!(part.bottom() <= second.top(), "{part:?} above {second:?}");
+    assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
+
+    // Down in the composer: the part follows to the second turn.
+    press(&started, "f6", cx);
+    press(&started, "down", cx);
+    assert_eq!(listed_turn(&started, cx), Some(ids[1]));
+    assert_eq!(rows(&started, cx), ranked(&["c.md"]));
+    let second = bounds_of(&started, turn_element_id(ids[1]), cx);
+    let part = bounds_of(&started, SOURCES_PART_ID, cx);
+    assert!(part.top() >= second.bottom(), "{part:?} under {second:?}");
+
+    // `s` on the turn list: shut (the turn list keeps the keyboard), open.
+    press(&started, "escape", cx);
+    press(&started, "s", cx);
+    assert!(!drawn(&started, SOURCES_PART_ID, cx));
+    press(&started, "s", cx);
+    assert!(drawn(&started, SOURCES_PART_ID, cx));
+    assert!(focused(&started, LIST_ROWS_ID, cx));
 }
 
 // ---- The reader ------------------------------------------------------------------
@@ -1055,12 +1132,14 @@ fn the_filter_narrows_the_rows(cx: &mut TestAppContext) {
 
 // ---- Citations ---------------------------------------------------------------------
 
-/// A click on `[n]` selects the source whose ordinal is `n` (not the
-/// `n`-th row): the server's out-of-order ordinals and the position
-/// fallback for `0` both resolve; the reader collapses. An unknown `[n]` is
-/// not a link. A citation in another turn selects that turn first.
+/// The Source reader opens from a source (a row and Enter) and from a
+/// citation: a click on `[n]` expands the sources (shut first), selects the
+/// source whose ordinal is `n` (not the `n`-th row; the server's
+/// out-of-order ordinals and the position fallback for `0` both resolve)
+/// and opens the reader on it. An unknown `[n]` is not a link. A citation in
+/// another turn selects that turn first.
 #[gpui_kit::test]
-fn a_citation_click_selects_its_source(cx: &mut TestAppContext) {
+fn source_reader_opens_from_a_source_and_from_a_citation(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let cited = vec![
@@ -1077,15 +1156,37 @@ fn a_citation_click_selects_its_source(cx: &mut TestAppContext) {
     ask(&started, &rt, "why?", cx);
     let turn = turn_ids(&started, cx)[0];
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md", "c.md"]));
-    // The reader open on the top source, then [1]: the third row, collapsed.
-    leader(&started, LeaderAction::AskSource, cx);
+
+    // From a source: its row, Enter.
+    click(&started, source_row_id(2), cx);
+    press(&started, "enter", cx);
     assert_eq!(reader_state(&started, cx), (false, true, false));
-    click_line_start(&started, turn, 4, cx);
-    assert_eq!(selected_row(&started, cx), Some(2));
+    settle(&rt, cx, |cx| {
+        reader_note(&started, cx) == Some(path("b.md"))
+    });
+    press(&started, "escape", cx);
     assert_eq!(reader_state(&started, cx), (true, false, false));
-    // [3]: the first row.
+
+    // From a citation, the sources shut first: [1] is the third row, read.
+    press(&started, "escape", cx);
+    press(&started, "escape", cx);
+    press(&started, "s", cx);
+    assert!(!sources_open(&started, cx));
+    click_line_start(&started, turn, 4, cx);
+    assert!(sources_open(&started, cx));
+    assert!(drawn(&started, SOURCES_PART_ID, cx));
+    assert_eq!(selected_row(&started, cx), Some(2));
+    assert_eq!(reader_state(&started, cx), (false, true, false));
+    settle(&rt, cx, |cx| {
+        reader_note(&started, cx) == Some(path("c.md"))
+    });
+    // [3]: the first row, the reader on it.
     click_line_start(&started, turn, 0, cx);
     assert_eq!(selected_row(&started, cx), Some(0));
+    assert_eq!(reader_state(&started, cx), (false, true, false));
+    settle(&rt, cx, |cx| {
+        reader_note(&started, cx) == Some(path("a.md"))
+    });
     // [9]: no such source, nothing moves.
     click_line_start(&started, turn, 2, cx);
     assert_eq!(selected_row(&started, cx), Some(0));
@@ -1106,13 +1207,14 @@ fn a_citation_click_selects_its_source(cx: &mut TestAppContext) {
     assert_eq!(listed_turn(&started, cx), Some(turn));
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md", "c.md"]));
     assert_eq!(selected_row(&started, cx), Some(2));
+    assert_eq!(reader_state(&started, cx), (false, true, false));
 }
 
 // ---- Leader ------------------------------------------------------------------------
 
-/// Leader `a s` reads the selected turn's top source with the drawer
-/// focused; with the Thread down and no server to answer, it is blocked
-/// with the TUI's message (palette and leader).
+/// Leader `a s` reads the selected turn's top source with the sources list
+/// focused; with ASK hidden and no server to answer, it is blocked with
+/// the TUI's message (palette and leader).
 #[gpui_kit::test]
 fn leader_a_s_reads_the_top_source(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -1127,9 +1229,9 @@ fn leader_a_s_reads_the_top_source(cx: &mut TestAppContext) {
         reader_note(&started, cx) == Some(path("a.md"))
     });
 
-    // The Thread down (a note opened) and the server search-only.
-    send(&started, AppMessage::open(path("b.md")), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
+    // ASK hidden (its rail cell) and the server search-only.
+    click(&started, rail_cell_id(DrawerView::Ask), cx);
+    assert!(!thread_shown(&started, cx));
     status(&started, SEARCH_ONLY, cx);
     let block = cx.read(|cx| {
         let w = started.workspace.read(cx);
@@ -1156,25 +1258,25 @@ fn the_copy_chord_copies_the_source_path(cx: &mut TestAppContext) {
     assert_eq!(started.flash(cx).as_deref(), Some("path copied"));
 }
 
-// ---- Leaving -----------------------------------------------------------------------
+// ---- Beside the note -------------------------------------------------------------
 
-/// Every door that opens a note takes the Thread down and ASK out of its
-/// slot (the right one, its home), never revealing a slot that was hidden:
-/// FILES, an open request, a followed link, the finder, and the finder's
-/// `Create:`.
+/// Every door that opens a note opens it in the editor and leaves ASK where
+/// it is (the right slot, its home), its sources still listed: FILES, an
+/// open request, a followed link, the finder.
 #[gpui_kit::test]
-fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppContext) {
+fn each_door_opens_the_note_beside_ask(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
-    let enter = |cx: &mut TestAppContext| {
-        press(&started, "f6", cx);
-        drive(&rt, cx, |cx| thread_shown(&started, cx));
-        assert!(slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
+    ask(&started, &rt, "why?", cx);
+    let stays = |cx: &mut TestAppContext| {
+        assert!(thread_shown(&started, cx));
+        assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+        assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+        assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
     };
 
-    // FILES, shown on the left.
-    enter(cx);
+    // FILES.
     let listed = |cx: &mut TestAppContext| {
         cx.read(|cx| {
             let files = started.workspace.read(cx).files.clone().unwrap();
@@ -1190,55 +1292,28 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
     drive(&rt, cx, |cx| listed(cx).is_some());
     let row = listed(cx).expect("b.md is listed");
     click(&started, SharedString::from(row), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("b.md"))));
-    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
-    assert!(
-        !drawer_visible(&started, Side::Right, cx),
-        "ASK's slot is not drawn"
-    );
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+    drive(&rt, cx, |cx| {
+        open_note(&started, cx).is_some_and(|n| n.is_like(&path("b.md")))
+    });
+    stays(cx);
 
     // An open request (the follow / OpenPath door).
-    enter(cx);
     send(&started, AppMessage::open(path("a.md")), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
-    assert!(drawer_visible(&started, Side::Left, cx));
-    assert!(!drawer_visible(&started, Side::Right, cx));
+    drive(&rt, cx, |cx| {
+        open_note(&started, cx).is_some_and(|n| n.is_like(&path("a.md")))
+    });
+    stays(cx);
 
-    // A followed link, the left side hidden first: it stays hidden.
-    enter(cx);
-    cx.update_window(started.handle, |_, window, cx| {
-        started
-            .workspace
-            .update(cx, |w, cx| w.toggle_side(Side::Left, window, cx))
-    })
-    .unwrap();
-    assert!(!drawer_visible(&started, Side::Left, cx));
+    // A followed link.
     started.workspace.update(cx, |w, cx| {
         w.followed("b", Ok(FollowOutcome::Note(path("b.md"))), cx)
     });
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert!(!drawer_visible(&started, Side::Left, cx), "not revealed");
-    assert!(!drawer_visible(&started, Side::Right, cx));
-    click(&started, rail_cell_id(DrawerView::Ask), cx);
-    drive(&rt, cx, |cx| thread_shown(&started, cx));
-    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
-    assert!(focused(&started, COMPOSER_ID, cx));
-    // The left side back for the finder doors.
-    cx.update_window(started.handle, |_, window, cx| {
-        started
-            .workspace
-            .update(cx, |w, cx| w.toggle_side(Side::Left, window, cx))
-    })
-    .unwrap();
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
-    send(&started, AppMessage::open(path("a.md")), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
+    drive(&rt, cx, |cx| {
+        open_note(&started, cx).is_some_and(|n| n.is_like(&path("b.md")))
+    });
+    stays(cx);
 
     // The finder.
-    enter(cx);
     press(&started, "ctrl-o", cx);
     type_in(&started, "c", cx);
     drive(&rt, cx, |cx| {
@@ -1267,36 +1342,17 @@ fn each_door_takes_the_thread_down_and_the_drawer_to_files(cx: &mut TestAppConte
             .unwrap()
     });
     press(&started, "enter", cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&wanted)));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
-
-    // The finder's `Create:` (create and open).
-    enter(cx);
-    press(&started, "ctrl-o", cx);
-    type_in(&started, "fresh", cx);
     drive(&rt, cx, |cx| {
-        cx.read(|cx| {
-            started
-                .workspace
-                .read(cx)
-                .picker
-                .as_ref()
-                .and_then(|p| p.upgrade())
-                .is_some_and(|p| !p.read(cx).is_loading())
-        })
+        open_note(&started, cx).is_some_and(|n| n.is_like(&wanted))
     });
-    press(&started, "enter", cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert!(open_note(&started, cx).is_some_and(|n| n.is_like(&path("fresh.md"))));
-    assert_eq!(slot_views(&started, Side::Left, cx), [DrawerView::Files]);
+    stays(cx);
 }
 
-/// Another view shown in ASK's place (FILES moved into its slot) takes the
-/// Thread down too; the thread is kept, and a click on the ASK cell brings
-/// both back, the rows on the selected turn.
+/// Another view shown in ASK's slot (FILES moved there) hides ASK as any
+/// view sharing a slot is hidden; the thread is kept, and a click on the
+/// ASK cell shows it again there, the rows on the selected turn.
 #[gpui_kit::test]
-fn another_view_in_asks_place_takes_the_thread_down(cx: &mut TestAppContext) {
+fn another_view_in_asks_slot_hides_it_and_keeps_the_thread(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
@@ -1307,28 +1363,27 @@ fn another_view_in_asks_place_takes_the_thread_down(cx: &mut TestAppContext) {
     assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Files]);
     assert_eq!(turn_ids(&started, cx).len(), 1);
     click(&started, rail_cell_id(DrawerView::Ask), cx);
-    drive(&rt, cx, |cx| thread_shown(&started, cx));
+    assert!(thread_shown(&started, cx));
     assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
     assert!(focused(&started, COMPOSER_ID, cx));
     assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
 }
 
-/// ASK is never persisted: the layout with the Sources view showing is
-/// recorded without it, and comes back without ASK.
+/// ASK's placement is persisted like any view's: the layout with it shown
+/// is recorded with it, and comes back with ASK shown in the same slot.
 #[gpui_kit::test]
-fn ask_is_not_persisted(cx: &mut TestAppContext) {
+fn ask_placement_is_persisted(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
     ask(&started, &rt, "why?", cx);
-    assert!(!shell_layout::hosts(DrawerView::Ask));
     let mut gui = GuiSettings::default();
-    cx.read(|cx| crate::shell_tree::record(&started.workspace.read(cx).layout, &mut gui));
-    let written = toml::to_string(&gui).unwrap();
-    assert!(!written.contains("ask"), "{written}");
+    let live = cx.read(|cx| started.workspace.read(cx).layout.clone());
+    crate::shell_tree::record(&live, &mut gui);
     let back = crate::shell_tree::restore(&gui, crate::shell_tree::RESTORE_CAPS);
-    assert_eq!(back.view_slot(&DrawerView::Ask), None);
-    assert_eq!(back.shown(back.slots()[0]), Some(DrawerView::Files));
+    let slot = live.view_slot(&DrawerView::Ask).unwrap();
+    assert_eq!(back.view_slot(&DrawerView::Ask), Some(slot));
+    assert_eq!(back.shown(slot), Some(DrawerView::Ask));
 }
 
 /// A click on a source only selects it (C1: the Sources view's selection
@@ -1388,11 +1443,12 @@ fn a_click_selects_a_source_and_a_double_click_opens_its_note(cx: &mut TestAppCo
     })
     .unwrap();
     drive(&rt, cx, |cx| open_note(&started, cx) == Some(path("b.md")));
-    assert!(!thread_shown(&started, cx));
+    assert!(thread_shown(&started, cx), "ASK stays beside the note");
 }
 
-/// The two doors onto a source's note: `o` and the row menu's `Open note`. Each takes the Thread down and opens the
-/// note of the SELECTED source (the second row, not the first).
+/// The two doors onto a source's note: `o` and the row menu's `Open note`.
+/// Each opens the note of the SELECTED source (the second row, not the
+/// first) in the editor; ASK stays.
 #[gpui_kit::test]
 fn a_source_opens_its_note_by_key_and_menu(cx: &mut TestAppContext) {
     use super::drawer_list::{DrawerListEvent, OPEN_NOTE};
@@ -1418,7 +1474,9 @@ fn a_source_opens_its_note_by_key_and_menu(cx: &mut TestAppContext) {
     assert!(focused(&started, LIST_ROWS_ID, cx));
     press(&started, "o", cx);
     drive(&rt, cx, |cx| open_note(&started, cx) == Some(path("b.md")));
-    assert!(!thread_shown(&started, cx));
+    assert!(thread_shown(&started, cx));
+    send(&started, AppMessage::open(path("a.md")), cx);
+    drive(&rt, cx, |cx| open_note(&started, cx) == Some(path("a.md")));
 
     // The row menu's `Open note` (its event, as the menu item emits it).
     reenter(cx);
@@ -1428,38 +1486,14 @@ fn a_source_opens_its_note_by_key_and_menu(cx: &mut TestAppContext) {
     let row = cx.read(|cx| list.read(cx).selected_row().cloned()).unwrap();
     list.update(cx, |_, cx| cx.emit(DrawerListEvent::Verb(row, OPEN_NOTE)));
     drive(&rt, cx, |cx| open_note(&started, cx) == Some(path("b.md")));
-    assert!(!thread_shown(&started, cx));
+    assert!(thread_shown(&started, cx));
 }
 
-/// The Thread gone (a note opened), the right side's toggle never brings
-/// ASK back on its own: with nothing else placed there, the slot opens
-/// empty (Ruling 14).
+/// ASK's side toggles like any view's: off hides ASK (the thread kept),
+/// on shows it again in its slot (no "only beside a Thread" rule any more,
+/// ADR-0053).
 #[gpui_kit::test]
-fn toggling_asks_side_after_the_thread_left_does_not_revive_ask(cx: &mut TestAppContext) {
-    let rt = runtime();
-    let _guard = rt.enter();
-    let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
-    ask(&started, &rt, "why?", cx);
-    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
-    send(&started, AppMessage::open(path("a.md")), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    assert!(!drawer_visible(&started, Side::Right, cx));
-    cx.update_window(started.handle, |_, window, cx| {
-        started
-            .workspace
-            .update(cx, |w, cx| w.toggle_side(Side::Right, window, cx))
-    })
-    .unwrap();
-    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
-    assert!(!thread_shown(&started, cx));
-    assert!(drawer_visible(&started, Side::Right, cx), "opened empty");
-}
-
-/// ASK's side toggled off while the Thread shows, then the Thread leaves:
-/// ASK is dropped from what the toggle remembers, so toggling the side on
-/// again does not revive it (Ruling 14).
-#[gpui_kit::test]
-fn the_thread_leaving_forgets_ask_in_a_toggled_off_side(cx: &mut TestAppContext) {
+fn toggling_asks_side_hides_and_restores_it(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));
@@ -1474,10 +1508,10 @@ fn the_thread_leaving_forgets_ask_in_a_toggled_off_side(cx: &mut TestAppContext)
     };
     toggle(cx);
     assert!(!drawer_visible(&started, Side::Right, cx));
-    assert!(thread_shown(&started, cx), "the toggle keeps the Thread");
-    send(&started, AppMessage::open(path("a.md")), cx);
-    drive(&rt, cx, |cx| !thread_shown(&started, cx));
-    toggle(cx);
-    assert!(!slot_views(&started, Side::Right, cx).contains(&DrawerView::Ask));
     assert!(!thread_shown(&started, cx));
+    toggle(cx);
+    assert_eq!(slot_views(&started, Side::Right, cx), [DrawerView::Ask]);
+    assert!(thread_shown(&started, cx));
+    assert_eq!(turn_ids(&started, cx).len(), 1);
+    assert_eq!(rows(&started, cx), ranked(&["a.md", "b.md"]));
 }

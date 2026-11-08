@@ -45,15 +45,15 @@ pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a slot list focused";
 pub(crate) const NEEDS_FIND_FOCUS: &str = "Needs FIND focused";
 impl Workspace {
     /// The facts a route reads: the open note (the vault root when none is
-    /// open) and whether the Thread holds the editor Panel (then no note is
-    /// "this note").
+    /// open). Ask never takes the editor's place (ADR-0053), so the open
+    /// note stays "this note" while it shows.
     pub(crate) fn route_facts(&self) -> RouteFacts {
         let note = self
             .notes
             .as_ref()
             .and_then(|h| h.note.clone())
             .unwrap_or_else(VaultPath::root);
-        RouteFacts::new(note, self.ask_shown())
+        RouteFacts::new(note, false)
     }
 
     /// The route of `action` in this window.
@@ -85,8 +85,8 @@ impl Workspace {
             // SEM only while the server can search (the TUI's words why
             // not); the rail hides its cell then too.
             LeaderRoute::Drawer(DrawerView::Semantic) => self.semantic_block(),
-            // ASK (the Sources view beside the Thread) only while the server
-            // can answer (the TUI gates every route into it so).
+            // ASK only while the server can answer (the rail's rule), or
+            // already shown.
             LeaderRoute::Drawer(DrawerView::Ask) => self.ask_drawer_block(),
             LeaderRoute::Drawer(view) if shell_layout::hosts(*view) => None,
             // Every view is hosted (`shell_layout::hosts`); a guard for a
