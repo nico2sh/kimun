@@ -237,6 +237,9 @@ pub(crate) struct Palette {
     workspace: WeakEntity<Workspace>,
     /// The leader sequences' colour, one for every row.
     quiet: Rgba,
+    /// The query changed since the kit last laid the rows out: the
+    /// highlight goes back to the first runnable visible row once it has.
+    reselect: bool,
 }
 
 impl Palette {
@@ -254,6 +257,7 @@ impl Palette {
             visible,
             workspace,
             quiet,
+            reselect: false,
         }
     }
 
@@ -283,6 +287,7 @@ impl Palette {
 
     fn on_query(&mut self, query: &str, cx: &mut Context<Self>) {
         self.visible = fuzzy_rank(&self.entries, query);
+        self.reselect = true;
         cx.notify();
     }
 
@@ -294,7 +299,23 @@ impl Palette {
 }
 
 impl Render for Palette {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.reselect) {
+            // The kit keeps its highlight by row number across a re-filter,
+            // so Enter would run whatever row now sits where it was. Put it
+            // on the first runnable row of the new list, after the kit has
+            // installed that list (this frame's `Command` render).
+            let first = self
+                .visible
+                .iter()
+                .position(|&ix| self.entries[ix].blocked.is_none());
+            let state = self.state.clone();
+            window.defer(cx, move |window, cx| {
+                state.update(cx, |state, cx| {
+                    state.set_selected_index(first.map(IndexPath::new), window, cx)
+                });
+            });
+        }
         let this = cx.entity().downgrade();
         let confirm = this.clone();
         let workspace = self.workspace.clone();
