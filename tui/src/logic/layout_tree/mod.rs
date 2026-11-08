@@ -735,6 +735,49 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Ok(new)
     }
 
+    /// Move `view` into a new slot beside `target`: split along the axis of
+    /// `dir` (Up/Down vertical, Left/Right horizontal), the new slot before
+    /// `target` for Up and Left, after it for Down and Right. The view
+    /// leaves its old slot as by [`Self::move_view`] and is shown in the
+    /// new one. Focus is unchanged; the slot the view left is not closed
+    /// (see [`Self::vacate_close`]). [`TreeError::NoSuchSlot`] (nothing
+    /// changes) when `target` is absent.
+    pub fn place_beside(&mut self, view: V, target: SlotId, dir: Dir) -> Result<SlotId, TreeError> {
+        let (axis, before) = match dir {
+            Dir::Up => (Axis::Vertical, true),
+            Dir::Down => (Axis::Vertical, false),
+            Dir::Left => (Axis::Horizontal, true),
+            Dir::Right => (Axis::Horizontal, false),
+        };
+        let new = SlotId(self.next_slot);
+        if !self.slots.contains_key(&target)
+            || !self
+                .root
+                .split_leaf_at(&Leaf::Slot(target), axis, Leaf::Slot(new), before)
+        {
+            return Err(TreeError::NoSuchSlot);
+        }
+        self.next_slot += 1;
+        self.slots.insert(
+            new,
+            SlotState {
+                views: Vec::new(),
+                shown: None,
+            },
+        );
+        self.move_view(view, new);
+        Ok(new)
+    }
+
+    /// Close `slot` when it holds no views at all and is not the only
+    /// slot; returns the slot that absorbed it. `None` otherwise.
+    pub fn vacate_close(&mut self, slot: SlotId) -> Option<SlotId> {
+        if !self.slots.get(&slot)?.views.is_empty() {
+            return None;
+        }
+        self.close_slot(slot).ok()
+    }
+
     /// Close `slot` and return the slot that absorbed its views, which
     /// join it hidden (its own shown view is unchanged). That is
     /// `Node::absorber` when it is a slot; when the leaf taking over the

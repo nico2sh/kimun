@@ -1127,3 +1127,106 @@ fn focus_dir_among_measures_the_layout_as_drawn() {
         TreeFocusMove::Moved(leaf(Leaf::Slot(q)))
     );
 }
+
+fn rect_of(t: &Tree, s: SlotId) -> UnitRect {
+    t.regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Slot(s))
+        .map(|(_, r)| r)
+        .expect("slot region")
+}
+
+/// Slot `right` holding `[x, y]` with `x` shown.
+fn right_with_two() -> (Tree, SlotId) {
+    let mut t = tree();
+    let (_, right) = sides(&t);
+    assert!(t.move_view("y", right));
+    assert!(t.move_view("x", right));
+    (t, right)
+}
+
+#[test]
+fn place_beside_down_puts_the_view_in_a_new_slot_below() {
+    let (mut t, a) = right_with_two();
+    let b = t.place_beside("x", a, Dir::Down).unwrap();
+    assert_eq!(t.view_slot(&"x"), Some(b));
+    assert_eq!(t.shown(b), Some("x"));
+    assert_eq!(t.slot_views(a), vec!["y"]);
+    let (ra, rb) = (rect_of(&t, a), rect_of(&t, b));
+    assert!((rb.y() - ra.bottom()).abs() < 1e-9);
+}
+
+#[test]
+fn place_beside_up_and_left_put_the_new_slot_first() {
+    let (mut t, a) = right_with_two();
+    let b = t.place_beside("x", a, Dir::Up).unwrap();
+    assert!((rect_of(&t, b).bottom() - rect_of(&t, a).y()).abs() < 1e-9);
+    let (mut t, a) = right_with_two();
+    let b = t.place_beside("x", a, Dir::Left).unwrap();
+    assert!((rect_of(&t, b).right() - rect_of(&t, a).x()).abs() < 1e-9);
+    let (mut t, a) = right_with_two();
+    let b = t.place_beside("x", a, Dir::Right).unwrap();
+    assert!((rect_of(&t, b).x() - rect_of(&t, a).right()).abs() < 1e-9);
+}
+
+#[test]
+fn place_beside_a_hidden_view_shows_it_in_the_new_slot() {
+    let (mut t, a) = right_with_two();
+    assert_eq!(t.hide_view(&"x"), Some(a));
+    let b = t.place_beside("x", a, Dir::Down).unwrap();
+    assert_eq!(t.shown(b), Some("x"));
+}
+
+#[test]
+fn place_beside_an_absent_slot_changes_nothing() {
+    let (mut t, _) = right_with_two();
+    let before = t.clone();
+    assert_eq!(
+        t.place_beside("x", SlotId::new(99), Dir::Down),
+        Err(TreeError::NoSuchSlot)
+    );
+    assert_eq!(t, before);
+}
+
+#[test]
+fn place_beside_reuses_a_split_along_the_same_axis() {
+    let (mut t, a) = right_with_two();
+    let c = t.split_slot(a, Axis::Vertical).unwrap();
+    let h = rect_of(&t, a).height();
+    let b = t.place_beside("x", a, Dir::Down).unwrap();
+    let leaves: Vec<Leaf> = t.node().leaves().into_iter().copied().collect();
+    let at = leaves.iter().position(|l| *l == Leaf::Slot(a)).unwrap();
+    assert_eq!(leaves[at + 1], Leaf::Slot(b));
+    assert_eq!(leaves[at + 2], Leaf::Slot(c));
+    assert!((rect_of(&t, a).height() - h / 2.0).abs() < 1e-9);
+    assert!((rect_of(&t, b).height() - h / 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn vacate_close_closes_an_empty_slot_and_not_the_last() {
+    let (mut t, a) = right_with_two();
+    assert!(t.move_view("y", a));
+    let b = t.place_beside("x", a, Dir::Down).unwrap();
+    assert_eq!(t.place_beside("y", a, Dir::Down).map(|_| ()), Ok(()));
+    let absorbed = t.vacate_close(a).expect("empty slot closes");
+    assert!(!t.slots().contains(&a));
+    assert!(t.slots().contains(&absorbed));
+    assert!(t.slots().contains(&b));
+
+    let mut one = tree();
+    while one.slots().len() > 1 {
+        let s = one.slots()[0];
+        one.close_slot(s).unwrap();
+    }
+    let only = one.slots()[0];
+    assert_eq!(one.vacate_close(only), None);
+}
+
+#[test]
+fn vacate_close_keeps_a_slot_with_hidden_views() {
+    let (mut t, a) = right_with_two();
+    assert_eq!(t.hide_view(&"x"), Some(a));
+    assert!(t.move_view("y", t.slots()[0]));
+    assert_eq!(t.slot_views(a), vec!["x"]);
+    assert_eq!(t.vacate_close(a), None);
+}

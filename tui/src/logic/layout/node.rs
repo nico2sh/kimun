@@ -159,24 +159,32 @@ impl<L: Clone + PartialEq> Node<L> {
     /// that split as a sibling; otherwise `target` becomes a two-way split.
     /// `target` gives up half its weight. False when `target` is absent.
     pub(crate) fn split_leaf(&mut self, target: &L, axis: Axis, new: L) -> bool {
+        self.split_leaf_at(target, axis, new, false)
+    }
+
+    /// [`Self::split_leaf`] with the new leaf before (above, left of)
+    /// `target` when `before`, after it otherwise.
+    pub(crate) fn split_leaf_at(&mut self, target: &L, axis: Axis, new: L, before: bool) -> bool {
         match &mut self.kind {
             Kind::Leaf(id) => {
                 if id != target {
                     return false;
                 }
-                let old = Node::leaf(id.clone());
+                let old = Child {
+                    weight: 1.0,
+                    node: Node::leaf(id.clone()),
+                };
+                let new = Child {
+                    weight: 1.0,
+                    node: Node::leaf(new),
+                };
                 self.kind = Kind::Split {
                     axis,
-                    children: vec![
-                        Child {
-                            weight: 1.0,
-                            node: old,
-                        },
-                        Child {
-                            weight: 1.0,
-                            node: Node::leaf(new),
-                        },
-                    ],
+                    children: if before {
+                        vec![new, old]
+                    } else {
+                        vec![old, new]
+                    },
                 };
                 true
             }
@@ -191,7 +199,7 @@ impl<L: Clone + PartialEq> Node<L> {
                         let half = children[i].weight / 2.0;
                         children[i].weight = half;
                         children.insert(
-                            i + 1,
+                            if before { i } else { i + 1 },
                             Child {
                                 weight: half,
                                 node: Node::leaf(new),
@@ -200,7 +208,7 @@ impl<L: Clone + PartialEq> Node<L> {
                         return true;
                     }
                     if children[i].node.contains(target) {
-                        return children[i].node.split_leaf(target, axis, new);
+                        return children[i].node.split_leaf_at(target, axis, new, before);
                     }
                 }
                 false
