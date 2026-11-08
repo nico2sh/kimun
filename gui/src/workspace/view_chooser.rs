@@ -165,15 +165,31 @@ impl<P: 'static> Render for ViewChooser<P> {
     }
 }
 
-/// The split chooser while it is open: where the picked view goes.
-pub(crate) struct SplitChooser {
-    chooser: Entity<ViewChooser<DrawerView>>,
-    /// The slot split.
-    slot: SlotId,
-    /// The new slot's side of it.
-    dir: Dir,
+/// A chooser while it is open: its list, what opening it was for (`C`,
+/// the slot and side split, or the slot and view moved), and the
+/// subscription to its answer. The split and move choosers are this with
+/// their own payload and context.
+pub(crate) struct OpenChooser<P: 'static, C> {
+    chooser: Entity<ViewChooser<P>>,
+    ctx: C,
     _events: Subscription,
 }
+
+impl<P: Clone + 'static, C> OpenChooser<P, C> {
+    /// What the chooser answered: the context it opened with and the
+    /// picked row's payload; `None` for a cancel (or a row gone).
+    fn answer(self, event: &ChooserEvent, cx: &gpui_kit::App) -> Option<(C, P)> {
+        let ChooserEvent::Picked(index) = *event else {
+            return None;
+        };
+        let payload = self.chooser.read(cx).payload(index).cloned()?;
+        Some((self.ctx, payload))
+    }
+}
+
+/// The split chooser: which view the new slot holds. Context: the slot
+/// split and the new slot's side of it.
+pub(crate) type SplitChooser = OpenChooser<DrawerView, (SlotId, Dir)>;
 
 /// Where a move chooser row sends the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,30 +211,64 @@ const NEW_SIDES: [(Dir, &str); 4] = [
 /// What a slot opened empty is called in its header and in the rows.
 pub(crate) const EMPTY_TITLE: &str = "Empty";
 
-/// The move chooser while it is open: whose view moves.
-pub(crate) struct MoveChooser {
-    chooser: Entity<ViewChooser<MoveTarget>>,
-    /// The slot the view is moved out of.
-    slot: SlotId,
-    /// The view it showed when the chooser opened.
-    view: DrawerView,
-    _events: Subscription,
-}
+/// The move chooser: where the view goes. Context: the slot the view is
+/// moved out of and the view it showed when the chooser opened.
+pub(crate) type MoveChooser = OpenChooser<MoveTarget, (SlotId, DrawerView)>;
+
+/// A chooser's answer handler on the workspace.
+type AnswerFn<P> = fn(
+    &mut Workspace,
+    &Entity<ViewChooser<P>>,
+    &ChooserEvent,
+    &mut Window,
+    &mut Context<Workspace>,
+);
 
 impl Workspace {
+    /// Open a chooser over `rows` as the modal: the list takes the keyboard,
+    /// its answer goes to `on_answer`. The caller keeps the result in its
+    /// field, which [`Self::reset_modal_state`] clears with the modal.
+    fn open_chooser<P: Clone + 'static, C>(
+        &mut self,
+        rows: Vec<ChooserRow<P>>,
+        placeholder: &'static str,
+        ctx: C,
+        on_answer: AnswerFn<P>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> OpenChooser<P, C> {
+        let chooser = cx.new(|cx| ViewChooser::new(rows, placeholder, window, cx));
+        let events = cx.subscribe_in(&chooser, window, on_answer);
+        let state = chooser.read(cx).state.clone();
+        let shown = chooser.clone();
+        self.show_modal(
+            Slot::Own(ModalKind::ViewChooser),
+            WIDTH_REMS,
+            move |window, cx| state.update(cx, |state, cx| state.focus(window, cx)),
+            move |dialog, _, _| dialog.p_0().child(shown.clone()),
+            window,
+            cx,
+        );
+        OpenChooser {
+            chooser,
+            ctx,
+            _events: events,
+        }
+    }
+
     /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view the
     /// new slot beside `slot` holds, `dir` its side. The rows are the views
     /// the rail offers now that no slot shows, in registry order; with none,
-    /// the split says so and does nothing. Refused under another modal.
+    /// the split says so and does nothing. Refused (false) under another modal.
     pub(crate) fn open_split_chooser(
         &mut self,
         slot: SlotId,
         dir: Dir,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if super::modal::dialog_open(window, cx) {
-            return;
+            return false;
         }
         let rows: Vec<ChooserRow<DrawerView>> = self
             .rail_views()
@@ -228,25 +278,17 @@ impl Workspace {
             .collect();
         if rows.is_empty() {
             self.flash("Every view is already shown", cx);
-            return;
+            return true;
         }
-        let chooser = cx.new(|cx| ViewChooser::new(rows, "Show in the new slot", window, cx));
-        let events = cx.subscribe_in(&chooser, window, Self::on_split_chooser);
-        self.split_chooser = Some(SplitChooser {
-            chooser: chooser.clone(),
-            slot,
-            dir,
-            _events: events,
-        });
-        let state = chooser.read(cx).state.clone();
-        self.show_modal(
-            Slot::Own(ModalKind::ViewChooser),
-            WIDTH_REMS,
-            move |window, cx| state.update(cx, |state, cx| state.focus(window, cx)),
-            move |dialog, _, _| dialog.p_0().child(chooser.clone()),
+        self.split_chooser = Some(self.open_chooser(
+            rows,
+            "Show in the new slot",
+            (slot, dir),
+            Self::on_split_chooser,
             window,
             cx,
-        );
+        ));
+        true
     }
 
     /// The split chooser answered: on a pick, close it and place the view
@@ -261,21 +303,19 @@ impl Workspace {
         let Some(open) = self.split_chooser.take() else {
             return;
         };
-        let ChooserEvent::Picked(index) = *event else {
-            return;
-        };
-        let Some(view) = open.chooser.read(cx).payload(index).copied() else {
+        let Some(((slot, dir), view)) = open.answer(event, cx) else {
             return;
         };
         self.close_modal(window, cx);
-        self.place_picked(view, open.slot, open.dir, window, cx);
+        self.place_picked(view, slot, dir, window, cx);
     }
 
     /// Put `view` in a new slot on the `dir` side of `slot`
     /// ([`LayoutTree::place_beside`]); the view leaves the slot it was
     /// hidden in, which closes if that emptied it
     /// ([`Self::close_if_vacated`]). The keyboard goes to the new slot.
-    /// Persisted. Nothing changes when `slot` went away meanwhile.
+    /// Persisted. Nothing changes when `slot` went away meanwhile, the view
+    /// got shown elsewhere, or the layout was zoomed.
     ///
     /// [`LayoutTree::place_beside`]: kimun_notes::logic::layout_tree::LayoutTree::place_beside
     fn place_picked(
@@ -286,6 +326,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // As `move_picked`: the layout may have changed under the chooser.
+        if self.layout.zoomed().is_some() || self.is_shown(view) {
+            return;
+        }
         let from = self.layout.view_slot(&view);
         let Ok(new) = self.layout.place_beside(view, slot, dir) else {
             return;
@@ -338,23 +382,14 @@ impl Workspace {
             self.flash("Nowhere else to move this view", cx);
             return;
         }
-        let chooser = cx.new(|cx| ViewChooser::new(rows, "Move the view to", window, cx));
-        let events = cx.subscribe_in(&chooser, window, Self::on_move_chooser);
-        self.move_chooser = Some(MoveChooser {
-            chooser: chooser.clone(),
-            slot,
-            view,
-            _events: events,
-        });
-        let state = chooser.read(cx).state.clone();
-        self.show_modal(
-            Slot::Own(ModalKind::ViewChooser),
-            WIDTH_REMS,
-            move |window, cx| state.update(cx, |state, cx| state.focus(window, cx)),
-            move |dialog, _, _| dialog.p_0().child(chooser.clone()),
+        self.move_chooser = Some(self.open_chooser(
+            rows,
+            "Move the view to",
+            (slot, view),
+            Self::on_move_chooser,
             window,
             cx,
-        );
+        ));
     }
 
     /// Where `view`, shown in `slot`, can go: `Into <title> slot` for each
@@ -372,19 +407,26 @@ impl Workspace {
     ) -> Vec<ChooserRow<MoveTarget>> {
         let keymap = keymap::active(cx);
         let chord = |dir: Dir| keymap.chord_for(&ActionShortcuts::MoveViewToNeighbour(dir));
-        // Where the move chord toward `dir` takes the view; `None`: a new
-        // slot on that side (up and down make one rather than land on a
-        // slot that is not drawn).
-        let reach = |dir: Dir| {
+        // Where the move chord toward each side takes the view; `None`: a
+        // new slot on that side (up and down make one rather than land on
+        // a slot that is not drawn). Worked out once, each is a layout pass.
+        let reaches = NEW_SIDES.map(|(dir, _)| {
             let mut tree = self.layout.clone();
             let to = tree
                 .move_view_dir(&view, dir)
                 .then(|| tree.view_slot(&view))
-                .flatten()?;
-            match dir {
-                Dir::Up | Dir::Down => self.slot_drawn(to).then_some(to),
-                Dir::Left | Dir::Right => Some(to),
-            }
+                .flatten()
+                .filter(|to| match dir {
+                    Dir::Up | Dir::Down => self.slot_drawn(*to),
+                    Dir::Left | Dir::Right => true,
+                });
+            (dir, to)
+        });
+        let reach = |dir: Dir| {
+            reaches
+                .iter()
+                .find(|(d, _)| *d == dir)
+                .and_then(|(_, to)| *to)
         };
         let mut rows: Vec<ChooserRow<MoveTarget>> = self
             .layout
@@ -426,14 +468,11 @@ impl Workspace {
         let Some(open) = self.move_chooser.take() else {
             return;
         };
-        let ChooserEvent::Picked(index) = *event else {
-            return;
-        };
-        let Some(target) = open.chooser.read(cx).payload(index).copied() else {
+        let Some(((slot, view), target)) = open.answer(event, cx) else {
             return;
         };
         self.close_modal(window, cx);
-        self.move_picked(open.view, open.slot, target, window, cx);
+        self.move_picked(view, slot, target, window, cx);
     }
 
     /// Move `view` out of `from` to `target`. Into a slot: shown there,

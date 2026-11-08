@@ -7,7 +7,8 @@
 //! which leaf has the keyboard live in the logic [`LayoutTree`]; this view
 //! only renders it ([`tree_view`]) and keeps GPUI focus in step with it. A
 //! slot with no shown view is not drawn, unless it was opened empty this
-//! session (a side toggled on with nothing placed): then it shows a hint. Neither that nor which views a side toggle hid is persisted.
+//! session (a side toggled on with nothing placed): then it shows a hint.
+//! Neither that nor which views a side toggle hid is persisted.
 //!
 //! **Arranging.** The rail shows a view where it is placed, hiding the
 //! view sharing its slot, and a click on a shown view hides it; the move,
@@ -1864,6 +1865,13 @@ impl Workspace {
         }
         let zoomed = self.layout.zoomed() == Some(Leaf::Slot(slot));
         if self.layout.vacate_close(slot).is_none() {
+            // Kept: holding other views, the first shows in the place of
+            // the one that left, so the slot stays drawn.
+            if self.layout.shown(slot).is_none()
+                && let Some(next) = self.layout.slot_views(slot).first().copied()
+            {
+                self.layout.show_view(&next, false);
+            }
             return false;
         }
         if zoomed && let Some(to) = self.layout.view_slot(&view) {
@@ -1945,9 +1953,10 @@ impl Workspace {
     /// above (`Dir::Up`) or below the slot that last held the keyboard,
     /// while it exists and is drawn, else the slot beside the rail
     /// ([`LayoutTree::place_beside`]); it leaves the slot it was in, which
-    /// closes when emptied. Handled with nothing changed while zoomed (the
-    /// new slot would not be on screen) or when the view is alone in that
-    /// slot already. The rail keeps the keyboard. Persisted.
+    /// closes when emptied. Handled, with a flash and nothing changed, while
+    /// zoomed (the new slot would not be on screen), with no drawn slot to
+    /// place beside, or when the view is alone in that slot already. The rail
+    /// keeps the keyboard. Persisted.
     fn place_from_rail(&mut self, dir: Dir, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(view) = self.rail_cursor_view() else {
             return false;
@@ -1966,25 +1975,22 @@ impl Workspace {
                 let Some(target) = self
                     .last_slot
                     .filter(|s| self.slot_drawn(*s))
-                    .or_else(|| self.slot_beside_rail())
+                    .or_else(|| self.slot_beside_rail().filter(|s| self.slot_drawn(*s)))
                 else {
-                    return false;
+                    self.flash("No slot to place this view beside", cx);
+                    return true;
                 };
-                let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
-                if self.layout.zoomed().is_some()
-                    || alone
-                    || self.layout.place_beside(view, target, dir).is_err()
-                {
+                if self.layout.zoomed().is_some() {
+                    self.flash("Leave zoom to place a view", cx);
                     return true;
                 }
-                // Out of the slot it is placed beside: as a move toward
-                // nothing, the first view left there shows in its place.
-                if from == Some(target)
-                    && self.layout.shown(target).is_none()
-                    && let Some(next) = self.layout.slot_views(target).first().copied()
-                {
-                    self.layout.show_view(&next, false);
+                let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
+                if alone || self.layout.place_beside(view, target, dir).is_err() {
+                    self.flash("Nowhere to place this view", cx);
+                    return true;
                 }
+                // Out of the slot it is placed beside: the first view left
+                // there shows in its place ([`Self::close_if_vacated`]).
             }
         }
         if let Some(from) = from {
@@ -2000,8 +2006,9 @@ impl Workspace {
     /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view
     /// the new slot, right of the focused slot (`axis` horizontal) or below
     /// it, holds ([`Self::open_split_chooser`]); the slot arrives filled.
-    /// Handled whenever a slot has the keyboard; nothing splits while
-    /// zoomed (the new slot would not be drawn).
+    /// Handled whenever a slot has the keyboard, except under another
+    /// modal, where the key passes on; zoomed it flashes and splits
+    /// nothing (the new slot would not be drawn).
     fn split_focused_slot(
         &mut self,
         axis: TreeAxis,
@@ -2011,23 +2018,24 @@ impl Workspace {
         let Some(slot) = self.focused_slot() else {
             return false;
         };
-        if self.layout.zoomed().is_none() {
-            let dir = match axis {
-                TreeAxis::Horizontal => Dir::Right,
-                TreeAxis::Vertical => Dir::Down,
-            };
-            self.open_split_chooser(slot, dir, window, cx);
+        if self.layout.zoomed().is_some() {
+            self.flash("Leave zoom to split a slot", cx);
+            return true;
         }
-        true
+        let dir = match axis {
+            TreeAxis::Horizontal => Dir::Right,
+            TreeAxis::Vertical => Dir::Down,
+        };
+        self.open_split_chooser(slot, dir, window, cx)
     }
 
     /// `CloseSlot` (Ruling 15): with a slot opened empty
     /// somewhere, close that one (the keyboard stays where it is);
     /// otherwise close the focused slot. While zoomed only the zoomed slot
-    /// is on screen, so that is the one that closes (and zoom ends). Its views join the neighbouring
-    /// slot that takes over its area, hidden, and the keyboard goes there
-    /// when that slot is drawn (else to the editor). The only slot stays.
-    /// Persisted.
+    /// is on screen, so that is the one that closes (and zoom ends). Its
+    /// views join the neighbouring slot that takes over its area, hidden,
+    /// and the keyboard goes there when that slot is drawn (else to the
+    /// editor). The only slot stays. Persisted.
     fn close_focused_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(focused) = self.focused_slot() else {
             return false;
