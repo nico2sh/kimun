@@ -1351,7 +1351,7 @@ fn a_narrow_slot_header_does_not_wrap(cx: &mut TestAppContext) {
     let one_line = cx
         .update_window(wide.handle, |_, window, cx| {
             window.render_frame(cx);
-            let mut slot = window.within(slot_id(DrawerView::Semantic));
+            let slot = window.within(slot_id(DrawerView::Semantic));
             f32::from(slot.find("slot-header").bounds().size.height)
         })
         .unwrap();
@@ -1365,7 +1365,7 @@ fn a_narrow_slot_header_does_not_wrap(cx: &mut TestAppContext) {
                 .width,
         );
         assert!(width < 40., "the slot is narrow: {width}");
-        let mut slot = window.within(slot_id(DrawerView::Semantic));
+        let slot = window.within(slot_id(DrawerView::Semantic));
         let header = slot.find("slot-header").bounds();
         assert!(
             (f32::from(header.size.height) - one_line).abs() < 0.5,

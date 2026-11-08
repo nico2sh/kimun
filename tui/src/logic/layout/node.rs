@@ -390,7 +390,7 @@ impl<L: Clone + PartialEq> Node<L> {
         while sum > len + 1e-9 {
             let Some(pos) = active
                 .iter()
-                .rposition(|&i| !children[i].node.leaves().into_iter().any(|l| keep(l)))
+                .rposition(|&i| !children[i].node.leaves().into_iter().any(keep))
             else {
                 break;
             };
