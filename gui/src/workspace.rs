@@ -1772,8 +1772,11 @@ impl Workspace {
     /// `MoveViewToNeighbour(Left / Right)`: move the focused view to the
     /// nearest slot toward `dir` ([`LayoutTree::move_view_dir`]) and show
     /// it there, replacing the view shown there (which stays placed,
-    /// hidden); the keyboard follows it. Nothing that way: handled, nothing
-    /// moves. Persisted.
+    /// hidden); the keyboard follows it. Nothing that way: the view goes
+    /// to a new slot on that side when its slot holds other views
+    /// ([`Self::spawn_beside`]); alone there, handled, nothing moves. A
+    /// slot the move empties closes ([`Self::close_if_vacated`]).
+    /// Persisted.
     ///
     /// From the rail the move is spatial: the rail sits at the window's
     /// left edge, so Right moves and shows the cursor's view in the slot
@@ -1783,6 +1786,7 @@ impl Workspace {
         let Some(view) = self.arranged_view() else {
             return false;
         };
+        let from = self.layout.view_slot(&view);
         match self.layout.focused() {
             Focus::Rail => {
                 let target = match dir {
@@ -1795,19 +1799,77 @@ impl Workspace {
                 self.layout.move_view(view, target);
             }
             _ => {
-                let from = self.layout.view_slot(&view);
-                if self.layout.move_view_dir(&view, dir)
-                    && self.focused_slot() == from
-                    && let Some(to) = self.layout.view_slot(&view)
+                if self.layout.move_view_dir(&view, dir) {
+                    if self.focused_slot() == from
+                        && let Some(to) = self.layout.view_slot(&view)
+                    {
+                        self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
+                    }
+                } else if let Some(from) = from
+                    && self.spawn_beside(view, from, dir, window, cx)
                 {
-                    self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
+                    return true;
                 }
             }
+        }
+        if let Some(from) = from {
+            self.close_if_vacated(from, view);
         }
         self.ensure_files_listing(cx);
         self.tidy_layout(cx);
         self.apply_focus(window, cx);
         self.save_layout(cx);
+        true
+    }
+
+    /// A move toward nothing (ADR-0054 §2): put `view`, shown in `from`,
+    /// into a new slot on the `dir` side of `from`
+    /// ([`LayoutTree::place_beside`]), when `from` holds other views (the
+    /// first of them shows in its place, so `from` stays drawn) and nothing
+    /// is zoomed. The keyboard follows the view. Persisted. False (nothing
+    /// changes) otherwise: a view alone in its slot leaves nothing behind.
+    fn spawn_beside(
+        &mut self,
+        view: DrawerView,
+        from: SlotId,
+        dir: Dir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.layout.zoomed().is_some() || self.layout.slot_views(from).len() < 2 {
+            return false;
+        }
+        let Ok(new) = self.layout.place_beside(view, from, dir) else {
+            return false;
+        };
+        if self.layout.shown(from).is_none()
+            && let Some(next) = self.layout.slot_views(from).first().copied()
+        {
+            self.layout.show_view(&next, false);
+        }
+        self.layout.focus(Focus::Leaf(Leaf::Slot(new)));
+        self.ensure_files_listing(cx);
+        self.tidy_layout(cx);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+        true
+    }
+
+    /// After a move of `view` out of `slot` (ADR-0054 §1): close `slot`
+    /// when it holds no views any more ([`LayoutTree::vacate_close`]),
+    /// never a slot opened empty, which is not vacated. A zoom on it moves
+    /// to `view`'s new slot. True when it closed.
+    fn close_if_vacated(&mut self, slot: SlotId, view: DrawerView) -> bool {
+        if self.opened_empty.contains(&slot) {
+            return false;
+        }
+        let zoomed = self.layout.zoomed() == Some(Leaf::Slot(slot));
+        if self.layout.vacate_close(slot).is_none() {
+            return false;
+        }
+        if zoomed && let Some(to) = self.layout.view_slot(&view) {
+            self.layout.zoom(Some(Leaf::Slot(to)));
+        }
         true
     }
 
@@ -1822,9 +1884,11 @@ impl Workspace {
     /// trading places with the view shown there; a focused view keeps the
     /// keyboard. With the rail cursor on a view no
     /// slot shows, it goes into a slot opened empty (the first in reading
-    /// order), the rail keeping the keyboard. Nothing that way: handled
-    /// when slots are stacked there, else not handled, so the key passes
-    /// on. Persisted.
+    /// order), the rail keeping the keyboard. Nothing drawn that way: a
+    /// focused view goes to a new slot on that side when its slot holds
+    /// other views ([`Self::spawn_beside`]); otherwise handled when slots
+    /// are stacked there, else not handled, so the key passes on. A slot
+    /// the move empties closes ([`Self::close_if_vacated`]). Persisted.
     fn move_view_vertically(
         &mut self,
         up: bool,
@@ -1840,7 +1904,11 @@ impl Workspace {
                 .into_iter()
                 .find(|s| self.opened_empty.contains(s))
         {
+            let from = self.layout.view_slot(&view);
             self.layout.move_view(view, slot);
+            if let Some(from) = from {
+                self.close_if_vacated(from, view);
+            }
             self.ensure_files_listing(cx);
             self.apply_focus(window, cx);
             self.save_layout(cx);
@@ -1866,7 +1934,8 @@ impl Workspace {
             // stacked there.
             if !to.is_some_and(|to| undo.shown(to).is_some() || self.opened_empty.contains(&to)) {
                 self.layout = undo;
-                return self.stacked(from);
+                return self.spawn_focused_beside(view, from, dir, window, cx)
+                    || self.stacked(from);
             }
             // A swap: the view shown where it landed takes the slot it left.
             if let Some(Some(other)) = before
@@ -1881,12 +1950,26 @@ impl Workspace {
             {
                 self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
             }
+            self.close_if_vacated(from, view);
             self.tidy_layout(cx);
             self.apply_focus(window, cx);
             self.save_layout(cx);
             return true;
         }
-        self.stacked(from)
+        self.spawn_focused_beside(view, from, dir, window, cx) || self.stacked(from)
+    }
+
+    /// [`Self::spawn_beside`] for the view the focused slot shows; a view
+    /// under the rail's cursor does not spawn from here.
+    fn spawn_focused_beside(
+        &mut self,
+        view: DrawerView,
+        from: SlotId,
+        dir: Dir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.focused_slot() == Some(from) && self.spawn_beside(view, from, dir, window, cx)
     }
 
     /// `SplitSlotRight` / `SplitSlotDown`: split the focused slot along
@@ -2901,6 +2984,8 @@ mod palette_tests;
 mod picker_tests;
 #[cfg(test)]
 mod pinned_tests;
+#[cfg(test)]
+mod placement_tests;
 #[cfg(test)]
 mod preferences_tests;
 #[cfg(test)]

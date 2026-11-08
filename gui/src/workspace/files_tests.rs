@@ -600,12 +600,19 @@ impl Started {
 /// With the FILES filter holding the keyboard (where the kit's input binds
 /// Alt+Shift+Left/Right to word selection and Alt+Shift+Up/Down to extra
 /// carets), the move chords still carry FILES between the slots, both
-/// ways, and the keyboard stays in its filter.
+/// ways, and the keyboard stays in its filter. Each slot keeps a hidden
+/// view (FIND left, TAGS right), so no move empties a slot (which would
+/// close it, ADR-0054).
 #[gpui_kit::test]
 fn files_moves_both_ways_from_its_filter(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "top.md");
+    started.workspace.update(cx, |w, _| {
+        let slots = w.layout.slots();
+        assert!(w.layout.place(DrawerView::Find, slots[0], false));
+        assert!(w.layout.place(DrawerView::Tags, slots[1], false));
+    });
     focus_files(&started, cx);
     assert!(started.filter_focused(cx));
 
@@ -732,22 +739,24 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     assert_eq!(started.query(cx), "");
 
     // Moved to the empty right side (its top slot) and split there,
-    // from the filter: FILES moves down into the empty slot.
+    // from the filter: FILES moves down into the empty slot, and the slot
+    // it left, empty now, closes (ADR-0054).
     started.press_key("alt-shift-right", cx);
     assert_eq!(started.views(Side::Right, cx), [DrawerView::Files]);
     started.press_key("alt-shift-d", cx);
     assert!(started.filter_focused(cx));
+    let split = cx.read(|cx| started.workspace.read(cx).side_slots(Side::Right)[1]);
     started.press_key("alt-shift-down", cx);
     let slots = cx.read(|cx| {
         let w = started.workspace.read(cx);
         w.side_slots(Side::Right)
             .into_iter()
-            .map(|s| w.layout.shown(s))
+            .map(|s| (s, w.layout.shown(s)))
             .collect::<Vec<_>>()
     });
     assert_eq!(
         slots,
-        [None, Some(DrawerView::Files)],
+        [(split, Some(DrawerView::Files))],
         "moved from the filter in the right slot"
     );
     assert!(started.filter_focused(cx));
