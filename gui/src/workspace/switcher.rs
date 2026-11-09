@@ -344,18 +344,27 @@ impl Render for WorkspaceSwitcher {
 // ---- The workspace's side ----------------------------------------------------------
 
 impl Workspace {
+    /// Whether [`Self::open_workspace_switcher`] does anything now: it
+    /// toggles the switcher closed when that is the open modal, and is
+    /// otherwise refused under the setup assistant, Preferences or another
+    /// dialog. The workspace chip is inert while it is not.
+    pub(crate) fn workspace_switcher_available(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.onboarding_open() || self.preferences_open() {
+            return false;
+        }
+        self.open_modal(window, cx) == Some(ModalKind::WorkspaceSwitcher)
+            || !modal::dialog_open(window, cx)
+    }
+
     /// `SwitchWorkspace`, leader `v s`, the palette: open the workspace
     /// switcher over the window, or close it when it is the open modal.
     /// Refused under the setup assistant or another modal.
     pub(crate) fn open_workspace_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.onboarding_open() || self.preferences_open() {
+        if !self.workspace_switcher_available(window, cx) {
             return;
         }
         if self.open_modal(window, cx) == Some(ModalKind::WorkspaceSwitcher) {
             self.close_modal(window, cx);
-            return;
-        }
-        if modal::dialog_open(window, cx) {
             return;
         }
         // Read now, not cached: what the settings hold at this moment.

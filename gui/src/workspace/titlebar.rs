@@ -23,6 +23,16 @@
 //! its bounds change (a fullscreen change arrives as one), so the bar's
 //! inactive colour and its fullscreen check are always current.
 //!
+//! **The workspace chip.** With a workspace open the bar names it as a button
+//! (the kit's ghost button: name and a caret) that opens the workspace
+//! switcher, in place of the plain title (the OS's window title stays
+//! `<name> - Kimün`). After a failed open it says "No workspace", the way to
+//! pick another; under the setup assistant there is none. When there is no
+//! bar (system decorations, fullscreen) the same chip leads the footer. It is
+//! inert while the switcher cannot open (Preferences, a dialog). The footer is
+//! the editor panel's, so Preferences and setup, which replace it, show the
+//! chip only through the bar.
+//!
 //! **Close.** Linux: the kit's close button calls the hook, which goes
 //! through the window's close guard: unsaved notes are flushed, dirty
 //! Preferences ask first, and a refused close keeps the window. Windows:
@@ -39,11 +49,12 @@
 use std::rc::Rc;
 
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::TitleBar as KitTitleBar;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{Disableable as _, Sizable as _, TitleBar as KitTitleBar};
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Decorations, Entity, InteractiveElement, IntoElement,
-    ParentElement, Rgba, Role, SharedString, StatefulInteractiveElement, Styled, Window,
-    WindowDecorations, WindowOptions, div, img,
+    MouseButton, ParentElement, Rgba, Role, SharedString, StatefulInteractiveElement, Styled,
+    Window, WindowDecorations, WindowOptions, div, img, rems,
 };
 use kimun_notes::settings::gui::WindowDecorations as DecorationsSetting;
 use kimun_notes::settings::themes::Theme;
@@ -56,6 +67,10 @@ use crate::{assets, startup, theme};
 /// ships one in `assets/packaging/linux/kimun.desktop` (`StartupWMClass` is
 /// this id; a test keeps the two in step) for a package to install.
 pub(crate) const APP_ID: &str = "kimun";
+
+/// The workspace chip: the open workspace's name, which opens the switcher.
+/// In the title bar, or in the footer when there is no bar.
+pub(crate) const WORKSPACE_CHIP_ID: &str = "workspace-chip";
 
 /// The element ids of our wrapper around the kit's bar, and of the title.
 pub(crate) const TITLE_BAR_ID: &str = "window-title-bar";
@@ -195,7 +210,32 @@ pub(crate) struct TitleBar {
     window: Rc<dyn WindowChrome>,
     /// The window title, as the operating system's title shows it too.
     pub(crate) title: SharedString,
+    /// What the chip names (`None`: no chip).
+    pub(crate) chip: Option<ChipName>,
 }
+
+/// What the workspace chip says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChipName {
+    pub(crate) text: SharedString,
+    /// Whether `text` is an open workspace's name (otherwise it says that
+    /// there is none, and the chip is the way to pick one).
+    pub(crate) open: bool,
+}
+
+impl ChipName {
+    /// The chip's accessible name.
+    fn spoken(&self) -> String {
+        if self.open {
+            format!("Workspace {}, switch workspace", self.text)
+        } else {
+            format!("{}, switch workspace", self.text)
+        }
+    }
+}
+
+/// The chip's text when a workspace failed to open.
+const NO_WORKSPACE: &str = "No workspace";
 
 impl TitleBar {
     /// The system's chrome (no bar) until `main` says otherwise.
@@ -205,6 +245,7 @@ impl TitleBar {
             os: Os::current(),
             window: Rc::new(PlatformWindow),
             title: startup::APP_NAME.into(),
+            chip: None,
         }
     }
 }
@@ -232,6 +273,44 @@ pub(crate) fn bar_colors(t: &Theme, active: bool) -> BarColors {
     }
 }
 
+/// The workspace chip: `name` and a caret, which `on_click` answers (open the
+/// workspace switcher). The kit's ghost button, so its hover, focus ring, Tab
+/// stop and disabled look are the kit's; the caller gives it the text colour
+/// that suits the surface, and `inert` while the switcher cannot open.
+///
+/// It blocks the pointer from the bar under it: on Windows the bar's drag
+/// area would otherwise take the press as a window drag, and on Linux a press
+/// would start moving the window. Its own press and click go no further.
+pub(crate) fn workspace_chip(
+    name: &ChipName,
+    color: Rgba,
+    inert: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    Button::new(WORKSPACE_CHIP_ID)
+        .ghost()
+        .xsmall()
+        .label(name.text.clone())
+        .dropdown_caret(true)
+        .accessibility_label(name.spoken())
+        .tooltip("Switch workspace")
+        .text_color(color)
+        .disabled(inert)
+        // It shrinks (the label cut short with an ellipsis) before it crowds
+        // its neighbours, and a long name stops at a readable width.
+        .min_w_0()
+        .max_w(rems(16.))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx);
+        })
+}
+
 /// What the kit's close button runs (Linux): the window's close guard, as
 /// the operating system's close button reaches it.
 pub(crate) fn close_hook(
@@ -254,33 +333,99 @@ impl Workspace {
         self.titlebar.window = window;
     }
 
-    /// The window title: the bar's, and the operating system's (the task
-    /// switcher, the accessibility tree).
-    pub(super) fn set_title(&mut self, title: String, window: &mut Window) {
+    /// A workspace is open under `name`: the window title (the OS's too) and
+    /// the chip both name it. One setter, so the two cannot disagree.
+    pub(super) fn set_workspace_name(&mut self, name: &str, window: &mut Window) {
+        let name = name.trim();
+        let chip = (!name.is_empty()).then(|| ChipName {
+            text: name.to_string().into(),
+            open: true,
+        });
+        self.apply_identity(crate::startup::title_for_workspace(name), chip, window);
+    }
+
+    /// No workspace is open. After a failed open (`failed`) the chip stays,
+    /// saying so: it is the way to pick another; the setup assistant needs
+    /// none.
+    pub(super) fn set_no_workspace(&mut self, failed: bool, window: &mut Window) {
+        let chip = failed.then(|| ChipName {
+            text: NO_WORKSPACE.into(),
+            open: false,
+        });
+        self.apply_identity(crate::startup::title_for_workspace(""), chip, window);
+    }
+
+    fn apply_identity(&mut self, title: String, chip: Option<ChipName>, window: &mut Window) {
         window.set_window_title(&title);
         self.titlebar.title = title.into();
+        self.titlebar.chip = chip;
+    }
+
+    /// Whether the bar shows now (see [`bar_shown`]); when it does not, the
+    /// footer carries the chip.
+    pub(super) fn bar_visible(&self, window: &Window) -> bool {
+        let bar = &self.titlebar;
+        bar_shown(
+            bar.chrome,
+            bar.os,
+            bar.window.decorations(window),
+            bar.window.is_fullscreen(window),
+        )
+    }
+
+    /// The chip, wired to the workspace switcher. `None` with nothing to name.
+    /// Inert while the switcher cannot open (setup, Preferences, a dialog up).
+    pub(super) fn workspace_chip(
+        &self,
+        color: Rgba,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let name = self.titlebar.chip.as_ref()?;
+        let inert = !self.workspace_switcher_available(window, cx);
+        Some(
+            workspace_chip(
+                name,
+                color,
+                inert,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_workspace_switcher(window, cx)
+                }),
+            )
+            .into_any_element(),
+        )
     }
 
     /// The bar, when it shows (see [`bar_shown`]): the kit's title bar,
     /// carrying the logo and the title, closing through the close guard.
     pub(super) fn render_title_bar(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let bar = &self.titlebar;
-        let shown = bar_shown(
-            bar.chrome,
-            bar.os,
-            bar.window.decorations(window),
-            bar.window.is_fullscreen(window),
-        );
-        if !shown {
+        if !self.bar_visible(window) {
             return None;
         }
         let colors = bar_colors(&theme::current(cx), window.is_window_active());
-        let title = bar.title.clone();
+        let title = self.titlebar.title.clone();
         let workspace = cx.entity();
+        // With a workspace open the bar names it as the switcher's button; the
+        // window title (the OS's) stays "<name> - Kimün". Without one, the
+        // app's name.
+        let name: AnyElement = match self.workspace_chip(colors.title, window, cx) {
+            Some(chip) => chip,
+            None => div()
+                .id(TITLE_TEXT_ID)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(title.clone())
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .text_color(colors.title)
+                .child(title.clone())
+                .into_any_element(),
+        };
         let content = div()
             .flex()
             .flex_row()
@@ -289,18 +434,7 @@ impl Workspace {
             .min_w_0()
             // Decorative: the title names the window.
             .child(img(assets::logo()).size_4().flex_none())
-            .child(
-                div()
-                    .id(TITLE_TEXT_ID)
-                    .test_support()
-                    .role(Role::Label)
-                    .aria_label(title.clone())
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(colors.title)
-                    .child(title.clone()),
-            );
+            .child(name);
         let kit_bar = KitTitleBar::new()
             .bg(colors.surface)
             .on_close_window(close_hook(workspace))

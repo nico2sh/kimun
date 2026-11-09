@@ -501,10 +501,17 @@ impl Workspace {
         }
         let shape = self.layout.shape();
         let tree = self
-            .render_node(&shape, self.tree_area(window), (false, false), rem, cx)
+            .render_node(
+                &shape,
+                self.tree_area(window),
+                (false, false),
+                rem,
+                window,
+                cx,
+            )
             // Every tree holds an editor group, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
-            .unwrap_or_else(|| self.render_editor(cx).into_any_element());
+            .unwrap_or_else(|| self.render_editor(window, cx).into_any_element());
         div()
             .id("layout-tree")
             .flex()
@@ -526,7 +533,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let content = match leaf {
-            Leaf::Group(_) => self.render_editor(cx).into_any_element(),
+            Leaf::Group(_) => self.render_editor(window, cx).into_any_element(),
             Leaf::Slot(_) => {
                 let slot = self
                     .render_node(
@@ -534,6 +541,7 @@ impl Workspace {
                         self.tree_area(window),
                         (false, false),
                         rem,
+                        window,
                         cx,
                     )
                     .unwrap_or_else(|| div().flex_1().into_any_element());
@@ -544,7 +552,7 @@ impl Workspace {
                     .min_w_0()
                     .h_full()
                     .child(div().flex().flex_1().min_h_0().child(slot))
-                    .child(self.render_footer(false, cx))
+                    .child(self.render_footer(false, window, cx))
                     .into_any_element()
             }
         };
@@ -567,10 +575,13 @@ impl Workspace {
         size: (f64, f64),
         across: (bool, bool),
         rem: f64,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         match shape {
-            TreeShape::Leaf(Leaf::Group(_)) => Some(self.render_editor(cx).into_any_element()),
+            TreeShape::Leaf(Leaf::Group(_)) => {
+                Some(self.render_editor(window, cx).into_any_element())
+            }
             TreeShape::Leaf(Leaf::Slot(slot)) => {
                 if !self.leaf_visible(Leaf::Slot(*slot)) {
                     return None;
@@ -622,7 +633,7 @@ impl Workspace {
                             Axis::Horizontal => (*along, cross),
                             Axis::Vertical => (cross, *along),
                         };
-                        let element = self.render_node(child, size, across, rem, cx)?;
+                        let element = self.render_node(child, size, across, rem, window, cx)?;
                         // Minimums are set only where they all fit.
                         let min = held.then_some(*min);
                         Some((*index, *weight, min, last_leaf(child), element))

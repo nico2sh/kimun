@@ -160,6 +160,7 @@ pub(crate) fn render(
     on_backlinks: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_properties: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     zoom: Option<ZoomSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    workspace: Option<AnyElement>,
 ) -> impl IntoElement {
     // Tabular figures: the caret's line and column, the match index and the
     // counts change in place, and should not jitter as their digits do.
@@ -188,6 +189,9 @@ pub(crate) fn render(
     // The path shrinks (cut short with an ellipsis) rather than pushing the
     // pinned labels out.
     let bar = StatusBar::new()
+        // The workspace chip leads the row when the title bar is not there to
+        // carry it.
+        .when_some(workspace, |bar, chip| bar.child(chip))
         .when_some(zoom, |bar, zoom| bar.child(zoom_segment(zoom, theme)))
         .when_some(
             status.note.as_ref().or(status.attachment.as_ref()),
