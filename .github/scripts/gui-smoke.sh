@@ -7,7 +7,7 @@
 #               (alive and panic-free is all this checks, not what it shows)
 #
 # Everything runs against a throw-away HOME, so it never touches real notes or
-# config. It needs a display. With none ($DISPLAY and $WAYLAND_DISPLAY unset)
+# config. It needs a display (always assumed on macOS). With none ($DISPLAY and $WAYLAND_DISPLAY unset)
 # it re-runs itself under `xvfb-run`, which also needs a Vulkan driver that
 # works without a GPU (Mesa's lavapipe: `mesa-vulkan-drivers`).
 #
@@ -26,7 +26,8 @@ seconds="${2:-6}"
 cd "$(dirname "$self")/../.."
 bin="${bin:-$PWD/target/debug/kimun-gui}"
 
-if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+# macOS draws through its own window server, so there is no $DISPLAY to look for.
+if [ "$(uname -s)" != "Darwin" ] && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
   command -v xvfb-run >/dev/null || {
     echo "no display and no xvfb-run: install xvfb, or run on a desktop" >&2
     exit 2

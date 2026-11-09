@@ -69,10 +69,11 @@ echo "   installed byte-for-byte what was built; marker written"
 
 echo "== running what was installed"
 echo "   terminal app: $(HOME="$home" "$home/bin/kimun" --version 2>&1 | head -1)"
-if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || command -v xvfb-run >/dev/null; then
+# macOS has its own window server: no $DISPLAY involved (needs a logged-in desktop session).
+if [ "$(uname -s)" = "Darwin" ] || [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || command -v xvfb-run >/dev/null; then
   bash .github/scripts/gui-smoke.sh "$home/bin/kimun-gui" "${SMOKE_SECONDS:-5}"
 else
-  echo "   desktop app: skipped (no display and no xvfb-run)"
+  echo "   desktop app: skipped (no display and no xvfb-run; on macOS run from a desktop session, not over ssh)"
 fi
 
 echo "rehearsal ok: $platform, $version"
