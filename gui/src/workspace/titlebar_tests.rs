@@ -20,14 +20,15 @@ use kimun_notes::settings::gui::WindowDecorations as DecorationsSetting;
 use kimun_notes::settings::themes::Theme;
 
 use super::LayoutStore;
+use super::modal::ModalKind;
 use super::onboarding::ONBOARDING_ID;
 use super::preferences::{DISCARD_ID, Section, UPDATE_CHECK_ID};
 use super::preferences_tests::{on_vault, vault};
 use super::reopen_tests::{BETA, open_on_a, pair, set_current};
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use super::titlebar::{
-    APP_ID, Chrome, Os, TITLE_BAR_ID, TITLE_TEXT_ID, WindowChrome, bar_colors, bar_shown,
-    chrome_for, close_hook, window_options,
+    APP_ID, Chrome, Os, TITLE_BAR_ID, TITLE_TEXT_ID, WORKSPACE_CHIP_ID, WindowChrome, bar_colors,
+    bar_shown, chrome_for, close_hook, window_options,
 };
 use crate::startup::{FirstNote, Start};
 use crate::status_row::ROW_ID;
@@ -180,6 +181,30 @@ impl Started {
         })
     }
 
+    /// The workspace chip, wherever it sits: its accessible name, and its
+    /// window bounds.
+    fn tb_chip(
+        &self,
+        cx: &mut TestAppContext,
+    ) -> Option<(String, gpui_kit::Bounds<gpui_kit::Pixels>)> {
+        self.tb_on_window(cx, |window| {
+            window
+                .try_find(WORKSPACE_CHIP_ID)
+                .filter(|e| e.visible())
+                .map(|e| (e.label().unwrap_or_default().to_string(), e.bounds()))
+        })
+    }
+
+    /// A click on the chip.
+    fn tb_click_chip(&self, cx: &mut TestAppContext) {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(WORKSPACE_CHIP_ID, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
     /// The kit's close button was pressed: its hook runs.
     fn tb_close(&self, cx: &mut TestAppContext) {
         let workspace = self.workspace.clone();
@@ -220,7 +245,7 @@ fn the_client_chrome_draws_the_bar_on_top(cx: &mut TestAppContext) {
     let started = bare(cx);
     started.tb_client(cx);
     assert!(started.shows(TITLE_BAR_ID, cx));
-    assert_eq!(started.tb_title(cx).as_deref(), Some("kimün"));
+    assert!(started.tb_chip(cx).is_some(), "the bar names the workspace");
     let (bar, role, footer, height) = started.tb_on_window(cx, |window| {
         let bar = window.find(TITLE_BAR_ID);
         (
@@ -294,10 +319,19 @@ fn the_title_follows_a_workspace_switch(cx: &mut TestAppContext) {
     let p = rt.block_on(pair());
     let started = open_on_a(cx, &rt, &p, LayoutStore::Off);
     started.tb_client(cx);
-    assert_eq!(started.tb_title(cx).as_deref(), Some("a - kimün"));
+    // The bar names the workspace as the switcher's chip; the OS title keeps
+    // the "<name> - kimün" form.
+    assert_eq!(
+        started.tb_chip(cx).map(|c| c.0).as_deref(),
+        Some("Workspace a, switch workspace")
+    );
+    assert_eq!(started.sw_title(cx).as_deref(), Some("a - kimün"));
     set_current(&p.settings, "b");
     started.sw_reopen_to(&rt, Some(BETA), cx);
-    assert_eq!(started.tb_title(cx).as_deref(), Some("b - kimün"));
+    assert_eq!(
+        started.tb_chip(cx).map(|c| c.0).as_deref(),
+        Some("Workspace b, switch workspace")
+    );
     assert_eq!(started.sw_title(cx).as_deref(), Some("b - kimün"));
 }
 
@@ -321,9 +355,9 @@ fn close_with_nothing_dirty_closes(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| started.text(cx) == "alpha");
     started.tb_client(cx);
     assert_eq!(
-        started.tb_title(cx),
-        Some(format!("{NAME} - kimün")),
-        "titled by the workspace"
+        started.tb_chip(cx).map(|c| c.0),
+        Some(format!("Workspace {NAME}, switch workspace")),
+        "named by the workspace"
     );
     started.tb_close(cx);
     assert!(started.tb_closed(cx));
@@ -379,4 +413,138 @@ fn close_over_dirty_preferences_asks_first(cx: &mut TestAppContext) {
     );
     s.pf_click(DISCARD_ID, cx);
     drive(&rt, cx, |cx| s.tb_closed(cx));
+}
+
+// ── the workspace chip ───────────────────────────────────────────────────
+
+/// A started workspace on a real vault: the chip's tests' window.
+fn on_a_vault(cx: &mut TestAppContext, rt: &tokio::runtime::Runtime) -> Started {
+    let v = rt.block_on(test_vault(&[("a.md", "alpha")], &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(rt, cx, |cx| started.text(cx) == "alpha");
+    started
+}
+
+/// With the title bar up, the chip is in it, the footer carries none, and a
+/// click on it opens the workspace switcher.
+#[gpui_kit::test]
+fn the_chip_is_in_the_title_bar_and_opens_the_switcher(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let started = on_a_vault(cx, &rt);
+    started.tb_client(cx);
+    let (_, chip) = started.tb_chip(cx).expect("the chip shows");
+    let (bar, footer) = started.tb_on_window(cx, |window| {
+        (
+            window.find(TITLE_BAR_ID).bounds(),
+            window.find(ROW_ID).bounds(),
+        )
+    });
+    assert!(
+        chip.origin.y >= bar.origin.y && chip.bottom() <= bar.bottom(),
+        "the chip sits in the bar: {chip:?} in {bar:?}"
+    );
+    assert!(chip.origin.y < footer.origin.y, "and not in the footer");
+    assert_eq!(started.shown_modal(cx), None);
+    started.tb_click_chip(cx);
+    assert_eq!(
+        started.shown_modal(cx),
+        Some(ModalKind::WorkspaceSwitcher),
+        "a click opens the switcher"
+    );
+}
+
+/// With no title bar (system decorations, here the test window's own), the
+/// footer carries the chip, and a click opens the switcher.
+#[gpui_kit::test]
+fn without_a_bar_the_footer_carries_the_chip(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let started = on_a_vault(cx, &rt);
+    assert!(!started.shows(TITLE_BAR_ID, cx));
+    let (name, chip) = started.tb_chip(cx).expect("the chip is in the footer");
+    assert_eq!(name, format!("Workspace {NAME}, switch workspace"));
+    let footer = started.tb_on_window(cx, |window| window.find(ROW_ID).bounds());
+    assert!(
+        chip.origin.y >= footer.origin.y && chip.bottom() <= footer.bottom(),
+        "the chip sits in the footer: {chip:?} in {footer:?}"
+    );
+    started.tb_click_chip(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::WorkspaceSwitcher));
+}
+
+/// Fullscreen takes the bar away and the chip moves to the footer; leaving
+/// fullscreen moves it back. Never two, never none.
+#[gpui_kit::test]
+fn the_chip_moves_to_the_footer_in_fullscreen(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let started = on_a_vault(cx, &rt);
+    let fake = started.tb_client(cx);
+    let in_bar = |started: &Started, cx: &mut TestAppContext| {
+        let (_, chip) = started.tb_chip(cx).expect("exactly one chip shows");
+        let bar = started.tb_on_window(cx, |window| {
+            window.try_find(TITLE_BAR_ID).map(|e| e.bounds())
+        });
+        bar.is_some_and(|bar| chip.bottom() <= bar.bottom())
+    };
+    assert!(in_bar(&started, cx));
+    fake.fullscreen.set(true);
+    assert!(!in_bar(&started, cx), "fullscreen: the footer has it");
+    fake.fullscreen.set(false);
+    assert!(in_bar(&started, cx));
+}
+
+/// A workspace that failed to open keeps a chip, saying so: it is the way to
+/// pick another one, and a click opens the switcher.
+#[gpui_kit::test]
+fn a_failed_open_keeps_a_chip_that_opens_the_switcher(cx: &mut TestAppContext) {
+    let started = bare(cx);
+    assert_eq!(
+        started.tb_chip(cx).map(|c| c.0).as_deref(),
+        Some("No workspace, switch workspace"),
+        "footer"
+    );
+    started.tb_client(cx);
+    assert!(started.tb_chip(cx).is_some(), "bar");
+    assert_eq!(started.sw_title(cx).as_deref(), Some("kimün"));
+    started.tb_click_chip(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::WorkspaceSwitcher));
+}
+
+/// Over Preferences the switcher does not open, and the chip does not
+/// pretend: its click does nothing.
+#[gpui_kit::test]
+fn the_chip_is_inert_over_preferences(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = on_vault(cx, &rt, &v);
+    s.pf_route(cx);
+    s.pf_loaded(&rt, cx);
+    s.tb_client(cx);
+    assert!(s.tb_chip(cx).is_some(), "the chip shows");
+    s.tb_click_chip(cx);
+    assert_eq!(s.shown_modal(cx), None, "and a click opens nothing");
+}
+
+/// The setup assistant has no workspace to name and no use for a switcher:
+/// no chip anywhere.
+#[gpui_kit::test]
+fn setup_has_no_chip(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let started = open_started(cx, Start::NoWorkspace, Default::default());
+    assert_eq!(started.tb_chip(cx), None, "footer");
+    started.tb_client(cx);
+    assert_eq!(started.tb_chip(cx), None, "bar");
+    assert_eq!(
+        started.tb_title(cx).as_deref(),
+        Some("kimün"),
+        "the app's name"
+    );
 }

@@ -905,7 +905,11 @@ impl Workspace {
             .unwrap_or_else(|e| e.into_inner())
             .leader_tree();
         self.leader.set_tree(tree);
-        self.set_title(startup::window_title(&start), window);
+        match &start {
+            Start::Vault(vault) => self.set_workspace_name(vault.name.as_str(), window),
+            Start::OpenFailed(_) => self.set_no_workspace(true, window),
+            Start::NoWorkspace => self.set_no_workspace(false, window),
+        }
         self.empty = startup::empty_state(&start);
         // No workspace: the setup assistant makes one. A vault entered
         // leaves nothing for one still up to set up.
@@ -2745,7 +2749,11 @@ impl Workspace {
 
     /// The editor Panel: the editor (or the attachment view, or the empty
     /// state) over the Footer.
-    pub(super) fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_editor(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
         let empty = match &attachment {
             None => self.empty.clone().or_else(|| self.note_empty_state()),
@@ -2801,7 +2809,7 @@ impl Workspace {
                     this.focus_panel(Panel::Editor, window, cx)
                 }))
                 .child(document)
-                .child(self.render_footer(editor_shown, cx)),
+                .child(self.render_footer(editor_shown, window, cx)),
             )
             // While a view is dragged: where it fills or makes a side.
             .children(self.window_strips(cx))
@@ -2809,15 +2817,28 @@ impl Workspace {
 
     /// The Footer: under the editor Panel, or under the zoomed slot while
     /// one is zoomed (with the zoom hint and restore button then).
-    pub(super) fn render_footer(&self, editor_shown: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_footer(
+        &self,
+        editor_shown: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let zoom = self.layout.zoomed().map(|_| status_row::ZoomSegment {
             hint: self.chord_labels.zoom_hint.clone(),
             on_restore: cx.listener(|this, _: &ClickEvent, window, cx| this.leave_zoom(window, cx)),
         });
+        // No title bar (system decorations, fullscreen): the footer carries
+        // the workspace chip, so the name is always on screen.
+        let t = theme::current(cx);
+        let chip = if self.bar_visible(window) {
+            None
+        } else {
+            self.workspace_chip(theme::muted(&t), window, cx)
+        };
         status_row::render(
             &self.status,
             &self.doc_facts(editor_shown, cx),
-            &theme::current(cx),
+            &t,
             cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.show_links_tab(LinksTab::Backlinks, window, cx)
             }),
@@ -2825,6 +2846,7 @@ impl Workspace {
                 this.open_properties_for_open_note(window, cx)
             }),
             zoom,
+            chip,
         )
         .into_any_element()
     }

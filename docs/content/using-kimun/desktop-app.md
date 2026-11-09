@@ -45,7 +45,7 @@ Typing `[[` in a note offers the vault's notes, and `#` offers its tags. In FIND
 
 ## Workspaces
 
-`F5` opens the workspace switcher (or leader `v s`). Switching saves the open note first. Workspaces are managed in Preferences > Workspaces, and are the same ones the terminal app uses.
+The title bar shows which workspace is open, as a button: click it, or press `F5` (or leader `v s`), to open the workspace switcher. With system window decorations, or in fullscreen, the button moves to the left end of the footer. Switching saves the open note first. Workspaces are managed in Preferences > Workspaces, and are the same ones the terminal app uses.
 
 ## Preferences
 
