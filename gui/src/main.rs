@@ -9,6 +9,15 @@
 //! before the window closes. The layout tree is saved to the `[gui]`
 //! table's `layout`.
 
+// A release build on Windows is a GUI program: without this the system opens a
+// console window beside the app whenever it is started from the Start menu or
+// Explorer. Debug builds keep the console, for `cargo run`. Nothing is lost:
+// config and keymap problems go to the log file as well as to stderr.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod assets;
 mod autocomplete;
 #[cfg(test)]

@@ -46,6 +46,14 @@ d="$work/bad-digest"; cp -r "$good" "$d"; echo tampered >"$d/kimun-$v-windows-x6
 d="$work/stray"; cp -r "$good" "$d"; echo x >"$d/kimun-gui-$v-linux-x64.deb"; (cd "$d" && sha256sum kimun-* >checksums-sha256.txt); expect_fail "an unexpected asset" "$d"
 d="$work/no-desktop-files"; cp -r "$good" "$d"; s="$(mktemp -d)"; echo bin >"$s/kimun-gui"; tar -czf "$d/kimun-gui-$v-linux-x64.tar.gz" -C "$s" .; (cd "$d" && sha256sum kimun-* >checksums-sha256.txt); expect_fail "a Linux desktop archive without the launcher files" "$d"
 d="$work/wrong-root"; cp -r "$good" "$d"; s="$(mktemp -d)"; mkdir "$s/sub"; echo bin >"$s/sub/kimun"; tar -czf "$d/kimun-$v-macos-arm64.tar.gz" -C "$s" .; (cd "$d" && sha256sum kimun-* >checksums-sha256.txt); expect_fail "a binary not at the archive root" "$d"
+# A real binary for the wrong platform is caught (a cross-build gone wrong).
+if command -v file >/dev/null 2>&1 && file -b /bin/true | grep -q ELF; then
+  case "$(uname -m)" in x86_64) wrong=linux-arm64 ;; *) wrong=linux-x64 ;; esac
+  d="$work/wrong-arch"; cp -r "$good" "$d"; cp /bin/true "$d/kimun-gui-$v-$wrong"
+  (cd "$d" && sha256sum kimun-* >checksums-sha256.txt)
+  expect_fail "a binary built for another CPU than its name says" "$d"
+fi
+
 # The signed macOS app: optional unless expected, never without a checksum.
 d="$work/with-dmg"; cp -r "$good" "$d"
 for p in macos-x64 macos-arm64; do echo dmg >"$d/kimun-gui-$v-$p.dmg"; done
