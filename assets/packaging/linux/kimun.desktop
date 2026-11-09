@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Kimün
+GenericName=Note Taking
+Comment=Plain-text notes in Markdown
+Exec=kimun-gui %f
+Icon=kimun
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=notes;markdown;wiki;journal;
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=kimun

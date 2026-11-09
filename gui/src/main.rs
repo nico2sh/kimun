@@ -20,6 +20,8 @@ mod find_bar;
 mod fixture;
 mod fonts;
 mod grid;
+#[cfg(test)]
+mod identity_tests;
 mod input;
 mod keymap;
 mod row_cache;

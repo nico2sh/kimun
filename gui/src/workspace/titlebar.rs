@@ -53,7 +53,8 @@ use crate::{assets, startup, theme};
 
 /// The window's application id (Wayland `app_id`, X11 `WM_CLASS`): what a
 /// desktop entry names to group the window and give it its icon. The repo
-/// ships no desktop entry; a package that adds one names it `kimun.desktop`.
+/// ships one in `assets/packaging/linux/kimun.desktop` (`StartupWMClass` is
+/// this id; a test keeps the two in step) for a package to install.
 pub(crate) const APP_ID: &str = "kimun";
 
 /// The element ids of our wrapper around the kit's bar, and of the title.

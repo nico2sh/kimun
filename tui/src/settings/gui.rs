@@ -21,8 +21,8 @@
 //! Welcome wordmark's bounce, loading spinners). It is the desktop app's
 //! Preferences > Display > Reduce motion, applied as soon as it is saved; the
 //! TUI never shows it. Missing means `false`: the system's own reduced-motion
-//! setting is not read (GPUI offers no query for it). There is no desktop-app
-//! page in the user docs yet, so this is where the key is described.
+//! setting is not read (GPUI offers no query for it). The user docs describe
+//! the key on the desktop-app page (`docs/content/using-kimun/desktop-app.md`).
 
 use std::collections::BTreeMap;
 
