@@ -21,6 +21,11 @@ use crate::logic::message::{AppMessage, AppTx};
 
 pub struct DocMeta {
     vault: Arc<NoteVault>,
+    /// Runtime captured at construction, so a refresh spawns on it even when
+    /// the caller's thread has no runtime context (a GPUI task resumed off
+    /// the thread that entered the runtime). `None` when built outside one;
+    /// spawns then fall back to the ambient runtime.
+    runtime: Option<tokio::runtime::Handle>,
     /// Backlink count of the open note (status line 2), async-loaded.
     backlink_count: Option<usize>,
     /// Frontmatter property count of the open note (status line 2).
@@ -43,12 +48,25 @@ impl DocMeta {
     pub fn new(vault: Arc<NoteVault>) -> Self {
         Self {
             vault,
+            runtime: tokio::runtime::Handle::try_current().ok(),
             backlink_count: None,
             property_count: None,
             git_status: None,
             last_git_fetch: None,
             git_unavailable_since: None,
             link_meta: None,
+        }
+    }
+
+    /// Spawn on the captured runtime, else the ambient one.
+    fn spawn(&self, fut: impl std::future::Future<Output = ()> + Send + 'static) {
+        match &self.runtime {
+            Some(handle) => {
+                handle.spawn(fut);
+            }
+            None => {
+                tokio::spawn(fut);
+            }
         }
     }
 
@@ -91,7 +109,7 @@ impl DocMeta {
         let vault = self.vault.clone();
         let path = path.clone();
         let tx2 = tx.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             let count = vault
                 .get_backlinks(&path)
                 .await
@@ -107,7 +125,7 @@ impl DocMeta {
         let vault = self.vault.clone();
         let path = path.clone();
         let tx2 = tx.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             let count = vault
                 .get_properties(&path)
                 .await
@@ -140,7 +158,7 @@ impl DocMeta {
         self.last_git_fetch = Some(now);
         let root = self.vault.workspace_path().as_path().to_path_buf();
         let tx2 = tx.clone();
-        tokio::spawn(async move {
+        self.spawn(async move {
             let status = crate::util::git_status::fetch(root).await;
             tx2.send(AppMessage::GitStatusLoaded(status)).ok();
         });
@@ -175,7 +193,7 @@ impl DocMeta {
                         let kind = *kind;
                         let note_path = current_note.clone();
                         let tx2 = tx.clone();
-                        tokio::spawn(async move {
+                        self.spawn(async move {
                             let FollowOutcome::Note(path) =
                                 follow::resolve(&vault, &note_path, &target, kind).await
                             else {
