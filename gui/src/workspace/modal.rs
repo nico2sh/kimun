@@ -171,12 +171,12 @@ impl Workspace {
     }
 
     /// Open a kit dialog in `slot`, `width_rems` wide and without the kit's
-    /// close button (`build` may put it back). A modal takes every key, so a pending leader
-    /// sequence ends. `focus` runs on the dialog's first build only (the
-    /// builder re-runs whenever the dialog layer rebuilds); `build` adds the
-    /// rest — the title, `on_ok` / `on_cancel` / `on_close`, the content.
-    /// The caller checks first that nothing else is open and records its
-    /// own view.
+    /// close button (`build` may put it back). A modal takes every key, so a
+    /// pending leader sequence ends, as does a view's drag (ADR-0054 §8).
+    /// `focus` runs on the dialog's first build only (the builder re-runs
+    /// whenever the dialog layer rebuilds); `build` adds the rest — the
+    /// title, `on_ok` / `on_cancel` / `on_close`, the content. The caller
+    /// checks first that nothing else is open and records its own view.
     pub(crate) fn show_modal(
         &mut self,
         slot: Slot,
@@ -187,6 +187,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.cancel_leader(cx);
+        self.end_view_drag(window, cx);
         if let Slot::Own(kind) = slot {
             self.modal = Some(kind);
         }
@@ -263,9 +264,7 @@ impl Workspace {
         self.modal = None;
         self.query_help = false;
         self.palette = None;
-        self.split_chooser = None;
-        self.side_chooser = None;
-        self.move_chooser = None;
+        self.view_chooser = None;
         #[cfg(test)]
         {
             self.file_dialog = None;

@@ -1221,3 +1221,146 @@ fn the_last_slot_on_a_side_stays_when_vacated(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// FILES (FIND hidden with it) over TAGS in a 0.2 column, the editor,
+/// OUTLINE right.
+fn files_find_over_tags() -> GuiSettings {
+    gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\", \"find\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"tags\"], shown = \"tags\" },\n] },\n\
+         { weight = 0.6, editor = true },\n\
+         { weight = 0.2, views = [\"outline\"], shown = \"outline\" },\n]\n")
+}
+
+/// The move chooser's "New slot to the right" makes room as a drop does:
+/// the column cannot hold FIND and FILES side by side at its 0.2, so it
+/// grows, and the new slot is visible with every other leaf. The keyboard
+/// follows FILES.
+#[gpui_kit::test]
+fn the_chooser_new_slot_rows_make_room_too(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_find_over_tags(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(move_button(DrawerView::Files), cx);
+        window.render_frame(cx);
+        let mut want = vec![into(DrawerView::Tags), into(DrawerView::Outline)];
+        want.extend(NEW_SIDES.map(String::from));
+        assert_eq!(move_rows(&shell, cx), want);
+        for _ in 0..5 {
+            window.press("down", cx);
+        }
+        window.press("enter", cx);
+    })
+    .unwrap();
+    settle(&shell, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let w = shell.workspace.read(cx);
+        assert!(w.collapsed.is_empty(), "collapsed: {:?}", w.collapsed);
+        let files = w.layout.view_slot(&DrawerView::Files).expect("placed");
+        let find = w.layout.view_slot(&DrawerView::Find).expect("placed");
+        assert_ne!(files, find, "FILES is in a new slot");
+        for view in [
+            DrawerView::Files,
+            DrawerView::Find,
+            DrawerView::Tags,
+            DrawerView::Outline,
+        ] {
+            let slot = w.layout.view_slot(&view).expect("placed");
+            assert!(w.leaf_visible(Leaf::Slot(slot)), "{view:?} is visible");
+        }
+        assert_eq!(w.layout.focused(), Focus::Leaf(Leaf::Slot(files)));
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+    })
+    .unwrap();
+}
+
+/// FILES, FIND, TAGS and LINKS stacked left of the editor, a slot each.
+fn four_stacked_left() -> GuiSettings {
+    gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.25, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.25, views = [\"find\"], shown = \"find\" },\n\
+           { weight = 0.25, views = [\"tags\"], shown = \"tags\" },\n\
+           { weight = 0.25, views = [\"links\"], shown = \"links\" },\n] },\n\
+         { weight = 0.8, editor = true },\n]\n")
+}
+
+/// The rail's Move Down makes a slot too: a fifth slot in the column
+/// would collapse LINKS (the window is not tall enough, and nothing above
+/// the column can grow it), so nothing changes and a flash says so.
+#[gpui_kit::test]
+fn rail_placement_with_no_room_changes_nothing_and_says_so(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &four_stacked_left(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-left", cx);
+        rail_cursor_on(&shell, DrawerView::Outline, cx);
+        window.render_frame(cx);
+        let before = layout(&shell, cx);
+        assert!(shell.workspace.read(cx).collapsed.is_empty());
+        window.press("alt-shift-down", cx);
+        window.render_frame(cx);
+        assert_eq!(layout(&shell, cx), before, "nothing changed");
+        assert_eq!(
+            flash(&shell, cx).as_deref(),
+            Some("No room for Outline here")
+        );
+        assert!(shell.workspace.read(cx).collapsed.is_empty());
+    })
+    .unwrap();
+}
+
+/// FILES over TAGS in a 0.2 column, the editor, OUTLINE right.
+fn files_over_tags() -> GuiSettings {
+    gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"tags\"], shown = \"tags\" },\n] },\n\
+         { weight = 0.6, editor = true },\n\
+         { weight = 0.2, views = [\"outline\"], shown = \"outline\" },\n]\n")
+}
+
+/// Split Right from FILES and pick FIND: the column cannot hold FILES and
+/// FIND side by side at its 0.2, so the split chooser makes room through
+/// the same helper, and every leaf is visible with FIND focused.
+#[gpui_kit::test]
+fn the_split_chooser_makes_room_too(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &files_over_tags(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(slot_id(DrawerView::Files), cx);
+        window.press("alt-shift-r", cx);
+        window.render_frame(cx);
+        assert_eq!(chooser_views(&shell, cx).first(), Some(&DrawerView::Find));
+        window.press("enter", cx);
+    })
+    .unwrap();
+    settle(&shell, cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let w = shell.workspace.read(cx);
+        assert!(w.collapsed.is_empty(), "collapsed: {:?}", w.collapsed);
+        for view in [
+            DrawerView::Files,
+            DrawerView::Find,
+            DrawerView::Tags,
+            DrawerView::Outline,
+        ] {
+            let slot = w.layout.view_slot(&view).expect("placed");
+            assert!(w.leaf_visible(Leaf::Slot(slot)), "{view:?} is visible");
+        }
+        let find = w.layout.view_slot(&DrawerView::Find).expect("placed");
+        assert_eq!(w.layout.focused(), Focus::Leaf(Leaf::Slot(find)));
+    })
+    .unwrap();
+}

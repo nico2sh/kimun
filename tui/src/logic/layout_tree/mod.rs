@@ -502,6 +502,52 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             .collect()
     }
 
+    /// The editor group nearest the window edge on `side`: the leftmost
+    /// (rightmost) one, the first in reading order on a tie. Unlike
+    /// [`Self::side_slots`] it does not depend on the active group.
+    pub fn edge_group(&self, side: Side) -> Option<GroupId> {
+        let mut best: Option<(GroupId, f64)> = None;
+        for (leaf, rect) in self.regions() {
+            let Leaf::Group(g) = leaf else { continue };
+            // Smaller is nearer the edge.
+            let key = match side {
+                Side::Left => rect.x(),
+                Side::Right => -rect.right(),
+            };
+            if best.is_none_or(|(_, k)| key < k - EPS) {
+                best = Some((g, key));
+            }
+        }
+        best.map(|(g, _)| g)
+    }
+
+    /// The slots lying entirely outside every editor group on `side`, in
+    /// reading order: the window-edge counterpart of [`Self::side_slots`],
+    /// the same whichever group is active.
+    pub fn edge_slots(&self, side: Side) -> Vec<SlotId> {
+        let regions = self.regions();
+        let groups = regions.iter().filter(|(l, _)| matches!(l, Leaf::Group(_)));
+        let bound = match side {
+            Side::Left => groups.map(|(_, r)| r.x()).fold(f64::INFINITY, f64::min),
+            Side::Right => groups
+                .map(|(_, r)| r.right())
+                .fold(f64::NEG_INFINITY, f64::max),
+        };
+        regions
+            .into_iter()
+            .filter_map(|(leaf, rect)| match leaf {
+                Leaf::Slot(slot) => {
+                    let outside = match side {
+                        Side::Left => rect.right() <= bound + EPS,
+                        Side::Right => rect.x() >= bound - EPS,
+                    };
+                    outside.then_some(slot)
+                }
+                Leaf::Group(_) => None,
+            })
+            .collect()
+    }
+
     /// The side `slot` reads as: left when its centre lies left of the
     /// active group's, else right.
     pub fn slot_side(&self, slot: SlotId) -> Side {
@@ -743,6 +789,30 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// (see [`Self::vacate_close`]). [`TreeError::NoSuchSlot`] (nothing
     /// changes) when `target` is absent.
     pub fn place_beside(&mut self, view: V, target: SlotId, dir: Dir) -> Result<SlotId, TreeError> {
+        if !self.slots.contains_key(&target) {
+            return Err(TreeError::NoSuchSlot);
+        }
+        self.place_beside_leaf(view, Leaf::Slot(target), dir)
+            .ok_or(TreeError::NoSuchSlot)
+    }
+
+    /// [`Self::place_beside`] against an editor group: the new slot lands
+    /// at that group's `dir` edge, which with the group between the sides
+    /// is the window-edge side for Left and Right.
+    /// [`TreeError::NoSuchGroup`] (nothing changes) when `group` is absent.
+    pub fn place_beside_group(
+        &mut self,
+        view: V,
+        group: GroupId,
+        dir: Dir,
+    ) -> Result<SlotId, TreeError> {
+        self.place_beside_leaf(view, Leaf::Group(group), dir)
+            .ok_or(TreeError::NoSuchGroup)
+    }
+
+    /// The split behind [`Self::place_beside`]: `None` when `target` is not
+    /// a leaf of the tree.
+    fn place_beside_leaf(&mut self, view: V, target: Leaf, dir: Dir) -> Option<SlotId> {
         let (axis, before) = match dir {
             Dir::Up => (Axis::Vertical, true),
             Dir::Down => (Axis::Vertical, false),
@@ -750,12 +820,11 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             Dir::Right => (Axis::Horizontal, false),
         };
         let new = SlotId(self.next_slot);
-        if !self.slots.contains_key(&target)
-            || !self
-                .root
-                .split_leaf_at(&Leaf::Slot(target), axis, Leaf::Slot(new), before)
+        if !self
+            .root
+            .split_leaf_at(&target, axis, Leaf::Slot(new), before)
         {
-            return Err(TreeError::NoSuchSlot);
+            return None;
         }
         self.next_slot += 1;
         self.slots.insert(
@@ -766,7 +835,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             },
         );
         self.move_view(view, new);
-        Ok(new)
+        Some(new)
     }
 
     /// Close `slot` when it holds no views at all and another slot reads
@@ -951,6 +1020,32 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         root.layout_fit(area, &|leaf: &Leaf| min(*leaf), &|leaf: &Leaf| {
             matches!(leaf, Leaf::Group(_))
         })
+    }
+
+    /// Change weights so [`Self::fit`] (same `area`, `min` and `drawn`)
+    /// collapses none of `leaves` (ADR-0054 §8): the cell holding a split
+    /// that collapses one grows along that split's axis, in the nearest
+    /// split above it along that axis, taking from its siblings only what
+    /// each has above its minimum, so none collapses there and no editor
+    /// group goes under its minimum. Repeated, a bounded number of times,
+    /// while one of `leaves` still collapses. True when none collapses
+    /// (already, or now); false, nothing changed, when one is absent, not
+    /// drawn, or there is no room to make for it.
+    pub fn make_room(
+        &mut self,
+        leaves: &[Leaf],
+        area: UnitRect,
+        min: &dyn Fn(Leaf) -> (f64, f64),
+        drawn: &dyn Fn(Leaf) -> bool,
+    ) -> bool {
+        let group = |leaf: &Leaf| matches!(leaf, Leaf::Group(_));
+        self.root.make_room(
+            leaves,
+            area,
+            &|leaf: &Leaf| min(*leaf),
+            &group,
+            &|leaf: &Leaf| group(leaf) || drawn(*leaf),
+        )
     }
 }
 

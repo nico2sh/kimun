@@ -212,6 +212,8 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use self::drop_zones::{LiveViewDrag, ViewDrag};
+use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
 use crate::keymap::{self, KeyCtx};
@@ -258,6 +260,36 @@ enum PresetRecord<'a> {
     Set(&'a str),
     /// Remove it (the default layout was installed).
     Clear,
+}
+
+/// Why [`Workspace::place_new_slot`] made no slot; nothing changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoNewSlot {
+    /// The leaf to place beside is not in the tree.
+    Refused,
+    /// The window has no room for the slot; a flash said so.
+    NoRoom,
+}
+
+/// What [`Workspace::spawn_at`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Spawn {
+    /// A slot was made and the view put in it.
+    Placed,
+    /// The window had no room; nothing changed, a flash said so.
+    NoRoom,
+    /// The leaf to place beside is not in the tree, or the move is
+    /// pointless; nothing changed.
+    Refused,
+}
+
+impl Spawn {
+    /// Whether the request was dealt with: placed, or refused for lack of
+    /// room with the user told. False only for [`Spawn::Refused`], where a
+    /// caller may try something else.
+    pub(crate) fn handled(self) -> bool {
+        self != Spawn::Refused
+    }
 }
 
 impl LayoutStore {
@@ -461,18 +493,17 @@ pub(crate) struct Workspace {
     /// Resolves the workspace's chords before a slot's own key bindings
     /// can take them ([`Self::intercept_shell_key`]).
     _shell_keys: Subscription,
+    /// The view being dragged onto a drop zone, while one is
+    /// ([`Self::dragged_view`]).
+    view_drag: Option<LiveViewDrag>,
     /// What the window's one modal slot holds, while the kit says a dialog
     /// is open ([`modal`]).
     pub(crate) modal: Option<ModalKind>,
     /// The command palette's view while it is open (tests read its rows).
     pub(crate) palette: Option<WeakEntity<Palette>>,
-    /// The split chooser while it is open ([`view_chooser`]).
-    split_chooser: Option<view_chooser::SplitChooser>,
-    /// The chooser a side toggle opens when nothing is placed there
+    /// The view chooser while it is open: split, side or move
     /// ([`view_chooser`]).
-    side_chooser: Option<view_chooser::SideChooser>,
-    /// The move chooser while it is open ([`view_chooser`]).
-    move_chooser: Option<view_chooser::MoveChooser>,
+    view_chooser: Option<view_chooser::OpenViewChooser>,
     /// The shared settings (the leader tree, the vault to open, what
     /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
     /// that never call it.
@@ -717,11 +748,10 @@ impl Workspace {
             _editor_watch: editor_watch,
             _on_quit: None,
             _shell_keys: shell_keys,
+            view_drag: None,
             modal: None,
             palette: None,
-            split_chooser: None,
-            side_chooser: None,
-            move_chooser: None,
+            view_chooser: None,
             settings: None,
             _editor_events: editor_events,
             leader: LeaderState::default(),
@@ -1794,7 +1824,7 @@ impl Workspace {
                         self.layout.focus(Focus::Leaf(Leaf::Slot(to)));
                     }
                 } else if let Some(from) = from
-                    && self.spawn_beside(view, from, dir, window, cx)
+                    && self.place(view, Placement::Beside(from, dir), window, cx)
                 {
                     return true;
                 }
@@ -1810,37 +1840,121 @@ impl Workspace {
         true
     }
 
-    /// A move toward nothing (ADR-0054 §2): put `view`, shown in `from`,
-    /// into a new slot on the `dir` side of `from`
-    /// ([`LayoutTree::place_beside`]), when `from` holds other views (the
-    /// first of them shows in its place, so `from` stays drawn) and nothing
-    /// is zoomed. The keyboard follows the view. Persisted. False (nothing
-    /// changes) otherwise: a view alone in its slot leaves nothing behind.
+    /// A move toward nothing (ADR-0054 §2, §8): put `view` into a new slot
+    /// on the `dir` side of `target` ([`LayoutTree::place_beside`]) when
+    /// nothing is zoomed. The slot the view leaves, if any, closes when
+    /// that emptied it, else the first of its views shows in the view's
+    /// place ([`Self::close_if_vacated`]), so it stays drawn. A view alone
+    /// in `target` has nothing to leave behind there: [`Spawn::Refused`],
+    /// nothing changes. A view no slot holds (a rail entry, dropped) is placed.
+    /// The keyboard follows the view. Persisted. With no room for the new
+    /// slot nothing changes and a flash says so ([`Self::place_new_slot`]);
+    /// that is [`Spawn::NoRoom`].
     fn spawn_beside(
         &mut self,
         view: DrawerView,
-        from: SlotId,
+        target: SlotId,
         dir: Dir,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        if self.layout.zoomed().is_some() || self.layout.slot_views(from).len() < 2 {
-            return false;
-        }
-        let Ok(new) = self.layout.place_beside(view, from, dir) else {
-            return false;
-        };
-        if self.layout.shown(from).is_none()
-            && let Some(next) = self.layout.slot_views(from).first().copied()
+    ) -> Spawn {
+        let from = self.layout.view_slot(&view);
+        if self.layout.zoomed().is_some()
+            || (from == Some(target) && self.layout.slot_views(target).len() < 2)
         {
-            self.layout.show_view(&next, false);
+            return Spawn::Refused;
         }
-        self.layout.focus(Focus::Leaf(Leaf::Slot(new)));
+        self.spawn_at(view, Leaf::Slot(target), dir, window, cx)
+    }
+
+    /// Put `view` in a new slot on the `dir` side of `beside`
+    /// ([`Self::place_new_slot`]) and give that slot the keyboard; settled
+    /// and persisted. [`Spawn::NoRoom`] (nothing changed, a flash said so)
+    /// when the window has no room for it; [`Spawn::Refused`] (nothing
+    /// changed) when `beside` is not in the tree.
+    pub(super) fn spawn_at(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Spawn {
+        match self.place_new_slot(view, beside, dir, window, cx) {
+            Ok(new) => {
+                self.layout.focus(Focus::Leaf(Leaf::Slot(new)));
+                self.settle_placement(window, cx);
+                cx.notify();
+                Spawn::Placed
+            }
+            Err(NoNewSlot::NoRoom) => Spawn::NoRoom,
+            Err(NoNewSlot::Refused) => Spawn::Refused,
+        }
+    }
+
+    /// Every placement that makes a slot goes through here (ADR-0054 §8):
+    /// put `view` in a new slot on the `dir` side of `beside`
+    /// ([`LayoutTree::place_beside`], or
+    /// [`LayoutTree::place_beside_group`] for an editor group); the slot
+    /// the view left closes, or shows its next view
+    /// ([`Self::close_if_vacated`]); then the window makes room for the
+    /// new slot ([`Self::make_room`]). With no room, the layout is put
+    /// back as it was and a flash says `No room for <view> here`. Focus,
+    /// settling and saving are the caller's.
+    fn place_new_slot(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<SlotId, NoNewSlot> {
+        let visible = self.fitting_leaves(window);
+        let from = self.layout.view_slot(&view);
+        let placed = self.try_layout(|ws| {
+            let new = match beside {
+                Leaf::Slot(slot) => ws.layout.place_beside(view, slot, dir),
+                Leaf::Group(group) => ws.layout.place_beside_group(view, group, dir),
+            }
+            .map_err(|_| NoNewSlot::Refused)?;
+            if let Some(from) = from {
+                ws.close_if_vacated(from, view);
+            }
+            if ws.make_room(new, &visible, window) {
+                Ok(new)
+            } else {
+                Err(NoNewSlot::NoRoom)
+            }
+        });
+        if placed == Err(NoNewSlot::NoRoom) {
+            let name = view_registry::spec(view).name;
+            self.flash(format!("No room for {name} here"), cx);
+        }
+        placed
+    }
+
+    /// Run `edit`, which may change the layout and nothing else of the
+    /// workspace; on `Err` the layout is put back as it was. The one
+    /// rollback for a multi-step layout change, so a step added to `edit`
+    /// later cannot leave a half-made layout behind. Anything `edit` would
+    /// change outside `self.layout` is not undone: do it after.
+    fn try_layout<T, E>(&mut self, edit: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
+        let undo = self.layout.clone();
+        let result = edit(self);
+        if result.is_err() {
+            self.layout = undo;
+        }
+        result
+    }
+
+    /// The shared tail of every placement: settle and persist. Focus is
+    /// the caller's: a drop and a chooser move it to the new slot, the
+    /// rail keeps it.
+    fn settle_placement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_files_listing(cx);
         self.tidy_layout(cx);
         self.apply_focus(window, cx);
         self.save_layout(cx);
-        true
     }
 
     /// After a move of `view` out of `slot` (ADR-0054 §1): close `slot`
@@ -1908,7 +2022,8 @@ impl Workspace {
             // stacked there.
             if !to.is_some_and(|to| undo.shown(to).is_some()) {
                 self.layout = undo;
-                return self.spawn_beside(view, from, dir, window, cx) || self.stacked(from);
+                return self.place(view, Placement::Beside(from, dir), window, cx)
+                    || self.stacked(from);
             }
             // A swap: the view shown where it landed takes the slot it left.
             if let Some(Some(other)) = before
@@ -1929,7 +2044,7 @@ impl Workspace {
             self.save_layout(cx);
             return true;
         }
-        self.spawn_beside(view, from, dir, window, cx) || self.stacked(from)
+        self.place(view, Placement::Beside(from, dir), window, cx) || self.stacked(from)
     }
 
     /// Up / Down from the rail (ADR-0054 §3), on the cursor's view: the view
@@ -1938,7 +2053,8 @@ impl Workspace {
     /// the rail ([`LayoutTree::place_beside`]); it leaves the slot it was
     /// in, which closes when emptied. Handled, with a flash and nothing changed, while
     /// zoomed (the new slot would not be on screen), with no drawn slot to
-    /// place beside, or when the view is alone in that slot already. The rail
+    /// place beside, when the view is alone in that slot already, or with
+    /// no room for the new slot ([`Self::place_new_slot`]). The rail
     /// keeps the keyboard. Persisted.
     fn place_from_rail(&mut self, dir: Dir, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(view) = self.rail_cursor_view() else {
@@ -1958,19 +2074,17 @@ impl Workspace {
             return true;
         }
         let alone = from == Some(target) && self.layout.slot_views(target).len() < 2;
-        if alone || self.layout.place_beside(view, target, dir).is_err() {
+        if alone {
             self.flash("Nowhere to place this view", cx);
             return true;
         }
         // Out of the slot it is placed beside: the first view left there
         // shows in its place ([`Self::close_if_vacated`]).
-        if let Some(from) = from {
-            self.close_if_vacated(from, view);
+        match self.place_new_slot(view, Leaf::Slot(target), dir, window, cx) {
+            Ok(_) => self.settle_placement(window, cx),
+            Err(NoNewSlot::Refused) => self.flash("Nowhere to place this view", cx),
+            Err(NoNewSlot::NoRoom) => {}
         }
-        self.ensure_files_listing(cx);
-        self.tidy_layout(cx);
-        self.apply_focus(window, cx);
-        self.save_layout(cx);
         true
     }
 
@@ -2144,6 +2258,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Esc during a view's drag ends the drag, ahead of any binding.
+        if self.escape_ends_view_drag(event, window, cx) {
+            return;
+        }
         // The setup assistant and Preferences have every key; no shell chord
         // runs under them.
         if self.onboarding.is_some() || self.preferences.is_some() {
@@ -2563,6 +2681,8 @@ impl Workspace {
                 )
             })
             .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+            // A drag source only: the rail is not a drop target (ADR-0054 §8).
+            .on_drag(ViewDrag(view), self.view_drag_ghost(cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate_rail_view(view, window, cx)
             }))
@@ -2640,6 +2760,7 @@ impl Workspace {
         div()
             .id("editor-panel")
             .test_support()
+            .relative()
             .flex()
             .flex_1()
             .min_w_0()
@@ -2656,6 +2777,8 @@ impl Workspace {
                 .child(document)
                 .child(self.render_footer(editor_shown, cx)),
             )
+            // While a view is dragged: where it fills or makes a side.
+            .children(self.window_strips(cx))
     }
 
     /// The Footer: under the editor Panel, or under the zoomed slot while
@@ -2765,6 +2888,7 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prune_view_drag(cx);
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
         // The tree is fitted to the height the bar leaves; a change in the
@@ -2977,6 +3101,7 @@ mod attachment;
 mod config;
 mod create;
 mod drawer_list;
+mod drop_zones;
 mod file_dialogs;
 mod file_ops;
 mod files;
@@ -2996,6 +3121,7 @@ mod outline;
 mod palette;
 mod picker;
 mod pinned;
+mod placement;
 mod preferences;
 mod presets;
 mod properties;
@@ -3025,6 +3151,8 @@ mod ask_tests;
 mod attachment_tests;
 #[cfg(test)]
 mod cfg_tests;
+#[cfg(test)]
+mod drop_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]
