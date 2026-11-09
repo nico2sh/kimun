@@ -170,11 +170,8 @@ fn the_open_notes_counts_load_on_open(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         started.text(cx) == "see [[a]]"
             && started.segment(BACKLINKS_ID, cx).as_deref() == Some("0 backlinks")
+            && started.segment(PROPERTIES_ID, cx).as_deref() == Some("0 properties")
     });
-    assert_eq!(
-        started.segment(PROPERTIES_ID, cx).as_deref(),
-        Some("0 properties")
-    );
 }
 
 /// Saving re-reads the open note's property count.

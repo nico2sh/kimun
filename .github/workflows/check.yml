@@ -187,13 +187,15 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # `--profile ci` (.config/nextest.toml) retries a failing test twice and reports one
+      # that passed on a retry as FLAKY: the GUI tests are load sensitive on small runners.
       # `--no-fail-fast`: nextest's default cancels the run on the first
       # failure, which on a three-OS matrix turns one red platform into a
       # partial answer — the report reads "2871 tests were not run" and the
       # next failure only surfaces after another full round trip. Finishing
       # the run costs a couple of minutes and states the whole problem once.
       - name: Run tests
-        run: cargo nextest run --workspace --no-fail-fast
+        run: cargo nextest run --workspace --no-fail-fast --profile ci
 
   # Release targets with no corresponding entry in the `test` matrix. macOS ARM
   # and Windows used to be checked here; they run the full suite now, which

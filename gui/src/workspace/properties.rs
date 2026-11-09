@@ -266,6 +266,12 @@ impl PropertiesDialog {
         mine
     }
 
+    /// The vault's property keys, once they have loaded (tests).
+    #[cfg(test)]
+    pub(crate) fn known_keys(&self) -> &[String] {
+        &self.known_keys
+    }
+
     fn loaded(&mut self, result: &Result<Vec<PropertyEntry>, String>) {
         self.loading = false;
         match result {

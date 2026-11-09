@@ -192,6 +192,13 @@ impl ClickRun {
     }
 }
 
+/// A clock that never moves (tests): every press happens at the same instant.
+#[cfg(test)]
+pub(crate) fn frozen_clock() -> Instant {
+    static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(Instant::now)
+}
+
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
 pub struct EditorView {
     pub(crate) editor: Editor,
@@ -205,6 +212,10 @@ pub struct EditorView {
     dragging: bool,
     /// The presses that may form a double-click (follow the link there).
     clicks: ClickRun,
+    /// What time it is, for the double-click rule: the real clock. Tests freeze it:
+    /// two simulated presses are microseconds apart on a calm machine and seconds
+    /// apart on a loaded one, and the rule is about the gap between them.
+    clock: fn() -> Instant,
     /// IME composition text, shown at the caret but kept out of the buffer
     /// until committed: a preedit is not an edit, so it must not dirty the
     /// note or enter undo history.
@@ -270,6 +281,12 @@ impl EditorView {
             engine.set_redraw_callback(redraw_callback(tx.clone()));
         }
         self.tx = tx;
+    }
+
+    /// Run the double-click rule on `clock` instead of the real one (tests).
+    #[cfg(test)]
+    pub(crate) fn set_clock(&mut self, clock: fn() -> Instant) {
+        self.clock = clock;
     }
 
     /// Complete `[[` and `#` from `source` (`None`: no vault, so no popup).
@@ -447,6 +464,7 @@ impl EditorView {
             scroll: ScrollAccumulator::default(),
             dragging: false,
             clicks: ClickRun::default(),
+            clock: Instant::now,
             preedit: None,
             input_blocked: false,
             painted: None,
@@ -764,7 +782,7 @@ impl EditorView {
         if left && pointer.mods == Mods::NONE {
             if self
                 .clicks
-                .completes_double(pointer.col, pointer.row, Instant::now())
+                .completes_double(pointer.col, pointer.row, (self.clock)())
                 && self.follow_at_caret()
             {
                 self.dragging = false;
