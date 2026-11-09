@@ -427,7 +427,7 @@ fn zoom_hint_names_the_bound_chord(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             window.find(status_row::ZOOM_ID).label(),
-            Some("Zoomed · Alt+Z to restore")
+            Some(chords("Zoomed · Alt+Z to restore").as_str())
         );
         window.press("alt-z", cx);
         assert_eq!(shell.zoomed(cx), None);

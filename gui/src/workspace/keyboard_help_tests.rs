@@ -373,7 +373,10 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
     assert_eq!(leader("v p").label, "+vault · preferences");
     assert_eq!(leader("v p").note, None);
     assert_eq!(leader("n t").note.as_deref(), Some(SOON));
-    assert_eq!(s.kh_read(cx, |h| h.gateway().to_string()), "Ctrl+Shift+B");
+    assert_eq!(
+        s.kh_read(cx, |h| h.gateway().to_string()),
+        chords("Ctrl+Shift+B")
+    );
     // Selected: the first row, shown.
     let first = s.kh_read(cx, |h| h.selected()).unwrap();
     assert_eq!(first, rows[0]);
