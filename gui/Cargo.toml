@@ -28,6 +28,12 @@ unicode-segmentation = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# The Windows exe's icon and version resource (see build.rs). A build script's
+# `cfg` tests the host, so the dependency is unconditional and build.rs checks
+# the target at run time.
+[build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 kimun-notes = { path = "../tui", features = ["scripted-updates"] }
 async-trait = "0.1"
