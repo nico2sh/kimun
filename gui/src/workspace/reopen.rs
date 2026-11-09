@@ -321,6 +321,8 @@ impl Workspace {
         self.editor.update(cx, |view, cx| {
             view.editor.close_find();
             view.editor.set_search_needles(Vec::new());
+            // The old vault's notes and tags are not the next one's.
+            view.set_suggestions(None);
             cx.notify();
         });
         if let Some(host) = self.notes.as_mut() {

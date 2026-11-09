@@ -10,6 +10,9 @@
 //! table's `layout`.
 
 mod assets;
+mod autocomplete;
+#[cfg(test)]
+mod autocomplete_tests;
 mod editor_element;
 mod editor_view;
 mod find_bar;

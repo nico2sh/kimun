@@ -51,6 +51,10 @@ impl AutocompleteController {
         self.engine.is_open()
     }
 
+    pub fn may_need_sync(&self, line: &str, col: usize) -> bool {
+        self.engine.may_need_sync(line, col)
+    }
+
     pub fn state(&self) -> Option<&AutocompleteState> {
         self.engine.state()
     }

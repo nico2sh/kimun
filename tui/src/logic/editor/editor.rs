@@ -435,6 +435,20 @@ impl Editor {
         self.end_typing();
     }
 
+    /// Apply an autocomplete accept: the trigger range becomes the suggestion
+    /// and the cursor lands where the action says. It interrupts the typing
+    /// run first ([`Self::interrupt_typing`]): outside a vim Insert session the
+    /// accept is **one undo group** of its own, so `u` takes the suggestion
+    /// back to what was typed. Inside one the session *is* the group, so the
+    /// accept joins it and one `u` takes back the whole insert.
+    pub fn apply_autocomplete(&mut self, action: &crate::logic::autocomplete::AcceptAction) {
+        self.interrupt_typing();
+        self.buf
+            .ta
+            .edit(|ta| crate::logic::autocomplete::apply_accept(ta, action));
+        self.after_edit();
+    }
+
     /// End the open typing run: the next keystroke starts a new **undo group**.
     pub(crate) fn end_typing(&mut self) {
         self.buf.typing.end();

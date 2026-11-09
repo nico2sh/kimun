@@ -28,8 +28,10 @@
 //! and never reaches the editor. Under vim the keymap hands bare Ctrl+letter
 //! chords to the editor (the vim rule, ADR-0050 §6).
 
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::TestSupportExt;
@@ -40,6 +42,10 @@ use gpui_kit::{
     SharedString, Styled, Task, TextSystem, UTF16Selection, Window, div,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::autocomplete::{
+    AutocompleteEngine, AutocompleteMode, AutocompleteState, HandleKeyOutcome, PopupCommand,
+    SuggestionSource, key_command,
+};
 use kimun_notes::logic::editor::Editor;
 use kimun_notes::logic::editor::claim::FollowTarget;
 use kimun_notes::logic::editor::handled::Handled;
@@ -49,6 +55,7 @@ use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::{AppMessage, AppTx, redraw_callback};
 use kimun_notes::logic::text_action::TextAction;
 
+use crate::autocomplete::EditorHost;
 use crate::editor_element::{EditorElement, ShapedRows};
 use crate::find_bar::{self, BarPaint};
 use crate::fonts::EditorFonts;
@@ -147,6 +154,9 @@ pub struct Painted {
     /// The find bar, when open: docked in the rows below the text (above the
     /// mode line). While it is open `caret` is the bar's.
     pub find_bar: Option<BarPaint>,
+    /// The autocomplete popup, when one is drawn: its box in window
+    /// coordinates.
+    pub popup: Option<Bounds<Pixels>>,
 }
 
 /// How close together two presses on a cell must be to follow (ADR-0043;
@@ -209,6 +219,11 @@ pub struct EditorView {
     fonts: Option<(SharedString, EditorFonts)>,
     /// Rows painted in recent frames, reused while their content is unchanged.
     pub(crate) row_cache: ShapedRows,
+    /// Wikilink and hashtag autocomplete, once a vault supplies suggestions.
+    autocomplete: Option<AutocompleteEngine>,
+    /// The content revision the autocomplete last reconciled with. A buffer
+    /// that moved on without us (a note loaded, a reload) closes the popup.
+    ac_revision: NonZeroU64,
     /// Drains the editor's own channel, when it has one (the tests'
     /// stand-alone `EditorView::new`).
     _messages: Option<Task<()>>,
@@ -251,7 +266,141 @@ impl EditorView {
     /// so a job finishing for the old channel's buffer wakes no one.
     pub(crate) fn set_channel(&mut self, tx: AppTx) {
         self.editor.session_mut().notifier = Some(redraw_callback(tx.clone()));
+        if let Some(engine) = self.autocomplete.as_mut() {
+            engine.set_redraw_callback(redraw_callback(tx.clone()));
+        }
         self.tx = tx;
+    }
+
+    /// Complete `[[` and `#` from `source` (`None`: no vault, so no popup).
+    /// The popup's results wake the window through the app channel.
+    pub(crate) fn set_suggestions(&mut self, source: Option<Arc<dyn SuggestionSource>>) {
+        self.autocomplete = source.map(|source| {
+            let mut engine = AutocompleteEngine::new(source, AutocompleteMode::Both);
+            engine.set_redraw_callback(redraw_callback(self.tx.clone()));
+            engine
+        });
+        self.ac_revision = self.editor.content_revision();
+    }
+
+    /// The popup's state while it has something to show.
+    pub(crate) fn autocomplete_state(&self) -> Option<&AutocompleteState> {
+        self.autocomplete
+            .as_ref()
+            .filter(|engine| engine.is_open())
+            .and_then(|engine| engine.state())
+    }
+
+    /// Reconcile the popup with the buffer after input. Text typed (the
+    /// revision moved) may open it; a cursor move only keeps it or closes it.
+    /// Only where the editor types: never in vim's command modes, never while
+    /// the find bar has the keyboard.
+    fn sync_autocomplete(&mut self) {
+        let Some(engine) = self.autocomplete.as_mut() else {
+            return;
+        };
+        let types = !self.input_blocked
+            && !self.editor.find_open()
+            && self.editor.modal_is_insert() != Some(false);
+        if !types {
+            engine.close();
+            return;
+        }
+        let revision = self.editor.content_revision();
+        if revision == self.ac_revision {
+            engine.refresh_if_open(&EditorHost(&self.editor));
+            return;
+        }
+        self.ac_revision = revision;
+        // Prose with no `[` or `#` before the caret cannot open a popup: skip
+        // the buffer scan the engine would otherwise do per keystroke.
+        let (row, col) = self.editor.cursor();
+        let line = self.editor.buffer().row(row).unwrap_or_default();
+        if !engine.may_need_sync(&line, col) {
+            return;
+        }
+        engine.sync(&EditorHost(&self.editor));
+    }
+
+    /// Drain finished queries, and drop a popup that no longer belongs: the
+    /// buffer changed without our input (another note loaded) or the editor
+    /// lost the keyboard.
+    fn tidy_autocomplete(&mut self, window: &Window) {
+        let revision = self.editor.content_revision();
+        let focused = self.focus_handle.is_focused(window);
+        if let Some(engine) = self.autocomplete.as_mut() {
+            engine.poll_results();
+            if engine.is_open() && (revision != self.ac_revision || !focused) {
+                engine.close();
+            }
+        }
+    }
+
+    /// Run `command` on the open popup. `true` when the popup took it.
+    fn run_popup_command(
+        &mut self,
+        command: PopupCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.input_blocked || self.editor.find_open() {
+            return false;
+        }
+        let Some(engine) = self.autocomplete.as_mut().filter(|e| e.is_open()) else {
+            return false;
+        };
+        match engine.handle_command(command, &EditorHost(&self.editor)) {
+            HandleKeyOutcome::NotHandled => false,
+            HandleKeyOutcome::Consumed | HandleKeyOutcome::Dismissed => {
+                self.settle(window, cx);
+                true
+            }
+            HandleKeyOutcome::Accepted(action) => {
+                self.preedit = None;
+                self.editor.apply_autocomplete(&action);
+                // The edit is ours: reconciling with it would reopen the popup
+                // on the word just completed.
+                self.ac_revision = self.editor.content_revision();
+                self.settle(window, cx);
+                true
+            }
+        }
+    }
+
+    /// A press on popup row `offset` (from the top of the window): accept it.
+    pub(crate) fn autocomplete_click(
+        &mut self,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_popup_command(PopupCommand::ClickRow(offset), window, cx);
+    }
+
+    /// The pointer over popup row `offset`: highlight it.
+    pub(crate) fn autocomplete_hover(&mut self, offset: usize, cx: &mut Context<Self>) {
+        if let Some(state) = self
+            .autocomplete
+            .as_mut()
+            .and_then(|engine| engine.state_mut())
+        {
+            let (start, end) = state.visible_window();
+            let idx = start + offset;
+            if idx < end && state.highlighted != idx {
+                state.highlighted = idx;
+                cx.notify();
+            }
+        }
+    }
+
+    /// A navigation `command` on the popup (the wheel over it).
+    pub(crate) fn autocomplete_command(&mut self, command: PopupCommand, cx: &mut Context<Self>) {
+        if let Some(engine) = self.autocomplete.as_mut()
+            && let Some(state) = engine.state_mut()
+        {
+            kimun_notes::logic::autocomplete::apply_command(state, command);
+            cx.notify();
+        }
     }
 
     /// Run the vim engine (`vim`) or the plain editor from now on: a fresh,
@@ -265,6 +414,10 @@ impl EditorView {
         let mut editor = Editor::new(vim);
         editor.session_mut().notifier = Some(redraw_callback(self.tx.clone()));
         self.editor = editor;
+        if let Some(engine) = self.autocomplete.as_mut() {
+            engine.close();
+        }
+        self.ac_revision = self.editor.content_revision();
         self.preedit = None;
         self.painted = None;
         self.row_cache = ShapedRows::default();
@@ -286,6 +439,7 @@ impl EditorView {
         if let Some(text) = text {
             editor.set_text(text);
         }
+        let ac_revision = editor.content_revision();
         Self {
             editor,
             focus_handle: cx.focus_handle(),
@@ -298,6 +452,8 @@ impl EditorView {
             painted: None,
             fonts: None,
             row_cache: ShapedRows::default(),
+            autocomplete: None,
+            ac_revision,
             _messages: messages,
         }
     }
@@ -322,6 +478,7 @@ impl EditorView {
                 EditorRequest::ViewportScrolled => {}
             }
         }
+        self.sync_autocomplete();
         window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
     }
@@ -512,6 +669,18 @@ impl EditorView {
             // A dead key or compose sequence finishes as a plain key-down
             // (`´` preedit, then `é` as a keystroke): whatever was being
             // composed is over once a key acts.
+            // The popup, when open, has Up/Down/Tab/Enter/Esc before anything
+            // else: they are its own, not the editor's or an app command.
+            // Except mid-composition: those keys then belong to the IME
+            // (Enter commits, Esc cancels), and an accept would drop the
+            // composed text.
+            if self.preedit.is_none()
+                && let Some(command) = key_command(key, false)
+                && self.run_popup_command(command, window, cx)
+            {
+                cx.stop_propagation();
+                return;
+            }
             self.preedit = None;
             match self.app_command(key, cx) {
                 AppCommand::Handled => {
@@ -563,6 +732,11 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        // A press on the text (the popup's own rows never get here) dismisses
+        // the popup.
+        if let Some(engine) = self.autocomplete.as_mut() {
+            engine.close();
+        }
         let Some(pointer) = input::pointer_down(event, origin, cells) else {
             return;
         };
@@ -859,7 +1033,8 @@ impl Focusable for EditorView {
 }
 
 impl Render for EditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.tidy_autocomplete(window);
         div()
             .id("editor")
             .test_support()
