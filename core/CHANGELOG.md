@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.6.0...kimun_core-v0.7.0) - 2026-11-09
+
+### Added
+
+- onboard
+- properties
+
+### Fixed
+
+- protect from deadlocks
+- changed unwrap() to or_else variants with a poison error
+
+### Other
+
+- pickers logic
+
 ## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.5.2...kimun_core-v0.6.0) - 2026-10-08
 
 ### Added
