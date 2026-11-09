@@ -19,11 +19,13 @@ use std::num::NonZeroU64;
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
-    AnyElement, Bounds, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Point, ScrollEvent, SharedString, Size, Styled, Window, div, point, px,
-    size,
+    AnyElement, App, Bounds, Div, Entity, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Role, ScrollEvent, SharedString, Size, Stateful,
+    StatefulInteractiveElement, Styled, Window, div, point, px, size,
 };
-use kimun_notes::logic::autocomplete::{AutocompleteHost, AutocompleteState, PopupCommand};
+use kimun_notes::logic::autocomplete::{
+    AutocompleteHost, AutocompleteState, PopupCommand, Suggestion,
+};
 use kimun_notes::logic::editor::Editor;
 use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use kimun_notes::settings::themes::Theme;
@@ -141,6 +143,95 @@ pub(crate) struct PopupStyle<'a> {
     pub(crate) theme: &'a Theme,
 }
 
+/// One suggestion row's content, apart from how its surface lays it out.
+pub(crate) struct PopupRow<'a> {
+    pub(crate) item: &'a Suggestion,
+    /// The typed query: its matching prefix is set apart.
+    pub(crate) query: &'a str,
+    /// The row's offset from the top of the visible window.
+    pub(crate) offset: usize,
+    pub(crate) highlighted: bool,
+    /// Expose the row to assistive technology (a list-box option).
+    pub(crate) accessible: bool,
+}
+
+/// A suggestion row, shared by every popup: the editor's cell grid and the
+/// query fields' list differ only in `shape` (the row's size and padding) and
+/// `shape_secondary` (the secondary text's), and in what a press and a hover
+/// do. What a row shows (the accented typed prefix, the rest, the secondary
+/// text, the highlight) is decided here once.
+pub(crate) fn popup_row(
+    row: PopupRow<'_>,
+    t: &Theme,
+    shape: impl FnOnce(Stateful<Div>) -> Stateful<Div>,
+    shape_secondary: impl FnOnce(Div) -> Div,
+    press: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    hover: impl Fn(&gpui_kit::MouseMoveEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let PopupRow {
+        item,
+        query,
+        offset,
+        highlighted,
+        accessible,
+    } = row;
+    let (typed, rest) = split_prefix(&item.display, query);
+    let base = div()
+        // Keyed by what the row is, not where: the list reorders as the query
+        // narrows.
+        .id((SharedString::from(item.display.clone()), offset))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .text_color(theme::foreground(t));
+    let base = if accessible {
+        base.role(Role::ListBoxOption)
+            .aria_label(SharedString::from(item.display.clone()))
+            .aria_selected(highlighted)
+    } else {
+        base
+    };
+    let row = shape(base)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .whitespace_nowrap()
+                .child(div().text_color(theme::accent(t)).child(typed.to_string()))
+                .child(rest.to_string()),
+        )
+        .on_mouse_down(MouseButton::Left, press)
+        .on_mouse_move(hover);
+    let row = match &item.secondary {
+        Some(secondary) => row.child(shape_secondary(
+            div()
+                .text_color(theme::secondary(t))
+                .child(secondary.clone()),
+        )),
+        None => row,
+    };
+    let row = if highlighted {
+        row.bg(theme::selected_background(t))
+    } else {
+        row
+    };
+    row.test_support()
+}
+
+/// What the wheel does over a popup: a step up for a scroll up, a step down
+/// for a scroll down. Nothing for a delta with no vertical part (a sideways
+/// swipe, a trackpad's trailing events).
+pub(crate) fn wheel_command(y: Pixels) -> Option<PopupCommand> {
+    if y > px(0.) {
+        Some(PopupCommand::Up)
+    } else if y < px(0.) {
+        Some(PopupCommand::Down)
+    } else {
+        None
+    }
+}
+
 /// The popup's element: a bordered, cell-sized box of rows. A press on a row
 /// accepts it, a move over one highlights it, the wheel moves the highlight;
 /// the box blocks the pointer from the text beneath it.
@@ -162,56 +253,27 @@ pub(crate) fn popup_element(
     let line_height = px(cells.height());
 
     let list = (start..end).map(|idx| {
-        let item = &state.items[idx];
         let offset = idx - start;
-        let (typed, rest) = split_prefix(&item.display, &state.query);
-        let row = div()
-            // Keyed by what the row is, not where: the list reorders as the
-            // query narrows.
-            .id((SharedString::from(item.display.clone()), offset))
-            .test_support()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .w_full()
-            .h(line_height)
-            .px(pad)
-            .whitespace_nowrap()
-            .text_color(theme::foreground(t))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(div().text_color(theme::accent(t)).child(typed.to_string()))
-                    .child(rest.to_string()),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                window.listener_for(view, move |view, _: &MouseDownEvent, window, cx| {
-                    view.autocomplete_click(offset, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_move(window.listener_for(
-                view,
-                move |view, _: &gpui_kit::MouseMoveEvent, _, cx| {
-                    view.autocomplete_hover(offset, cx);
-                },
-            ));
-        let row = match &item.secondary {
-            Some(secondary) => row.child(
-                div()
-                    .text_color(theme::secondary(t))
-                    .child(secondary.clone()),
-            ),
-            None => row,
-        };
-        if idx == state.highlighted {
-            row.bg(theme::selected_background(t))
-        } else {
-            row
-        }
+        popup_row(
+            PopupRow {
+                item: &state.items[idx],
+                query: &state.query,
+                offset,
+                highlighted: idx == state.highlighted,
+                accessible: false,
+            },
+            t,
+            // A cell-aligned row: one grid line tall, padded in whole cells.
+            |row| row.w_full().h(line_height).px(pad).whitespace_nowrap(),
+            |secondary| secondary,
+            window.listener_for(view, move |view, _: &MouseDownEvent, window, cx| {
+                view.autocomplete_click(offset, window, cx);
+                cx.stop_propagation();
+            }),
+            window.listener_for(view, move |view, _: &gpui_kit::MouseMoveEvent, _, cx| {
+                view.autocomplete_hover(offset, cx);
+            }),
+        )
     });
 
     div()
@@ -231,17 +293,10 @@ pub(crate) fn popup_element(
         .overflow_hidden()
         .on_scroll(
             window.listener_for(view, move |view, event: &ScrollEvent, _, cx| {
-                let y = event.delta.pixel_delta(line_height).y;
-                // A sideways swipe or a trackpad's trailing zero-delta events
-                // scroll nothing; they still must not reach the editor.
-                if y != px(0.) {
-                    let command = if y > px(0.) {
-                        PopupCommand::Up
-                    } else {
-                        PopupCommand::Down
-                    };
+                if let Some(command) = wheel_command(event.delta.pixel_delta(line_height).y) {
                     view.autocomplete_command(command, cx);
                 }
+                // Over the popup the wheel never reaches the editor.
                 cx.stop_propagation();
             }),
         )
@@ -270,6 +325,13 @@ mod tests {
 
     fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
+    }
+
+    #[test]
+    fn the_wheel_steps_the_highlight_only_when_it_scrolls_vertically() {
+        assert_eq!(wheel_command(px(3.)), Some(PopupCommand::Up));
+        assert_eq!(wheel_command(px(-3.)), Some(PopupCommand::Down));
+        assert_eq!(wheel_command(px(0.)), None);
     }
 
     #[test]

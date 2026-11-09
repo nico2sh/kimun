@@ -55,6 +55,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription,
     UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
 };
+use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
 use kimun_notes::logic::file_ops;
@@ -73,6 +74,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::files::{ClickPolicy, ClickRows, entry_row, with_click_cursor};
+use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::modal::{self, ModalKind, Slot};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
@@ -236,6 +238,10 @@ pub(crate) struct NotePicker<R: PickerRow = FileListEntry> {
     kind: PickerKind,
     core: ListCore<R>,
     pub(crate) input: Entity<InputState>,
+    /// `#label`, `<note` and `?saved` completion under the field: the finder
+    /// and the search browser have it (the TUI's note browser does), the
+    /// link chooser and the saved-search list do not.
+    ac: Option<InputAutocomplete>,
     scroll: UniformListScrollHandle,
     workspace: WeakEntity<Workspace>,
     /// Why the last `Create:` failed; cleared by the next keystroke.
@@ -247,6 +253,7 @@ pub(crate) struct NotePicker<R: PickerRow = FileListEntry> {
     /// The query's emphasis needles (search browser), made once per query.
     needles: Arc<[String]>,
     _input_events: Subscription,
+    _caret_events: Subscription,
 }
 
 impl<R: PickerRow> NotePicker<R> {
@@ -257,10 +264,14 @@ impl<R: PickerRow> NotePicker<R> {
         query: String,
         search: Option<SearchParts>,
         redraw: kimun_notes::logic::message::Notifier,
+        vault: Option<Arc<NoteVault>>,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let ac = vault
+            .filter(|_| matches!(kind, PickerKind::Finder | PickerKind::Search))
+            .map(|vault| InputAutocomplete::new(vault, redraw.clone()));
         let placeholder = match kind {
             PickerKind::Finder => "Find a note, or name a new one",
             PickerKind::Links => "Filter the matches",
@@ -274,10 +285,19 @@ impl<R: PickerRow> NotePicker<R> {
         });
         let input_events = cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
-                let query = input.read(cx).value().to_string();
-                this.set_query(query, cx);
+                // An accept's own edit was handled by the accept.
+                let typed = match this.ac.as_mut() {
+                    Some(ac) => ac.on_change(input.read(cx)),
+                    None => true,
+                };
+                if typed {
+                    let query = input.read(cx).value().to_string();
+                    this.set_query(query, cx);
+                }
             }
         });
+        // A caret move can leave the trigger: look again.
+        let caret_events = watch(&input, window, cx);
         let needles = Self::needles_of(search.as_ref(), &query);
         let setup = ListSetup {
             query,
@@ -288,6 +308,7 @@ impl<R: PickerRow> NotePicker<R> {
             kind,
             core: ListCore::new(source, redraw, setup),
             input,
+            ac,
             scroll: UniformListScrollHandle::new(),
             workspace,
             error: None,
@@ -295,6 +316,7 @@ impl<R: PickerRow> NotePicker<R> {
             search,
             needles,
             _input_events: input_events,
+            _caret_events: caret_events,
         }
     }
 
@@ -350,6 +372,12 @@ impl<R: PickerRow> NotePicker<R> {
         self.core.query()
     }
 
+    /// The suggestions under the field, top first (tests).
+    #[cfg(test)]
+    pub(crate) fn suggested(&self) -> Vec<String> {
+        self.ac.as_ref().map(|ac| ac.shown()).unwrap_or_default()
+    }
+
     /// The row Enter would choose (tests).
     #[cfg(test)]
     pub(crate) fn selected(&self) -> Option<R> {
@@ -364,6 +392,10 @@ impl<R: PickerRow> NotePicker<R> {
 
     /// Apply what the load delivered (on the redraw it sends).
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
+        // Suggestions for the field may have landed too.
+        if self.ac.is_some() {
+            cx.notify();
+        }
         let polled = self.core.poll();
         if polled.changed {
             if polled.restarted {
@@ -422,6 +454,9 @@ impl<R: PickerRow> NotePicker<R> {
             return;
         }
         // `set_value` reports no change: the query runs here.
+        if let Some(ac) = self.ac.as_mut() {
+            ac.close();
+        }
         self.input
             .update(cx, |input, cx| input.set_value(sorted.clone(), window, cx));
         self.set_query(sorted, cx);
@@ -607,10 +642,27 @@ impl<R: PickerRow> ClickRows for NotePicker<R> {
     }
 }
 
+impl<R: PickerRow> QueryFieldOwner for NotePicker<R> {
+    fn autocomplete_mut(&mut self) -> Option<&mut InputAutocomplete> {
+        self.ac.as_mut()
+    }
+
+    fn field(&self) -> &Entity<InputState> {
+        &self.input
+    }
+
+    fn accepted(&mut self, _: Option<String>, cx: &mut Context<Self>) {
+        // The browser pins no saved-search name (FIND does).
+        let query = self.input.read(cx).value().to_string();
+        self.set_query(query, cx);
+    }
+}
+
 impl<R: PickerRow> Render for NotePicker<R> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
+        let popup = show(self, t, window, cx);
         let count = self.core.visible_len();
         let selected = self.core.selected();
         let policy = self.click_policy();
@@ -763,6 +815,8 @@ impl<R: PickerRow> Render for NotePicker<R> {
             .gap_2()
             // The input's keys that mean something else here, taken before
             // the input sees them.
+            // With suggestions open they have these keys first.
+            .map(|el| popup_keys(el, cx))
             .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
                 this.step(false, cx);
                 cx.stop_propagation();
@@ -792,6 +846,7 @@ impl<R: PickerRow> Render for NotePicker<R> {
                 }))
             })
             .child(input_row)
+            .children(popup)
             .child(body)
             .children(footer)
             .when_some(query_error, |picker, reason| {
@@ -948,6 +1003,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<NotePicker<R>>> {
         let tx = self.tx.clone()?;
+        let vault = self.notes.as_ref().map(|host| host.session.vault().clone());
         let workspace = cx.entity().downgrade();
         let picker = cx.new(|cx| {
             NotePicker::new(
@@ -956,6 +1012,7 @@ impl Workspace {
                 query,
                 search,
                 redraw_callback(tx),
+                vault,
                 workspace,
                 window,
                 cx,
