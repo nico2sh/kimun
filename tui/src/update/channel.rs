@@ -4,13 +4,17 @@
 //! managed install.
 //!
 //! Order of precedence:
-//!   1. The install marker (`install.toml`) written by `install.sh` — deterministic.
-//!   2. A heuristic on the canonicalised executable path.
+//!   1. Running from inside a macOS app bundle (`Foo.app/Contents/MacOS/`):
+//!      always [`InstallChannel::Bundle`], whatever the marker says. Replacing
+//!      the executable inside a signed bundle breaks its seal, and the config
+//!      dir (and its marker) is shared with a terminal install elsewhere.
+//!   2. The install marker (`install.toml`) written by `install.sh` — deterministic.
+//!   3. A heuristic on the canonicalised executable path.
 //!
 //! Anything that cannot be classified fails safe to notify-only.
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const MARKER_FILE: &str = "install.toml";
@@ -25,6 +29,9 @@ pub enum InstallChannel {
     Brew,
     /// `cargo install` — package-manager owned, notify-only.
     Cargo,
+    /// The desktop app run from inside its macOS `.app` bundle: replaced as a
+    /// whole by a new download (or a cask), never executable-by-executable.
+    Bundle,
     /// Could not determine; treated as notify-only.
     Unknown,
 }
@@ -49,6 +56,29 @@ impl InstallChannel {
 #[derive(serde::Deserialize)]
 struct InstallMarker {
     channel: String,
+    /// Directory `install.sh` put the binary in. The marker file is shared by
+    /// every kimün app (and outlives the install), so it only describes a
+    /// binary that actually lives there.
+    install_dir: Option<String>,
+}
+
+/// The running executable, as invoked and with symlinks resolved. Invariant
+/// for the process, so resolved once.
+struct ExePaths {
+    raw: PathBuf,
+    canonical: Option<PathBuf>,
+}
+
+fn exe_paths() -> Option<&'static ExePaths> {
+    static EXE: OnceLock<Option<ExePaths>> = OnceLock::new();
+    EXE.get_or_init(|| {
+        let raw = env::current_exe().ok()?;
+        let canonical = kimun_core::SystemPath::canonical(&raw)
+            .map(|p| p.into_path_buf())
+            .ok();
+        Some(ExePaths { raw, canonical })
+    })
+    .as_ref()
 }
 
 /// Detect how the running binary was installed. `config_dir` is kimün's config
@@ -60,34 +90,62 @@ struct InstallMarker {
 /// the process, so only *it* is cached. Caching keyed on the result of an
 /// argument would let the first caller's `config_dir` win forever.
 pub fn detect(config_dir: &Path) -> InstallChannel {
-    if let Some(channel) = channel_from_marker(config_dir) {
+    let exe = exe_paths();
+    // Check the path as invoked *and* resolved: a symlink pointing into a
+    // bundle must still count as the bundle.
+    let in_bundle = exe.is_some_and(|e| {
+        is_app_bundle_path(&e.raw.to_string_lossy())
+            || e.canonical
+                .as_deref()
+                .is_some_and(|c| is_app_bundle_path(&c.to_string_lossy()))
+    });
+    if in_bundle {
+        return InstallChannel::Bundle;
+    }
+    let exe_dir = exe
+        .and_then(|e| e.canonical.as_deref())
+        .and_then(Path::parent);
+    if let Some(channel) = channel_from_marker(config_dir, exe_dir) {
         return channel;
     }
     static EXE_CHANNEL: OnceLock<InstallChannel> = OnceLock::new();
     *EXE_CHANNEL.get_or_init(channel_from_exe_path)
 }
 
-fn channel_from_marker(config_dir: &Path) -> Option<InstallChannel> {
+/// Whether `path` is an executable inside a macOS app bundle.
+fn is_app_bundle_path(path: &str) -> bool {
+    path.contains(".app/Contents/MacOS/")
+}
+
+/// The channel the marker declares, if it exists and describes the binary
+/// running from `exe_dir`. A marker naming a different `install_dir` belongs to
+/// another install (e.g. `install.sh --gui` after a brew-installed `kimun`),
+/// so it is ignored rather than trusted.
+fn channel_from_marker(config_dir: &Path, exe_dir: Option<&Path>) -> Option<InstallChannel> {
     let raw = std::fs::read_to_string(config_dir.join(MARKER_FILE)).ok()?;
     let marker: InstallMarker = toml::from_str(&raw).ok()?;
+    if let Some(dir) = marker.install_dir.as_deref().filter(|d| !d.is_empty()) {
+        let marked = kimun_core::SystemPath::canonical(Path::new(dir))
+            .map(|p| p.into_path_buf())
+            .unwrap_or_else(|_| PathBuf::from(dir));
+        if exe_dir != Some(marked.as_path()) {
+            return None;
+        }
+    }
     match marker.channel.as_str() {
         "script" => Some(InstallChannel::Script),
         "direct" => Some(InstallChannel::Direct),
         "brew" => Some(InstallChannel::Brew),
         "cargo" => Some(InstallChannel::Cargo),
+        "bundle" => Some(InstallChannel::Bundle),
         _ => None,
     }
 }
 
 fn channel_from_exe_path() -> InstallChannel {
-    let exe = match env::current_exe().map_err(|e| e.to_string()).and_then(|p| {
-        kimun_core::SystemPath::canonical(&p)
-            .map(|p| p.into_path_buf())
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(p) => p,
-        // No idea where we live — do not risk touching a managed binary.
-        Err(_) => return InstallChannel::Unknown,
+    // No idea where we live — do not risk touching a managed binary.
+    let Some(exe) = exe_paths().and_then(|e| e.canonical.clone()) else {
+        return InstallChannel::Unknown;
     };
     let path = exe.to_string_lossy();
 
@@ -139,5 +197,60 @@ fn dir_is_writable(dir: &Path) -> bool {
             true
         }
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_executable_inside_an_app_bundle_is_the_bundle_channel() {
+        assert!(is_app_bundle_path(
+            "/Applications/Kimün.app/Contents/MacOS/kimun-gui"
+        ));
+        assert!(is_app_bundle_path(
+            "/Users/me/Apps/Kimun.app/Contents/MacOS/kimun-gui"
+        ));
+        assert!(!is_app_bundle_path("/Users/me/.local/bin/kimun-gui"));
+        assert!(!is_app_bundle_path("/opt/Kimun.app/bin/kimun"));
+    }
+
+    #[test]
+    fn a_bundle_is_never_self_update_eligible() {
+        assert!(!InstallChannel::Bundle.self_update_eligible());
+        assert_eq!(InstallChannel::Bundle.upgrade_hint(), None);
+    }
+
+    #[test]
+    fn the_marker_may_name_the_bundle_channel() {
+        let dir = std::env::temp_dir().join(format!("kimun-channel-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MARKER_FILE), "channel = \"bundle\"\n").unwrap();
+        assert_eq!(channel_from_marker(&dir, None), Some(InstallChannel::Bundle));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_marker_for_another_install_dir_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("kimun-channel-dir-{}", std::process::id()));
+        let here = dir.join("here");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(
+            dir.join(MARKER_FILE),
+            format!("channel = \"script\"\ninstall_dir = \"{}\"\n", here.display()),
+        )
+        .unwrap();
+        let here_canon = kimun_core::SystemPath::canonical(&here).unwrap().into_path_buf();
+        let else_canon = kimun_core::SystemPath::canonical(&elsewhere).unwrap().into_path_buf();
+        assert_eq!(
+            channel_from_marker(&dir, Some(&here_canon)),
+            Some(InstallChannel::Script)
+        );
+        assert_eq!(channel_from_marker(&dir, Some(&else_canon)), None);
+        assert_eq!(channel_from_marker(&dir, None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

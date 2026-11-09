@@ -45,3 +45,6 @@ adr/
 handoff/
 plan/
 plans/
+
+# Python bytecode from the .github/scripts tests
+**/__pycache__/

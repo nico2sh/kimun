@@ -7,11 +7,21 @@ weight = 16
 
 Kimün also has a desktop app, `kimun-gui`: a native window over the same notes, the same `config.toml`, the same themes and the same [search](@/using-kimun/search.md) as the [terminal UI](@/using-kimun/tui.md). You can use both on one workspace.
 
-> **Status.** The desktop app is new. Prebuilt binaries are not published yet, so for now you build it yourself (below). It is developed and tried on Linux; Windows and macOS use the same code but have not been verified there yet. Expect rough edges, and see [what is not there yet](#not-in-the-desktop-app-yet).
+> **Status.** The desktop app is new. It is developed and tried on Linux; Windows and macOS builds come from the same code but have not been verified there yet. Expect rough edges, and see [what is not there yet](#not-in-the-desktop-app-yet).
 
 ## Install and run
 
-There is no installer or release download for the desktop app yet. Build it from a checkout of the repository:
+**macOS and Linux:** the install script, with `--gui`:
+
+```sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
+```
+
+On Linux it also puts the app in your application menu (a launcher entry and icons under `~/.local/share`). On macOS it installs the plain binary: run `kimun-gui` from a terminal. For a double-clickable app, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases) and drag Kimün to Applications. The script installs into `~/.local/bin` (set `KIMUN_INSTALL_DIR` to change it), checks the download's checksum, and leaves an install marker so the app can update itself. It can sit beside the terminal app.
+
+**Windows:** download `kimun-gui-<version>-windows-x64.zip` from the [releases page](https://github.com/nico2sh/kimun/releases), unzip it and run `kimun-gui.exe`. There is no installer yet.
+
+**From source,** in a checkout of the repository:
 
 ```sh
 cargo build --release -p kimun-gui
@@ -26,8 +36,6 @@ sudo apt-get install pkg-config libwayland-dev libfontconfig-dev \
 ```
 
 Give it a note to open on the command line (`kimun-gui path/to/note.md`) or run it bare to start where you left off. The first time, with no workspace configured, a short setup assistant walks you through it.
-
-The desktop app does not update itself like the terminal app does today; see [Updates](#updates).
 
 ## The window
 
@@ -93,7 +101,7 @@ The interface uses [Inter](https://rsms.me/inter/), embedded in the app and lice
 
 ## Updates
 
-The desktop app checks for a new Kimün release when it starts (turn it off with `update_check` in `config.toml`) and tells you in a toast. **Preferences > Display > Check now**, or leader `v u`, checks on demand. Since prebuilt desktop binaries are not published yet, the app cannot install an update itself: the dialog shows what is new and points you at the releases page, and a new version means building from source again.
+The desktop app checks for a new Kimün release when it starts (turn it off with `update_check` in `config.toml`) and tells you in a toast. **Preferences > Display > Check now**, or leader `v u`, checks on demand. The update dialog's `Install update` downloads the desktop app's own release binary (`kimun-gui-<version>-<platform>`), checks its checksum and replaces the running one; restart to use it. That is only offered for a copy installed by the install script or placed by you. Under Homebrew, `cargo install` or a system package, and for the macOS `.app` (from the `.dmg`), the dialog points you at the right way to update instead. A release that has no desktop build for your system says so instead of failing quietly.
 
 If a [Kimün server](@/using-kimun/server.md) reports a newer release of itself, you get a toast saying so. Update the server the way you installed it.
 

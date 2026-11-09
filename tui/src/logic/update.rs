@@ -30,14 +30,22 @@ pub enum Frontend {
 }
 
 /// Whether a release ships the desktop app's binary. `build.yml` uploads
-/// only `kimun-<version>-<platform>` (the terminal app), and
-/// [`crate::update::apply`] replaces the *running* executable with that
-/// asset: run from the desktop app it would put the terminal app in its
-/// place. Until a desktop asset is published (and the asset name in
-/// `update::platform` knows it), the desktop app never installs in place.
-pub const DESKTOP_BINARY_PUBLISHED: bool = false;
+/// `kimun-gui-<version>-<platform>` beside the terminal app's, and
+/// [`crate::update::apply`] takes the asset of the app that is running
+/// ([`update::Product`]): the desktop app only ever replaces itself with its
+/// own. A kill switch: set `false` to make the desktop app offer the releases
+/// page instead of installing (a release train without desktop assets).
+pub const DESKTOP_BINARY_PUBLISHED: bool = true;
 
 impl Frontend {
+    /// The product whose release asset this frontend replaces itself with.
+    pub fn product(self) -> update::Product {
+        match self {
+            Self::Terminal => update::Product::Terminal,
+            Self::Desktop => update::Product::Desktop,
+        }
+    }
+
     /// Whether the release publishes this frontend's binary, so that it can
     /// replace itself.
     pub fn binary_published(self) -> bool {
@@ -67,7 +75,10 @@ pub enum UpdateOffer {
 /// are [`InstallChannel`]'s: anything not self-update eligible is the
 /// package manager's.
 pub fn offer(channel: InstallChannel, binary_published: bool) -> UpdateOffer {
-    if !channel.self_update_eligible() {
+    if channel == InstallChannel::Bundle {
+        // Not a package manager's: a whole new download replaces the bundle.
+        UpdateOffer::Download
+    } else if !channel.self_update_eligible() {
         UpdateOffer::PackageManager {
             command: channel.upgrade_hint(),
         }
@@ -442,6 +453,22 @@ impl SystemUpdates {
     }
 }
 
+/// An install error, in words. A release without the desktop app's asset
+/// (cut before desktop builds were published) is not the user's problem to
+/// decode: say what it is.
+fn install_error(frontend: Frontend, error: &update::UpdateError) -> String {
+    match (frontend, error) {
+        (Frontend::Desktop, update::UpdateError::MissingAsset(name))
+            if name.starts_with("kimun-gui-") =>
+        {
+            format!(
+                "this release has no desktop build for this system ({name}); see the releases page"
+            )
+        }
+        _ => error.to_string(),
+    }
+}
+
 fn config_dir() -> Result<std::path::PathBuf, String> {
     crate::settings::config_dir().map_err(|e| e.to_string())
 }
@@ -458,7 +485,8 @@ impl UpdateBackend for SystemUpdates {
             return Err("this install can't update itself".to_string());
         }
         let latest = update::fetch_latest().map_err(|e| e.to_string())?;
-        update::apply(&latest).map_err(|e| e.to_string())?;
+        update::apply(&latest, self.frontend.product())
+            .map_err(|e| install_error(self.frontend, &e))?;
         Ok(latest.version)
     }
 
@@ -769,7 +797,10 @@ mod tests {
             offer(C::Unknown, true),
             UpdateOffer::PackageManager { command: None }
         );
-        // The terminal app's binary ships; the desktop app's does not yet.
+        // A macOS bundle is replaced whole: the releases page, whatever ships.
+        assert_eq!(offer(C::Bundle, true), UpdateOffer::Download);
+        assert_eq!(offer(C::Bundle, false), UpdateOffer::Download);
+        // Both apps' binaries ship.
         assert!(Frontend::Terminal.binary_published());
         assert_eq!(
             Frontend::Desktop.binary_published(),
@@ -1108,15 +1139,44 @@ mod tests {
         assert!(fails.check(false).unwrap().unwrap().dismissed);
     }
 
+    /// A desktop app in a macOS bundle is offered the download, and the real
+    /// backend refuses to install over it before any network or file work.
     #[test]
-    fn the_desktop_app_never_installs_through_the_real_backend() {
-        if DESKTOP_BINARY_PUBLISHED {
-            return;
-        }
+    fn a_bundled_desktop_app_never_installs_in_place() {
         let real = SystemUpdates::new(Frontend::Desktop);
-        let s = status("999.0.0", InstallChannel::Direct, false);
+        let s = status("999.0.0", InstallChannel::Bundle, false);
         assert_eq!(real.offer(&s), UpdateOffer::Download);
-        // Refused before any network or file work.
         assert!(real.install(&s).is_err());
+    }
+
+    /// An install on a package manager's channel is refused too, for either app.
+    #[test]
+    fn a_managed_install_never_installs_in_place() {
+        for frontend in [Frontend::Terminal, Frontend::Desktop] {
+            let real = SystemUpdates::new(frontend);
+            let s = status("999.0.0", InstallChannel::Brew, false);
+            assert!(matches!(real.offer(&s), UpdateOffer::PackageManager { .. }));
+            assert!(real.install(&s).is_err());
+        }
+    }
+
+    #[test]
+    fn a_release_without_a_desktop_build_says_so() {
+        let missing = update::UpdateError::MissingAsset("kimun-gui-9.9.9-linux-x64".into());
+        let said = install_error(Frontend::Desktop, &missing);
+        assert!(said.contains("no desktop build"), "{said}");
+        // The terminal app, and any other error, keep the plain wording.
+        assert_eq!(
+            install_error(Frontend::Terminal, &missing),
+            missing.to_string()
+        );
+        let other = update::UpdateError::MissingAsset("checksums-sha256.txt".into());
+        assert_eq!(install_error(Frontend::Desktop, &other), other.to_string());
+    }
+
+    #[test]
+    fn each_frontend_updates_to_its_own_product() {
+        assert_eq!(Frontend::Terminal.product(), update::Product::Terminal);
+        assert_eq!(Frontend::Desktop.product(), update::Product::Desktop);
     }
 }

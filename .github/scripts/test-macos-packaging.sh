@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Tests for the macOS packaging scripts, on any machine: the bundle's structure and
+# Info.plist, and the signing script's sequence of Apple commands in dry-run mode
+# (the real tools exist only on macOS, with an Apple account).
+# Run: bash .github/scripts/test-macos-packaging.sh
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+fail() { echo "FAIL: $*"; exit 1; }
+ok() { echo "ok: $*"; }
+
+# --- the bundle -------------------------------------------------------------------
+printf '#!/bin/sh\n' >"$work/kimun-gui"
+bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3 "$work/out" >/dev/null
+app="$work/out/Kimun.app"
+[ -x "$app/Contents/MacOS/kimun-gui" ] || fail "the executable is missing or not executable"
+[ -f "$app/Contents/Resources/kimun.icns" ] || fail "the icon is missing"
+[ -f "$app/Contents/PkgInfo" ] || fail "PkgInfo"
+python3 - "$app/Contents/Info.plist" <<'P' || fail "Info.plist"
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["CFBundleExecutable"] == "kimun-gui"
+assert p["CFBundleIconFile"] == "kimun"
+assert p["CFBundleIdentifier"] == "dev.2co.kimun"
+assert p["CFBundleShortVersionString"] == "1.2.3" and p["CFBundleVersion"] == "1.2.3"
+assert p["CFBundlePackageType"] == "APPL" and p["NSHighResolutionCapable"] is True
+assert "@" not in repr(p), "an unfilled placeholder"
+P
+ok "the bundle: executable, icon, a valid Info.plist"
+
+bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3-beta.4 "$work/pre" >/dev/null
+python3 - "$work/pre/Kimun.app/Contents/Info.plist" <<'P' || fail "pre-release version"
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["CFBundleShortVersionString"] == "1.2.3-beta.4"
+assert p["CFBundleVersion"] == "1.2.3", "the build number is three integers"
+P
+ok "a pre-release keeps its suffix in the short version only"
+if bash .github/scripts/macos-bundle.sh "$work/kimun-gui" dryrun "$work/bad" >/dev/null 2>&1; then fail "a non-numeric version made a bundle"; fi
+if bash .github/scripts/macos-bundle.sh "$work/missing" 1.2.3 "$work/bad" >/dev/null 2>&1; then fail "a missing binary made a bundle"; fi
+ok "a bad version or a missing binary is refused"
+
+# --- the signing sequence (dry run) -----------------------------------------------
+export SIGN_DRY_RUN=1
+export APPLE_CERT_P12="$(printf 'cert' | base64)" APPLE_NOTARY_KEY="$(printf 'key' | base64)"
+export APPLE_CERT_PASSWORD="s3cret-pass" APPLE_SIGNING_IDENTITY="Developer ID Application: Test (ABCDE12345)"
+export APPLE_NOTARY_KEY_ID="KEYID123" APPLE_NOTARY_ISSUER_ID="issuer-uuid"
+log="$(bash .github/scripts/macos-sign.sh "$app" "$work/dmg/out.dmg")" || fail "the dry run failed: $log"
+
+in_order() { # every pattern appears, each after the one before
+  local n=0 pat
+  for pat in "$@"; do
+    local m
+    m="$(echo "$log" | grep -n -m1 -- "$pat" | cut -d: -f1 || true)"
+    [ -n "$m" ] || fail "missing from the sequence: $pat"
+    [ "$m" -ge "$n" ] || fail "out of order: $pat"
+    n="$m"
+  done
+}
+in_order "security create-keychain" "security import" "set-key-partition-list" \
+  "codesign --force --options runtime --timestamp" "codesign --verify --strict" \
+  "notarytool submit .*app.zip" "stapler staple .*Kimun.app" \
+  "hdiutil create" "codesign --force --timestamp .*out.dmg" \
+  "notarytool submit .*out.dmg" "stapler staple .*out.dmg" "spctl --assess"
+[ "$(echo "$log" | grep -c "notarytool submit")" = 2 ] || fail "the app and the dmg are both notarized"
+echo "$log" | grep -q -- "--sign Developer ID Application: Test (ABCDE12345)" || fail "the signing identity is not passed"
+ok "signing: keychain, sign app, notarize + staple, dmg, sign, notarize + staple, assess"
+
+echo "$log" | grep -q "s3cret-pass" && fail "the certificate password was printed"
+echo "$log" | grep -q "\*\*\*" || fail "nothing was masked where the password goes"
+ok "secrets are masked in the log"
+
+for var in APPLE_CERT_P12 APPLE_CERT_PASSWORD APPLE_SIGNING_IDENTITY APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+  out="$(env -u "$var" bash .github/scripts/macos-sign.sh "$app" "$work/dmg/x.dmg" 2>&1)" && fail "ran without $var"
+  echo "$out" | grep -q "$var is not set" || fail "$var not named: $out"
+done
+ok "each missing secret is named and stops the run"
+if bash .github/scripts/macos-sign.sh "$work/nope.app" "$work/dmg/y.dmg" >/dev/null 2>&1; then fail "signed a missing bundle"; fi
+ok "a missing bundle is refused"
+
+echo "macOS packaging scripts behave"

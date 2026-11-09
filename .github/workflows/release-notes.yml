@@ -1,0 +1,37 @@
+# Release notes gate: a release PR (opened by release-plz) cannot go green until
+# release-notes/<version>.md holds hand-written notes, not just the template.
+# Make this a required check on main. See release-notes/README.md.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+name: release-notes
+
+jobs:
+  notes:
+    name: Release notes are written
+    # Only the release PRs release-plz opens (its branches are release-plz-*).
+    if: startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A PR that releases only the server leaves the app's version as it was,
+      # and that version already has its tag: nothing to write notes for.
+      - name: Does this release the app?
+        id: app
+        run: |
+          if python3 .github/scripts/release_notes.py unreleased; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "The app's version already has a release tag: no notes needed."
+          fi
+
+      - name: Notes are written
+        if: steps.app.outputs.released == 'false'
+        run: python3 .github/scripts/release_notes.py check
