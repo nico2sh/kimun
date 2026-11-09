@@ -722,9 +722,7 @@ impl<R: SearchRow> SearchList<R> {
             if let (Some(state), Some(anchor)) = (ac.state_mut(), caret) {
                 state.anchor = anchor;
             }
-            if let Some(state) = ac.state_mut() {
-                crate::components::autocomplete::render(f, state, clamp, theme);
-            }
+            ac.render(f, clamp, theme);
         }
     }
 
@@ -757,13 +755,10 @@ impl<R: SearchRow> SearchList<R> {
     /// Whether (col,row) is on a row of the open autocomplete popup, as last
     /// drawn — a host that filters mouse events must let these through.
     pub fn popup_contains(&self, col: u16, row: u16) -> bool {
-        self.autocomplete
-            .as_ref()
-            .and_then(|ac| ac.state())
-            .is_some_and(|st| {
-                st.rows_rect
-                    .contains(ratatui::layout::Position::new(col, row))
-            })
+        self.autocomplete.as_ref().is_some_and(|ac| {
+            ac.rows_rect()
+                .contains(ratatui::layout::Position::new(col, row))
+        })
     }
 
     pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
@@ -1802,8 +1797,7 @@ mod tests {
         let rows = list
             .autocomplete
             .as_ref()
-            .and_then(|ac| ac.state())
-            .map(|st| st.rows_rect)
+            .map(|ac| ac.rows_rect())
             .expect("popup open");
         assert!(
             list.popup_contains(rows.x + 1, rows.y),

@@ -4,6 +4,7 @@
 
 pub mod actions;
 pub mod ask_flow;
+pub mod autocomplete;
 pub mod clipboard;
 pub mod input;
 pub mod keyboard_help;

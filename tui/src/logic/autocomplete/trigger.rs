@@ -497,6 +497,97 @@ mod tests {
         }
     }
 
+    // ---- Sweeps over cursor positions (M11a) ----
+
+    /// Every char-boundary cursor offset in `text`.
+    fn boundaries(text: &str) -> impl Iterator<Item = usize> + '_ {
+        (0..=text.len()).filter(|&i| text.is_char_boundary(i))
+    }
+
+    /// The cursor at the end of the first `needle` in `text` must open no
+    /// popup: the match sits inside an exclusion zone.
+    fn assert_vetoed(text: &str, needle: &str) {
+        let cursor = text.find(needle).expect("needle in text") + needle.len();
+        assert_eq!(ctx(text, cursor), None, "{text:?} at {cursor}");
+    }
+
+    #[test]
+    fn no_trigger_anywhere_inside_a_code_span() {
+        assert_vetoed("see `a #tag` now", "#tag");
+        assert_vetoed("see `a [[note` now", "[[note");
+    }
+
+    #[test]
+    fn no_trigger_inside_a_fenced_block() {
+        assert_vetoed("```\n#tag\n```\n", "#tag");
+        assert_vetoed("```rust\nlet a = [[0];\n```\n", "[[0");
+    }
+
+    #[test]
+    fn no_trigger_inside_frontmatter() {
+        assert_vetoed("---\ntags: #x\n---\nbody\n", "#x");
+        assert_vetoed("---\ntitle: [[ab\n---\nbody\n", "[[ab");
+    }
+
+    #[test]
+    fn no_trigger_inside_a_link_body() {
+        assert_vetoed("a [text](page#frag) b", "#frag");
+    }
+
+    #[test]
+    fn no_trigger_anywhere_on_a_heading_line() {
+        let text = "# Heading text\n";
+        for cursor in boundaries(text).filter(|&i| i <= "# Heading text".len()) {
+            assert_eq!(ctx(text, cursor), None, "heading, cursor {cursor}");
+        }
+    }
+
+    #[test]
+    fn a_trigger_outside_the_zone_still_opens_next_to_one() {
+        // The veto is local to the zone, not the line or the note.
+        let text = "`code` then #ta";
+        let t = ctx(text, text.len()).expect("hashtag after a code span");
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "ta");
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Any text, any cursor: no panic, and a trigger's ranges are
+            /// well-formed char-boundary slices that end at the cursor.
+            #[test]
+            fn detection_is_total_and_ranges_are_well_formed(
+                text in "[ a-z#\\[\\]|`\\n>=<?é-]{0,40}",
+                pick in 0usize..64,
+            ) {
+                let offsets: Vec<usize> = boundaries(&text).collect();
+                let cursor = offsets[pick % offsets.len()];
+                for opts in [
+                    TriggerOptions::default(),
+                    TriggerOptions { allow_saved_search: true, ..TriggerOptions::default() },
+                    TriggerOptions {
+                        disambiguate_header: false,
+                        apply_exclusion_zone: false,
+                        allow_saved_search: true,
+                    },
+                ] {
+                    if let Some(t) = detect_trigger_with(&text, cursor, opts) {
+                        prop_assert!(t.replace_range.start <= t.replace_range.end);
+                        prop_assert!(t.replace_range.end <= text.len());
+                        prop_assert!(text.is_char_boundary(t.replace_range.start));
+                        prop_assert!(text.is_char_boundary(t.replace_range.end));
+                        prop_assert_eq!(t.replace_range.end, cursor);
+                        prop_assert_eq!(t.anchor_col, t.replace_range.start);
+                        prop_assert_eq!(&text[t.replace_range.clone()], t.query.as_str());
+                    }
+                }
+            }
+        }
+    }
+
     // ---- Lazy exclusion oracle ----
 
     #[test]
