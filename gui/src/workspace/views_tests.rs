@@ -27,6 +27,7 @@ use super::modal::ModalKind;
 use super::outline::{OUTLINE_ID, OutlineView, heading_row_id};
 use super::rail_cell_id;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use super::start_tests::{copy_key, select_all_key};
 use crate::startup::FirstNote;
 use crate::status_row::BACKLINKS_ID;
 use crate::test_vault::{TestVault, test_vault};
@@ -757,8 +758,8 @@ fn the_copy_chord_in_the_files_filter_copies_its_text(cx: &mut TestAppContext) {
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
     press(&started, "ctrl-e", cx);
     type_in(&started, "gam", cx);
-    press(&started, "ctrl-a", cx);
-    press(&started, "ctrl-c", cx);
+    press(&started, select_all_key(), cx);
+    press(&started, copy_key(), cx);
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(copied.as_deref(), Some("gam"));
     assert_eq!(started.flash(cx), None);

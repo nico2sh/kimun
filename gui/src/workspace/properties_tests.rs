@@ -24,6 +24,7 @@ use super::properties::{
     suggestion_id,
 };
 use super::route::NO_NOTE;
+use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::status_row::PROPERTIES_ID;
@@ -283,7 +284,7 @@ fn editing_writes_and_an_unchanged_edit_writes_nothing(cx: &mut TestAppContext) 
 
     // A new value (Edit starts on the value).
     press(&started, "enter", cx);
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     type_in(&started, "final", cx);
     press(&started, "enter", cx);
     settled(&rt, &started, cx);
@@ -305,7 +306,7 @@ fn renaming_a_key_moves_its_value(cx: &mut TestAppContext) {
     press(&started, "down", cx);
     press(&started, "enter", cx);
     click(&started, KEY_INPUT_ID, cx);
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     type_in(&started, "state", cx);
     press(&started, "enter", cx);
     settled(&rt, &started, cx);

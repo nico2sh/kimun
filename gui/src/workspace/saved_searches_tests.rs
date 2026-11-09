@@ -28,6 +28,7 @@ use super::route::NEEDS_FIND_FOCUS;
 use super::saved_searches::{
     BACKLINKS_ROW_ID, SAVE_SEARCH_INPUT_ID, SaveSearchDialog, saved_row_id,
 };
+use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -201,7 +202,7 @@ fn find_on(s: &Started, rt: &Runtime, query: &str, cx: &mut TestAppContext) {
     if !focused(s, FIND_INPUT_ID, cx) {
         click_rail_find(s, cx);
     }
-    press(s, "ctrl-a", cx);
+    press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, query, cx);
     cx.executor().advance_clock(FIND_DEBOUNCE);
@@ -290,7 +291,7 @@ fn a_number_or_a_name_selects_the_search(cx: &mut TestAppContext) {
     press(&started, "backspace", cx);
     type_in(&started, "TOD", cx);
     assert_eq!(selected_name(&started, cx).as_deref(), Some("todo"));
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     press(&started, "backspace", cx);
     assert_eq!(
         selected_name(&started, cx).as_deref(),

@@ -14,6 +14,7 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 use kimun_notes::settings::gui::GuiSettings;
 
+use super::start_tests::chords;
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, saved, temp_config};
 use super::{LayoutStore, rail_cell_id, slot_id};
 use crate::shell_tree;
@@ -723,7 +724,7 @@ fn the_leader_label_follows_a_replaced_keymap(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             shell.workspace.read(cx).leader_chord_label().as_ref(),
-            "Ctrl+Shift+B"
+            chords("Ctrl+Shift+B")
         );
     })
     .unwrap();

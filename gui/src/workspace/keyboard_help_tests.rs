@@ -26,7 +26,7 @@ use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::preferences_tests::{config, on_vault, open, settle, vault};
 use super::route::SOON;
-use super::start_tests::{Started, runtime};
+use super::start_tests::{Started, chords, runtime};
 use super::{LayoutStore, Workspace};
 use crate::keymap::{self, Keymap, Platform};
 use crate::startup::Start;
@@ -311,7 +311,7 @@ fn it_lists_every_bound_action_once_under_its_heading(cx: &mut TestAppContext) {
     let rows = s.kh_rows(cx);
 
     let prefs = action_row(&rows, ActionShortcuts::OpenPreferences).unwrap();
-    assert_eq!(prefs.keys, "F4 / Ctrl+,");
+    assert_eq!(prefs.keys, chords("F4 / Ctrl+,"));
     assert_eq!(prefs.label, "Preferences");
     assert_eq!(prefs.group, ActionGroup::Other);
     assert_eq!(
@@ -419,7 +419,7 @@ fn overrides_show_the_effective_chords(cx: &mut TestAppContext) {
         action_row(&rows, ActionShortcuts::OpenPreferences)
             .unwrap()
             .keys,
-        "F9 / Ctrl+Alt+P"
+        chords("F9 / Ctrl+Alt+P")
     );
     let quick = action_row(&rows, ActionShortcuts::QuickNote).unwrap();
     assert_eq!(quick.group, ActionGroup::Unbound);
@@ -452,7 +452,7 @@ fn the_vim_editor_adds_the_space_gateway(cx: &mut TestAppContext) {
     assert!(s.kh_is_open(cx));
     assert_eq!(
         s.kh_read(cx, |h| h.gateway().to_string()),
-        "Ctrl+Shift+B, or Space in vim Normal mode"
+        chords("Ctrl+Shift+B, or Space in vim Normal mode")
     );
     settle(&rt, cx);
 }

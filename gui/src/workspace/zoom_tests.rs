@@ -14,7 +14,7 @@ use kimun_notes::settings::gui::GuiSettings;
 
 use kimun_core::nfs::VaultPath;
 
-use super::start_tests::{drive, open_started, runtime, vault_start};
+use super::start_tests::{chords, drive, open_started, runtime, vault_start};
 use super::tests::{HEIGHT, Shell, close, gui, open_shell, temp_config};
 use super::{LayoutStore, Workspace, slot_id};
 use crate::startup::FirstNote;
@@ -409,7 +409,7 @@ fn zoom_hint_names_the_bound_chord(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             window.find(status_row::ZOOM_ID).label(),
-            Some("Zoomed · Ctrl+Shift+M to restore")
+            Some(chords("Zoomed · Ctrl+Shift+M to restore").as_str())
         );
     })
     .unwrap();

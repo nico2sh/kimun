@@ -243,9 +243,11 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::write(
             dir.join(MARKER_FILE),
+            // `{:?}` escapes the backslashes of a Windows path: unescaped they
+            // are TOML escape sequences, and the marker would not parse.
             format!(
-                "channel = \"script\"\ninstall_dir = \"{}\"\n",
-                here.display()
+                "channel = \"script\"\ninstall_dir = {:?}\n",
+                here.display().to_string()
             ),
         )
         .unwrap();

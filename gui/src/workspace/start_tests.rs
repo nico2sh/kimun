@@ -117,6 +117,87 @@ impl Started {
     }
 }
 
+/// The chord that selects all in a kit text field on this platform. The kit binds
+/// Cmd-A on macOS, where Ctrl-A is "go to line start"; tests that replace a field's
+/// text must press the one that is real where they run.
+pub(super) fn select_all_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    }
+}
+
+/// The chord that copies a kit text field's selection (Cmd-C on macOS, Ctrl-C elsewhere).
+pub(super) fn copy_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-c"
+    }
+}
+
+/// `label`, a chord label written the Linux and Windows way (`Ctrl+Shift+B`), as this
+/// platform draws it: on macOS the kit writes modifiers as symbols (`⌃⇧B`).
+pub(super) fn chords(label: &str) -> String {
+    if cfg!(target_os = "macos") {
+        mac_chords(label)
+    } else {
+        label.to_string()
+    }
+}
+
+/// [`chords`] for macOS, kept apart so its rule is tested everywhere. A run of `Ctrl+`,
+/// `Alt+`, `Shift+`, `Cmd+` prefixes becomes their symbols, and the one character after
+/// them (the key) follows with no `+`.
+pub(super) fn mac_chords(label: &str) -> String {
+    const MODS: [(&str, char); 4] = [
+        ("Ctrl+", '⌃'),
+        ("Alt+", '⌥'),
+        ("Shift+", '⇧'),
+        ("Cmd+", '⌘'),
+    ];
+    let mut out = String::new();
+    let mut rest = label;
+    while !rest.is_empty() {
+        let mut symbols = String::new();
+        'mods: loop {
+            for (word, symbol) in MODS {
+                if let Some(after) = rest.strip_prefix(word) {
+                    symbols.push(symbol);
+                    rest = after;
+                    continue 'mods;
+                }
+            }
+            break;
+        }
+        out.push_str(&symbols);
+        let mut chars = rest.chars();
+        if let Some(c) = chars.next() {
+            out.push(c);
+            rest = chars.as_str();
+        }
+    }
+    out
+}
+
+#[test]
+fn macos_draws_modifiers_as_symbols() {
+    assert_eq!(mac_chords("Ctrl+Shift+B"), "⌃⇧B");
+    assert_eq!(mac_chords("Ctrl+Alt+P"), "⌃⌥P");
+    assert_eq!(mac_chords("F4 / Ctrl+,"), "F4 / ⌃,");
+    assert_eq!(mac_chords("Ctrl+Shift+B n w"), "⌃⇧B n w");
+    assert_eq!(
+        mac_chords("Ctrl+Shift+B, or Space in vim Normal mode"),
+        "⌃⇧B, or Space in vim Normal mode"
+    );
+    assert_eq!(
+        mac_chords("Zoomed · Ctrl+Shift+M to restore"),
+        "Zoomed · ⌃⇧M to restore"
+    );
+    assert_eq!(mac_chords("no chord here"), "no chord here");
+}
+
 /// A runtime for the vault's calls, run only when [`drive`] drives it.
 pub(super) fn runtime() -> Runtime {
     tokio::runtime::Builder::new_current_thread()
