@@ -19,14 +19,15 @@ use std::rc::Rc;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
-    App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
-    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
+    AnyElement, App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler,
+    Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollEvent, ShapedLine,
     SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window,
     WindowTextSystem, fill, point, px, relative, size,
 };
 use kimun_notes::settings::themes::Theme;
 
+use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
 use crate::editor_view::{CaretShape, EditorView, Painted};
 use crate::find_bar;
 use crate::fonts::EditorFonts;
@@ -198,6 +199,74 @@ impl EditorElement {
     pub fn new(view: Entity<EditorView>) -> Self {
         Self { view }
     }
+
+    /// The popup element, when one is open: built and laid out with the pane,
+    /// since a layer handed to the window in prepaint must already have asked
+    /// for its layout. Its size is whole cells of the editor's grid, known
+    /// without the caret, which only prepaint finds.
+    fn build_popup(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        self.view.read(cx).autocomplete_state()?;
+        let (font_family, font_size, line_height) = {
+            let t = cx.theme();
+            let size = t.mono_font_size;
+            (
+                t.mono_font_family.clone(),
+                size,
+                px((f32::from(size) * LINE_HEIGHT).round()),
+            )
+        };
+        let text_system = window.text_system().clone();
+        let cells = self.view.update(cx, |view, _| {
+            let fonts = view.editor_fonts(&font_family, &text_system);
+            CellMetrics::from_text_system(
+                &text_system,
+                &fonts.face(false, false),
+                font_size,
+                line_height,
+            )
+        });
+        let theme = theme::current(cx);
+        let style = PopupStyle {
+            cells: &cells,
+            font_family,
+            font_size,
+            theme: &theme,
+        };
+        // Borrowed, not cloned: the state can hold hundreds of suggestions and
+        // this runs every frame the popup is open.
+        let state = self.view.read(cx).autocomplete_state()?;
+        Some(popup_element(&self.view, state, &style, window))
+    }
+
+    /// Hand the popup to the window as a layer above everything else, placed
+    /// against the caret cell and the window, and record where it went.
+    fn place_popup(
+        &self,
+        element: AnyElement,
+        request: &PopupRequest,
+        cells: &CellMetrics,
+        pane: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let (cols, rows) = request.cells;
+        let popup = popup_size(cells, cols, rows);
+        let at = place(
+            request.caret,
+            popup,
+            Bounds::new(Point::default(), window.viewport_size()),
+        );
+        // The popup's layout sits at the pane's origin, and the window adds
+        // that to the offset it is given: hand it the difference, so it lands
+        // exactly on `at`.
+        let offset = point(at.x - pane.x, at.y - pane.y);
+        window.defer_draw(element, offset, 1, None);
+        self.view.update(cx, |view, _| {
+            if let Some(painted) = view.painted.as_mut() {
+                painted.popup = Some(Bounds::new(at, popup));
+            }
+        });
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -247,8 +316,16 @@ pub struct EditorPrepaint {
     mode_line: Vec<PlacedLine>,
 }
 
+/// An open autocomplete popup waiting to be handed to the window: its size in
+/// cells and the caret cell it hangs from.
+struct PopupRequest {
+    cells: (u16, u16),
+    caret: Bounds<Pixels>,
+}
+
 impl Element for EditorElement {
-    type RequestLayoutState = ();
+    /// The autocomplete popup, built and laid out with the pane.
+    type RequestLayoutState = Option<AnyElement>;
     type PrepaintState = EditorPrepaint;
 
     fn id(&self) -> Option<ElementId> {
@@ -270,7 +347,14 @@ impl Element for EditorElement {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
-        (window.request_layout(style, [], cx), ())
+        // The popup's layout hangs from the pane's so the window measures it
+        // (its text) with everything else; where it is drawn is decided in
+        // prepaint, by the caret.
+        let popup = self
+            .build_popup(window, cx)
+            .map(|mut element| (element.request_layout(window, cx), element));
+        let layout_id = window.request_layout(style, popup.iter().map(|(id, _)| *id), cx);
+        (layout_id, popup.map(|(_, element)| element))
     }
 
     fn prepaint(
@@ -278,7 +362,7 @@ impl Element for EditorElement {
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
+        request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
@@ -295,7 +379,7 @@ impl Element for EditorElement {
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let origin = bounds.origin;
 
-        let mut prepaint = self.view.update(cx, |view, view_cx| {
+        let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&kit_family, &text_system);
             let base_font = fonts.face(false, false);
             let cells =
@@ -567,8 +651,16 @@ impl Element for EditorElement {
                 fonts: fonts.clone(),
                 caret_glyph: caret_glyph.as_ref().map(|g| g.at),
                 find_bar: bar_paint,
+                popup: None,
             });
-            EditorPrepaint {
+            // The popup hangs from the caret's cell: nowhere to hang from
+            // (scrolled off, the find bar has the keyboard), nothing drawn.
+            let popup = view
+                .autocomplete_state()
+                .map(popup_cells)
+                .zip(caret_cell)
+                .map(|(cells, caret)| PopupRequest { cells, caret });
+            let prepaint = EditorPrepaint {
                 hitbox,
                 cells,
                 line_height,
@@ -589,8 +681,19 @@ impl Element for EditorElement {
                 } else {
                     bounds
                 },
-            }
+            };
+            (prepaint, popup)
         });
+        if let (Some(request), Some(element)) = (popup, request_layout.take()) {
+            self.place_popup(
+                element,
+                &request,
+                &prepaint.cells,
+                bounds.origin,
+                window,
+                cx,
+            );
+        }
         prepaint.text_hitbox =
             Some(window.insert_hitbox(prepaint.text_area, HitboxBehavior::Normal));
         prepaint.target_hitboxes = prepaint

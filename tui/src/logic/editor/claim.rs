@@ -82,7 +82,7 @@ pub(crate) fn follow_target_in_line(line: &str, col: usize) -> Option<FollowTarg
 /// not a codepoint boundary. Wikilinks can contain spaces
 /// (`[[my note title`), so the walk does NOT stop at whitespace — only
 /// the trigger char or start-of-row halts it.
-pub(crate) fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
+pub fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
     let cursor_byte = line
         .char_indices()
         .nth(col)

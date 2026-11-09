@@ -908,6 +908,14 @@ impl Workspace {
                 settings.clone(),
                 VaultPath::root(),
             )));
+            // The editor completes `[[` and `#` from this vault's notes and tags.
+            self.editor.update(cx, |view, _| {
+                view.set_suggestions(Some(std::sync::Arc::new(
+                    kimun_notes::logic::autocomplete::VaultSuggestions {
+                        vault: vault.clone(),
+                    },
+                )));
+            });
             {
                 let settings = settings.read().unwrap_or_else(|e| e.into_inner());
                 self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);

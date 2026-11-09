@@ -53,9 +53,7 @@ use self::backend::BackendState;
 use self::nvim_host::NvimHost;
 use self::view::PainterState;
 use crate::logic::editor::Editor;
-use crate::logic::editor::claim::{
-    ClipboardImage, EditorClaim, FollowTarget, has_trigger_before_cursor,
-};
+use crate::logic::editor::claim::{ClipboardImage, EditorClaim, FollowTarget};
 #[cfg(test)]
 use crate::logic::editor::find_bar::{BarFocus, SearchStatus};
 use crate::logic::editor::handled::{Handled, KeyPath};
@@ -75,8 +73,8 @@ use crate::components::autocomplete::{
 };
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
-use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
+use crate::logic::autocomplete::apply_accept;
 #[cfg(test)]
 use crate::logic::message::AppMessage;
 use crate::logic::message::AppTx;
@@ -351,13 +349,15 @@ impl TextEditorComponent {
         // lines it touches only a handful of chars before bailing or
         // promoting to the slow path. Using `char_indices().rev()` keeps
         // the walk UTF-8-safe — never slices mid-codepoint.
-        if !controller.is_open() {
+        // A pending query counts as held state: it must be reconciled so it
+        // is cancelled when its trigger is gone (`may_need_sync`).
+        {
             let Some(ta) = self.backend.as_textarea() else {
                 return;
             };
             let (row, col) = ta.cursor();
             let line = ta.row(row).unwrap_or_default();
-            if !has_trigger_before_cursor(&line, col) {
+            if !controller.may_need_sync(&line, col) {
                 return;
             }
         }
@@ -949,7 +949,7 @@ impl TextEditorComponent {
             HandleKeyOutcome::Accepted(action) => {
                 self.interrupt_typing();
                 if let Some(ta) = self.backend.as_textarea_mut() {
-                    ta.edit(|ta| apply_accept_to_textarea(ta, &action));
+                    ta.edit(|ta| apply_accept(ta, &action));
                 }
                 self.after_edit();
                 Some(EventState::Consumed)

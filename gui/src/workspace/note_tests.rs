@@ -615,3 +615,40 @@ fn an_error_flash_stays_beside_a_later_notice(cx: &mut TestAppContext) {
     );
     assert_eq!(started.toasts(cx), 2, "the error toast was not displaced");
 }
+
+/// The window's editor completes `[[` from the open vault: the popup lists
+/// the vault's notes, Tab writes the link, and the note saves with it.
+#[gpui_kit::test]
+fn the_workspace_editor_completes_wikilinks_from_its_vault(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    // The suggestions come from the index: wait for the startup indexing.
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| !started.workspace.read(cx).status.indexing)
+    });
+    started.type_text("[[b", cx);
+    let listed = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .editor
+                .read(cx)
+                .autocomplete_state()
+                .map(|s| {
+                    s.items
+                        .iter()
+                        .map(|i| i.display.clone())
+                        .collect::<Vec<_>>()
+                })
+        })
+    };
+    drive(&rt, cx, |cx| listed(cx).is_some());
+    assert_eq!(listed(cx), Some(vec!["b".to_string()]));
+    started.press("tab", cx);
+    assert_eq!(started.text(cx), "[[b]]alpha");
+    started.press("ctrl-s", cx);
+    drive(&rt, cx, |cx| !started.dirty(cx));
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("[[b]]alpha"));
+}

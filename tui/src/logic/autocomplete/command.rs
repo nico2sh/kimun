@@ -1,4 +1,5 @@
 use super::state::AutocompleteState;
+use crate::logic::input::{Key, KeyInput};
 
 /// A toolkit-free popup input. A front end maps its own keys and clicks onto
 /// one of these; [`apply_command`] holds the rules (what moves the highlight,
@@ -40,6 +41,32 @@ pub enum PopupAction {
     Accept,
     /// User dismissed: close the popup without changing the buffer.
     Dismiss,
+}
+
+/// Map a key onto the popup's input model, for a front end whose keys are
+/// [`KeyInput`]s: Up/Down, PageUp/PageDown and Home/End move, Tab and Enter
+/// accept, Esc dismisses. Everything else is `None`, left to the host as
+/// typing. Ctrl, Alt and Super chords are never the popup's: they are
+/// shortcuts. Shift is the front end's call (`allow_shift`): a GUI keeps its
+/// own meaning for it (Shift+Enter breaks the line, Shift+arrows select),
+/// while a terminal reports Shift on keys it cannot tell apart and treats
+/// them as the plain key.
+pub fn key_command(key: KeyInput, allow_shift: bool) -> Option<PopupCommand> {
+    let m = key.mods;
+    if m.ctrl || m.alt || m.sup || (m.shift && !allow_shift) {
+        return None;
+    }
+    match key.key {
+        Key::Down => Some(PopupCommand::Down),
+        Key::Up => Some(PopupCommand::Up),
+        Key::PageDown => Some(PopupCommand::PageDown),
+        Key::PageUp => Some(PopupCommand::PageUp),
+        Key::Home => Some(PopupCommand::Home),
+        Key::End => Some(PopupCommand::End),
+        Key::Tab | Key::Enter => Some(PopupCommand::Accept),
+        Key::Esc => Some(PopupCommand::Dismiss),
+        _ => None,
+    }
 }
 
 /// Apply `command` to the popup state. Accept on an empty list is
@@ -111,6 +138,44 @@ mod tests {
                 .collect(),
         );
         st
+    }
+
+    #[test]
+    fn keys_map_to_commands_and_modified_keys_are_the_hosts() {
+        use crate::logic::input::Mods;
+        let plain = |k| key_command(KeyInput::plain(k), false);
+        assert_eq!(plain(Key::Down), Some(PopupCommand::Down));
+        assert_eq!(plain(Key::Tab), Some(PopupCommand::Accept));
+        assert_eq!(plain(Key::Enter), Some(PopupCommand::Accept));
+        assert_eq!(plain(Key::Esc), Some(PopupCommand::Dismiss));
+        assert_eq!(plain(Key::Char('x')), None);
+        assert_eq!(plain(Key::BackTab), None);
+        for mods in [
+            Mods {
+                ctrl: true,
+                ..Mods::NONE
+            },
+            Mods {
+                alt: true,
+                ..Mods::NONE
+            },
+            Mods {
+                sup: true,
+                ..Mods::NONE
+            },
+            Mods {
+                shift: true,
+                ..Mods::NONE
+            },
+        ] {
+            assert_eq!(key_command(KeyInput::new(Key::Down, mods), false), None);
+            assert_eq!(key_command(KeyInput::new(Key::Enter, mods), false), None);
+        }
+        // A terminal lets Shift ride along; ctrl/alt/super still never do.
+        let shifted = KeyInput::new(Key::Enter, Mods::SHIFT);
+        assert_eq!(key_command(shifted, true), Some(PopupCommand::Accept));
+        let ctrl = KeyInput::new(Key::Enter, Mods::CTRL);
+        assert_eq!(key_command(ctrl, true), None);
     }
 
     #[test]

@@ -1,7 +1,5 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -31,34 +29,15 @@ pub fn mouse_command(m: &MouseEvent, rows_rect: Rect) -> Option<PopupCommand> {
     })
 }
 
-/// Map a key onto the popup's input model. Navigation keys (Up/Down,
-/// PageUp/PageDown, Home/End) move, Tab and Enter accept, Esc dismisses.
-/// Everything else is `None` so the host can process it as normal typing —
-/// the host then recomputes the trigger context, which may close or refresh
-/// the popup naturally.
+/// Map a key onto the popup's input model, through the shared table
+/// ([`crate::logic::autocomplete::key_command`]). Everything it does not map is
+/// `None` so the host can process it as normal typing — the host then
+/// recomputes the trigger context, which may close or refresh the popup
+/// naturally. System-modifier chords (Ctrl, Alt, Cmd/SUPER, Win/META) are never
+/// the popup's: otherwise macOS Cmd+Tab / Cmd+Esc / Cmd+arrows would be
+/// swallowed as Accept/Dismiss/Navigate. Shift keeps its plain key's meaning.
 pub fn key_command(key: KeyEvent) -> Option<PopupCommand> {
-    // System-modifier combos (Ctrl, Alt, Cmd/SUPER, Win/META) are
-    // never the popup's to consume — let the host route them as
-    // shortcuts. Otherwise macOS Cmd+Tab / Cmd+Esc / Cmd+arrows
-    // would be swallowed as Accept/Dismiss/Navigate.
-    const SYSTEM_MODS: KeyModifiers = KeyModifiers::CONTROL
-        .union(KeyModifiers::ALT)
-        .union(KeyModifiers::SUPER)
-        .union(KeyModifiers::META);
-    if key.modifiers.intersects(SYSTEM_MODS) {
-        return None;
-    }
-    match key.code {
-        KeyCode::Down => Some(PopupCommand::Down),
-        KeyCode::Up => Some(PopupCommand::Up),
-        KeyCode::PageDown => Some(PopupCommand::PageDown),
-        KeyCode::PageUp => Some(PopupCommand::PageUp),
-        KeyCode::Home => Some(PopupCommand::Home),
-        KeyCode::End => Some(PopupCommand::End),
-        KeyCode::Tab | KeyCode::Enter => Some(PopupCommand::Accept),
-        KeyCode::Esc => Some(PopupCommand::Dismiss),
-        _ => None,
-    }
+    crate::logic::autocomplete::key_command(crate::keys::crossterm_input::key_input(&key)?, true)
 }
 
 /// Render the popup as a floating layer over `screen`. Picks an anchor
@@ -283,7 +262,7 @@ mod tests {
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn sample_state(n: usize) -> AutocompleteState {
         let mut st = AutocompleteState::new(TriggerKind::Hashtag, (0, 0));

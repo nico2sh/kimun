@@ -11,6 +11,7 @@ use super::host::AutocompleteHost;
 use super::source::{SuggestionItem, SuggestionSource};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
+use crate::logic::editor::claim::has_trigger_before_cursor;
 #[cfg(test)]
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -184,6 +185,15 @@ impl AutocompleteEngine {
     /// navigates files, etc).
     pub fn is_open(&self) -> bool {
         self.state.as_ref().is_some_and(|s| !s.items.is_empty())
+    }
+
+    /// Whether an edit with the caret at byte `col` of `line` can change the
+    /// popup: one is already held (open, or a query still pending: a pending
+    /// one must be reconciled so it is cancelled when its trigger is gone), or
+    /// a trigger character sits before the caret. Hosts call this before
+    /// building a buffer snapshot, so plain prose never pays for the scan.
+    pub fn may_need_sync(&self, line: &str, col: usize) -> bool {
+        self.state.is_some() || has_trigger_before_cursor(line, col)
     }
 
     /// Borrow the popup state for read-only inspection (rendering,
@@ -860,6 +870,23 @@ mod tests {
         let host = FakeHost::new("plain text", 5);
         c.sync(&host);
         assert!(!c.is_open());
+    }
+
+    #[tokio::test]
+    async fn pending_query_forces_sync_so_a_dead_trigger_cancels_it() {
+        // Regression: a prefilter keyed on `is_open()` skipped the sync while
+        // the first query was still pending, so deleting the `[[` left the
+        // state to pop up over prose once results landed.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+        assert!(!c.may_need_sync("plain", 5));
+        assert!(c.may_need_sync("see [[me", 8));
+        c.sync(&FakeHost::new("see [[me", 8));
+        assert!(c.state().is_some() && !c.is_open());
+        // Trigger gone, query pending: the hook must still reconcile.
+        assert!(c.may_need_sync("see me", 6));
+        c.sync(&FakeHost::new("see me", 6));
+        assert!(c.state().is_none());
     }
 
     #[tokio::test]

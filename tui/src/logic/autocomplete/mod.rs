@@ -3,6 +3,7 @@
 //! suggestion source. Toolkit-free; the TUI draws the popup and maps keys
 //! onto [`PopupCommand`], and any other front end does the same.
 
+pub mod apply;
 pub mod command;
 pub mod engine;
 pub mod host;
@@ -10,7 +11,8 @@ pub mod source;
 pub mod state;
 pub mod trigger;
 
-pub use command::{PopupAction, PopupCommand, PopupOutcome, apply_command};
+pub use apply::apply_accept;
+pub use command::{PopupAction, PopupCommand, PopupOutcome, apply_command, key_command};
 pub use engine::{
     AcceptAction, AutocompleteEngine, AutocompleteMode, HandleKeyOutcome, RedrawCallback,
 };
