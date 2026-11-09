@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.8](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.7...kimun-notes-v0.24.8) - 2026-11-09
+
+### Added
+
+- popups on autocomplete in text editor
+- *(layout)* place a view in a new slot beside a slot
+- *(keymap)* ToggleZoom action, primary+shift+m in the GUI
+- *(layout)* name the preset, path and key of a malformed node
+- *(layout)* fit the layout tree, leaving out undrawn leaves
+- *(gui)* split, close and move commands for the layout tree
+- *(layout)* tree shape for drawing and focus over visible leaves
+- *(settings)* [gui] live layout and active preset; drop legacy drawer keys
+- *(layout)* layout spec serde, build and validate
+- *(layout)* regions, geometric focus and zoom
+- *(layout)* LayoutTree structure, placement and close
+- *(layout)* static view registry
+- *(layout)* node weights, absorber and constrained layout
+- onboard animation
+- update notif
+- titlebar
+- save default sorting
+- theme picker
+- new workspaces
+- workspace switcher
+- onboard
+- pinned notes dialog
+- sort dialog
+- find sidebar
+- browse panel with preview
+- properties
+- which key
+- command palette basic
+- properties indicator
+- files drawer
+- footer
+- sidebar and rail focus
+- find and replace in gui
+- text area in pgui
+
+### Fixed
+
+- *(tests)* make the GUI and channel tests portable to macOS and Windows
+- failing test on the channel release
+- flaky test
+- better view placement
+- *(layout)* keep the last slot on each side of the editor when vacated
+- *(gui)* divider between drawn cells across a hidden slot
+- *(gui)* ASK's slot header says Ask, not Sources
+- *(layout)* refuse a second editor group and overflowing weights
+- clippy redundant closure and unused mut
+- *(gui)* retire MoveViewUp/Down, superseded by MoveViewToNeighbour
+- *(layout)* directional moves see only the zoomed leaf
+- cleanups and fixes
+- performance
+- better highlights on search and replace
+
+### Other
+
+- install process
+- updated docs
+- git status and entry animation
+- autocomplete engine
+- *(gui)* empty slots out, side chooser, open-in-FIND scoped to browser
+- leaf layout
+- fix rustdoc private links and HTML tags in layout docs
+- slot wording in layout node and [gui] table docs
+- cargo fmt view_registry
+- cleanups
+- ask and server-status seams out of the TUI panels
+- pickers logic
+- layout baseline
+- code review
+- editor logic outside presentaiton layer
+- input decouplment
+- foundations for logic separation ui
+- Update README.md
+
 ## [0.24.7](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.6...kimun-notes-v0.24.7) - 2026-10-10
 
 ### Added
