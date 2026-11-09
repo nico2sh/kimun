@@ -85,6 +85,9 @@ function Get-RawUserPath {
 }
 
 $menuDir = [Environment]::GetFolderPath("Programs")
+# The installer runs with a fake USERPROFILE, where .NET may not resolve this folder:
+# it then falls back to %APPDATA%. The test looks in the same place.
+if (-not $menuDir) { $menuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs" }
 $shortcut = Join-Path $menuDir "Kim$([char]0xFC)n.lnk"
 $pathBefore = Get-RawUserPath
 $pathKindBefore = $null

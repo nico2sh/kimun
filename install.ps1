@@ -130,14 +130,22 @@ try {
 
     # Start-menu shortcut, desktop app only (a terminal app wants a terminal).
     if ($WantGui) {
-        $name = "Kim$([char]0xFC)n.lnk"
-        $menu = Join-Path ([Environment]::GetFolderPath("Programs")) $name
-        $link = (New-Object -ComObject WScript.Shell).CreateShortcut($menu)
-        $link.TargetPath = $exe
-        $link.WorkingDirectory = $env:USERPROFILE
-        $link.Description = "Kim$([char]0xFC)n notes"
-        $link.Save()
-        Write-Host "Added a Start-menu shortcut"
+        # A shortcut is a convenience: failing to make one must not fail the install.
+        try {
+            $programs = [Environment]::GetFolderPath("Programs")
+            # Empty when the profile's folders cannot be resolved (a stripped-down account).
+            if (-not $programs) { $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs" }
+            New-Item -ItemType Directory -Force $programs | Out-Null
+            $menu = Join-Path $programs "Kim$([char]0xFC)n.lnk"
+            $link = (New-Object -ComObject WScript.Shell).CreateShortcut($menu)
+            $link.TargetPath = $exe
+            $link.WorkingDirectory = $env:USERPROFILE
+            $link.Description = "Kim$([char]0xFC)n notes"
+            $link.Save()
+            Write-Host "Added a Start-menu shortcut"
+        } catch {
+            Write-Warning "could not add the Start-menu shortcut: $($_.Exception.Message)"
+        }
     }
 
     # The install marker (the "script" channel contract the app reads). One marker
