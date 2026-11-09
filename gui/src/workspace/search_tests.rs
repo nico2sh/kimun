@@ -1057,3 +1057,85 @@ fn large_vault_timings(cx: &mut TestAppContext) {
     eprintln!("preview after the debounce in {:?}", t.elapsed());
     assert!(previewed(&started, cx).is_some());
 }
+
+// ── autocomplete in the field ────────────────────────────────────────────
+
+fn suggested(s: &Started, cx: &TestAppContext) -> Vec<String> {
+    let view = picker(s, cx);
+    cx.read(|cx| view.read(cx).suggested())
+}
+
+/// `#r` typed in the search browser; waits for the suggestions to list.
+fn browser_with_hash(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Started) {
+    let (v, started) = started_on(cx, rt, NOTES, &[], "a.md");
+    press(&started, "ctrl-k", cx);
+    type_in(&started, "#r", cx);
+    drive(rt, cx, |cx| !suggested(&started, cx).is_empty());
+    (v, started)
+}
+
+#[gpui_kit::test]
+fn the_search_browser_completes_a_label_with_tab(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = browser_with_hash(cx, &rt);
+    assert_eq!(suggested(&started, cx), ["rust"]);
+    press(&started, "tab", cx);
+    let view = picker(&started, cx);
+    assert_eq!(cx.read(|cx| view.read(cx).query().to_string()), "#rust");
+    assert!(suggested(&started, cx).is_empty());
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_suggestions_before_it_closes_the_browser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = browser_with_hash(cx, &rt);
+    press(&started, "escape", cx);
+    assert!(suggested(&started, cx).is_empty());
+    assert_eq!(
+        started.shown_modal(cx),
+        Some(ModalKind::Search),
+        "still open"
+    );
+    let view = picker(&started, cx);
+    assert_eq!(cx.read(|cx| view.read(cx).query().to_string()), "#r");
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None, "the second Escape closes it");
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_suggestion_takes_it_in_the_browser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = browser_with_hash(cx, &rt);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((gpui_kit::SharedString::from("rust"), 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let view = picker(&started, cx);
+    assert_eq!(cx.read(|cx| view.read(cx).query().to_string()), "#rust");
+    assert!(suggested(&started, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn the_finder_completes_too_but_only_the_finder_and_the_browser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, &[], "a.md");
+    cx.update_window(started.handle, |_, window, cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.open_finder(window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
+    type_in(&started, "#r", cx);
+    drive(&rt, cx, |cx| !suggested(&started, cx).is_empty());
+    assert_eq!(suggested(&started, cx), ["rust"]);
+}

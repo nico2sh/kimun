@@ -1345,6 +1345,8 @@ impl Workspace {
         if let Some(find) = self.find.as_ref() {
             let list = find.read(cx).list.clone();
             list.update(cx, |list, cx| list.poll(cx));
+            // Suggestions for the field may have landed.
+            find.update(cx, |_, cx| cx.notify());
         }
         if let Some(tags) = self.tags.as_ref() {
             let list = tags.read(cx).list.clone();
@@ -3116,6 +3118,7 @@ mod files;
 mod find;
 mod folder_chooser;
 mod follow;
+mod input_autocomplete;
 mod key_suggestions;
 mod keyboard_help;
 mod layout_writer;

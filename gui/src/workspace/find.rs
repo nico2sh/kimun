@@ -65,8 +65,8 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{ListSetup, ResolvingRowSource, RowSource, Unresolvable};
-use kimun_notes::logic::message::AppTx;
 use kimun_notes::logic::message::SortTarget;
+use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::logic::query::{
@@ -79,6 +79,7 @@ use kimun_notes::settings::themes::Theme;
 use super::Workspace;
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
 use super::files::{display_title, ellipsis, lane_row};
+use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
 use super::search::SearchPreview;
@@ -193,6 +194,8 @@ pub(crate) struct FindView {
     pub(crate) list: Entity<DrawerList<QueryHit>>,
     pub(crate) preview: Entity<SearchPreview>,
     pub(crate) input: Entity<InputState>,
+    /// `#label`, `<note` and `?saved` completion under the field.
+    ac: InputAutocomplete,
     vault: Arc<NoteVault>,
     /// The note `{note}` resolves to, read by each load.
     note: Arc<Mutex<VaultPath>>,
@@ -228,6 +231,7 @@ impl FindView {
     fn new(
         vault: Arc<NoteVault>,
         list: Entity<DrawerList<QueryHit>>,
+        redraw: Notifier,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -240,11 +244,16 @@ impl FindView {
             SearchPreview::new(preview_vault, cx).with_ids(FIND_PREVIEW_ID, FIND_PREVIEW_ROW_ID)
         });
         let subscriptions = vec![
-            cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.typed(cx);
+                    // An accept's own edit was handled by the accept.
+                    if this.ac.on_change(input.read(cx)) {
+                        this.typed(None, cx);
+                    }
                 }
             }),
+            // A caret move can leave the trigger: look again.
+            watch(&input, window, cx),
             // A selection move, or rows landing: the preview follows.
             cx.observe(&list, |this, _, cx| this.sync_preview(cx)),
             keymap::observe(cx, |this: &mut Self, cx| {
@@ -256,6 +265,7 @@ impl FindView {
             list,
             preview,
             input,
+            ac: InputAutocomplete::new(vault.clone(), redraw),
             vault,
             note: Arc::new(Mutex::new(VaultPath::empty())),
             model: PreviewModel::new(),
@@ -296,11 +306,13 @@ impl FindView {
 
     // ---- Running the query -----------------------------------------------------
 
-    /// The field changed (typing): run it once typing pauses.
-    fn typed(&mut self, cx: &mut Context<Self>) {
+    /// The field changed (typing, or accepting `accepted`, a saved search's
+    /// name): run it once typing pauses.
+    fn typed(&mut self, accepted: Option<String>, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let blank = query.trim().is_empty() || is_default_query(&query);
-        self.breadcrumb.on_query_consumed(None, &query, blank);
+        // A `?name` accept pins the saved search's name; typing keeps it.
+        self.breadcrumb.on_query_consumed(accepted, &query, blank);
         // The matches move: the preview anchors on them again.
         self.model.re_anchor();
         self.needs_run = true;
@@ -376,6 +388,9 @@ impl FindView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The field's text is replaced from outside: what the popup completed
+        // is gone.
+        self.ac.close();
         self.input.update(cx, |input, cx| {
             input.set_value(query.clone(), window, cx);
         });
@@ -403,6 +418,7 @@ impl FindView {
             return;
         }
         // `set_value` reports no change: the edit's rules run here.
+        self.ac.close();
         self.input.update(cx, |input, cx| {
             input.set_value(sorted.clone(), window, cx);
         });
@@ -423,6 +439,18 @@ impl FindView {
     pub(crate) fn repin(&mut self, name: String, query: &str, cx: &mut Context<Self>) {
         self.breadcrumb.set(Some(name), query);
         cx.notify();
+    }
+
+    /// The suggestions under the field, top first (tests).
+    #[cfg(test)]
+    pub(crate) fn suggested(&self) -> Vec<String> {
+        self.ac.shown()
+    }
+
+    /// The highlighted suggestion (tests).
+    #[cfg(test)]
+    pub(crate) fn suggestion_highlighted(&self) -> Option<usize> {
+        self.ac.highlighted()
     }
 
     /// FIND's title as shown (tests).
@@ -723,6 +751,20 @@ impl FindView {
     }
 }
 
+impl QueryFieldOwner for FindView {
+    fn autocomplete_mut(&mut self) -> Option<&mut InputAutocomplete> {
+        Some(&mut self.ac)
+    }
+
+    fn field(&self) -> &Entity<InputState> {
+        &self.input
+    }
+
+    fn accepted(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        self.typed(name, cx);
+    }
+}
+
 impl Focusable for FindView {
     /// The field: typing in FIND edits the query.
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -731,8 +773,9 @@ impl Focusable for FindView {
 }
 
 impl Render for FindView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current(cx);
+        let popup = show(self, &t, window, cx);
         let query = self.query(cx);
         let error = error_reason(&query).map(query_problem);
         let (shown, total) = {
@@ -789,6 +832,8 @@ impl Render for FindView {
                     cx.stop_propagation();
                 }
             }))
+            // With suggestions open they have the field's keys first.
+            .map(|el| popup_keys(el, cx))
             // The field's keys that mean something else here.
             .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
                 this.focus_list(window, cx);
@@ -803,6 +848,7 @@ impl Render for FindView {
                 cx.stop_propagation();
             }))
             .child(query_field(&self.input, FIND_INPUT_ID, "Query", &t))
+            .children(popup)
             .child(self.render_bar(&query, cx))
             .when_some(error, |view, error| {
                 view.child(
@@ -851,8 +897,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let redraw = redraw_callback(tx.clone());
         let list = DrawerList::spawn(FIND_LIST_ID, "Results", tx, cx);
-        let view = cx.new(|cx| FindView::new(vault, list.clone(), window, cx));
+        let view = cx.new(|cx| FindView::new(vault, list.clone(), redraw, window, cx));
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_find_list_event));
         self._views_events

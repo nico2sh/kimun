@@ -988,3 +988,185 @@ fn find_large_vault_timings(cx: &mut TestAppContext) {
     }
     eprintln!("50 Down presses in {:?}", t.elapsed());
 }
+
+// ── autocomplete in the field ────────────────────────────────────────────
+
+fn suggested(s: &Started, cx: &TestAppContext) -> Vec<String> {
+    let view = find(s, cx);
+    cx.read(|cx| view.read(cx).suggested())
+}
+
+/// Clear FIND's field and type `text`; wait for the suggestions to list.
+fn type_and_suggest(s: &Started, rt: &Runtime, text: &str, cx: &mut TestAppContext) {
+    open_find_on_backlinks(s, cx);
+    press(s, "ctrl-a", cx);
+    press(s, "backspace", cx);
+    type_in(s, text, cx);
+    drive(rt, cx, |cx| !suggested(s, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_hash_in_the_field_lists_the_vault_labels(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#r", cx);
+    assert_eq!(suggested(&started, cx), ["rust"]);
+    // Drawn under the field, as a listbox.
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(super::input_autocomplete::POPUP_ID).visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn tab_completes_the_label_and_the_query_runs(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#r", cx);
+    press(&started, "tab", cx);
+    assert_eq!(query(&started, cx), "#rust");
+    assert!(suggested(&started, cx).is_empty(), "closed, not reopened");
+    cx.executor().advance_clock(FIND_DEBOUNCE);
+    cx.run_until_parked();
+    assert_eq!(find_names(&started, &rt, cx), ["alpha", "beta", "epsilon"]);
+}
+
+#[gpui_kit::test]
+fn down_then_enter_takes_the_second_suggestion_not_the_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#", cx);
+    let second = suggested(&started, cx)[1].clone();
+    press(&started, "down", cx);
+    let view = find(&started, cx);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).suggestion_highlighted()),
+        Some(1)
+    );
+    assert!(!find_list_focused(&started, cx), "Down moved the highlight");
+    press(&started, "enter", cx);
+    assert!(
+        query(&started, cx).contains(&second),
+        "{} vs {second}",
+        query(&started, cx)
+    );
+    assert!(suggested(&started, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_suggestions_before_it_dismisses_find(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#r", cx);
+    press(&started, "escape", cx);
+    assert!(suggested(&started, cx).is_empty());
+    assert_eq!(query(&started, cx), "#r", "the field is untouched");
+    assert!(shown(&started, DrawerView::Find, cx), "FIND stays up");
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_suggestion_takes_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#r", cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click((SharedString::from("rust"), 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(query(&started, cx), "#rust");
+    assert!(suggested(&started, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_question_mark_completes_a_saved_search_and_names_find_for_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    rt.block_on(v.vault.save_search("rusty", "#rust")).unwrap();
+    type_and_suggest(&started, &rt, "?ru", cx);
+    assert_eq!(suggested(&started, cx), ["rusty"]);
+    press(&started, "tab", cx);
+    assert_eq!(
+        query(&started, cx),
+        "#rust",
+        "the stored query fills the field"
+    );
+    let view = find(&started, cx);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).saved_name()).as_deref(),
+        Some("rusty")
+    );
+}
+
+#[gpui_kit::test]
+fn a_link_filter_operator_completes_note_names(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "<be", cx);
+    assert_eq!(suggested(&started, cx), ["beta"]);
+    press(&started, "tab", cx);
+    assert_eq!(query(&started, cx), "<beta");
+}
+
+#[gpui_kit::test]
+fn moving_the_caret_out_of_the_trigger_closes_the_suggestions(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "word #r", cx);
+    press(&started, "home", cx);
+    cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(suggested(&started, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_saved_search_typed_in_full_still_offers_its_stored_query(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    rt.block_on(v.vault.save_search("rusty", "#rust")).unwrap();
+    // The one match is exactly what was typed, yet accepting it expands.
+    type_and_suggest(&started, &rt, "?rusty", cx);
+    assert_eq!(suggested(&started, cx), ["rusty"]);
+    press(&started, "tab", cx);
+    assert_eq!(query(&started, cx), "#rust");
+    let view = find(&started, cx);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).saved_name()).as_deref(),
+        Some("rusty")
+    );
+}
+
+#[gpui_kit::test]
+fn replacing_the_query_from_outside_closes_the_suggestions(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    type_and_suggest(&started, &rt, "#r", cx);
+    let view = find(&started, cx);
+    cx.update_window(started.handle, |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.apply_query("#rust #be".into(), None, window, cx)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        suggested(&started, cx).is_empty(),
+        "the popup was for the old text"
+    );
+    // Enter commits the query; it does not accept a stale suggestion.
+    assert_eq!(query(&started, cx), "#rust #be");
+}
