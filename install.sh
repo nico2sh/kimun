@@ -24,7 +24,7 @@
 # `kimun-gui` from a terminal. For a double-clickable app, download the signed
 # kimun-gui-<version>-<platform>.dmg from the release page instead.
 #
-# Unix only (Linux, macOS). Windows users: use the release archive directly.
+# Unix only (Linux, macOS). Windows users: install.ps1, or the release archive.
 
 set -eu
 
@@ -80,7 +80,7 @@ detect_platform() {
       esac
       ;;
     MINGW* | MSYS* | CYGWIN*)
-      err "this installer is for Linux and macOS. On Windows, download kimun-<version>-windows-x64.zip (or kimun-gui-<version>-windows-x64.zip for the desktop app) from https://github.com/$REPO/releases"
+      err "this installer is for Linux and macOS. On Windows, run: irm https://kimun.2co.dev/install.ps1 | iex   (or download kimun-<version>-windows-x64.zip, or kimun-gui-<version>-windows-x64.zip for the desktop app, from https://github.com/$REPO/releases)"
       ;;
     *)
       err "unsupported OS: $os (this script supports Linux and macOS; Windows users should use the release archive)"

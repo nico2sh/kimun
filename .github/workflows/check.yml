@@ -152,6 +152,18 @@ jobs:
         if: matrix.lint
         run: bash .github/scripts/test-install.sh
 
+      # install.ps1 on a real Windows host, in both shells people use: Windows
+      # PowerShell 5.1 (what `powershell` starts) and PowerShell 7. A fake release
+      # served from a directory: both apps, the shortcut, the marker, the PATH.
+      - name: Installer tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github/scripts/test-install.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File .github/scripts/test-install.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Clippy
         if: matrix.lint
         run: cargo clippy --workspace --all-targets -- -D warnings
