@@ -766,6 +766,16 @@ fn open_note_survives_entering_ask(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = ready(cx, &rt, Stub::with(Vec::new()));
+    // This test is about the tick (its last step): a one-second one, from here on.
+    v.settings.write().unwrap().autosave_interval_secs = 1;
+    started.workspace.update(cx, |w, _| {
+        let tx = w.tx.clone().expect("the app channel");
+        w.notes
+            .as_mut()
+            .expect("a vault is open")
+            .session
+            .restart_autosave(&tx);
+    });
     type_in(&started, "X", cx);
     press(&started, "ctrl-shift-b", cx);
     press(&started, "a", cx);

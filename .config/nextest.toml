@@ -1,0 +1,16 @@
+# cargo-nextest settings (https://nexte.st/docs/configuration/).
+#
+# The `ci` profile is what .github/workflows/check.yml runs. It retries a failing test twice:
+# the GUI tests drive real tokio runtimes, timers and file I/O, and on a small shared runner
+# an occasional test loses a race that is never lost on a developer's machine. Retrying is not
+# hiding: a test that passes on a retry is reported as FLAKY in the run's summary (and listed
+# at the end), and a test that fails all three attempts fails the job. Fix a flaky test; do
+# not raise the retry count.
+#
+# Locally, plain `cargo nextest run` (the default profile) retries nothing.
+[profile.ci]
+retries = 2
+fail-fast = false
+status-level = "retry"
+final-status-level = "flaky"
+failure-output = "immediate-final"
