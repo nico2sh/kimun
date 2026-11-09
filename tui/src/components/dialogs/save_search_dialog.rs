@@ -9,28 +9,9 @@ use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::logic::message::{AppMessage, AppTx, SaveSource, SavedSearchFlow};
+pub use crate::logic::saved_search::SaveHint;
+use crate::logic::saved_search::{effective_save_name, save_hint};
 use crate::settings::themes::Theme;
-
-/// What submitting the dialog will do with the current name field — drives
-/// the live hint line so an overwrite is never silent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SaveHint {
-    /// The name matches the saved search the query came from (the breadcrumb
-    /// provenance): submitting updates it in place.
-    Update(String),
-    /// The name matches a different existing saved search: submitting
-    /// replaces that search's query. Rendered as a warning.
-    Overwrite(String),
-    /// A fresh name: submitting creates a new saved search.
-    SaveNew,
-    /// The name field is empty: submitting saves a new search named after the
-    /// query itself (the query-as-name fallback).
-    SaveNewAsQuery(String),
-    /// The existing names have not loaded yet, so save-new vs overwrite is
-    /// unknown (the provenance Update case never waits — it is checked
-    /// synchronously). Submitting still saves.
-    Pending,
-}
 
 pub struct SaveSearchDialog {
     /// The query being saved (read-only context).
@@ -75,36 +56,17 @@ impl SaveSearchDialog {
     /// The name a submit would save under: the typed name, or the trimmed
     /// query when the field is empty (the query-as-name fallback).
     fn effective_name(&self) -> &str {
-        let typed = self.name.value().trim();
-        if typed.is_empty() {
-            self.query.trim()
-        } else {
-            typed
-        }
+        effective_save_name(self.name.value(), &self.query)
     }
 
-    /// What submitting right now would do. Name matching delegates to core's
-    /// `saved_search_name_matches` — the same rule `save_search` applies on
-    /// write, so the hint can never disagree with the actual save outcome.
+    /// What submitting right now would do. See [`save_hint`].
     pub fn hint(&self) -> SaveHint {
-        let matches = kimun_core::saved_search_name_matches;
-        let effective = self.effective_name();
-        if let Some(p) = &self.provenance
-            && matches(p, effective)
-        {
-            return SaveHint::Update(p.clone());
-        }
-        let Some(existing) = &self.existing else {
-            return SaveHint::Pending;
-        };
-        if let Some(name) = existing.iter().find(|n| matches(n, effective)) {
-            return SaveHint::Overwrite(name.clone());
-        }
-        if self.name.value().trim().is_empty() {
-            SaveHint::SaveNewAsQuery(self.query.clone())
-        } else {
-            SaveHint::SaveNew
-        }
+        save_hint(
+            self.name.value(),
+            &self.query,
+            self.provenance.as_deref(),
+            self.existing.as_deref(),
+        )
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {

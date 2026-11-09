@@ -1,6 +1,6 @@
 //! The **command palette** (the `›`-prefixed telescope scope): a fuzzy
 //! list of every leader-tree command. Selecting one executes its
-//! [`LeaderAction`] — the palette is a labelled door onto the same actions
+//! [`LeaderAction`](crate::keys::leader::LeaderAction) — the palette is a labelled door onto the same actions
 //! the leader sequences fire, never a second implementation.
 
 use ratatui::Frame;
@@ -19,22 +19,14 @@ use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Filter, KeyReaction, SearchList, SearchMouse, SearchRow, StaticRowSource,
 };
-use crate::keys::leader::{LeaderAction, LeaderNode};
+use crate::keys::leader::LeaderNode;
 use crate::logic::message::{AppMessage, AppTx, redraw_callback};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
-/// One palette row: a leader leaf with its full key sequence.
-#[derive(Clone)]
-pub struct CommandEntry {
-    /// `group label · leaf label`, e.g. `+find · files`.
-    pub label: String,
-    /// The key sequence, e.g. `Ctrl+G f f`.
-    pub keys: String,
-    /// `label + keys`, so the fuzzy filter matches either.
-    haystack: String,
-    pub action: LeaderAction,
-}
+/// The palette rows live in the Logic layer (`logic::palette`); re-exported
+/// here under their TUI names.
+pub use crate::logic::palette::{PaletteRow as CommandEntry, palette_rows as command_entries};
 
 impl SearchRow for CommandEntry {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
@@ -44,51 +36,9 @@ impl SearchRow for CommandEntry {
             .into_list_item(theme)
     }
 
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.haystack)
-    }
-
     fn visual_height(&self) -> u16 {
         1
     }
-}
-
-/// Flatten a leader tree into palette entries — the single keymap source.
-pub fn command_entries(tree: &LeaderNode, gateway: &str) -> Vec<CommandEntry> {
-    fn walk(node: &LeaderNode, group: &str, keys: &str, out: &mut Vec<CommandEntry>) {
-        for (key, child) in node.children() {
-            let child_keys = format!("{keys} {key}");
-            match child {
-                // The palette never lists itself — selecting it would just
-                // close and reopen the palette.
-                LeaderNode::Leaf { action, .. } if *action == LeaderAction::Palette => {}
-                // The nine jump leaves stay out of the palette: they're a
-                // single fuzzy-searchable concept ("pinned notes"), not nine
-                // near-identical rows differing only by digit.
-                LeaderNode::Leaf {
-                    action: LeaderAction::PinnedJump(_),
-                    ..
-                } => {}
-                LeaderNode::Leaf { label, action } => {
-                    let label = if group.is_empty() {
-                        (*label).to_string()
-                    } else {
-                        format!("{group} · {label}")
-                    };
-                    out.push(CommandEntry {
-                        haystack: format!("{label} {child_keys}"),
-                        label,
-                        keys: child_keys,
-                        action: *action,
-                    });
-                }
-                LeaderNode::Group { label, .. } => walk(child, label, &child_keys, out),
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(tree, "", gateway, &mut out);
-    out
 }
 
 /// The palette modal — same engine as the note browser, command rows.
@@ -274,35 +224,6 @@ mod tests {
             click(&mut p, col, row)
                 .iter()
                 .any(|e| matches!(e, AppMessage::CloseOverlay))
-        );
-    }
-
-    #[test]
-    fn entries_cover_every_leader_leaf() {
-        let entries = command_entries(&crate::keys::leader::leader_tree(), "Ctrl+G");
-        // Spot-check shape and coverage.
-        assert!(entries.len() > 20);
-        assert!(
-            entries
-                .iter()
-                .any(|e| e.keys == "Ctrl+G o f" && e.label.contains("files"))
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|e| e.action == LeaderAction::Help && e.keys == "Ctrl+G ?")
-        );
-        assert!(
-            !entries
-                .iter()
-                .any(|e| matches!(e.action, LeaderAction::PinnedJump(_))),
-            "the nine jump leaves stay out of the palette"
-        );
-        assert!(entries.iter().any(|e| e.action == LeaderAction::FindPinned));
-        assert!(
-            entries
-                .iter()
-                .any(|e| e.action == LeaderAction::NoteTogglePin)
         );
     }
 

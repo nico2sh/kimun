@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 
-use super::seams::{Emit, RowSource, SearchRow};
+use super::{Emit, ListRow, RowSource, SearchRow};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestRow {
@@ -18,6 +18,18 @@ impl TestRow {
     }
 }
 
+impl ListRow for TestRow {
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+
+    /// Rows named "quiet" declare nothing to copy, so tests can exercise both
+    /// halves of the yank contract with the same row type.
+    fn yank_target(&self) -> Option<super::YankTarget> {
+        (self.name != "quiet").then(|| super::YankTarget::path(self.name.clone()))
+    }
+}
+
 impl SearchRow for TestRow {
     fn to_list_item(
         &self,
@@ -26,14 +38,6 @@ impl SearchRow for TestRow {
         _sel: bool,
     ) -> ratatui::widgets::ListItem<'static> {
         ratatui::widgets::ListItem::new(self.name.clone())
-    }
-    fn match_text(&self) -> Option<&str> {
-        Some(&self.name)
-    }
-    /// Rows named "quiet" declare nothing to copy, so tests can exercise both
-    /// halves of the yank contract with the same row type.
-    fn yank_target(&self) -> Option<super::seams::YankTarget> {
-        (self.name != "quiet").then(|| super::seams::YankTarget::path(self.name.clone()))
     }
 }
 
@@ -58,6 +62,7 @@ impl RowSource<TestRow> for VecSource {
         };
         emit.replace(out);
     }
+
     fn reload_on_query(&self) -> bool {
         self.reload
     }
@@ -74,6 +79,7 @@ impl RowSource<TestRow> for VecSourceWithLead {
     async fn load(&self, _query: &str, emit: Emit<TestRow>) {
         emit.replace(self.rows.clone());
     }
+
     fn leading_row(&self, query: &str) -> Option<TestRow> {
         if query.is_empty() {
             None
@@ -81,6 +87,7 @@ impl RowSource<TestRow> for VecSourceWithLead {
             Some(TestRow::new(&format!("create:{query}")))
         }
     }
+
     fn reload_on_query(&self) -> bool {
         false
     }
@@ -103,6 +110,7 @@ impl RowSource<TestRow> for ScriptedStreamSource {
         }
         emit.done();
     }
+
     fn reload_on_query(&self) -> bool {
         false
     }
@@ -120,6 +128,7 @@ impl RowSource<TestRow> for HeldEmitSource {
     async fn load(&self, _query: &str, emit: Emit<TestRow>) {
         *self.slot.lock().unwrap() = Some(emit);
     }
+
     fn reload_on_query(&self) -> bool {
         false
     }
@@ -146,6 +155,7 @@ impl RowSource<TestRow> for ReloadWithLeadSource {
         };
         emit.replace(out);
     }
+
     fn leading_row(&self, query: &str) -> Option<TestRow> {
         if query.is_empty() {
             None
@@ -153,6 +163,7 @@ impl RowSource<TestRow> for ReloadWithLeadSource {
             Some(TestRow::new(&format!("create:{query}")))
         }
     }
+
     fn reload_on_query(&self) -> bool {
         true
     }
@@ -167,6 +178,15 @@ pub enum StreamRow {
     Create(String),
 }
 
+impl ListRow for StreamRow {
+    fn match_text(&self) -> Option<&str> {
+        match self {
+            StreamRow::Item(s) => Some(s),
+            StreamRow::Create(_) => None,
+        }
+    }
+}
+
 impl SearchRow for StreamRow {
     fn to_list_item(
         &self,
@@ -179,12 +199,6 @@ impl SearchRow for StreamRow {
             StreamRow::Create(q) => format!("create:{q}"),
         };
         ratatui::widgets::ListItem::new(text)
-    }
-    fn match_text(&self) -> Option<&str> {
-        match self {
-            StreamRow::Item(s) => Some(s),
-            StreamRow::Create(_) => None,
-        }
     }
 }
 
@@ -203,6 +217,7 @@ impl RowSource<StreamRow> for ScriptedStreamLeadSource {
         }
         emit.done();
     }
+
     fn leading_row(&self, query: &str) -> Option<StreamRow> {
         if query.is_empty() {
             None
@@ -210,6 +225,7 @@ impl RowSource<StreamRow> for ScriptedStreamLeadSource {
             Some(StreamRow::Create(query.to_string()))
         }
     }
+
     fn reload_on_query(&self) -> bool {
         false
     }

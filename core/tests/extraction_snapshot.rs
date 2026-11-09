@@ -27,6 +27,10 @@ pub fn corpus() -> Vec<(String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect(&root.join("../example"), &mut files);
+    // Running Ask against the `example/` vault saves its answers here. They
+    // are local output, never part of the corpus, and must not change it.
+    let ask_output = root.join("../example/personal/ask");
+    files.retain(|path| !path.starts_with(&ask_output));
     collect(&root.join("benches/fixtures"), &mut files);
     collect(&root.join("tests/fixtures/walk"), &mut files);
     let mut notes: Vec<(String, String)> = files
@@ -190,7 +194,7 @@ fn every_extractor_agrees_with_the_others() {
             links
                 .iter()
                 .filter_map(|l| match &l.ltype {
-                    LinkType::Note(p) => Some(p.to_string()),
+                    LinkType::Note(t) => Some(t.path().to_string()),
                     _ => None,
                 })
                 .collect()

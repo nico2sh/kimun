@@ -14,26 +14,8 @@ use crate::components::sortable::SortableList;
 use crate::logic::message::{AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
-/// Identifies which overlay is active — used for toggle, focus label, and hints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayKind {
-    NoteBrowser,
-    SavedSearches,
-    CommandPalette,
-    Dialog,
-}
-
-impl OverlayKind {
-    /// Footer label for this overlay kind.
-    pub fn label(&self) -> &'static str {
-        match self {
-            OverlayKind::NoteBrowser => "NOTE BROWSER",
-            OverlayKind::SavedSearches => "SAVED SEARCHES",
-            OverlayKind::CommandPalette => "COMMANDS",
-            OverlayKind::Dialog => "DIALOG",
-        }
-    }
-}
+/// The overlay kind lives in the Logic layer; re-exported at its old path.
+pub use crate::logic::overlay_open::OverlayKind;
 
 /// Outcome of routing an `AppMessage` to the active overlay. Overlays never
 /// request their own dismissal here: dialogs close by emitting the

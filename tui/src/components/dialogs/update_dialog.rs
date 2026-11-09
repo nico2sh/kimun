@@ -11,6 +11,7 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::logic::message::{AppMessage, AppTx, UpdateFlow};
+use crate::logic::update::{self, Frontend, UpdateOffer};
 use crate::settings::themes::Theme;
 use crate::update::UpdateStatus;
 use unicode_width::UnicodeWidthStr;
@@ -46,11 +47,16 @@ pub struct UpdateAvailableDialog {
 
 impl UpdateAvailableDialog {
     pub fn new(status: &UpdateStatus) -> Self {
+        // The offer rules are the logic's, shared with the desktop app.
+        let offer = update::offer(status.channel, Frontend::Terminal.binary_published());
         Self {
             current: status.current.clone(),
             latest: status.latest.clone(),
-            eligible: status.channel.self_update_eligible(),
-            upgrade_hint: status.channel.upgrade_hint().map(str::to_string),
+            eligible: offer == UpdateOffer::Install,
+            upgrade_hint: match offer {
+                UpdateOffer::PackageManager { command } => command.map(str::to_string),
+                UpdateOffer::Install | UpdateOffer::Download => None,
+            },
             shell: ModalShell::default(),
             action_rects: Vec::new(),
             close_hint: HintRow::new(&[(KeyCode::Esc, "Esc", "Close")]),

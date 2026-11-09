@@ -10,6 +10,7 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::workspaces::{initial_selection, workspace_rows};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -25,23 +26,13 @@ pub struct WorkspaceSwitcherModal {
 
 impl WorkspaceSwitcherModal {
     pub fn new(settings: &AppSettings) -> Self {
-        let mut workspaces: Vec<(String, bool)> = Vec::new();
-        if let Some(ref wc) = settings.workspace_config {
-            let current = &wc.global.current_workspace;
-            let mut names: Vec<&String> = wc.workspaces.keys().collect();
-            names.sort();
-            for name in names {
-                workspaces.push((name.clone(), name == current));
-            }
-        }
+        let rows = workspace_rows(settings);
         let mut list_state = ListState::default();
-        if !workspaces.is_empty() {
-            let current_idx = workspaces
-                .iter()
-                .position(|(_, is_cur)| *is_cur)
-                .unwrap_or(0);
-            list_state.select(Some(current_idx));
-        }
+        list_state.select(initial_selection(&rows));
+        let workspaces: Vec<(String, bool)> = rows
+            .into_iter()
+            .map(|row| (row.name, row.current))
+            .collect();
         Self {
             workspaces,
             list_state,

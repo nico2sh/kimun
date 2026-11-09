@@ -1,42 +1,37 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use unicode_width::UnicodeWidthStr;
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::logic::message::AppTx;
+use crate::logic::preferences::{PreferencesModel, SortSlot};
 use crate::settings::themes::Theme;
-use crate::settings::{SortFieldSetting, SortOrderSetting};
 
 use super::{ClickMap, text_rect};
-use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
 
+/// The Sorting section: default and journal sort field/order. The values
+/// live in the [`PreferencesModel`] (cycling with them, see
+/// [`PreferencesModel::cycle_sort`]); rows are [`SortSlot::ALL`] in order.
 pub struct SortingSection {
-    pub default_sort_field: SortFieldSetting,
-    pub default_sort_order: SortOrderSetting,
-    pub journal_sort_field: SortFieldSetting,
-    pub journal_sort_order: SortOrderSetting,
     list_state: ListState,
     clicks: ClickMap,
 }
 
+impl Default for SortingSection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SortingSection {
-    pub fn new(
-        default_sort_field: SortFieldSetting,
-        default_sort_order: SortOrderSetting,
-        journal_sort_field: SortFieldSetting,
-        journal_sort_order: SortOrderSetting,
-    ) -> Self {
+    pub fn new() -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
-            default_sort_field,
-            default_sort_order,
-            journal_sort_field,
-            journal_sort_order,
             list_state,
             clicks: ClickMap::default(),
         }
@@ -84,39 +79,14 @@ impl SortingSection {
         .style(Style::default().fg(theme.fg.to_ratatui()))
     }
 
-    const ROW_COUNT: usize = 4;
+    const ROW_COUNT: usize = SortSlot::ALL.len();
 
-    fn cycle_field(f: SortFieldSetting) -> SortFieldSetting {
-        match f {
-            SortFieldSetting::Name => SortFieldSetting::Title,
-            SortFieldSetting::Title => SortFieldSetting::Name,
-        }
-    }
-
-    fn cycle_order(o: SortOrderSetting) -> SortOrderSetting {
-        match o {
-            SortOrderSetting::Ascending => SortOrderSetting::Descending,
-            SortOrderSetting::Descending => SortOrderSetting::Ascending,
-        }
-    }
-
-    fn field_label(f: SortFieldSetting) -> &'static str {
-        match f {
-            SortFieldSetting::Name => "Name",
-            SortFieldSetting::Title => "Title",
-        }
-    }
-
-    fn order_label(o: SortOrderSetting) -> &'static str {
-        match o {
-            SortOrderSetting::Ascending => "Ascending",
-            SortOrderSetting::Descending => "Descending",
-        }
-    }
-}
-
-impl Component for SortingSection {
-    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    pub fn handle_input(
+        &mut self,
+        event: &InputEvent,
+        model: &mut PreferencesModel,
+        _tx: &AppTx,
+    ) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -136,12 +106,8 @@ impl Component for SortingSection {
             }
             ratatui::crossterm::event::KeyCode::Enter
             | ratatui::crossterm::event::KeyCode::Char(' ') => {
-                match selected {
-                    0 => self.default_sort_field = Self::cycle_field(self.default_sort_field),
-                    1 => self.default_sort_order = Self::cycle_order(self.default_sort_order),
-                    2 => self.journal_sort_field = Self::cycle_field(self.journal_sort_field),
-                    3 => self.journal_sort_order = Self::cycle_order(self.journal_sort_order),
-                    _ => {}
+                if let Some(slot) = SortSlot::ALL.get(selected) {
+                    model.cycle_sort(*slot);
                 }
                 EventState::Consumed
             }
@@ -149,7 +115,14 @@ impl Component for SortingSection {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        theme: &Theme,
+        focused: bool,
+        model: &PreferencesModel,
+    ) {
         let border_style = theme.border_style(focused);
 
         // Outer container
@@ -187,7 +160,7 @@ impl Component for SortingSection {
                 0,
                 0,
                 "  Sort field:  ",
-                Self::field_label(self.default_sort_field),
+                model.sort_label(SortSlot::DefaultField),
                 theme,
             ),
             self.value_row(
@@ -195,7 +168,7 @@ impl Component for SortingSection {
                 1,
                 1,
                 "  Sort order:  ",
-                Self::order_label(self.default_sort_order),
+                model.sort_label(SortSlot::DefaultOrder),
                 theme,
             ),
         ];
@@ -222,7 +195,7 @@ impl Component for SortingSection {
                 0,
                 2,
                 "  Sort field:  ",
-                Self::field_label(self.journal_sort_field),
+                model.sort_label(SortSlot::JournalField),
                 theme,
             ),
             self.value_row(
@@ -230,7 +203,7 @@ impl Component for SortingSection {
                 1,
                 3,
                 "  Sort order:  ",
-                Self::order_label(self.journal_sort_order),
+                model.sort_label(SortSlot::JournalOrder),
                 theme,
             ),
         ];
@@ -247,5 +220,37 @@ impl Component for SortingSection {
             halves[1],
             &mut journal_state,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::AppSettings;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+    fn key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent::from(code))
+    }
+
+    #[test]
+    fn enter_cycles_the_selected_slot_only() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut section = SortingSection::new();
+        let base = PreferencesModel::new(&AppSettings::default());
+        let mut m = base.clone();
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Enter), &mut m, &tx);
+        assert_ne!(m.journal_sort_field, base.journal_sort_field);
+        assert_eq!(m.default_sort_field, base.default_sort_field);
+        assert_eq!(m.default_sort_order, base.default_sort_order);
+        assert_eq!(m.journal_sort_order, base.journal_sort_order);
+        // Up wraps to the last slot.
+        let mut section = SortingSection::new();
+        let mut m = base.clone();
+        section.handle_input(&key(KeyCode::Up), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Char(' ')), &mut m, &tx);
+        assert_ne!(m.journal_sort_order, base.journal_sort_order);
     }
 }

@@ -10,10 +10,11 @@ use crate::logic::editor::claim::{
     ClipboardImage, FollowTarget, WHEEL_SCROLL_ROWS, follow_target_in_line, linkable_url,
     try_build_markdown_link,
 };
+use crate::logic::editor::find_bar::{FindBar, MatchPosition};
 use crate::logic::editor::handled::{Handled, KeyPath};
 use crate::logic::editor::request::EditorRequest;
 use crate::logic::editor::rope_buffer::{CursorMove, RopeBuffer};
-use crate::logic::editor::session::EditorSession;
+use crate::logic::editor::session::{EditorSession, FrameInput};
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::logic::editor::textarea::TextareaBackend;
 use crate::logic::editor::{markdown_edits, plain_keys, typing_run};
@@ -41,6 +42,10 @@ pub struct Editor {
     /// Asks for the host to act on (a right-click with no selection wants the
     /// note's context menu); drained by [`Editor::take_requests`].
     requests: Vec<EditorRequest>,
+    /// The open **find bar**, if any. While it is open it owns every key
+    /// ([`Editor::handle_find_key`]) and its **current match** is what gets
+    /// painted as the selection ([`Editor::painted_selection`]).
+    find: Option<FindBar>,
 }
 
 impl Editor {
@@ -66,6 +71,7 @@ impl Editor {
             selection: None,
             last_insert_session: false,
             requests: Vec::new(),
+            find: None,
         }
     }
 
@@ -86,9 +92,10 @@ impl Editor {
         &self.buf.ta
     }
 
-    /// The rope buffer, mutably. A caller that edits through it (the find bar,
-    /// the autocomplete accept) must call [`Editor::finish_external_edit`]
-    /// afterwards so the revision clock and the parse damage follow.
+    /// The rope buffer, mutably. A caller that edits through it (the
+    /// autocomplete accept) must settle the edit afterwards
+    /// ([`Editor::after_edit`]) so the revision clock and the parse damage
+    /// follow. The find bar is the editor's own and is settled internally.
     pub fn buffer_mut(&mut self) -> &mut RopeBuffer {
         &mut self.buf.ta
     }
@@ -139,6 +146,76 @@ impl Editor {
             cursor,
             self.session.revs.current(),
         )
+    }
+
+    /// Prepare this frame for a host that has nothing to add to it: the
+    /// editor's own snapshot and selection, no replace preview, no find
+    /// matches. Hosts that draw those build a [`FrameInput`] and call
+    /// [`EditorSession::prepare_frame`] directly.
+    pub fn prepare_frame(&mut self, width: u16, height: u16) {
+        let (preview, preview_overlays, matches) = self.find_frame_parts();
+        let input = FrameInput {
+            snapshot: self.view_snapshot(),
+            width,
+            height,
+            selection: self.painted_selection(),
+            preview,
+            preview_overlays,
+            matches,
+        };
+        self.session.prepare_frame(input);
+    }
+
+    /// What is painted as the selection this frame: the find bar's **current
+    /// match** while a bar is open (the bar owns it rather than writing the
+    /// editor's selection), the editor's own selection otherwise.
+    pub fn painted_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        match &self.find {
+            Some(bar) => bar.current_match(),
+            None => self.selection,
+        }
+    }
+
+    /// The open find bar's contribution to this frame, in
+    /// [`FrameInput`]'s shape: the **replace preview**'s lines, its
+    /// `Preview`/`PreviewCurrent` overlays, and the `Match` overlays. All
+    /// empty when no bar is open. The buffer is never touched — only this
+    /// frame's view of it is substituted.
+    #[allow(clippy::type_complexity)]
+    pub fn find_frame_parts(
+        &self,
+    ) -> (
+        Option<Vec<String>>,
+        Vec<crate::logic::editor::overlay::Overlay>,
+        Vec<crate::logic::editor::overlay::Overlay>,
+    ) {
+        match &self.find {
+            Some(bar) => bar.overlay(&self.buf.ta).into_frame_parts(),
+            None => (None, Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Whether the vim interpreter is driving this editor.
+    pub fn is_vim(&self) -> bool {
+        self.buf.is_vim()
+    }
+
+    /// The footer modal-mode label (`NORMAL`, `INSERT`, ...). `None` for the
+    /// plain direct-edit editor.
+    pub fn mode_label(&self) -> Option<String> {
+        self.buf.mode_label()
+    }
+
+    /// The in-progress vim command (pending count / operator / find) for the
+    /// footer. `None` when nothing is pending.
+    pub fn pending_input_hint(&self) -> Option<String> {
+        self.buf.pending_input_hint()
+    }
+
+    /// Cursor-shape classifier: `None` = non-modal, `Some(true)` = Insert
+    /// (bar), `Some(false)` = another modal mode (block).
+    pub fn modal_is_insert(&self) -> Option<bool> {
+        self.buf.modal_is_insert()
     }
 
     /// The cursor's (row, col) without materialising a snapshot.
@@ -275,6 +352,10 @@ impl Editor {
         self.mark_saved(reconstructed);
         // `self.selection` would otherwise still describe the old text.
         self.selection = None;
+        // The find bar is worse: `armed_empty` surviving a note swap means one
+        // Ctrl+A deletes every match in a note the user never armed, skipping
+        // the confirmation the flag exists to force.
+        self.find = None;
         // The whole buffer was replaced. The cursor resets to the top, so if
         // the line count happens to match and row 0 differs, the damage fast
         // path would report `0..1` and leave the rest of the note parsed as the
@@ -354,6 +435,20 @@ impl Editor {
         self.end_typing();
     }
 
+    /// Apply an autocomplete accept: the trigger range becomes the suggestion
+    /// and the cursor lands where the action says. It interrupts the typing
+    /// run first ([`Self::interrupt_typing`]): outside a vim Insert session the
+    /// accept is **one undo group** of its own, so `u` takes the suggestion
+    /// back to what was typed. Inside one the session *is* the group, so the
+    /// accept joins it and one `u` takes back the whole insert.
+    pub fn apply_autocomplete(&mut self, action: &crate::logic::autocomplete::AcceptAction) {
+        self.interrupt_typing();
+        self.buf
+            .ta
+            .edit(|ta| crate::logic::autocomplete::apply_accept(ta, action));
+        self.after_edit();
+    }
+
     /// End the open typing run: the next keystroke starts a new **undo group**.
     pub(crate) fn end_typing(&mut self) {
         self.buf.typing.end();
@@ -385,14 +480,6 @@ impl Editor {
         self.apply_edit_outcome()
     }
 
-    /// Settle an edit made straight on [`Editor::buffer_mut`] by a layer the
-    /// editor does not own (the find bar, the autocomplete accept): bump the
-    /// revision and tell the view what to re-parse. Reports whether the text
-    /// changed.
-    pub fn finish_external_edit(&mut self) -> bool {
-        self.apply_edit_outcome()
-    }
-
     /// Drain the **rope buffer**'s measured outcome and apply it.
     ///
     /// The one place a text change turns into a revision bump and a
@@ -414,9 +501,32 @@ impl Editor {
         outcome.changed
     }
 
-    /// Undo one *user action*. The **edit buffer** replays history to the
-    /// state the action started from, so nothing here counts entries.
-    pub fn undo_grouped(&mut self) -> bool {
+    /// Undo one *user action*, settled like any edit: the revision is bumped
+    /// (so dirty and autosave see it) and the view is told what to re-parse.
+    /// Reports whether anything was undone.
+    pub fn undo(&mut self) -> bool {
+        if self.undo_grouped() {
+            self.apply_edit_outcome();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Redo one *user action*, settled. Mirror of [`Self::undo`].
+    pub fn redo(&mut self) -> bool {
+        if self.redo_grouped() {
+            self.apply_edit_outcome();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Undo one *user action*, unsettled. The **edit buffer** replays history
+    /// to the state the action started from, so nothing here counts entries.
+    /// Hosts call [`Self::undo`], which also drains the edit outcome.
+    pub(crate) fn undo_grouped(&mut self) -> bool {
         let moved = self.buf.ta.undo();
         if moved {
             self.sync_highlight();
@@ -424,13 +534,24 @@ impl Editor {
         moved
     }
 
-    /// Redo one *user action*. Mirror of [`Self::undo_grouped`].
-    pub fn redo_grouped(&mut self) -> bool {
+    /// Redo one *user action*, unsettled. Mirror of [`Self::undo_grouped`].
+    pub(crate) fn redo_grouped(&mut self) -> bool {
         let moved = self.buf.ta.redo();
         if moved {
             self.sync_highlight();
         }
         moved
+    }
+
+    /// Settle the editor after a pointer event has been handled. A left press
+    /// ends vim's Visual mode (a drag selects through `select_dragged`; scroll,
+    /// release and right-click leave the mode alone), and the painted selection
+    /// is refreshed either way. Pass `left_down` as true for a left press.
+    pub fn settle_pointer(&mut self, left_down: bool) {
+        if left_down {
+            self.buf.sync_mouse_selection(false);
+        }
+        self.sync_highlight();
     }
 
     /// Paint the selection as the user sees it: under vim's Visual modes the
@@ -550,6 +671,66 @@ impl Editor {
         });
         self.buf.sync_mouse_selection(false);
         self.after_edit();
+    }
+
+    /// Text committed by a platform text-input service (an IME, a composed
+    /// character, a press-and-hold accent): replace `range` — chars of one
+    /// `row` — with `text`, or the selection (else nothing) at the cursor when
+    /// `range` is `None`. An empty range inserts at its start; empty `text`
+    /// deletes. Text input acts at the cursor, so a wheel-scrolled view follows
+    /// it back, as a key does. `false`, and nothing touched, when the range is
+    /// not addressable, or when vim is in a mode other than Insert.
+    pub fn commit_text(
+        &mut self,
+        range: Option<(usize, std::ops::Range<usize>)>,
+        text: &str,
+    ) -> bool {
+        // Committed text is typing, and vim only types in Insert. In Normal or
+        // Visual a keystroke is a command that must go through `handle_key`;
+        // committing here would bypass the engine, and in Visual the cut below
+        // would also re-select what Visual covers (one char wider than `range`).
+        if self.modal_is_insert() == Some(false) {
+            return false;
+        }
+        if let Some((row, cols)) = range {
+            let ta = &mut self.buf.ta;
+            let placed = if cols.start == cols.end {
+                // Validate before touching anything: a failed jump must leave
+                // the selection (and its painted mirror) as it was.
+                ta.text()
+                    .position(row, crate::ropetext::Column::new(cols.start))
+                    .is_some()
+                    && {
+                        ta.cancel_selection();
+                        ta.jump_to(row, cols.start)
+                    }
+            } else {
+                ta.set_selection((row, cols.start), (row, cols.end))
+            };
+            if !placed {
+                return false;
+            }
+        }
+        self.session.display.follow_cursor();
+        if text.is_empty() {
+            self.take_selection_for_external_paste();
+        } else {
+            // Committed text is typing. In a vim Insert session the session is
+            // one **undo group** (CONTEXT.md), so the text joins it as a typed
+            // char would (`i ab<IME é>cd Esc u` takes all of it back).
+            self.sync_insert_session();
+            if self.last_insert_session
+                && let Some(first) = text.chars().next()
+                && self
+                    .buf
+                    .typing
+                    .continues_session(typing_run::Stroke::Insert(first), std::time::Instant::now())
+            {
+                self.buf.ta.continue_group();
+            }
+            self.insert_at_cursor(text);
+        }
+        true
     }
 
     /// Inserts `text` at the cursor, replacing any active selection.
@@ -677,13 +858,129 @@ impl Editor {
         }
     }
 
+    // ---- Find bar ----------------------------------------------------------
+
+    /// The open **find bar**, for a front end to paint: its fields, focus,
+    /// status and match count. `None` when closed.
+    pub fn find_bar(&self) -> Option<&FindBar> {
+        self.find.as_ref()
+    }
+
+    /// Where the open find bar stands among its matches (`3/12`), for a
+    /// status line. `None` when the bar is closed or nothing matches.
+    pub fn find_match_position(&self) -> Option<MatchPosition> {
+        self.find.as_ref()?.match_position(&self.buf.ta)
+    }
+
+    /// Whether a find bar is open (and so holds the **editor claim**).
+    pub fn find_open(&self) -> bool {
+        self.find.is_some()
+    }
+
+    /// Open an empty find bar or, when one is already open, step to the next
+    /// match (vim `/` pressed again, Ctrl+F on an open bar). Returns whether a
+    /// bar was newly opened, so the host can close anything that would compete
+    /// for its keys (an autocomplete popup).
+    pub fn open_find(&mut self) -> bool {
+        // Acts at the cursor: a wheel-scrolled view re-attaches to it.
+        self.session.display.follow_cursor();
+        if let Some(bar) = self.find.as_mut() {
+            bar.advance(&mut self.buf.ta, false);
+            self.apply_edit_outcome();
+            return false;
+        }
+        self.find = Some(FindBar::new());
+        true
+    }
+
+    /// Open the find bar with the **replace field** revealed, or reveal it on
+    /// an already-open bar. Returns whether a bar was newly opened.
+    pub fn open_replace(&mut self) -> bool {
+        let opened = self.find.is_none();
+        self.find.get_or_insert_with(FindBar::new).reveal_replace();
+        opened
+    }
+
+    /// Hand a key to the open find bar, which consumes every key while open.
+    /// Returns `false` (and does nothing) when no bar is open.
+    ///
+    /// Settles whatever the bar did to the buffer (revision, parse damage),
+    /// drops the bar when it asks to close — clearing the selection with it —
+    /// and ends the typing run, so an edit after the bar is its own **undo
+    /// group**.
+    pub fn handle_find_key(&mut self, key: KeyInput) -> bool {
+        let Some(bar) = self.find.as_mut() else {
+            return false;
+        };
+        // The bar acts at the cursor: a wheel-scrolled view re-attaches to it.
+        self.session.display.follow_cursor();
+        let outcome = bar.handle_key(key, &mut self.buf.ta);
+        if outcome.close {
+            self.close_find();
+        }
+        self.apply_edit_outcome();
+        self.interrupt_typing();
+        true
+    }
+
+    /// A key the front end could not translate into a [`KeyInput`] while the
+    /// bar is open: the bar still owns it, so it is consumed and does nothing
+    /// but end the typing run, as any bar key does. Returns `false` when no bar
+    /// is open.
+    pub fn ignore_find_key(&mut self) -> bool {
+        if self.find.is_none() {
+            return false;
+        }
+        self.session.display.follow_cursor();
+        self.apply_edit_outcome();
+        self.interrupt_typing();
+        true
+    }
+
+    /// Paste `text` into the open bar's focused field (first line only).
+    /// Returns `false` when no bar is open — the paste is then the buffer's.
+    pub fn paste_into_find(&mut self, text: &str) -> bool {
+        let Some(bar) = self.find.as_mut() else {
+            return false;
+        };
+        bar.paste(text, &mut self.buf.ta);
+        self.apply_edit_outcome();
+        true
+    }
+
+    /// Close the find bar. The pattern stays on the buffer, so vim's `n`/`N`
+    /// ([`Self::search_repeat`]) still work.
+    ///
+    /// Clears the selection anchor as well as the painted range: the bar's
+    /// cursor jumps move the cursor without touching the anchor, so a
+    /// selection that existed before the search would be left live but
+    /// unpainted — and the next keystroke would silently delete it.
+    pub fn close_find(&mut self) {
+        if self.find.take().is_some() {
+            self.buf.ta.cancel_selection();
+            self.selection = None;
+        }
+    }
+
+    /// Repeat the last search (vim `n`/`N`) with the buffer's persisted
+    /// pattern, even when the bar is closed, and paint the match it landed on
+    /// as the selection.
+    pub fn search_repeat(&mut self, backward: bool) {
+        let selection = if self.buf.ta.search_repeat(backward) {
+            self.buf.ta.match_at_cursor()
+        } else {
+            None
+        };
+        self.selection = selection;
+    }
+
     /// Drain what the editor has asked its host to do since the last call.
     pub fn take_requests(&mut self) -> Vec<EditorRequest> {
         std::mem::take(&mut self.requests)
     }
 
     /// Drain the requests the host acts on *in the same input call* that
-    /// produced them (find bar, viewport): everything except
+    /// produced them (find bar, palette, viewport): everything except
     /// [`EditorRequest::ContextMenu`], which stays queued for the host's
     /// [`Self::take_requests`] poll after its own panel mouse handling.
     pub fn take_host_requests(&mut self) -> Vec<EditorRequest> {
@@ -709,6 +1006,11 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
+        // Every key acts at the cursor, so a wheel-scrolled view comes back to
+        // it — even when the key leaves the cursor where it was (find-next onto
+        // the same match, a motion at the buffer edge). Idempotent, so a host
+        // that also calls it earlier does not double-scroll.
+        self.session.display.follow_cursor();
         // Vim interpreter: Normal/Visual consume the key here; Insert
         // mode returns PassThrough and falls into the direct path below
         // so typing, autocomplete, auto-surround and smart-Enter all
@@ -748,11 +1050,7 @@ impl Editor {
                     let mut path = KeyPath::VimOther;
                     match action {
                         VimHostAction::OpenPalette => {
-                            // Reuse the existing palette gateway.
-                            tx.send(AppMessage::ExecuteLeaderAction(
-                                crate::keys::leader::LeaderAction::Palette,
-                            ))
-                            .ok();
+                            self.requests.push(EditorRequest::OpenPalette);
                         }
                         VimHostAction::OpenSearch { forward: _ } => {
                             // `/` and `?` open the host's find bar.
@@ -869,15 +1167,11 @@ impl Editor {
         {
             match key.key {
                 Key::Char('z') if !key.mods.shift => {
-                    if self.undo_grouped() {
-                        self.apply_edit_outcome();
-                    }
+                    self.undo();
                     return (Handled::Consumed, false);
                 }
                 Key::Char('y') | Key::Char('Z') => {
-                    if self.redo_grouped() {
-                        self.apply_edit_outcome();
-                    }
+                    self.redo();
                     return (Handled::Consumed, false);
                 }
                 _ => {}
@@ -1009,6 +1303,7 @@ impl Editor {
     /// action, so it ends the open typing run, settles vim's insert-session
     /// bracket, and is consumed.
     pub fn ignore_unmapped_key(&mut self) -> (Handled, KeyPath) {
+        self.session.display.follow_cursor();
         self.buf.typing.end();
         self.sync_insert_session();
         (
@@ -1109,6 +1404,14 @@ impl Editor {
                     .click_at_screen(pointer.row as usize, pointer.col as usize);
                 ta.jump_to(lrow as usize, lcol as usize);
             }
+            // A press that never became a drag leaves an empty selection
+            // anchored at the caret; left armed, the next cursor motion
+            // (vim's `k`) would grow it. Only a real drag keeps its range.
+            PointerKind::Up(_) => {
+                if ta.selection_range().is_none_or(|(a, b)| a == b) {
+                    ta.cancel_selection();
+                }
+            }
             // The wheel moves kimün's own viewport, never the cursor — the
             // find bar relies on that to let the user read elsewhere mid-search.
             PointerKind::ScrollUp | PointerKind::ScrollDown => {
@@ -1140,6 +1443,406 @@ mod tests {
     use crate::logic::editor::rope_buffer::CursorMove;
     use crate::logic::editor::snapshot::EditorMode;
 
+    fn long_note_editor(vim: bool) -> Editor {
+        let mut ed = Editor::new(vim);
+        ed.buffer_mut().insert_str(
+            (0..10)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        ed.buffer_mut().move_cursor(CursorMove::Top);
+        ed.buffer_mut().move_cursor(CursorMove::Head);
+        ed
+    }
+
+    // ---- Find bar, driven through the logic `KeyInput` ----
+
+    fn find_keys(ed: &mut Editor, s: &str) {
+        for c in s.chars() {
+            assert!(ed.handle_find_key(KeyInput::plain(Key::Char(c))));
+        }
+    }
+
+    #[test]
+    fn find_keys_are_refused_without_a_bar() {
+        let mut ed = Editor::new(false);
+        ed.set_text("abc".into());
+        assert!(!ed.handle_find_key(KeyInput::plain(Key::Char('a'))));
+        assert!(!ed.paste_into_find("a"));
+        assert!(!ed.ignore_find_key());
+        assert_eq!(ed.get_text(), "abc");
+    }
+
+    #[test]
+    fn open_find_types_into_the_bar_and_paints_the_current_match() {
+        let mut ed = Editor::new(false);
+        ed.set_text("foo bar\nbar".into());
+        assert!(ed.open_find(), "first open is a fresh bar");
+        find_keys(&mut ed, "bar");
+        assert_eq!(ed.get_text(), "foo bar\nbar", "typing went into the bar");
+        assert_eq!(ed.find_bar().unwrap().query(), "bar");
+        assert_eq!(ed.painted_selection(), Some(((0, 4), (0, 7))));
+        let (preview, _, matches) = ed.find_frame_parts();
+        assert!(preview.is_none());
+        assert_eq!(matches.len(), 2);
+        // Opening again advances rather than resetting.
+        assert!(!ed.open_find());
+        assert_eq!(ed.painted_selection(), Some(((1, 0), (1, 3))));
+    }
+
+    #[test]
+    fn esc_closes_the_bar_clears_the_selection_and_keeps_n_working() {
+        let mut ed = Editor::new(false);
+        ed.set_text("bar x bar".into());
+        ed.open_find();
+        find_keys(&mut ed, "bar");
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Esc)));
+        assert!(!ed.find_open());
+        assert_eq!(ed.selection(), None);
+        assert_eq!(ed.buffer().selection_range(), None);
+        // The pattern stays on the buffer for vim `n`.
+        ed.search_repeat(false);
+        assert_eq!(ed.selection(), Some(((0, 6), (0, 9))));
+    }
+
+    #[test]
+    fn replace_through_the_editor_bumps_the_revision_and_undoes_as_one() {
+        let mut ed = Editor::new(false);
+        ed.set_text("a a a".into());
+        assert!(ed.open_replace(), "Ctrl+H on a closed bar opens one");
+        find_keys(&mut ed, "a");
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Tab)));
+        find_keys(&mut ed, "b");
+        let rev = ed.revision();
+        assert!(ed.handle_find_key(KeyInput::ctrl('a')));
+        assert_eq!(ed.get_text(), "b b b");
+        assert!(ed.revision() > rev, "the external edit was settled");
+        assert!(ed.is_dirty());
+        assert!(ed.handle_find_key(KeyInput::ctrl('z')));
+        assert_eq!(ed.get_text(), "a a a");
+        assert!(ed.find_open(), "undo must not close the bar");
+    }
+
+    #[test]
+    fn closing_a_bar_after_a_replace_preview_repaints_the_real_text() {
+        // The preview swaps in other rows for a frame; closing the bar must
+        // not leave the layout describing them.
+        let mut ed = Editor::new(false);
+        ed.set_text("**aa** ab\nsecond a line\nthird".into());
+        ed.open_replace();
+        find_keys(&mut ed, "a");
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Tab)));
+        find_keys(&mut ed, "zzzzzzzzzzzzzzzzzzzz");
+        ed.prepare_frame(20, 10);
+        let _ = ed.session.display.frame(20, true);
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Esc)));
+        assert!(!ed.find_open());
+        ed.prepare_frame(20, 10);
+        let _ = ed.session.display.frame(20, true);
+    }
+
+    /// Every row the last frame drew, as text.
+    fn drawn_rows(ed: &Editor, width: u16) -> Vec<String> {
+        ed.session
+            .display
+            .frame(width, true)
+            .rows
+            .iter()
+            .map(|r| r.runs.iter().map(|run| run.text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_preview_with_matches_far_from_the_cursor_swaps_in_and_out_cleanly() {
+        // Regression (GUI manual gate): closing a bar whose preview had grown
+        // a row far from the cursor (outside the cursor hint's ±4 window)
+        // panicked in `frame` — the display took the swap for an edit at the
+        // cursor row and left that row's layout describing the preview.
+        let mut text = vec!["a here".to_string()];
+        // Blank rows between paragraphs: reset boundaries, so the parse
+        // splice stays narrow instead of widening over the whole note.
+        text.extend((0..8).map(|i| {
+            if i % 2 == 0 {
+                String::new()
+            } else {
+                format!("filler {i}")
+            }
+        }));
+        text.push("and a there".into());
+        let mut ed = Editor::new(false);
+        ed.set_text(text.join("\n"));
+        ed.prepare_frame(40, 20);
+        ed.open_replace();
+        find_keys(&mut ed, "a ");
+        assert_eq!(ed.cursor(), (0, 0));
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Tab)));
+        for c in "LONGER ".chars() {
+            find_keys(&mut ed, &c.to_string());
+            ed.prepare_frame(40, 20);
+            let rows = drawn_rows(&ed, 40);
+            // The far row shows the whole preview, not a stale cut of it.
+            let typed = &"LONGER "[..="LONGER ".find(c).unwrap()];
+            let want = format!("and {typed}there");
+            assert_eq!(rows[9], want, "while typing {c:?}");
+        }
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Esc)));
+        ed.prepare_frame(40, 20);
+        let rows = drawn_rows(&ed, 40);
+        assert_eq!(rows[0], "a here");
+        assert_eq!(rows[9], "and a there");
+    }
+
+    /// `(col, cells)` stretches of row `row` of the last frame carrying `kind`.
+    fn marked_cells(
+        ed: &Editor,
+        row: usize,
+        kind: crate::logic::editor::overlay::OverlayKind,
+    ) -> Vec<(usize, usize)> {
+        let frame = ed.session.display.frame(40, true);
+        let mut col = 0;
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for run in &frame.rows[row].runs {
+            let w = unicode_width::UnicodeWidthStr::width(run.text.as_str());
+            if run.overlays.contains(kind) && w > 0 {
+                match out.last_mut() {
+                    Some((c, n)) if *c + *n == col => *n += w,
+                    _ => out.push((col, w)),
+                }
+            }
+            col += w;
+        }
+        out
+    }
+
+    #[test]
+    fn an_empty_replacement_previews_the_removal_point_not_the_old_match_columns() {
+        // Regression (GUI manual gate): `ee` -> "" on "Three" showed "Thr",
+        // but painted the old match's columns (the bar's current match, in
+        // REAL text columns) as the selection over the preview row, so the
+        // cells after "Thr" lit up. On a preview row only the preview's own
+        // spans (preview columns) may paint.
+        use crate::logic::editor::overlay::OverlayKind;
+        let mut ed = Editor::new(false);
+        ed.set_text("One Three apples\nsee eel ee".into());
+        ed.open_replace();
+        find_keys(&mut ed, "ee");
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Tab)));
+        assert_eq!(
+            ed.find_bar().unwrap().current_match(),
+            Some(((0, 7), (0, 9)))
+        );
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40), vec!["One Thr apples", "s l "]);
+        // The removal point: one cell, right where "ee" was (after "Thr").
+        assert_eq!(
+            marked_cells(&ed, 0, OverlayKind::PreviewCurrent),
+            vec![(7, 1)]
+        );
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::CurrentMatch), vec![]);
+        // Several matches on one row: the spans sit at the preview's columns.
+        let (_, spans, _) = ed.find_frame_parts();
+        let at: Vec<_> = spans.iter().map(|o| (o.row, o.start, o.end)).collect();
+        assert_eq!(at, vec![(0, 7, 7), (1, 1, 1), (1, 2, 2), (1, 4, 4)]);
+        // A non-empty replacement: the current span covers exactly it.
+        find_keys(&mut ed, "X");
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40)[0], "One ThrX apples");
+        assert_eq!(
+            marked_cells(&ed, 0, OverlayKind::PreviewCurrent),
+            vec![(7, 1)]
+        );
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+        // Closing the bar: no preview, no stale highlight.
+        assert!(ed.handle_find_key(KeyInput::plain(Key::Esc)));
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_rows(&ed, 40)[0], "One Three apples");
+        assert_eq!(marked_cells(&ed, 0, OverlayKind::Selection), vec![]);
+    }
+
+    #[test]
+    fn paste_lands_in_the_bar_and_a_reload_drops_it() {
+        let mut ed = Editor::new(false);
+        ed.set_text("one two".into());
+        ed.open_find();
+        assert!(ed.paste_into_find("two\nthree"));
+        assert_eq!(ed.find_bar().unwrap().query(), "two");
+        assert_eq!(ed.get_text(), "one two");
+        ed.set_text("other".into());
+        assert!(!ed.find_open(), "the bar belonged to the old text");
+    }
+
+    #[test]
+    fn commit_text_replaces_a_row_range_inserts_at_an_empty_one_and_deletes() {
+        let mut ed = Editor::new(false);
+        ed.set_text("first\nxe".into());
+        // Replace "e" (row 1, chars 1..2).
+        assert!(ed.commit_text(Some((1, 1..2)), "é"));
+        assert_eq!(ed.get_text(), "first\nxé");
+        // An empty range inserts at its start, not at the cursor.
+        assert!(ed.commit_text(Some((0, 0..0)), ">"));
+        assert_eq!(ed.get_text(), ">first\nxé");
+        assert_eq!(ed.cursor(), (0, 1));
+        // Empty text deletes the range.
+        assert!(ed.commit_text(Some((0, 0..1)), ""));
+        assert_eq!(ed.get_text(), "first\nxé");
+        // No range: at the cursor.
+        assert!(ed.commit_text(None, "!"));
+        assert_eq!(ed.get_text(), "!first\nxé");
+        // An unaddressable range changes nothing.
+        assert!(!ed.commit_text(Some((9, 0..1)), "z"));
+        assert_eq!(ed.get_text(), "!first\nxé");
+    }
+
+    #[test]
+    fn a_failed_empty_range_commit_leaves_the_selection_alone() {
+        let mut ed = Editor::new(false);
+        ed.set_text("abc\nde".into());
+        assert!(ed.buffer_mut().set_selection((0, 0), (0, 2)));
+        ed.sync_highlight();
+        let rev = ed.revision();
+        assert!(!ed.commit_text(Some((9, 0..0)), "z"));
+        assert_eq!(ed.get_text(), "abc\nde");
+        assert_eq!(ed.revision(), rev);
+        assert_eq!(ed.buffer().selection_range(), Some(((0, 0), (0, 2))));
+        assert_eq!(ed.selection(), Some(((0, 0), (0, 2))));
+    }
+
+    #[test]
+    fn commit_text_is_refused_outside_vim_insert() {
+        let tx = tokio::sync::mpsc::unbounded_channel().0;
+        let key = |c| KeyInput::plain(Key::Char(c));
+        let mut ed = Editor::new(true);
+        ed.set_text("abcd".into());
+        // Normal: nothing is typed.
+        let rev = ed.revision();
+        assert!(!ed.commit_text(None, "x"));
+        assert!(!ed.commit_text(Some((0, 1..2)), "x"));
+        assert_eq!((ed.get_text().as_str(), ed.revision()), ("abcd", rev));
+        // Visual over "ab": neither the text nor the selection moves (before
+        // the guard, a ranged commit here cut one char more than its range).
+        ed.handle_key(key('v'), &tx);
+        ed.handle_key(key('l'), &tx);
+        let shown = ed.selection();
+        assert!(!ed.commit_text(Some((0, 0..1)), "Z"));
+        assert!(!ed.commit_text(None, ""));
+        assert_eq!(ed.get_text(), "abcd");
+        assert_eq!(ed.selection(), shown);
+        assert_eq!(ed.mode_label().as_deref(), Some("VISUAL"));
+        // Insert: text input types as usual.
+        ed.handle_key(KeyInput::plain(Key::Esc), &tx);
+        ed.handle_key(key('0'), &tx);
+        ed.handle_key(key('i'), &tx);
+        assert!(ed.commit_text(None, "é"));
+        assert_eq!(ed.get_text(), "éabcd");
+        assert!(ed.commit_text(Some((0, 1..2)), "X"));
+        assert_eq!(ed.get_text(), "éXbcd");
+    }
+
+    #[test]
+    fn committed_text_joins_the_vim_insert_session_undo_group() {
+        let tx = tokio::sync::mpsc::unbounded_channel().0;
+        let key = |c| KeyInput::plain(Key::Char(c));
+        let mut ed = Editor::new(true);
+        ed.set_text("xy".into());
+        ed.handle_key(key('i'), &tx);
+        ed.handle_key(key('a'), &tx);
+        ed.handle_key(key('b'), &tx);
+        assert!(ed.commit_text(None, "é"));
+        ed.handle_key(key('c'), &tx);
+        ed.handle_key(key('d'), &tx);
+        ed.handle_key(KeyInput::plain(Key::Esc), &tx);
+        assert_eq!(ed.get_text(), "abécdxy");
+        // One `u` takes back the whole Insert session, IME text included.
+        ed.handle_key(key('u'), &tx);
+        assert_eq!(ed.get_text(), "xy");
+        // Committed text opening the session, then typing: still one group,
+        // and the session before it stays its own.
+        ed.handle_key(key('i'), &tx);
+        assert!(ed.commit_text(None, "日"));
+        ed.handle_key(key('z'), &tx);
+        ed.handle_key(KeyInput::plain(Key::Esc), &tx);
+        assert_eq!(ed.get_text(), "日zxy");
+        ed.handle_key(key('u'), &tx);
+        assert_eq!(ed.get_text(), "xy");
+    }
+
+    #[test]
+    fn a_no_op_undo_leaves_the_revision_unchanged() {
+        let mut ed = Editor::new(false);
+        ed.set_text("abc".into());
+        let rev = ed.revision();
+        assert!(!ed.undo(), "nothing to undo after a load");
+        assert_eq!(ed.revision(), rev);
+        assert!(!ed.redo());
+        assert_eq!(ed.revision(), rev);
+    }
+
+    #[test]
+    fn commit_text_brings_a_scrolled_view_back_to_the_cursor() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        assert!(ed.session_mut().display.scroll_by(6));
+        ed.prepare_frame(20, 3);
+        ed.commit_text(None, "x");
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn editor_prepare_frame_builds_the_frame_input_itself() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        // The display took the editor's own cursor row: screen row 0 is row 0.
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn handle_key_alone_reattaches_a_wheel_scrolled_view_to_the_cursor() {
+        // A host with no wrapper (the GUI) gets cursor-following from the key.
+        let tx = tx();
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        assert!(ed.session_mut().display.scroll_by(6));
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 6, "detached");
+        // Left at the buffer start leaves the cursor exactly where it was.
+        ed.handle_key(KeyInput::plain(Key::Left), &tx);
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn ignore_unmapped_key_reattaches_the_view_too() {
+        let mut ed = long_note_editor(false);
+        ed.prepare_frame(20, 3);
+        ed.session_mut().display.scroll_by(6);
+        ed.prepare_frame(20, 3);
+        ed.ignore_unmapped_key();
+        ed.prepare_frame(20, 3);
+        assert_eq!(ed.session().display.click_at_screen(0, 0).0, 0);
+    }
+
+    #[test]
+    fn mode_accessors_follow_the_input_interpreter() {
+        let plain = Editor::new(false);
+        assert!(!plain.is_vim());
+        assert_eq!(plain.mode_label(), None);
+        assert_eq!(plain.modal_is_insert(), None);
+        assert_eq!(plain.pending_input_hint(), None);
+
+        let mut vim = Editor::new(true);
+        assert!(vim.is_vim());
+        assert_eq!(vim.mode_label().as_deref(), Some("NORMAL"));
+        assert_eq!(vim.modal_is_insert(), Some(false));
+        vim.handle_key(KeyInput::plain(Key::Char('2')), &tx());
+        assert_eq!(vim.pending_input_hint().as_deref(), Some("2"));
+        vim.handle_key(KeyInput::plain(Key::Esc), &tx());
+        vim.handle_key(KeyInput::plain(Key::Char('i')), &tx());
+        assert_eq!(vim.modal_is_insert(), Some(true));
+    }
+
     #[test]
     fn editor_exposes_buffer_cursor_and_revision_without_a_component() {
         let mut ed = Editor::new(false);
@@ -1168,8 +1871,42 @@ mod tests {
         ed.paste_text("bye");
         assert_eq!(ed.get_text(), "bye world");
         assert_ne!(ed.session().revs.current(), rev, "the paste is a revision");
-        assert!(ed.undo_grouped());
+        assert!(ed.undo());
         assert_eq!(ed.get_text(), "hello world", "one undo restores the text");
+    }
+
+    #[test]
+    fn undo_and_redo_bump_the_revision() {
+        let mut ed = Editor::new(false);
+        ed.buffer_mut().insert_str("hello");
+        ed.after_edit();
+        let r0 = ed.session().revs.current();
+        assert!(ed.undo());
+        let r1 = ed.session().revs.current();
+        assert_ne!(r1, r0, "undo is a revision");
+        assert!(ed.redo());
+        assert_ne!(ed.session().revs.current(), r1, "redo is a revision");
+        assert_eq!(ed.get_text(), "hello");
+        assert!(!ed.redo(), "nothing left to redo");
+    }
+
+    #[test]
+    fn settle_pointer_left_down_leaves_vim_visual() {
+        let mut ed = Editor::new(true);
+        ed.buffer_mut().insert_str("hello world");
+        ed.buf.sync_mouse_selection(true);
+        assert_eq!(ed.mode_label().as_deref(), Some("VISUAL"));
+        ed.settle_pointer(true);
+        assert_eq!(ed.mode_label().as_deref(), Some("NORMAL"));
+    }
+
+    #[test]
+    fn settle_pointer_without_left_down_keeps_visual() {
+        let mut ed = Editor::new(true);
+        ed.buffer_mut().insert_str("hello world");
+        ed.buf.sync_mouse_selection(true);
+        ed.settle_pointer(false);
+        assert_eq!(ed.mode_label().as_deref(), Some("VISUAL"));
     }
 
     #[test]
@@ -1260,6 +1997,20 @@ mod tests {
     }
 
     #[test]
+    fn editor_vim_colon_queues_open_palette_and_sends_no_message() {
+        let mut ed = Editor::new(true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (handled, path) = ed.handle_key(typed(':'), &tx);
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(path, KeyPath::VimOther);
+        assert_eq!(ed.take_host_requests(), vec![EditorRequest::OpenPalette]);
+        assert!(
+            rx.try_recv().is_err(),
+            "the editor no longer messages the app"
+        );
+    }
+
+    #[test]
     fn editor_wheel_scroll_queues_viewport_scrolled() {
         let mut ed = Editor::new(false);
         let text: String = (0..100)
@@ -1317,6 +2068,38 @@ mod tests {
             "a press selects nothing"
         );
         assert!(ed.take_requests().is_empty());
+    }
+
+    #[test]
+    fn a_click_then_vim_motion_selects_nothing() {
+        for vim in [true, false] {
+            let mut ed = Editor::new(vim);
+            ed.set_text("one\ntwo\nthree\nfour".to_string());
+            lay_out(&mut ed, 40, 10);
+            let tx = tx();
+            ed.handle_pointer(&pointer(PointerKind::Down(Button::Left), 1, 2), &tx);
+            ed.settle_pointer(true);
+            ed.handle_pointer(&pointer(PointerKind::Up(Button::Left), 1, 2), &tx);
+            ed.settle_pointer(false);
+            if vim {
+                assert_eq!(ed.mode_label().as_deref(), Some("NORMAL"));
+            }
+            ed.handle_key(
+                if vim {
+                    typed('k')
+                } else {
+                    KeyInput::plain(Key::Up)
+                },
+                &tx,
+            );
+            assert_eq!(ed.cursor(), (1, 1));
+            assert!(
+                ed.selection().is_none_or(|(a, b)| a == b),
+                "motion after a click must not select: {:?}",
+                ed.selection()
+            );
+            assert!(ed.painted_selection().is_none_or(|(a, b)| a == b));
+        }
     }
 
     #[test]
@@ -1566,9 +2349,33 @@ mod tests {
         place_cursor_at_col(&mut editor, 7);
         let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
+            matches!(result, Some(FollowTarget::Link { .. })),
             "expected Link variant, got {result:?}"
         );
+    }
+
+    /// The follow target carries the link's kind: it decides whether the
+    /// target names a note (wikilink) or is a path (markdown).
+    #[test]
+    fn follow_target_at_cursor_carries_the_link_kind() {
+        use kimun_core::note::scan::LinkSpanKind;
+        let mut editor = make_editor();
+        editor.set_text("[[a/dup]] [x](dup.md) ![i](p.png)".to_string());
+        for (col, target, kind) in [
+            (3, "a/dup", LinkSpanKind::WikiLink),
+            (12, "dup.md", LinkSpanKind::Markdown),
+            (24, "p.png", LinkSpanKind::Image),
+        ] {
+            place_cursor_at_col(&mut editor, col);
+            assert_eq!(
+                editor.follow_target_at_cursor(),
+                Some(FollowTarget::Link {
+                    target: target.to_string(),
+                    kind
+                }),
+                "col {col}"
+            );
+        }
     }
 
     // ── F5: follow_target_at_cursor prioritises Link over Label ────────────────────────
@@ -1587,7 +2394,7 @@ mod tests {
         place_cursor_at_col(&mut editor, cursor);
         let result = editor.follow_target_at_cursor();
         assert!(
-            matches!(result, Some(FollowTarget::Link(_))),
+            matches!(result, Some(FollowTarget::Link { .. })),
             "expected Link variant for markdown link fragment, got {result:?}"
         );
     }

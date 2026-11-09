@@ -16,7 +16,7 @@ use crate::note::properties::{
     date_in_text, format_datetime, format_number, search_form, PropertySet,
 };
 use crate::note::{
-    ContentChunk, LinkType, NoteContentData, NoteDetails, PropertyKind, PropertyValue,
+    ContentChunk, LinkType, NoteContentData, NoteDetails, NoteTarget, PropertyKind, PropertyValue,
 };
 
 /// A note change reported by the `NoteIndex` the moment it is recorded, for
@@ -148,7 +148,12 @@ use super::{
 //       wikilinks in code are no longer links, reference links and autolinks
 //       are recorded, a `#`-prefixed setext heading is kept, and a title
 //       renders like its heading or line. Bump forces a clean reindex.
-const VERSION: &str = "0.18";
+// 0.19: links carry their form (`links.form`: `name` for a wikilink by name,
+//       `path` for an exact path); markdown link destinations are canonical
+//       (vault-absolute) paths, a bare `[x](dup.md)` resolved against the
+//       linking note's folder; wikilinks to non-note files (`![[pic.png]]`,
+//       `[[doc.pdf]]`) are no longer note links. Bump forces a clean reindex.
+const VERSION: &str = "0.19";
 
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
@@ -634,28 +639,30 @@ impl NoteIndex {
         rows.iter().map(row_to_note_entry).collect()
     }
 
-    /// Backlinks of a *specific* note: notes whose body links to exactly this note,
-    /// matched by its full path OR its bare filename (wikilinks stored without a
-    /// path). This is intentionally narrower than the `>`/`lk:` search filter
-    /// (see [`link_subquery`]), which matches a name in *any* folder; keep the two
-    /// in step on the stored-form invariant they share (lowercased, `.md`-suffixed
-    /// destinations, bare-relative or relative/absolute path).
+    /// Backlinks of a *specific* note: notes with a link that points at it
+    /// ([`link_points_at_sql`], the SQL twin of [`NoteTarget::matches`]) — a
+    /// path link to exactly this path, or a name link whose suffix this
+    /// path ends with (`[[dup]]`, `[[work/dup]]` for `/a/work/dup.md`). An
+    /// ambiguous name link is a backlink of every note it can point at.
+    /// Index-served: the name pre-filter reads `links_by_dest_name`. This is
+    /// narrower than the `<`/`lk:` search filter (see [`link_subquery`]),
+    /// which matches written targets, not one note.
     pub(crate) async fn get_backlinks(
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
         let path = path.canonical();
-        // Match notes that link to the full path OR by filename only (wikilinks stored without path)
         let sql = format!(
             "SELECT DISTINCT {cols} \
              FROM notes n \
              JOIN links l ON n.path = l.source \
-             WHERE l.destination = ? OR l.destination = ?",
+             WHERE l.dest_name = ?1 AND {points_at}",
             cols = qualify_columns("n", NOTE_COLUMNS),
+            points_at = link_points_at_sql("l", "?2"),
         );
         let rows = sqlx::query(&sql)
-            .bind(path.to_string())
             .bind(path.get_name())
+            .bind(path.to_string())
             .fetch_all(&self.pool)
             .await?;
 
@@ -739,12 +746,12 @@ impl NoteIndex {
         Ok(rows.into_iter().map(|(n,)| n).collect())
     }
 
-    /// The link rows of one note, `(destination, dest_name)`, sorted.
+    /// The link rows of one note, `(destination, dest_name, form)`, sorted.
     #[cfg(test)]
-    pub(crate) async fn links_of(&self, path: &VaultPath) -> Vec<(String, String)> {
+    pub(crate) async fn links_of(&self, path: &VaultPath) -> Vec<(String, String, String)> {
         sqlx::query_as(
-            "SELECT destination, dest_name FROM links WHERE source = ? \
-             ORDER BY destination, dest_name",
+            "SELECT destination, dest_name, form FROM links WHERE source = ? \
+             ORDER BY destination, dest_name, form",
         )
         .bind(path.canonical().to_string())
         .fetch_all(&self.pool)
@@ -981,7 +988,8 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
         "CREATE TABLE links (
             source TEXT,
             destination TEXT,
-            dest_name TEXT
+            dest_name TEXT,
+            form TEXT NOT NULL
         )",
     )
     .execute(&mut *tx)
@@ -1390,42 +1398,77 @@ fn add_labels_query(
     );
 }
 
-/// Builds the `SELECT source FROM links WHERE …` subquery for one link-filter
-/// target (`>`/`lk:`). Matching is by note name, extension optional,
-/// case-insensitive, with `*` wildcards.
-///
-/// A bare name matches a link in *any* folder via the indexed `dest_name`
-/// column (the folder-independent basename) — no leading-`%` scan. A slash in
-/// the target anchors it to a full path via indexed equality on `destination`
-/// (covering both the relative and absolute stored forms). Wildcards fall back
-/// to `LIKE`, but the pattern is prefix-anchored so the index can still help
-/// (e.g. `proj*`).
-///
-/// This is the name-anywhere counterpart to [`get_backlinks`], which matches a
-/// *specific* note by its exact full path or bare name. Both rely on the same
-/// stored-form invariant: link destinations are lowercased, carry the note
-/// extension, and are either a bare relative name or a relative/absolute path.
-/// Returns `None` for an empty target.
+/// `links.form` of a link by name ([`NoteTarget::Name`]).
+const LINK_FORM_NAME: &str = "name";
+/// `links.form` of a link by exact path ([`NoteTarget::Path`]).
+const LINK_FORM_PATH: &str = "path";
+
+/// The `links.form` value a link target is stored with.
+fn link_form(target: &NoteTarget) -> &'static str {
+    match target {
+        NoteTarget::Name(_) => LINK_FORM_NAME,
+        NoteTarget::Path(_) => LINK_FORM_PATH,
+    }
+}
+
+/// The SQL twin of [`NoteTarget::matches`]: whether the link row `l` (a
+/// `links` alias) points at the note whose canonical path is the SQL
+/// expression `p`. A path row when its destination is `p`; a name row when
+/// `p`'s components end with the destination's — compared on a separator
+/// boundary (`SEP || destination` is `p`'s tail), never as a bare string
+/// suffix, so `work/dup.md` matches `/a/work/dup.md` but not
+/// `/notwork/dup.md`. Callers pre-filter `l.dest_name` on `p`'s name so the
+/// index serves the lookup. Kept in step with `NoteTarget::matches` by
+/// `index::tests::link_predicate_agrees_with_note_target`.
+fn link_points_at_sql(l: &str, p: &str) -> String {
+    let sep = PATH_SEPARATOR;
+    format!(
+        "(({l}.form = '{LINK_FORM_PATH}' AND {l}.destination = {p}) \
+          OR ({l}.form = '{LINK_FORM_NAME}' \
+              AND ({p} = ('{sep}' || {l}.destination) \
+                   OR substr({p}, -length({l}.destination) - 1) = ('{sep}' || {l}.destination))))"
+    )
+}
+
 /// Normalized pieces of a link-filter target, shared by [`link_subquery`]
-/// (backlinks) and [`forward_link_subquery`] (forward links). Only the SQL
-/// column names differ between the two; the normalization is identical.
+/// (backlinks) and [`forward_link_subquery`] (forward links). The target
+/// reads as a wikilink typed at the vault root: a bare name, a relative
+/// path (a suffix), or a path with a leading separator (exact).
 struct LinkTarget {
-    /// Lowercased, extension-applied note name/path used as the bound param.
+    /// Lowercased, extension-applied note name/path without a leading
+    /// separator, used as the bound param.
     name: String,
-    /// `true` when the target contains a path separator (anchor to full path).
+    /// `true` when the target contains a path separator after its leading
+    /// one (a suffix, or an exact path when [`Self::is_absolute`]).
     is_path_qualified: bool,
+    /// `true` when the target starts with a separator (exact vault path).
+    is_absolute: bool,
     /// `true` when the target contains a `*` wildcard (use `LIKE`).
     has_wildcard: bool,
 }
 
-/// Normalize a link-filter target: trim/lowercase, strip a leading separator,
-/// detect path-qualified / wildcard, and apply the note extension. Returns
-/// `None` for an empty target.
-///
-/// A leading separator only signals "absolute"; both stored forms are matched
-/// anyway, so it is stripped before normalizing.
+impl LinkTarget {
+    /// The note name the target ends with (its last component), for the
+    /// indexed `dest_name` / `noteName` pre-filter.
+    fn last_name(&self) -> &str {
+        self.name
+            .rsplit(PATH_SEPARATOR)
+            .next()
+            .unwrap_or(&self.name)
+    }
+
+    /// The exact vault path of an absolute target.
+    fn absolute_path(&self) -> String {
+        format!("{PATH_SEPARATOR}{}", self.name)
+    }
+}
+
+/// Normalize a link-filter target: trim/lowercase, note and strip a leading
+/// separator, detect path-qualified / wildcard, and apply the note
+/// extension. Returns `None` for an empty target.
 fn normalize_link_target(target: &str) -> Option<LinkTarget> {
     let lowered = target.trim().to_lowercase();
+    let is_absolute = lowered.starts_with(PATH_SEPARATOR);
     let stripped = lowered.strip_prefix(PATH_SEPARATOR).unwrap_or(&lowered);
     if stripped.is_empty() {
         return None;
@@ -1436,47 +1479,80 @@ fn normalize_link_target(target: &str) -> Option<LinkTarget> {
     Some(LinkTarget {
         name,
         is_path_qualified,
+        is_absolute,
         has_wildcard,
     })
 }
 
+/// Builds the `SELECT source FROM links WHERE …` subquery for one link-filter
+/// target (`<` / `lk:`): the notes with a link that can point at the same
+/// note as the target `X`, read as a wikilink typed at the root. Textual —
+/// it compares written link rows, so a dangling link still matches.
+///
+/// - Bare `X` (`dup`): every row named `dup.md` (`dest_name`, indexed) — a
+///   name link with any suffix, a path link to any `*/dup.md`.
+/// - Relative path `X` (`work/dup`, a suffix): a name row when one suffix
+///   ends the other (`[[dup]]`, `[[work/dup]]`, `[[a/work/dup]]`); a path
+///   row whose path ends with `X`. Pre-filtered on `dest_name`.
+/// - Absolute `X` (`/work/dup`): the rows that point at exactly that note
+///   ([`link_points_at_sql`]).
+/// - Wildcards fall back to `LIKE`: bare on `dest_name` (prefix-anchored, so
+///   `proj*` can use the index); a relative path as a suffix of the row's
+///   destination (`[[work/proj]]` or any path ending in it; one direction
+///   only — a shorter `[[proj]]` does not match `work/p*`); an absolute
+///   path as a path row's destination or a name row written from the root.
+///
+/// The `(form, destination)` invariant shared with [`link_points_at_sql`]:
+/// destinations are lowercased and carry the note extension; name rows are
+/// relative suffixes, path rows canonical (vault-absolute) paths. Returns
+/// `None` for an empty target.
 fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
-    let LinkTarget {
-        name,
-        is_path_qualified,
-        has_wildcard,
-    } = normalize_link_target(target)?;
-
-    let body = if has_wildcard {
-        // Escape LIKE metacharacters in the literal, then turn user `*` into
-        // the SQL `%` wildcard. Destinations never contain `*`, so this is safe.
-        let pattern = like_pattern(&name);
+    let target = normalize_link_target(target)?;
+    let sep = PATH_SEPARATOR;
+    let n = *var_num;
+    let body = if target.has_wildcard {
+        let pattern = like_pattern(&target.name);
         params.push(pattern);
-        let body = if is_path_qualified {
+        *var_num += 1;
+        if target.is_absolute {
             format!(
-                "destination LIKE ?{n} ESCAPE '\\' OR destination LIKE ('/' || ?{n}) ESCAPE '\\'",
-                n = var_num
+                "(form = '{LINK_FORM_PATH}' AND destination LIKE ('{sep}' || ?{n}) ESCAPE '\\') \
+                 OR (form = '{LINK_FORM_NAME}' AND ('{sep}' || destination) LIKE ('{sep}' || ?{n}) ESCAPE '\\')"
+            )
+        } else if target.is_path_qualified {
+            format!(
+                "destination LIKE ?{n} ESCAPE '\\' \
+                 OR destination LIKE ('%{sep}' || ?{n}) ESCAPE '\\'"
             )
         } else {
-            format!("dest_name LIKE ?{n} ESCAPE '\\'", n = var_num)
-        };
-        *var_num += 1;
-        body
-    } else if is_path_qualified {
-        // Indexed equality on the full path (relative or absolute stored form).
-        params.push(name);
-        let body = format!(
-            "destination = ?{n} OR destination = ('/' || ?{n})",
-            n = var_num
-        );
-        *var_num += 1;
-        body
+            format!("dest_name LIKE ?{n} ESCAPE '\\'")
+        }
+    } else if target.is_absolute {
+        params.push(target.last_name().to_string());
+        params.push(target.absolute_path());
+        *var_num += 2;
+        format!(
+            "dest_name = ?{n} AND {}",
+            link_points_at_sql("links", &format!("?{}", n + 1))
+        )
+    } else if target.is_path_qualified {
+        params.push(target.last_name().to_string());
+        params.push(target.name.clone());
+        *var_num += 2;
+        let s = n + 1;
+        format!(
+            "dest_name = ?{n} AND (\
+               (form = '{LINK_FORM_NAME}' \
+                AND (destination = ?{s} \
+                     OR substr(?{s}, -length(destination) - 1) = ('{sep}' || destination) \
+                     OR substr(destination, -length(?{s}) - 1) = ('{sep}' || ?{s}))) \
+               OR (form = '{LINK_FORM_PATH}' \
+                AND substr(destination, -length(?{s}) - 1) = ('{sep}' || ?{s})))"
+        )
     } else {
-        // Indexed equality on the folder-independent basename.
-        params.push(name);
-        let body = format!("dest_name = ?{n}", n = var_num);
+        params.push(target.name);
         *var_num += 1;
-        body
+        format!("dest_name = ?{n}")
     };
     Some(format!("SELECT source FROM links WHERE {body}"))
 }
@@ -1501,65 +1577,61 @@ fn add_links_query(
 }
 
 /// Builds the subquery of NOTE PATHS that are link *destinations* of the
-/// note(s) named `target` — i.e. the forward-links of `target` (`>` / `fwd:`).
+/// note(s) matching `target` — i.e. the forward-links of `target` (`>` /
+/// `fwd:`).
 ///
-/// Where [`link_subquery`] selects the *sources* of links pointing at a name,
-/// this selects the *destinations* of links emitted by the note(s) matching the
-/// name. The destination column is heterogeneous (a bare relative name, or a
-/// relative/absolute path), so resolving it back to a concrete note path is
-/// done by joining `notes n2` and matching on all stored forms:
-///   - `l.dest_name = n2.noteName` (folder-independent bare basename, both
-///     carry the `.md` extension), or
-///   - `l.destination = n2.path` (relative stored form), or
-///   - `l.destination = '/' || n2.path` (absolute stored form).
-///
-/// The *source* note is matched by name exactly as [`link_subquery`] matches a
-/// target: bare name → indexed equality on `src.noteName` (the lowercased
-/// basename, `.md`-suffixed); path-qualified → equality on `src.path` (relative
-/// or absolute); wildcards → `LIKE`. Returns `None` for an empty target.
+/// The *source* note is matched with the same reading as [`link_subquery`]:
+/// bare name → indexed equality on `src.noteName` (the lowercased basename,
+/// `.md`-suffixed); relative path → a note whose path ends with it
+/// (slice-wise, pre-filtered on `noteName`); absolute path → that exact
+/// path; wildcards → `LIKE` (a relative path as a suffix, an absolute one
+/// from the root). Each of its links is resolved to the notes it points at
+/// with [`link_points_at_sql`] (an ambiguous name link yields every
+/// candidate), pre-filtered on `n2.noteName = l.dest_name` so the join is
+/// index-served. Returns `None` for an empty target.
 fn forward_link_subquery(
     target: &str,
     var_num: &mut usize,
     params: &mut Vec<String>,
 ) -> Option<String> {
-    let LinkTarget {
-        name,
-        is_path_qualified,
-        has_wildcard,
-    } = normalize_link_target(target)?;
-
-    let src_match = if has_wildcard {
-        let pattern = like_pattern(&name);
-        params.push(pattern);
-        let body = if is_path_qualified {
-            format!(
-                "src.path LIKE ?{n} ESCAPE '\\' OR src.path LIKE ('/' || ?{n}) ESCAPE '\\'",
-                n = var_num
-            )
+    let target = normalize_link_target(target)?;
+    let sep = PATH_SEPARATOR;
+    let n = *var_num;
+    let src_match = if target.has_wildcard {
+        params.push(like_pattern(&target.name));
+        *var_num += 1;
+        if target.is_absolute {
+            format!("src.path LIKE ('{sep}' || ?{n}) ESCAPE '\\'")
+        } else if target.is_path_qualified {
+            format!("src.path LIKE ('%{sep}' || ?{n}) ESCAPE '\\'")
         } else {
-            format!("src.noteName LIKE ?{n} ESCAPE '\\'", n = var_num)
-        };
+            format!("src.noteName LIKE ?{n} ESCAPE '\\'")
+        }
+    } else if target.is_absolute {
+        params.push(target.absolute_path());
         *var_num += 1;
-        body
-    } else if is_path_qualified {
-        params.push(name);
-        let body = format!("src.path = ?{n} OR src.path = ('/' || ?{n})", n = var_num);
-        *var_num += 1;
-        body
+        format!("src.path = ?{n}")
+    } else if target.is_path_qualified {
+        params.push(target.last_name().to_string());
+        params.push(target.name.clone());
+        *var_num += 2;
+        let s = n + 1;
+        format!(
+            "src.noteName = ?{n} \
+             AND substr(src.path, -length(?{s}) - 1) = ('{sep}' || ?{s})"
+        )
     } else {
-        params.push(name);
-        let body = format!("src.noteName = ?{n}", n = var_num);
+        params.push(target.name);
         *var_num += 1;
-        body
+        format!("src.noteName = ?{n}")
     };
 
     Some(format!(
-        "SELECT n2.path FROM notes n2 \
-         JOIN links l ON (l.dest_name = n2.noteName \
-                          OR l.destination = n2.path \
-                          OR l.destination = ('/' || n2.path)) \
-         JOIN notes src ON src.path = l.source \
-         WHERE {src_match}"
+        "SELECT n2.path FROM notes src \
+         JOIN links l ON l.source = src.path \
+         JOIN notes n2 ON n2.noteName = l.dest_name AND {points_at} \
+         WHERE {src_match}",
+        points_at = link_points_at_sql("l", "n2.path"),
     ))
 }
 
@@ -2037,10 +2109,14 @@ struct ChunkRow {
 
 struct LinkRow {
     path_idx: usize,
+    /// A [`NoteTarget::Name`]'s relative suffix (`work/dup.md`) or a
+    /// [`NoteTarget::Path`]'s canonical path (`/work/dup.md`).
     destination: String,
     /// Bare lowercased filename of `destination` (folder-independent), indexed
     /// to back the link filter's name-anywhere match. See `link_subquery`.
     dest_name: String,
+    /// [`LINK_FORM_NAME`] or [`LINK_FORM_PATH`]: how `destination` matches.
+    form: &'static str,
 }
 
 struct LabelRow {
@@ -2198,12 +2274,13 @@ impl NoteBatch {
         }
         for l in &links {
             match &l.ltype {
-                LinkType::Note(p) => {
+                LinkType::Note(target) => {
                     self.links.push(LinkRow {
                         path_idx: idx,
-                        destination: p.to_string(),
+                        destination: target.path().to_string(),
                         // Already lowercased by VaultPathSlice; folder-independent.
-                        dest_name: p.get_name(),
+                        dest_name: target.name(),
+                        form: link_form(target),
                     });
                 }
                 LinkType::Hashtag => {
@@ -2377,9 +2454,9 @@ impl BulkInsertRow for ChunkRow {
 }
 
 impl BulkInsertRow for LinkRow {
-    const HEADER: &'static str = "INSERT INTO links (source, destination, dest_name) VALUES ";
+    const HEADER: &'static str = "INSERT INTO links (source, destination, dest_name, form) VALUES ";
     const FOOTER: &'static str = "";
-    const COLS: usize = 3;
+    const COLS: usize = 4;
 
     fn bind_to<'q>(
         &'q self,
@@ -2389,6 +2466,7 @@ impl BulkInsertRow for LinkRow {
         q.bind(&paths[self.path_idx])
             .bind(&self.destination)
             .bind(&self.dest_name)
+            .bind(self.form)
     }
 }
 
@@ -2553,7 +2631,6 @@ async fn rename_note(
     from: &VaultPath,
     to: &VaultPath,
 ) -> Result<(), DBError> {
-    let old_note_name = from.get_name();
     let (new_base_path, new_note_name) = to.get_parent_path();
 
     sqlx::query("UPDATE notes SET path = ?, basePath = ?, noteName = ? WHERE path = ?")
@@ -2570,20 +2647,19 @@ async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE links SET destination = ?, dest_name = ? WHERE destination = ?")
-        .bind(to.to_string())
-        .bind(&new_note_name)
-        .bind(from.to_string())
-        .execute(&mut **tx)
-        .await?;
-
-    // Update links that reference the note by filename only (wikilinks without path)
-    sqlx::query("UPDATE links SET destination = ?, dest_name = ? WHERE destination = ?")
-        .bind(&new_note_name)
-        .bind(&new_note_name)
-        .bind(&old_note_name)
-        .execute(&mut **tx)
-        .await?;
+    // Path links to the note follow it. Name links are left alone: a
+    // rewritten backlink victim is reindexed from its new text in the same
+    // transaction, and any other name link still names what it named (it is
+    // resolved at query time) — never a mass rewrite of every same-named row.
+    sqlx::query(&format!(
+        "UPDATE links SET destination = ?, dest_name = ? \
+         WHERE form = '{LINK_FORM_PATH}' AND destination = ?"
+    ))
+    .bind(to.to_string())
+    .bind(&new_note_name)
+    .bind(from.to_string())
+    .execute(&mut **tx)
+    .await?;
 
     for table in NOTE_PATH_TABLES {
         sqlx::query(&format!("UPDATE {table} SET path = ? WHERE path = ?"))
@@ -2642,7 +2718,7 @@ async fn rename_directory(
     .execute(&mut **tx)
     .await?;
 
-    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%') ESCAPE '\\'")
+    sqlx::query(&format!("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE form = '{LINK_FORM_PATH}' AND destination LIKE (? || '%') ESCAPE '\\'"))
         .bind(&to)
         .bind(&from)
         .bind(&from_escaped)

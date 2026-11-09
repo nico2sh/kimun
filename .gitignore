@@ -38,8 +38,13 @@ example/*/kimun.sqlite
 example/*/.kimun/*
 !example/*/.kimun/saved-searches.toml
 example/history/
+# Saved Ask answers ("Save as note" writes under ask/) are local output.
+example/*/ask/
 openspec/
 adr/
 handoff/
 plan/
 plans/
+
+# Python bytecode from the .github/scripts tests
+**/__pycache__/

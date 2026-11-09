@@ -7,6 +7,7 @@
 
 use std::time::Instant;
 
+use crate::logic::input::{Key, KeyInput};
 use crate::logic::nav::DrawerView;
 use crate::logic::nav::LinksTab;
 
@@ -744,6 +745,12 @@ pub enum LeaderOutcome {
     /// Stepped up one level (Backspace); pending unless at the root… in
     /// which case it cancels.
     SteppedUp,
+    /// A key with no leader meaning (arrows, function keys, …): swallowed,
+    /// the sequence stays pending.
+    Swallowed,
+    /// A Ctrl chord: not the leader's. The engine is unchanged; the caller
+    /// cancels the sequence and dispatches the chord normally.
+    Passed,
 }
 
 /// The pending-sequence state machine. `start()` arms it; `feed()` walks the
@@ -840,6 +847,24 @@ impl LeaderEngine {
         }
     }
 
+    /// One key of a pending sequence, terminal-neutrally — the one key feed
+    /// both frontends use. Esc cancels, Backspace steps up, a character
+    /// without Ctrl walks the tree ([`Self::feed`]); a Ctrl chord is
+    /// [`LeaderOutcome::Passed`] back, and anything else is swallowed. Esc and
+    /// Backspace act whatever modifiers are held.
+    pub fn key(&mut self, key: KeyInput) -> LeaderOutcome {
+        match key.key {
+            Key::Esc => {
+                self.cancel();
+                LeaderOutcome::Cancelled
+            }
+            Key::Backspace => self.step_up(),
+            Key::Char(_) if key.mods.ctrl => LeaderOutcome::Passed,
+            Key::Char(c) => self.feed(c),
+            _ => LeaderOutcome::Swallowed,
+        }
+    }
+
     /// Step up one level (Backspace). At the root this cancels.
     pub fn step_up(&mut self) -> LeaderOutcome {
         if self.path.pop().is_some() {
@@ -891,6 +916,45 @@ mod tests {
         assert_eq!(e.step_up(), LeaderOutcome::SteppedUp);
         assert!(e.is_pending());
         assert_eq!(e.step_up(), LeaderOutcome::Cancelled);
+        assert!(!e.is_pending());
+    }
+
+    /// The neutral key feed: Esc cancels, Backspace steps up (and cancels at
+    /// the root), a char walks the tree, an unknown char is Invalid and stays
+    /// pending, a Ctrl chord is passed back untouched, and other keys are
+    /// swallowed.
+    #[test]
+    fn key_feed_table() {
+        use crate::logic::input::{KeyInput as K, Mods};
+        let mut e = LeaderEngine::new();
+        e.start();
+        assert_eq!(e.key(K::plain(Key::Backspace)), LeaderOutcome::Cancelled);
+        assert!(!e.is_pending(), "Backspace at the root cancels");
+
+        e.start();
+        assert_eq!(e.key(K::plain(Key::Char('z'))), LeaderOutcome::Invalid);
+        assert!(e.is_pending());
+        assert_eq!(e.key(K::ctrl('f')), LeaderOutcome::Passed);
+        assert!(
+            e.is_pending(),
+            "a passed chord leaves the engine to the caller"
+        );
+        assert_eq!(e.key(K::plain(Key::Down)), LeaderOutcome::Swallowed);
+        assert_eq!(e.key(K::plain(Key::Char('o'))), LeaderOutcome::Descended);
+        assert_eq!(e.key(K::plain(Key::Backspace)), LeaderOutcome::SteppedUp);
+        assert_eq!(e.key(K::plain(Key::Char('o'))), LeaderOutcome::Descended);
+        assert_eq!(
+            e.key(K::new(Key::Char('f'), Mods::ALT)),
+            LeaderOutcome::Fired(LeaderAction::OpenDrawer(DrawerView::Files)),
+            "only Ctrl makes a char a chord"
+        );
+
+        e.start();
+        e.key(K::plain(Key::Char('f')));
+        assert_eq!(
+            e.key(K::new(Key::Esc, Mods::SHIFT)),
+            LeaderOutcome::Cancelled
+        );
         assert!(!e.is_pending());
     }
 

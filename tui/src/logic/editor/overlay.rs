@@ -52,11 +52,16 @@ pub enum OverlayKind {
     Preview,
     /// The previewed **current match**.
     PreviewCurrent,
+    /// A **follow target** (wikilink, markdown link, image link, hashtag
+    /// label) as drawn, emphasis inside its label included. No style of its
+    /// own: a pointer host marks the cells clickable. Not derived for the
+    /// element the caret is in, which is being edited as raw source.
+    FollowTarget,
 }
 
 impl OverlayKind {
     /// Every kind, in stacking (declaration) order.
-    pub const ALL: [OverlayKind; 8] = [
+    pub const ALL: [OverlayKind; 9] = [
         OverlayKind::TaskBox,
         OverlayKind::TaskDone,
         OverlayKind::Needle,
@@ -65,6 +70,7 @@ impl OverlayKind {
         OverlayKind::CurrentMatch,
         OverlayKind::Preview,
         OverlayKind::PreviewCurrent,
+        OverlayKind::FollowTarget,
     ];
 
     /// The kind's position in declaration order. An exhaustive `match`, so
@@ -80,20 +86,21 @@ impl OverlayKind {
             OverlayKind::CurrentMatch => 5,
             OverlayKind::Preview => 6,
             OverlayKind::PreviewCurrent => 7,
+            OverlayKind::FollowTarget => 8,
         }
     }
 
-    const fn bit(self) -> u8 {
+    const fn bit(self) -> u16 {
         1 << self.index()
     }
 }
 
 // Guarantees: every `ALL` entry has `index()` and discriminant equal to its
-// position, and the variant count fits `OverlaySet`'s `u8` bitset. Adding a
+// position, and the variant count fits `OverlaySet`'s `u16` bitset. Adding a
 // variant fails the exhaustive `index()` match until it is handled. Omitting
 // the LAST variant from `ALL` is not caught by the compiler.
 const _: () = {
-    assert!(OverlayKind::ALL.len() <= u8::BITS as usize);
+    assert!(OverlayKind::ALL.len() <= u16::BITS as usize);
     let mut i = 0;
     while i < OverlayKind::ALL.len() {
         assert!(OverlayKind::ALL[i].index() as usize == i);
@@ -107,7 +114,7 @@ const _: () = {
 
 /// A set of [`OverlayKind`]s, one bit each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct OverlaySet(u8);
+pub struct OverlaySet(u16);
 
 impl OverlaySet {
     pub fn insert(&mut self, kind: OverlayKind) {
@@ -153,6 +160,6 @@ mod tests {
             s.insert(k);
             assert!(s.contains(k));
         }
-        assert_eq!(s.iter().count(), 8);
+        assert_eq!(s.iter().count(), 9);
     }
 }

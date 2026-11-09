@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use kimun_core::note::scan::LinkSpanKind;
 use kimun_core::{NoteVault, nfs::VaultPath};
 
 use crate::logic::nav::{DrawerView, HeadingTarget};
@@ -69,6 +70,9 @@ pub enum AppMessage {
         /// The note's recomputed title (first body line) from the save, so the
         /// sidebar row can be retitled. `None` when the save failed.
         title: Option<String>,
+        /// Why the save failed, `None` on success (the TUI ignores it; a
+        /// frontend may flash it).
+        error: Option<String>,
     },
     /// Open a note (or directory) — `emphasis` carries the originating
     /// query's needles when the open comes from a query result, so the
@@ -122,6 +126,7 @@ pub enum AppMessage {
     /// cursor (status line 2's `→ target · N backlinks` affordance).
     LinkTargetMeta {
         target: String,
+        kind: LinkSpanKind,
         count: usize,
     },
     /// Async-loaded backlink count for the note at `path` (status line 2).
@@ -134,9 +139,13 @@ pub enum AppMessage {
         path: VaultPath,
         count: usize,
     },
-    /// Async-loaded workspace git summary for the status bar, `None` when
-    /// the workspace is not a git repository.
-    GitStatusLoaded(Option<String>),
+    /// Async-loaded git summary of the workspace at `root` for the status
+    /// bar, `None` when it is not a git repository. `root` names which
+    /// workspace asked, so an answer that outlives a switch is not shown.
+    GitStatusLoaded {
+        root: std::path::PathBuf,
+        status: Option<crate::util::git_status::GitSummary>,
+    },
     /// Sent by PreferencesScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
     PreferencesSaved,
@@ -158,8 +167,12 @@ pub enum AppMessage {
     /// Dismiss the active editor overlay (note browser, Saved Searches modal,
     /// or dialog). The single close path for everything owned by `OverlayHost`.
     CloseOverlay,
-    /// Follow the link under the editor cursor: note name/path or external URL.
-    FollowLink(String),
+    /// Follow the link under the editor cursor: its target as written (note
+    /// name/path, attachment, external URL) and its kind.
+    FollowLink {
+        target: String,
+        kind: LinkSpanKind,
+    },
     /// Open the search modal pre-filled with `#<name>` to browse notes by label.
     FollowLabel(String),
     /// Insert raw text at the editor's cursor (replacing any active selection).

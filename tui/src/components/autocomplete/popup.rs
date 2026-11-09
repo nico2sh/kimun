@@ -1,125 +1,43 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 use unicode_width::UnicodeWidthStr;
 
+use crate::logic::autocomplete::{AutocompleteState, PopupCommand};
 use crate::settings::themes::Theme;
 
-use super::state::AutocompleteState;
-
-/// Result of forwarding a key event to the popup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopupOutcome {
-    Consumed(PopupAction),
-    NotHandled,
-}
-
-/// What the host should do after a `Consumed` outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PopupAction {
-    /// Internal navigation — no buffer change.
-    None,
-    /// User accepted the highlighted suggestion. Host pulls
-    /// `state.selected()` and writes the replacement.
-    Accept,
-    /// User pressed Esc — close popup without changing the buffer.
-    Dismiss,
-}
-
-/// Routes a mouse event through the popup: the wheel over it moves the
-/// highlight, a left click on a row highlights and accepts it. Anything
-/// else (including a press outside) is `NotHandled` — the host's own mouse
-/// handling then closes the popup as before.
-pub fn handle_mouse(
-    state: &mut AutocompleteState,
-    m: &ratatui::crossterm::event::MouseEvent,
-) -> PopupOutcome {
-    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
-    let pos = ratatui::layout::Position::new(m.column, m.row);
-    if !state.rows_rect.contains(pos) {
-        return PopupOutcome::NotHandled;
+/// Map a mouse event onto a popup command, given where the rows were last
+/// drawn: the wheel over them moves the highlight, a left click on a row
+/// highlights and accepts it. `None` for anything outside the rows
+/// (including a press) — the host's own mouse handling then closes the popup.
+pub fn mouse_command(m: &MouseEvent, rows_rect: Rect) -> Option<PopupCommand> {
+    if !rows_rect.contains(Position::new(m.column, m.row)) {
+        return None;
     }
-    match m.kind {
-        MouseEventKind::ScrollUp => {
-            state.move_highlight_up();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        MouseEventKind::ScrollDown => {
-            state.move_highlight_down();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
+    Some(match m.kind {
+        MouseEventKind::ScrollUp => PopupCommand::Up,
+        MouseEventKind::ScrollDown => PopupCommand::Down,
         MouseEventKind::Down(MouseButton::Left) => {
-            let (start, end) = state.visible_window();
-            let idx = start + (m.row - state.rows_rect.y) as usize;
-            if idx < end {
-                state.highlighted = idx;
-                PopupOutcome::Consumed(PopupAction::Accept)
-            } else {
-                PopupOutcome::Consumed(PopupAction::None)
-            }
+            PopupCommand::ClickRow((m.row - rows_rect.y) as usize)
         }
         // Moves, drags and other buttons over the popup do nothing, but
         // must not fall through and dismiss it.
-        _ => PopupOutcome::Consumed(PopupAction::None),
-    }
+        _ => PopupCommand::Swallow,
+    })
 }
 
-/// Routes a key event through the popup's input model. Navigation keys are
-/// consumed (Up/Down, PageUp/PageDown, Home/End). Tab and Enter accept;
-/// Esc dismisses. Everything else returns `NotHandled` so the host can
-/// process it as normal typing — the host then recomputes the trigger
-/// context, which may close or refresh the popup naturally.
-pub fn handle_key(state: &mut AutocompleteState, key: KeyEvent) -> PopupOutcome {
-    // System-modifier combos (Ctrl, Alt, Cmd/SUPER, Win/META) are
-    // never the popup's to consume — let the host route them as
-    // shortcuts. Otherwise macOS Cmd+Tab / Cmd+Esc / Cmd+arrows
-    // would be swallowed as Accept/Dismiss/Navigate.
-    const SYSTEM_MODS: KeyModifiers = KeyModifiers::CONTROL
-        .union(KeyModifiers::ALT)
-        .union(KeyModifiers::SUPER)
-        .union(KeyModifiers::META);
-    if key.modifiers.intersects(SYSTEM_MODS) {
-        return PopupOutcome::NotHandled;
-    }
-    match key.code {
-        KeyCode::Down => {
-            state.move_highlight_down();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::Up => {
-            state.move_highlight_up();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::PageDown => {
-            state.page_down();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::PageUp => {
-            state.page_up();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::Home => {
-            state.home();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::End => {
-            state.end();
-            PopupOutcome::Consumed(PopupAction::None)
-        }
-        KeyCode::Tab | KeyCode::Enter => {
-            if state.selected().is_some() {
-                PopupOutcome::Consumed(PopupAction::Accept)
-            } else {
-                // Empty list — let the host process the key as usual.
-                PopupOutcome::NotHandled
-            }
-        }
-        KeyCode::Esc => PopupOutcome::Consumed(PopupAction::Dismiss),
-        _ => PopupOutcome::NotHandled,
-    }
+/// Map a key onto the popup's input model, through the shared table
+/// ([`crate::logic::autocomplete::key_command`]). Everything it does not map is
+/// `None` so the host can process it as normal typing — the host then
+/// recomputes the trigger context, which may close or refresh the popup
+/// naturally. System-modifier chords (Ctrl, Alt, Cmd/SUPER, Win/META) are never
+/// the popup's: otherwise macOS Cmd+Tab / Cmd+Esc / Cmd+arrows would be
+/// swallowed as Accept/Dismiss/Navigate. Shift keeps its plain key's meaning.
+pub fn key_command(key: KeyEvent) -> Option<PopupCommand> {
+    crate::logic::autocomplete::key_command(crate::keys::crossterm_input::key_input(&key)?, true)
 }
 
 /// Render the popup as a floating layer over `screen`. Picks an anchor
@@ -129,10 +47,12 @@ pub fn handle_key(state: &mut AutocompleteState, key: KeyEvent) -> PopupOutcome 
 /// is bounded by `state.max_visible_rows`; the popup never grows past it,
 /// even when the screen has more room available — keeping it visually
 /// subordinate to the editor.
-pub fn render(frame: &mut Frame, state: &mut AutocompleteState, screen: Rect, theme: &Theme) {
-    state.rows_rect = Rect::default();
+/// Returns where the visible rows were drawn (inside the border) — what a
+/// click is hit-tested against — or an empty rect when the popup could not
+/// draw.
+pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme: &Theme) -> Rect {
     if state.items.is_empty() {
-        return;
+        return Rect::default();
     }
 
     const MAX_WIDTH: u16 = 60;
@@ -142,13 +62,13 @@ pub fn render(frame: &mut Frame, state: &mut AutocompleteState, screen: Rect, th
     // border + a row of content, so just bail. ratatui can render
     // smaller, but the result is uninterpretable to the user.
     if screen.width < BORDERS + 1 || screen.height < BORDERS + 1 {
-        return;
+        return Rect::default();
     }
 
     let (start, end) = state.visible_window();
     let visible_rows = (end - start) as u16;
     if visible_rows == 0 {
-        return;
+        return Rect::default();
     }
 
     let content_width = visible_content_width(state, start, end);
@@ -197,7 +117,6 @@ pub fn render(frame: &mut Frame, state: &mut AutocompleteState, screen: Rect, th
         .style(theme.panel_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    state.rows_rect = inner;
 
     let inner_width = inner.width as usize;
 
@@ -216,19 +135,20 @@ pub fn render(frame: &mut Frame, state: &mut AutocompleteState, screen: Rect, th
     if state.has_more_below() {
         render_overflow_marker(frame, area, '▼', false, theme, state.hidden_below());
     }
+    inner
 }
 
 fn visible_title(state: &AutocompleteState) -> String {
     let sigil = match state.kind {
-        super::TriggerKind::Wikilink => "[[".to_string(),
-        super::TriggerKind::Hashtag => "#".to_string(),
+        crate::logic::autocomplete::TriggerKind::Wikilink => "[[".to_string(),
+        crate::logic::autocomplete::TriggerKind::Hashtag => "#".to_string(),
         // `LinkFilter` fires for `<`, `>`, and `=`; render the operator the
         // user actually typed rather than a hardcoded one.
-        super::TriggerKind::LinkFilter => state
+        crate::logic::autocomplete::TriggerKind::LinkFilter => state
             .opener
             .map(|c| c.to_string())
             .unwrap_or_else(|| ">".to_string()),
-        super::TriggerKind::SavedSearch => "?".to_string(),
+        crate::logic::autocomplete::TriggerKind::SavedSearch => "?".to_string(),
     };
     if state.query.is_empty() {
         sigil
@@ -336,12 +256,13 @@ fn render_overflow_marker(
 
 #[cfg(test)]
 mod tests {
-    use super::super::TriggerKind;
-    use super::super::state::Suggestion;
     use super::*;
+    use crate::logic::autocomplete::{
+        PopupAction, PopupOutcome, Suggestion, TriggerKind, apply_command,
+    };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn sample_state(n: usize) -> AutocompleteState {
         let mut st = AutocompleteState::new(TriggerKind::Hashtag, (0, 0));
@@ -354,6 +275,21 @@ mod tests {
                 .collect(),
         );
         st
+    }
+
+    /// The pipeline a host runs: map the key, apply it.
+    fn handle_key(st: &mut AutocompleteState, key: KeyEvent) -> PopupOutcome {
+        match key_command(key) {
+            Some(c) => apply_command(st, c),
+            None => PopupOutcome::NotHandled,
+        }
+    }
+
+    fn handle_mouse(st: &mut AutocompleteState, rows: Rect, m: &MouseEvent) -> PopupOutcome {
+        match mouse_command(m, rows) {
+            Some(c) => apply_command(st, c),
+            None => PopupOutcome::NotHandled,
+        }
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -439,22 +375,26 @@ mod tests {
         }
     }
 
-    /// Render for real so `rows_rect` is recorded on `st` itself.
-    fn draw_mut(st: &mut AutocompleteState) {
+    /// Render for real and return the rows rect it reports.
+    fn draw_mut(st: &AutocompleteState) -> Rect {
         let theme = Theme::gruvbox_dark();
         let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| render(f, st, f.area(), &theme)).unwrap();
+        let mut rows = Rect::default();
+        terminal
+            .draw(|f| rows = render(f, st, f.area(), &theme))
+            .unwrap();
+        rows
     }
 
     #[test]
     fn clicking_a_row_highlights_and_accepts_it() {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         let mut st = sample_state(5);
-        draw_mut(&mut st);
-        let r = st.rows_rect;
+        let r = draw_mut(&st);
         assert!(!r.is_empty(), "rows rect recorded");
         let out = handle_mouse(
             &mut st,
+            r,
             &press(MouseEventKind::Down(MouseButton::Left), r.x, r.y + 2),
         );
         assert_eq!(out, PopupOutcome::Consumed(PopupAction::Accept));
@@ -465,12 +405,11 @@ mod tests {
     fn wheel_moves_the_highlight_and_outside_is_not_handled() {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         let mut st = sample_state(5);
-        draw_mut(&mut st);
-        let r = st.rows_rect;
-        handle_mouse(&mut st, &press(MouseEventKind::ScrollDown, r.x, r.y));
+        let r = draw_mut(&st);
+        handle_mouse(&mut st, r, &press(MouseEventKind::ScrollDown, r.x, r.y));
         assert_eq!(st.highlighted, 1);
         let outside = press(MouseEventKind::Down(MouseButton::Left), r.right() + 5, r.y);
-        assert_eq!(handle_mouse(&mut st, &outside), PopupOutcome::NotHandled);
+        assert_eq!(handle_mouse(&mut st, r, &outside), PopupOutcome::NotHandled);
     }
 
     // ---- Rendering smoke tests ----
@@ -481,7 +420,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render(f, &mut state.clone(), f.area(), &theme);
+                render(f, state, f.area(), &theme);
             })
             .unwrap();
         terminal
@@ -554,14 +493,14 @@ mod tests {
 
     #[test]
     fn render_empty_state_is_noop() {
-        let mut st = sample_state(0);
+        let st = sample_state(0);
         let theme = Theme::gruvbox_dark();
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         // Should complete without rendering anything.
         terminal
             .draw(|f| {
-                render(f, &mut st, f.area(), &theme);
+                render(f, &st, f.area(), &theme);
             })
             .unwrap();
     }

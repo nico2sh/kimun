@@ -12,6 +12,12 @@ pub fn suggested_path(question: &str) -> VaultPath {
     VaultPath::new("ask").append(&VaultPath::note_path_from(note_name_from_title(question)))
 }
 
+/// The text "copy answer" puts on the clipboard: the turn's answer with its
+/// `[n]` citation markers stripped.
+pub fn copy_text(turn: &Turn) -> String {
+    citations::strip(&turn.answer)
+}
+
 /// The clean source names addressed by **citation number**: `names[n - 1]` is
 /// the clean name of the source whose ordinal is `n`, so `link_sources` can
 /// rewrite `[n]` → `[[name]]` by the same explicit pairing the rest of Ask
@@ -239,5 +245,16 @@ mod tests {
 
         let path = suggested_path("David Howell (sometimes refered as David H)?");
         vault.create_note(&path, "content").await.unwrap();
+    }
+
+    #[test]
+    fn copy_text_strips_the_citation_markers() {
+        let turn = turn_with(
+            "q",
+            "Because notes [1]. And more [2].",
+            vec![source("a.md", "x"), source("b.md", "y")],
+        );
+        assert_eq!(copy_text(&turn), citations::strip(&turn.answer));
+        assert!(!copy_text(&turn).contains("[1]"));
     }
 }

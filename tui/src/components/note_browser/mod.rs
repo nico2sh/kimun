@@ -1,13 +1,12 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
@@ -25,7 +24,9 @@ use crate::components::sortable::{
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, OverlayData, redraw_callback};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData, redraw_callback};
+use crate::logic::pickers::{PickerOpen, picker_open};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::icons::Icons;
@@ -357,27 +358,27 @@ impl NoteBrowserModal {
         let Some(entry) = self.list.selected_row() else {
             return;
         };
-        if let FileListEntry::CreateNote { path, .. } = entry {
-            let path = path.clone();
-            let vault = Arc::clone(&self.vault);
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                match vault.load_or_create_note(&path, None).await {
-                    Ok((_, created)) => tx.announce_and_open(path, created),
-                    Err(e) => {
-                        tx.send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
-                            .ok();
+        match picker_open(entry) {
+            PickerOpen::Create(path) => {
+                let vault = Arc::clone(&self.vault);
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    match file_ops::create_note(&vault, &path, None).await {
+                        Ok(outcome) => outcome.announce_and_open(&tx),
+                        Err(e) => {
+                            tx.send(AppMessage::OverlayData(OverlayData::Error(e))).ok();
+                        }
                     }
-                }
-            });
-            return;
+                });
+            }
+            PickerOpen::Open(path) => {
+                tx.send(AppMessage::OpenPath {
+                    path,
+                    emphasis: self.emphasis(),
+                })
+                .ok();
+            }
         }
-        let path = entry.path().clone();
-        tx.send(AppMessage::OpenPath {
-            path,
-            emphasis: self.emphasis(),
-        })
-        .ok();
     }
 
     fn is_sortable(&self) -> bool {
@@ -725,7 +726,10 @@ impl Overlay for NoteBrowserModal {
                 &needles,
                 theme,
                 modal_style,
-            )),
+            ))
+            // Long lines wrap inside the pane (indentation kept) rather than
+            // being cut at its edge.
+            .wrap(Wrap { trim: false }),
             preview_inner,
         );
 
@@ -831,10 +835,6 @@ fn browser_hints(scope: BrowserScope) -> crate::components::hint_row::HintRow {
         chips.push((KeyCode::F(1), "F1", "Query syntax"));
     }
     crate::components::hint_row::HintRow::new(&chips).with_indent(0)
-}
-
-pub(crate) fn format_journal_date(date: NaiveDate) -> String {
-    date.format("%A, %B %-d, %Y").to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1133,22 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AppMessage::CloseOverlay)),
             "the hidden [Esc] chip did not fire"
+        );
+    }
+
+    /// A long line in the preview wraps inside the pane instead of being
+    /// cut at its edge: the end of the line is on screen.
+    #[tokio::test]
+    async fn a_long_preview_line_wraps_inside_the_pane() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (mut modal, _tx) = search_modal(BrowserScope::Query, "").await;
+        modal.preview_text = format!("{}TAILMARK", "word ".repeat(60));
+        let theme = crate::settings::themes::Theme::default();
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| modal.render(f, f.area(), &theme)).unwrap();
+        assert!(
+            crate::test_support::find_text(t.backend().buffer(), "TAILMARK").is_some(),
+            "the end of the long line is wrapped into view"
         );
     }
 

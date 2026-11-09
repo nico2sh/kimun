@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
 
 use color_eyre::eyre;
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::NoteVault;
 use ratatui::Terminal;
 use ratatui::prelude::Backend;
 
@@ -27,7 +27,7 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::events::InputEvent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, FileOp, ScreenEvent, UpdateFlow};
+use crate::logic::message::{AppMessage, AppTx, FileOp, ScreenEvent, UpdateFlow};
 use crate::settings::{AppSettings, SharedSettings};
 use clap::Parser;
 use color_eyre::Result;
@@ -55,6 +55,13 @@ pub fn main() -> Result<ExitCode> {
         .enable_all()
         .build()?;
     runtime.block_on(entry())
+}
+
+/// File logging in the app's log directory, set up as the TUI's own; for
+/// another frontend (the GUI). Keep the guard alive for the process's life
+/// so the log is flushed. `None` (reported on stderr) when it cannot start.
+pub fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    bootstrap::init_logging(&kimun_core::system::log_dir().into_path_buf())
 }
 
 async fn entry() -> Result<ExitCode> {
@@ -182,7 +189,7 @@ pub struct App {
 
     /// The background RAG sync task for the current vault, when a server is
     /// configured. Aborted and respawned when the vault is rebuilt.
-    pub rag_sync_task: Option<tokio::task::JoinHandle<()>>,
+    pub rag_sync_task: crate::logic::task_slot::TaskSlot,
 
     /// Latest RAG status from the background task, held app-globally so a
     /// freshly-opened editor can be seeded immediately (like `update`) instead
@@ -208,7 +215,7 @@ impl App {
     /// name (if any) and starts on the **Start** screen. The door tests use —
     /// nothing here touches the config file.
     pub async fn from_settings(settings: SharedSettings) -> Self {
-        let vault = Self::open_vault(&settings).await;
+        let vault = crate::logic::startup::open_vault(&settings).await;
         Self {
             current_screen: Box::new(StartScreen::new(settings.clone(), vault.clone())),
             settings,
@@ -216,52 +223,9 @@ impl App {
             screen_generation: 0,
             update: None,
             parked_flashes: Vec::new(),
-            rag_sync_task: None,
+            rag_sync_task: Default::default(),
             rag_status: crate::rag::RagStatus::Disabled,
             server_update: None,
-        }
-    }
-
-    /// A fresh `NoteVault` for whatever workspace the settings currently
-    /// resolve to, wired to the configured index and the workspace's inbox.
-    /// `None` if no workspace is configured or the vault fails to open.
-    ///
-    /// Used at startup and every time the workspace changes (preferences
-    /// saved, onboarding finished, workspace switched).
-    pub async fn open_vault(settings: &SharedSettings) -> Option<Arc<NoteVault>> {
-        let (workspace_path, cache_path, inbox_path) = {
-            let s = settings.read().unwrap();
-            let wp = s.resolve_workspace_path();
-            let name = s.current_workspace_name();
-            let cache = name.as_ref().map(|n| s.index_for(n));
-            let ip = s
-                .workspace_config
-                .as_ref()
-                .and_then(|wc| wc.get_current_workspace())
-                .map(|e| e.effective_inbox_path());
-            (wp, cache, ip)
-        };
-        let workspace = workspace_path?;
-        let mut config = VaultConfig::new(workspace.clone());
-        if let Some(cp) = cache_path {
-            config = config.with_index(cp);
-        }
-        match NoteVault::new(config).await {
-            Ok(mut v) => {
-                if let Some(ref ip) = inbox_path {
-                    v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
-                }
-                Some(Arc::new(v))
-            }
-            // Don't swallow the cause: since the index self-heal, opening the
-            // vault can fail on a cache probe error (e.g. the cache is locked
-            // by another kimun process). The app falls back to the no-vault
-            // start screen either way, but the reason must reach the log
-            // instead of looking like an unconfigured workspace.
-            Err(e) => {
-                tracing::error!("could not open vault at {}: {e}", workspace);
-                None
-            }
         }
     }
 }
@@ -270,12 +234,14 @@ impl App {
 /// task and spawns a fresh one bound to the current `app.vault`. A no-op sync
 /// (no server configured, or no vault) leaves the task `None`.
 fn respawn_rag(app: &mut App, tx: &crate::logic::message::AppTx) {
-    if let Some(handle) = app.rag_sync_task.take() {
-        handle.abort();
-    }
-    if let Some(vault) = app.vault.clone() {
-        app.rag_sync_task = crate::rag::spawn_rag_sync(vault, &app.settings, tx.clone());
-    }
+    // Stop the old loop before the new one starts: two for one vault would
+    // replace each other's index observer.
+    app.rag_sync_task.stop();
+    let task = app
+        .vault
+        .clone()
+        .and_then(|vault| crate::rag::spawn_rag_sync(vault, &app.settings, tx.clone()));
+    app.rag_sync_task.replace(task);
 }
 
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
@@ -717,17 +683,15 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
             // route it like any other note via OpenPath so it works from every
             // screen — the current screen opens it inline or the loop switches
             // to the editor.
-            if let Some(vault) = app.vault.clone()
-                && let Ok((details, _, created)) = vault.journal_entry().await
-            {
-                // Notify the current screen's sidebar when freshly created, then
-                // open it — works from every screen via OpenPath.
-                tx.announce_and_open(details.path, created);
+            // Notify the current screen's sidebar when freshly created, then
+            // open it — works from every screen via OpenPath.
+            if let Some(vault) = app.vault.clone() {
+                crate::logic::file_ops::open_journal(&vault, tx).await;
             }
         }
         AppMessage::PreferencesSaved | AppMessage::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
-            app.vault = App::open_vault(&app.settings).await;
+            app.vault = crate::logic::startup::open_vault(&app.settings).await;
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
@@ -755,7 +719,7 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
                 }
                 s.save_to_disk().ok();
             }
-            app.vault = App::open_vault(&app.settings).await;
+            app.vault = crate::logic::startup::open_vault(&app.settings).await;
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }

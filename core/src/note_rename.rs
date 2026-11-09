@@ -11,13 +11,17 @@
 //!    of the rename (in a stable order, so two overlapping renames can't
 //!    deadlock), so a concurrent in-process write to any of them can't
 //!    interleave with what follows (lost update / stale backup).
-//! 3. *prepare* — read every victim, rewrite its links in memory, and take a
-//!    fail-closed backup of each note about to change. No filesystem
+//! 3. *prepare* — look up the notes named like the source or the destination
+//!    (the facts the pure rewriter needs: is a name link ambiguous, which
+//!    suffix names the destination alone), read every victim, rewrite its
+//!    links in memory, and take a fail-closed backup of each note about to
+//!    change. No filesystem
 //!    mutation: a failure here aborts the rename cleanly.
 //! 4. *move* — rename the source note on disk. If this fails, victims remain
 //!    untouched and the index is unchanged: clean abort.
 //! 5. *commit* — write the rewritten victims (concurrency-bounded) and rewrite
-//!    the renamed note's self-links at its new path.
+//!    the renamed note's self-links at its new path (after a move, its other
+//!    relative links too, so they keep their targets).
 //! 6. *index* — one atomic index operation: rename the source rows and update
 //!    each victim's chunks and links. If this fails, the filesystem is
 //!    consistent with the rename but the index is stale — the next sync pass
@@ -69,7 +73,9 @@ impl<'a> NoteRename<'a> {
 
     /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
     /// Markdown links, and the note's own self-links) in every backlinking
-    /// note so they keep pointing at the renamed note. Fails if `to` already
+    /// note so they keep pointing at the renamed note — by the rules of
+    /// `walk::retarget_links`: an ambiguous name link is left alone, a move
+    /// keeping a unique name rewrites no name link. Fails if `to` already
     /// exists. See the module docs for the stage order and what each failure
     /// leaves behind.
     ///
@@ -105,6 +111,32 @@ impl<'a> NoteRename<'a> {
         index.rename_note(&from, &to, &notes_with_text).await?;
 
         Ok(())
+    }
+
+    /// Every note but `from` and `to` named like either, canonical: what
+    /// the pure link rewriter needs to know about the vault.
+    async fn namesakes(
+        &self,
+        from: &VaultPath,
+        to: &VaultPath,
+    ) -> Result<Vec<VaultPath>, VaultError> {
+        let mut names = vec![from.get_name()];
+        if to.get_name() != names[0] {
+            names.push(to.get_name());
+        }
+        let (from, to) = (from.canonical(), to.canonical());
+        let mut namesakes = Vec::new();
+        for name in names {
+            namesakes.extend(
+                self.index
+                    .search_note_by_name(name)
+                    .await?
+                    .into_iter()
+                    .map(|(entry, _)| entry.path.canonical())
+                    .filter(|path| *path != from && *path != to),
+            );
+        }
+        Ok(namesakes)
     }
 
     /// Stage 1: query the index once for the notes linking to `from`. The
@@ -173,13 +205,19 @@ impl<'a> Scouted<'a> {
             victims,
         } = self;
 
+        // The index facts the pure rewriter needs: every other note named
+        // like `from` or `to`, so it can tell a link that led to `from` alone
+        // from an ambiguous one, and write `to` by a suffix naming it alone.
+        let namesakes = base.namesakes(&from, &to).await?;
         let workspace = base.workspace_path;
         let updates: Vec<(VaultPath, String)> = run_bounded(victims.into_iter().map(|path| {
             let from = &from;
             let to = &to;
+            let namesakes = &namesakes;
             async move {
                 let text = nfs::load_note(workspace, &path).await?;
-                let (updated, changed) = note::replace_note_links(&text, &path, from, to);
+                let (updated, changed) =
+                    note::replace_note_links(&text, &path, from, to, namesakes);
                 Ok(changed.then_some((path, updated)))
             }
         }))
@@ -203,6 +241,7 @@ impl<'a> Scouted<'a> {
             workspace_path: base.workspace_path,
             from,
             to,
+            namesakes,
             updates,
         })
     }
@@ -214,6 +253,8 @@ struct Prepared<'a> {
     workspace_path: &'a SystemPath,
     from: VaultPath,
     to: VaultPath,
+    /// The other notes named like `from` or `to` (see [`NoteRename::namesakes`]).
+    namesakes: Vec<VaultPath>,
     updates: Vec<(VaultPath, String)>,
 }
 
@@ -227,6 +268,7 @@ impl Prepared<'_> {
             workspace_path,
             from,
             to,
+            namesakes,
             updates,
         } = self;
 
@@ -238,9 +280,11 @@ impl Prepared<'_> {
         }))
         .await?;
 
-        // Self-links inside the renamed file, rewritten at its new location.
+        // Self-links inside the renamed file, rewritten at its new location;
+        // after a move its other relative links too, so they keep their
+        // targets from the new folder.
         let text = nfs::load_note(workspace_path, &to).await?;
-        let (updated, changed) = note::replace_note_links(&text, &from, &from, &to);
+        let (updated, changed) = note::replace_note_links(&text, &from, &from, &to, &namesakes);
         if changed {
             let (entry, written) = nfs::save_note(workspace_path, &to, &updated).await?;
             out.push((entry, written));
@@ -547,12 +591,15 @@ mod tests {
 
     /// The link rows the index would record for `text` at `path`, as
     /// `links_of` reports them.
-    fn walked_links(path: &VaultPath, text: &str) -> Vec<(String, String)> {
+    fn walked_links(path: &VaultPath, text: &str) -> Vec<(String, String, String)> {
         let (_, links) = crate::note::content_extractor::get_chunks_and_links(path, text);
-        let mut rows: Vec<(String, String)> = links
+        let mut rows: Vec<(String, String, String)> = links
             .iter()
             .filter_map(|l| match &l.ltype {
-                crate::note::LinkType::Note(p) => Some((p.to_string(), p.get_name())),
+                crate::note::LinkType::Note(t) => {
+                    let form = if t.is_name() { "name" } else { "path" };
+                    Some((t.path().to_string(), t.name(), form.to_string()))
+                }
                 _ => None,
             })
             .collect();
@@ -632,5 +679,159 @@ mod tests {
                 "{path}: {text:?}"
             );
         }
+    }
+
+    /// After a rename, every listed note's index link rows equal what a walk
+    /// of its text on disk records.
+    async fn assert_index_matches_text(f: &Fixture, paths: &[&str]) {
+        for path in paths {
+            let path = VaultPath::new(path);
+            let text = nfs::load_note(&f.ws, &path).await.unwrap();
+            assert_eq!(
+                f.index.links_of(&path).await,
+                walked_links(&path, &text),
+                "{path}: {text:?}"
+            );
+        }
+    }
+
+    /// Two notes named `dup`, and a linker using every form.
+    async fn duplicates() -> Fixture {
+        let f = Fixture::new().await;
+        f.note("/dup.md", "root dup").await;
+        f.note("/work/dup.md", "# Work dup\n[s](sibling.md) [[sibling]]")
+            .await;
+        f.note("/work/sibling.md", "sibling").await;
+        f.note("/other/dup.md", "other dup").await;
+        f.note(
+            "/journal/today.md",
+            "[[dup]] [[work/dup]] [x](/work/dup.md) [[other/dup]] [y](../work/dup.md#s)",
+        )
+        .await;
+        f
+    }
+
+    // Renaming one of several same-named notes: the ambiguous bare link
+    // is left alone, the suffix and path links follow it, a link naming
+    // another `dup` is untouched.
+    #[tokio::test]
+    async fn rename_of_a_duplicate_rewrites_only_the_links_that_led_to_it() {
+        let f = duplicates().await;
+        f.rename(false)
+            .rename(
+                &VaultPath::new("/work/dup.md"),
+                &VaultPath::new("/work/dup2.md"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            f.text("/journal/today.md").await,
+            "[[dup]] [[work/dup2]] [x](/work/dup2.md) [[other/dup]] [y](../work/dup2.md#s)"
+        );
+        assert_eq!(
+            f.text("/work/dup2.md").await,
+            "# Work dup\n[s](sibling.md) [[sibling]]"
+        );
+        assert_eq!(
+            f.backlinks("/work/dup2.md").await,
+            vec![VaultPath::new("/journal/today.md")]
+        );
+        // The bare `[[dup]]` still leads to the other `dup`s.
+        assert_eq!(
+            f.backlinks("/dup.md").await,
+            vec![VaultPath::new("/journal/today.md")]
+        );
+        assert_index_matches_text(&f, &["/journal/today.md", "/work/dup2.md"]).await;
+    }
+
+    // A move keeping the name: the ambiguous bare link needs no rewrite,
+    // the suffix link names the new folder, and the moved note's own
+    // relative markdown link keeps pointing at its old sibling.
+    #[tokio::test]
+    async fn move_of_a_duplicate_rewrites_its_suffix_and_its_own_relative_links() {
+        let f = duplicates().await;
+        f.rename(false)
+            .rename(
+                &VaultPath::new("/work/dup.md"),
+                &VaultPath::new("/archive/dup.md"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            f.text("/journal/today.md").await,
+            "[[dup]] [[archive/dup]] [x](/archive/dup.md) [[other/dup]] \
+             [y](../archive/dup.md#s)"
+        );
+        assert_eq!(
+            f.text("/archive/dup.md").await,
+            "# Work dup\n[s](../work/sibling.md) [[sibling]]"
+        );
+        assert_eq!(
+            f.backlinks("/work/sibling.md").await,
+            vec![VaultPath::new("/archive/dup.md")]
+        );
+        assert_index_matches_text(&f, &["/journal/today.md", "/archive/dup.md"]).await;
+    }
+
+    // A move keeping a unique name rewrites nothing: the bare link still
+    // names the note alone, and no victim is written or backed up.
+    #[tokio::test]
+    async fn move_keeping_a_unique_name_leaves_its_bare_links() {
+        let f = Fixture::new().await;
+        f.note("/work/solo.md", "solo").await;
+        f.note("/journal/today.md", "[[solo]] and [[Solo#Top]]")
+            .await;
+        f.rename(true)
+            .rename(
+                &VaultPath::new("/work/solo.md"),
+                &VaultPath::new("/archive/solo.md"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            f.text("/journal/today.md").await,
+            "[[solo]] and [[Solo#Top]]"
+        );
+        assert_eq!(
+            f.backlinks("/archive/solo.md").await,
+            vec![VaultPath::new("/journal/today.md")]
+        );
+        let date = crate::dates::format_iso_date(chrono::Utc::now().date_naive());
+        let day = backups_dir(&f.ws).join(date);
+        assert!(
+            day.join("work").join("solo.md").exists(),
+            "the source is backed up"
+        );
+        assert!(
+            !day.join("journal").join("today.md").exists(),
+            "the linker is not"
+        );
+    }
+
+    // A new name another note already has: the rewritten link gets the
+    // shortest suffix naming the renamed note alone.
+    #[tokio::test]
+    async fn rename_onto_a_taken_name_writes_a_unique_suffix() {
+        let f = Fixture::new().await;
+        f.note("/work/plan.md", "plan").await;
+        f.note("/roadmap.md", "another roadmap").await;
+        f.note("/journal/today.md", "[[plan]]").await;
+        f.rename(false)
+            .rename(
+                &VaultPath::new("/work/plan.md"),
+                &VaultPath::new("/work/roadmap.md"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(f.text("/journal/today.md").await, "[[work/roadmap]]");
+        assert_eq!(
+            f.backlinks("/work/roadmap.md").await,
+            vec![VaultPath::new("/journal/today.md")]
+        );
+        assert!(f.backlinks("/roadmap.md").await.is_empty());
     }
 }

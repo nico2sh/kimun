@@ -25,6 +25,7 @@ use crate::components::events::InputEvent;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::logic::message::{AppMessage, AppTx, OverlayData, PinnedRow};
+use crate::logic::pinned;
 use crate::settings::themes::Theme;
 
 const OUTER_WIDTH: u16 = 60;
@@ -98,25 +99,13 @@ impl PinnedNotesDialog {
     pub(crate) fn spawn_load(vault: Arc<NoteVault>, tx: &AppTx) {
         let tx = tx.clone();
         tokio::spawn(async move {
-            let paths = match vault.list_pinned_notes().await {
-                Ok(paths) => paths,
-                Err(e) => {
-                    tracing::warn!("failed to load pinned notes: {e}");
-                    tx.send(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(
-                        Err(format!("could not read pinned notes: {e}")),
-                    )))
-                    .ok();
-                    return;
-                }
-            };
-            let mut rows = Vec::with_capacity(paths.len());
-            for path in paths {
-                let missing = !vault.exists(&path).await;
-                rows.push(PinnedRow { path, missing });
+            let result = pinned::load(&vault).await;
+            if let Err(e) = &result {
+                tracing::warn!("failed to load pinned notes: {e}");
             }
-            tx.send(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(Ok(
-                rows,
-            ))))
+            tx.send(AppMessage::OverlayData(OverlayData::PinnedNotesLoaded(
+                result,
+            )))
             .ok();
         });
     }
@@ -157,27 +146,14 @@ impl PinnedNotesDialog {
     /// dismisses the active overlay unconditionally, so sending it here
     /// too would just be a redundant second close.
     fn open_row(&self, index: usize, tx: &AppTx) {
-        let Some(row) = self.rows.get(index) else {
-            tx.send(AppMessage::FlashMessage(format!(
-                "no pinned note {}",
-                index + 1
-            )))
-            .ok();
-            return;
+        let message = match pinned::open_target(&self.rows, index) {
+            Ok(path) => AppMessage::OpenPath {
+                path,
+                emphasis: None,
+            },
+            Err(flash) => AppMessage::FlashMessage(flash),
         };
-        if row.missing {
-            tx.send(AppMessage::FlashMessage(format!(
-                "pinned note not found: {}",
-                row.path
-            )))
-            .ok();
-            return;
-        }
-        tx.send(AppMessage::OpenPath {
-            path: row.path.clone(),
-            emphasis: None,
-        })
-        .ok();
+        tx.send(message).ok();
     }
 
     /// Run a persisting write, then always reload — on success so the list
@@ -191,14 +167,14 @@ impl PinnedNotesDialog {
     fn persist_and_reload(
         &mut self,
         tx: &AppTx,
-        op: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+        op: impl std::future::Future<Output = pinned::Outcome> + Send + 'static,
     ) {
         self.persist_pending = true;
         let vault = self.vault.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            if let Err(msg) = op.await {
-                tx.send(AppMessage::FlashMessage(msg)).ok();
+            if let Some(msg) = op.await.flash() {
+                tx.send(AppMessage::FlashMessage(msg.to_string())).ok();
             }
             Self::spawn_load(vault, &tx);
         });
@@ -212,34 +188,20 @@ impl PinnedNotesDialog {
     /// process) the note the user selected still moves — or, when it is no
     /// longer pinned, nothing does and the reload shows why.
     fn move_selected(&mut self, delta: isize, tx: &AppTx) {
-        if self.persist_pending || self.rows.is_empty() {
+        if self.persist_pending {
             return;
         }
-        let from = self.selected;
-        let to = from as isize + delta;
-        if to < 0 || to as usize >= self.rows.len() {
+        let Some((from, to)) = pinned::swap_selection(self.rows.len(), self.selected, delta) else {
             return;
-        }
-        let to = to as usize;
+        };
         self.rows.swap(from, to);
         self.selected = to;
         let path = self.rows[to].path.clone();
         let vault = self.vault.clone();
-        let flash_tx = tx.clone();
-        self.persist_and_reload(tx, async move {
-            match vault.move_pinned_note(&path, delta).await {
-                Ok(true) => Ok(()),
-                Ok(false) => {
-                    flash_tx
-                        .send(AppMessage::FlashMessage(format!(
-                            "pinned notes changed — could not move {path}"
-                        )))
-                        .ok();
-                    Ok(())
-                }
-                Err(e) => Err(format!("could not reorder pinned notes: {e}")),
-            }
-        });
+        self.persist_and_reload(
+            tx,
+            async move { pinned::move_by(&vault, &path, delta).await },
+        );
     }
 
     /// Unpin the selected row, persist, reload. Refuses while a previous
@@ -257,19 +219,7 @@ impl PinnedNotesDialog {
         };
         let path = row.path.clone();
         let vault = self.vault.clone();
-        let flash_tx = tx.clone();
-        self.persist_and_reload(tx, async move {
-            match vault.unpin_note(&path).await {
-                Ok(true) => Ok(()),
-                Ok(false) => {
-                    flash_tx
-                        .send(AppMessage::FlashMessage(format!("not pinned: {path}")))
-                        .ok();
-                    Ok(())
-                }
-                Err(e) => Err(format!("could not unpin {path}: {e}")),
-            }
-        });
+        self.persist_and_reload(tx, async move { pinned::unpin(&vault, &path).await });
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {

@@ -312,7 +312,7 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::search_list::{Emit, SearchRow};
+    use crate::components::search_list::{Emit, ListRow, SearchRow};
     use crate::settings::themes::Theme;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -320,6 +320,18 @@ mod tests {
 
     #[derive(Clone)]
     struct Row(String);
+    impl ListRow for Row {
+        fn match_text(&self) -> Option<&str> {
+            Some(&self.0)
+        }
+
+        fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
+            Some(crate::components::search_list::YankTarget::path(
+                self.0.clone(),
+            ))
+        }
+    }
+
     impl SearchRow for Row {
         fn to_list_item(
             &self,
@@ -329,16 +341,9 @@ mod tests {
         ) -> ratatui::widgets::ListItem<'static> {
             ratatui::widgets::ListItem::new(self.0.clone())
         }
+
         fn visual_height(&self) -> u16 {
             1
-        }
-        fn match_text(&self) -> Option<&str> {
-            Some(&self.0)
-        }
-        fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
-            Some(crate::components::search_list::YankTarget::path(
-                self.0.clone(),
-            ))
         }
     }
 

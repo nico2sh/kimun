@@ -72,7 +72,7 @@ pub fn is_remote_url(s: &str) -> bool {
 }
 
 /// Discriminates the type of an inline link found by [`link_char_spans`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkSpanKind {
     /// A `[[page]]` or `[[page|display]]` wikilink.
     WikiLink,
@@ -711,7 +711,10 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
 /// with a `#section`, `^block` or padding, markdown links with spaces in
 /// their destination or a `#section`, reference definitions. `note_path` is
 /// where the note was when its links were indexed (the renamed note's own
-/// self-links: `old_path`).
+/// self-links: `old_path`; its other relative links follow it to its new
+/// folder). `namesakes` are the vault's other notes named like `old_path`
+/// or `new_path`: an ambiguous name link is left alone, and a rewritten one
+/// names `new_path` uniquely among them.
 ///
 /// Returns `(updated_text, changed)` where `changed` is true when at least one replacement was made.
 pub(crate) fn replace_note_links(
@@ -719,8 +722,9 @@ pub(crate) fn replace_note_links(
     note_path: &VaultPath,
     old_path: &VaultPath,
     new_path: &VaultPath,
+    namesakes: &[VaultPath],
 ) -> (String, bool) {
-    let result = retarget_links(md_text, note_path, old_path, new_path);
+    let result = retarget_links(md_text, note_path, old_path, new_path, namesakes);
     let changed = result != md_text;
     (result, changed)
 }
@@ -839,7 +843,7 @@ mod test {
         nfs::VaultPath,
         note::{
             content_extractor::{get_content_chunks, get_content_data},
-            LinkType,
+            LinkType, NoteTarget,
         },
     };
 
@@ -855,7 +859,7 @@ mod test {
         let notes: Vec<String> = links
             .iter()
             .filter_map(|l| match &l.ltype {
-                super::super::LinkType::Note(p) => Some(p.to_string()),
+                super::super::LinkType::Note(t) => Some(t.path().to_string()),
                 _ => None,
             })
             .collect();
@@ -1053,7 +1057,7 @@ mod test {
     fn replace_wikilink_no_display() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("See [[old-note]].", &victim(), &old, &new);
+        let (result, changed) = replace_note_links("See [[old-note]].", &victim(), &old, &new, &[]);
         assert!(changed);
         assert_eq!(result, "See [[new-note]].");
     }
@@ -1063,7 +1067,7 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
         let (result, changed) =
-            replace_note_links("See [[old-note|my note]].", &victim(), &old, &new);
+            replace_note_links("See [[old-note|my note]].", &victim(), &old, &new, &[]);
         assert!(changed);
         assert_eq!(result, "See [[new-note|my note]].");
     }
@@ -1073,7 +1077,7 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
         let (result, changed) =
-            replace_note_links("[click](/notes/old-note.md)", &victim(), &old, &new);
+            replace_note_links("[click](/notes/old-note.md)", &victim(), &old, &new, &[]);
         assert!(changed);
         assert_eq!(result, "[click](/notes/new-note.md)");
     }
@@ -1082,7 +1086,8 @@ mod test {
     fn replace_markdown_link_filename_only() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) = replace_note_links("[click](old-note.md)", &victim(), &old, &new);
+        let (result, changed) =
+            replace_note_links("[click](old-note.md)", &victim(), &old, &new, &[]);
         assert!(changed);
         assert_eq!(result, "[click](new-note.md)");
     }
@@ -1092,7 +1097,7 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
         let text = "[[other-note]] [x](/notes/unrelated.md) [y](unrelated.md)";
-        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new, &[]);
         assert!(!changed);
         assert_eq!(result, text);
     }
@@ -1103,7 +1108,7 @@ mod test {
         let new = VaultPath::new("/notes/new-note.md");
         // Images that happen to match the name must not be touched
         let text = "![old-note.md](old-note.md)";
-        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new, &[]);
         assert!(!changed);
         assert_eq!(result, text);
     }
@@ -1113,7 +1118,7 @@ mod test {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/archive/new-note.md");
         let text = "[[old-note]] and [[old-note|read this]] plus [link](/notes/old-note.md) end.";
-        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new, &[]);
         assert!(changed);
         assert_eq!(
             result,
@@ -1143,7 +1148,7 @@ mod test {
             ("/notes/p (1).md", "[[plan]]", "[[p (1)]]"),
         ] {
             let new = VaultPath::new(new);
-            let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+            let (result, changed) = replace_note_links(text, &victim(), &old, &new, &[]);
             assert!(changed, "{text:?}");
             assert_eq!(result, expected);
         }
@@ -1158,11 +1163,198 @@ mod test {
         let new = VaultPath::new("/archive/old/plan.md");
         let text = "[a](../notes/plan.md) [b](/notes/plan.md) [c](plan.md) `[d](plan.md)`";
         let at = VaultPath::new("/journal/x.md");
-        let (result, _) = replace_note_links(text, &at, &old, &new);
+        let (result, _) = replace_note_links(text, &at, &old, &new, &[]);
         assert_eq!(
             result,
             "[a](../archive/old/plan.md) [b](/archive/old/plan.md) [c](plan.md) `[d](plan.md)`"
         );
+    }
+
+    /// A rename's link rewrites by link form, from `/journal/x.md`, with
+    /// `namesakes` the vault's other notes named like `from` or `to`.
+    #[test]
+    fn replace_rewrites_each_link_form_by_its_rules() {
+        let p = VaultPath::new;
+        let at = p("/journal/x.md");
+        type Case<'a> = (&'a str, &'a str, Vec<VaultPath>, &'a str, &'a str);
+        let cases: Vec<Case> = vec![
+            // Bare name, unique: the new name.
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![],
+                "[[dup]]",
+                "[[dup2]]",
+            ),
+            (
+                "/work/dup.md",
+                "/archive/dup2.md",
+                vec![],
+                "[[Dup#Sec|t]] ![[dup^b]]",
+                "[[dup2#Sec|t]] ![[dup2^b]]",
+            ),
+            // Bare name, ambiguous before the rename: left alone (it still
+            // leads to the other `dup`).
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![p("/dup.md")],
+                "[[dup]]",
+                "[[dup]]",
+            ),
+            // A move keeping the name: a bare name still names it alone.
+            (
+                "/work/dup.md",
+                "/archive/dup.md",
+                vec![],
+                "[[dup]]",
+                "[[dup]]",
+            ),
+            // The new name taken elsewhere: the shortest unique suffix.
+            (
+                "/work/dup.md",
+                "/work/new.md",
+                vec![p("/new.md")],
+                "[[dup]]",
+                "[[work/new]]",
+            ),
+            (
+                "/work/dup.md",
+                "/new.md",
+                vec![p("/a/new.md")],
+                "[[dup]]",
+                "[[/new]]",
+            ),
+            // A folder part: the same number of components, the folder as
+            // written when it does not change.
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![p("/dup.md")],
+                "[[Work/Dup]]",
+                "[[Work/dup2]]",
+            ),
+            (
+                "/work/dup.md",
+                "/archive/dup.md",
+                vec![p("/dup.md")],
+                "[[work/dup]]",
+                "[[archive/dup]]",
+            ),
+            (
+                "/a/work/dup.md",
+                "/b/work/dup.md",
+                vec![],
+                "[[work/dup]]",
+                "[[work/dup]]",
+            ),
+            (
+                "/work/dup.md",
+                "/archive/dup.md",
+                vec![p("/x/archive/dup.md")],
+                "[[work/dup]]",
+                "[[/archive/dup]]",
+            ),
+            // A folder part matching a namesake too: ambiguous, alone.
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![p("/a/work/dup.md")],
+                "[[work/dup]]",
+                "[[work/dup]]",
+            ),
+            // A folder part naming another note: untouched.
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![p("/other/dup.md")],
+                "[[other/dup]]",
+                "[[other/dup]]",
+            ),
+            // Wikilinks by path: absolute stays absolute, relative relative.
+            (
+                "/work/dup.md",
+                "/archive/dup2.md",
+                vec![],
+                "[[/work/dup]]",
+                "[[/archive/dup2]]",
+            ),
+            (
+                "/work/dup.md",
+                "/archive/dup2.md",
+                vec![],
+                "[[../work/dup#s]]",
+                "[[../archive/dup2#s]]",
+            ),
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![],
+                "[[../Work/dup]]",
+                "[[../Work/dup2]]",
+            ),
+            (
+                "/work/dup.md",
+                "/journal/dup.md",
+                vec![],
+                "[[../work/dup]]",
+                "[[./dup]]",
+            ),
+            // Markdown: a bare destination is a path in the linker's folder.
+            (
+                "/journal/dup.md",
+                "/journal/dup2.md",
+                vec![],
+                "[x](dup.md#s)",
+                "[x](dup2.md#s)",
+            ),
+            (
+                "/journal/dup.md",
+                "/work/dup.md",
+                vec![],
+                "[x](dup.md)",
+                "[x](../work/dup.md)",
+            ),
+            (
+                "/work/dup.md",
+                "/work/dup2.md",
+                vec![],
+                "[x](dup.md)",
+                "[x](dup.md)",
+            ),
+            (
+                "/work/dup.md",
+                "/archive/dup.md",
+                vec![],
+                "[x](/work/dup.md) [y](../work/dup.md)",
+                "[x](/archive/dup.md) [y](../archive/dup.md)",
+            ),
+        ];
+        for (from, to, namesakes, text, expected) in cases {
+            let (result, _) = replace_note_links(text, &at, &p(from), &p(to), &namesakes);
+            assert_eq!(result, expected, "{from} -> {to}, {namesakes:?}: {text}");
+        }
+    }
+
+    /// A moved note's own relative path links are rewritten from its new
+    /// folder so they keep their targets; names, absolute paths, images and
+    /// URLs stay; a rename within the folder changes none of them.
+    #[test]
+    fn replace_keeps_a_moved_notes_own_relative_links_working() {
+        let p = VaultPath::new;
+        let from = p("/work/dup.md");
+        let text = "[s](sibling.md#a) [u](../up.md) [a](/abs.md) [[./sib2]] [[../top]] \
+                    [[name]] [[dup]] ![i](pic.png) [w](https://x.org) [d](doc.pdf)";
+        let (moved, changed) =
+            replace_note_links(text, &from, &from, &p("/archive/old/dup.md"), &[]);
+        assert!(changed);
+        assert_eq!(
+            moved,
+            "[s](../../work/sibling.md#a) [u](../../up.md) [a](/abs.md) [[../../work/sib2]] \
+             [[../../top]] [[name]] [[dup]] ![i](pic.png) [w](https://x.org) [d](doc.pdf)"
+        );
+        let (renamed, _) = replace_note_links(text, &from, &from, &p("/work/dup2.md"), &[]);
+        assert_eq!(renamed, text.replace("[[dup]]", "[[dup2]]"));
     }
 
     #[test]
@@ -1170,7 +1362,7 @@ mod test {
         let old = VaultPath::new("/notes/missing.md");
         let new = VaultPath::new("/notes/also-missing.md");
         let text = "No references here at all.";
-        let (result, changed) = replace_note_links(text, &victim(), &old, &new);
+        let (result, changed) = replace_note_links(text, &victim(), &old, &new, &[]);
         assert!(!changed);
         assert_eq!(result, text);
     }
@@ -1220,7 +1412,10 @@ mod test {
         assert_eq!(1, links.len());
         let link = links.first().unwrap();
         assert_eq!("link", link.text);
-        assert_eq!(LinkType::Note(VaultPath::new("/main.md")), link.ltype);
+        assert_eq!(
+            LinkType::Note(NoteTarget::Path(VaultPath::new("/main.md"))),
+            link.ltype
+        );
     }
 
     #[test]
@@ -1234,7 +1429,10 @@ mod test {
         assert_eq!(1, links.len());
         let link = links.first().unwrap();
         assert_eq!("link", link.text);
-        assert_eq!(LinkType::Note(VaultPath::new("/notes/main.md")), link.ltype);
+        assert_eq!(
+            LinkType::Note(NoteTarget::Path(VaultPath::new("/notes/main.md"))),
+            link.ltype
+        );
     }
 
     #[test]
@@ -1252,11 +1450,12 @@ Here's a [url](https://www.example.com)"#;
         assert_eq!(3, links.len());
         // Now has an absolute path
         assert!(links.iter().any(|link| {
-            let path = VaultPath::new("/notes/main.md");
+            let path = NoteTarget::Path(VaultPath::new("/notes/main.md"));
             link.text.eq("link") && link.ltype.eq(&LinkType::Note(path))
         }));
         assert!(links.iter().any(|link| {
-            let path = VaultPath::new("note.md");
+            // A wikilink is a name: not resolved against the note's folder.
+            let path = NoteTarget::Name(VaultPath::new("note.md"));
             link.text.eq("note.md") && link.ltype.eq(&LinkType::Note(path))
         }));
         assert!(links.iter().any(|link| {
@@ -2326,7 +2525,7 @@ ls -la ./test
         let note_targets: Vec<&str> = links
             .iter()
             .filter_map(|l| match &l.ltype {
-                super::super::LinkType::Note(p) => Some(p.to_bare_string()),
+                super::super::LinkType::Note(t) => Some(t.path().to_bare_string()),
                 _ => None,
             })
             .map(|s| -> &str {

@@ -1,41 +1,32 @@
-//! Reusable single-line text input.
+//! Reusable single-line text input: the logic [`LineField`] plus its terminal
+//! drawing.
 //!
-//! Used by the editor find bar, dialogs (rename, move, quick-note), the sidebar
-//! / note-browser search boxes, and the settings workspace name field. The
-//! widget owns its value and char cursor; callers add titles, hints, validation
-//! visuals, and submit/cancel semantics on top.
+//! Used by the dialogs (rename, move, quick-note), the sidebar / note-browser
+//! search boxes, and the settings workspace name field. The editing — value,
+//! cursor, keys — is the toolkit-free [`LineField`]; this wrapper adds the
+//! crossterm key translation and the ratatui rendering ([`FieldView`]: the
+//! horizontal scroll and caret placement). Callers add titles, hints,
+//! validation visuals, and submit/cancel semantics on top. The editor's find
+//! bar paints its logic-owned fields through [`FieldView`] directly.
 //!
 //! `handle_key` returns [`InputOutcome`] so callers can branch on Submit /
 //! Cancel / textual mutation without re-matching the raw key.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
-/// Outcome of [`SingleLineInput::handle_key`] — lets callers branch without
-/// re-parsing the key event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputOutcome {
-    /// Key was consumed but the value did not change (cursor move, no-op).
-    Consumed,
-    /// Value (and possibly cursor) changed.
-    Changed,
-    /// User pressed Enter.
-    Submit,
-    /// User pressed Esc.
-    Cancel,
-    /// Key was not recognised by the widget.
-    NotConsumed,
-}
+use crate::logic::editor::line_field::{FieldOutcome, LineField};
 
-#[derive(Default)]
-pub struct SingleLineInput {
-    value: String,
-    /// Byte offset into `value`.
-    cursor: usize,
+/// Outcome of [`SingleLineInput::handle_key`] — the logic field's outcome.
+pub type InputOutcome = FieldOutcome;
+
+/// The terminal drawing state of one line field: the horizontal scroll that
+/// keeps the caret visible, and where the caret was last placed.
+#[derive(Debug, Default)]
+pub struct FieldView {
     /// Caret screen position (col, row), cached after the most recent
     /// `render` call. Used by overlays anchored on the caret (e.g. the
     /// hashtag autocomplete popup). `None` until the first render.
@@ -47,164 +38,21 @@ pub struct SingleLineInput {
     scroll_x: u16,
 }
 
-impl SingleLineInput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_value(value: impl Into<String>) -> Self {
-        let value = value.into();
-        let cursor = value.len();
-        Self {
-            value,
-            cursor,
-            last_caret_pos: None,
-            scroll_x: 0,
-        }
-    }
-
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.value.is_empty()
-    }
-
-    /// Current cursor position as a byte offset.
-    pub fn cursor_byte(&self) -> usize {
-        self.cursor
-    }
-
-    /// Caret screen position from the last `render` call, or `None` if
-    /// the widget has not been rendered yet (or was rendered unfocused).
+impl FieldView {
+    /// Caret screen position from the last `render` call, or `None` if the
+    /// field has not been rendered yet (or was rendered unfocused).
     pub fn last_caret_pos(&self) -> Option<(u16, u16)> {
         self.last_caret_pos
     }
 
-    /// Overwrite a byte `range` of the value with `new_text`, then place
-    /// the cursor at byte offset `new_cursor_byte` in the updated value.
-    /// Used by the hashtag autocomplete to apply an `AcceptAction`. All
-    /// three positions must be on char boundaries; the controller
-    /// computes them off `value` so this holds in practice — checked
-    /// via debug_assert.
-    pub fn replace_range_bytes(
-        &mut self,
-        range: std::ops::Range<usize>,
-        new_text: &str,
-        new_cursor_byte: usize,
-    ) {
-        debug_assert!(self.value.is_char_boundary(range.start));
-        debug_assert!(self.value.is_char_boundary(range.end));
-        self.value.replace_range(range, new_text);
-        let clamped = new_cursor_byte.min(self.value.len());
-        debug_assert!(
-            self.value.is_char_boundary(clamped),
-            "new_cursor_byte must land on a char boundary"
-        );
-        self.cursor = clamped;
-    }
-
-    /// Replace the value; cursor jumps to end.
-    pub fn set_value(&mut self, value: impl Into<String>) {
-        self.value = value.into();
-        self.cursor = self.value.len();
-    }
-
-    pub fn clear(&mut self) {
-        self.value.clear();
-        self.cursor = 0;
-    }
-
-    /// Take the current value, leaving the input empty — a submit path that
-    /// consumes the text without a separate `clear()` call.
-    pub fn take_text(&mut self) -> String {
-        self.cursor = 0;
-        std::mem::take(&mut self.value)
-    }
-
-    /// Codepoint count to the left of the cursor. Test-only: callers must use
-    /// [`cursor_display_col`](Self::cursor_display_col) for caret placement,
-    /// since codepoint count differs from display width for CJK / emoji.
-    #[cfg(test)]
-    pub(crate) fn cursor_char_offset(&self) -> usize {
-        self.value[..self.cursor].chars().count()
-    }
-
-    /// Display column to the left of the cursor — accounts for wide (CJK,
-    /// emoji) characters via `unicode-width`. Use this for caret placement.
-    pub fn cursor_display_col(&self) -> usize {
-        self.value[..self.cursor].width()
-    }
-
-    /// Total display width of the value — accounts for wide characters.
-    pub fn display_width(&self) -> usize {
-        self.value.width()
-    }
-
-    pub fn handle_key(&mut self, key: &KeyEvent) -> InputOutcome {
-        match (key.modifiers, key.code) {
-            (_, KeyCode::Enter) => InputOutcome::Submit,
-            (_, KeyCode::Esc) => InputOutcome::Cancel,
-            (_, KeyCode::Backspace) => {
-                if self.cursor == 0 {
-                    return InputOutcome::Consumed;
-                }
-                let prev = prev_char_boundary(&self.value, self.cursor);
-                self.value.drain(prev..self.cursor);
-                self.cursor = prev;
-                InputOutcome::Changed
-            }
-            (_, KeyCode::Delete) => {
-                if self.cursor >= self.value.len() {
-                    return InputOutcome::Consumed;
-                }
-                let next = next_char_boundary(&self.value, self.cursor);
-                self.value.drain(self.cursor..next);
-                InputOutcome::Changed
-            }
-            (_, KeyCode::Left) => {
-                if self.cursor == 0 {
-                    return InputOutcome::Consumed;
-                }
-                self.cursor = prev_char_boundary(&self.value, self.cursor);
-                InputOutcome::Consumed
-            }
-            (_, KeyCode::Right) => {
-                if self.cursor >= self.value.len() {
-                    return InputOutcome::Consumed;
-                }
-                self.cursor = next_char_boundary(&self.value, self.cursor);
-                InputOutcome::Consumed
-            }
-            (_, KeyCode::Home) => {
-                self.cursor = 0;
-                InputOutcome::Consumed
-            }
-            (_, KeyCode::End) => {
-                self.cursor = self.value.len();
-                InputOutcome::Consumed
-            }
-            // Accept only plain or Shift-modified chars; Ctrl/Alt combos are
-            // not text input and must bubble up to the caller for shortcuts.
-            (m, KeyCode::Char(c)) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-                self.value.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
-                InputOutcome::Changed
-            }
-            _ => InputOutcome::NotConsumed,
-        }
-    }
-
-    /// Render the value text at `rect` using `style`. Caller is responsible for
-    /// any surrounding chrome (borders, prompt prefix, validation glyphs).
-    /// Place the terminal cursor when `focused`. `value_offset_x` is the
-    /// display-column offset within `rect` where the value text starts (e.g.
-    /// when the caller renders a "Find: " prefix separately, pass its
-    /// display width via `UnicodeWidthStr::width`).
+    /// Render `field`'s value at `rect` using `style`. Caller is responsible
+    /// for any surrounding chrome. Place the terminal cursor when `focused`.
+    /// `value_offset_x` is the display-column offset within `rect` where the
+    /// value text starts.
     pub fn render(
         &mut self,
         f: &mut Frame,
+        field: &LineField,
         rect: Rect,
         style: Style,
         value_offset_x: u16,
@@ -215,22 +63,24 @@ impl SingleLineInput {
             width: rect.width.saturating_sub(value_offset_x),
             ..rect
         };
-        let scroll_x = self.scroll_into_view(inner.width);
+        let scroll_x = self.scroll_into_view(field, inner.width);
         f.render_widget(
-            Paragraph::new(self.value.as_str())
+            Paragraph::new(field.value())
                 .style(style)
                 .scroll((0, scroll_x)),
             inner,
         );
-        self.place_caret(f, inner, focused);
+        self.place_caret(f, field, inner, focused);
     }
 
     /// Like [`Self::render`], but with a pre-styled line (e.g. the query
     /// highlighter's output). The line must render the same text as the
-    /// input's value, so caret math stays valid.
+    /// field's value, so caret math stays valid.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_line(
         &mut self,
         f: &mut Frame,
+        field: &LineField,
         rect: Rect,
         line: ratatui::text::Line<'static>,
         base_style: Style,
@@ -242,19 +92,19 @@ impl SingleLineInput {
             width: rect.width.saturating_sub(value_offset_x),
             ..rect
         };
-        let scroll_x = self.scroll_into_view(inner.width);
+        let scroll_x = self.scroll_into_view(field, inner.width);
         f.render_widget(
             Paragraph::new(line).style(base_style).scroll((0, scroll_x)),
             inner,
         );
-        self.place_caret(f, inner, focused);
+        self.place_caret(f, field, inner, focused);
     }
 
     /// Adjust the horizontal scroll so the caret falls inside a window of
     /// `width` display columns, and return the resulting offset. Scrolls only
     /// when the caret crosses a window edge, so cursor movement inside the
     /// window leaves the text in place.
-    fn scroll_into_view(&mut self, width: u16) -> u16 {
+    fn scroll_into_view(&mut self, field: &LineField, width: u16) -> u16 {
         if width == 0 {
             self.scroll_x = 0;
             return 0;
@@ -262,10 +112,10 @@ impl SingleLineInput {
         // The caret can sit one column past the last char, so the maximum
         // useful offset keeps that extra cell — not just the last char —
         // inside the window. Also clamps stale offsets after the value shrank.
-        let total = u16::try_from(self.display_width()).unwrap_or(u16::MAX);
+        let total = u16::try_from(field.display_width()).unwrap_or(u16::MAX);
         let max_scroll = total.saturating_add(1).saturating_sub(width);
         self.scroll_x = self.scroll_x.min(max_scroll);
-        let cursor_col = u16::try_from(self.cursor_display_col()).unwrap_or(u16::MAX);
+        let cursor_col = u16::try_from(field.cursor_display_col()).unwrap_or(u16::MAX);
         if cursor_col < self.scroll_x {
             self.scroll_x = cursor_col;
         } else if cursor_col >= self.scroll_x.saturating_add(width) {
@@ -275,12 +125,12 @@ impl SingleLineInput {
     }
 
     /// Shared caret placement for both render paths.
-    fn place_caret(&mut self, f: &mut Frame, inner: Rect, focused: bool) {
+    fn place_caret(&mut self, f: &mut Frame, field: &LineField, inner: Rect, focused: bool) {
         self.last_caret_pos = None;
         if focused {
             let caret_x = inner
                 .x
-                .saturating_add((self.cursor_display_col() as u16).saturating_sub(self.scroll_x))
+                .saturating_add((field.cursor_display_col() as u16).saturating_sub(self.scroll_x))
                 .min(inner.x + inner.width.saturating_sub(1));
             f.set_cursor_position(Position {
                 x: caret_x,
@@ -291,25 +141,139 @@ impl SingleLineInput {
     }
 }
 
-fn prev_char_boundary(s: &str, from: usize) -> usize {
-    s[..from]
-        .char_indices()
-        .next_back()
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+#[derive(Default)]
+pub struct SingleLineInput {
+    field: LineField,
+    view: FieldView,
 }
 
-fn next_char_boundary(s: &str, from: usize) -> usize {
-    s[from..]
-        .char_indices()
-        .nth(1)
-        .map(|(i, _)| from + i)
-        .unwrap_or(s.len())
+impl SingleLineInput {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_value(value: impl Into<String>) -> Self {
+        Self {
+            field: LineField::with_value(value),
+            view: FieldView::default(),
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        self.field.value()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.field.is_empty()
+    }
+
+    /// Current cursor position as a byte offset.
+    pub fn cursor_byte(&self) -> usize {
+        self.field.cursor_byte()
+    }
+
+    /// Caret screen position from the last `render` call, or `None` if
+    /// the widget has not been rendered yet (or was rendered unfocused).
+    pub fn last_caret_pos(&self) -> Option<(u16, u16)> {
+        self.view.last_caret_pos()
+    }
+
+    /// Overwrite a byte `range` of the value with `new_text`, then place
+    /// the cursor at byte offset `new_cursor_byte` in the updated value.
+    /// Used by the hashtag autocomplete to apply an `AcceptAction`
+    /// ([`LineField::replace_range_bytes`]).
+    pub fn replace_range_bytes(
+        &mut self,
+        range: std::ops::Range<usize>,
+        new_text: &str,
+        new_cursor_byte: usize,
+    ) {
+        self.field
+            .replace_range_bytes(range, new_text, new_cursor_byte);
+    }
+
+    /// Replace the value; cursor jumps to end.
+    pub fn set_value(&mut self, value: impl Into<String>) {
+        self.field.set_value(value);
+    }
+
+    pub fn clear(&mut self) {
+        self.field.clear();
+    }
+
+    /// Take the current value, leaving the input empty — a submit path that
+    /// consumes the text without a separate `clear()` call.
+    pub fn take_text(&mut self) -> String {
+        self.field.take_text()
+    }
+
+    /// Codepoint count to the left of the cursor. Test-only: callers must use
+    /// [`cursor_display_col`](Self::cursor_display_col) for caret placement,
+    /// since codepoint count differs from display width for CJK / emoji.
+    #[cfg(test)]
+    pub(crate) fn cursor_char_offset(&self) -> usize {
+        self.field.cursor_char_offset()
+    }
+
+    /// Display column to the left of the cursor — accounts for wide (CJK,
+    /// emoji) characters via `unicode-width`. Use this for caret placement.
+    pub fn cursor_display_col(&self) -> usize {
+        self.field.cursor_display_col()
+    }
+
+    /// Total display width of the value — accounts for wide characters.
+    pub fn display_width(&self) -> usize {
+        self.field.display_width()
+    }
+
+    /// Translate the crossterm key and apply it ([`LineField::handle_key`]).
+    /// A key with no field meaning is [`InputOutcome::NotConsumed`].
+    pub fn handle_key(&mut self, key: &KeyEvent) -> InputOutcome {
+        match crate::keys::crossterm_input::field_key_input(key) {
+            Some(input) => self.field.handle_key(input),
+            None => InputOutcome::NotConsumed,
+        }
+    }
+
+    /// Render the value text at `rect` using `style` ([`FieldView::render`]).
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        style: Style,
+        value_offset_x: u16,
+        focused: bool,
+    ) {
+        self.view
+            .render(f, &self.field, rect, style, value_offset_x, focused);
+    }
+
+    /// Render a pre-styled line ([`FieldView::render_line`]).
+    pub fn render_line(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        line: ratatui::text::Line<'static>,
+        base_style: Style,
+        value_offset_x: u16,
+        focused: bool,
+    ) {
+        self.view.render_line(
+            f,
+            &self.field,
+            rect,
+            line,
+            base_style,
+            value_offset_x,
+            focused,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

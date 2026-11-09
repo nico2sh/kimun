@@ -5,10 +5,7 @@ use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{
-    FrontmatterFormat, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
-    is_list_property_key, property_keys_match,
-};
+use kimun_core::note::{PropertyEntry, PropertyKind};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -21,13 +18,11 @@ use crate::components::event_state::EventState;
 use crate::components::key_picker::{KeyPicker, PickerOutcome};
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
-use crate::logic::message::{AppMessage, AppTx, OverlayData};
-use crate::logic::properties::PropertyWriteError;
+#[cfg(test)]
+use crate::logic::message::OverlayData;
+use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::properties::{self as props, PropertyForm, PropertyWriteError};
 use crate::settings::themes::Theme;
-
-// ---------------------------------------------------------------------------
-// Write errors
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Dialog state
@@ -63,7 +58,7 @@ pub struct PropertiesDialog {
 enum Mode {
     List,
     ConfirmDelete(String),
-    Form(Box<PropertyForm>),
+    Form(Box<FormUi>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -121,12 +116,7 @@ impl PropertiesDialog {
         let path = self.path.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            let result = vault.get_properties(&path).await.map_err(|e| e.to_string());
-            tx.send(AppMessage::OverlayData(OverlayData::PropertiesLoaded {
-                path,
-                result,
-            }))
-            .ok();
+            let _ = props::load(&vault, path, &tx).await;
         });
     }
 
@@ -202,7 +192,7 @@ impl PropertiesDialog {
                     self.reload(tx);
                     super::spawn_property_keys(self.vault.clone(), tx);
                     if let Mode::Form(form) = &mut self.mode {
-                        form.orig_key = Some(new);
+                        form.fields.orig_key = Some(new);
                     }
                 }
                 self.show_write_error(e);
@@ -236,11 +226,7 @@ impl PropertiesDialog {
 
     /// (key, type, value) as the list shows them.
     pub(crate) fn row_cells(&self, i: usize) -> (String, String, String) {
-        let (key, value) = &self.entries[i];
-        match value {
-            Some(v) => (key.clone(), v.kind().as_str().to_string(), v.to_string()),
-            None => (key.clone(), "—".to_string(), String::new()),
-        }
+        props::row_cells(&self.entries[i])
     }
 
     fn can_write(&self) -> bool {
@@ -267,31 +253,18 @@ impl PropertiesDialog {
         let path = self.path.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            let result = vault
-                .remove_property(&path, &key)
-                .await
-                .map(|_| "property removed".to_string())
-                .map_err(PropertyWriteError::from_vault);
-            if result.is_ok() {
-                tx.send(AppMessage::NoteReloadFromDisk(path.clone())).ok();
-            }
-            tx.send(AppMessage::OverlayData(OverlayData::PropertyWritten {
-                path,
-                result,
-            }))
-            .ok();
+            let _ = props::run_delete(&vault, path, &key, &tx).await;
         });
     }
 
     fn open_add(&mut self) {
-        self.mode = Mode::Form(Box::new(PropertyForm::add(&self.known_keys)));
+        self.mode = Mode::Form(Box::new(FormUi::new(PropertyForm::add(), &self.known_keys)));
     }
 
     fn open_edit(&mut self) {
         if let Some((key, value)) = self.entries.get(self.selected) {
-            self.mode = Mode::Form(Box::new(PropertyForm::edit(
-                key,
-                value.as_ref(),
+            self.mode = Mode::Form(Box::new(FormUi::new(
+                PropertyForm::edit(key, value.as_ref()),
                 &self.known_keys,
             )));
         }
@@ -575,17 +548,6 @@ impl PropertiesDialog {
 // Form state
 // ---------------------------------------------------------------------------
 
-/// `None` = auto (let core decide against the vault's type).
-const TYPES: [Option<PropertyKind>; 7] = [
-    None,
-    Some(PropertyKind::Text),
-    Some(PropertyKind::Number),
-    Some(PropertyKind::Bool),
-    Some(PropertyKind::Date),
-    Some(PropertyKind::DateTime),
-    Some(PropertyKind::List),
-];
-
 /// Width of the form's field labels (`" Key    "`).
 const LABEL_W: u16 = 8;
 
@@ -598,33 +560,36 @@ enum FormFocus {
     Buttons,
 }
 
-struct PropertyForm {
-    /// `None` for Add; the original key for Edit.
-    orig_key: Option<String>,
-    /// The original value's kind (Edit), shown as "(currently <kind>)".
-    current_kind: Option<PropertyKind>,
-    /// The original entry had no value (YAML `due:`).
-    was_bare: bool,
-    /// The Value text the Edit form was pre-filled with (`None` for Add or a
-    /// bare key): saving it unchanged under auto writes nothing.
-    orig_text: Option<String>,
+/// The add/edit form's widgets over the logic field model
+/// ([`PropertyForm`], reached through `Deref`). The key picker and the value
+/// input own the typed text; [`FormUi::sync_fields`] copies it into the model
+/// before the model is asked anything.
+struct FormUi {
+    fields: PropertyForm,
     key: KeyPicker,
-    /// Index into TYPES; 0 = auto.
-    kind_idx: usize,
     value: SingleLineInput,
     focus: FormFocus,
     /// `[Save] [Cancel]`
     buttons: ButtonRow,
-    /// Shown under Value: core's refusal or a local check.
-    error: Option<String>,
-    /// Offered after an `auto` save was refused: retry forced to this kind.
-    store_anyway: Option<PropertyKind>,
     /// `[Store as <kind> anyway]`
     store_btn: ButtonRow,
     // Rects from the last render.
     value_rect: Option<Rect>,
     kind_prev_rect: Option<Rect>,
     kind_next_rect: Option<Rect>,
+}
+
+impl std::ops::Deref for FormUi {
+    type Target = PropertyForm;
+    fn deref(&self) -> &PropertyForm {
+        &self.fields
+    }
+}
+
+impl std::ops::DerefMut for FormUi {
+    fn deref_mut(&mut self) -> &mut PropertyForm {
+        &mut self.fields
+    }
 }
 
 /// What a form key or click asks the dialog to do once the form borrow ends.
@@ -635,22 +600,20 @@ enum FormAction {
     Cancel,
 }
 
-impl PropertyForm {
-    fn blank(orig_key: Option<String>, key: &str, known_keys: &[String]) -> Self {
-        let mut picker = KeyPicker::new(key);
+impl FormUi {
+    fn new(fields: PropertyForm, known_keys: &[String]) -> Self {
+        let mut picker = KeyPicker::new(&fields.key);
         picker.set_keys(known_keys.to_vec());
+        let value = match &fields.orig_text {
+            Some(text) => SingleLineInput::with_value(text.clone()),
+            None => SingleLineInput::new(),
+        };
         Self {
-            orig_key,
-            current_kind: None,
-            was_bare: false,
-            orig_text: None,
+            fields,
             key: picker,
-            kind_idx: 0,
-            value: SingleLineInput::new(),
+            value,
             focus: FormFocus::Key,
             buttons: ButtonRow::new(&["Save", "Cancel"]),
-            error: None,
-            store_anyway: None,
             store_btn: ButtonRow::new(&["Store anyway"]),
             value_rect: None,
             kind_prev_rect: None,
@@ -658,81 +621,21 @@ impl PropertyForm {
         }
     }
 
-    fn add(known_keys: &[String]) -> Self {
-        Self::blank(None, "", known_keys)
-    }
-
-    fn edit(key: &str, value: Option<&PropertyValue>, known_keys: &[String]) -> Self {
-        let mut form = Self::blank(Some(key.to_string()), key, known_keys);
-        match value {
-            Some(v) => {
-                form.current_kind = Some(v.kind());
-                // An empty list displays as `[]`; pre-fill it as empty.
-                let text = match v {
-                    PropertyValue::List(items) if items.is_empty() => String::new(),
-                    other => other.to_string(),
-                };
-                form.orig_text = Some(text.clone());
-                form.value = SingleLineInput::with_value(text);
-            }
-            None => form.was_bare = true,
-        }
-        form
-    }
-
-    fn kind(&self) -> Option<PropertyKind> {
-        TYPES[self.kind_idx]
-    }
-
-    /// The field as `PropertyInput` values: comma-split for a list (chosen,
-    /// or `auto` on a key that was a list or that core always keeps as a
-    /// list), one untrimmed value otherwise.
-    fn input_values(&self) -> Vec<String> {
-        let as_list = match self.kind() {
-            Some(k) => k == PropertyKind::List,
-            None => {
-                self.current_kind == Some(PropertyKind::List)
-                    || is_list_property_key(self.key.value().trim())
-            }
-        };
-        if as_list {
-            self.value
-                .value()
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        } else {
-            vec![self.value.value().to_string()]
-        }
-    }
-
-    /// The kind the input infers to: the "Store as <kind> anyway" target.
-    fn inferred_kind(&self) -> PropertyKind {
-        let v = self.input_values();
-        if v.len() > 1 {
-            PropertyKind::List
-        } else {
-            PropertyValue::infer(v.first().map_or("", String::as_str)).kind()
-        }
+    /// Copy the widgets' text into the field model.
+    fn sync_fields(&mut self) {
+        self.fields.key = self.key.value().to_string();
+        self.fields.value = self.value.value().to_string();
     }
 
     fn clear_feedback(&mut self) {
-        self.error = None;
-        self.store_anyway = None;
+        self.fields.clear_feedback();
         if self.focus == FormFocus::StoreAnyway {
             self.focus = FormFocus::Value;
         }
     }
 
     fn cycle_kind(&mut self, forward: bool) {
-        let n = TYPES.len();
-        self.kind_idx = if forward {
-            (self.kind_idx + 1) % n
-        } else {
-            (self.kind_idx + n - 1) % n
-        };
+        self.fields.cycle_kind(forward);
         self.clear_feedback();
     }
 
@@ -941,101 +844,27 @@ impl PropertiesDialog {
         let Mode::Form(form) = &mut self.mode else {
             return;
         };
-        let new_key = form.key.value().trim().to_string();
-        if new_key.is_empty() {
-            form.error = Some("key required".into());
-            form.store_anyway = None;
-            return;
-        }
-        // Add never overwrites: a key the note already has is edited instead.
-        if form.orig_key.is_none()
-            && self
-                .entries
-                .iter()
-                .any(|(k, _)| property_keys_match(k, &new_key))
-        {
-            form.error = Some(format!("'{new_key}' already exists — edit it"));
-            form.store_anyway = None;
-            return;
-        }
-        // An Edit saved as pre-filled (same key, type auto, same text) would
-        // only re-run inference on Display text: write nothing.
-        if forced.is_none()
-            && form.kind().is_none()
-            && form.orig_key.as_deref() == Some(new_key.as_str())
-            && form.orig_text.as_deref() == Some(form.value.value())
-        {
-            self.mode = Mode::List;
-            return;
-        }
-        let values = form.input_values();
-        let value_empty = values.iter().all(|v| v.trim().is_empty());
-        let renamed = form
-            .orig_key
-            .as_deref()
-            .filter(|o| *o != new_key)
-            .map(str::to_string);
-        // A bare key whose value is still empty: rename only (or nothing).
-        let rename_only = form.was_bare && value_empty;
-        if value_empty && !rename_only {
-            form.error = Some("value required".into());
-            form.store_anyway = None;
-            return;
-        }
-        if rename_only && renamed.is_none() {
-            self.mode = Mode::List;
-            return;
-        }
-        let mut input = PropertyInput::new(values).forced(forced.or(form.kind()));
-        // Edit under auto: the note's own kind is the guess when the vault
-        // has none (core still checks it against the vault's kind).
-        if let Some(kind) = form.current_kind {
-            input = input.implied(kind);
-        }
+        form.sync_fields();
+        let plan = match props::plan_write(&self.entries, form, forced) {
+            Ok(plan) => plan,
+            Err(props::FormError::Unchanged) => {
+                self.mode = Mode::List;
+                return;
+            }
+            Err(e) => {
+                form.show_refusal(&e);
+                return;
+            }
+        };
         form.clear_feedback();
-        self.pending_rename = renamed.clone().map(|old| (old, new_key.clone()));
+        self.pending_rename = plan.rename();
         self.busy = true;
         self.sync_buttons();
         let vault = self.vault.clone();
         let path = self.path.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            // Whether the file changed: the rename alone counts, even if the
-            // set after it fails.
-            let mut changed = false;
-            let result = async {
-                if let Some(old) = &renamed {
-                    // A refused rename is never a type mismatch: report it as
-                    // `Other` so the form offers no "Store as … anyway".
-                    vault
-                        .rename_property(&path, old, &new_key)
-                        .await
-                        .map_err(|e| match PropertyWriteError::from_vault(e) {
-                            PropertyWriteError::Invalid(m) => PropertyWriteError::Other(m),
-                            other => other,
-                        })?;
-                    changed = true;
-                }
-                if !rename_only {
-                    vault
-                        .set_property_from_input(&path, &new_key, &input, FrontmatterFormat::Toml)
-                        .await
-                        .map_err(PropertyWriteError::from_vault)?;
-                    changed = true;
-                }
-                Ok::<_, PropertyWriteError>("property saved".to_string())
-            }
-            .await;
-            // Sent by the task, not the result handler: the editor must
-            // reload even when the dialog closed before the result arrives.
-            if changed {
-                tx.send(AppMessage::NoteReloadFromDisk(path.clone())).ok();
-            }
-            tx.send(AppMessage::OverlayData(OverlayData::PropertyWritten {
-                path,
-                result,
-            }))
-            .ok();
+            let _ = props::run_write(&vault, path, plan, &tx).await;
         });
     }
 
@@ -1046,12 +875,8 @@ impl PropertiesDialog {
             self.error = Some(e.message().to_string());
             return;
         };
-        form.error = Some(e.message().to_string());
-        form.store_anyway = match e {
-            PropertyWriteError::Invalid(_) if form.kind().is_none() => Some(form.inferred_kind()),
-            _ => None,
-        };
-        if let Some(kind) = form.store_anyway {
+        form.sync_fields();
+        if let Some(kind) = form.show_write_error(e) {
             form.store_btn = ButtonRow::new(&[&format!("Store as {kind} anyway")]);
         }
     }
@@ -1146,8 +971,7 @@ impl PropertiesDialog {
 
         // Type cycler: ‹ kind ›   (currently <kind>)
         let kind_row = field_at(KIND_ROW);
-        let kind = form.kind().map_or("auto", PropertyKind::as_str);
-        let kind_text = format!(" {kind} ");
+        let kind_text = format!(" {} ", form.kind_label());
         let kind_w = kind_text.width() as u16;
         let kind_style = if form.focus == FormFocus::Kind {
             Style::default()

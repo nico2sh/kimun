@@ -7,19 +7,24 @@ use std::io::Read;
 
 use sha2::{Digest, Sha256};
 
+use super::UpdateError;
+use super::platform::{self, Product};
 use super::provider::LatestRelease;
-use super::{UpdateError, platform};
 
 const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
 
 /// Download the raw binary for `latest`, verify it against
 /// `checksums-sha256.txt`, and replace the currently running executable.
 ///
+/// `product` names whose binary to fetch: an app only ever replaces itself with
+/// its own asset (the terminal app's asset swapped into the desktop app would
+/// turn it into the other app).
+///
 /// The caller must ensure self-update is permitted for the install channel; the
 /// channel gate lives in [`super::InstallChannel`], not here.
-pub fn self_update(latest: &LatestRelease) -> Result<(), UpdateError> {
-    let asset_name =
-        platform::binary_asset_name(&latest.version).ok_or(UpdateError::UnsupportedPlatform)?;
+pub fn self_update(latest: &LatestRelease, product: Product) -> Result<(), UpdateError> {
+    let asset_name = platform::binary_asset_name(product, &latest.version)
+        .ok_or(UpdateError::UnsupportedPlatform)?;
 
     let binary_asset = latest
         .asset(&asset_name)

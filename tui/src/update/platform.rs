@@ -21,15 +21,69 @@ pub fn platform() -> Option<&'static str> {
     }
 }
 
-/// Name of the raw binary release asset for `version` on this platform, e.g.
-/// `kimun-0.18.0-linux-x64` (or `…-windows-x64.exe`). `None` on unsupported
-/// platforms. Must match what `build.yml` uploads.
-pub fn binary_asset_name(version: &str) -> Option<String> {
+/// Which of kimün's two apps is updating itself. Each has its own raw-binary
+/// asset on every release, and must only ever replace itself with its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Product {
+    /// The terminal app, `kimun`.
+    Terminal,
+    /// The desktop app, `kimun-gui`.
+    Desktop,
+}
+
+impl Product {
+    /// The binary's (and the asset's) name stem.
+    pub fn stem(self) -> &'static str {
+        match self {
+            Self::Terminal => "kimun",
+            Self::Desktop => "kimun-gui",
+        }
+    }
+}
+
+/// Name of the raw binary release asset of `product` for `version` on this
+/// platform, e.g. `kimun-0.18.0-linux-x64` or `kimun-gui-0.18.0-linux-x64` (or
+/// `…-windows-x64.exe`). `None` on unsupported platforms. Must match what
+/// `build.yml` uploads (and `verify-release-assets.sh` checks).
+pub fn binary_asset_name(product: Product, version: &str) -> Option<String> {
     let platform = platform()?;
     let ext = if cfg!(target_os = "windows") {
         ".exe"
     } else {
         ""
     };
-    Some(format!("kimun-{version}-{platform}{ext}"))
+    Some(format!("{}-{version}-{platform}{ext}", product.stem()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_app_has_its_own_asset_name() {
+        let Some(platform) = platform() else { return };
+        let ext = if cfg!(target_os = "windows") {
+            ".exe"
+        } else {
+            ""
+        };
+        assert_eq!(
+            binary_asset_name(Product::Terminal, "1.2.3").as_deref(),
+            Some(format!("kimun-1.2.3-{platform}{ext}").as_str())
+        );
+        assert_eq!(
+            binary_asset_name(Product::Desktop, "1.2.3").as_deref(),
+            Some(format!("kimun-gui-1.2.3-{platform}{ext}").as_str())
+        );
+    }
+
+    #[test]
+    fn the_desktop_name_is_never_the_terminals() {
+        // The terminal app's asset name is a prefix of the desktop's glob
+        // (`kimun-*`), never equal to it: an exact-name lookup cannot mix them up.
+        assert_ne!(
+            binary_asset_name(Product::Terminal, "9.9.9"),
+            binary_asset_name(Product::Desktop, "9.9.9")
+        );
+    }
 }

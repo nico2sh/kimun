@@ -769,8 +769,12 @@ impl NoteVault {
         })
     }
 
-    /// Returns all notes that contain a link pointing to `path`.
-    /// Matches both absolute vault paths and bare filename links (wikilinks).
+    /// Returns all notes that contain a link pointing to `path`: a path link
+    /// (markdown, or a wikilink written from the root or the note's folder)
+    /// to exactly this note, or a wikilink by name whose written components
+    /// end this note's path (`[[dup]]`, `[[work/dup]]` for `/a/work/dup.md`)
+    /// — see [`note::NoteTarget::matches`]. An ambiguous name link is a
+    /// backlink of every note it can point at.
     pub async fn get_backlinks(
         &self,
         path: &VaultPath,
@@ -1120,19 +1124,53 @@ impl NoteVault {
         Ok(())
     }
 
-    /// If the path looks like a specific note (has the note extension), search by name;
-    /// otherwise treat it as a directory/path query that may return many results.
-    pub async fn open_or_search(
+    /// Where a note link leads: the notes `target` matches
+    /// ([`note::NoteTarget::matches`]), looked up in the index.
+    ///
+    /// - [`note::NoteTarget::Name`] (a wikilink by name): every note named
+    ///   like it whose path ends with the written components, in any folder,
+    ///   case-insensitively; several are [`LinkResolution::Ambiguous`].
+    /// - [`note::NoteTarget::Path`]: the note at exactly that path.
+    ///
+    /// No match is [`LinkResolution::Missing`] with the path a new note
+    /// would get: a name at the vault root plus its written components
+    /// (`[[work/new]]` → `/work/new.md`), a path as it is.
+    pub async fn resolve_note_target(
         &self,
-        path: &VaultPath,
-    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        debug!("PATH: {}", path);
-        let (_parent, name) = path.get_parent_path();
-        if path.is_note_file() {
-            Ok(self.index.search_note_by_name(name).await?)
-        } else {
-            Ok(self.index.search_note_by_path(path).await?)
-        }
+        target: &note::NoteTarget,
+    ) -> Result<LinkResolution, VaultError> {
+        let mut hits = match target {
+            note::NoteTarget::Name(_) => {
+                let mut hits = self.index.search_note_by_name(target.name()).await?;
+                hits.retain(|(entry, _)| target.matches(&entry.path));
+                hits
+            }
+            note::NoteTarget::Path(path) => self.index.search_note_by_path(path).await?,
+        };
+        Ok(match hits.len() {
+            0 => LinkResolution::Missing(target.path().canonical()),
+            1 => {
+                let (entry, content) = hits.remove(0);
+                LinkResolution::Note(entry, content)
+            }
+            _ => LinkResolution::Ambiguous(hits),
+        })
+    }
+
+    /// The shortest wikilink target naming the note at `path` alone (no
+    /// brackets, no note extension): its name when no other note shares it
+    /// (`dup`), else the fewest trailing folders that tell it apart
+    /// (`work/dup`), else its vault-absolute path (`/work/dup`) when even
+    /// its whole path ends another note's.
+    pub async fn wikilink_target_for(&self, path: &VaultPath) -> Result<String, VaultError> {
+        let namesakes: Vec<VaultPath> = self
+            .index
+            .search_note_by_name(path.get_name())
+            .await?
+            .into_iter()
+            .map(|(entry, _)| entry.path)
+            .collect();
+        Ok(note::unique_wikilink(path, 1, &namesakes))
     }
 
     /// Deletes the note at `path` (backing it up first when backups are
@@ -1490,7 +1528,12 @@ impl NoteVault {
 
     /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
     /// Markdown links, and the note's own self-links) in every backlinking note
-    /// so they keep pointing at the renamed note. Fails if `to` already exists.
+    /// so they keep pointing at the renamed note. A name link that also leads
+    /// to another note of the same name is ambiguous and left alone; a
+    /// rewritten one names `to` by the shortest suffix that names it alone
+    /// (at least as many folders as written); a move keeping a unique name
+    /// rewrites no name link. After a move, the note's own relative links
+    /// are rewritten from its new folder. Fails if `to` already exists.
     /// The whole operation — locks, filesystem move, link rewrites, index
     /// commit — is `NoteRename`'s (`note_rename.rs`); see its docs for the stage order and
     /// failure atomicity.
@@ -1506,7 +1549,9 @@ impl NoteVault {
     }
 
     /// Renames the directory `from` to `to`, updating the index paths of all
-    /// notes beneath it. Fails if `to` already exists.
+    /// notes beneath it. Fails if `to` already exists. No link text is
+    /// rewritten: path links into the folder, and wikilinks naming it as a
+    /// folder part, break (a known gap).
     pub async fn rename_directory(
         &self,
         from: &VaultPath,
@@ -1621,6 +1666,17 @@ fn attachment_extension(path: &VaultPath) -> Option<String> {
     std::path::Path::new(&name)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
+}
+
+/// Where a note link leads ([`NoteVault::resolve_note_target`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkResolution {
+    /// Exactly one note matches: its index entry and content data.
+    Note(NoteEntryData, NoteContentData),
+    /// A name several notes match, in index order.
+    Ambiguous(Vec<(NoteEntryData, NoteContentData)>),
+    /// No note matches: the canonical path a new note for the link would get.
+    Missing(VaultPath),
 }
 
 /// A directory entry within the vault.
@@ -5506,6 +5562,160 @@ mod property_api_tests {
                 query.last(),
                 Some(&p("/none.md")),
                 "missing last, asc={asc}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod link_resolution_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup_vault_with_notes(dir: &std::path::Path) -> NoteVault {
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir)))
+            .await
+            .unwrap();
+        vault.validate_and_init().await.unwrap();
+        vault
+    }
+
+    // ---- resolve_note_target ----
+
+    /// A vault holding `/dup.md`, `/work/dup.md`, `/a/work/dup.md` and
+    /// `/journal/today.md` (the note links are followed from).
+    async fn link_forms_vault(dir: &std::path::Path) -> NoteVault {
+        let vault = setup_vault_with_notes(dir).await;
+        for path in [
+            "/dup.md",
+            "/work/dup.md",
+            "/a/work/dup.md",
+            "/journal/today.md",
+        ] {
+            vault
+                .save_note(&VaultPath::new(path), "body")
+                .await
+                .unwrap();
+        }
+        vault
+    }
+
+    /// What `target` resolves to, ambiguous candidates sorted by path.
+    async fn resolved(vault: &NoteVault, target: note::NoteTarget) -> (String, Vec<VaultPath>) {
+        match vault.resolve_note_target(&target).await.unwrap() {
+            LinkResolution::Note(entry, _) => ("note".into(), vec![entry.path]),
+            LinkResolution::Missing(path) => ("missing".into(), vec![path]),
+            LinkResolution::Ambiguous(hits) => {
+                let mut paths: Vec<VaultPath> = hits.into_iter().map(|(e, _)| e.path).collect();
+                paths.sort();
+                ("ambiguous".into(), paths)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_note_target_by_name_suffix_and_exact_path() {
+        let dir = TempDir::new().unwrap();
+        let vault = link_forms_vault(dir.path()).await;
+        let today = VaultPath::new("/journal/today.md");
+        let wiki = |t: &str| note::NoteTarget::from_wikilink(t, &today).unwrap();
+        let md = |t: &str| note::NoteTarget::from_markdown(t, &today).unwrap();
+        let p = |s: &str| VaultPath::new(s);
+        for (target, kind, paths) in [
+            // Name: every note whose path ends with the written components.
+            (
+                wiki("dup"),
+                "ambiguous",
+                vec![p("/a/work/dup.md"), p("/dup.md"), p("/work/dup.md")],
+            ),
+            (
+                wiki("Dup#Goals"),
+                "ambiguous",
+                vec![p("/a/work/dup.md"), p("/dup.md"), p("/work/dup.md")],
+            ),
+            (
+                wiki("work/dup"),
+                "ambiguous",
+                vec![p("/a/work/dup.md"), p("/work/dup.md")],
+            ),
+            (
+                wiki("WORK/DUP"),
+                "ambiguous",
+                vec![p("/a/work/dup.md"), p("/work/dup.md")],
+            ),
+            (wiki("a/work/dup"), "note", vec![p("/a/work/dup.md")]),
+            (wiki("today"), "note", vec![p("/journal/today.md")]),
+            // Name, missing: the vault root plus the written components.
+            (wiki("nobody"), "missing", vec![p("/nobody.md")]),
+            (wiki("work/new"), "missing", vec![p("/work/new.md")]),
+            (wiki("notwork/dup"), "missing", vec![p("/notwork/dup.md")]),
+            // Path: exact.
+            (wiki("/work/dup"), "note", vec![p("/work/dup.md")]),
+            (wiki("../work/dup"), "note", vec![p("/work/dup.md")]),
+            (md("../dup.md"), "note", vec![p("/dup.md")]),
+            (md("/a/work/dup.md#s"), "note", vec![p("/a/work/dup.md")]),
+            (md("dup.md"), "missing", vec![p("/journal/dup.md")]),
+            (
+                md("work/dup.md"),
+                "missing",
+                vec![p("/journal/work/dup.md")],
+            ),
+            (wiki("./ghost"), "missing", vec![p("/journal/ghost.md")]),
+        ] {
+            let label = format!("{target:?}");
+            assert_eq!(
+                resolved(&vault, target).await,
+                (kind.to_string(), paths),
+                "{label}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wikilink_target_for_is_the_shortest_unique_suffix() {
+        let dir = TempDir::new().unwrap();
+        let vault = link_forms_vault(dir.path()).await;
+        vault
+            .save_note(&VaultPath::new("/x/plan.md"), "body")
+            .await
+            .unwrap();
+        for (path, expected) in [
+            ("/x/plan.md", "plan"),
+            ("/journal/today.md", "today"),
+            ("/dup.md", "/dup"),
+            ("/a/work/dup.md", "a/work/dup"),
+            ("/work/dup.md", "/work/dup"),
+            // A note not indexed yet: named against the ones that are.
+            ("/b/dup.md", "b/dup"),
+        ] {
+            assert_eq!(
+                vault
+                    .wikilink_target_for(&VaultPath::new(path))
+                    .await
+                    .unwrap(),
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_note_target_finds_a_note_saved_under_another_case() {
+        let dir = TempDir::new().unwrap();
+        let vault = setup_vault_with_notes(dir.path()).await;
+        vault
+            .save_note(&VaultPath::new("/Work/Plan.md"), "body")
+            .await
+            .unwrap();
+        let at = VaultPath::new("/today.md");
+        for target in [
+            note::NoteTarget::from_wikilink("PLAN", &at).unwrap(),
+            note::NoteTarget::from_wikilink("work/plan", &at).unwrap(),
+            note::NoteTarget::from_markdown("WORK/plan.md", &at).unwrap(),
+        ] {
+            assert_eq!(
+                resolved(&vault, target).await,
+                ("note".to_string(), vec![VaultPath::new("/work/plan.md")])
             );
         }
     }

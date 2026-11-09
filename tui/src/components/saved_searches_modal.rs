@@ -8,14 +8,15 @@
 //! [`AppMessage::CloseOverlay`]; Delete removes the selected user entry.
 //!
 //! Hosts a [`SearchList`] engine: the vault load is a load-once
-//! [`RowSource`] (`reload_on_query == false`), name/index ranking is the
-//! [`Filter::Rank`] closure, the pinned backlinks row is supplied as the
-//! engine's `leading_row`, and Delete is intercepted by the modal.
+//! [`RowSource`](crate::logic::list::RowSource) (`reload_on_query == false`),
+//! name/index ranking is the [`Filter::Rank`] closure, the pinned backlinks
+//! row is supplied as the engine's `leading_row`, and Delete is intercepted by
+//! the modal. The rows, ranking and source live in
+//! [`crate::logic::saved_search`] (re-exported here).
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use kimun_core::{NoteVault, SavedSearch};
+use kimun_core::NoteVault;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,42 +26,17 @@ use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::components::search_list::{
-    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
-};
+use crate::components::search_list::{Filter, KeyReaction, SearchList, SearchMouse, SearchRow};
 use crate::keys::key_combo::KeyCombo;
 use crate::keys::{KeyBindings, key_event_to_combo};
 use crate::logic::message::{AppMessage, AppTx, SavedSearchFlow, redraw_callback};
+use crate::logic::saved_search::SavedSearchSource;
+pub use crate::logic::saved_search::{
+    SavedSearchesModel, SearchItem, VIRTUAL_BACKLINKS_NAME, VIRTUAL_BACKLINKS_QUERY,
+    rank_to_indices,
+};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-
-// ---------------------------------------------------------------------------
-// Model (pure, unit-tested)
-// ---------------------------------------------------------------------------
-
-/// One row in the modal. `index` is the 1–9 quick-select number (only the
-/// first nine USER searches get one). The virtual backlinks entry is pinned
-/// at the top (supplied as the engine's `leading_row`) and is never numbered
-/// or deletable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchItem {
-    pub index: Option<u8>,
-    pub name: String,
-    pub query: String,
-    pub is_virtual: bool,
-}
-
-impl SearchItem {
-    /// A normal (user) saved-search item with a quick-select index.
-    pub fn saved(index: u8, name: &str, query: &str) -> Self {
-        Self {
-            index: Some(index),
-            name: name.to_string(),
-            query: query.to_string(),
-            is_virtual: false,
-        }
-    }
-}
 
 impl SearchRow for SearchItem {
     fn to_list_item(&self, theme: &Theme, _icons: &Icons, _selected: bool) -> ListItem<'static> {
@@ -86,123 +62,6 @@ impl SearchRow for SearchItem {
     fn visual_height(&self) -> u16 {
         1
     }
-
-    /// The virtual backlinks row is filter-exempt: returning `None` makes the
-    /// engine keep it present regardless of the query (it is also prepended by
-    /// the engine when the rank closure drops it).
-    fn match_text(&self) -> Option<&str> {
-        if self.is_virtual {
-            None
-        } else {
-            Some(&self.name)
-        }
-    }
-
-    /// The stored query, not the display name — the query is the reusable
-    /// thing (paste it into another search, or into a note).
-    fn yank_target(&self) -> Option<crate::components::search_list::YankTarget> {
-        Some(crate::components::search_list::YankTarget::new(
-            self.query.clone(),
-            "query",
-        ))
-    }
-}
-
-pub const VIRTUAL_BACKLINKS_NAME: &str = "Backlinks (current note)";
-pub const VIRTUAL_BACKLINKS_QUERY: &str = "<{note}";
-
-pub struct SavedSearchesModel;
-
-impl SavedSearchesModel {
-    /// Build the USER rows from the vault's saved searches: the first nine get
-    /// quick-select indices 1..=9, the rest are unnumbered. The pinned virtual
-    /// backlinks row is NOT included here — the engine supplies it via
-    /// [`RowSource::leading_row`].
-    pub fn user_items(user: Vec<SavedSearch>) -> Vec<SearchItem> {
-        user.into_iter()
-            .enumerate()
-            .map(|(i, s)| SearchItem {
-                index: if i < 9 { Some((i + 1) as u8) } else { None },
-                name: s.name,
-                query: s.query,
-                is_virtual: false,
-            })
-            .collect()
-    }
-}
-
-/// Rank the rows named by `base` (indices into `rows`, USER rows only, already
-/// in list order), returning DISPLAY INDICES into `rows`. An exact leading-index
-/// match (filter parses to a u8 equal to a row's `index`) ranks that row first;
-/// otherwise a case-insensitive name substring match. Stable order preserves
-/// `base` order within a rank. Empty filter → `base` unchanged. The engine
-/// re-adds any filter-exempt rows (the virtual backlinks row) that this closure
-/// omits, so it may ignore the virtual row.
-pub fn rank_to_indices(rows: &[SearchItem], base: &[usize], filter: &str) -> Vec<usize> {
-    let f = filter.trim();
-    if f.is_empty() {
-        return base.to_vec();
-    }
-    let as_index: Option<u8> = f.parse().ok();
-    let needle = f.to_lowercase();
-    let mut ranked: Vec<(usize, u8)> = Vec::new(); // (index, rank: 0 = best)
-    for &i in base {
-        let it = &rows[i];
-        let exact_index = as_index.is_some() && it.index == as_index;
-        let name_match = it.name.to_lowercase().contains(&needle);
-        if exact_index {
-            ranked.push((i, 0));
-        } else if name_match {
-            ranked.push((i, 1));
-        }
-    }
-    // stable sort by rank keeps `base` relative order within a rank
-    ranked.sort_by_key(|(_, r)| *r);
-    ranked.into_iter().map(|(i, _)| i).collect()
-}
-
-// ---------------------------------------------------------------------------
-// RowSource
-// ---------------------------------------------------------------------------
-
-/// Loads the vault's saved searches once (`reload_on_query == false`); the
-/// local [`Filter::Rank`] narrows the set per keystroke. The virtual backlinks
-/// row is supplied by [`leading_row`](RowSource::leading_row), not the load.
-///
-/// Deletes are routed THROUGH the load (via `pending_delete`) so the delete and
-/// the subsequent list-read happen in one ordered async step — avoiding the
-/// race where a separately-spawned delete and a `reload()` interleave and the
-/// reload reads pre-delete state.
-struct SavedSearchSource {
-    vault: Arc<NoteVault>,
-    pending_delete: Arc<std::sync::Mutex<Option<String>>>,
-}
-
-#[async_trait]
-impl RowSource<SearchItem> for SavedSearchSource {
-    async fn load(&self, _query: &str, emit: Emit<SearchItem>) {
-        // Drain any pending delete BEFORE listing, so the list read below is
-        // ordered strictly after the delete completes.
-        let to_delete = self.pending_delete.lock().unwrap().take();
-        if let Some(name) = to_delete {
-            self.vault.delete_saved_search(&name).await.ok();
-        }
-        let user = self.vault.list_saved_searches().await.unwrap_or_default();
-        emit.replace(SavedSearchesModel::user_items(user));
-    }
-
-    fn leading_row(&self, _query: &str) -> Option<SearchItem> {
-        Some(SearchItem {
-            index: None,
-            name: VIRTUAL_BACKLINKS_NAME.to_string(),
-            query: VIRTUAL_BACKLINKS_QUERY.to_string(),
-            is_virtual: true,
-        })
-    }
-
-    fn reload_on_query(&self) -> bool {
-        false
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,10 +83,7 @@ impl SavedSearchesModal {
             .expect("Delete maps to a key combo");
         let pending_delete = Arc::new(std::sync::Mutex::new(None));
         let list = SearchList::builder(
-            SavedSearchSource {
-                vault,
-                pending_delete: pending_delete.clone(),
-            },
+            SavedSearchSource::new(vault, pending_delete.clone()),
             redraw_callback(tx),
         )
         .filter(Filter::Rank(Arc::new(rank_to_indices)))
@@ -410,81 +266,6 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         modal.list.poll();
-    }
-
-    #[test]
-    fn user_items_skip_virtual_and_number_first_nine() {
-        let user: Vec<SavedSearch> = (0..11)
-            .map(|i| SavedSearch {
-                name: format!("s{i}"),
-                query: format!("#{i}"),
-            })
-            .collect();
-        let items = SavedSearchesModel::user_items(user);
-        // No virtual row here — it is supplied by leading_row.
-        assert!(items.iter().all(|i| !i.is_virtual));
-        assert_eq!(items[0].index, Some(1));
-        assert_eq!(items[8].index, Some(9));
-        assert_eq!(items[9].index, None); // 10th user search unnumbered
-    }
-
-    /// Every index into `items`, in order — the `base` a list with no
-    /// `order_by` hands the ranker.
-    fn all(items: &[SearchItem]) -> Vec<usize> {
-        (0..items.len()).collect()
-    }
-
-    #[test]
-    fn rank_exact_index_first() {
-        let items = vec![
-            SearchItem::saved(1, "todo", "#todo"),
-            SearchItem::saved(2, "backlinks-ish", "<{note}"),
-            SearchItem::saved(3, "two-things", "#a"),
-        ];
-        let idx = rank_to_indices(&items, &all(&items), "2");
-        assert_eq!(items[idx[0]].name, "backlinks-ish"); // index 2 wins
-        let idx = rank_to_indices(&items, &all(&items), "tod");
-        assert_eq!(items[idx[0]].name, "todo");
-    }
-
-    #[test]
-    fn rank_empty_filter_returns_all_in_order() {
-        let items = vec![
-            SearchItem::saved(1, "a", "#a"),
-            SearchItem::saved(2, "b", "#b"),
-        ];
-        let idx = rank_to_indices(&items, &all(&items), "");
-        assert_eq!(idx, vec![0, 1]);
-    }
-
-    /// The ranker never re-derives the candidate set: it walks `base`, so a
-    /// list order (or a narrower candidate set) reaches the ranked output.
-    #[test]
-    fn rank_honors_the_base_order_within_a_rank() {
-        let items = vec![
-            SearchItem::saved(1, "todo-a", "#a"),
-            SearchItem::saved(2, "todo-b", "#b"),
-            SearchItem::saved(3, "todo-c", "#c"),
-        ];
-        // Same rank for all three (name substring), reversed base order.
-        let idx = rank_to_indices(&items, &[2, 1, 0], "todo");
-        assert_eq!(idx, vec![2, 1, 0]);
-        // A base that omits a row omits it from the result.
-        let idx = rank_to_indices(&items, &[0, 2], "todo");
-        assert_eq!(idx, vec![0, 2]);
-        // An empty filter passes `base` straight through.
-        assert_eq!(rank_to_indices(&items, &[1, 0], ""), vec![1, 0]);
-    }
-
-    #[test]
-    fn rank_name_substring_only_matches() {
-        let items = vec![
-            SearchItem::saved(1, "todo", "#todo"),
-            SearchItem::saved(2, "ideas", "#ideas"),
-        ];
-        let idx = rank_to_indices(&items, &all(&items), "ide");
-        assert_eq!(idx.len(), 1);
-        assert_eq!(items[idx[0]].name, "ideas");
     }
 
     #[tokio::test(flavor = "multi_thread")]

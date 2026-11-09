@@ -1,38 +1,38 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::logic::message::AppTx;
-use crate::settings::EditorBackendSetting;
+use crate::logic::preferences::{PreferencesModel, backend_label};
 use crate::settings::themes::Theme;
 
 use super::{ClickMap, text_rect};
-use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
-
-const MIN_AUTOSAVE_SECS: u64 = 5;
-const MAX_AUTOSAVE_SECS: u64 = 300;
-const STEP: u64 = 5;
 
 const ROW_AUTOSAVE: usize = 0;
 const ROW_BACKEND: usize = 1;
 const ROW_COUNT: usize = 2;
 
+/// The Editor section: autosave interval and editor backend. The values
+/// live in the [`PreferencesModel`] (ranges, steps and the backend cycle
+/// with them); this holds the selection and the click targets.
 pub struct EditorSection {
-    pub autosave_interval_secs: u64,
-    pub editor_backend: EditorBackendSetting,
     selected_row: usize,
     clicks: ClickMap,
 }
 
+impl Default for EditorSection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditorSection {
-    pub fn new(autosave_interval_secs: u64, editor_backend: EditorBackendSetting) -> Self {
+    pub fn new() -> Self {
         Self {
-            autosave_interval_secs,
-            editor_backend,
             selected_row: ROW_AUTOSAVE,
             clicks: ClickMap::default(),
         }
@@ -68,44 +68,12 @@ impl EditorSection {
         ])
     }
 
-    fn cycle_backend(b: EditorBackendSetting, forward: bool) -> EditorBackendSetting {
-        use EditorBackendSetting::*;
-        if forward {
-            match b {
-                Plain => Vim,
-                Vim => Nvim,
-                Nvim => Plain,
-            }
-        } else {
-            match b {
-                Plain => Nvim,
-                Vim => Plain,
-                Nvim => Vim,
-            }
-        }
-    }
-
-    fn backend_label(b: EditorBackendSetting) -> &'static str {
-        match b {
-            EditorBackendSetting::Plain => "Plain",
-            EditorBackendSetting::Vim => "Vim (built-in)",
-            EditorBackendSetting::Nvim => "Nvim (external)",
-        }
-    }
-
-    fn adjust_autosave(&mut self, increase: bool) {
-        self.autosave_interval_secs = if increase {
-            (self.autosave_interval_secs + STEP).min(MAX_AUTOSAVE_SECS)
-        } else {
-            self.autosave_interval_secs
-                .saturating_sub(STEP)
-                .max(MIN_AUTOSAVE_SECS)
-        };
-    }
-}
-
-impl Component for EditorSection {
-    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    pub fn handle_input(
+        &mut self,
+        event: &InputEvent,
+        model: &mut PreferencesModel,
+        _tx: &AppTx,
+    ) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -121,27 +89,34 @@ impl Component for EditorSection {
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 match self.selected_row {
-                    ROW_AUTOSAVE => self.adjust_autosave(false),
-                    _ => self.editor_backend = Self::cycle_backend(self.editor_backend, false),
+                    ROW_AUTOSAVE => model.step_autosave(false),
+                    _ => model.cycle_backend(false),
                 }
                 EventState::Consumed
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 match self.selected_row {
-                    ROW_AUTOSAVE => self.adjust_autosave(true),
-                    _ => self.editor_backend = Self::cycle_backend(self.editor_backend, true),
+                    ROW_AUTOSAVE => model.step_autosave(true),
+                    _ => model.cycle_backend(true),
                 }
                 EventState::Consumed
             }
             KeyCode::Enter | KeyCode::Char(' ') if self.selected_row == ROW_BACKEND => {
-                self.editor_backend = Self::cycle_backend(self.editor_backend, true);
+                model.cycle_backend(true);
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        rect: Rect,
+        theme: &Theme,
+        focused: bool,
+        model: &PreferencesModel,
+    ) {
         let border_style = theme.border_style(focused);
         let block = Block::default()
             .title("Editor")
@@ -189,7 +164,7 @@ impl Component for EditorSection {
         let autosave = self.stepper(
             rows[1],
             ROW_AUTOSAVE,
-            &format!("{}s", self.autosave_interval_secs),
+            &format!("{}s", model.autosave_interval_secs),
             theme,
         );
         f.render_widget(Paragraph::new(autosave).style(autosave_style), rows[1]);
@@ -199,7 +174,7 @@ impl Component for EditorSection {
         let backend = self.stepper(
             rows[4],
             ROW_BACKEND,
-            Self::backend_label(self.editor_backend),
+            backend_label(model.editor_backend),
             theme,
         );
         f.render_widget(Paragraph::new(backend).style(backend_style), rows[4]);
@@ -215,6 +190,8 @@ impl Component for EditorSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logic::preferences::{AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS};
+    use crate::settings::EditorBackendSetting;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> InputEvent {
@@ -226,113 +203,127 @@ mod tests {
         })
     }
 
-    fn section() -> EditorSection {
-        EditorSection::new(10, EditorBackendSetting::Plain)
+    fn model(secs: u64, backend: EditorBackendSetting) -> PreferencesModel {
+        let mut m = PreferencesModel::new(&crate::settings::AppSettings::default());
+        m.autosave_interval_secs = secs;
+        m.editor_backend = backend;
+        m
     }
 
     #[test]
     fn right_increases_interval_by_step() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Right), &tx);
-        assert_eq!(section.autosave_interval_secs, 15);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Right), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, 15);
     }
 
     #[test]
     fn left_decreases_interval_by_step() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Left), &tx);
-        assert_eq!(section.autosave_interval_secs, 5);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Left), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, 5);
     }
 
     #[test]
     fn left_clamps_at_min() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = EditorSection::new(5, EditorBackendSetting::Plain);
-        section.handle_input(&key(KeyCode::Left), &tx);
-        assert_eq!(section.autosave_interval_secs, MIN_AUTOSAVE_SECS);
+        let mut section = EditorSection::new();
+        let mut m = model(5, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Left), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, AUTOSAVE_MIN_SECS);
     }
 
     #[test]
     fn right_clamps_at_max() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = EditorSection::new(298, EditorBackendSetting::Plain);
-        section.handle_input(&key(KeyCode::Right), &tx);
-        assert_eq!(section.autosave_interval_secs, MAX_AUTOSAVE_SECS);
+        let mut section = EditorSection::new();
+        let mut m = model(298, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Right), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, AUTOSAVE_MAX_SECS);
     }
 
     #[test]
     fn l_key_increases_interval() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Char('l')), &tx);
-        assert_eq!(section.autosave_interval_secs, 15);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Char('l')), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, 15);
     }
 
     #[test]
     fn h_key_decreases_interval() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Char('h')), &tx);
-        assert_eq!(section.autosave_interval_secs, 5);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Char('h')), &mut m, &tx);
+        assert_eq!(m.autosave_interval_secs, 5);
     }
 
     #[test]
     fn down_selects_backend_row_and_right_cycles() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Down), &tx);
-        section.handle_input(&key(KeyCode::Right), &tx);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Vim);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Right), &mut m, &tx);
+        assert_eq!(m.editor_backend, EditorBackendSetting::Vim);
         // autosave untouched while on the backend row
-        assert_eq!(section.autosave_interval_secs, 10);
+        assert_eq!(m.autosave_interval_secs, 10);
     }
 
     #[test]
     fn backend_cycle_wraps_forward() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Down), &tx);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
         for expected in [
             EditorBackendSetting::Vim,
             EditorBackendSetting::Nvim,
             EditorBackendSetting::Plain,
         ] {
-            section.handle_input(&key(KeyCode::Right), &tx);
-            assert_eq!(section.editor_backend, expected);
+            section.handle_input(&key(KeyCode::Right), &mut m, &tx);
+            assert_eq!(m.editor_backend, expected);
         }
     }
 
     #[test]
     fn backend_cycle_reverses_with_left() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Down), &tx);
-        section.handle_input(&key(KeyCode::Left), &tx);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Nvim);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Left), &mut m, &tx);
+        assert_eq!(m.editor_backend, EditorBackendSetting::Nvim);
     }
 
     #[test]
     fn enter_cycles_backend_only_on_its_row() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
         // On the autosave row Enter is not consumed and changes nothing.
-        let state = section.handle_input(&key(KeyCode::Enter), &tx);
+        let state = section.handle_input(&key(KeyCode::Enter), &mut m, &tx);
         assert_eq!(state, EventState::NotConsumed);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Plain);
+        assert_eq!(m.editor_backend, EditorBackendSetting::Plain);
         // On the backend row it cycles.
-        section.handle_input(&key(KeyCode::Down), &tx);
-        section.handle_input(&key(KeyCode::Enter), &tx);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Vim);
+        section.handle_input(&key(KeyCode::Down), &mut m, &tx);
+        section.handle_input(&key(KeyCode::Enter), &mut m, &tx);
+        assert_eq!(m.editor_backend, EditorBackendSetting::Vim);
     }
 
     #[test]
     fn row_navigation_wraps() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut section = section();
-        section.handle_input(&key(KeyCode::Up), &tx); // wraps to backend row
-        section.handle_input(&key(KeyCode::Char(' ')), &tx);
-        assert_eq!(section.editor_backend, EditorBackendSetting::Vim);
+        let mut section = EditorSection::new();
+        let mut m = model(10, EditorBackendSetting::Plain);
+        section.handle_input(&key(KeyCode::Up), &mut m, &tx); // wraps to backend row
+        section.handle_input(&key(KeyCode::Char(' ')), &mut m, &tx);
+        assert_eq!(m.editor_backend, EditorBackendSetting::Vim);
     }
 }

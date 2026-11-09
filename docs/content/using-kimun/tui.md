@@ -76,7 +76,7 @@ Every `#tag` in the vault with its note count, filterable. Enter (or click) runs
 
 ### LINKS
 
-Link context for the open note, in three sub-tabs: backlinks, outgoing, and unlinked (mentions of the note's name that don't link to it). Switch tabs with `b` / `o` / `u`, `←`/`→`, or by clicking the tab name. Enter opens the selected note; right-click opens its file-operations menu.
+Link context for the open note, in three sub-tabs: backlinks, outgoing, and unlinked (mentions of the note's name that don't link to it). Switch tabs with `b` / `o` / `u`, `←`/`→`, or by clicking the tab name. Enter opens the selected note; right-click opens its file-operations menu. Outgoing lists each note a link [points at](@/using-kimun/search.md#how-links-point-at-notes): every match of a name several notes share, and the path a missing note would get (Enter offers to create it).
 
 ### OUTLINE
 
@@ -105,14 +105,17 @@ The editor styles Markdown in place. The text stays plain, editable source, and 
 - The cursor line shows the raw markup for editing.
 - An empty note shows a ghost tip (`Type to start · [[ to link · # to tag · Ctrl+B for commands`) that disappears on the first keystroke.
 
-When the cursor enters a link or tag, status line 2 shows where it goes: `→ people/maria · 3 backlinks` or `→ #tag · tag query`.
+When the cursor enters a link or tag, status line 2 shows where it goes: `→ people/maria · 3 backlinks` or `→ #tag · tag query`. The count is the backlinks of the note the link opens; a link several notes match, or none, shows no count.
 
 ### Following links
 
 With the cursor on a link, `Ctrl+Enter` follows it. `Ctrl+N` does the same, for terminals that can't distinguish Ctrl+Enter from Enter.
 
-- **Wikilink**: opens the note (or a picker if several match). Relative paths and `#fragment` suffixes resolve correctly.
-- **Markdown link**: same as a wikilink. A URL opens in your browser, and an image opens in your image viewer.
+- **Wikilink**: opens the note it names, in any folder (or a picker if several match). Folders narrow the name from the end: `[[work/plan]]` finds `/work/plan.md` or `/a/work/plan.md` from anywhere. `[[/work/plan]]`, `[[./plan]]` and `[[../work/plan]]` are exact paths. A `#fragment` doesn't change the note.
+- **Markdown link**: an exact path, relative to the note's folder: `[text](plan.md)` is the `plan.md` beside it, never a note elsewhere. A URL opens in your browser, an image in your image viewer, and a link to any other file (`[report](files/report.pdf)`) in its default program.
+- A link to no note offers to create it.
+
+See [How links point at notes](@/using-kimun/search.md#how-links-point-at-notes) for the full rules.
 - **`#tag`**: opens the query search pre-filled with that tag.
 
 ### Find in buffer

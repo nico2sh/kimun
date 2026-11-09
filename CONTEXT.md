@@ -155,13 +155,25 @@ _Avoid_: global replace, bulk replace, replace everything.
 ### Search
 
 **Note link**:
-A note→note reference inside a note's body — either a `[[wikilink]]` or a markdown link resolving to a vault note. Attachments, images, and external URLs are *not* note links. Only note links participate in the **link filter**.
+A note→note reference inside a note's body — either a **wikilink** or a **markdown link** resolving to a vault note. Attachments, images, and external URLs are *not* note links (nor is a wikilink naming a non-note file, `![[pic.png]]`). Only note links participate in the **link filter**. What it points at is read by its **link form**; a link several notes answer to is **ambiguous** and counts as a link to each of them.
+
+**Wikilink**:
+A `[[target]]` (or `![[target]]` embed) **note link** that names a note. A bare name (`[[plan]]`) means every note of that name, in any folder; a name with folder parts (`[[work/plan]]`) narrows it to the notes whose path ends with those parts (`/work/plan.md`, `/a/work/plan.md`, never `/notwork/plan.md`). Written from the root (`[[/work/plan]]`) or from the note's own folder (`[[./plan]]`, `[[../work/plan]]`), it is an exact path instead. A `#section` / `^block` never changes which note it names.
+_Avoid_: internal link, wiki link (two words).
+
+**Markdown link**:
+A `[text](destination)` **note link** whose destination is a path, never a name: relative to the linking note's folder (a bare `[x](plan.md)` is the `plan.md` beside it), or vault-absolute with a leading `/`. It never matches a note in another folder. A markdown link to a file that is no note is an attachment link, opened with the OS default program.
+_Avoid_: md link, path link (a wikilink can be a path too).
+
+**Link form**:
+How a **note link** points at a note: by *name* (a wikilink's name or name-with-folder-parts, matched against the end of every note's path) or by *path* (a markdown link, or a `/`, `./`, `../` wikilink, matched exactly). The bracket style only decides the form; everything downstream sees the form. Resolved when it is read — following, backlinks, the **link filter** — against the notes that exist then, so a link written before its note exists starts pointing at it once it is made. A name several notes share is **ambiguous**: following it offers a choice, and it is a backlink of each candidate. A link no note answers to is *missing*: following it offers to create the note (at the vault root plus the written folders for a name; at the exact path for a path).
+_Avoid_: link target (that is the **follow target**'s raw text), link type (the core enum that also covers attachments and URLs).
 
 **Link filter**:
 A search operator that selects notes by the note links between them, in one of two directions (the full operator alphabet is in the user docs). The arrow points **relative to the named note**:
 - **Backlinks** — `<X` / `lk:X` — notes whose body contains a note link **to** X (links pointing *into* X).
 - **Forward links** — `>X` / `fwd:X` — the notes that **X links to** (links pointing *out* of X).
-The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
+`X` is read as a **wikilink** typed at the vault root: a bare name matches by note name in any folder, a name with folder parts matches as a path ending, a leading `/` is an exact path (extension optional, case-insensitive, `*` wildcards). A link and `X` match when they can point at the same note, so `<work/plan` also finds the notes whose `[[plan]]` is ambiguous.
 _Avoid_: backlink search (names only one direction), `>`/`@` (the superseded chars).
 
 **Query variable**:
@@ -217,7 +229,7 @@ _Avoid_: yank text (loses the noun), copyable field, clipboard value (collides w
 The seam that supplies the query input's autocomplete with candidates (note names for `>`, tag labels for `#`), kept separate from the **row source** and from the vault so the autocomplete host is testable in isolation.
 
 **Query panel**:
-The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
+The FIND **drawer view**: a query input over the list of notes matching the active query, each row with the paragraph that matched, and a **Preview pane** for the selected row. One per window, so its query survives hiding and showing the view. A query naming the open note (`{note}`, a bare `<`) follows the open note. Any spelling of the backlinks query `<{note}` titles it "Backlinks"; any other query titles it with the query, or with the **saved-search breadcrumb**.
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 **Preview pane**:
@@ -234,8 +246,12 @@ _Avoid_: action (collides with `ActionShortcuts`, one input to classification), 
 Which editor-internal surface currently holds input — the **find bar**, the autocomplete popup, or nothing. Part of the snapshot the **Intent** classifier reads, so ownership is decided once, inside the classifier, instead of being re-asserted per event kind further down. The holder is named rather than merely counted, because what a claim blocks differs by holder: the find bar blocks a paste, a click and a bare Space; the popup wants all three. A claim decides *ownership* only — the holder still decides what the event does.
 _Avoid_: capture (taken by the mouse-capture toggle), focus (collides with panel focus and **list focus**), lock/grab.
 
+**Leader route**:
+What a fired leader leaf means — open an **Overlay**, reveal a **drawer view**, open a dialog about the open note, refuse with "no note open", copy, format, save, quit, run a background job, or flash "coming soon". Decided once by a pure function over a small snapshot of the screen (`logic::leader_route::route(action, facts)`), shared by every door onto a leaf (the leader sequence, the command palette, vim `:`) and by both frontends; each frontend then *performs* the route with its own surfaces. Data only, so the decision is table-tested and the performer is a mechanical match.
+_Avoid_: command (collides with **Vim command**), intent (the classifier's **Intent**), action (the leaf itself, `LeaderAction`), dispatch.
+
 **Follow target**:
-What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
+What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note, with its kind — wikilink, markdown link or image — which decides its **link form**) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
 _Avoid_: link target (silent about labels), note target (a link is often not a note at all).
 
 ### App shell
@@ -267,19 +283,39 @@ The fixed-width icon strip on the far left of the editor screen. Each cell names
 _Avoid_: sidebar (the pre-rail name for the file browser), icon bar, toolbar.
 
 **Drawer**:
-The single panel between the **Activity rail** and the editor; renders whichever **drawer view** is active. Toggleable (Ctrl-T) — hiding it gives its width to the editor — and divider-drag resizable. Exactly one drawer renders at a time.
-_Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel.
+The TUI's single panel between the **Activity rail** and the editor, holding **drawer views**. Toggleable (Ctrl-T) — hiding it gives its width to the editor — and divider-drag resizable. The GUI has no drawers: its layout is a tree of **slots** and **editor groups** (see **Layout tree**).
+_Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel, dock.
+
+**Layout tree**:
+The GUI's arrangement of the window to the right of the **Activity rail**: a recursive tree whose leaves are **slots** and **editor groups** and whose inner nodes split their area along an axis by relative weight. It always contains at least one editor group; the rail sits outside it. The built-in default arrangement reproduces today's layout (a left slot, the editor, an empty right slot, which takes no space until opened). Authored as named presets, nested to match the tree, in their own file, `layouts.toml` beside `config.toml`, which the app reads but never writes; applying a preset copies it into the live layout, which `config.toml` keeps as dragged and toggled along with the active preset's name. Resetting to the default restores the built-in arrangement and forgets the preset's name. When the window is too small for every minimum, slots collapse (never an editor group); collapse is recomputed from the window size, lasts only for the session and never changes the saved layout. The TUI does not use it.
+_Avoid_: layout (too broad), dock layout, panel tree.
+
+**Slot**:
+A leaf of the **layout tree** that holds **drawer views**. Each view has a **placement**: the slot it lives in. Several views may share a slot, like tabs, but at most one per slot is **shown**; showing a view hides whichever view shares its slot, which stays placed there and comes back when shown again. Hiding a view only clears its shown flag, never its placement, so it returns to the same slot, also after a restart. A view is in at most one slot; placing it elsewhere moves it rather than duplicating it. A slot with no shown view takes no space unless it was just opened (by a side toggle or a split), in which case it is drawn showing a hint (an **empty slot**) until a view lands in it or it closes; that opened state lasts only for the session. Closing a slot never loses a view: its views join the nearest slot of the sibling subtree that takes over the freed area, arriving hidden, so the screen changes only by the freed space.
+_Avoid_: drawer slot (the drawer is TUI-only now), pane, tab.
 
 **Drawer view**:
-What the **Drawer** can show: FILES (the file browser, formerly the sidebar), FIND (the **Query panel**), TAGS, LINKS, OUTLINE, CFG. The rail and the drawer stay in step through the view, not through panel identities.
+What the TUI's **Drawer**, or a GUI **slot**, can show: FILES (the file browser, formerly the sidebar), FIND (the **Query panel**), SEM, TAGS, LINKS, OUTLINE, CFG, and in the GUI ASK (the **Ask workspace**; the TUI's ASK swaps its drawer and editor area instead). The rail and the drawer or slots stay in step through the view, not through panel identities.
 
 **Open-note marker**:
 The accent recoloring of a FILES-list row's type glyph that flags the note currently open in the editor. Lives only in the editor's FILES **drawer view** — Browse never has an open note. Driven by the sidebar's tracked open-note path, matched by `is_like`, and re-applied after every listing (re)load. Distinct from selection (the navigation cursor's row highlight): a row can be selected, open, both, or neither.
 _Avoid_: active note (collides with the focused **Panel** / selection), current note (that is the `{note}` **query variable** — the open note's clean name).
 
 **PanelSet**:
-The fixed left→right collection of the editor screen's **Panels** (rail → drawer → editor); owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
+The collection of the editor screen's **Panels**. In the TUI a fixed left→right line (rail → drawer → editor); in the GUI the rail plus the **layout tree**. Owns which panel is focused, drawer visibility and width, and focus cycling, and routes input and render to the focused panel. Focus cycles over the visible panels or regions, wrapping at both ends. The persistent-surface counterpart to the **OverlayHost**.
 _Avoid_: panel manager, layout, panel stack.
+
+**Zoom**:
+A layout state in which one focused **drawer view** (or the editor) takes over everything to the right of the **Activity rail** — every other **slot**, every **editor group** and the splits between them — while the footer stays to carry the exit hint. Available to any view, not only Ask. It is not a placement: the zoomed view keeps its slot, nothing is moved or hidden in the layout, and leaving zoom restores the previous arrangement exactly. Zoom ends by its own chord or the footer's restore button, or when a command gives another leaf the keyboard (a rail click into another slot, opening a note from the zoomed view, a side toggled on); Esc, the focus cycle and directional focus never end it. Session-only, never saved.
+_Avoid_: maximize, fullscreen (names the OS window), tab (a persistent second instance in the editor area, a separate later feature tied to **editor group** splitting).
+
+**Editor group**:
+A leaf of the **layout tree** (GUI) holding one piece of content at a time — a note editor or an **attachment view**. Each group has its own editor, find bar and open note. In the TUI the editor Panel is one group. The tree always holds at least one; until group splitting exists there is exactly one.
+_Avoid_: pane (collides with the editor's viewport and the **Preview pane**), split (that is the act, not the region), tab.
+
+**Active group**:
+The **editor group** that owns the keyboard when the editor Panel is focused, and that save, the footer and the `{note}` **query variable** follow. Exactly one at a time.
+_Avoid_: focused group (focus is a **Panel** property).
 
 **Overlay**:
 A transient, modal surface drawn on top of the **Panels** — the **note browser**, the **Saved Searches modal**, or a dialog. Captures all input while open; closing restores focus to the panel that opened it.
@@ -296,15 +332,15 @@ _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation resul
 ### GUI
 
 **GUI**:
-The native desktop frontend built on egui, a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawer, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
-_Avoid_: desktop app, egui app, GUI TUI (it is not a terminal emulator hosting the TUI).
+The native desktop frontend built on GPUI (the `gpui-kit` crate), a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawers or slots, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
+_Avoid_: desktop app, egui app, GPUI app, GUI TUI (it is not a terminal emulator hosting the TUI).
 
 **Logic layer**:
-A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm or egui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
+A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm, egui or gpui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.
 _Avoid_: model (collides with the **Edit buffer**'s avoid list), view (collides with **drawer view**), backend (collides with **Editor backend**), core (that is the vault crate).
 
 **Renderer**:
-A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, `egui::Event`) into its intents. One per frontend per feature.
+A frontend's code for one feature: draws the **Logic layer**'s state and turns raw input (crossterm, GPUI events) into its intents. One per frontend per feature.
 _Avoid_: view, widget, component (too generic).
 
 **Editor display**:
@@ -336,7 +372,7 @@ What a component or background task tells the app (open a note, autosave complet
 _Avoid_: event (ambiguous with input events), command (the **Vim command** and palette actions are different things).
 
 **Edit surface**:
-The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not egui's `TextEdit`, which has no motion layer and cannot host the vim engine.
+The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not a toolkit text-edit widget, which has no motion layer and cannot host the vim engine.
 _Avoid_: text box, text area, TextEdit.
 
 **Key input**:
@@ -350,11 +386,11 @@ _Avoid_: auto-save (that is the note **autosave**), live setting.
 ### Ask
 
 **Ask workspace**:
-The question-answering surface, entered from its own **Activity rail** entry: selecting ASK swaps the **Drawer** to the conversation's sources and the editor area to the conversation itself. Not an **Overlay** (the superseded ask surface was) and not a separate screen — it reuses the editor screen's panel layout, the same way the **attachment view** reuses the editor area. The rail entry is only offered when the **Kimün server** is reachable *and* has an LLM configured (full capability) — a *semantic-only* or **unconfigured** server never shows it. Losing that capability mid-use never evicts the user: an open Ask workspace stays readable (its answers are already local) with asking disabled until capability returns; only the rail entry disappears.
-_Avoid_: RAG screen (RAG names the technique, not the surface), ask overlay (the superseded modal), ask view (underspecified — it is a drawer view *plus* an editor-area content).
+The question-answering surface. In the GUI it is a single **drawer view**, ASK: the **Thread**, with the **Sources view** and **Source reader** folded in as a part that expands in place under the selected **Turn**. Toggled from its own **Activity rail** entry like any other view, placed in a **slot** on the right by default, and kept in the saved layout like any other view; it never replaces the editor area, so the open note stays visible. **Zoom** gives it the full width for reading. The TUI keeps the older pair: selecting ASK swaps its **Drawer** to the Sources view and its editor area to the Thread. Not an **Overlay** (the superseded ask surface was) and not a separate screen. The rail entry is only offered when the **Kimün server** is reachable *and* has an LLM configured (full capability) — a *semantic-only* or **unconfigured** server never shows it. Losing that capability mid-use never evicts the user: an open Ask workspace stays readable (its answers are already local) with asking disabled until capability returns; only the rail entry disappears. Likewise a GUI layout that places ASK shows it, read-only, while the server lacks the capability: an empty Thread with asking disabled.
+_Avoid_: RAG screen (RAG names the technique, not the surface), ask overlay (the superseded modal), ask view (the pre-zoom name for the two-part drawer-plus-editor-area surface).
 
 **Thread**:
-The conversation the **Ask workspace** shows — the ordered sequence of **turns**, oldest first, with the question composer docked at the end. Follow-up questions continue the thread: prior completed turns travel with the new question as conversation history (a bounded recent window, citation markers stripped), so answers can refer back. One thread at a time, in memory only: it survives switching panels and server blips, and dies with the app or a workspace switch — starting a new conversation is an explicit action, never a side effect.
+The conversation the **Ask workspace** shows — the ordered sequence of **turns**, oldest first, with the question composer docked at the end. In the GUI the selected turn carries the **Sources view** under it, expanded on demand; keys typed there never act on the Thread. Follow-up questions continue the thread: prior completed turns travel with the new question as conversation history (a bounded recent window, citation markers stripped), so answers can refer back. One thread at a time, in memory only: it survives switching panels and server blips, and dies with the app or a workspace switch — starting a new conversation is an explicit action, never a side effect.
 _Avoid_: chat (imports chat-app expectations), session (collides with app lifetime), Q&A list (misses that turns are linked by history).
 
 **Turn**:
@@ -366,11 +402,11 @@ A `[n]` marker inside an answer tying a claim to the n-th source of its own **Tu
 _Avoid_: reference (too generic), footnote (citations are inline, not appended), source link (the source is the target, the citation is the marker).
 
 **Sources view**:
-The drawer view of the **Ask workspace**: the ranked sources of the selected **Turn** — section heading, note path, similarity, snippet. Selecting a different turn in the **Thread** repopulates it; it never shows a mix of turns. Flips between its list and the **Source reader**.
+The part of the **Ask workspace** that lists the ranked sources of the selected **Turn** — section heading, note path, similarity, snippet. In the GUI it is folded into the ASK view and expands in place under the selected turn; in the TUI it is what the **Drawer** shows while ASK is selected. Selecting a different turn in the **Thread** repopulates it; it never shows a mix of turns. Flips between its list and the **Source reader**.
 _Avoid_: context panel (context is what the LLM saw, this is its per-note presentation), results (collides with search results).
 
 **Source reader**:
-The **Sources view**'s reveal of a source's full note — the retrieved section highlighted and scrolled into view — so evidence can be read *without leaving the answer*; the **Thread** stays put. It *is* the **Preview pane** (the same expand cycle and content surface the **Query panel** uses), anchored by the section's range rather than query needles. Entered from a source row or a **Citation**. Read-only: editing the note is the editor's job (open-in-editor leaves the Ask workspace).
+The **Sources view**'s reveal of a source's full note — the retrieved section highlighted and scrolled into view — so evidence can be read *without leaving the answer*; the **Thread** stays put. It *is* the **Preview pane** (the same expand cycle and content surface the **Query panel** uses), anchored by the section's range rather than query needles. Entered from a source row or a **Citation**. Read-only: editing the note is the editor's job. Open-in-editor opens the note in the editor; in the GUI the ASK view stays where it is beside it, in the TUI the editor area leaves the Ask workspace.
 _Avoid_: reader face (the superseded bespoke surface — the reveal is the shared Preview pane now), note viewer.
 
 **Saved answer**:

@@ -3,12 +3,45 @@ name = "kimun-gui"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "Native egui frontend for kimün (ADR-0049)"
+description = "Native GPUI frontend for kimün (ADR-0049)"
 
 [[bin]]
 name = "kimun-gui"
 path = "src/main.rs"
 
+[features]
+# `KIMUN_GUI_FAKE_UPDATE` (a faked release for the manual gate). Off in releases.
+fake-update = ["kimun-notes/scripted-updates"]
+
 [dependencies]
 kimun-notes = { path = "../tui" }
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+kimun_core = { path = "../core" }
+gpui-kit = "0.9.0"
+open = "5"
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = "0.1"
+unicode-segmentation = "1"
+
+# The X11 window icon (`WindowOptions::icon`, an `image::RgbaImage`): GPUI's
+# own `image` major, PNG decoding only.
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# The Windows exe's icon and version resource (see build.rs). A build script's
+# `cfg` tests the host, so the dependency is unconditional and build.rs checks
+# the target at run time.
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+kimun-notes = { path = "../tui", features = ["scripted-updates"] }
+async-trait = "0.1"
+gpui-kit = { version = "0.9.0", features = ["test-support"] }
+tempfile = "3"
+
+# A real text system for the UI font's tests (`ui_font`): Linux's
+# cosmic-text backend, built without system fonts. Already in the tree
+# through `gpui-pre-linux`; the same pinned version.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui-pre-wgpu = "=0.3.11"

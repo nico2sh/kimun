@@ -88,7 +88,7 @@ pub(crate) fn cluster_width_at(cluster: &str, col: usize) -> usize {
 /// mark) measure 0 — matching what the terminal draws. The wrap loop's
 /// forward-progress guard in the layout's row wrapping handles a zero-width
 /// start cluster, so no `.max(1)` floor is needed here.
-pub(crate) fn cluster_display_width(cluster: &str) -> usize {
+pub fn cluster_display_width(cluster: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     cluster.width()
 }
@@ -366,10 +366,11 @@ pub(crate) fn list_marker_len(s: &str) -> Option<usize> {
     }
 }
 
-/// Per-char emphasis-modifier bits, OR-ed across nested elements.
-pub(crate) const MOD_BOLD: u8 = 1 << 0;
-pub(crate) const MOD_ITALIC: u8 = 1 << 1;
-pub(crate) const MOD_STRIKE: u8 = 1 << 2;
+/// Per-char emphasis-modifier bits, OR-ed across nested elements. Public so a
+/// renderer can decode [`runs::Run::mods`].
+pub const MOD_BOLD: u8 = 1 << 0;
+pub const MOD_ITALIC: u8 = 1 << 1;
+pub const MOD_STRIKE: u8 = 1 << 2;
 
 /// Emphasis bit contributed by an element kind, or `0` for non-emphasis kinds.
 fn modifier_bit(kind: ElementKind) -> u8 {
