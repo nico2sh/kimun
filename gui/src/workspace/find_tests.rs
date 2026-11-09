@@ -28,6 +28,7 @@ use super::picker::TO_FIND_BUTTON_ID;
 use super::rail_cell_id;
 use super::search::{PREVIEW_DEBOUNCE, SearchPreview};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use super::start_tests::{copy_key, select_all_key};
 use super::tags::{TAGS_FILTER_ID, TAGS_ID, TagsView, tag_row_id};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -149,7 +150,7 @@ fn find_names(s: &Started, rt: &Runtime, cx: &mut TestAppContext) -> Vec<String>
 
 /// Replace FIND's query with `q` and let it run (the debounce out).
 fn search(s: &Started, rt: &Runtime, q: &str, cx: &mut TestAppContext) {
-    press(s, "ctrl-a", cx);
+    press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, q, cx);
     cx.executor().advance_clock(FIND_DEBOUNCE);
@@ -475,7 +476,7 @@ fn typing_is_debounced(cx: &mut TestAppContext) {
     open_find_on_backlinks(&started, cx);
     find_rows(&started, &rt, cx);
     let before = runs(&started, cx);
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     press(&started, "backspace", cx);
     for key in ["#", "r", "u", "s", "t"] {
         type_in(&started, key, cx);
@@ -493,7 +494,7 @@ fn typing_is_debounced(cx: &mut TestAppContext) {
     assert_eq!(find_names(&started, &rt, cx), ["alpha", "beta", "epsilon"]);
 
     // Enter runs a waiting query at once.
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     press(&started, "backspace", cx);
     type_in(&started, "#go", cx);
     press(&started, "enter", cx);
@@ -509,7 +510,7 @@ fn typing_is_debounced(cx: &mut TestAppContext) {
 
     // A blank query lists nothing and says how to search.
     press(&started, "up", cx);
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     press(&started, "backspace", cx);
     cx.executor().advance_clock(FIND_DEBOUNCE);
     cx.run_until_parked();
@@ -883,8 +884,8 @@ fn the_copy_chord_in_find(cx: &mut TestAppContext) {
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
     open_find_on_backlinks(&started, cx);
     find_rows(&started, &rt, cx);
-    press(&started, "ctrl-a", cx);
-    press(&started, "ctrl-c", cx);
+    press(&started, select_all_key(), cx);
+    press(&started, copy_key(), cx);
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(copied.as_deref(), Some("<{note}"), "the field's own copy");
     press(&started, "down", cx);
@@ -999,7 +1000,7 @@ fn suggested(s: &Started, cx: &TestAppContext) -> Vec<String> {
 /// Clear FIND's field and type `text`; wait for the suggestions to list.
 fn type_and_suggest(s: &Started, rt: &Runtime, text: &str, cx: &mut TestAppContext) {
     open_find_on_backlinks(s, cx);
-    press(s, "ctrl-a", cx);
+    press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, text, cx);
     drive(rt, cx, |cx| !suggested(s, cx).is_empty());

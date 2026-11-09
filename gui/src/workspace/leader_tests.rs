@@ -18,6 +18,7 @@ use kimun_notes::settings::gui::GuiSettings;
 use super::leader::{DEFAULT_TIMEOUT, WHICH_KEY_ID};
 use super::palette::{Palette, PaletteRun};
 use super::route::{NEEDS_NOTE_FOCUS, NO_WORKSPACE};
+use super::start_tests::chords;
 use super::start_tests::{drive, open_started, runtime, vault_start};
 use super::tests::{Shell, open_default, open_shell};
 use super::{LayoutStore, Workspace};
@@ -188,7 +189,7 @@ fn the_which_key_shows_after_a_hesitation(cx: &mut TestAppContext) {
     assert!(revealed(&shell, cx));
     assert!(which_key_drawn(&shell, cx));
     let (pressed, rows) = which_key(&shell, cx).unwrap();
-    assert_eq!(pressed, "Ctrl+Shift+B w");
+    assert_eq!(pressed, chords("Ctrl+Shift+B w"));
     assert_eq!(rows, 4, "the +window group's leaves");
     // `z` (zen) fires: the popup goes, and the slot with it.
     type_text(&shell, "z", cx);
@@ -224,7 +225,7 @@ fn backspace_steps_up_then_cancels(cx: &mut TestAppContext) {
     wait(cx, DEFAULT_TIMEOUT.as_millis() as u64);
     assert_eq!(
         which_key(&shell, cx).map(|w| w.0).as_deref(),
-        Some("Ctrl+Shift+B f")
+        Some(chords("Ctrl+Shift+B f").as_str())
     );
     press(&shell, "backspace", cx);
     assert!(pending(&shell, cx));
@@ -345,7 +346,7 @@ fn palette_rows_show_the_leader_sequence(cx: &mut TestAppContext) {
     press(&shell, "ctrl-shift-p", cx);
     assert_eq!(
         sequence_of(&shell, LeaderAction::NoteSave, cx).as_deref(),
-        Some("Ctrl+Shift+B n w")
+        Some(chords("Ctrl+Shift+B n w").as_str())
     );
     assert_eq!(
         sequence_of(&shell, LeaderAction::TextBold, cx).as_deref(),

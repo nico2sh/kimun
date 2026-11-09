@@ -34,6 +34,7 @@ use super::sort::{
     SAVE_LABEL, SAVE_NOTES_LABEL, SORT_CLOSE_ID, SORT_DIALOG_ID, SORT_HINT_ID, SORT_SAVE_ID,
     SortDialog,
 };
+use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -220,7 +221,7 @@ fn find_on(s: &Started, rt: &Runtime, query: &str, cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    press(s, "ctrl-a", cx);
+    press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, query, cx);
     cx.executor().advance_clock(FIND_DEBOUNCE);
@@ -535,7 +536,7 @@ fn the_browser_sort_stacks_and_rewrites_its_query(cx: &mut TestAppContext) {
     assert!(focused(&started, PICKER_INPUT_ID, cx));
 
     // A query: its chip opens the dialog; Title rewrites it.
-    press(&started, "ctrl-a", cx);
+    press(&started, select_all_key(), cx);
     press(&started, "backspace", cx);
     type_in(&started, "#rust", cx);
     browser_rows(&started, &rt, cx);

@@ -21,6 +21,7 @@ use super::search::{
     PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_ID, PREVIEW_ROW_ID, PREVIEW_TRUNCATED_ID,
     QUERY_HELP_ID, SearchPreview, cap_text, preview_text,
 };
+use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -135,7 +136,7 @@ fn selected_path(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
 
 /// Replace the query with `query` and wait for its rows.
 fn search(s: &Started, rt: &Runtime, query: &str, cx: &mut TestAppContext) {
-    press(s, "ctrl-a", cx);
+    press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, query, cx);
     rows(s, rt, cx);

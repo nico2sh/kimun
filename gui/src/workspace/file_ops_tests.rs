@@ -23,6 +23,7 @@ use super::file_dialogs::{
 use super::file_ops::FileDialogView;
 use super::files::row_id;
 use super::modal::ModalKind;
+use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -149,7 +150,7 @@ impl Started {
 
     /// Replace the rename input's text with `name` and wait for its check.
     fn rename_to(&self, rt: &Runtime, name: &str, cx: &mut TestAppContext) -> ValidationState {
-        self.hit("ctrl-a", cx);
+        self.hit(select_all_key(), cx);
         self.typed(name, cx);
         let view = self.rename_view(cx);
         drive(rt, cx, |cx| {

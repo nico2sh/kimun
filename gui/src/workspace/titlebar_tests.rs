@@ -270,6 +270,8 @@ fn the_client_chrome_draws_the_bar_on_top(cx: &mut TestAppContext) {
 fn no_bar_when_the_compositor_draws_one(cx: &mut TestAppContext) {
     let started = bare(cx);
     let fake = started.tb_client(cx);
+    // Linux's rule, whatever system the test runs on.
+    started.workspace.update(cx, |w, _| w.set_os(Os::Linux));
     fake.decorations.set(Decorations::Server);
     assert!(!started.shows(TITLE_BAR_ID, cx));
 }

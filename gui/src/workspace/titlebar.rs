@@ -327,6 +327,14 @@ impl Workspace {
         self.titlebar.chrome = chrome;
     }
 
+    /// Pretend the window runs on `os` (tests): the bar's rules differ per system
+    /// (a compositor's say-so matters on Linux only), and a test of one system's
+    /// rule must not depend on the system it happens to run on.
+    #[cfg(test)]
+    pub(crate) fn set_os(&mut self, os: Os) {
+        self.titlebar.os = os;
+    }
+
     /// Drive `window` instead of the real window (tests).
     #[cfg(test)]
     pub(crate) fn set_window_chrome(&mut self, window: Rc<dyn WindowChrome>) {
