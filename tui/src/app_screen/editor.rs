@@ -1165,7 +1165,7 @@ impl EditorScreen {
                 tokio::spawn(async move {
                     let result = async {
                         let latest = crate::update::latest_release().await?;
-                        crate::update::install(latest).await
+                        crate::update::install(latest, crate::update::Product::Terminal).await
                     }
                     .await;
                     let msg = match result {

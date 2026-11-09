@@ -1,9 +1,19 @@
-# Release workflow: Build and bundle Kimun for all platforms
-# Triggered on semantic version tags
+# Release workflow: Build and bundle Kimun (the terminal app `kimun` and the
+# desktop app `kimun-gui`) for all platforms.
+# Triggered on semantic version tags, and by hand as a DRY RUN: a manual run
+# builds everything, assembles and verifies the release assets exactly as a tag
+# does, and uploads them as a workflow artifact. It publishes nothing: no
+# release is touched, no formula pushed.
 on:
   push:
     tags:
       - "kimun-notes-v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to name the dry-run assets with (nothing is published)"
+        required: false
+        default: "0.0.0-dryrun"
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,7 +32,6 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x64
-            binary: kimun.exe
           # If this Intel Mac build is ever dropped, also update:
           # .github/homebrew/formula.rb.tmpl, install.sh (macos-x64 mapping),
           # and tui/src/update/platform.rs — all expect the macos-x64 asset.
@@ -30,27 +39,31 @@ jobs:
             os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x64
-            binary: kimun
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-arm64
-            binary: kimun
           - name: Linux Build
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-x64
-            binary: kimun
           - name: Linux Build arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-arm64
-            binary: kimun
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The desktop app (GPUI) links these on Linux.
+      - name: Install GPUI system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 
       # Setup Rust toolchain
       - name: Install Rust
@@ -65,24 +78,86 @@ jobs:
         with:
           shared-key: release-${{ matrix.target }}
 
-      # Build the TUI binary
+      # Build both apps
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin kimun
+        run: cargo build --release --target ${{ matrix.target }} --bin kimun --bin kimun-gui
 
-      # Copy binary to dist/
-      - name: Create distribution directory
-        run: mkdir -p dist
+      # dist/ is the terminal app's distribution, dist-gui/ the desktop app's: the
+      # binary, and on Linux the launcher entry and the icons as a `share/` tree that
+      # mirrors an install prefix (the installer and packagers copy it as it is).
+      # macOS gets its signed .app below; its raw binary is what self-update
+      # replaces. Windows has the icon built in. The script is shared with the local
+      # rehearsal (.github/scripts/rehearse-release.sh).
+      - name: Assemble the distributions
+        run: bash .github/scripts/release-dist.sh assemble ${{ matrix.platform }} target/${{ matrix.target }}/release .
         shell: bash
 
-      - name: Copy binary to dist
-        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
-        shell: bash
+      # macOS: the desktop app's .app bundle always (so a break shows up here),
+      # and, when the Apple secrets exist, the signed, notarized, stapled .dmg
+      # (assets/packaging/macos/SIGNING.md). Without the secrets the raw binary
+      # still ships, unsigned, and no .dmg is made.
+      - name: Version for the macOS bundle
+        if: runner.os == 'macOS'
+        id: appver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION:-0.0.0-dryrun}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble the macOS app bundle
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ steps.appver.outputs.version }}
+        run: bash .github/scripts/macos-bundle.sh target/${{ matrix.target }}/release/kimun-gui "$VERSION" bundle
+
+      - name: Apple signing configured?
+        if: runner.os == 'macOS'
+        id: apple
+        env:
+          CERT: ${{ secrets.APPLE_CERT_P12 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no Apple signing secrets: no macOS .dmg is built; the raw macOS binary ships unsigned"
+          fi
+
+      - name: Sign, notarize and package the macOS app
+        if: steps.apple.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.appver.outputs.version }}
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash .github/scripts/macos-sign.sh bundle/Kimun.app "dist-dmg/kimun-gui-${VERSION}-${{ matrix.platform }}.dmg"
+
+      - name: Upload the signed macOS app
+        if: steps.apple.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.platform }}
+          path: dist-dmg
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.platform }}
           path: dist
+
+      # `distgui-`, not `dist-gui-`: the terminal app's archive loop globs `dist-*`.
+      - name: Upload the desktop app's build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: distgui-${{ matrix.platform }}
+          path: dist-gui
 
   create-release:
     needs: [build]
@@ -93,11 +168,33 @@ jobs:
       version: ${{ steps.extract_version.outputs.version }}
 
     steps:
+      # From the tag; a manual dry run takes it from the input.
       - name: Extract version
         id: extract_version
-        run: echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> $GITHUB_OUTPUT
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION:-0.0.0-dryrun}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> $GITHUB_OUTPUT
+          fi
 
       - uses: actions/checkout@v4
+
+      # The hand-written notes (release-notes/<version>.md) are the release's
+      # body. Missing or still the empty template: warn, and the release keeps
+      # the changelog release-plz generated.
+      - name: Hand-written release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.extract_version.outputs.version }}
+        run: |
+          if python3 .github/scripts/release_notes.py ready "$VERSION"; then
+            echo "path=release-notes/${VERSION}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no written release notes for ${VERSION} (release-notes/${VERSION}.md): the release keeps the generated changelog as its body"
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -107,59 +204,35 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R release-artifacts
 
-      # Each build job uploads its artifact as dist-<platform>, so the platform
-      # string is read straight off the directory name — no classification.
-      - name: Create compressed archives with consistent naming
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          cd release-artifacts
-          VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
-
-          dirs=(dist-*/)
-          if [[ ${#dirs[@]} -eq 0 ]]; then
-            echo "::error::no dist-* build artifacts found"
-            exit 1
-          fi
-
-          for dir in "${dirs[@]}"; do
-            platform="${dir%/}"
-            platform="${platform#dist-}"
-            base="kimun-${VERSION}-${platform}"
-
-            # Raw, uncompressed binary asset for in-app self-update.
-            # The running app downloads this directly, checksum-verifies it, and
-            # swaps it in place — no client-side archive extraction needed.
-            if [[ "$platform" == windows-* ]]; then
-              (cd "$dir" && zip -r "../${base}.zip" .)
-              cp "${dir}kimun.exe" "${base}.exe"
-            else
-              tar -czf "${base}.tar.gz" -C "$dir" .
-              cp "${dir}kimun" "${base}"
-            fi
-          done
-
-          ls -lh kimun-* 2>/dev/null || true
+      # Each build job uploads its artifacts as dist-<platform>, distgui-<platform>
+      # (and dmg-<platform>), so the platform string is read straight off the
+      # directory name — no classification. Both apps, every platform: a raw binary
+      # and an archive each, the signed .dmg files, and the checksums.
+      - name: Create the release assets and their checksums
+        env:
+          VERSION: ${{ steps.extract_version.outputs.version }}
+        run: bash .github/scripts/release-dist.sh package release-artifacts "$VERSION"
         shell: bash
 
-      - name: Generate checksums
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          cd release-artifacts
-          # Archives + the raw self-update binaries (nullglob drops any absent).
-          files=(
-            kimun-*.zip kimun-*.tar.gz
-            kimun-*-linux-x64 kimun-*-linux-arm64
-            kimun-*-macos-x64 kimun-*-macos-arm64 kimun-*-windows-x64.exe
-          )
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "::error::No archives found to checksum"
-            exit 1
-          fi
-          sha256sum "${files[@]}" > checksums-sha256.txt
-          cat checksums-sha256.txt
-        shell: bash
+      # Everything a release must hold, before anything is published: both apps,
+      # five platforms, raw binary and archive each, checksums, archive contents.
+      - name: Verify the release assets
+        env:
+          VERSION: ${{ steps.extract_version.outputs.version }}
+          # With the Apple secrets set, both macOS .dmg files must be there.
+          EXPECT_DMG: ${{ secrets.APPLE_CERT_P12 != '' && '1' || '0' }}
+        run: bash .github/scripts/verify-release-assets.sh release-artifacts "$VERSION"
+
+      # A manual dry run stops here: the assets are kept as a workflow artifact
+      # to download and try, and nothing below runs.
+      - name: Keep the assets (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            release-artifacts/kimun-*
+            release-artifacts/checksums-sha256.txt
 
       - name: Upload checksums for downstream jobs
         uses: actions/upload-artifact@v4
@@ -167,13 +240,18 @@ jobs:
           name: checksums
           path: release-artifacts/checksums-sha256.txt
 
-      # Attach binaries to the release created by release-plz. No `body:` /
-      # `name:` here: release-plz owns the changelog, we only add assets.
+      # Attach binaries to the release created by release-plz. No `name:`
+      # here. The body is the hand-written notes when they exist
+      # (`body_path`), else release-plz's changelog stays; `append_body` is off
+      # so the two are never mixed.
       - name: Attach release assets
+        if: github.event_name != 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
+          # The hand-written notes, when there are any (empty: the body stays).
+          body_path: ${{ steps.notes.outputs.path }}
           prerelease: ${{ contains(steps.extract_version.outputs.version, '-') }}
           # Reclaim the "Latest" badge for the app on every stable release.
           # Prereleases can't be latest, so mirror the `prerelease` condition.
@@ -182,6 +260,7 @@ jobs:
           files: |
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz
+            release-artifacts/kimun-*.dmg
             release-artifacts/kimun-*-linux-x64
             release-artifacts/kimun-*-linux-arm64
             release-artifacts/kimun-*-macos-x64
@@ -196,8 +275,8 @@ jobs:
     runs-on: ubuntu-latest
     # Skip pre-releases. The version is extracted by stripping the "kimun-notes-v"
     # prefix; a pre-release like "0.5.0-beta.1" will contain a hyphen in the
-    # remaining version string.
-    if: ${{ !contains(needs.create-release.outputs.version, '-') }}
+    # remaining version string. Never on a manual dry run.
+    if: ${{ github.event_name != 'workflow_dispatch' && !contains(needs.create-release.outputs.version, '-') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -211,13 +290,19 @@ jobs:
         run: cat checksums-sha256.txt
 
       - name: Generate Homebrew formula
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
-
-          SHA256_MACOS_ARM64=$(grep "macos-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
-          SHA256_MACOS_X64=$(grep "macos-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
-          SHA256_LINUX_X64=$(grep "linux-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
-          SHA256_LINUX_ARM64=$(grep "linux-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
+          # The formula is the terminal app's: match `kimun-<version>-...` only
+          # (a bare `grep macos-arm64.tar.gz` would also find kimun-gui-...).
+          sum() { grep -E "  kimun-[0-9][^ ]*-$1\.tar\.gz\$" checksums-sha256.txt | awk '{print $1}'; }
+          SHA256_MACOS_ARM64=$(sum macos-arm64)
+          SHA256_MACOS_X64=$(sum macos-x64)
+          SHA256_LINUX_X64=$(sum linux-x64)
+          SHA256_LINUX_ARM64=$(sum linux-arm64)
+          for v in "$SHA256_MACOS_ARM64" "$SHA256_MACOS_X64" "$SHA256_LINUX_X64" "$SHA256_LINUX_ARM64"; do
+            [ "$(printf '%s' "$v" | wc -w)" = 1 ] || { echo "::error::expected one checksum per platform, got: '$v'"; exit 1; }
+          done
 
           sed \
             -e "s/{{VERSION}}/${VERSION}/g" \
