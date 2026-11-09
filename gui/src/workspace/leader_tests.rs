@@ -233,7 +233,7 @@ fn backspace_steps_up_then_cancels(cx: &mut TestAppContext) {
     wait(cx, DEFAULT_TIMEOUT.as_millis() as u64);
     assert_eq!(
         which_key(&shell, cx).map(|w| w.0).as_deref(),
-        Some("Ctrl+Shift+B")
+        Some(chords("Ctrl+Shift+B").as_str())
     );
     press(&shell, "backspace", cx);
     assert!(!pending(&shell, cx));
@@ -350,7 +350,7 @@ fn palette_rows_show_the_leader_sequence(cx: &mut TestAppContext) {
     );
     assert_eq!(
         sequence_of(&shell, LeaderAction::TextBold, cx).as_deref(),
-        Some("Ctrl+Shift+B t b")
+        Some(chords("Ctrl+Shift+B t b").as_str())
     );
 
     let shell = vim_shell(cx, "abc");
