@@ -1,0 +1,40 @@
+# GUI smoke workflow: start the desktop app under a virtual display and fail if
+# it exits or panics. MANUAL ONLY for now: whether a GitHub runner can host
+# GPUI's window with a software Vulkan renderer (Mesa lavapipe) is unproven. Run
+# it from the Actions tab; once it is green, move the job into check.yml's lint
+# job (see plans/m11/release-checklist.md). Never a required check until then.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+name: gui-smoke
+
+jobs:
+  smoke:
+    name: GUI starts (Linux, Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GPUI system libraries, Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+            xvfb mesa-vulkan-drivers libvulkan1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gui-smoke
+
+      - name: Build
+        run: cargo build -p kimun-gui
+
+      - name: Smoke test
+        run: bash .github/scripts/gui-smoke.sh target/debug/kimun-gui 8

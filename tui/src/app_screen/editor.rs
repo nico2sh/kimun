@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::scan::LinkSpanKind;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -19,7 +18,6 @@ use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
-use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::dialogs::ActiveDialog;
 use crate::components::drawer::DrawerHost;
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
@@ -41,26 +39,25 @@ use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::logic::editor::request::EditorRequest;
+use crate::logic::leader_route::{
+    self, AskStep, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
+};
 use crate::logic::message::{
     AppMessage, AppTx, FileOp, OverlayData, SaveSource, SavedSearchFlow, ScreenEvent, SortTarget,
     UpdateFlow,
 };
 use crate::logic::nav::DrawerView;
+use crate::logic::rag_caps::{self, Caps};
+use crate::logic::session::{
+    NoteSession, OpenKind, OpenOutcome, ReloadOutcome, RemovedOutcome, RenameOutcome,
+    SaveCompleted, SaveOutcome,
+};
 use crate::logic::sort::SortField;
 use crate::logic::sort::SortState;
 use crate::logic::text_action::TextAction;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-use crate::util::single_slot_task::SingleSlotTask;
-
-/// Hard cap on every blocking save path so a stuck disk (NFS hang,
-/// fsync stall) cannot freeze quit, navigation, or the next autosave
-/// tick. The same value is used both to wait for an in-flight
-/// background autosave and to bound our own synchronous save call —
-/// the worst-case quit time is therefore one cap plus the
-/// observability of `abort()` on a syscall in progress.
-const SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct EditorScreen {
     vault: Arc<NoteVault>,
@@ -71,7 +68,10 @@ pub struct EditorScreen {
     /// visibility, and focus. The host reaches a specific panel through the
     /// typed accessors (`panels.editor_mut()`, …) for panel-specific calls.
     panels: PanelSet,
-    path: VaultPath,
+    /// The open note's lifecycle: its path (`session.path()`), saving,
+    /// autosave, and following renames/deletes/disk changes. Returns outcomes;
+    /// this screen performs them (see `logic::session`).
+    session: NoteSession,
     footer: FooterBar,
     /// Clickable title-bar targets from the last render.
     title_targets: Vec<(Rect, TitleTarget)>,
@@ -81,7 +81,7 @@ pub struct EditorScreen {
     pointer: Option<ratatui::layout::Position>,
     /// Async document/status state: backlink count, git summary, link
     /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
-    doc_meta: crate::app_screen::doc_meta::DocMeta,
+    doc_meta: crate::logic::doc_meta::DocMeta,
     /// App-global update notice, seeded by `AppMessage::Update(UpdateFlow::Available)`. Drives
     /// the footer indicator; `None` when up to date or the check found nothing.
     update: Option<crate::update::UpdateStatus>,
@@ -102,19 +102,9 @@ pub struct EditorScreen {
     /// App event sender, captured on enter — render-side async kicks (the
     /// link-affordance backlink fetch) need it where no `tx` is threaded.
     app_tx: Option<AppTx>,
-    autosave: AutosaveTimer,
     /// The active overlay, if any. An open overlay intercepts input ahead of
     /// the panels; closing it restores focus to the panel that opened it.
     overlays: OverlayHost<PanelKind>,
-    /// Handle to the most recently spawned background autosave task.
-    /// `is_in_flight()` is the source of truth for "is a save still in
-    /// flight"; both successful completion AND panic flip it to false
-    /// so the next periodic tick can spawn fresh. The synchronous save
-    /// paths (`open_path` / `on_entry_op` / `on_exit`) await this slot
-    /// before issuing their own `vault.save_note`, so two concurrent
-    /// writes for the same path can never collide. Drop aborts the
-    /// in-flight task so the spawned future cannot outlive the screen.
-    autosave_task: SingleSlotTask<()>,
 }
 
 impl EditorScreen {
@@ -152,6 +142,7 @@ impl EditorScreen {
         drop(s);
         let rail_icons = icons.clone();
         let ask = AskCoordinator::new(settings.clone(), vault.clone());
+        let session = NoteSession::new(vault.clone(), settings.clone(), path);
         Self {
             settings,
             icons,
@@ -169,22 +160,20 @@ impl EditorScreen {
                     ask: false,
                 },
             ),
-            doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
+            doc_meta: crate::logic::doc_meta::DocMeta::new(vault.clone()),
             update: None,
             rag_status: crate::rag::RagStatus::Disabled,
             server_update: None,
             ask,
+            session,
             vault,
-            path,
             footer,
             title_targets: Vec::new(),
             pointer: None,
             leader: leader_engine,
             clicks: Default::default(),
             app_tx: None,
-            autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
-            autosave_task: SingleSlotTask::empty(),
         }
     }
 }
@@ -240,7 +229,7 @@ impl EditorScreen {
         // runs only on success, does the replacement and reconciles the vim
         // engine out of Visual in the same breath.
         let asset_path = self.vault.generate_attachment_path("image", "png");
-        let link_path = asset_path.relative_link_from_note(&self.path);
+        let link_path = asset_path.relative_link_from_note(self.session.path());
         let markdown = format!("![]({link_path})");
         let vault = self.vault.clone();
         let tx2 = tx.clone();
@@ -292,57 +281,41 @@ impl EditorScreen {
     /// Persist a saved search via core. Used by the SaveSearchConfirmed handler
     /// and unit tests.
     #[cfg(test)]
-    async fn persist_saved_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
+    async fn persist_saved_search(
+        &self,
+        name: &str,
+        query: &str,
+    ) -> Result<(), kimun_core::error::VaultError> {
         self.vault.save_search(name, query).await
     }
 
-    async fn follow_link(&mut self, target: String, tx: &AppTx) {
-        // External URL — hand off to the OS browser/handler.
-        if kimun_core::note::scan::is_remote_url(&target) {
-            match open::that_detached(&target) {
+    /// Follows `target` from the open note: resolve it (`logic::follow`),
+    /// then act — the OS handoff for a URL or an image, open a single match,
+    /// offer to create a missing note, choose between several matches.
+    async fn follow_link(&mut self, target: String, kind: LinkSpanKind, tx: &AppTx) {
+        use crate::logic::follow::{FollowOutcome, resolve};
+        match resolve(&self.vault, self.session.path(), &target, kind).await {
+            // External URL — hand off to the OS browser/handler.
+            FollowOutcome::External(url) => match open::that_detached(&url) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
                 Err(e) => self.footer.flash(format!("Cannot open URL: {e}"), tx),
-            }
-            return;
-        }
-
-        // Image attachment — resolve the (potentially relative) path against
-        // the current note's directory, convert to an OS path, hand off to the
-        // OS default handler. Images are not notes, so skip the note lookup.
-        if kimun_core::note::scan::target_looks_like_image(&target) {
-            let parent = self.path.get_parent_path().0;
-            let resolved = parent.append(&VaultPath::new(target.trim()));
-            let os_path = self.vault.path_to_pathbuf(&resolved);
-            match open::that_detached(&os_path) {
+            },
+            // Image or attachment — hand off to the OS default handler.
+            FollowOutcome::OpenFile(os_path) => match open::that_detached(&os_path) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
-                Err(e) => self.footer.flash(format!("Cannot open image: {e}"), tx),
-            }
-            return;
-        }
-
-        // Note reference — look it up in the vault.
-        // Strip any `#section` / `^block` suffix before resolving (e.g.
-        // `notes/design.md#goals` resolves to `notes/design.md`, not
-        // `notes/design.md#goals.md`) — the same split the index uses.
-        let (target_clean, _) = kimun_core::note::scan::split_link_fragment(&target);
-        // Resolve the (possibly relative, e.g. `../work/anton.md`) target
-        // against this note's directory so the existence lookup uses the same
-        // absolute path the note is stored under. Bare names stay name-lookups.
-        let path = kimun_core::nfs::VaultPath::note_path_from(target_clean)
-            .resolve_link_in_note(&self.path);
-        match self.vault.open_or_search(&path).await {
-            Ok(results) if results.is_empty() => {
+                Err(e) => self.footer.flash(format!("Cannot open file: {e}"), tx),
+            },
+            FollowOutcome::Missing(path) => {
                 self.present_overlay(Box::new(ActiveDialog::create_note(
                     path,
                     self.vault.clone(),
                     None,
                 )));
             }
-            Ok(mut results) if results.len() == 1 => {
-                let (entry, _) = results.remove(0);
-                self.open_path(entry.path, None, tx).await;
+            FollowOutcome::Note(path) => {
+                self.open_path(path, None, tx).await;
             }
-            Ok(results) => {
+            FollowOutcome::Ambiguous(results) => {
                 use crate::components::note_browser::link_results_provider::LinkResultsProvider;
                 let provider = LinkResultsProvider::from_results(results);
                 let s = self.settings.read().unwrap();
@@ -358,34 +331,35 @@ impl EditorScreen {
                 drop(s);
                 self.present_overlay(Box::new(modal));
             }
-            Err(e) => {
+            FollowOutcome::Error(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
             }
         }
     }
 
     pub async fn open_path(&mut self, path: VaultPath, emphasis: Option<Vec<String>>, tx: &AppTx) {
-        if !path.is_note() {
-            // A non-note path is either an attachment (show it in place of the
-            // editor) or a directory (browse it). Classify so a stray
-            // attachment open here still lands in the attachment view rather
-            // than the directory browser.
-            if let Ok(kimun_core::EntryKind::Attachment) = self.vault.entry_kind(&path).await {
+        // A non-note path is either an attachment (show it in place of the
+        // editor) or a directory (browse it).
+        match self.session.open_kind(&path).await {
+            OpenKind::Attachment => {
                 self.open_attachment(path, tx).await;
                 return;
             }
-            tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
-                self.vault.clone(),
-                path,
-            )))
-            .ok();
-            return;
+            OpenKind::Directory => {
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
+                    self.vault.clone(),
+                    path,
+                )))
+                .ok();
+                return;
+            }
+            OpenKind::Note => {}
         }
 
         // Save current note before switching
         self.try_save().await;
 
-        self.path = path.clone();
+        let read = self.session.begin_open(path.clone());
         // Returning to a note swaps the editor area back from any attachment or
         // the Ask workspace. `clear_attachment` and `hide_ask_if_shown` each
         // only touch their own content, so both are needed to guarantee the
@@ -393,22 +367,21 @@ impl EditorScreen {
         self.hide_ask_if_shown();
         self.panels.clear_attachment();
         // Mark this note's row in the sidebar (clears the previous one).
-        self.panels
-            .sidebar_mut()
-            .set_open_note(Some(self.path.clone()));
-        match self.vault.get_note_text(&self.path).await {
-            Ok(content) => {
-                // Recorded only once the read succeeds: a note that isn't
-                // there was never opened, and history is what the next
-                // launch restores.
-                self.settings.read().unwrap().add_path_history(&path);
+        self.panels.sidebar_mut().set_open_note(Some(path.clone()));
+        let read = read.run().await;
+        // On success the session records the history (only once the read
+        // succeeded: history is what the next launch restores), loads the
+        // buffer and restarts the autosave tick.
+        match self.session.finish_open(read, self.panels.editor_mut(), tx) {
+            OpenOutcome::Opened(_) => {
+                // Vestigial: the history lives in `HistoryFile` now (written by
+                // the session). Kept so TUI behaviour is unchanged.
                 let settings_snapshot = self.settings.read().unwrap().clone();
                 tokio::spawn(async move {
                     settings_snapshot.save_to_disk().ok();
                 });
-                self.doc_meta.note_opened(&self.path, tx);
+                self.doc_meta.note_opened(self.session.path(), tx);
                 if let Some(ed) = self.panels.editor_mut() {
-                    ed.open_note(self.path.clone(), content);
                     // Arrive-from-query emphasis: apply after the load so the
                     // buffer's new revision owns the needles.
                     if let Some(needles) = emphasis {
@@ -421,24 +394,23 @@ impl EditorScreen {
                 // step. Shared with `on_note_renamed` via the helper.
                 self.reflect_open_note_in_drawers(tx);
             }
-            Err(e) => {
-                if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
-                    self.present_overlay(Box::new(ActiveDialog::create_note(
-                        self.path.clone(),
-                        self.vault.clone(),
-                        None,
-                    )));
-                } else {
-                    tracing::error!("Failed to read note {}: {e}", self.path);
-                    let parent = self.path.get_parent_path().0;
-                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
-                        self.vault.clone(),
-                        parent,
-                    )))
-                    .ok();
-                }
+            OpenOutcome::NotFound(missing) => {
+                self.present_overlay(Box::new(ActiveDialog::create_note(
+                    missing,
+                    self.vault.clone(),
+                    None,
+                )));
                 return;
             }
+            OpenOutcome::ReadFailed { parent, .. } => {
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
+                    self.vault.clone(),
+                    parent,
+                )))
+                .ok();
+                return;
+            }
+            OpenOutcome::Superseded => return,
         }
 
         // Load the sidebar on first open only; refreshes happen via explicit
@@ -447,10 +419,6 @@ impl EditorScreen {
         if self.panels.sidebar().is_empty() {
             self.navigate_sidebar(note_parent, tx);
         }
-
-        // Abort any existing timer and spawn a fresh one for the new note.
-        let interval = self.settings.read().unwrap().autosave_interval_secs;
-        self.autosave.restart(interval, tx.clone());
     }
 
     /// Take the editor area off the Ask workspace before it's swapped to
@@ -470,7 +438,7 @@ impl EditorScreen {
     async fn open_attachment(&mut self, path: VaultPath, tx: &AppTx) {
         // Persist the current note before swapping the editor area away from it.
         self.try_save().await;
-        self.autosave_task.abort();
+        self.session.abort_autosave();
 
         match self.vault.get_attachment_details(&path).await {
             Ok(details) => {
@@ -479,7 +447,7 @@ impl EditorScreen {
                     (s.icons(), s.key_bindings.clone())
                 };
                 let view = AttachmentView::new(details, icons, kb);
-                self.path = path;
+                self.session.set_path(path);
                 // Take the area off Ask so the attachment actually replaces it
                 // (show_attachment leaves Ask content alone).
                 self.hide_ask_if_shown();
@@ -518,91 +486,26 @@ impl EditorScreen {
         self.panels.sidebar_mut().update_note_row(path, &title);
     }
 
+    /// Save now (see `NoteSession::save_now`): waits out a background
+    /// autosave (≤ `SAVE_TIMEOUT`, else aborts it and writes nothing), then
+    /// writes a dirty buffer and retitles its sidebar row. No editor mounted
+    /// (an attachment is shown) → nothing to save.
     async fn try_save(&mut self) {
-        // Wait out any background autosave so two concurrent `vault.save_note`
-        // calls cannot race on the same path. Capped at 5s so a wedged
-        // filesystem (NFS hang, fsync stall, SQLite lock contention) does
-        // not freeze app-quit indefinitely.
-        //
-        // If the timeout fires we MUST abort the prior task and bail
-        // without issuing our own save: dropping a JoinHandle detaches
-        // the tokio task rather than cancelling it, so the spawned
-        // vault.save_note keeps running. Calling our own vault.save_note
-        // on the same path on top of that is the exact two-writer race
-        // the in-flight serialisation is meant to prevent. abort() is
-        // best-effort (will not unwind an in-progress syscall) but it
-        // stops any further await points in the spawned task. The editor
-        // stays dirty so the next session retries; the spawned task
-        // either finishes against the disk on its own or is killed when
-        // the process exits.
-        if self.autosave_task.is_in_flight() {
-            match self.autosave_task.await_with_timeout(SAVE_TIMEOUT).await {
-                Some(_) => {} // completed (success or panic) — slot already cleared
-                None => {
-                    // Timeout: abort the spawned task and bail.
-                    self.autosave_task.abort();
-                    return;
-                }
-            }
-        }
-        // No note editor mounted (an attachment is shown) → nothing to save.
-        let Some(text) = self
-            .panels
-            .editor()
-            .filter(|e| e.is_dirty())
-            .map(|e| e.get_text())
-        else {
-            return;
-        };
-        // Same cap on our own save so quit cannot hang on a stuck
-        // disk. A timeout returns Err(_); we skip mark_saved so the
-        // editor stays dirty for any subsequent retry.
-        let save = self.vault.save_note(&self.path, &text);
-        if let Ok(Ok((_, content))) = tokio::time::timeout(SAVE_TIMEOUT, save).await {
-            if let Some(ed) = self.panels.editor_mut() {
-                ed.mark_saved(text);
-            }
-            let path = self.path.clone();
-            self.note_saved(&path, content.title);
+        let outcome = self.session.save_now(self.panels.editor_mut()).await;
+        self.apply_save_outcome(outcome);
+    }
+
+    fn apply_save_outcome(&mut self, outcome: SaveOutcome) {
+        if let SaveOutcome::Saved(saved) = outcome {
+            self.note_saved(&saved.path, saved.title);
         }
     }
 
-    /// Fire-and-forget autosave used by the periodic timer. The save runs in
-    /// a spawned tokio task so the main event loop is never blocked by the
-    /// filesystem + SQLite write. Completion is reported back as
-    /// `AppMessage::AutosaveCompleted`, which marks the editor clean iff the
-    /// editor is still at the revision that was written. `is_in_flight()`
-    /// on the `SingleSlotTask` slot is the "is a save in flight" signal;
-    /// it flips to false on both successful completion AND panic, so a
-    /// single panicked task can never permanently disable autosave.
+    /// Fire-and-forget autosave used by the periodic timer and the leader's
+    /// save. Completion is reported back as `AppMessage::AutosaveCompleted`
+    /// (see `NoteSession::spawn_autosave`).
     fn spawn_autosave(&mut self, tx: &AppTx) {
-        // A previous task that hasn't reported completion yet still holds the
-        // lock on the file system + SQLite path; let it finish first.
-        if self.autosave_task.is_in_flight() {
-            return;
-        }
-        let Some(ed) = self.panels.editor() else {
-            return;
-        };
-        if !ed.is_dirty() {
-            return;
-        }
-        let text = ed.get_text();
-        let revision = ed.content_revision();
-        let vault = self.vault.clone();
-        let path = self.path.clone();
-        let tx = tx.clone();
-        self.autosave_task.spawn(async move {
-            let (saved_revision, title) = match vault.save_note(&path, &text).await {
-                Ok((_, content)) => (Some(revision), Some(content.title)),
-                Err(_) => (None, None),
-            };
-            let _ = tx.send(AppMessage::AutosaveCompleted {
-                path,
-                saved_revision,
-                title,
-            });
-        });
+        self.session.spawn_autosave(self.panels.editor(), tx);
     }
 
     /// The panel to restore focus to when the active overlay closes — the
@@ -646,21 +549,26 @@ impl EditorScreen {
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         self.dismiss_all_overlays();
-        // `is_like` ignores the vault-relative/absolute distinction: `from` (from
-        // a sidebar/query row) is index-absolute while `self.path` may be relative.
-        // A plain `==` would miss, leaving the stale autosave to
-        // recreate a deleted/moved note.
-        if from.is_like(&self.path) {
-            self.autosave.stop();
-            self.try_save().await;
-            let parent = self.path.get_parent_path().0;
-            tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
-                self.vault.clone(),
-                parent,
-            )))
-            .ok();
-        } else {
-            self.refresh_sidebar_if_showing(&from.get_parent_path().0, tx);
+        // `is_like` inside the session: `from` (from a sidebar/query row) is
+        // index-absolute while the open path may be relative. A plain `==`
+        // would miss, leaving the stale autosave to recreate a deleted/moved
+        // note. The session stops the timer before flushing.
+        match self
+            .session
+            .on_removed(&from, self.panels.editor_mut())
+            .await
+        {
+            RemovedOutcome::OpenNoteRemoved { saved, parent } => {
+                self.apply_save_outcome(saved);
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
+                    self.vault.clone(),
+                    parent,
+                )))
+                .ok();
+            }
+            RemovedOutcome::NotOpen { parent } => {
+                self.refresh_sidebar_if_showing(&parent, tx);
+            }
         }
     }
 
@@ -669,49 +577,31 @@ impl EditorScreen {
     /// from disk so any self-link rewrites from the rename land in the buffer
     /// (the in-memory text still holds the pre-rename self-links). We
     /// deliberately do NOT `try_save` — the old path no longer exists on disk.
+    /// The session aborts the in-flight autosave (it bakes in the OLD path)
+    /// before retargeting.
     async fn on_note_renamed(&mut self, from: VaultPath, to: VaultPath, tx: &AppTx) {
         self.dismiss_all_overlays();
         self.panels.sidebar_mut().rename_note_row(&from, &to);
-        // `is_like` so an absolute `from` (index row) matches a possibly-relative
-        // `self.path` — otherwise the retarget + autosave-abort below
-        // are skipped and the stale save resurrects the old path.
-        if from.is_like(&self.path) {
-            // The open note was renamed. Kill any in-flight autosave still
-            // targeting the OLD path before retargeting (spawn_autosave bakes
-            // the path in; vault.save_note writes unconditionally, so a stale
-            // save would recreate the renamed-away file). abort() is
-            // best-effort (can't unwind a syscall already in progress).
-            self.autosave_task.abort();
-            match self.vault.get_note_text(&to).await {
-                Ok(text) => {
-                    self.path = to.clone();
-                    if let Some(ed) = self.panels.editor_mut() {
-                        ed.renamed_to(to.clone());
-                        ed.set_text(text.clone());
-                        ed.mark_saved(text);
-                    }
-                    self.panels
-                        .sidebar_mut()
-                        .set_open_note(Some(self.path.clone()));
-                    self.doc_meta.note_opened(&self.path, tx);
-                    self.reflect_open_note_in_drawers(tx);
-                    // Fresh autosave timer for the new path (mirrors open_path).
-                    let interval = self.settings.read().unwrap().autosave_interval_secs;
-                    self.autosave.restart(interval, tx.clone());
-                }
-                Err(_) => {
-                    // Couldn't load the renamed note — do NOT keep a dirty
-                    // buffer pointed at it (autosave would clobber the
-                    // on-disk rewrite). Fall back to Browse on the new
-                    // parent dir.
-                    self.autosave.stop();
-                    let parent = to.get_parent_path().0;
-                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
-                        self.vault.clone(),
-                        parent,
-                    )))
-                    .ok();
-                }
+        match self
+            .session
+            .on_renamed(&from, &to, self.panels.editor_mut(), tx)
+            .await
+        {
+            RenameOutcome::NotOpen => {}
+            RenameOutcome::Retargeted(path) => {
+                self.panels.sidebar_mut().set_open_note(Some(path.clone()));
+                self.doc_meta.note_opened(&path, tx);
+                self.reflect_open_note_in_drawers(tx);
+            }
+            RenameOutcome::ReloadFailed { parent } => {
+                // Couldn't load the renamed note — the session stopped the
+                // timer so a dirty buffer can't clobber the on-disk rewrite.
+                // Fall back to Browse on the new parent dir.
+                tx.send(AppMessage::OpenScreen(ScreenEvent::OpenBrowse(
+                    self.vault.clone(),
+                    parent,
+                )))
+                .ok();
             }
         }
     }
@@ -742,7 +632,7 @@ impl EditorScreen {
         };
         match target {
             FooterTarget::Props => {
-                if let Some(path) = self.open_note().cloned() {
+                if let Some(path) = self.open_note() {
                     tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
                         .ok();
                 }
@@ -970,8 +860,10 @@ impl EditorScreen {
                     .editor_mut()
                     .is_some_and(|e| e.take_requests().contains(&EditorRequest::ContextMenu));
                 if wants_menu {
-                    tx.send(AppMessage::FileOp(FileOp::ShowMenu(self.path.clone())))
-                        .ok();
+                    tx.send(AppMessage::FileOp(FileOp::ShowMenu(
+                        self.session.path().clone(),
+                    )))
+                    .ok();
                 }
                 state
             }
@@ -1012,8 +904,10 @@ impl EditorScreen {
                 tx.send(AppMessage::OpenJournal).ok();
             }
             EditorOp::ShowFileOps => {
-                tx.send(AppMessage::FileOp(FileOp::ShowMenu(self.path.clone())))
-                    .ok();
+                tx.send(AppMessage::FileOp(FileOp::ShowMenu(
+                    self.session.path().clone(),
+                )))
+                .ok();
             }
             EditorOp::ToggleQueryPanel => self.toggle_backlinks(tx),
             EditorOp::OpenFileBrowserReveal => {
@@ -1063,10 +957,7 @@ impl EditorScreen {
     /// file finder): it parks the browser (`OverlayHost::open_over`) so
     /// closing the dialog brings it back with focus unchanged.
     fn open_overlay(&mut self, open: OverlayOpen, tx: &AppTx) {
-        let stacks = matches!(
-            open,
-            OverlayOpen::SortBrowser | OverlayOpen::QueryHelpOverBrowser
-        );
+        let stacks = open.stacks();
         if self.overlays.is_open() != stacks {
             return;
         }
@@ -1117,99 +1008,15 @@ impl EditorScreen {
         )))
     }
 
-    /// The note the editor area is showing, if any — what every "+this
-    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m i`) acts on.
-    /// `None` on the vault root, in the attachment view (`self.path` is
-    /// then the attachment's path, never a note) and while the Ask
-    /// workspace is up (`self.path` still names the note it replaced, but
-    /// the user is not looking at it). The one definition of "this note",
-    /// so the m-group cannot disagree about it.
-    fn open_note(&self) -> Option<&VaultPath> {
-        if self.panels.is_showing_ask() || !self.path.is_note() {
-            None
-        } else {
-            Some(&self.path)
-        }
+    /// The facts a **Leader route** reads from this screen.
+    fn route_facts(&self) -> RouteFacts {
+        RouteFacts::new(self.session.path().clone(), self.panels.is_showing_ask())
     }
 
-    /// [`Self::open_note`], flashing "no note open" when there is none.
-    fn open_note_or_flash(&self, tx: &AppTx) -> Option<VaultPath> {
-        let note = self.open_note().cloned();
-        if note.is_none() {
-            tx.send(AppMessage::FlashMessage("no note open".into()))
-                .ok();
-        }
-        note
-    }
-
-    /// Leader `m i`: pin the open note, or unpin it if pinned. Refused with
-    /// a flash when nothing is open (see [`Self::open_note`]), when the
-    /// open note is no longer on disk, or when the vault already holds the
-    /// cap.
-    fn toggle_pin_open_note(&self, tx: &AppTx) {
-        let Some(path) = self.open_note_or_flash(tx) else {
-            return;
-        };
-        let vault = self.vault.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let msg = match vault.toggle_pinned_note(&path).await {
-                Ok(kimun_core::PinToggle::Pinned { position }) => format!(
-                    "pinned as {} of {}",
-                    position + 1,
-                    kimun_core::PINNED_NOTES_CAP
-                ),
-                Ok(kimun_core::PinToggle::Unpinned) => "unpinned".to_string(),
-                Ok(kimun_core::PinToggle::Full) => format!(
-                    "already {} pinned — unpin one first",
-                    kimun_core::PINNED_NOTES_CAP
-                ),
-                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-                    format!("note not found: {path}")
-                }
-                Err(e) => {
-                    tracing::warn!("failed to toggle pin on {path}: {e}");
-                    format!("could not update pinned notes: {e}")
-                }
-            };
-            tx.send(AppMessage::FlashMessage(msg)).ok();
-        });
-    }
-
-    /// Leader digit `n`: open pinned note `n` (1-based). A slot with no pin,
-    /// or a pin whose note is missing on disk, flashes instead.
-    fn jump_to_pinned(&self, n: u8, tx: &AppTx) {
-        let vault = self.vault.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let pins = match vault.list_pinned_notes().await {
-                Ok(pins) => pins,
-                Err(e) => {
-                    tx.send(AppMessage::FlashMessage(format!(
-                        "could not read pinned notes: {e}"
-                    )))
-                    .ok();
-                    return;
-                }
-            };
-            let Some(path) = pins.get(usize::from(n).saturating_sub(1)).cloned() else {
-                tx.send(AppMessage::FlashMessage(format!("no pinned note {n}")))
-                    .ok();
-                return;
-            };
-            if !vault.exists(&path).await {
-                tx.send(AppMessage::FlashMessage(format!(
-                    "pinned note not found: {path}"
-                )))
-                .ok();
-                return;
-            }
-            tx.send(AppMessage::OpenPath {
-                path,
-                emphasis: None,
-            })
-            .ok();
-        });
+    /// The note the editor area is showing, if any — the one definition of
+    /// "this note" ([`RouteFacts::open_note`]).
+    fn open_note(&self) -> Option<VaultPath> {
+        self.route_facts().open_note().cloned()
     }
 
     /// Apply a sort dialog selection to `target` — the one path every sort
@@ -1230,21 +1037,12 @@ impl EditorScreen {
         self.panels
             .sidebar_mut()
             .remember_default(state.field.clone(), state.order);
-        {
-            let mut s = self.settings.write().unwrap();
-            let field = crate::settings::SortFieldSetting::from(state.field.clone());
-            let order = crate::settings::SortOrderSetting::from(state.order);
-            if is_journal {
-                s.journal_sort_field = field;
-                s.journal_sort_order = order;
-            } else {
-                s.default_sort_field = field;
-                s.default_sort_order = order;
-            }
-            if let Some(group) = state.group_dirs {
-                s.group_directories = group;
-            }
-        }
+        // The rule the desktop app shares (`logic::files`).
+        crate::logic::files::save_sort_default(
+            &mut self.settings.write().unwrap(),
+            state,
+            is_journal,
+        );
         let snapshot = self.settings.read().unwrap().clone();
         tokio::spawn(async move {
             snapshot.save_to_disk().ok();
@@ -1264,7 +1062,7 @@ impl EditorScreen {
                 let provider = resolving_search_source(
                     self.vault.clone(),
                     s.current_last_paths(),
-                    Some(self.path.clone()),
+                    Some(self.session.path().clone()),
                 );
                 Box::new(NoteBrowserModal::new(
                     "Note Browser",
@@ -1279,7 +1077,7 @@ impl EditorScreen {
             // The note-browser modal over the fuzzy file finder (Ctrl-O and
             // the leader's `f f`).
             OverlayOpen::FileFinder => {
-                let current_dir = self.path.get_parent_path().0;
+                let current_dir = self.session.path().get_parent_path().0;
                 let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
                 Box::new(
                     NoteBrowserModal::new(
@@ -1367,7 +1165,7 @@ impl EditorScreen {
                 tokio::spawn(async move {
                     let result = async {
                         let latest = crate::update::latest_release().await?;
-                        crate::update::install(latest).await
+                        crate::update::install(latest, crate::update::Product::Terminal).await
                     }
                     .await;
                     let msg = match result {
@@ -1393,7 +1191,7 @@ impl EditorScreen {
             FileOp::ShowProperties(path) => {
                 // The dialog writes the file through core; flush the buffer
                 // first so no unsaved edit is lost under it.
-                if path.is_like(&self.path) {
+                if path.is_like(self.session.path()) {
                     self.try_save().await;
                     if self.panels.editor().is_some_and(|e| e.is_dirty()) {
                         self.footer
@@ -1525,31 +1323,23 @@ impl EditorScreen {
     async fn handle_owned_message(&mut self, msg: AppMessage, tx: &AppTx) {
         match msg {
             AppMessage::RagStatus(status) => {
-                let ask_was = self.rag_status.llm_available();
-                let sem_was = self.rag_status.search_available();
+                let was = Caps::from_status(self.rag_status);
                 self.rag_status = status;
                 // Both rail entries are live-status-driven: ASK on whether the
                 // server can answer questions, SEM on whether it can search.
                 // Rebuild the rail when either flips (an active view
                 // stays put when its capability drops — only the rail entry
                 // goes). The Ask client only needs refreshing on the ASK flip.
-                let ask_now = status.llm_available();
-                let sem_now = status.search_available();
-                if ask_was != ask_now || sem_was != sem_now {
+                let now = Caps::from_status(status);
+                let flip = Caps::changed(was, now);
+                if flip.any() {
                     let (kb, icons) = {
                         let s = self.settings.read().unwrap();
                         (s.key_bindings.clone(), s.icons())
                     };
-                    self.panels.rebuild_rail(
-                        kb,
-                        icons,
-                        crate::components::activity_rail::RailCaps {
-                            semantic: sem_now,
-                            ask: ask_now,
-                        },
-                    );
+                    self.panels.rebuild_rail(kb, icons, now);
                 }
-                if ask_was != ask_now {
+                if flip.ask {
                     self.ask
                         .refresh_capability(&mut self.panels, self.rag_status)
                         .await;
@@ -1631,7 +1421,7 @@ impl EditorScreen {
                 // The row may predate edits that moved, renamed or added
                 // headings: bring the OUTLINE up to the buffer, then resolve
                 // the row against it — one parse for both.
-                self.panels.sync_outline(&self.path, tx);
+                self.panels.sync_outline(self.session.path(), tx);
                 let row = self.panels.outline_mut().resolve(&target);
                 match (self.panels.editor_mut(), row) {
                     (Some(ed), Some(row)) => ed.jump_to_row(row),
@@ -1649,22 +1439,18 @@ impl EditorScreen {
                 // The rail hides SEM unless the server is reachable for search,
                 // but the leader path (`drawer.semantic`) can still request it —
                 // gate here so every route gets the same answer.
-                if view == DrawerView::Semantic && !self.rag_status.search_available() {
-                    let msg = if crate::rag::rag_configured(&self.settings) {
-                        "Semantic search needs a reachable server with an embedder"
-                    } else {
-                        "Set kimun_server_url in config to use semantic search"
-                    };
+                let unavailable = match view {
+                    DrawerView::Semantic => rag_caps::semantic_unavailable_message(
+                        self.rag_status,
+                        crate::rag::rag_configured(&self.settings),
+                    ),
+                    // ASK needs an LLM-configured server (the rail hides its
+                    // entry otherwise); gate every route the same way.
+                    DrawerView::Ask => rag_caps::ask_unavailable_message(self.rag_status),
+                    _ => None,
+                };
+                if let Some(msg) = unavailable {
                     tx.send(AppMessage::FlashMessage(msg.into())).ok();
-                }
-                // ASK needs an LLM-configured server (the rail hides its entry
-                // otherwise); gate every route the same way.
-                else if view == DrawerView::Ask && !self.rag_status.llm_available() {
-                    tx.send(AppMessage::FlashMessage(
-                        "Ask needs an LLM-configured server; this one is semantic-search only"
-                            .into(),
-                    ))
-                    .ok();
                 }
                 // Selecting the already-active view toggles the drawer closed
                 // (clicking the active rail item toggles it).
@@ -1714,73 +1500,65 @@ impl EditorScreen {
                 // Unsaved typing (made after the write was spawned) wins: the
                 // buffer and the autosave carrying it are kept, and the user
                 // is told the file changed underneath.
-                if path.is_like(&self.path) && self.panels.editor().is_some_and(|e| e.is_dirty()) {
-                    self.footer.flash(
+                let outcome = self
+                    .session
+                    .on_reload_from_disk(&path, self.panels.editor_mut())
+                    .await;
+                match outcome {
+                    ReloadOutcome::NotOpen | ReloadOutcome::Reloaded => {}
+                    ReloadOutcome::KeptDirty => self.footer.flash(
                         "properties changed on disk — reopen the note to see them".to_string(),
                         tx,
-                    );
-                    // The footer's count follows the disk; the buffer stays.
-                    self.doc_meta.refresh_properties(&self.path, tx);
-                } else if path.is_like(&self.path) {
-                    self.autosave_task.abort();
-                    match self.vault.get_note_text(&self.path).await {
-                        Ok(text) => {
-                            if let Some(ed) = self.panels.editor_mut() {
-                                ed.set_text(text.clone());
-                                ed.mark_saved(text);
-                            }
-                        }
-                        // The buffer still holds the old text: an edit and
-                        // autosave would revert what changed on disk.
-                        Err(_) => self.footer.flash(
-                            "reload failed — reopen the note before editing".to_string(),
-                            tx,
-                        ),
-                    }
-                    self.doc_meta.refresh_properties(&self.path, tx);
+                    ),
+                    // The buffer still holds the old text: an edit and
+                    // autosave would revert what changed on disk.
+                    ReloadOutcome::Failed => self.footer.flash(
+                        "reload failed — reopen the note before editing".to_string(),
+                        tx,
+                    ),
+                }
+                // The footer's count follows the disk.
+                if outcome != ReloadOutcome::NotOpen {
+                    self.doc_meta.refresh_properties(self.session.path(), tx);
                 }
             }
             AppMessage::AutosaveCompleted {
                 path,
                 saved_revision,
                 title,
+                error,
             } => {
-                if path == self.path
-                    && let Some(rev) = saved_revision
-                    && let Some(ed) = self.panels.editor_mut()
-                {
-                    ed.mark_saved_at_revision(rev);
-                }
-                if let Some(raw_title) = title {
-                    self.note_saved(&path, raw_title);
+                let done = self.session.on_autosave_completed(
+                    SaveCompleted {
+                        path: path.clone(),
+                        saved_revision,
+                        title,
+                        error,
+                    },
+                    self.panels.editor_mut(),
+                );
+                if let Some(saved) = done.saved {
+                    self.note_saved(&saved.path, saved.title);
                 }
                 // The write changed the working tree — refresh the git
                 // segment (throttled).
                 self.doc_meta.refresh_git(tx);
-                if path == self.path {
+                if done.is_open_note {
                     self.doc_meta.refresh_properties(&path, tx);
                     // The OUTLINE catches up with the buffer on each autosave
                     // tick (every `autosave_interval_secs`), on reveal and on
                     // a jump — never per keystroke. A failed save changed
                     // nothing worth a re-read.
-                    if saved_revision.is_some() && self.drawer_open_on(DrawerView::Outline) {
+                    if done.wrote && self.drawer_open_on(DrawerView::Outline) {
                         self.panels.sync_outline(&path, tx);
                     }
                 }
-                // `SingleSlotTask::is_in_flight()` flips to false the
-                // moment the spawned future returns (success or panic),
-                // so we don't have to clear the slot manually here —
-                // the next `spawn_autosave` tick will overwrite it.
-                // Skip explicit cleanup; was previously racy because a
-                // stale completion arriving after `try_save` had
-                // already cleared and respawned could wipe the fresh
-                // handle.
             }
             AppMessage::FocusSidebar => {
                 self.focus_sidebar(tx);
             }
-            AppMessage::FollowLink(target) => {
-                self.follow_link(target, tx).await;
+            AppMessage::FollowLink { target, kind } => {
+                self.follow_link(target, kind, tx).await;
             }
             AppMessage::FollowLabel(name) => {
                 let initial = format!("#{name}");
@@ -1788,7 +1566,7 @@ impl EditorScreen {
                 let provider = resolving_search_source(
                     self.vault.clone(),
                     s.current_last_paths(),
-                    Some(self.path.clone()),
+                    Some(self.session.path().clone()),
                 );
                 let modal = NoteBrowserModal::with_initial_query(
                     "Note Browser",
@@ -1821,12 +1599,12 @@ impl EditorScreen {
         self.panels.is_visible(PanelKind::Drawer) && self.panels.active_drawer_view() == view
     }
 
-    /// Reflect the currently-open note (`self.path`) into whichever drawer view
+    /// Reflect the currently-open note (`session.path()`) into whichever drawer view
     /// is visible (FIND/LINKS/OUTLINE). Shared by `open_path` and
     /// `on_note_renamed` so a rename keeps the drawers in step, not just a
     /// fresh open.
     fn reflect_open_note_in_drawers(&mut self, tx: &AppTx) {
-        let path = self.path.clone();
+        let path = self.session.path().clone();
         if self.drawer_open_on(DrawerView::Find) {
             self.panels.query_mut().set_note(path.clone(), tx.clone());
         }
@@ -1843,7 +1621,7 @@ impl EditorScreen {
     /// rebuild when the sidebar is already there so an in-progress filter
     /// and selection survive a re-open.
     fn reveal_note_dir_in_sidebar(&mut self, tx: &AppTx) {
-        let note_parent = self.path.get_parent_path().0;
+        let note_parent = self.session.path().get_parent_path().0;
         if self.panels.sidebar().is_empty()
             || !note_parent.is_like(self.panels.sidebar().current_dir())
         {
@@ -1915,37 +1693,22 @@ impl EditorScreen {
             DrawerView::Find if newly_shown => {
                 self.panels
                     .query_mut()
-                    .set_note(self.path.clone(), tx.clone());
+                    .set_note(self.session.path().clone(), tx.clone());
             }
             DrawerView::Files if newly_shown => {
                 self.reveal_note_dir_in_sidebar(tx);
             }
             DrawerView::Config => {
-                let info = {
-                    let s = self.settings.read().unwrap();
-                    let key_of = |a: &ActionShortcuts| {
-                        s.key_bindings
-                            .first_combo_for(a)
-                            .unwrap_or_else(|| "unbound".to_string())
-                    };
-                    crate::components::drawer::ConfigInfo {
-                        theme_name: s.get_theme().name,
-                        leader_key: key_of(&ActionShortcuts::Leader),
-                        preferences_key: key_of(&ActionShortcuts::OpenPreferences),
-                        leader_timeout_ms: s.leader_timeout_ms,
-                        config_path: s
-                            .config_file
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "default location".to_string()),
-                    }
-                };
+                let info = crate::logic::preferences::config_info(&self.settings.read().unwrap());
                 self.panels.drawer_set_config_info(info);
             }
             DrawerView::Semantic => self.panels.semantic_mut().ensure_source(tx),
             DrawerView::Tags => self.panels.tags_mut().refresh(tx),
-            DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
-            DrawerView::Outline => self.panels.sync_outline(&self.path, tx),
+            DrawerView::Links => self
+                .panels
+                .links_mut()
+                .set_note(self.session.path().clone(), tx),
+            DrawerView::Outline => self.panels.sync_outline(self.session.path(), tx),
             _ => {}
         }
     }
@@ -2054,11 +1817,8 @@ impl EditorScreen {
             return;
         }
         if !self.panels.is_showing_ask() {
-            if !self.rag_status.llm_available() {
-                tx.send(AppMessage::FlashMessage(
-                    "Ask needs an LLM-configured server; this one is semantic-search only".into(),
-                ))
-                .ok();
+            if let Some(msg) = rag_caps::ask_unavailable_message(self.rag_status) {
+                tx.send(AppMessage::FlashMessage(msg.into())).ok();
                 return;
             }
             self.open_drawer_view(DrawerView::Ask, tx);
@@ -2086,8 +1846,8 @@ impl EditorScreen {
             return false;
         };
         match editor.follow_target_at_cursor() {
-            Some(FollowTarget::Link(target)) => {
-                tx.send(AppMessage::FollowLink(target)).ok();
+            Some(FollowTarget::Link { target, kind }) => {
+                tx.send(AppMessage::FollowLink { target, kind }).ok();
                 true
             }
             Some(FollowTarget::Label(name)) => {
@@ -2122,96 +1882,57 @@ impl EditorScreen {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> EventState {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        match key.code {
-            KeyCode::Esc => {
-                self.leader.cancel();
-                self.focus_editor();
+        use crate::logic::input::Key;
+        // The neutral key feed (`LeaderEngine::key`); a key with no neutral
+        // form is swallowed like any other non-leader key.
+        let Some(input) = crate::keys::crossterm_input::field_key_input(key) else {
+            tx.send(AppMessage::Redraw).ok();
+            return EventState::Consumed;
+        };
+        match self.leader.key(input) {
+            LeaderOutcome::Cancelled if input.key == Key::Esc => self.focus_editor(),
+            // Stepping past the root cancels — no reveal to re-arm then.
+            LeaderOutcome::SteppedUp | LeaderOutcome::Descended => {
+                self.schedule_whichkey_reveal(tx)
             }
-            KeyCode::Backspace => {
-                let outcome = self.leader.step_up();
-                // Stepping past the root cancels — no reveal to re-arm then.
-                if outcome == LeaderOutcome::SteppedUp {
-                    self.schedule_whichkey_reveal(tx);
+            LeaderOutcome::Fired(action) => self.execute_leader_action(action, tx),
+            LeaderOutcome::Invalid => {
+                // Gentle feedback; the sequence stays pending.
+                if let Key::Char(c) = input.key {
+                    self.footer.flash(format!("leader: no entry for '{c}'"), tx);
                 }
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match self.leader.feed(c) {
-                    LeaderOutcome::Fired(action) => self.execute_leader_action(action, tx),
-                    LeaderOutcome::Invalid => {
-                        // Gentle feedback; the sequence stays pending.
-                        self.footer.flash(format!("leader: no entry for '{c}'"), tx);
-                        self.schedule_whichkey_reveal(tx);
-                    }
-                    LeaderOutcome::Descended => self.schedule_whichkey_reveal(tx),
-                    _ => {}
-                }
+                self.schedule_whichkey_reveal(tx);
             }
             // Other keys (arrows, function keys, …) are swallowed; the
             // sequence stays pending. Ctrl-chords never reach here — the
-            // intercept in handle_input cancels and re-dispatches them.
-            _ => {}
+            // intercept in handle_input cancels and re-dispatches them — so a
+            // passed chord is swallowed too.
+            LeaderOutcome::Cancelled | LeaderOutcome::Swallowed | LeaderOutcome::Passed => {}
         }
         tx.send(AppMessage::Redraw).ok();
         EventState::Consumed
     }
 
-    /// Execute a fired leader leaf. Stubs for surfaces that land in later
-    /// phases flash a "coming soon" notice instead of silently doing nothing.
+    /// Execute a fired leader leaf: route it (`logic::leader_route`), then
+    /// perform the route with this screen's surfaces. Stubs for surfaces that
+    /// land in later phases flash a "coming soon" notice instead of silently
+    /// doing nothing.
     fn execute_leader_action(&mut self, action: LeaderAction, tx: &AppTx) {
-        match action {
-            LeaderAction::OpenDrawer(view) => self.open_drawer_view(view, tx),
+        let route = leader_route::route(action, &self.route_facts());
+        self.perform_route(route, tx);
+    }
 
-            LeaderAction::AppCheckUpdates => {
-                if let Some(status) = self.update.clone() {
-                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
-                } else {
-                    // No cached notice — run a forced check and report the result.
-                    let tx2 = tx.clone();
-                    tx.send(AppMessage::FlashMessage("Checking for updates…".into()))
-                        .ok();
-                    tokio::spawn(async move {
-                        let Ok(config_dir) = crate::settings::config_dir() else {
-                            return;
-                        };
-                        match crate::update::check_now(config_dir, true).await {
-                            Ok(Some(status)) if status.update_available => {
-                                // Manual check: surface the notice AND open the
-                                // dialog the user explicitly asked for (shown even
-                                // if previously skipped — they asked).
-                                tx2.send(AppMessage::Update(UpdateFlow::Available(status)))
-                                    .ok();
-                                tx2.send(AppMessage::Update(UpdateFlow::ShowDialog)).ok();
-                            }
-                            Ok(_) => {
-                                tx2.send(AppMessage::FlashMessage("kimün is up to date".into()))
-                                    .ok();
-                            }
-                            Err(e) => {
-                                tx2.send(AppMessage::FlashMessage(format!(
-                                    "Update check failed: {e}"
-                                )))
-                                .ok();
-                            }
-                        }
-                    });
-                }
+    /// The TUI performer of a [`LeaderRoute`].
+    fn perform_route(&mut self, route: LeaderRoute, tx: &AppTx) {
+        match route {
+            LeaderRoute::Overlay(open) => self.open_overlay(open, tx),
+            LeaderRoute::Drawer(view) => self.open_drawer_view(view, tx),
+            LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, None, tx),
+            LeaderRoute::LinksTab(tab) => {
+                self.open_drawer_view(DrawerView::Links, tx);
+                self.panels.links_mut().show_tab(tab, tx);
             }
-
-            // +find — list-style leaves route to today's pickers; the
-            // telescope modal takes them over in phase 08.
-            LeaderAction::FindFiles => self.open_overlay(OverlayOpen::FileFinder, tx),
-            LeaderAction::FindGrep => self.open_overlay(OverlayOpen::SearchBrowser, tx),
-            LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
-            LeaderAction::FindBacklinks => {
-                self.open_find_with_query("<{note}".to_string(), None, tx)
-            }
-            LeaderAction::FindSaved => self.open_overlay(OverlayOpen::SavedSearches, tx),
-            LeaderAction::FindRecent => self.open_overlay(OverlayOpen::SearchBrowser, tx),
-            LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
-
-            // +note
-            LeaderAction::NoteNew => {
+            LeaderRoute::NewNote => {
                 // The FILES filter doubles as the create field (typing a new
                 // name offers "Create: …"); the telescope picker (08) gives
                 // this a dedicated door.
@@ -2219,158 +1940,107 @@ impl EditorScreen {
                 self.footer
                     .flash("type a name — Enter creates".to_string(), tx);
             }
-            LeaderAction::NoteDaily => {
+            LeaderRoute::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
-            LeaderAction::NoteFromTemplate => {
-                self.footer.flash("templates — coming soon".to_string(), tx);
+            LeaderRoute::Quit => {
+                tx.send(AppMessage::Quit).ok();
             }
-            LeaderAction::NoteRename => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowRename(path))).ok();
-                }
-            }
-            LeaderAction::NoteMove => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowMove(path))).ok();
-                }
-            }
-            LeaderAction::NoteProperties => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowProperties(path)))
-                        .ok();
-                }
-            }
-            LeaderAction::NoteDelete => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    tx.send(AppMessage::FileOp(FileOp::ShowDelete(path))).ok();
-                }
-            }
-
-            // +links
-            LeaderAction::LinksTab(tab) => {
-                self.open_drawer_view(DrawerView::Links, tx);
-                self.panels.links_mut().show_tab(tab, tx);
-            }
-            LeaderAction::LinksGraph => {
-                self.footer
-                    .flash("local graph — coming soon".to_string(), tx);
-            }
-
-            // +git/sync — status is live; the rest are display-only stubs
-            // (git interactions are out of scope).
-            LeaderAction::GitStatus => {
-                self.doc_meta.refresh_git(tx);
-                let msg = self
-                    .doc_meta
-                    .git()
-                    .cloned()
-                    .unwrap_or_else(|| "not a git repository".to_string());
-                self.footer.flash(msg, tx);
-            }
-            LeaderAction::GitSync | LeaderAction::GitLog | LeaderAction::GitDiff => {
-                self.footer
-                    .flash("git is display-only for now".to_string(), tx);
-            }
-
-            // +vault
-            LeaderAction::VaultSwitch => self.open_overlay(OverlayOpen::WorkspaceSwitcher, tx),
-            LeaderAction::VaultReindex => {
-                // Fast reindex right here — the same pipeline the Settings
-                // screen runs, result surfaced as a footer flash.
-                let vault = self.vault.clone();
-                let tx2 = tx.clone();
-                self.footer.flash("reindexing…".to_string(), tx);
-                tokio::spawn(async move {
-                    let started = std::time::Instant::now();
-                    let result = vault.index_notes(kimun_core::NotesValidation::Fast).await;
-                    let msg = match result {
-                        Ok(_) => format!("reindexed in {:.1?}", started.elapsed()),
-                        Err(e) => format!("reindex failed: {e}"),
-                    };
-                    tx2.send(AppMessage::FlashMessage(msg)).ok();
-                });
-            }
-            // `v c` opens the config panel (the CFG drawer); `v t` opens the
-            // theme picker directly (also reachable inside CFG via `t`).
-            LeaderAction::VaultConfig => self.open_drawer_view(DrawerView::Config, tx),
-            LeaderAction::VaultTheme => self.open_overlay(OverlayOpen::ThemePicker, tx),
-            LeaderAction::VaultPreferences => {
+            LeaderRoute::OpenPreferences => {
                 tx.send(AppMessage::OpenScreen(ScreenEvent::OpenPreferences))
                     .ok();
             }
-            LeaderAction::AppOnboarding => {
+            LeaderRoute::OpenOnboarding => {
                 tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
                     .ok();
             }
-
-            // +window
-            LeaderAction::WindowZen => {
-                self.panels.hide(PanelKind::Drawer);
-                self.focus_editor();
+            LeaderRoute::NoteDialog(dialog, path) => {
+                tx.send(AppMessage::FileOp(dialog.file_op(path))).ok();
             }
-            LeaderAction::WindowSplit => {
-                self.footer
-                    .flash("editor splits — coming soon".to_string(), tx);
+            LeaderRoute::NoNoteOpen => {
+                tx.send(AppMessage::FlashMessage("no note open".into()))
+                    .ok();
             }
-            LeaderAction::WindowGrowDrawer => self.panels.adjust_drawer_width(4),
-            LeaderAction::WindowShrinkDrawer => self.panels.adjust_drawer_width(-4),
-
-            // +this note
-            LeaderAction::NoteToggleTodo => {
-                self.footer
-                    .flash("toggle todo — coming soon".to_string(), tx);
-            }
-            LeaderAction::NotePreview => {
-                self.footer
-                    .flash("preview — lands with phase 09".to_string(), tx);
-            }
-            LeaderAction::NoteCopyWikilink => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    let link = format!("[[{}]]", path.get_clean_name());
-                    crate::logic::clipboard::yank(link, "wikilink copied", tx);
-                }
-            }
-            LeaderAction::NoteExport => {
-                self.footer.flash("export — coming soon".to_string(), tx);
-            }
-            LeaderAction::NoteYankPath => {
-                if let Some(path) = self.open_note_or_flash(tx) {
-                    crate::logic::clipboard::yank(path.to_string(), "note path copied", tx);
-                }
-            }
-
+            LeaderRoute::Yank { text, label } => crate::logic::clipboard::yank(text, label, tx),
             // +text — markdown formatting, the only route to it. Gated on the
             // editor having focus for the same reason the shortcut tier gates
             // `ActionShortcuts::Text` on `editor_active`: the action reads the
             // editor's own selection, and applying it from a focused drawer
             // would edit a buffer the user is not looking at.
-            LeaderAction::TextBold => self.apply_text_from_leader(TextAction::Bold, tx),
-            LeaderAction::TextItalic => self.apply_text_from_leader(TextAction::Italic, tx),
-            LeaderAction::TextStrikethrough => {
-                self.apply_text_from_leader(TextAction::Strikethrough, tx)
+            LeaderRoute::Text(action) => self.apply_text_from_leader(action, tx),
+            LeaderRoute::Save => {
+                // Flush the periodic autosave immediately (no manual-save
+                // concept; this force-persists the current buffer if dirty).
+                self.spawn_autosave(tx);
             }
+            LeaderRoute::Layout(LayoutStep::Zen) => {
+                self.panels.hide(PanelKind::Drawer);
+                self.focus_editor();
+            }
+            LeaderRoute::Layout(LayoutStep::GrowDrawer) => self.panels.adjust_drawer_width(4),
+            LeaderRoute::Layout(LayoutStep::ShrinkDrawer) => self.panels.adjust_drawer_width(-4),
+            LeaderRoute::Job(job) => self.run_leader_job(job, tx),
+            LeaderRoute::GitStatus => {
+                self.doc_meta.refresh_git_now(tx);
+                let msg = self
+                    .doc_meta
+                    .git_label()
+                    .unwrap_or_else(|| "not a git repository".to_string());
+                self.footer.flash(msg, tx);
+            }
+            LeaderRoute::Ask(step) => self.perform_ask_step(step, tx),
+            LeaderRoute::Soon(notice) => self.footer.flash(notice.to_string(), tx),
+        }
+    }
 
-            // +ask — the Ask workspace's conversation actions.
-            LeaderAction::AskFocus => self.open_ask_workspace(tx),
-            LeaderAction::AskNew => {
+    /// Spawn an asynchronous leader leaf (`leader_route::jobs`).
+    fn run_leader_job(&mut self, job: LeaderJob, tx: &AppTx) {
+        match job {
+            LeaderJob::TogglePin(path) => {
+                tokio::spawn(jobs::toggle_pin(self.vault.clone(), path, tx.clone()));
+            }
+            LeaderJob::JumpToPinned(n) => {
+                tokio::spawn(jobs::jump_to_pinned(self.vault.clone(), n, tx.clone()));
+            }
+            LeaderJob::Reindex => {
+                self.footer.flash("reindexing…".to_string(), tx);
+                tokio::spawn(jobs::reindex(self.vault.clone(), tx.clone()));
+            }
+            LeaderJob::CheckUpdates => {
+                if let Some(status) = self.update.clone() {
+                    self.present_overlay(Box::new(ActiveDialog::update(&status)));
+                } else {
+                    // No cached notice — run a forced check and report the result.
+                    tx.send(AppMessage::FlashMessage("Checking for updates…".into()))
+                        .ok();
+                    tokio::spawn(jobs::check_updates(tx.clone()));
+                }
+            }
+        }
+    }
+
+    /// `+ask` — the Ask workspace's conversation actions.
+    fn perform_ask_step(&mut self, step: AskStep, tx: &AppTx) {
+        match step {
+            AskStep::Focus => self.open_ask_workspace(tx),
+            AskStep::New => {
                 self.with_ask_panel(tx, |panel, _tx| {
                     panel.thread_mut().clear();
                     panel.focus_composer();
                 });
                 self.panels.ask_sources_mut().reset(tx);
             }
-            LeaderAction::AskCopy => {
+            AskStep::Copy => {
                 self.with_ask_panel(tx, |panel, tx| panel.copy_selected(tx));
             }
-            LeaderAction::AskSave => {
+            AskStep::Save => {
                 self.with_ask_panel(tx, |panel, tx| panel.save_selected(tx));
             }
-            LeaderAction::AskRegenerate => {
+            AskStep::Regenerate => {
                 self.with_ask_panel(tx, |panel, tx| panel.regenerate_selected(tx));
                 self.ask.sync_sources(&mut self.panels, tx);
             }
-            LeaderAction::AskSource => {
+            AskStep::Source => {
                 self.ensure_ask_workspace(tx);
                 // The top source of the selected turn — sync the drawer to the
                 // current turn first, then open its first source in the reader.
@@ -2378,23 +2048,6 @@ impl EditorScreen {
                 self.panels.ask_sources_mut().open_reader(0, tx);
                 self.panels.focus(PanelKind::Drawer);
             }
-
-            LeaderAction::Palette => self.open_overlay(OverlayOpen::CommandPalette, tx),
-            LeaderAction::Help => self.open_overlay(OverlayOpen::Cheatsheet, tx),
-
-            LeaderAction::NoteSave => {
-                // Flush the periodic autosave immediately (no manual-save
-                // concept; this force-persists the current buffer if dirty).
-                self.spawn_autosave(tx);
-            }
-            LeaderAction::AppQuit => {
-                tx.send(AppMessage::Quit).ok();
-            }
-
-            // +pinned
-            LeaderAction::FindPinned => self.open_overlay(OverlayOpen::PinnedNotes, tx),
-            LeaderAction::NoteTogglePin => self.toggle_pin_open_note(tx),
-            LeaderAction::PinnedJump(n) => self.jump_to_pinned(n, tx),
         }
     }
 
@@ -2438,7 +2091,7 @@ impl AppScreen for EditorScreen {
 
     async fn on_enter(&mut self, tx: &AppTx) {
         self.app_tx = Some(tx.clone());
-        self.open_path(self.path.clone(), None, tx).await;
+        self.open_path(self.session.path().clone(), None, tx).await;
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -2533,7 +2186,8 @@ impl AppScreen for EditorScreen {
             .unwrap_or_default();
         let right_w = palette_w + if badge_w > 0 { GAP + badge_w } else { 0 };
         let breadcrumb = self
-            .path
+            .session
+            .path()
             .to_string()
             .trim_start_matches('/')
             .replace('/', " / ");
@@ -2611,7 +2265,7 @@ impl AppScreen for EditorScreen {
                 PanelKind::Rail => false,
             }
         };
-        let path_str = self.path.to_string();
+        let path_str = self.session.path().to_string();
         // Link-under-cursor affordance: `→ target · N backlinks`.
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
@@ -2621,7 +2275,7 @@ impl AppScreen for EditorScreen {
                 .editor()
                 .and_then(|e| e.follow_target_at_cursor());
             self.doc_meta
-                .link_segment(link.as_ref(), &self.path, self.app_tx.as_ref())
+                .link_segment(link.as_ref(), self.session.path(), self.app_tx.as_ref())
         } else {
             None
         };
@@ -2660,7 +2314,7 @@ impl AppScreen for EditorScreen {
                 ln_col,
                 backlinks: self.doc_meta.backlinks(),
                 props: self.open_note().and(self.doc_meta.properties()),
-                git: self.doc_meta.git().cloned(),
+                git: self.doc_meta.git_label(),
                 matches,
                 link: link_segment,
                 update: self
@@ -2683,10 +2337,11 @@ impl AppScreen for EditorScreen {
 
         // which-key overlay — docked above the status bar once the user
         // hesitates mid-sequence.
-        let whichkey_visible = self
-            .leader
-            .pending_since()
-            .is_some_and(|since| since.elapsed() >= leader_timeout);
+        let whichkey_visible = crate::logic::which_key::revealed(
+            &self.leader,
+            std::time::Instant::now(),
+            leader_timeout,
+        );
         if whichkey_visible {
             let gateway = gateway_label;
             let area = f.area();
@@ -2718,7 +2373,7 @@ impl AppScreen for EditorScreen {
             msg => {
                 // Async status results (backlink count, git, link meta) are
                 // DocMeta's; everything else reaches the owned match.
-                let Some(msg) = self.doc_meta.handle(msg, &self.path) else {
+                let Some(msg) = self.doc_meta.handle(msg, self.session.path()) else {
                     return;
                 };
                 self.handle_owned_message(msg, tx).await;
@@ -2751,7 +2406,8 @@ impl AppScreen for EditorScreen {
     }
 
     async fn on_exit(&mut self, _tx: &AppTx) {
-        self.try_save().await;
+        let outcome = self.session.close(self.panels.editor_mut()).await;
+        self.apply_save_outcome(outcome);
     }
 }
 
@@ -2846,7 +2502,10 @@ mod tests {
         let (mut screen, vault, tx, mut rx, _dir) = screen_on_note().await;
         screen.handle_input(&chr('x'), &tx);
         assert!(screen.panels.editor().unwrap().is_dirty(), "precondition");
-        screen.autosave_task.spawn(std::future::pending::<()>());
+        screen
+            .session
+            .autosave_task_mut()
+            .spawn(std::future::pending::<()>());
         vault
             .save_note(&VaultPath::new("n.md"), "+++\na = 1\n+++\nhi")
             .await
@@ -2858,7 +2517,7 @@ mod tests {
         assert_eq!(ed.get_text(), "xhi", "the typing is kept");
         assert!(ed.is_dirty(), "still unsaved");
         assert!(
-            screen.autosave_task.is_in_flight(),
+            screen.session.autosave_task_mut().is_in_flight(),
             "the autosave carrying the typing is not aborted"
         );
         assert_eq!(
@@ -2877,7 +2536,7 @@ mod tests {
             }
         }
         assert_eq!(screen.panels.editor().unwrap().get_text(), "xhi");
-        screen.autosave_task.abort();
+        screen.session.autosave_task_mut().abort();
     }
 
     /// Feed channel events through the screen until `done` has seen what it
@@ -3060,7 +2719,9 @@ mod tests {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
-        screen.path = VaultPath::new("projects").append(&VaultPath::note_path_from("plan"));
+        screen
+            .session
+            .set_path(VaultPath::new("projects").append(&VaultPath::note_path_from("plan")));
         // Sidebar left on an unrelated directory, drawer hidden.
         screen
             .panels
@@ -3087,7 +2748,9 @@ mod tests {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
-        screen.path = VaultPath::new("projects").append(&VaultPath::note_path_from("plan"));
+        screen
+            .session
+            .set_path(VaultPath::new("projects").append(&VaultPath::note_path_from("plan")));
         screen.open_drawer_view(DrawerView::Files, &tx);
         // User browses away while FILES stays open.
         screen
@@ -3181,7 +2844,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
         vault.create_note(&note, "hi").await.unwrap();
-        screen.path = note.clone();
+        screen.session.set_path(note.clone());
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
@@ -3221,7 +2884,7 @@ mod tests {
         }
         let extra = VaultPath::new("extra.md");
         vault.create_note(&extra, "hi").await.unwrap();
-        screen.path = extra;
+        screen.session.set_path(extra);
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
@@ -3239,7 +2902,7 @@ mod tests {
     async fn leader_m_i_on_a_missing_note_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        screen.path = VaultPath::new("gone.md");
+        screen.session.set_path(VaultPath::new("gone.md"));
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
         screen.handle_input(&chr('i'), &tx);
@@ -3260,7 +2923,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
         vault.create_note(&note, "hi").await.unwrap();
-        screen.path = note;
+        screen.session.set_path(note);
         screen.open_drawer_view(DrawerView::Ask, &tx);
 
         screen.handle_input(&ctrl_key('b'), &tx);
@@ -3355,7 +3018,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
         vault.create_note(&note, "hi").await.unwrap();
-        screen.path = note;
+        screen.session.set_path(note);
         screen.open_drawer_view(DrawerView::Ask, &tx);
         assert!(screen.panels.is_showing_ask());
 
@@ -4012,7 +3675,11 @@ mod tests {
             )
             .await;
 
-        assert_eq!(screen.path, to, "editor retargets to the new path");
+        assert_eq!(
+            screen.session.path(),
+            &to,
+            "editor retargets to the new path"
+        );
         assert!(
             !screen.panels.editor().unwrap().is_dirty(),
             "reloaded buffer is clean (won't clobber the renamed file)"
@@ -4044,6 +3711,7 @@ mod tests {
             path: path.clone(),
             saved_revision: rev,
             title: rev.map(|_| "Alpha".to_string()),
+            error: None,
         };
 
         screen.open_drawer_view(DrawerView::Outline, &tx);
@@ -4164,6 +3832,7 @@ mod tests {
                     path: path.clone(),
                     saved_revision: None,
                     title: Some("New First Line".to_string()),
+                    error: None,
                 },
                 &tx,
             )
@@ -4920,11 +4589,14 @@ mod tests {
         let followed = crate::test_support::drain(&mut rx)
             .into_iter()
             .find_map(|ev| match ev {
-                AppMessage::FollowLink(target) => Some(target),
+                AppMessage::FollowLink { target, kind } => Some((target, kind)),
                 _ => None,
             })
             .expect("the double-click emitted no FollowLink");
-        assert_eq!(followed, "target note");
+        assert_eq!(
+            followed,
+            ("target note".to_string(), LinkSpanKind::WikiLink)
+        );
     }
 
     /// The first press only places the cursor. Following on a single click is
@@ -4946,7 +4618,7 @@ mod tests {
         assert!(
             !crate::test_support::drain(&mut rx)
                 .into_iter()
-                .any(|ev| matches!(ev, AppMessage::FollowLink(_))),
+                .any(|ev| matches!(ev, AppMessage::FollowLink { .. })),
             "one click is a cursor placement, not a navigation"
         );
         assert!(

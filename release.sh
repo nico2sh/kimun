@@ -13,8 +13,13 @@ echo "Releasing version: $VERSION"
 # 2. Stamp the version into kimun-notes only (core is versioned manually).
 cargo set-version -p kimun-notes "$VERSION"
 
+# 2b. The empty hand-written release notes for this version, to fill in
+#     (release-notes/README.md). Until they are written the release keeps the
+#     generated changelog as its body.
+python3 "$(dirname "$0")/.github/scripts/release_notes.py" scaffold "$VERSION"
+
 # 3. Commit the version bump.
-git add tui/Cargo.toml Cargo.lock
+git add tui/Cargo.toml Cargo.lock release-notes
 git commit -m "chore: bump version to $VERSION"
 
 # 4. Tag and push via semtag (also pushes the commit).

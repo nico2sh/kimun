@@ -26,12 +26,12 @@
 -- index links (sorted)
 Hashtag "#question" "question"
 Hashtag "#systems" "systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags ["learning", "question", "systems"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 Hashtag "#systems" "systems"
 Hashtag "#question" "question"
 -- markdown
@@ -107,10 +107,10 @@ Labels: [#systems](#systems) [#question](#question)
 -- index links (sorted)
 Hashtag "#brewing" "brewing"
 Hashtag "#recipe" "recipe"
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
 -- tags ["brewing", "recipe"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
 Hashtag "#brewing" "brewing"
 Hashtag "#recipe" "recipe"
 -- markdown
@@ -172,27 +172,27 @@ Labels: [#brewing](#brewing) [#recipe](#recipe)
 2 10 "Good Companions"
 2 17 "Bad Companions"
 2 22 "Timing"
-2 29 "Sources"
+2 31 "Sources"
 -- chunks
 [Companion Planting] "Notes from research on companion planting for the garden-plan."
 [Companion PlantingGood Companions] "* Tomatoes + Basil: Basil repels aphids and may improve tomato flavor\n* Carrots + Onions: Onions repel carrot fly\n* Lettuce + Radishes: Radishes mature fast and loosen soil for lettuce roots\n* Rosemary + Beans: Rosemary deters bean beetles"
 [Companion PlantingBad Companions] "* Tomatoes + Fennel (fennel inhibits tomato growth)\n* Beans + Onions (onions stunt bean growth)"
-[Companion PlantingTiming] "* Basil sprouts: 5-10 days\n* Tomato seedlings: transplant after last frost\n* Lettuce: can start early, cool-weather crop\n* Radishes: 25-30 days to harvest"
+[Companion PlantingTiming] "* Basil sprouts: 5-10 days\n* Tomato seedlings: transplant after last frost\n* Lettuce: can start early, cool-weather crop\n* Radishes: 25-30 days to harvest\nwiki"
 [Companion PlantingSources] "* \"Carrots Love Tomatoes\" by Louise Riotte\n* Local nursery handout\nLabels: reading"
 [FrontMatter] "type: idea\nstatus: growing\ntags:\n  - garden"
 -- index chunks
 [Companion Planting] "Notes from research on companion planting for the garden-plan."
 [Companion PlantingGood Companions] "* Tomatoes + Basil: Basil repels aphids and may improve tomato flavor\n* Carrots + Onions: Onions repel carrot fly\n* Lettuce + Radishes: Radishes mature fast and loosen soil for lettuce roots\n* Rosemary + Beans: Rosemary deters bean beetles"
 [Companion PlantingBad Companions] "* Tomatoes + Fennel (fennel inhibits tomato growth)\n* Beans + Onions (onions stunt bean growth)"
-[Companion PlantingTiming] "* Basil sprouts: 5-10 days\n* Tomato seedlings: transplant after last frost\n* Lettuce: can start early, cool-weather crop\n* Radishes: 25-30 days to harvest"
+[Companion PlantingTiming] "* Basil sprouts: 5-10 days\n* Tomato seedlings: transplant after last frost\n* Lettuce: can start early, cool-weather crop\n* Radishes: 25-30 days to harvest\nwiki"
 [Companion PlantingSources] "* \"Carrots Love Tomatoes\" by Louise Riotte\n* Local nursery handout\nLabels: reading"
 [FrontMatter] "type: idea\nstatus: growing\ntags:\n  - garden"
 -- index links (sorted)
 Hashtag "#reading" "reading"
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
 -- tags ["garden", "reading"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
 Hashtag "#reading" "reading"
 -- markdown
 ---
@@ -223,6 +223,8 @@ Notes from research on companion planting for the [garden-plan](garden-plan.md).
 - Tomato seedlings: transplant after last frost
 - Lettuce: can start early, cool-weather crop
 - Radishes: 25-30 days to harvest
+
+![wiki](/assets/logo.png)
 
 ## Sources
 
@@ -257,10 +259,10 @@ Labels: [#reading](#reading)
 -- index links (sorted)
 Hashtag "#reading" "reading"
 Hashtag "#systems" "systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] }) "cap-theorem.md" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
 -- tags ["reading", "systems"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] }) "cap-theorem.md" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
 Hashtag "#systems" "systems"
 Hashtag "#reading" "reading"
 -- markdown
@@ -460,6 +462,19 @@ processed: false
 Look into Zettelkasten method for organizing the distributed systems notes — atomic notes linked together might work better than long documents [#systems](#systems) [#idea](#idea)
 
 
+=== ../example/personal/inbox/2026-11-04t11-28-07.md
+-- title "This is a quick thought"
+-- headings
+-- chunks
+[] "This is a quick thought"
+-- index chunks
+[] "This is a quick thought"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+This is a quick thought
+
 === ../example/personal/journal/2026-04-07.md
 -- title "2026-04-07"
 -- headings
@@ -527,12 +542,12 @@ Watched a documentary about deep ocean exploration. The bioluminescence footage 
 [2026-04-08Notes] "Found an interesting article about companion planting — companion-planting notes saved."
 [FrontMatter] "date: 2026-04-08\nmood: relaxed\nweather: rainy"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
 -- markdown
 ---
 date: 2026-04-08
@@ -581,12 +596,12 @@ Found an interesting article about companion planting — [companion-planting](c
 [2026-04-09Evening] "Video call with Alex. Planning a hiking trip for next weekend — looking at Mount Wilson trail."
 [FrontMatter] "date: 2026-04-09\nmood: focused\nweather: sunny\nmeditation_minutes: 20"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
 -- markdown
 ---
 date: 2026-04-09
@@ -634,12 +649,12 @@ Video call with Alex. Planning a hiking trip for next weekend — looking at Mou
 [2026-04-10Tasks] "* [x] Feed sourdough starter\n* [x] Water garden\n* [ ] Clean telescope lens\n* [ ] Book campsite for next month"
 [FrontMatter] "date: 2026-04-10\nmood: good\nexercise: run\nrun_km: 5\nrun_minutes: 24"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
 -- markdown
 ---
 date: 2026-04-10
@@ -695,18 +710,18 @@ Organized the garage. Found my old telescope — need to clean the lens and try 
 [FrontMatter] "date: 2026-04-11\nmood: happy\nexercise: run\nrun_km: 7\nrun_minutes: 28"
 -- index links (sorted)
 Hashtag "#reading" "reading"
-Note(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] }) "cap-theorem.md" "cap-theorem"
-Note(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] }) "coffee-brewing.md" "coffee-brewing"
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
 -- tags ["reading"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] }) "sourdough-starter.md" "sourdough-starter"
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] }) "cap-theorem.md" "cap-theorem"
-Note(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] }) "garden-plan.md" "garden-plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] }) "coffee-brewing.md" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
 Hashtag "#reading" "reading"
 -- markdown
 ---
@@ -766,17 +781,48 @@ date: 2026-07-17
 
 
 
+=== ../example/personal/journal/2026-11-04.md
+-- title "2026-11-04"
+-- headings
+1 0 "2026-11-04"
+-- chunks
+[2026-11-04] "New note, journal entry actually"
+-- index chunks
+[2026-11-04] "New note, journal entry actually"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+# 2026-11-04
+
+New note, journal entry actually
+
+
+=== ../example/personal/list.md
+-- title "This is another list file"
+-- headings
+-- chunks
+[] "This is another list file"
+-- index chunks
+[] "This is another list file"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+This is another list file
+
 === ../example/personal/projects/garden-plan.md
 -- title "Garden Plan"
 -- headings
 1 8 "Garden Plan"
-2 10 "Layout"
-3 14 "Bed 1 — Tomatoes & Herbs"
-3 20 "Bed 2 — Greens"
-3 26 "Bed 3 — Root Vegetables"
-2 32 "Watering Schedule"
-2 38 "Notes"
+2 12 "Layout"
+3 16 "Bed 1 — Tomatoes & Herbs"
+3 22 "Bed 2 — Greens"
+3 28 "Bed 3 — Root Vegetables"
+2 34 "Watering Schedule"
+2 40 "Notes"
 -- chunks
+[Garden Plan] "list"
 [Garden PlanLayout] "Three raised beds along the south fence (4x8 each):"
 [Garden PlanLayoutBed 1 — Tomatoes & Herbs] "* Roma tomatoes (center)\n* Cherry tomatoes (east end)\n* Basil (companion, between tomatoes)\n* Rosemary (west end)"
 [Garden PlanLayoutBed 2 — Greens] "* Lettuce (mixed varieties)\n* Spinach\n* Kale\n* Arugula"
@@ -785,6 +831,7 @@ date: 2026-07-17
 [Garden PlanNotes] "See companion-planting for plant pairings.\nBed layout sketch: garden-layout.txt\nLabels: idea"
 [FrontMatter] "type: project\nstatus: active\npriority: 2\nstarted: 2026-04-08\ntags:\n  - garden"
 -- index chunks
+[Garden Plan] "list"
 [Garden PlanLayout] "Three raised beds along the south fence (4x8 each):"
 [Garden PlanLayoutBed 1 — Tomatoes & Herbs] "* Roma tomatoes (center)\n* Cherry tomatoes (east end)\n* Basil (companion, between tomatoes)\n* Rosemary (west end)"
 [Garden PlanLayoutBed 2 — Greens] "* Lettuce (mixed varieties)\n* Spinach\n* Kale\n* Arugula"
@@ -794,11 +841,13 @@ date: 2026-07-17
 [FrontMatter] "type: project\nstatus: active\npriority: 2\nstarted: 2026-04-08\ntags:\n  - garden"
 -- index links (sorted)
 Hashtag "#idea" "idea"
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
 -- tags ["garden", "idea"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("assets"), PathSlice("garden-layout.txt")] }) "assets/garden-layout.txt" "garden-layout.txt"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("assets"), PathSlice("garden-layout.txt")] }) "../assets/garden-layout.txt" "garden-layout.txt"
 Hashtag "#idea" "idea"
 -- markdown
 ---
@@ -810,6 +859,8 @@ tags:
   - garden
 ---
 # Garden Plan
+
+[list](list.md)
 
 ## Layout
 
@@ -938,11 +989,11 @@ Labels: [#hiking](#hiking)
 [Kimün] "Kimun logo\nKimun is a note taking app, focused on simplicity. It is not expected to become your second brain, but instead a place to jot down and help you remember things. It supports a simple, but powerful query anguange to search across your notes, and an efficient indexing system so your queries are blazing fast.\nThe note editor supports Markdown rendering, supporting wikilinks, Markdown Links, `inline code`, bold, italic.\n* lists\n    * Nested lists\n* ordered lists\n* auto incrementing the numbers\n```bash\necho \"code blocks\"\n```\nquoted text\n... And more!"
 [FrontMatter] "type: project\nstatus: active\npriority: 1\ntags:\n  - software"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("wikilinks.md")] }) "wikilinks.md" "wikilinks"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("wikilinks.md")] })) "wikilinks" "wikilinks"
 -- tags ["software"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("wikilinks.md")] }) "wikilinks.md" "wikilinks"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("link")] }) "folder/link" "Markdown Links"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("wikilinks.md")] })) "wikilinks" "wikilinks"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("link")] }) "link" "Markdown Links"
 -- markdown
 ---
 type: project
@@ -973,6 +1024,27 @@ echo "code blocks"
 
 ... And more!
 
+=== ../example/personal/projects/list.md
+-- title "List"
+-- headings
+1 0 "List"
+-- chunks
+[List] "This is a note with a list\n* One\n* Two\n* Three"
+-- index chunks
+[List] "This is a note with a list\n* One\n* Two\n* Three"
+-- index links (sorted)
+-- tags []
+-- markdown links
+-- markdown
+# List
+
+This is a note with a list
+
+* One
+* Two
+* Three
+
+
 === ../example/personal/projects/reading-list.md
 -- title "Reading List"
 -- headings
@@ -992,12 +1064,12 @@ echo "code blocks"
 [FrontMatter] "type: project\nstatus: active\npriority: 3\ncurrently_reading:\n  - Designing Data-Intensive Applications\n  - The Overstory"
 -- index links (sorted)
 Hashtag "#reading" "reading"
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
 -- tags ["reading"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] }) "distributed-systems.md" "distributed-systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] }) "companion-planting.md" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
 Hashtag "#reading" "reading"
 -- markdown
 ---
@@ -1142,18 +1214,18 @@ Carlos mentioned that Redis 7.2 has client-side caching support — could reduce
 [2026-04-07Action Items] "* [ ] Write tests for edge cases in rate limiter\n* [ ] Review the search index PR from david\n* [x] Send Redis cluster request to infra team"
 [FrontMatter] "date = 2026-04-07\nfocus = \"search caching\"\nblocked = true"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
 -- markdown
 +++
 date = 2026-04-07
@@ -1202,18 +1274,18 @@ Meeting with [maria](maria.md) about the auth flow at 2pm. She wants to add OAut
 [2026-04-08EOD] "Pushed the first draft of the caching layer. Tests passing locally. Will need carlos to review the Redis integration."
 [FrontMatter] "date = 2026-04-08\nfocus = \"search caching\"\nblocked = false"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
 -- markdown
 +++
 date = 2026-04-08
@@ -1274,16 +1346,16 @@ Pushed the first draft of the caching layer. Tests passing locally. Will need [c
 [2026-04-09Notes] "Got the Redis credentials from carlos at 3pm. Tested the caching layer against the staging cluster — latency dropped from 120ms to 8ms for cached queries. Big win.\nReviewed david's search index PR. Left comments about the tokenizer configuration."
 [FrontMatter] "date = 2026-04-09\nfocus = \"cache invalidation\"\nblocked = true"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
 -- markdown
 +++
 date = 2026-04-09
@@ -1341,22 +1413,22 @@ Reviewed [david](david.md)'s search index PR. Left comments about the tokenizer 
 [2026-04-10EOD] "All cache invalidation tests passing. PR ready for review. Tagged carlos and maria."
 [FrontMatter] "date = 2026-04-10\nfocus = \"demo prep\"\nblocked = false"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] }) "manager-notes.md" "manager-notes"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] })) "manager-notes" "manager-notes"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] }) "manager-notes.md" "manager-notes"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] })) "manager-notes" "manager-notes"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 -- markdown
 +++
 date = 2026-04-10
@@ -1419,16 +1491,16 @@ All cache invalidation tests passing. PR ready for review. Tagged [carlos](carlo
 [2026-04-11EOD] "Shadow mode running clean. Will check overnight metrics tomorrow morning before enabling 10% traffic."
 [FrontMatter] "date = 2026-04-11\nfocus = \"feature flag rollout\"\nblocked = false"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
 -- markdown
 +++
 date = 2026-04-11
@@ -1506,14 +1578,14 @@ Shadow mode running clean. Will check overnight metrics tomorrow morning before 
 Hashtag "#api" "api"
 Hashtag "#docs" "docs"
 Hashtag "#meeting" "meeting"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 -- tags ["api", "auth", "docs", "meeting"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
 Hashtag "#meeting" "meeting"
 Hashtag "#api" "api"
 Hashtag "#docs" "docs"
@@ -1591,30 +1663,30 @@ Labels: [#meeting](#meeting) [#api](#api) [#docs](#docs)
 -- index links (sorted)
 Hashtag "#meeting" "meeting"
 Hashtag "#planning" "planning"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
 -- tags ["meeting", "planning"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 Hashtag "#meeting" "meeting"
 Hashtag "#planning" "planning"
 -- markdown
@@ -1746,10 +1818,10 @@ Labels: [#perf](#perf) [#review](#review)
 -- index links (sorted)
 Hashtag "#perf" "perf"
 Hashtag "#review" "review"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags ["perf", "review"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 Hashtag "#review" "review"
 Hashtag "#perf" "perf"
 -- markdown
@@ -1802,22 +1874,22 @@ Labels: [#review](#review) [#perf](#perf)
 -- index links (sorted)
 Hashtag "#1on1" "1on1"
 Hashtag "#planning" "planning"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags ["1on1", "planning"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("observability.md")] }) "observability.md" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("observability.md")] })) "observability" "observability"
 Hashtag "#1on1" "1on1"
 Hashtag "#planning" "planning"
 -- markdown
@@ -1941,18 +2013,18 @@ Labels: [#api](#api) [#review](#review)
 -- index links (sorted)
 Hashtag "#api" "api"
 Hashtag "#docs" "docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("2026-04-08-auth-flow.md")] }) "2026-04-08-auth-flow.md" "2026-04-08-auth-flow"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("2026-04-08-auth-flow.md")] })) "2026-04-08-auth-flow" "2026-04-08-auth-flow"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags ["api", "docs"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("2026-04-08-auth-flow.md")] }) "2026-04-08-auth-flow.md" "2026-04-08-auth-flow"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("2026-04-08-auth-flow.md")] })) "2026-04-08-auth-flow" "2026-04-08-auth-flow"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
 Hashtag "#api" "api"
 Hashtag "#docs" "docs"
 -- markdown
@@ -2038,14 +2110,14 @@ Labels: [#api](#api) [#docs](#docs)
 -- index links (sorted)
 Hashtag "#api" "api"
 Hashtag "#systems" "systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
 -- tags ["api", "systems"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] }) "api-docs.md" "api-docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-docs.md")] })) "api-docs" "api-docs"
 Hashtag "#api" "api"
 Hashtag "#systems" "systems"
 -- markdown
@@ -2118,20 +2190,20 @@ Labels: [#api](#api) [#systems](#systems)
 Hashtag "#idea" "idea"
 Hashtag "#perf" "perf"
 Hashtag "#systems" "systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] }) "manager-notes.md" "manager-notes"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] })) "manager-notes" "manager-notes"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 -- tags ["idea", "perf", "systems"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
-Note(VaultPath { absolute: false, slices: [PathSlice("maria.md")] }) "maria.md" "maria"
-Note(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] }) "manager-notes.md" "manager-notes"
-Note(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] }) "search-caching.md" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("maria.md")] })) "maria" "maria"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("manager-notes.md")] })) "manager-notes" "manager-notes"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("search-caching.md")] })) "search-caching" "search-caching"
 Hashtag "#perf" "perf"
 Hashtag "#systems" "systems"
 Hashtag "#idea" "idea"
@@ -2230,14 +2302,14 @@ Labels: [#perf](#perf) [#systems](#systems) [#idea](#idea)
 Hashtag "#api" "api"
 Hashtag "#perf" "perf"
 Hashtag "#systems" "systems"
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
 -- tags ["api", "perf", "systems"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] }) "api-rate-limiter.md" "api-rate-limiter"
-Note(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] }) "carlos.md" "carlos"
-Note(VaultPath { absolute: false, slices: [PathSlice("david.md")] }) "david.md" "david"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("api-rate-limiter.md")] })) "api-rate-limiter" "api-rate-limiter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("carlos.md")] })) "carlos" "carlos"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("david.md")] })) "david" "david"
 Hashtag "#perf" "perf"
 Hashtag "#systems" "systems"
 Hashtag "#api" "api"
@@ -14943,10 +15015,10 @@ Paragraph 5000 — sample prose line with no blank separators. The quick brown f
 [Project notes — realistic mixed markdownLoose list with mixed content] "* \nalpha\n* \nbeta with `code` mid-item\nparagraph continuation inside item beta\n* \ngamma\n* nested item under gamma\n* another nested item"
 [Project notes — realistic mixed markdownIndented code as multi-chunk] "```\nfn hello() {\n    println!(\"hi\");\n}\n\nfn another() {\n    println!(\"there\");\n}\n```\nEnd of note."
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("wikilink.md")] }) "wikilink.md" "WikiLink"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("wikilink.md")] })) "WikiLink" "WikiLink"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("wikilink.md")] }) "wikilink.md" "WikiLink"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("wikilink.md")] })) "WikiLink" "WikiLink"
 Url "https://doc.rust-lang.org/book/" "Rust book"
 -- markdown
 # Project notes — realistic mixed markdown
@@ -15198,14 +15270,14 @@ Hashtag "#whiskey" "whiskey"
 Hashtag "#xray" "xray"
 Hashtag "#yankee" "yankee"
 Hashtag "#zulu" "zulu"
-Note(VaultPath { absolute: false, slices: [PathSlice("page.md")] }) "page.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] }) "topic-a.md" "topic-a"
-Note(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] }) "topic-b.md" "topic-b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] })) "topic-a" "topic-a"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] })) "topic-b" "topic-b"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("page.md")] })) "page.md#section" ""
 -- tags ["after", "alpha", "archived", "backend", "background", "beta", "blocked", "bravo", "charlie", "component", "context", "delta", "design", "echo", "end", "foxtrot", "frontend", "golf", "hashtag", "hotel", "in", "india", "infra", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "qa", "quebec", "release", "review", "romeo", "sierra", "stale", "tango", "task", "uniform", "upstream", "urgent", "victor", "whiskey", "xray", "yankee", "zulu"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("page.md")] }) "page.md" "docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] }) "topic-a.md" "topic-a"
-Note(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] }) "topic-b.md" "topic-b"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("page.md")] })) "page.md#section" "docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("topic-a.md")] })) "topic-a" "topic-a"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("topic-b.md")] })) "topic-b" "topic-b"
 Hashtag "#hashtag" "hashtag"
 Hashtag "#urgent" "urgent"
 Hashtag "#review" "review"
@@ -15284,7 +15356,7 @@ Edge cases that should NOT be labels per the new rule:
 - #tag#more (adjacent)
 - hello#world (mid-word)
 - code: `#inside-backticks`
-- link: [docs](page.md#section)
+- link: [docs](/folder/page.md#section)
 
 Real labels surrounded by punctuation: ,[#after](#after)-comma. ;[#after](#after)-semi. ([#in](#in)-parens) "[#in](#in)-quotes"
 
@@ -15337,32 +15409,32 @@ Hashtag "#eventbus" "eventbus"
 Hashtag "#eventbus" "eventbus"
 Hashtag "#perf" "perf"
 Hashtag "#streaming" "streaming"
-Note(VaultPath { absolute: false, slices: [PathSlice("architecture"), PathSlice("overview-2025.md")] }) "architecture/overview-2025.md" "architecture/overview-2025"
-Note(VaultPath { absolute: false, slices: [PathSlice("cli"), PathSlice("kimun.md")] }) "cli/kimun.md" "cli/kimun"
-Note(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] }) "decisions/kafka-vs-internal.md" "decisions/kafka-vs-internal"
-Note(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] }) "decisions/kafka-vs-internal.md" "decisions/kafka-vs-internal"
-Note(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] }) "decisions/serde-vs-custom.md" "decisions/serde-vs-custom"
-Note(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] }) "decisions/serde-vs-custom.md" "decisions/serde-vs-custom"
-Note(VaultPath { absolute: false, slices: [PathSlice("integrations"), PathSlice("slack.md")] }) "integrations/slack.md" "integrations/slack"
-Note(VaultPath { absolute: false, slices: [PathSlice("legal"), PathSlice("raw-log-exposure.md")] }) "legal/raw-log-exposure.md" "legal/raw-log-exposure"
-Note(VaultPath { absolute: false, slices: [PathSlice("lib"), PathSlice("transform.md")] }) "lib/transform.md" "lib/transform"
-Note(VaultPath { absolute: false, slices: [PathSlice("schemas"), PathSlice("event.md")] }) "schemas/event.md" "schemas/event"
-Note(VaultPath { absolute: false, slices: [PathSlice("security"), PathSlice("auth.md")] }) "security/auth.md" "security/auth"
-Note(VaultPath { absolute: false, slices: [PathSlice("ui"), PathSlice("web.md")] }) "ui/web.md" "ui/web"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("architecture"), PathSlice("overview-2025.md")] })) "architecture/overview-2025" "architecture/overview-2025"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cli"), PathSlice("kimun.md")] })) "cli/kimun" "cli/kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] })) "decisions/kafka-vs-internal" "decisions/kafka-vs-internal"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] })) "decisions/kafka-vs-internal" "decisions/kafka-vs-internal"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] })) "decisions/serde-vs-custom" "decisions/serde-vs-custom"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] })) "decisions/serde-vs-custom" "decisions/serde-vs-custom"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("integrations"), PathSlice("slack.md")] })) "integrations/slack" "integrations/slack"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("legal"), PathSlice("raw-log-exposure.md")] })) "legal/raw-log-exposure" "legal/raw-log-exposure"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("lib"), PathSlice("transform.md")] })) "lib/transform" "lib/transform"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("schemas"), PathSlice("event.md")] })) "schemas/event" "schemas/event"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("security"), PathSlice("auth.md")] })) "security/auth" "security/auth"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("ui"), PathSlice("web.md")] })) "ui/web" "ui/web"
 -- tags ["architecture", "batch", "disaster", "draft", "eventbus", "perf", "streaming"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("schemas"), PathSlice("event.md")] }) "folder/schemas/event.md" "schemas/event"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("decisions"), PathSlice("serde-vs-custom.md")] }) "folder/decisions/serde-vs-custom.md" "decisions/serde-vs-custom"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("lib"), PathSlice("transform.md")] }) "folder/lib/transform.md" "lib/transform"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] }) "folder/decisions/kafka-vs-internal.md" "decisions/kafka-vs-internal"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("ui"), PathSlice("web.md")] }) "folder/ui/web.md" "ui/web"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("cli"), PathSlice("kimun.md")] }) "folder/cli/kimun.md" "cli/kimun"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("integrations"), PathSlice("slack.md")] }) "folder/integrations/slack.md" "integrations/slack"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("security"), PathSlice("auth.md")] }) "folder/security/auth.md" "security/auth"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("legal"), PathSlice("raw-log-exposure.md")] }) "folder/legal/raw-log-exposure.md" "legal/raw-log-exposure"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("architecture"), PathSlice("overview-2025.md")] }) "folder/architecture/overview-2025.md" "architecture/overview-2025"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("decisions"), PathSlice("serde-vs-custom.md")] }) "folder/decisions/serde-vs-custom.md" "decisions/serde-vs-custom"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] }) "folder/decisions/kafka-vs-internal.md" "decisions/kafka-vs-internal"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("schemas"), PathSlice("event.md")] })) "schemas/event" "schemas/event"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] })) "decisions/serde-vs-custom" "decisions/serde-vs-custom"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("lib"), PathSlice("transform.md")] })) "lib/transform" "lib/transform"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] })) "decisions/kafka-vs-internal" "decisions/kafka-vs-internal"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("ui"), PathSlice("web.md")] })) "ui/web" "ui/web"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cli"), PathSlice("kimun.md")] })) "cli/kimun" "cli/kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("integrations"), PathSlice("slack.md")] })) "integrations/slack" "integrations/slack"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("security"), PathSlice("auth.md")] })) "security/auth" "security/auth"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("legal"), PathSlice("raw-log-exposure.md")] })) "legal/raw-log-exposure" "legal/raw-log-exposure"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("architecture"), PathSlice("overview-2025.md")] })) "architecture/overview-2025" "architecture/overview-2025"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("serde-vs-custom.md")] })) "decisions/serde-vs-custom" "decisions/serde-vs-custom"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("decisions"), PathSlice("kafka-vs-internal.md")] })) "decisions/kafka-vs-internal" "decisions/kafka-vs-internal"
 Hashtag "#eventbus" "eventbus"
 Hashtag "#batch" "batch"
 Hashtag "#streaming" "streaming"
@@ -15383,11 +15455,11 @@ The system is split into three layers: ingestion, processing, and presentation. 
 
 ## Ingestion
 
-The ingestion layer pulls from three sources: the upstream event bus ([#eventbus](#eventbus)), the periodic batch job ([#batch](#batch)), and the manual operator console. Each source feeds into a normalization stage that converts heterogeneous payloads into the canonical [schemas/event](folder/schemas/event.md) shape.
+The ingestion layer pulls from three sources: the upstream event bus ([#eventbus](#eventbus)), the periodic batch job ([#batch](#batch)), and the manual operator console. Each source feeds into a normalization stage that converts heterogeneous payloads into the canonical [schemas/event](schemas/event.md) shape.
 
 Key decisions:
 
-- Use `serde_json` for deserialization rather than a custom parser — see [decisions/serde-vs-custom](folder/decisions/serde-vs-custom.md).
+- Use `serde_json` for deserialization rather than a custom parser — see [decisions/serde-vs-custom](decisions/serde-vs-custom.md).
 - Buffer up to 10,000 events in memory before flushing to disk. The buffer is implemented as a ring with `crossbeam-channel` backing it.
 - On crash recovery, replay from the last checkpoint. Checkpoints are written every 30 seconds.
 
@@ -15401,9 +15473,9 @@ fn ingest(event: RawEvent) -> Result<NormalizedEvent, IngestError> {
 
 ## Processing
 
-Processing runs in two modes: streaming (for the realtime path) and batch (for backfills and recomputation). Both modes share the same transformation library at [lib/transform](folder/lib/transform.md).
+Processing runs in two modes: streaming (for the realtime path) and batch (for backfills and recomputation). Both modes share the same transformation library at [lib/transform](lib/transform.md).
 
-The [#streaming](#streaming) path uses a Kafka-style log abstraction. We considered using actual Kafka — see [decisions/kafka-vs-internal](folder/decisions/kafka-vs-internal.md) — and rejected it for ops complexity. The internal log is backed by SQLite with a custom FTS5 index.
+The [#streaming](#streaming) path uses a Kafka-style log abstraction. We considered using actual Kafka — see [decisions/kafka-vs-internal](decisions/kafka-vs-internal.md) — and rejected it for ops complexity. The internal log is backed by SQLite with a custom FTS5 index.
 
 Performance targets:
 
@@ -15425,21 +15497,21 @@ The backfill job is idempotent: re-running over an already-processed range produ
 
 ## Presentation
 
-The presentation layer serves the web UI ([ui/web](folder/ui/web.md)), the CLI ([cli/kimun](folder/cli/kimun.md)), and the Slack bot ([integrations/slack](folder/integrations/slack.md)). All three consume the same GraphQL API at `api.internal/graphql`.
+The presentation layer serves the web UI ([ui/web](ui/web.md)), the CLI ([cli/kimun](cli/kimun.md)), and the Slack bot ([integrations/slack](integrations/slack.md)). All three consume the same GraphQL API at `api.internal/graphql`.
 
-Authentication uses short-lived JWTs signed by the auth service. Refresh tokens live in `httpOnly` cookies. See [security/auth](folder/security/auth.md) for the threat model.
+Authentication uses short-lived JWTs signed by the auth service. Refresh tokens live in `httpOnly` cookies. See [security/auth](security/auth.md) for the threat model.
 
 ## Open questions
 
 - How do we handle out-of-order events from [#eventbus](#eventbus) when the upstream clock skews? Current proposal: bucket by ingestion time, not event time, for the realtime path. Discuss with @nico in next sync.
-- Should we expose the raw event log to power users? Privacy review pending — see [legal/raw-log-exposure](folder/legal/raw-log-exposure.md).
+- Should we expose the raw event log to power users? Privacy review pending — see [legal/raw-log-exposure](legal/raw-log-exposure.md).
 - The [#batch](#batch) job has been flaky on Mondays. Theory: it conflicts with the weekly compaction. Need to confirm.
 
 ## References
 
-- [architecture/overview-2025](folder/architecture/overview-2025.md)
-- [decisions/serde-vs-custom](folder/decisions/serde-vs-custom.md)
-- [decisions/kafka-vs-internal](folder/decisions/kafka-vs-internal.md)
+- [architecture/overview-2025](architecture/overview-2025.md)
+- [decisions/serde-vs-custom](decisions/serde-vs-custom.md)
+- [decisions/kafka-vs-internal](decisions/kafka-vs-internal.md)
 - Internal RFC: https://internal.example.com/rfc/0042
 - Public docs: https://docs.example.com/architecture
 
@@ -15457,12 +15529,12 @@ Hashtag "#beta" "beta"
 Hashtag "#design" "design"
 Hashtag "#review" "review"
 Hashtag "#urgent" "urgent"
-Note(VaultPath { absolute: false, slices: [PathSlice("infra"), PathSlice("observability.md")] }) "infra/observability.md" "infra/observability"
-Note(VaultPath { absolute: false, slices: [PathSlice("planning"), PathSlice("q2.md")] }) "planning/q2.md" "planning/q2"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("infra"), PathSlice("observability.md")] })) "infra/observability" "infra/observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("planning"), PathSlice("q2.md")] })) "planning/q2" "planning/q2"
 -- tags ["beta", "design", "review", "urgent"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("planning"), PathSlice("q2.md")] }) "folder/planning/q2.md" "planning/q2"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("infra"), PathSlice("observability.md")] }) "folder/infra/observability.md" "infra/observability"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("planning"), PathSlice("q2.md")] })) "planning/q2" "planning/q2"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("infra"), PathSlice("observability.md")] })) "infra/observability" "infra/observability"
 Hashtag "#urgent" "urgent"
 Hashtag "#design" "design"
 Hashtag "#beta" "beta"
@@ -15476,7 +15548,7 @@ Quick sync on the Q2 roadmap. Decisions:
 - Hold off on the mobile spike until [#design](#design) lands
 - Re-evaluate the [#beta](#beta) cohort after the next telemetry batch
 
-See [planning/q2](folder/planning/q2.md) for the full thread. Related: [infra/observability](folder/infra/observability.md).
+See [planning/q2](planning/q2.md) for the full thread. Related: [infra/observability](infra/observability.md).
 
 Side notes:
 - The schema migration we discussed last week still needs review [#review](#review)
@@ -15492,15 +15564,15 @@ Side notes:
 -- index chunks
 [Bracket edge cases] "CRLF (stored LF, the corpus reads it as LF): `code span` and dis\nplay.\n<div>\n\nhtml\n\n</div>\n\nBracket [[a|b]c]] x and [[a]b]] y.\nWrapped [x\ny](a b.md) label.\n401 Guide nowhere.\na c]]\nSee img]] here\n!]]\n[]<]]"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "dis\nplay"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "dis\nplay"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" ""
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "dis\nplay"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "x\ny"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "a"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("a.png")] }) "folder/a.png" "img"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "folder/x" "!"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "dis\nplay"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" "x\ny"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "b" "a"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("a.png")] }) "a.png" "img"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("x")] }) "x" "!"
 -- markdown
 # Bracket edge cases
 
@@ -15515,7 +15587,7 @@ html
 Bracket [[a|b]c]] x and [[a]b]] y.
 
 Wrapped [x
-y](<a b.md>) label.
+y](</folder/a b.md>) label.
 
 [401 Guide]([https://x.y/a](https://x.y/a)) nowhere.
 
@@ -15542,24 +15614,23 @@ See ![[img](folder/a.png)](b.md)]] here
 -- index links (sorted)
 Hashtag "#t2" "t2"
 Hashtag "#t3" "t3"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "#b"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "*Emph* name"
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "a &amp; b"
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "d"
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "Shown"
-Note(VaultPath { absolute: false, slices: [PathSlice("other.md")] }) "other.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "Picture"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "#b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "*Emph* name"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "a &amp; b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("d.md")] })) "d" "d"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "note" "Shown"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("other.md")] })) "other.md" ""
 -- tags ["t2", "t3"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "#b"
-Note(VaultPath { absolute: false, slices: [PathSlice("other.md")] }) "other.md" "ref"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "#b"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("other.md")] })) "other.md" "ref"
 Url "https://e.x" "https://e.x"
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "Shown"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "*Emph* name"
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "a &amp; b"
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "d"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "note" "Shown"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "*Emph* name"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "a &amp; b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("d.md")] })) "d" "d"
 Url "https://x.com/#frag" "https://x.com/#frag"
 Hashtag "#t2" "t2"
 Hashtag "#t3" "t3"
@@ -15612,41 +15683,41 @@ body
 [Team] "* A\n* T n"
 -- index links (sorted)
 Hashtag "#t" "t"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<b>x</b>"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "A"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b `c` d"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see <https://e.f>"
-Note(VaultPath { absolute: false, slices: [PathSlice("b.md")] }) "b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("f.md")] }) "f.md" "f"
-Note(VaultPath { absolute: false, slices: [PathSlice("t.md")] }) "t.md" "T"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("z.md")] }) "z.md" "z"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "A" "A"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "<b>x</b>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b `c` d"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "see <https://e.f>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("b.md")] })) "b" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("f.md")] })) "f" "f"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("t.md")] })) "T" "T"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("z.md")] })) "z" "z"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("y.md")] })) "y.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("y.md")] })) "y.md" ""
 -- tags ["t"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("b.md")] }) "b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("c.md")] }) "c.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("f.md")] }) "f.md" "f"
-Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x [[a|]]"
-Note(VaultPath { absolute: false, slices: [PathSlice("z.md")] }) "z.md" "z"
-Note(VaultPath { absolute: false, slices: [PathSlice("y.md")] }) "y.md" "x ![[a]]"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("b.md")] })) "b" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("c.md")] })) "c" "c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("f.md")] })) "f" "f"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("y.md")] })) "y.md" "x [[a|]]"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("z.md")] })) "z" "z"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("y.md")] })) "y.md" "x ![[a]]"
 Url "https://x.com" "![[pic.png|200]]"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "t"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b `c` d"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<b>x</b>"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see <https://e.f>"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "A"
-Note(VaultPath { absolute: false, slices: [PathSlice("t.md")] }) "t.md" "T"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "t"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b `c` d"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "<b>x</b>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "see <https://e.f>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "A" "A"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("t.md")] })) "T" "T"
 Url "https://x.y" "n"
 Hashtag "#t" "t"
 -- markdown
@@ -15657,9 +15728,9 @@ Empty displays see [a](a.md) and [b](b.md) and [c](c.md).
 > [a](a.md) q
 > b [c](c.md)
 
-*em [a](a.md)* tail [f](f.md) and [x [[a|]]](y.md) [#t](#t) [z](z.md)
+*em [a](a.md)* tail [f](f.md) and [x [[a|]]](/folder/y.md) [#t](#t) [z](z.md)
 
-See [x ![[a]]](y.md) and [![[pic.png|200]]](https://x.com) end
+See [x ![[a]]](/folder/y.md) and [![[pic.png|200]]](https://x.com) end
 
 See ![[1] diagram](img.png) here
 
@@ -15682,10 +15753,10 @@ Inside [b `c` d](a.md) and [<b>x</b>](a.md) and [see \<https://e.f>](a.md).
 [] "body with real"
 [FrontMatter] "related: see [docs](other.md) and [[refnote]]"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("real.md")] }) "real.md" "real"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("real.md")] })) "real" "real"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("real.md")] }) "real.md" "real"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("real.md")] })) "real" "real"
 -- markdown
 ---
 related: see [docs](other.md) and [[refnote]]
@@ -15702,15 +15773,13 @@ body with [real](real.md)
 -- index chunks
 [HTML blocks and embeds] "A markdown link in an HTML block:\n<details>\n\nSee [doc](doc.md) and [deep](sub/deep.md)\n\n</details>\n\n<div>[x](y.md)</div>\n\nEscaped [[a]] x and markup a *b* c and section S.\nEmbeds pic.png and sub/pic.png and sub/e.\nA code span in a label a `]` b."
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "S"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "pic.png"
-Note(VaultPath { absolute: false, slices: [PathSlice("sub"), PathSlice("e.md")] }) "sub/e.md" "sub/e"
-Note(VaultPath { absolute: false, slices: [PathSlice("sub"), PathSlice("pic.png.md")] }) "sub/pic.png.md" "sub/pic.png"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a#sec" "S"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sub"), PathSlice("e.md")] })) "sub/e" "sub/e"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" ""
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "S"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a `]` b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a#sec" "S"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" "a `]` b"
 -- markdown
 # HTML blocks and embeds
 
@@ -15726,7 +15795,7 @@ Escaped \[[a]] x and markup [[a *b* c]] and section [S](a.md#sec).
 
 Embeds ![pic.png](pic.png) and ![sub/pic.png](sub/pic.png) and ![sub/e](sub/e.md).
 
-A code span in a label [a `]` b](folder/sub/x.md).
+A code span in a label [a `]` b](/folder/sub/x.md).
 
 
 === tests/fixtures/walk/images_and_entities.md
@@ -15742,10 +15811,10 @@ Hashtag "#esc" "esc"
 Hashtag "#ok" "ok"
 Hashtag "#tag" "tag"
 Hashtag "#tag2" "tag2"
-Note(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] }) "dem platform.md" "DEM Platform"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] })) "DEM Platform" "DEM Platform"
 -- tags ["esc", "ok", "tag", "tag2"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] }) "dem platform.md" "DEM Platform"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("dem platform.md")] })) "DEM Platform" "DEM Platform"
 Hashtag "#esc" "esc"
 Hashtag "#ok" "ok"
 Hashtag "#tag" "tag"
@@ -15779,28 +15848,27 @@ it&#39;s Title&#32; a [#tag](#tag) &x [#tag2](#tag2)
 -- index chunks
 [Long lines and reference links] "A long line: [a] [a] [a]\nSpaced link around a wikilink [see a](x y.md) and [pic.png](my page.md)\nAutolink alias <https://x.y>\nUse `[[` to start a link.\nSee Note.\nSpaced paren [notes](My Notes (draft).md)\nEscaped bang x !a y\nsee about #tag and #tag\nCross-line alias see the\n`[[` syntax and x\ny \\[[ z"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<https://x.y>"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see the\n`[[` syntax"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "x\ny \\[[ z"
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "Note"
-Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "pic.png"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "<https://x.y>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "a"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "a"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "see the\n`[[` syntax"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "x\ny \\[[ z"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "Note" "Note"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
 -- tags []
 -- markdown links
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "[a]"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "[a]"
-Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "folder/b" "[a]"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "<https://x.y>"
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "Note"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "about #tag"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "#tag"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "see the\n`[[` syntax"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "x\ny \\[[ z"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "b" "[a]"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "b" "[a]"
+Attachment(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("b")] }) "b" "[a]"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "a"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "<https://x.y>"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "Note" "Note"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "a"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "about #tag"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "#tag"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "see the\n`[[` syntax"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "x\ny \\[[ z"
 -- markdown
 # Long lines and reference links
 
@@ -15839,22 +15907,22 @@ y \\\[\[ z](a.md)
 [Reference links and outline] "See docs for details and Project Plan.\nWrapping link see [[a]] and destination t"
 [Reference links and outlineOutline] "```\n- [[Pep]] and [[Ann|A]]\n- [x](y.md) #nottag\n```\n```\n[[fenced]] #fencedtag\n```\nSection links x and [y](my note.md#sec)\nRust\nJunk [a b](c d.md \"Title\") and x"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("ann.md")] }) "ann.md" "A"
-Note(VaultPath { absolute: false, slices: [PathSlice("docs.md")] }) "docs.md" "docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("pep.md")] }) "pep.md" "Pep"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] }) "project plan.md" "Project Plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("ann.md")] })) "Ann" "A"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("docs.md")] })) "docs" "docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("pep.md")] })) "Pep" "Pep"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] })) "Project Plan" "Project Plan"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my note.md")] })) "my note.md#sec" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("plan.md")] })) "plan.md#goals" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("docs.md")] }) "docs.md" "docs"
-Note(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] }) "project plan.md" "Project Plan"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "see [[a]]"
-Note(VaultPath { absolute: false, slices: [PathSlice("pep.md")] }) "pep.md" "Pep"
-Note(VaultPath { absolute: false, slices: [PathSlice("ann.md")] }) "ann.md" "A"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "x"
-Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" "y"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("docs.md")] })) "docs" "docs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("project plan.md")] })) "Project Plan" "Project Plan"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "see [[a]]"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("pep.md")] })) "Pep" "Pep"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("ann.md")] })) "Ann" "A"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("plan.md")] })) "plan.md#goals" "x"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my note.md")] })) "my note.md#sec" "y"
 Url "https://en.wikipedia.org/wiki/Rust_(programming_language)" "Rust"
 -- markdown
 # Reference links and outline
@@ -15864,7 +15932,7 @@ See [docs](docs.md) for details and [Project Plan](<project plan.md>).
 [docs]: https://docs.example.com
 [project plan]: https://plan.example.com
 
-Wrapping link [see [[a]]](x.md) and destination [t]([[a]])
+Wrapping link [see [[a]]](/folder/x.md) and destination [t]([[a]])
 
 ## Outline
 	- [[Pep]] and [[Ann|A]]
@@ -15874,7 +15942,7 @@ Wrapping link [see [[a]]](x.md) and destination [t]([[a]])
 [[fenced]] #fencedtag
 ```
 
-Section links [x](plan.md#goals) and [y](<my note.md#sec>)
+Section links [x](/folder/plan.md#goals) and [y](</folder/my note.md#sec>)
 
 [Rust](<https://en.wikipedia.org/wiki/Rust_(programming_language)>)
 
@@ -15890,34 +15958,34 @@ Junk [a b](c d.md "Title") and [x](a|b.md)
 -- index chunks
 [Section and padded wikilinks] "Section note#section, alias goals, block a^blk, padded  spaced .\nStill no vault path #tag.\nUse top.\nParens t, draft Note (draft), triple a [tri] b, escaped v.\nPadded u, entity v, tab w, angle x, title t.\n<div>\n\nHTML [p]( sub/c.md ) and [[note#sec|S]]\n\n</div>\n\nInline <span title=\"[[x|one\ntwo]]\">z</span> tag.\nSpaced section g, broken target Shown stays text.\n<div>\n\n    Indented [i](sub/i.md) and [[ind]]\n\n</div>\n"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("a(b).md")] }) "a(b).md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a^blk"
-Note(VaultPath { absolute: false, slices: [PathSlice("d_e.md")] }) "d_e.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] }) "folder/sub/a&b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] }) "note (draft).md" "Note (draft)"
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "note#section"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "goals"
-Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a^blk" "a^blk"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] })) "Note (draft)" "Note (draft)"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "note#section" "note#section"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#Goals" "goals"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#My Goals" "g"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] })) " spaced " " spaced "
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a(b).md")] })) "a(b).md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d_e.md")] })) "d_e.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my note.md")] })) "my note.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] })) "sub/a&b.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] })) "sub/c.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("note.md")] }) "note.md" "note#section"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "goals"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "a^blk"
-Note(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] }) "spaced.md" " spaced "
-Note(VaultPath { absolute: false, slices: [PathSlice("a(b).md")] }) "a(b).md" "t"
-Note(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] }) "note (draft).md" "Note (draft)"
-Note(VaultPath { absolute: false, slices: [PathSlice("d_e.md")] }) "d_e.md" "v"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] }) "folder/sub/c.md" "u"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] }) "folder/sub/a&b.md" "v"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "w"
-Note(VaultPath { absolute: false, slices: [PathSlice("my note.md")] }) "my note.md" "x"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "t"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note.md")] })) "note#section" "note#section"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#Goals" "goals"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a^blk" "a^blk"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("spaced.md")] })) " spaced " " spaced "
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a(b).md")] })) "a(b).md" "t"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("note (draft).md")] })) "Note (draft)" "Note (draft)"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d_e.md")] })) "d_e.md" "v"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("c.md")] })) "sub/c.md" "u"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("a&b.md")] })) "sub/a&b.md" "v"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" "w"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my note.md")] })) "my note.md" "x"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "t"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#My Goals" "g"
 -- markdown
 # Section and padded wikilinks
 
@@ -15929,9 +15997,9 @@ Still no vault path [[#tag]].
 
 Use [top].
 
-Parens [t](<a(b).md>), draft [Note (draft)](<note (draft).md>), triple a [[[tri]]] b, escaped [v](d_e.md).
+Parens [t](</folder/a(b).md>), draft [Note (draft)](<note (draft).md>), triple a [[[tri]]] b, escaped [v](/folder/d_e.md).
 
-Padded [u](folder/sub/c.md), entity [v](folder/sub/a&b.md), tab [w](folder/sub/x.md), angle [x](<my note.md>), title [t](x.md "Title").
+Padded [u](/folder/sub/c.md), entity [v](/folder/sub/a&b.md), tab [w](/folder/sub/x.md), angle [x](<my note.md>), title [t](x.md "Title").
 
 <div>
 HTML [p]( sub/c.md ) and [[note#sec|S]]
@@ -15987,61 +16055,61 @@ body under the setext heading
 [] "Brackets [[a|b]c]] and b[c.\nLabel over lines a\n.\nMarkup in labels [David H](a b.md), [x](a b.md), [a `c`](d e.md), [a <b>x</b>](c d.md).\nCode and HTML `[x](a b.md)` and <b>[y](a b.md)</b>.\nNowhere [x](a b.md \"T\") and [a](https://x.y/a b).\n```\nx\n```\n* [ ] Call Bob today\n[a] see w and c\nSee [ref] a\n[Doc](My Doc.md)\n[a] b\n`[x](y z.md)`\nEscaped [x](a b.md)."
 -- index links (sorted)
 Hashtag "#y" "y"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
-Note(VaultPath { absolute: false, slices: [PathSlice("bob.md")] }) "bob.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("c d.md")] }) "c d.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("my doc.md")] }) "my doc.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("w.md")] }) "w.md" "w"
-Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "first\n  second"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "multi\n> line"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "setext\n> head"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" " "
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b[c"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("w.md")] })) "w" "w"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "first\n  second"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "multi\n> line"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "setext\n> head"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("bob.md")] })) "bob.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("c d.md")] })) "c d.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d e.md")] })) "d e.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d e.md")] })) "d e.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d.md")] })) "d.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my doc.md")] })) "My Doc.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] })) "../Work/People/David H.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] })) "../Work/People/David H.md" ""
 -- tags ["y"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" "David H"
-Note(VaultPath { absolute: false, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] }) "work/people/david h.md" "David H"
-Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" "Dave #x"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "t"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "u"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "multi\n> line"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "first\n  second"
-Note(VaultPath { absolute: false, slices: [PathSlice("x.md")] }) "x.md" "setext\n> head"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" " "
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b[c"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] }) "folder/sub/x.md" "a\n"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "**David** H"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "*x*"
-Note(VaultPath { absolute: false, slices: [PathSlice("d e.md")] }) "d e.md" "a `c`"
-Note(VaultPath { absolute: false, slices: [PathSlice("c d.md")] }) "c d.md" "a <b>x</b>"
-Note(VaultPath { absolute: false, slices: [PathSlice("a b.md")] }) "a b.md" "y"
-Note(VaultPath { absolute: false, slices: [PathSlice("bob.md")] }) "bob.md" "Bob"
-Note(VaultPath { absolute: false, slices: [PathSlice("w.md")] }) "w.md" "w"
-Note(VaultPath { absolute: false, slices: [PathSlice("d.md")] }) "d.md" "c"
-Note(VaultPath { absolute: false, slices: [PathSlice("my doc.md")] }) "my doc.md" "Doc"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] })) "../Work/People/David H.md" "David H"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("work"), PathSlice("people"), PathSlice("david h.md")] })) "../Work/People/David H.md" "David H"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d e.md")] })) "d e.md" "Dave #x"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" "t"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("x.md")] })) "x.md" "u"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "multi\n> line"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "first\n  second"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("x.md")] })) "x" "setext\n> head"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" " "
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b[c"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("x.md")] })) "sub/x.md" "a\n"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" "**David** H"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" "*x*"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d e.md")] })) "d e.md" "a `c`"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("c d.md")] })) "c d.md" "a <b>x</b>"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a b.md")] })) "a b.md" "y"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("bob.md")] })) "bob.md" "Bob"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("w.md")] })) "w" "w"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("d.md")] })) "d.md" "c"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("my doc.md")] })) "My Doc.md" "Doc"
 Hashtag "#y" "y"
 -- markdown
 # Spaced destinations and multiline links
 
-### [David H](<work/people/david h.md>)
+### [David H](</work/people/david h.md>)
 
-See [David H](<work/people/david h.md>) and ![img](a b.png) and [Dave #x](<d e.md>) [#y](#y).
+See [David H](</work/people/david h.md>) and ![img](a b.png) and [Dave #x](</folder/d e.md>) [#y](#y).
 
-- item [t](<a b.md>) and [u](x.md)
+- item [t](</folder/a b.md>) and [u](/folder/x.md)
 
 > see [multi
 > line](x.md) end
@@ -16062,11 +16130,11 @@ see [a](a.md)
 Brackets [[a|b]c]] and [b\[c](a.md).
 
 Label over lines [a
-](folder/sub/x.md).
+](/folder/sub/x.md).
 
-Markup in labels [**David** H](<a b.md>), [*x*](<a b.md>), [a `c`](<d e.md>), [a <b>x</b>](<c d.md>).
+Markup in labels [**David** H](</folder/a b.md>), [*x*](</folder/a b.md>), [a `c`](</folder/d e.md>), [a <b>x</b>](</folder/c d.md>).
 
-Code and HTML `[x](a b.md)` and <b>[y](<a b.md>)</b>.
+Code and HTML `[x](a b.md)` and <b>[y](</folder/a b.md>)</b>.
 
 Nowhere [x](a b.md "T") and [a](https://x.y/a b).
 
@@ -16074,12 +16142,12 @@ Nowhere [x](a b.md "T") and [a](https://x.y/a b).
  x　
 ```
 
-- [ ] **Call [Bob](bob.md)** today
+- [ ] **Call [Bob](/folder/bob.md)** today
 
-[a] *see [w](w.md) and [c](d.md)*
+[a] *see [w](w.md) and [c](/folder/d.md)*
 
 See [ref] *a
-[Doc](<my doc.md>)*
+[Doc](</folder/my doc.md>)*
 
 [a] **b
 `[x](y z.md)`**
@@ -16115,10 +16183,10 @@ body
 -- index chunks
 [See Project] "body"
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("proj.md")] }) "proj.md" "Project"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("proj.md")] })) "proj" "Project"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("proj.md")] }) "proj.md" "Project"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("proj.md")] })) "proj" "Project"
 -- markdown
 # See [Project](proj.md)
 
@@ -16145,19 +16213,19 @@ body
 -- index links (sorted)
 Hashtag "#t" "t"
 Hashtag "#yes" "yes"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("page.md")] }) "folder/sub/page.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("target.md")] }) "target.md" "target"
-Note(VaultPath { absolute: true, slices: [PathSlice("top"), PathSlice("page.md")] }) "/top/page.md" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("target.md")] })) "target" "target"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a.md")] })) "a.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("page.md")] })) "sub/page.md" ""
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("top"), PathSlice("page.md")] })) "/top/page.md" ""
 -- tags ["alpha", "beta", "t", "yes"]
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "b"
-Note(VaultPath { absolute: false, slices: [PathSlice("target.md")] }) "target.md" "target"
-Note(VaultPath { absolute: false, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("page.md")] }) "folder/sub/page.md" "rel"
-Note(VaultPath { absolute: true, slices: [PathSlice("top"), PathSlice("page.md")] }) "/top/page.md" "abs"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a" "b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("target.md")] })) "target" "target"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("sub"), PathSlice("page.md")] })) "sub/page.md" "rel"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("top"), PathSlice("page.md")] })) "/top/page.md" "abs"
 Url "https://e.x/p" "web"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" "l"
+Note(Path(VaultPath { absolute: true, slices: [PathSlice("folder"), PathSlice("a.md")] })) "a.md" "l"
 Hashtag "#yes" "yes"
 Hashtag "#t" "t"
 -- markdown
@@ -16179,7 +16247,7 @@ Boundaries: x#no ##no [#yes](#yes). and #my_tag_ end.
 Setext heading
 --------------
 
-Links [rel](folder/sub/page.md), [abs](/top/page.md), [web](https://e.x/p) and [l](a.md)[#t](#t) after.
+Links [rel](/folder/sub/page.md), [abs](/top/page.md), [web](https://e.x/p) and [l](/folder/a.md)[#t](#t) after.
 
 
 === tests/fixtures/walk/unusual_destinations.md
@@ -16191,18 +16259,17 @@ Links [rel](folder/sub/page.md), [abs](/top/page.md), [web](https://e.x/p) and [
 -- index chunks
 [Unusual destinations] "Unusual destinations g, Plan#a), Plan#a(b.\nEmbeds with a fragment pic.png#x and e^b.\nEmpty destinations t and t and x.\nEmpty display ."
 -- index links (sorted)
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
-Note(VaultPath { absolute: false, slices: [PathSlice("e.md")] }) "e.md" "e^b"
-Note(VaultPath { absolute: false, slices: [PathSlice("pic.png.md")] }) "pic.png.md" "pic.png#x"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a(b"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a)"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a#s" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("e.md")] })) "e^b" "e^b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a > b" "g"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a(b" "Plan#a(b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a)" "Plan#a)"
 -- tags []
 -- markdown links
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "g"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a)"
-Note(VaultPath { absolute: false, slices: [PathSlice("plan.md")] }) "plan.md" "Plan#a(b"
-Note(VaultPath { absolute: false, slices: [PathSlice("a.md")] }) "a.md" ""
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a > b" "g"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a)" "Plan#a)"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("plan.md")] })) "Plan#a(b" "Plan#a(b"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("a.md")] })) "a#s" ""
 -- markdown
 # Unusual destinations
 

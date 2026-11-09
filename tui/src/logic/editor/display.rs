@@ -7,7 +7,7 @@
 
 use crate::logic::editor::frame::{EditorFrame, FrameRow};
 use crate::logic::editor::markdown::runs::{box_runs, mark_overlay, render_runs};
-use crate::logic::editor::markdown::{ParsedBuffer, opener_shape, reveal};
+use crate::logic::editor::markdown::{ElementKind, ParsedBuffer, opener_shape, reveal};
 use crate::logic::editor::overlay::{Overlay, OverlayKind};
 use crate::logic::editor::rope_buffer::RopeBuffer;
 use crate::ropetext::{Column, Layout, Metrics, RowHints, Viewport, motion};
@@ -489,6 +489,38 @@ impl EditorDisplay {
                 self.overlays
                     .push(Overlay::new(row, start, end, OverlayKind::Needle));
             }
+            // Follow targets: the whole link element, so emphasis inside a
+            // link label (`[**a**](u)`, whose innermost role is Bold) is
+            // still the link. Skipped for the element under the caret and
+            // for a row revealed in full, which draw raw source.
+            if self.fence_ranges.iter().any(|r| r.contains(&row)) {
+                continue;
+            }
+            let Some(parsed) = self.parse_state.buf().lines.get(row) else {
+                continue;
+            };
+            let caret = (self.cursor_snapshot.0 == row).then_some(self.cursor_snapshot.1);
+            if reveal::row_reveals_whole(line, parsed, caret, false) {
+                continue;
+            }
+            for e in &parsed.elements {
+                let target = matches!(
+                    e.kind,
+                    ElementKind::Link
+                        | ElementKind::WikiLink
+                        | ElementKind::Image
+                        | ElementKind::Label
+                );
+                let edited = caret.is_some_and(|c| e.start_char <= c && c < e.end_char);
+                if target && !edited && e.start_char < e.end_char {
+                    self.overlays.push(Overlay::new(
+                        row,
+                        e.start_char,
+                        e.end_char,
+                        OverlayKind::FollowTarget,
+                    ));
+                }
+            }
         }
     }
 
@@ -577,6 +609,17 @@ impl EditorDisplay {
     }
 
     pub fn note_bulk_edit(&mut self) {
+        self.bulk_edit_pending = true;
+    }
+
+    /// The next snapshot is not an edit of the last one: a **replace preview**
+    /// swapping in, changing, or swapping out. Such a swap rewrites every
+    /// matched row at once, wherever the cursor is, so neither the damage the
+    /// buffer reported (rows of the *real* text, against which the display
+    /// may not have been drawing) nor the cursor-row hint describes it: drop
+    /// the report and make the next update find the changed span itself.
+    pub fn note_swapped_snapshot(&mut self) {
+        self.reported_damage = None;
         self.bulk_edit_pending = true;
     }
 
@@ -2065,6 +2108,48 @@ pub(crate) mod tests {
 
     pub(crate) fn frame_row_text(row: &crate::logic::editor::frame::FrameRow) -> String {
         row.runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// The text of the runs carrying `kind` on frame row `row`.
+    fn marked(v: &EditorDisplay, row: usize, kind: OverlayKind) -> Vec<String> {
+        v.frame(60, true).rows[row]
+            .runs
+            .iter()
+            .filter(|r| r.overlays.contains(kind))
+            .map(|r| r.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn follow_targets_cover_whole_links_but_not_the_one_being_edited() {
+        let lines: Vec<String> = [
+            "x",
+            "[**a**](u) [[w]] ![i](p.png) #lab plain **b**",
+            "```",
+            "[c](u)",
+            "```",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut v = make_view_for_lines(&lines, (0, 0), 60);
+        v.set_overlays(Vec::new());
+        // Bold inside a link label is still the link; the image placeholder
+        // and the label are targets; plain text and bold outside are not.
+        assert_eq!(
+            marked(&v, 1, OverlayKind::FollowTarget),
+            vec!["a", "w", "[p.png]", "#lab"]
+        );
+        // Code is not markdown.
+        assert!(marked(&v, 3, OverlayKind::FollowTarget).is_empty());
+        // The caret inside the link: raw source, no target there; the other
+        // targets on the row stay.
+        update_view(&mut v, &lines, (1, 3), (60, 24), 2, None);
+        v.set_overlays(Vec::new());
+        assert_eq!(
+            marked(&v, 1, OverlayKind::FollowTarget),
+            vec!["w", "[p.png]", "#lab"]
+        );
     }
 
     #[test]

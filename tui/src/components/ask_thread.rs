@@ -26,7 +26,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::ask::{AskSource, Thread, Turn, TurnStatus, citations, save};
+#[cfg(test)]
+use crate::ask::AskSource;
+use crate::ask::{Thread, Turn, TurnStatus, citations, save};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
@@ -499,11 +501,11 @@ impl ThreadPanel {
         Self::spawn_ask(tx, &client, question, history, id);
     }
 
-    /// Spawn the async ask job for `turn_id`: call the RAG client with the
-    /// question and history, map the answer + freshly retrieved sources, and
-    /// deliver an `AskData::AnswerReady` on completion. Shared verbatim by
-    /// `submit` and `regenerate_selected` — both re-retrieve, so both take the
-    /// fresh sources from the response.
+    /// Spawn the ask job ([`crate::ask::jobs::ask`]) for `turn_id`: it calls
+    /// the RAG client with the question and history and delivers an
+    /// `AskData::AnswerReady` on completion. Shared verbatim by `submit` and
+    /// `regenerate_selected` — both re-retrieve, so both take the fresh
+    /// sources from the response.
     fn spawn_ask(
         tx: &AppTx,
         client: &Arc<RagClient>,
@@ -511,25 +513,13 @@ impl ThreadPanel {
         history: Vec<(String, String)>,
         turn_id: u64,
     ) {
-        let (tx, client) = (tx.clone(), client.clone());
-        tokio::spawn(async move {
-            let result = client
-                .ask(&question, &history, None)
-                .await
-                .map(|a| {
-                    // Normalize the wire ordinal ONCE here (position → 1-based
-                    // fallback for an older server); downstream sees real ordinals.
-                    let sources = a
-                        .sources
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, c)| AskSource::from_chunk(i, c))
-                        .collect();
-                    (a.answer, sources)
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppMessage::Ask(AskData::AnswerReady { turn_id, result }));
-        });
+        tokio::spawn(crate::ask::jobs::ask(
+            client.clone(),
+            question,
+            history,
+            turn_id,
+            tx.clone(),
+        ));
     }
 
     /// Copy the selected turn's answer (citation markers stripped) to the OS
@@ -539,8 +529,7 @@ impl ThreadPanel {
         let Some(turn) = self.thread.selected() else {
             return;
         };
-        let text = citations::strip(&turn.answer);
-        crate::logic::clipboard::yank(text, "answer copied", tx);
+        crate::logic::clipboard::yank(save::copy_text(turn), "answer copied", tx);
     }
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
@@ -794,9 +783,9 @@ fn separator_line(width: u16, style: Style) -> Line<'static> {
 }
 
 /// Render a `Done` turn's answer as styled markdown rows. The whole answer is
-/// handed to the editor's buffer-aware markdown model in one pass
-/// (`markdown_lines::classify_block_kinds`), which labels every logical source
-/// line's block role; each line is then word-wrapped and each wrapped slice
+/// parsed once by the shared answer rules (`ask::markdown::parse_answer`:
+/// the editor's buffer-aware model for block kinds, its inline emphasis,
+/// citations), then each logical line is word-wrapped and each wrapped slice
 /// keeps its byte range into `turn.answer` (so `RowSlot::Answer` hit-testing
 /// stays aligned) and is styled by `markdown_lines::style_slice_mapped`. That
 /// styler hides balanced emphasis sigils, so the rendered columns no longer map
@@ -809,35 +798,25 @@ fn render_answer(
     out: &mut Vec<(RowSlot, Line<'static>)>,
 ) {
     use crate::components::markdown_lines;
-    // One buffer-aware classification pass over the whole answer: split into
-    // logical (newline-free) lines and let the editor model decide each line's
-    // block role (fences, setext, lazy blockquotes all resolved there). The
-    // `split_inclusive` walk below visits the same lines in the same order, so
-    // `kinds` aligns index-for-index.
-    let logicals: Vec<&str> = turn
-        .answer
-        .split_inclusive('\n')
-        .map(|l| l.strip_suffix('\n').unwrap_or(l))
-        .collect();
-    let kinds = markdown_lines::classify_block_kinds(&logicals);
-    let mut offset = 0usize;
-    for (logical, &kind) in turn.answer.split_inclusive('\n').zip(kinds.iter()) {
+    // The parser splits on every `\n` (a final newline ends in one more,
+    // empty line); the `split_inclusive` walk visits the same lines in the
+    // same order and has no such tail, so the zip drops it.
+    let parsed = crate::ask::markdown::parse_answer(&turn.answer);
+    for (logical, line) in turn.answer.split_inclusive('\n').zip(parsed.iter()) {
         let stripped = logical.strip_suffix('\n').unwrap_or(logical);
-        let line_start = offset;
+        let line_start = line.range.start;
         for rel in wrap_text(stripped, width) {
             let abs = (line_start + rel.start)..(line_start + rel.end);
-            let (line, col_map) =
-                markdown_lines::style_slice_mapped(&turn.answer[abs.clone()], kind, md);
+            let (styled, col_map) = markdown_lines::style_slice_mapped(stripped, line, rel, md);
             out.push((
                 RowSlot::Answer {
                     turn_id: turn.id,
                     range: abs,
                     col_map,
                 },
-                line,
+                styled,
             ));
         }
-        offset += logical.len();
     }
 }
 
@@ -1164,10 +1143,12 @@ mod tests {
     /// Exercises a line with an emphasis run before the citation.
     #[test]
     fn citation_hit_test_resolves_through_hidden_emphasis() {
-        use crate::components::markdown_lines::{self, LineKind, MdStyles};
+        use crate::components::markdown_lines::{self, MdStyles};
         let md = MdStyles::from_theme(&Theme::default());
         let raw = "**bold** then [1] tail";
-        let (line, col_map) = markdown_lines::style_slice_mapped(raw, LineKind::Normal, &md);
+        let parsed = crate::ask::markdown::parse_answer(raw);
+        let (line, col_map) =
+            markdown_lines::style_slice_mapped(raw, &parsed[0], 0..raw.len(), &md);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "bold then [1] tail");
         // The rendered `[1]` starts at column 10 ("bold then " = 10 cols).

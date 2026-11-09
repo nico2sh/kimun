@@ -1,0 +1,330 @@
+//! The GUI's performer of a **Leader route** (`logic::leader_route`): what a
+//! leader leaf does in this window, and whether it can do it yet. The route
+//! is decided in logic, once for every door onto a leaf (the command
+//! palette, the leader sequence); this file only maps each route onto the
+//! window's surfaces — the same methods the chords and the rail use.
+//!
+//! A route the window has no surface for yet is **blocked** with a reason
+//! ([`Workspace::route_block`]); the palette shows such rows disabled, saying
+//! why, the leader flashes the reason, and [`Workspace::perform_route`] never
+//! runs them.
+
+use gpui_kit::{App, ClipboardItem, Context, Window};
+use kimun_core::nfs::VaultPath;
+use kimun_notes::keys::leader::LeaderAction;
+use kimun_notes::logic::layout::{Panel, Side};
+use kimun_notes::logic::leader_route::{
+    self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
+};
+use kimun_notes::logic::nav::{DrawerView, LinksTab};
+use kimun_notes::logic::overlay_open::OverlayOpen;
+use kimun_notes::logic::query::is_default_query;
+
+use super::Workspace;
+use super::file_dialogs::FileOpKind;
+use crate::shell_layout;
+
+/// Why a command cannot run here yet: no surface in the desktop app.
+pub(crate) const NOT_YET: &str = "Not in the desktop app yet";
+/// A leaf whose surface has not been built in either frontend.
+pub(crate) const SOON: &str = "Coming soon";
+/// The command acts on the open note and there is none.
+pub(crate) const NO_NOTE: &str = "No note open";
+/// The command needs a workspace (a vault) and the window has none.
+pub(crate) const NO_WORKSPACE: &str = "No workspace open";
+/// The command edits or searches the note and the note did not have the
+/// keyboard when the palette opened.
+pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
+/// The command arranges the view of the focused slot (or the rail's).
+pub(crate) const NEEDS_SLOT_FOCUS: &str = "Needs a slot focused";
+/// Copying a row needs the list of a slot's view (LINKS, OUTLINE, FIND,
+/// TAGS) to have the keyboard.
+pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a slot list focused";
+/// Saving a query needs FIND to have the keyboard (the search browser
+/// saves its own with the chord).
+pub(crate) const NEEDS_FIND_FOCUS: &str = "Needs FIND focused";
+impl Workspace {
+    /// The facts a route reads: the open note (the vault root when none is
+    /// open). Ask never takes the editor's place (ADR-0053), so the open
+    /// note stays "this note" while it shows.
+    pub(crate) fn route_facts(&self) -> RouteFacts {
+        let note = self
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+            .unwrap_or_else(VaultPath::root);
+        RouteFacts::new(note, false)
+    }
+
+    /// The route of `action` in this window.
+    pub(crate) fn route_of(&self, action: LeaderAction) -> LeaderRoute {
+        leader_route::route(action, &self.route_facts())
+    }
+
+    /// Whether the editor is on screen and had the keyboard with its find
+    /// bar closed — where a text action or a find may run. `opener` is the
+    /// panel that had the keyboard before a modal took it.
+    pub(crate) fn note_has_keyboard(&self, opener: Panel, cx: &App) -> bool {
+        opener == Panel::Editor
+            && self.empty.is_none()
+            && self.note_empty_state().is_none()
+            && !self.editor.read(cx).editor.find_open()
+    }
+
+    /// Why `route` cannot run in this window now, or `None` when it can.
+    /// `opener` is the panel that had the keyboard when the command was
+    /// asked for.
+    pub(crate) fn route_block(
+        &self,
+        route: &LeaderRoute,
+        opener: Panel,
+        cx: &App,
+    ) -> Option<&'static str> {
+        let has_vault = self.notes.is_some();
+        match route {
+            // SEM only while the server can search (the TUI's words why
+            // not); the rail hides its cell then too.
+            LeaderRoute::Drawer(DrawerView::Semantic) => self.semantic_block(),
+            // ASK only while the server can answer (the rail's rule), or
+            // already shown.
+            LeaderRoute::Drawer(DrawerView::Ask) => self.ask_view_block(),
+            LeaderRoute::Drawer(view) if shell_layout::hosts(*view) => None,
+            // Every view is hosted (`shell_layout::hosts`); a guard for a
+            // drawer view added later.
+            LeaderRoute::Drawer(_) => Some(NOT_YET),
+            // `+ask`: the Thread ([`super::ask`]).
+            LeaderRoute::Ask(step) => self.ask_block(*step),
+            // LINKS, on that tab.
+            LeaderRoute::LinksTab(_) => None,
+            LeaderRoute::NewNote if self.files.is_some() => None,
+            LeaderRoute::NewNote => Some(NO_WORKSPACE),
+            LeaderRoute::Quit => None,
+            LeaderRoute::NoNoteOpen => Some(NO_NOTE),
+            LeaderRoute::Yank { .. } => None,
+            LeaderRoute::Text(_) if self.note_has_keyboard(opener, cx) => None,
+            LeaderRoute::Text(_) => Some(NEEDS_NOTE_FOCUS),
+            LeaderRoute::Save => match self.notes.as_ref().and_then(|h| h.note.as_ref()) {
+                Some(_) => None,
+                None => Some(NO_NOTE),
+            },
+            // Zen always runs; grow and shrink need a divider beside the
+            // focused leaf (its floors are said when the step hits one).
+            LeaderRoute::Layout(LayoutStep::Zen) => None,
+            LeaderRoute::Layout(LayoutStep::GrowDrawer | LayoutStep::ShrinkDrawer) => {
+                self.resize_block()
+            }
+            LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
+            | LeaderRoute::Job(LeaderJob::Reindex)
+                if has_vault =>
+            {
+                None
+            }
+            LeaderRoute::Job(LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_))
+            | LeaderRoute::Job(LeaderJob::Reindex) => Some(NO_WORKSPACE),
+            // Leader `v u`: the update dialog or a manual check, vault or not.
+            LeaderRoute::Job(LeaderJob::CheckUpdates) => None,
+            LeaderRoute::Soon(_) => Some(SOON),
+            // Leader `p`: the palette.
+            LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
+            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n d`: the
+            // finder, the search browser, the saved searches, the pinned
+            // notes, today's journal.
+            LeaderRoute::Overlay(
+                OverlayOpen::FileFinder
+                | OverlayOpen::SearchBrowser
+                | OverlayOpen::SavedSearches
+                | OverlayOpen::PinnedNotes,
+            )
+            | LeaderRoute::OpenJournal
+                if has_vault =>
+            {
+                None
+            }
+            LeaderRoute::Overlay(
+                OverlayOpen::FileFinder
+                | OverlayOpen::SearchBrowser
+                | OverlayOpen::SavedSearches
+                | OverlayOpen::PinnedNotes,
+            )
+            | LeaderRoute::OpenJournal => Some(NO_WORKSPACE),
+            // Leader `f b`: the open note's backlinks (LINKS' Backlinks tab); any other
+            // query opens FIND on it.
+            LeaderRoute::FindWithQuery(_) if has_vault => None,
+            LeaderRoute::FindWithQuery(_) => Some(NO_WORKSPACE),
+            // `+note` rename / move / delete / properties of the open note
+            // (the route is `NoNoteOpen` when there is none).
+            LeaderRoute::NoteDialog(
+                NoteDialog::Rename | NoteDialog::Move | NoteDialog::Delete | NoteDialog::Properties,
+                _,
+            ) if has_vault => None,
+            // `app.onboarding`: the setup assistant, vault or not.
+            LeaderRoute::OpenOnboarding => None,
+            // Leader `v s`: the workspace switcher, vault or not (a broken
+            // workspace can be switched away from).
+            LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => None,
+            // Leader `v p`: Preferences, vault or not.
+            LeaderRoute::OpenPreferences => None,
+            // Leader `v t`: the theme picker, vault or not.
+            LeaderRoute::Overlay(OverlayOpen::ThemePicker) => None,
+            // Leader `?`: the keyboard reference (F1), vault or not. It lists
+            // the leader tree, so it is the cheatsheet too.
+            LeaderRoute::Overlay(OverlayOpen::Cheatsheet | OverlayOpen::Help) => None,
+            // A note dialog without a vault (not produced today: with no
+            // vault there is no open note, the route is `NoNoteOpen`).
+            LeaderRoute::NoteDialog(..) => Some(NO_WORKSPACE),
+            // Leader `g s`: the git summary of the workspace.
+            LeaderRoute::GitStatus if self.notes.is_some() => None,
+            LeaderRoute::GitStatus => Some(NO_WORKSPACE),
+            // The other overlays are no leader leaf's route (the sort and
+            // query-help recipes, the quick note: chords and buttons open
+            // those).
+            LeaderRoute::Overlay(_) => Some(NOT_YET),
+        }
+    }
+
+    /// Run `route` with the window's surfaces. A blocked route does nothing:
+    /// its callers only offer the ones [`Self::route_block`] allows.
+    pub(crate) fn perform_route(
+        &mut self,
+        route: LeaderRoute,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match route {
+            LeaderRoute::Drawer(DrawerView::Files) => self.open_file_browser(window, cx),
+            // Gated again: a leaf sent on the channel skips `route_block`.
+            LeaderRoute::Drawer(DrawerView::Semantic) => self.open_semantic(window, cx),
+            LeaderRoute::Drawer(DrawerView::Ask) => self.open_ask_view(window, cx),
+            LeaderRoute::Drawer(view) if shell_layout::hosts(view) => {
+                self.show_view(view, window, cx)
+            }
+            LeaderRoute::LinksTab(tab) => self.show_links_tab(tab, window, cx),
+            LeaderRoute::NewNote if self.files.is_some() => {
+                // The FILES filter doubles as the create field: typing a
+                // name offers `Create:`.
+                self.open_file_browser(window, cx);
+                self.flash("Type a name — Enter creates", cx);
+            }
+            LeaderRoute::Quit => self.request_close(window, cx),
+            LeaderRoute::Yank { text, label } => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.flash(label, cx);
+            }
+            LeaderRoute::Text(action) => {
+                self.editor.update(cx, |editor, cx| {
+                    editor.apply_text_action(action, window, cx)
+                });
+            }
+            LeaderRoute::Save => self.save_note(cx),
+            LeaderRoute::Layout(step) => self.layout_step(step, window, cx),
+            LeaderRoute::Job(LeaderJob::CheckUpdates) => self.check_for_updates(window, cx),
+            LeaderRoute::Job(job) => self.run_leader_job(job, cx),
+            LeaderRoute::NoNoteOpen => self.flash("No note open", cx),
+            LeaderRoute::Overlay(OverlayOpen::CommandPalette) => self.open_palette(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::FileFinder) => self.open_finder(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::SearchBrowser) => self.open_search(None, window, cx),
+            LeaderRoute::Overlay(OverlayOpen::SavedSearches) => {
+                self.open_saved_searches(window, cx)
+            }
+            LeaderRoute::Overlay(OverlayOpen::PinnedNotes) => self.open_pinned_notes(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::WorkspaceSwitcher) => {
+                self.open_workspace_switcher(window, cx)
+            }
+            LeaderRoute::Overlay(OverlayOpen::ThemePicker) => self.open_theme_picker(window, cx),
+            LeaderRoute::Overlay(OverlayOpen::Cheatsheet | OverlayOpen::Help) => {
+                self.open_keyboard_help(window, cx)
+            }
+            // Leader `f b` is the open note's backlinks, which LINKS owns (its
+            // Backlinks tab): show that, not FIND on a query.
+            LeaderRoute::FindWithQuery(query) if is_default_query(&query) => {
+                self.show_links_tab(LinksTab::Backlinks, window, cx)
+            }
+            LeaderRoute::FindWithQuery(query) => self.open_find_with_query(query, window, cx),
+            LeaderRoute::OpenJournal => self.open_journal(window, cx),
+            LeaderRoute::OpenOnboarding => self.open_onboarding(window, cx),
+            LeaderRoute::OpenPreferences => self.open_preferences(window, cx),
+            // Gated again inside: a leaf sent on the channel skips
+            // `route_block`.
+            LeaderRoute::Ask(step) => self.ask_step(step, window, cx),
+            LeaderRoute::NoteDialog(dialog, path) => {
+                let kind = match dialog {
+                    NoteDialog::Rename => FileOpKind::Rename,
+                    NoteDialog::Move => FileOpKind::Move,
+                    NoteDialog::Delete => FileOpKind::Delete,
+                    NoteDialog::Properties => FileOpKind::Properties,
+                };
+                self.open_file_dialog(kind, path, window, cx);
+            }
+            // Blocked here (see `route_block`).
+            LeaderRoute::Drawer(_)
+            | LeaderRoute::NewNote
+            | LeaderRoute::Overlay(_)
+            | LeaderRoute::Soon(_) => {}
+            LeaderRoute::GitStatus => self.show_git_status(cx),
+        }
+        cx.notify();
+    }
+
+    /// Show `view` where it is placed (a view placed nowhere: in the left
+    /// side's focused slot) and give it the keyboard. Unlike a rail click,
+    /// a shown view stays shown: the leader opens, it never toggles.
+    /// Persisted.
+    pub(super) fn show_view(
+        &mut self,
+        view: DrawerView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.place_rail_cursor(Some(view));
+        self.open_view_focused(view);
+        self.ensure_files_listing(cx);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+    }
+
+    /// `+window`: zen hides every view beside the active group (both side
+    /// toggles off) and gives the note the keyboard; grow and shrink move a
+    /// divider of the focused leaf ([`Self::step_focused_leaf`]).
+    /// Persisted.
+    fn layout_step(&mut self, step: LayoutStep, window: &mut Window, cx: &mut Context<Self>) {
+        match step {
+            LayoutStep::Zen => {}
+            LayoutStep::GrowDrawer => return self.step_focused_leaf(true, window, cx),
+            LayoutStep::ShrinkDrawer => return self.step_focused_leaf(false, window, cx),
+        }
+        for side in [Side::Left, Side::Right] {
+            if self
+                .side_slots(side)
+                .into_iter()
+                .any(|s| self.slot_drawn(s))
+            {
+                self.toggle_side(side, window, cx);
+            }
+        }
+        self.set_focus_panel(Panel::Editor);
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+    }
+
+    /// Spawn an asynchronous leaf (`leader_route::jobs`) on the window's
+    /// runtime; it reports on the app channel.
+    fn run_leader_job(&mut self, job: LeaderJob, cx: &mut Context<Self>) {
+        let (Some(tx), Some(vault)) = (self.tx.clone(), self.vault()) else {
+            return;
+        };
+        match job {
+            LeaderJob::TogglePin(path) => {
+                tokio::spawn(jobs::toggle_pin(vault, path, tx));
+            }
+            LeaderJob::JumpToPinned(n) => {
+                tokio::spawn(jobs::jump_to_pinned(vault, n, tx));
+            }
+            LeaderJob::Reindex => {
+                self.flash("Reindexing…", cx);
+                tokio::spawn(jobs::reindex(vault, tx));
+            }
+            // Needs the window (`perform_route` runs it).
+            LeaderJob::CheckUpdates => {}
+        }
+    }
+}

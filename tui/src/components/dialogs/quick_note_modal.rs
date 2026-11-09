@@ -11,6 +11,7 @@ use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::logic::file_ops;
 use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData};
 use crate::settings::themes::Theme;
 
@@ -75,22 +76,22 @@ impl QuickNoteModal {
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            match vault.quick_note(&text).await {
-                Ok(details) => {
+            match file_ops::quick_note(&vault, &text).await {
+                Ok(path) => {
                     // quick_note always materialises a fresh note — tell the
                     // sidebar so it refreshes if browsing that directory.
                     tx_clone
-                        .send(AppMessage::FileOp(FileOp::Created(details.path.clone())))
+                        .send(AppMessage::FileOp(FileOp::Created(path.clone())))
                         .ok();
                     if open_after {
-                        tx_clone.send(AppMessage::open(details.path)).ok();
+                        tx_clone.send(AppMessage::open(path)).ok();
                     } else {
                         tx_clone.send(AppMessage::CloseOverlay).ok();
                     }
                 }
                 Err(e) => {
                     tx_clone
-                        .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
+                        .send(AppMessage::OverlayData(OverlayData::Error(e)))
                         .ok();
                 }
             }

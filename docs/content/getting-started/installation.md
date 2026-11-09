@@ -44,6 +44,25 @@ brew install kimun
 cargo install kimun-notes
 ```
 
+## Desktop app
+
+The desktop app, `kimun-gui`, is installed the same way with `--gui`. See the
+[Desktop app](@/using-kimun/desktop-app.md) page for what it is.
+
+```sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
+```
+
+On Linux the script also installs the app's launcher entry and icons under
+`~/.local/share`, so it shows up in your application menu. On macOS it installs
+the plain binary (run `kimun-gui` from a terminal); for a double-clickable
+app, download the signed `kimun-gui-<version>-<platform>.dmg` from the
+[releases page](https://github.com/nico2sh/kimun/releases). Run the script once for each app you want: both can sit side by side
+and share one install marker. On Windows, download
+`kimun-gui-<version>-windows-x64.zip` from the
+[GitHub releases page](https://github.com/nico2sh/kimun/releases) and run
+`kimun-gui.exe`; there is no installer yet.
+
 ## Updating
 
 If you installed with the install script, Kimün can update itself in place,
@@ -51,8 +70,12 @@ because the install marker tells the app it is on the `script` channel. You can
 also re-run the install command at any time to get the latest stable release:
 
 ```sh
-curl -fsSL https://kimun.2co.dev/install.sh | sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh                # the terminal app
+curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui    # the desktop app
 ```
+
+The desktop app updates itself the same way when the install script put it
+there.
 
 If you installed with Homebrew or Cargo, update with the same tool:
 

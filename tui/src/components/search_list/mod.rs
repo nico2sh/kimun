@@ -1,27 +1,27 @@
 //! `SearchList`: the one module behind every query-input-over-an-async-loaded
-//! list surface in the TUI. See CONTEXT.md.
+//! list surface in the TUI. See CONTEXT.md. The toolkit-free engine (rows,
+//! display order, filter, selection, loading) is [`ListCore`]; this module
+//! composes it with the query input, autocomplete, rendering and hit-testing.
 
 #[cfg(test)]
 mod adapters;
 mod host;
-mod load;
-mod resolving;
 mod seams;
 
-pub use resolving::{ResolvingRowSource, Unresolvable};
-pub use seams::{
-    Emit, Filter, Loaded, OrderFn, RowSource, SearchRow, StaticRowSource, SuggestionItem,
-    SuggestionSource, VaultSuggestions, YankTarget,
+pub use crate::logic::list::{
+    Emit, Filter, ListCore, ListRow, Loaded, OrderFn, RowSource, StaticRowSource, YankTarget,
 };
+pub use crate::logic::list::{ResolvingRowSource, Unresolvable};
+pub use seams::{SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions};
 
 use crate::components::autocomplete::{
     AutocompleteController, AutocompleteMode, HandleKeyOutcome, TriggerOptions,
 };
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::key_combo::KeyCombo;
+use crate::logic::list::{ListHolder, ListSetup, Polled};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-use load::LoadEngine;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::{
     Frame,
@@ -29,30 +29,7 @@ use ratatui::{
     style::Style,
     widgets::{List, ListItem, ListState},
 };
-use seams::Loaded as LoadedInner;
 use std::sync::Arc;
-
-/// Fuzzy-ranks the rows named by `base` (indices into `rows`, in the order
-/// ties should keep) against `query`; absent = no match.
-fn fuzzy_indices<R: SearchRow>(rows: &[R], base: &[usize], query: &str) -> Vec<usize> {
-    use nucleo::pattern::{CaseMatching, Normalization, Pattern};
-    use nucleo::{Matcher, Utf32Str};
-    let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
-    let pat = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
-    let mut scored: Vec<(usize, u32)> = base
-        .iter()
-        .filter_map(|&i| {
-            let hay = rows[i].match_text()?;
-            let mut buf = Vec::new();
-            let h = Utf32Str::new(hay, &mut buf);
-            pat.score(h, &mut matcher).map(|s| (i, s))
-        })
-        .collect();
-    // Stable: equal scores keep `base` order, so an `order_by` still decides
-    // among ties.
-    scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
-    scored.into_iter().map(|(i, _)| i).collect()
-}
 
 /// Which half of a [`SearchList`] owns the keyboard. See CONTEXT.md
 /// (**List focus**). In [`Focus::Input`] typing filters the list; in
@@ -87,36 +64,14 @@ pub enum KeyReaction {
 }
 
 pub struct SearchList<R: SearchRow> {
-    source: Arc<dyn RowSource<R>>,
-    rows: Vec<R>,
-    /// Indices into `rows` in display order (after filtering/ranking).
-    display: Vec<usize>,
-    /// A synthetic, query-fresh, filter-exempt row pinned at visible position 0
-    /// (the `Create: <q>` affordance / saved-searches virtual entry). Held
-    /// separately from `rows` so it works regardless of delivery (one-shot
-    /// `Replace` or streamed `Push`) and refreshes on every query change. See
-    /// [`RowSource::leading_row`].
-    leading: Option<R>,
-    /// Index into the VISIBLE sequence `[leading?] ++ display` of the selected
-    /// item.
-    selected: Option<usize>,
-    /// Whether `selected` is the user's own choice rather than the seed
-    /// `recompute_and_seed` puts on the first row. A chosen selection tracks
-    /// its row across a re-sort; a seeded one keeps the top slot, so a streamed
-    /// listing highlights the top of the `order_by` order at every frame
-    /// instead of whichever row the source happened to emit first.
-    selection_pinned: bool,
+    /// The toolkit-free engine: rows, display order, leading row, selection,
+    /// query and load.
+    core: ListCore<R>,
     /// Viewport offset: visible position of the first row on screen. Owned
     /// here (not by a per-frame `ListState`) so mouse-wheel scrolling can move
     /// the viewport directly; `render` writes it back after ratatui clamps it
     /// to keep the selection visible.
     offset: usize,
-    filter: Filter<R>,
-    /// Optional total order applied before the local filter; see
-    /// [`SearchListBuilder::order_by`].
-    order: Option<OrderFn<R>>,
-    query: String,
-    loader: LoadEngine<R>,
     input: SingleLineInput,
     autocomplete: Option<AutocompleteController>,
     /// Key combos the caller wants to intercept before the engine acts.
@@ -146,11 +101,6 @@ pub struct SearchList<R: SearchRow> {
     /// Where the query input was drawn by the last [`Self::render_query`].
     /// A click there gives the input the keyboard.
     input_rect: Rect,
-    /// Load generation whose rows are currently held. When a newer generation
-    /// (a requery / reload) delivers its first event, `poll` clears the stale
-    /// rows before applying it — required for streamed (`Push`) sources, which
-    /// would otherwise append onto a superseded load's rows.
-    applied_generation: u64,
     /// Set when a SavedSearch suggestion was just accepted: the search's name,
     /// for the host to pin as the saved-search breadcrumb. Read once via
     /// [`take_accepted_saved_search`](Self::take_accepted_saved_search).
@@ -260,32 +210,24 @@ impl<R: SearchRow> SearchList<R> {
 
     /// The async path: kick off the initial load; rows land on a later `poll`.
     fn new(b: SearchListBuilder<R>) -> Self {
-        let mut list = Self::assemble(b);
-        list.loader.start(list.source.clone(), list.query.clone());
-        list
+        Self::assemble(b, None)
     }
 
     /// The synchronous path: apply an in-memory row set and seed the initial
     /// selection here and now — no async load, no channel, no redraw
-    /// round-trip. The [`LoadEngine`] stays idle (`is_loading()` is false
-    /// immediately), and the source's `load` is never invoked, so a caller can
-    /// read `selected_row()`/`rows()` on the very next line. For static sources
+    /// round-trip (see [`ListCore::with_rows`]). For static sources
     /// (`reload_on_query() == false`), where the query is a local filter over
     /// the built rows. See [`StaticRowSource`].
     ///
     /// [`StaticRowSource`]: crate::components::search_list::StaticRowSource
     fn with_rows(b: SearchListBuilder<R>, rows: Vec<R>) -> Self {
-        let mut list = Self::assemble(b);
-        list.rows = rows;
-        list.recompute_and_seed();
-        list
+        Self::assemble(b, Some(rows))
     }
 
-    /// Build the struct with an idle loader (no load started). The two entry
-    /// points ([`new`](Self::new)/[`with_rows`](Self::with_rows)) diverge on
-    /// what they do next: spawn an async load, or seed rows synchronously.
-    fn assemble(b: SearchListBuilder<R>) -> Self {
-        let loader = LoadEngine::new(b.redraw.clone());
+    /// Build the struct. The two entry points
+    /// ([`new`](Self::new)/[`with_rows`](Self::with_rows)) differ only in how
+    /// the engine starts: spawn an async load, or seed rows synchronously.
+    fn assemble(b: SearchListBuilder<R>, rows: Option<Vec<R>>) -> Self {
         let input = SingleLineInput::with_value(&b.initial_query);
         let debounce = b.debounce;
         let autocomplete = b.autocomplete.map(|(suggestions, mode)| {
@@ -303,18 +245,18 @@ impl<R: SearchRow> SearchList<R> {
             ac.set_redraw_callback(b.redraw.clone());
             ac
         });
-        Self {
-            source: b.source,
-            rows: Vec::new(),
-            display: Vec::new(),
-            leading: None,
-            selected: None,
-            selection_pinned: false,
-            offset: 0,
+        let setup = ListSetup {
             filter: b.filter,
             order: b.order,
             query: b.initial_query,
-            loader,
+        };
+        let core = match rows {
+            Some(rows) => ListCore::with_rows(b.source, b.redraw, setup, rows),
+            None => ListCore::new(b.source, b.redraw, setup),
+        };
+        Self {
+            core,
+            offset: 0,
             input,
             highlight_query: b.highlight_query,
             last_click_pos: None,
@@ -328,7 +270,6 @@ impl<R: SearchRow> SearchList<R> {
             panel_rect: Rect::default(),
             content_rect: Rect::default(),
             input_rect: Rect::default(),
-            applied_generation: 0,
             accepted_saved_search: None,
             focus: b.opening_focus,
             // List focus is active when the surface opens on the list or
@@ -338,64 +279,33 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    /// The toolkit-free engine this list draws.
+    pub fn core(&self) -> &ListCore<R> {
+        &self.core
+    }
+
+    /// Mutable access to the toolkit-free engine. Prefer the `SearchList`
+    /// wrappers where one exists: [`set_query`](Self::set_query) also updates
+    /// the input widget, [`poll`](Self::poll) also resets the viewport.
+    pub fn core_mut(&mut self) -> &mut ListCore<R> {
+        &mut self.core
+    }
+
     /// Which half currently owns the keyboard. See [`Focus`].
     pub fn focus(&self) -> Focus {
         self.focus
     }
 
-    pub fn poll(&mut self) {
-        let drained = self.loader.drain();
-        if !drained.is_empty() {
-            // A newer load delivered its first event(s): drop the prior load's
-            // rows so a streamed source starts from a clean slate (one-shot
-            // `Replace` overwrites anyway, but `Push` would otherwise append).
-            let current_gen = self.loader.generation();
-            if current_gen != self.applied_generation {
-                self.rows.clear();
-                self.selected = None;
-                self.selection_pinned = false;
-                self.offset = 0;
-                self.applied_generation = current_gen;
-            }
-            // Pushes only append, so row indices stay valid across the drain
-            // and the selection can follow its row wherever `order` puts it.
-            // A `Replace` swaps the whole set; indices mean nothing after it.
-            let keep = if drained
-                .iter()
-                .any(|ev| matches!(ev, LoadedInner::Replace(_)))
-            {
-                None
-            } else {
-                self.selection_to_carry()
-            };
-            for ev in drained {
-                match ev {
-                    LoadedInner::Replace(rows) => {
-                        self.rows = rows;
-                    }
-                    LoadedInner::Push(row) => {
-                        self.rows.push(row);
-                    }
-                    LoadedInner::Done => {}
-                }
-            }
-            self.recompute_and_seed();
-            self.reselect(keep);
+    pub fn poll(&mut self) -> Polled {
+        let polled = self.core.poll();
+        if polled.restarted {
+            // A newer load replaced the rows: the viewport goes back to the top.
+            self.offset = 0;
         }
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
         }
-    }
-
-    /// Recompute the display order, then seed the selection to the first row
-    /// when nothing is selected yet (e.g. after the first load or a filter that
-    /// repopulated the list). The single place display + initial selection are
-    /// brought in sync.
-    fn recompute_and_seed(&mut self) {
-        self.recompute_display();
-        if self.selected.is_none() && self.visible_len() > 0 {
-            self.selected = Some(0);
-        }
+        polled
     }
 
     /// Build a host snapshot from the current input state.
@@ -412,60 +322,34 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
-    fn clamp_selection(&mut self) {
-        let len = self.visible_len();
-        self.selected = if len == 0 {
-            None
-        } else {
-            Some(self.selected.unwrap_or(0).min(len - 1))
-        };
-    }
-
-    /// `1` when a leading row is pinned at visible position 0, else `0`.
-    fn leading_offset(&self) -> usize {
-        self.leading.is_some() as usize
-    }
-
     /// Length of the visible sequence `[leading?] ++ display`.
     pub fn visible_len(&self) -> usize {
-        self.leading_offset() + self.display.len()
+        self.core.visible_len()
     }
 
     /// Number of real matches — the visible rows minus the synthetic leading
     /// affordance ("Create: …"), for result-count displays.
     pub fn match_count(&self) -> usize {
-        self.display.len()
-    }
-
-    /// Row at visible position `pos` in `[leading?] ++ display`.
-    fn visible_row(&self, pos: usize) -> Option<&R> {
-        if self.leading.is_some() && pos == 0 {
-            self.leading.as_ref()
-        } else {
-            self.rows
-                .get(*self.display.get(pos - self.leading_offset())?)
-        }
+        self.core.match_count()
     }
 
     /// The source-delivered rows only (NOT the leading row). Prefer
     /// [`visible_len`](Self::visible_len)/[`visible_rows`](Self::visible_rows)
     /// for visible counts.
     pub fn rows(&self) -> &[R] {
-        &self.rows
+        self.core.rows()
     }
 
     pub fn selected_row(&self) -> Option<&R> {
-        self.selected.and_then(|p| self.visible_row(p))
+        self.core.selected_row()
     }
 
     pub fn visible_rows(&self) -> Vec<&R> {
-        (0..self.visible_len())
-            .filter_map(|p| self.visible_row(p))
-            .collect()
+        self.core.visible_rows()
     }
 
     pub fn query(&self) -> &str {
-        &self.query
+        self.core.query()
     }
 
     /// Take the name of a just-accepted saved search, if any. The host calls
@@ -482,7 +366,7 @@ impl<R: SearchRow> SearchList<R> {
         self.input.value()
     }
     pub fn is_loading(&self) -> bool {
-        self.loader.loading
+        self.core.is_loading()
     }
 
     /// Set the query programmatically: updates the visible input widget (cursor
@@ -496,8 +380,7 @@ impl<R: SearchRow> SearchList<R> {
     pub fn set_query(&mut self, q: impl Into<String>) {
         let q = q.into();
         self.input.set_value(q.clone());
-        self.query = q;
-        self.requery();
+        self.core.set_query(q);
     }
 
     /// Pull the query string FROM the input widget without touching the widget
@@ -505,134 +388,37 @@ impl<R: SearchRow> SearchList<R> {
     /// autocomplete-accept paths use this after they have already mutated the
     /// input in place.
     fn sync_query_from_input(&mut self) {
-        self.query = self.input.value().to_string();
-        self.requery();
-    }
-
-    /// Start a fresh load for `reload_on_query` sources, else recompute the
-    /// local display. The generation guard in `LoadEngine` drops stale results.
-    fn requery(&mut self) {
-        if self.source.reload_on_query() {
-            self.loader.start(self.source.clone(), self.query.clone());
-        }
-        // Recompute now so the query-fresh leading row (and local filter, for
-        // non-reload sources) reflect the new query in this frame. Reload
-        // sources refresh again when their load drains in poll().
-        self.recompute_and_seed();
+        self.core.set_query(self.input.value());
     }
 
     /// Re-run the source load for the current query (e.g. after a mutation).
     pub fn reload(&mut self) {
-        self.loader.start(self.source.clone(), self.query.clone());
+        self.core.reload();
     }
 
     /// Replace (or clear) the row order and re-sort the rows already loaded.
-    /// A recompute, not a reload: the source is not consulted. A selection the
-    /// user chose stays on the row it was on; a seeded one keeps the top slot
-    /// of the NEW order — and stays a seed, so a still-streaming listing goes
-    /// on re-seeding it (the `selection_pinned` split, as in `poll`).
+    /// See [`ListCore::set_order`].
     pub fn set_order(&mut self, cmp: Option<OrderFn<R>>) {
-        let keep = self.selection_to_carry();
-        self.order = cmp;
-        self.recompute_display();
-        self.reselect(keep);
+        self.core.set_order(cmp);
     }
 
-    /// The row a recompute has to put the selection back on: the row the user
-    /// chose, or `None` for a seed — a seed belongs to the top of the order,
-    /// wherever the recompute puts it. The one rule behind `poll`, `set_order`
-    /// and `update_rows`.
-    fn selection_to_carry(&self) -> Option<usize> {
-        self.selection_pinned
-            .then(|| self.selected_row_index())
-            .flatten()
+    /// Mutate rows in place; see [`ListCore::update_rows`]. Returns whether
+    /// anything changed.
+    pub fn update_rows(&mut self, mutate: impl FnMut(&mut R) -> bool) -> bool {
+        self.core.update_rows(mutate)
     }
 
-    /// Index into `rows` of the selected row, if the selection is on a real
-    /// (non-leading) row.
-    fn selected_row_index(&self) -> Option<usize> {
-        let pos = self.selected?.checked_sub(self.leading_offset())?;
-        self.display.get(pos).copied()
-    }
-
-    /// Move the selection back onto the row at `rows[row]` after the display
-    /// was recomputed, if that row is still visible; otherwise leave it where
-    /// the recompute clamped it.
-    fn reselect(&mut self, row: Option<usize>) {
-        if let Some(row) = row
-            && let Some(pos) = self.display.iter().position(|&i| i == row)
-        {
-            self.selected = Some(pos + self.leading_offset());
-        }
-    }
-
-    /// Mutate rows in place. `mutate` is called for each row and returns `true`
-    /// for each row it changed; if any did, the display is recomputed — which
-    /// re-filters AND re-sorts, so an edit to a field the `order_by` reads
-    /// moves its row. Returns whether anything changed.
-    ///
-    /// The selection is carried the same way every other recompute carries it:
-    /// a chosen row stays chosen wherever it lands, a seed keeps the top slot.
-    ///
-    /// This is the one seam that touches rows outside the [`RowSource`]; every
-    /// other change rebuilds from the source. Structural changes (add/remove)
-    /// must still reload; a reorder is [`set_order`](Self::set_order).
-    /// `SearchList` stays ignorant of the row type; callers layer the
-    /// path-matched operations on top.
-    pub fn update_rows(&mut self, mut mutate: impl FnMut(&mut R) -> bool) -> bool {
-        let mut changed = false;
-        for row in &mut self.rows {
-            if mutate(row) {
-                changed = true;
-            }
-        }
-        if changed {
-            let keep = self.selection_to_carry();
-            self.recompute_display();
-            self.reselect(keep);
-        }
-        changed
-    }
-
-    /// Select the visible row at `pos` (clamped to the visible range); clears
-    /// the selection when the list is empty. The index-based counterpart to
-    /// [`select_next`](Self::select_next)/[`select_prev`](Self::select_prev),
-    /// for surfaces that point the cursor at a specific row (the Sources view's
-    /// citation jump).
+    /// Select the visible row at `pos` (clamped); see [`ListCore::select`].
     pub fn select(&mut self, pos: usize) {
-        let n = self.visible_len();
-        self.selected = if n == 0 { None } else { Some(pos.min(n - 1)) };
-        // Unconditional: aiming at a row IS the choice, even when it happens
-        // to be the row the seed already sat on. Only the blind nudges below
-        // have to prove they moved.
-        self.selection_pinned = self.selected.is_some();
+        self.core.select(pos);
     }
 
     pub fn select_next(&mut self) {
-        let n = self.visible_len();
-        if n == 0 {
-            return;
-        }
-        self.move_selection(Some(self.selected.map_or(0, |i| (i + 1).min(n - 1))));
+        self.core.select_next();
     }
 
     pub fn select_prev(&mut self) {
-        if self.visible_len() == 0 {
-            return;
-        }
-        self.move_selection(Some(self.selected.map_or(0, |i| i.saturating_sub(1))));
-    }
-
-    /// Move the selection, marking it the user's own choice only when it
-    /// actually lands somewhere new. A nudge against either end of the list
-    /// changes nothing, so it must not turn a seed into a choice — one stray
-    /// `Up` on the first row of a streaming listing would otherwise freeze the
-    /// highlight at position 0 and let rows arriving above it walk underneath.
-    fn move_selection(&mut self, next: Option<usize>) {
-        if next != self.selected {
-            self.selected = next;
-            self.selection_pinned = next.is_some();
-        }
+        self.core.select_prev();
     }
 
     /// Largest useful viewport offset: the first visible position from which
@@ -649,6 +435,7 @@ impl<R: SearchRow> SearchList<R> {
         let mut first = n;
         while first > 0 {
             let h = self
+                .core
                 .visible_row(first - 1)
                 .map(|r| r.visual_height() as usize)
                 .unwrap_or(1);
@@ -670,7 +457,8 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.offset += 1;
-        self.move_selection(self.selected.map(|i| (i + 1).min(n - 1)));
+        let next = self.core.selected().map(|i| (i + 1).min(n - 1));
+        self.core.move_selection(next);
     }
 
     /// Scroll the viewport one row up, carrying the selection along so the
@@ -680,7 +468,8 @@ impl<R: SearchRow> SearchList<R> {
             return;
         }
         self.offset -= 1;
-        self.move_selection(self.selected.map(|i| i.saturating_sub(1)));
+        let next = self.core.selected().map(|i| i.saturating_sub(1));
+        self.core.move_selection(next);
     }
 
     /// The current viewport offset. Test-only: lets scroll tests assert the
@@ -866,15 +655,16 @@ impl<R: SearchRow> SearchList<R> {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
         self.poll();
-        let sel = self.selected;
+        let sel = self.core.selected();
         let items: Vec<ListItem> = (0..self.visible_len())
             .filter_map(|pos| {
-                self.visible_row(pos)
+                self.core
+                    .visible_row(pos)
                     .map(|r| r.to_list_item(theme, &self.icons, sel == Some(pos)))
             })
             .collect();
         let mut state = ListState::default().with_offset(self.offset);
-        state.select(self.selected);
+        state.select(sel);
         let list =
             List::new(items).highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
         f.render_stateful_widget(list, area, &mut state);
@@ -932,9 +722,7 @@ impl<R: SearchRow> SearchList<R> {
             if let (Some(state), Some(anchor)) = (ac.state_mut(), caret) {
                 state.anchor = anchor;
             }
-            if let Some(state) = ac.state_mut() {
-                crate::components::autocomplete::render(f, state, clamp, theme);
-            }
+            ac.render(f, clamp, theme);
         }
     }
 
@@ -967,13 +755,10 @@ impl<R: SearchRow> SearchList<R> {
     /// Whether (col,row) is on a row of the open autocomplete popup, as last
     /// drawn — a host that filters mouse events must let these through.
     pub fn popup_contains(&self, col: u16, row: u16) -> bool {
-        self.autocomplete
-            .as_ref()
-            .and_then(|ac| ac.state())
-            .is_some_and(|st| {
-                st.rows_rect
-                    .contains(ratatui::layout::Position::new(col, row))
-            })
+        self.autocomplete.as_ref().is_some_and(|ac| {
+            ac.rows_rect()
+                .contains(ratatui::layout::Position::new(col, row))
+        })
     }
 
     pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
@@ -1075,6 +860,7 @@ impl<R: SearchRow> SearchList<R> {
                 // offsets map to the positions actually on screen.
                 for pos in self.offset..self.visible_len() {
                     let h = self
+                        .core
                         .visible_row(pos)
                         .map(|r| r.visual_height())
                         .unwrap_or(1);
@@ -1085,15 +871,15 @@ impl<R: SearchRow> SearchList<R> {
                     acc += h;
                 }
                 if let Some(pos) = hit {
-                    let prev = self.selected;
+                    let prev = self.core.selected();
                     let prev_click = self.last_click_pos.replace(pos);
                     let prev_at = if right_click {
                         self.last_click_at.take()
                     } else {
                         self.last_click_at.replace(now)
                     };
-                    self.selected = Some(pos);
-                    self.selection_pinned = true;
+                    // A click is the user's own choice (`select` pins it).
+                    self.core.select(pos);
                     let fast = prev_at
                         .is_some_and(|at| now.duration_since(at) < crate::components::DOUBLE_CLICK);
                     let was_activate = std::mem::take(&mut self.last_click_activated);
@@ -1122,38 +908,6 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
-    fn recompute_display(&mut self) {
-        let q = self.query.trim();
-        // The leading row is query-fresh: rebuilt on every poll AND on every
-        // local-filter `set_query`, so it never goes stale.
-        self.leading = self.source.leading_row(q);
-        // Source order, or `order_by` order when one is set.
-        let mut base: Vec<usize> = (0..self.rows.len()).collect();
-        if let Some(cmp) = &self.order {
-            let rows = &self.rows;
-            base.sort_by(|&a, &b| cmp(&rows[a], &rows[b]));
-        }
-        let mut idx: Vec<usize> = match &self.filter {
-            Filter::SourceOrder => base,
-            Filter::Fuzzy if q.is_empty() => base,
-            Filter::Fuzzy => fuzzy_indices(&self.rows, &base, q),
-            Filter::Rank(_) if q.is_empty() => base,
-            Filter::Rank(f) => {
-                let f = f.clone();
-                f(&self.rows, &base, q)
-            }
-        };
-        // Filter-exempt rows (match_text() == None: Up / Create / virtual pinned)
-        // are always present; prepend any that the filter dropped.
-        for i in 0..self.rows.len() {
-            if self.rows[i].match_text().is_none() && !idx.contains(&i) {
-                idx.insert(0, i);
-            }
-        }
-        self.display = idx;
-        self.clamp_selection();
-    }
-
     #[cfg(test)]
     pub(crate) async fn poll_until_idle(&mut self) {
         // In-memory sources settle on the first poll (no sleep paid). Vault-backed
@@ -1173,6 +927,23 @@ impl<R: SearchRow> SearchList<R> {
     }
 }
 
+/// A `SearchList` is the TUI's holder of its [`ListCore`]: a feature model
+/// (`FilesModel`) owns it and polls it through [`SearchList::poll`], so the
+/// viewport resets with the core.
+impl<R: SearchRow> ListHolder<R> for SearchList<R> {
+    fn core(&self) -> &ListCore<R> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut ListCore<R> {
+        &mut self.core
+    }
+
+    fn poll(&mut self) -> Polled {
+        SearchList::poll(self)
+    }
+}
+
 impl<R: SearchRow> SearchListBuilder<R> {
     pub fn initial_query(mut self, q: impl Into<String>) -> Self {
         self.initial_query = q.into();
@@ -1182,6 +953,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.filter = f;
         self
     }
+
     /// Keep the rows in this order regardless of arrival order. Composes with
     /// any [`Filter`]: with an empty query the order is the display order;
     /// under `Fuzzy` it decides ties between equally-scored matches. Change it
@@ -1198,6 +970,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.autocomplete = Some((suggestions, mode));
         self
     }
+
     /// Bind the yank chord to whatever the user has bound
     /// [`ActionShortcuts::YankRow`](crate::keys::action_shortcuts::ActionShortcuts::YankRow) to.
     /// Surfaces that hold `KeyBindings` should always call this — the builder
@@ -1219,6 +992,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.intercept = v;
         self
     }
+
     /// Render the query input with syntax highlighting.
     pub fn highlight_query(mut self) -> Self {
         self.highlight_query = true;
@@ -1228,6 +1002,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.icons = icons;
         self
     }
+
     /// The focus the surface opens on (default [`Focus::Input`]). Opening on
     /// [`Focus::List`] also activates the list-focus state machine (so `Esc`
     /// cancels from the list rather than flipping into it).
@@ -1235,6 +1010,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.opening_focus = focus;
         self
     }
+
     /// Register a plain letter as a list-focus verb. In [`Focus::List`],
     /// pressing it returns [`KeyReaction::ListVerb`] with the char; the engine
     /// attaches no meaning — the caller decides the action. Registering any
@@ -1245,6 +1021,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.list_verbs.push(c);
         self
     }
+
     /// Override the autocomplete controller's debounce. Tests use
     /// `Duration::ZERO` to get suggestions without waiting on the debounce timer.
     pub fn debounce(mut self, d: std::time::Duration) -> Self {
@@ -1390,6 +1167,12 @@ mod tests {
         name: String,
         height: u16,
     }
+    impl ListRow for TallRow {
+        fn match_text(&self) -> Option<&str> {
+            Some(&self.name)
+        }
+    }
+
     impl SearchRow for TallRow {
         fn to_list_item(
             &self,
@@ -1399,11 +1182,9 @@ mod tests {
         ) -> ratatui::widgets::ListItem<'static> {
             ratatui::widgets::ListItem::new(self.name.clone())
         }
+
         fn visual_height(&self) -> u16 {
             self.height
-        }
-        fn match_text(&self) -> Option<&str> {
-            Some(&self.name)
         }
     }
     struct TallSource(Vec<TallRow>);
@@ -2016,8 +1797,7 @@ mod tests {
         let rows = list
             .autocomplete
             .as_ref()
-            .and_then(|ac| ac.state())
-            .map(|st| st.rows_rect)
+            .map(|ac| ac.rows_rect())
             .expect("popup open");
         assert!(
             list.popup_contains(rows.x + 1, rows.y),
@@ -2324,7 +2104,10 @@ mod tests {
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
         // Sanity: no leading row for empty query.
-        assert!(list.leading.is_none(), "no leading row for empty query");
+        assert!(
+            list.core.leading().is_none(),
+            "no leading row for empty query"
+        );
 
         // Change query — do NOT poll/drain after this.
         list.set_query("alp");
@@ -2601,8 +2384,8 @@ mod tests {
 #[cfg(test)]
 mod order_tests {
     use super::adapters::{HeldEmitSource, ScriptedStreamSource, TestRow};
-    use super::seams::RankFn;
     use super::*;
+    use crate::logic::list::RankFn;
     use std::sync::{Arc, Mutex};
 
     fn noop_redraw() -> Arc<dyn Fn() + Send + Sync> {

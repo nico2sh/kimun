@@ -28,6 +28,58 @@ impl DrawerView {
             DrawerView::Config => "CFG",
         }
     }
+
+    /// Every view, in rail order (top to bottom; CFG last).
+    pub const ALL: [DrawerView; 8] = [
+        DrawerView::Files,
+        DrawerView::Find,
+        DrawerView::Semantic,
+        DrawerView::Ask,
+        DrawerView::Tags,
+        DrawerView::Links,
+        DrawerView::Outline,
+        DrawerView::Config,
+    ];
+
+    /// The stable id the `[gui]` settings name this view by
+    /// (`drawer_left = ["files"]`, ADR-0050 §5). Never change one: it is
+    /// persisted.
+    pub fn id(&self) -> &'static str {
+        match self {
+            DrawerView::Files => "files",
+            DrawerView::Find => "find",
+            DrawerView::Semantic => "semantic",
+            DrawerView::Ask => "ask",
+            DrawerView::Tags => "tags",
+            DrawerView::Links => "links",
+            DrawerView::Outline => "outline",
+            DrawerView::Config => "config",
+        }
+    }
+
+    /// The view a persisted id names, if any (exact, lower-case match).
+    pub fn from_id(id: &str) -> Option<DrawerView> {
+        Self::ALL.into_iter().find(|v| v.id() == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DrawerView;
+
+    #[test]
+    fn view_ids_round_trip_and_are_unique() {
+        for view in DrawerView::ALL {
+            assert_eq!(DrawerView::from_id(view.id()), Some(view));
+        }
+        let mut ids: Vec<_> = DrawerView::ALL.iter().map(DrawerView::id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), DrawerView::ALL.len());
+        assert_eq!(DrawerView::from_id("files"), Some(DrawerView::Files));
+        assert_eq!(DrawerView::from_id("backlinks"), None);
+        assert_eq!(DrawerView::from_id("Files"), None);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -1,14 +1,15 @@
 //! The Ask workspace's coordination layer: Thread↔Sources sync, capability
 //! refresh, async-result routing, and the show/stash transitions that keep the
-//! resident thread alive across drawer view switches. The editor
-//! screen keeps only "which panel content is showing"; everything that decides
-//! *what the Ask panels should reflect* lives here, against `PanelSet`.
+//! resident thread alive across drawer view switches. The rules are the
+//! logic's [`AskFlow`]; this layer only executes its answers against
+//! `PanelSet`.
 
 use std::sync::Arc;
 
 use kimun_core::NoteVault;
 
 use crate::app_screen::panel_set::PanelSet;
+use crate::logic::ask_flow::{AskFlow, Transition};
 use crate::logic::message::{AppTx, AskData};
 use crate::logic::nav::DrawerView;
 use crate::rag::RagStatus;
@@ -21,12 +22,9 @@ use crate::settings::SharedSettings;
 pub struct AskCoordinator {
     settings: SharedSettings,
     vault: Arc<NoteVault>,
-    /// The turn id last mirrored into the Sources drawer — `sync_sources`
-    /// compares against this instead of a dirty flag on `ThreadPanel`, since
-    /// turn ids are never reused (`Thread::bump` only increments), a stale
-    /// value here can never falsely match a fresh selection. Reset to `None`
-    /// when leaving Ask so re-entering always re-syncs.
-    last_synced_turn: Option<u64>,
+    /// The show/sync rules. `PanelSet` stays the record of what the editor area
+    /// shows; each entry point adopts it first (`AskFlow::sync_showing`).
+    flow: AskFlow,
 }
 
 impl AskCoordinator {
@@ -34,7 +32,7 @@ impl AskCoordinator {
         Self {
             settings,
             vault,
-            last_synced_turn: None,
+            flow: AskFlow::new(),
         }
     }
 
@@ -43,12 +41,14 @@ impl AskCoordinator {
     /// leaving ASK returns the note editor. The thread survives either way by
     /// residency — this only flips the content selector.
     pub fn transition(&mut self, panels: &mut PanelSet, target: DrawerView, tx: &AppTx) {
-        let showing = panels.is_showing_ask();
-        if target == DrawerView::Ask && !showing {
-            panels.show_ask();
-            self.sync_sources_from_selected(panels, tx);
-        } else if target != DrawerView::Ask && showing {
-            panels.hide_ask();
+        self.flow.sync_showing(panels.is_showing_ask());
+        match self.flow.switch_to(target == DrawerView::Ask) {
+            Transition::Enter => {
+                panels.show_ask();
+                self.sync_sources_from_selected(panels, tx);
+            }
+            Transition::Leave => panels.hide_ask(),
+            Transition::Stay => {}
         }
     }
 
@@ -57,17 +57,14 @@ impl AskCoordinator {
     /// conversation survives by residency.
     ///
     /// Also switches the drawer off Ask (to FILES) when it's still showing the
-    /// conversation's Sources: a hidden thread's sources shouldn't linger, and
-    /// leaving the drawer's active view on `Ask` would make the rail's next
-    /// ASK click read as a toggle-off (drawer already "on" Ask) instead of a
-    /// re-open. The switch uses `switch_drawer_view` (not `open_drawer_view`)
-    /// so it never force-reveals a drawer the user explicitly hid.
+    /// conversation's Sources (see `AskFlow::hide_if_shown`). The switch uses
+    /// `switch_drawer_view` (not `open_drawer_view`) so it never force-reveals
+    /// a drawer the user explicitly hid.
     pub fn hide_if_shown(&mut self, panels: &mut PanelSet) {
-        if panels.is_showing_ask() {
+        self.flow.sync_showing(panels.is_showing_ask());
+        if self.flow.hide_if_shown() {
             panels.hide_ask();
             panels.switch_drawer_view(DrawerView::Files);
-            // Force a re-sync on the next Ask entry — see the field doc.
-            self.last_synced_turn = None;
         }
     }
 
@@ -77,13 +74,8 @@ impl AskCoordinator {
     /// forever-`Thinking` turn; carry-forward #2). `set_ask_client` is the
     /// single injection point, so this one call is enough.
     pub async fn refresh_capability(&self, panels: &mut PanelSet, rag_status: RagStatus) {
-        let client = if rag_status.llm_available() {
-            crate::rag::rag_client(&self.settings, &self.vault)
-                .await
-                .map(Arc::new)
-        } else {
-            None
-        };
+        let client =
+            crate::logic::rag_caps::ask_client(&self.settings, &self.vault, rag_status).await;
         panels.set_ask_client(client);
     }
 
@@ -92,26 +84,23 @@ impl AskCoordinator {
     /// while the user browses FILES). A reader note goes to the Sources
     /// drawer. When Ask *is* shown and the completed turn is the selected one,
     /// its sources are refreshed (rule 3).
-    pub fn handle_data(&self, panels: &mut PanelSet, data: AskData, tx: &AppTx) {
+    pub fn handle_data(&mut self, panels: &mut PanelSet, data: AskData, tx: &AppTx) {
+        self.flow.sync_showing(panels.is_showing_ask());
         match &data {
             AskData::AnswerReady { turn_id, .. } => {
                 let turn_id = *turn_id;
                 panels.ask_mut().handle_data(data);
-                // Refresh Sources only when Ask is shown and the completed turn
-                // is the one selected.
-                if panels.is_showing_ask() {
-                    let panel = panels.ask_mut();
-                    let selected = panel.thread().selected().map(|t| t.id);
-                    if selected == Some(turn_id) {
-                        let sources = panel
-                            .thread()
-                            .turns()
-                            .iter()
-                            .find(|t| t.id == turn_id)
-                            .map(|t| t.sources.clone())
-                            .unwrap_or_default();
-                        panels.ask_sources_mut().refresh(turn_id, sources, tx);
-                    }
+                let selected = panels.ask().thread().selected().map(|t| t.id);
+                if self.flow.answer_ready(turn_id, selected) {
+                    let sources = panels
+                        .ask()
+                        .thread()
+                        .turns()
+                        .iter()
+                        .find(|t| t.id == turn_id)
+                        .map(|t| t.sources.clone())
+                        .unwrap_or_default();
+                    panels.ask_sources_mut().refresh(turn_id, sources, tx);
                 }
             }
             AskData::ReaderNote { .. } => {
@@ -121,12 +110,14 @@ impl AskCoordinator {
     }
 
     /// Mirror the live Ask panel's selected turn into the Sources drawer when
-    /// it differs from `last_synced_turn`, consuming the per-input citation
+    /// it differs from the last synced turn, consuming the per-input citation
     /// signal. Called after every Ask input event (keyboard and mouse) so the
     /// drawer tracks the thread.
     pub fn sync_sources(&mut self, panels: &mut PanelSet, tx: &AppTx) {
-        // Only track the drawer to the thread while Ask is actually on screen.
-        if !panels.is_showing_ask() {
+        self.flow.sync_showing(panels.is_showing_ask());
+        // Only track the drawer to the thread while Ask is actually on screen
+        // (the citation signal stays untaken otherwise).
+        if !self.flow.showing() {
             return;
         }
         let (selected, citation) = {
@@ -136,10 +127,11 @@ impl AskCoordinator {
                 panel.take_citation_target(),
             )
         };
-        if selected.is_some() && selected != self.last_synced_turn {
+        let step = self.flow.after_input(selected, citation);
+        if step.sync_sources {
             self.sync_sources_from_selected(panels, tx);
         }
-        if let Some(ordinal) = citation {
+        if let Some(ordinal) = step.focus_citation {
             panels.ask_sources_mut().focus_source(ordinal);
         }
     }
@@ -147,18 +139,17 @@ impl AskCoordinator {
     /// Point the Sources drawer at the live thread's currently-selected turn,
     /// unconditionally — the switch-into-Ask sync (rule 1), the post-answer
     /// refresh, and `sync_sources` above (once it knows the selection
-    /// changed) all need the current turn's sources shown. Updates
-    /// `last_synced_turn` so a following `sync_sources` call doesn't redo
-    /// the same work.
+    /// changed) all need the current turn's sources shown. Records the synced
+    /// turn so a following `sync_sources` call doesn't redo the same work.
     pub fn sync_sources_from_selected(&mut self, panels: &mut PanelSet, tx: &AppTx) {
         let selected = panels
-            .ask_mut()
+            .ask()
             .thread()
             .selected()
             .map(|t| (t.id, t.sources.clone()));
         if let Some((id, sources)) = selected {
             panels.ask_sources_mut().set_turn(id, sources, tx);
-            self.last_synced_turn = Some(id);
+            self.flow.synced(id);
         }
     }
 }

@@ -12,7 +12,8 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::logic::message::{AppMessage, AppTx, AppTxExt, OverlayData};
+use crate::logic::file_ops;
+use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
 pub struct CreateNoteDialog {
@@ -69,23 +70,11 @@ impl CreateNoteDialog {
                     // silently dropped into a pre-existing note of the same name,
                     // so it always lands in a fresh note rather than going through
                     // load_or_create_note's load-if-exists behavior.
-                    let result = match &content {
-                        Some(text) => vault
-                            .create_note_avoiding_conflicts(&path, text)
-                            .await
-                            .map(|actual_path| (actual_path, true)),
-                        None => vault
-                            .load_or_create_note(&path, content)
-                            .await
-                            .map(|(_, created)| (path.clone(), created)),
-                    };
-                    match result {
-                        Ok((actual_path, created)) => {
-                            tx_clone.announce_and_open(actual_path, created)
-                        }
+                    match file_ops::create_note(&vault, &path, content).await {
+                        Ok(outcome) => outcome.announce_and_open(&tx_clone),
                         Err(e) => {
                             tx_clone
-                                .send(AppMessage::OverlayData(OverlayData::Error(e.to_string())))
+                                .send(AppMessage::OverlayData(OverlayData::Error(e)))
                                 .ok();
                         }
                     }

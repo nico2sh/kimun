@@ -58,6 +58,21 @@ pub fn key_input(event: &KeyEvent) -> Option<KeyInput> {
     ))
 }
 
+/// Convert a crossterm key event to a [`KeyInput`] for a one-line text field
+/// (the find bar, the dialogs' inputs). Unlike [`key_input`], META and HYPER
+/// are dropped rather than refusing the chord: a field has always matched only
+/// Ctrl and Alt (a char is typed unless one of those is held), so Meta+d types
+/// `d` there as it always did. `None` only for keys with no field meaning.
+pub fn field_key_input(event: &KeyEvent) -> Option<KeyInput> {
+    let stripped = KeyEvent {
+        modifiers: event
+            .modifiers
+            .difference(KeyModifiers::META | KeyModifiers::HYPER),
+        ..*event
+    };
+    key_input(&stripped)
+}
+
 /// Convert a crossterm mouse event to a [`PointerInput`] positioned relative to
 /// `origin` (the `(x, y)` of the widget's area; saturating, so an event left of
 /// or above it reads as 0). `None` for horizontal scrolling, which no widget

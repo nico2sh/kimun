@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 fail=0
-leaks=$(grep -rn --include='*.rs' -E '\b(ratatui|crossterm|egui|eframe)\b' tui/src/logic \
+leaks=$(grep -rn --include='*.rs' -E '\b(ratatui|crossterm|egui|eframe|gpui|gpui_kit|gpui-kit)\b' tui/src/logic \
           | grep -vE '^[^:]+:[0-9]+: *//' || true)
 if [ -n "$leaks" ]; then
   echo "::error::tui/src/logic must not name a UI crate:"

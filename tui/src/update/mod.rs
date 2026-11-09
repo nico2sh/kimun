@@ -19,6 +19,7 @@ mod provider;
 mod state;
 
 pub use channel::InstallChannel;
+pub use platform::Product;
 pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
 
@@ -146,9 +147,11 @@ pub fn fetch_latest() -> Result<LatestRelease, UpdateError> {
 /// Download, verify, and install `latest`, replacing the running binary.
 /// Blocking — prefer the async [`install`].
 ///
+/// `product` is the app that is running: it fetches its own asset.
+///
 /// The caller must gate on [`InstallChannel::self_update_eligible`] first.
-pub fn apply(latest: &LatestRelease) -> Result<(), UpdateError> {
-    apply::self_update(latest)
+pub fn apply(latest: &LatestRelease, product: Product) -> Result<(), UpdateError> {
+    apply::self_update(latest, product)
 }
 
 /// Run a blocking update operation on the blocking pool, flattening the
@@ -180,8 +183,8 @@ pub async fn latest_release() -> Result<LatestRelease, UpdateError> {
 }
 
 /// Async [`apply()`] — consumes `latest` so it can move onto the blocking pool.
-pub async fn install(latest: LatestRelease) -> Result<(), UpdateError> {
-    run_blocking(move || apply(&latest)).await
+pub async fn install(latest: LatestRelease, product: Product) -> Result<(), UpdateError> {
+    run_blocking(move || apply(&latest, product)).await
 }
 
 /// Record that the user dismissed `version`, suppressing the notification until

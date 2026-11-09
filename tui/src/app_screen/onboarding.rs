@@ -21,59 +21,14 @@ use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::single_line_input::SingleLineInput;
 use crate::logic::message::{AppMessage, AppTx, ScreenEvent};
-use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
+use crate::logic::onboarding::{BACKENDS, OnbStep, OnboardingModel, commit};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
-use crate::settings::{AppSettings, EditorBackendSetting, SharedSettings};
+use crate::settings::{EditorBackendSetting, SharedSettings};
 
-// ── Step enum ────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnbStep {
-    Welcome,
-    Workspace,
-    NerdFonts,
-    Theme,
-    Backend,
-    Updates,
-    Summary,
-}
-
-impl OnbStep {
-    pub(crate) const ORDER: [OnbStep; 7] = [
-        OnbStep::Welcome,
-        OnbStep::Workspace,
-        OnbStep::NerdFonts,
-        OnbStep::Theme,
-        OnbStep::Backend,
-        OnbStep::Updates,
-        OnbStep::Summary,
-    ];
-
-    pub(crate) fn index(self) -> usize {
-        Self::ORDER.iter().position(|s| *s == self).unwrap_or(0)
-    }
-
-    fn next(self) -> Option<OnbStep> {
-        Self::ORDER.get(self.index() + 1).copied()
-    }
-
-    fn prev(self) -> Option<OnbStep> {
-        self.index().checked_sub(1).map(|i| Self::ORDER[i])
-    }
-}
-
-// ── Draft ────────────────────────────────────────────────────────────────────
-
-/// Staged choices — applied to shared settings only on Finish.
-struct Draft {
-    /// `Some((name, path))` only on first run; rerun never mutates workspaces.
-    workspace: Option<(String, std::path::PathBuf)>,
-    use_nerd_fonts: bool,
-    update_check: bool,
-    theme_name: String,
-    editor_backend: EditorBackendSetting,
-}
+/// Flash shown when the first run tries to leave the Workspace step without
+/// a directory (`OnboardingModel::can_advance`).
+const CHOOSE_DIRECTORY_FIRST: &str = "choose a directory first (b to browse)";
 
 // ── Overlay ───────────────────────────────────────────────────────────────────
 
@@ -85,28 +40,6 @@ enum OnbOverlay {
     ConfirmQuit,
     ConfirmDiscard,
 }
-
-// ── BACKENDS constant ─────────────────────────────────────────────────────────
-
-// Descriptions stay short enough for one dialog row — wrapped continuation
-// lines would break out of the marker column.
-const BACKENDS: [(EditorBackendSetting, &str, &str); 3] = [
-    (
-        EditorBackendSetting::Plain,
-        "plain",
-        "simple editing, no modes (the default)",
-    ),
-    (
-        EditorBackendSetting::Vim,
-        "vim",
-        "built-in vim emulation, no external programs",
-    ),
-    (
-        EditorBackendSetting::Nvim,
-        "nvim",
-        "your real Neovim embedded; requires nvim",
-    ),
-];
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
@@ -173,18 +106,10 @@ pub struct OnboardingScreen {
     settings: SharedSettings,
     theme: Theme,
     icons: Icons,
-    pub(crate) step: OnbStep,
-    pub(crate) first_run: bool,
-    draft: Draft,
-    themes: Vec<Theme>,
-    theme_idx: usize,
-    backend_idx: usize,
-    nvim_available: bool,
+    /// Step, draft and selections — the toolkit-free part of the flow.
+    pub(crate) model: OnboardingModel,
     name_input: SingleLineInput,
     name_editing: bool,
-    /// User explicitly committed a name edit — directory picks stop
-    /// overwriting the name with the basename suggestion.
-    name_edited: bool,
     overlay: OnbOverlay,
     flash: Option<String>,
     /// When the screen mounted — drives the umlaut bounce animation frame.
@@ -198,92 +123,31 @@ pub struct OnboardingScreen {
 impl OnboardingScreen {
     pub fn new(settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
-        let first_run = s.resolve_workspace_path().is_none();
-        let themes = s.theme_list();
-        let current_theme_name = s.effective_theme_name();
-        let theme_idx = themes
-            .iter()
-            .position(|t| t.name == current_theme_name)
-            .unwrap_or(0);
-        let draft = Draft {
-            workspace: if first_run {
-                AppSettings::default_workspace_suggestion().map(|p| (suggest_name(&p), p))
-            } else {
-                None
-            },
-            use_nerd_fonts: s.use_nerd_fonts,
-            update_check: s.update_check(),
-            // Keep the configured name even when its theme file is missing
-            // from theme_list() — the draft must never silently rewrite a
-            // setting the user didn't touch (dirty()/finish() would persist
-            // the substitution). Same for a configured-but-unavailable nvim
-            // backend below: the row renders disabled, the setting survives.
-            theme_name: current_theme_name,
-            editor_backend: s.editor_backend,
-        };
-        let backend_idx = BACKENDS
-            .iter()
-            .position(|(b, _, _)| *b == draft.editor_backend)
-            .unwrap_or(0);
+        let model = OnboardingModel::new(&s);
         let theme = s.get_theme();
-        let icons = Icons::new(draft.use_nerd_fonts);
-        let nvim_available = nvim_on_path(s.nvim_path.as_deref());
+        drop(s);
+        let icons = Icons::new(model.draft.use_nerd_fonts);
         let name_input = SingleLineInput::with_value(
-            draft
+            model
+                .draft
                 .workspace
                 .as_ref()
                 .map(|(n, _)| n.clone())
                 .unwrap_or_default(),
         );
-        drop(s);
         Self {
             settings,
             theme,
             icons,
-            step: OnbStep::Welcome,
-            first_run,
-            draft,
-            themes,
-            theme_idx,
-            backend_idx,
-            nvim_available,
+            model,
             name_input,
             name_editing: false,
-            name_edited: false,
             overlay: OnbOverlay::None,
             flash: None,
             started: std::time::Instant::now(),
             anim: None,
         }
     }
-}
-
-// ── Free functions ────────────────────────────────────────────────────────────
-
-/// Derive a workspace name from a directory: basename, lowercased. Falls back
-/// to "notes" when the basename is empty or invalid.
-fn suggest_name(path: &std::path::Path) -> String {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if kimun_core::nfs::filename::validate_filename(&name).is_ok() && !name.is_empty() {
-        name
-    } else {
-        "notes".to_string()
-    }
-}
-
-/// `nvim` reachable? Explicit configured path wins; otherwise scan PATH.
-fn nvim_on_path(configured: Option<&std::path::Path>) -> bool {
-    if let Some(p) = configured {
-        return p.is_file();
-    }
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    let exe = if cfg!(windows) { "nvim.exe" } else { "nvim" };
-    std::env::split_paths(&paths).any(|d| d.join(exe).is_file())
 }
 
 // ── AppScreen impl ────────────────────────────────────────────────────────────
@@ -333,13 +197,10 @@ impl AppScreen for OnboardingScreen {
             KeyCode::Esc if !self.name_editing => self.on_cancel(tx),
             KeyCode::Left | KeyCode::BackTab if !self.name_editing => self.go_prev(),
             KeyCode::Right | KeyCode::Tab if !self.name_editing => {
-                if self.step == OnbStep::Workspace
-                    && self.first_run
-                    && self.draft.workspace.is_none()
-                {
-                    self.flash = Some("choose a directory first (b to browse)".to_string());
-                } else {
+                if self.model.can_advance() {
                     self.go_next();
+                } else {
+                    self.flash = Some(CHOOSE_DIRECTORY_FIRST.to_string());
                 }
             }
             _ => self.handle_step_key(key, tx),
@@ -361,32 +222,25 @@ impl AppScreen for OnboardingScreen {
 
 impl OnboardingScreen {
     fn go_next(&mut self) {
-        if let Some(n) = self.step.next() {
-            self.step = n;
+        if self.model.go_next() {
             self.name_editing = false;
             self.flash = None;
         }
     }
 
     fn go_prev(&mut self) {
-        if let Some(p) = self.step.prev() {
-            self.step = p;
+        if self.model.go_prev() {
             self.name_editing = false;
             self.flash = None;
         }
     }
 
     fn dirty(&self) -> bool {
-        let s = self.settings.read().unwrap();
-        let effective_theme = s.effective_theme_name();
-        s.use_nerd_fonts != self.draft.use_nerd_fonts
-            || s.editor_backend != self.draft.editor_backend
-            || s.update_check() != self.draft.update_check
-            || (!self.draft.theme_name.is_empty() && effective_theme != self.draft.theme_name)
+        self.model.dirty(&self.settings.read().unwrap())
     }
 
     fn on_cancel(&mut self, tx: &AppTx) {
-        if self.first_run {
+        if self.model.first_run {
             self.overlay = OnbOverlay::ConfirmQuit;
         } else if self.dirty() {
             self.overlay = OnbOverlay::ConfirmDiscard;
@@ -396,7 +250,7 @@ impl OnboardingScreen {
     }
 
     fn handle_step_key(&mut self, key: &KeyEvent, tx: &AppTx) {
-        match self.step {
+        match self.model.step {
             OnbStep::Welcome => self.welcome_step_key(key),
             OnbStep::Workspace => self.workspace_step_key(key),
             OnbStep::NerdFonts => self.nerd_fonts_step_key(key),
@@ -419,7 +273,7 @@ impl OnboardingScreen {
             KeyCode::Up => self.set_nerd_fonts(false),
             KeyCode::Down => self.set_nerd_fonts(true),
             KeyCode::Char(' ') => {
-                let next = !self.draft.use_nerd_fonts;
+                let next = !self.model.draft.use_nerd_fonts;
                 self.set_nerd_fonts(next);
             }
             KeyCode::Enter => self.go_next(),
@@ -428,23 +282,23 @@ impl OnboardingScreen {
     }
 
     fn set_nerd_fonts(&mut self, on: bool) {
-        self.draft.use_nerd_fonts = on;
+        self.model.draft.use_nerd_fonts = on;
         self.icons = Icons::new(on); // live preview
     }
 
     fn updates_step_key(&mut self, key: &KeyEvent) {
         // Mirrors the Nerd Fonts step: Up/Down pick, Space toggles, Enter advances.
         match key.code {
-            KeyCode::Up => self.draft.update_check = true,
-            KeyCode::Down => self.draft.update_check = false,
-            KeyCode::Char(' ') => self.draft.update_check = !self.draft.update_check,
+            KeyCode::Up => self.model.draft.update_check = true,
+            KeyCode::Down => self.model.draft.update_check = false,
+            KeyCode::Char(' ') => self.model.draft.update_check = !self.model.draft.update_check,
             KeyCode::Enter => self.go_next(),
             _ => {}
         }
     }
 
     fn workspace_step_key(&mut self, key: &KeyEvent) {
-        if !self.first_run {
+        if !self.model.first_run {
             if key.code == KeyCode::Enter {
                 self.go_next();
             }
@@ -458,16 +312,9 @@ impl OnboardingScreen {
                     self.flash = None;
                 }
                 KeyCode::Enter => {
-                    let name = self.name_input.value().trim().to_lowercase();
-                    if name.is_empty()
-                        || kimun_core::nfs::filename::validate_filename(&name).is_err()
-                    {
+                    if !self.model.set_workspace_name(self.name_input.value()) {
                         self.flash = Some("invalid workspace name".to_string());
                         return;
-                    }
-                    if let Some((n, _)) = self.draft.workspace.as_mut() {
-                        *n = name;
-                        self.name_edited = true;
                     }
                     self.name_editing = false;
                     self.flash = None;
@@ -480,38 +327,27 @@ impl OnboardingScreen {
         }
         match key.code {
             KeyCode::Enter => {
-                if self.draft.workspace.is_some() {
+                if self.model.can_advance() {
                     self.go_next();
                 } else {
-                    self.flash = Some("choose a directory first (b to browse)".to_string());
+                    self.flash = Some(CHOOSE_DIRECTORY_FIRST.to_string());
                 }
             }
             KeyCode::Char('b') => {
                 let start = self
-                    .draft
-                    .workspace
-                    .as_ref()
-                    .and_then(|(_, p)| p.parent().map(|p| p.to_path_buf()))
-                    .or_else(|| {
-                        AppSettings::default_workspace_suggestion()
-                            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                    })
-                    .or_else(|| {
-                        kimun_core::system::browse_root()
-                            .ok()
-                            .map(|p| p.into_path_buf())
-                    })
+                    .model
+                    .browse_start()
                     .unwrap_or_else(|| std::path::PathBuf::from("/"));
                 self.overlay = OnbOverlay::Browser(FileBrowserState::load(start));
             }
             KeyCode::Char('e') => {
                 // Without a workspace entry there is nothing to write the
                 // name into — committing would silently discard it.
-                if let Some((n, _)) = self.draft.workspace.as_ref() {
+                if let Some((n, _)) = self.model.draft.workspace.as_ref() {
                     self.name_input.set_value(n.clone());
                     self.name_editing = true;
                 } else {
-                    self.flash = Some("choose a directory first (b to browse)".to_string());
+                    self.flash = Some(CHOOSE_DIRECTORY_FIRST.to_string());
                 }
             }
             _ => {}
@@ -615,13 +451,7 @@ impl OnboardingScreen {
     }
 
     fn confirm_directory(&mut self, chosen: std::path::PathBuf) {
-        // A name the user explicitly edited survives re-picking the
-        // directory; only un-edited names follow the basename suggestion.
-        let name = match &self.draft.workspace {
-            Some((n, _)) if self.name_edited => n.clone(),
-            _ => suggest_name(&chosen),
-        };
-        self.draft.workspace = Some((name, chosen));
+        self.model.choose_directory(chosen);
         self.flash = None;
     }
 }
@@ -675,7 +505,7 @@ impl OnboardingScreen {
             ..rows[1]
         };
 
-        match self.step {
+        match self.model.step {
             OnbStep::Welcome => self.render_welcome_step(f, body_area),
             OnbStep::Workspace => self.render_workspace_step(f, body_area),
             OnbStep::NerdFonts => self.render_nerd_fonts_step(f, body_area),
@@ -696,12 +526,12 @@ impl OnboardingScreen {
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let idx = self.step.index();
+        let idx = self.model.step.index();
         let dots: String = (0..OnbStep::ORDER.len())
             .map(|i| if i == idx { "●" } else { "○" })
             .collect::<Vec<_>>()
             .join(" ");
-        let title = match self.step {
+        let title = match self.model.step {
             OnbStep::Welcome => "Welcome",
             OnbStep::Workspace => "Workspace",
             OnbStep::NerdFonts => "Nerd Fonts",
@@ -734,9 +564,9 @@ impl OnboardingScreen {
     }
 
     fn render_hints(&self, f: &mut Frame, area: Rect) {
-        let hints = match self.step {
+        let hints = match self.model.step {
             OnbStep::Welcome => " Enter: start  ←/→: steps  Esc: cancel",
-            OnbStep::Workspace if self.first_run => {
+            OnbStep::Workspace if self.model.first_run => {
                 " Enter: accept  b: browse  e: edit name  ←/→: steps  Esc: cancel"
             }
             OnbStep::Summary => " Enter: finish  ←: back  Esc: cancel",
@@ -831,7 +661,7 @@ impl OnboardingScreen {
 
         // No hard line breaks — the dialog width varies with the terminal,
         // so wrapping is left to the Paragraph.
-        let desc = if self.first_run {
+        let desc = if self.model.first_run {
             "A workspace is where your notes live: one directory on disk, \
              holding plain Markdown files. Kimün indexes it for search and \
              links. You can add more workspaces later in Preferences."
@@ -846,8 +676,8 @@ impl OnboardingScreen {
             rows[0],
         );
 
-        if self.first_run {
-            let (name, path) = match &self.draft.workspace {
+        if self.model.first_run {
+            let (name, path) = match &self.model.draft.workspace {
                 Some((n, p)) => (n.clone(), p.display().to_string()),
                 None => ("—".to_string(), "no directory chosen (press b)".to_string()),
             };
@@ -912,7 +742,7 @@ impl OnboardingScreen {
                 })
                 .collect::<String>()
         };
-        let selected = self.draft.use_nerd_fonts;
+        let selected = self.model.draft.use_nerd_fonts;
         let mark = |sel: bool| if sel { "▶" } else { " " };
         let text = format!(
             "Nerd Fonts are patched terminal fonts with extra icons. If the \
@@ -935,7 +765,7 @@ impl OnboardingScreen {
         );
     }
     fn render_updates_step(&mut self, f: &mut Frame, area: Rect) {
-        let selected = self.draft.update_check;
+        let selected = self.model.draft.update_check;
         let mark = |sel: bool| if sel { "▶" } else { " " };
         let text = format!(
             "kimün can check GitHub for a newer release on startup and show a \
@@ -957,22 +787,20 @@ impl OnboardingScreen {
 
     fn theme_step_key(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Up if self.theme_idx > 0 => {
-                self.theme_idx -= 1;
-                self.apply_theme_preview();
+            KeyCode::Up if self.model.theme_idx > 0 => {
+                self.select_theme(self.model.theme_idx - 1);
             }
-            KeyCode::Down if self.theme_idx + 1 < self.themes.len() => {
-                self.theme_idx += 1;
-                self.apply_theme_preview();
+            KeyCode::Down if self.model.theme_idx + 1 < self.model.themes.len() => {
+                self.select_theme(self.model.theme_idx + 1);
             }
             KeyCode::Enter => self.go_next(),
             _ => {}
         }
     }
 
-    fn apply_theme_preview(&mut self) {
-        if let Some(t) = self.themes.get(self.theme_idx) {
-            self.draft.theme_name = t.name.clone();
+    /// Select a theme row and restyle the dialog with it (live preview).
+    fn select_theme(&mut self, idx: usize) {
+        if let Some(t) = self.model.select_theme(idx) {
             self.theme = t.clone().adapt_to_terminal();
         }
     }
@@ -992,12 +820,13 @@ impl OnboardingScreen {
             rows[0],
         );
         let items: Vec<ListItem> = self
+            .model
             .themes
             .iter()
             .map(|t| ListItem::new(format!("  {}", t.name)))
             .collect();
         let mut state = ratatui::widgets::ListState::default();
-        state.select(Some(self.theme_idx));
+        state.select(Some(self.model.theme_idx));
         let list = List::new(items)
             .style(self.theme.base_style())
             .highlight_symbol("▶ ")
@@ -1007,28 +836,10 @@ impl OnboardingScreen {
 
     fn backend_step_key(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Up => self.move_backend(-1),
-            KeyCode::Down => self.move_backend(1),
+            KeyCode::Up => self.model.move_backend(-1),
+            KeyCode::Down => self.model.move_backend(1),
             KeyCode::Enter => self.go_next(),
             _ => {}
-        }
-    }
-
-    fn move_backend(&mut self, delta: isize) {
-        let len = BACKENDS.len() as isize;
-        let mut idx = self.backend_idx as isize;
-        loop {
-            idx += delta;
-            if idx < 0 || idx >= len {
-                return; // stay at the edges
-            }
-            let (backend, _, _) = BACKENDS[idx as usize];
-            if backend == EditorBackendSetting::Nvim && !self.nvim_available {
-                continue; // hop over the disabled entry
-            }
-            self.backend_idx = idx as usize;
-            self.draft.editor_backend = backend;
-            return;
         }
     }
 
@@ -1039,8 +850,12 @@ impl OnboardingScreen {
             String::new(),
         ];
         for (i, (backend, name, desc)) in BACKENDS.iter().enumerate() {
-            let mark = if i == self.backend_idx { "▶" } else { " " };
-            let disabled = *backend == EditorBackendSetting::Nvim && !self.nvim_available;
+            let mark = if i == self.model.backend_idx {
+                "▶"
+            } else {
+                " "
+            };
+            let disabled = *backend == EditorBackendSetting::Nvim && !self.model.nvim_available;
             if disabled {
                 lines.push(format!(
                     "{mark} {name}  (nvim not found — install it or set its path in Preferences)"
@@ -1063,69 +878,24 @@ impl OnboardingScreen {
         }
     }
 
-    /// Commit the draft: create + register the workspace (first run only),
-    /// apply fonts/theme/backend, persist, and hand off to the App loop, which rebuilds the vault.
+    /// Commit the draft (`logic::onboarding::commit`) and hand off to the App
+    /// loop, which rebuilds the vault. A refused commit flashes its message and
+    /// returns to the step that can fix it.
     fn finish(&mut self, tx: &AppTx) {
-        // Filesystem work happens before the settings lock is taken — a slow
-        // mount must not stall settings readers for its duration.
-        let workspace = if self.first_run {
-            let Some((name, path)) = self.draft.workspace.clone() else {
-                self.flash = Some("no workspace configured".to_string());
-                self.step = OnbStep::Workspace;
-                return;
-            };
-            let existed = path.is_dir();
-            if let Err(e) = kimun_core::system::create_dir(&path) {
-                // `create_dir` can fail *after* creating the directory — it
-                // canonicalizes as a second step — so this needs the same
-                // rollback as the `add_workspace` failure below. Non-recursive,
-                // so a pre-existing or non-empty directory is never touched.
-                if !existed {
-                    kimun_core::system::remove_empty_dir(&path).ok();
-                }
-                self.flash = Some(format!("cannot create {}: {e}", path.display()));
-                self.step = OnbStep::Workspace;
-                return;
+        match commit(&self.settings, &self.model.draft, self.model.first_run) {
+            Ok(()) => {
+                tx.send(AppMessage::OnboardingFinished).ok();
             }
-            Some((name, path, existed))
-        } else {
-            None
-        };
-        let mut s = self.settings.write().unwrap();
-        if let Some((name, path, existed)) = workspace {
-            let wc = s
-                .workspace_config
-                .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty);
-            if let Err(e) = wc.add_workspace(name, path.clone()) {
-                drop(s);
-                // Roll back a directory this run created. Non-recursive, so a
-                // pre-existing or non-empty directory is never touched.
-                if !existed {
-                    kimun_core::system::remove_empty_dir(&path).ok();
-                }
+            Err(e) => {
                 self.flash = Some(e.to_string());
-                self.step = OnbStep::Workspace;
-                return;
+                self.model.step = e.return_step();
             }
-            s.config_version = CURRENT_CONFIG_VERSION;
         }
-        s.use_nerd_fonts = self.draft.use_nerd_fonts;
-        s.editor_backend = self.draft.editor_backend;
-        s.workspace_config
-            .get_or_insert_with(crate::settings::workspace_config::WorkspaceConfig::new_empty)
-            .global
-            .update_check = self.draft.update_check;
-        s.set_theme(self.draft.theme_name.clone());
-        if let Err(e) = s.save_to_disk() {
-            tracing::error!("failed to save settings after onboarding: {e}");
-        }
-        drop(s);
-        tx.send(AppMessage::OnboardingFinished).ok();
     }
 
     fn render_summary_step(&mut self, f: &mut Frame, area: Rect) {
         let s = self.settings.read().unwrap();
-        let workspace_line = match (&self.draft.workspace, self.first_run) {
+        let workspace_line = match (&self.model.draft.workspace, self.model.first_run) {
             (Some((name, path)), _) => format!("{name}  —  {}", path.display()),
             (None, false) => {
                 let n = s.current_workspace_name().unwrap_or_default();
@@ -1134,18 +904,18 @@ impl OnboardingScreen {
             (None, true) => "NOT CONFIGURED — go back to step 1".to_string(),
         };
         drop(s);
-        let (_, backend_name, _) = BACKENDS[self.backend_idx];
+        let backend_name = self.model.backend_name();
         let kv_rows = [
             format!("Workspace:       {workspace_line}"),
             format!(
                 "Nerd fonts:      {}",
-                if self.draft.use_nerd_fonts {
+                if self.model.draft.use_nerd_fonts {
                     "on"
                 } else {
                     "off"
                 }
             ),
-            format!("Theme:           {}", self.draft.theme_name),
+            format!("Theme:           {}", self.model.draft.theme_name),
             format!("Editor backend:  {backend_name}"),
         ];
         // Pad the key-value rows to a common width so per-line centering
@@ -1300,18 +1070,10 @@ mod tests {
     }
 
     #[test]
-    fn first_run_detected_from_missing_workspace() {
-        let screen = OnboardingScreen::new(shared_defaults());
-        assert!(screen.first_run);
-        let screen = OnboardingScreen::new(shared_with_workspace());
-        assert!(!screen.first_run);
-    }
-
-    #[test]
     fn kind_is_onboarding_and_starts_on_welcome_step() {
         let screen = OnboardingScreen::new(shared_defaults());
         assert_eq!(screen.get_kind() as u8, ScreenKind::Onboarding as u8);
-        assert_eq!(screen.step, OnbStep::Welcome);
+        assert_eq!(screen.model.step, OnbStep::Welcome);
     }
 
     #[test]
@@ -1319,13 +1081,13 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         // Rerun screen starts at Welcome; Right advances to Workspace.
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        assert_eq!(screen.step, OnbStep::Welcome);
+        assert_eq!(screen.model.step, OnbStep::Welcome);
         screen.handle_input(&key_event(KeyCode::Right), &tx);
-        assert_eq!(screen.step, OnbStep::Workspace);
+        assert_eq!(screen.model.step, OnbStep::Workspace);
         screen.handle_input(&key_event(KeyCode::Left), &tx);
-        assert_eq!(screen.step, OnbStep::Welcome);
+        assert_eq!(screen.model.step, OnbStep::Welcome);
         screen.handle_input(&key_event(KeyCode::Left), &tx);
-        assert_eq!(screen.step, OnbStep::Welcome);
+        assert_eq!(screen.model.step, OnbStep::Welcome);
     }
 
     #[test]
@@ -1346,32 +1108,24 @@ mod tests {
     }
 
     #[test]
-    fn first_run_workspace_step_prefills_suggestion() {
-        let screen = OnboardingScreen::new(shared_defaults());
-        let (name, path) = screen.draft.workspace.clone().expect("suggestion expected");
-        assert!(path.ends_with("kimun-notes"));
-        assert_eq!(name, "kimun-notes");
-    }
-
-    #[test]
     fn first_run_enter_on_valid_workspace_advances() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
         // Start at Welcome — advance past it first.
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
-        assert_eq!(screen.step, OnbStep::NerdFonts);
+        assert_eq!(screen.model.step, OnbStep::NerdFonts);
     }
 
     #[test]
     fn first_run_right_blocked_without_workspace_draft() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
-        screen.draft.workspace = None;
+        screen.model.step = OnbStep::Workspace;
+        screen.model.draft.workspace = None;
         screen.handle_input(&key_event(KeyCode::Right), &tx);
         assert_eq!(
-            screen.step,
+            screen.model.step,
             OnbStep::Workspace,
             "cannot advance without a workspace"
         );
@@ -1382,14 +1136,14 @@ mod tests {
     fn rerun_workspace_step_is_informational_and_lists_workspaces() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        assert!(screen.draft.workspace.is_none());
-        screen.step = OnbStep::Workspace;
+        assert!(screen.model.draft.workspace.is_none());
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
-        assert_eq!(screen.step, OnbStep::NerdFonts);
+        assert_eq!(screen.model.step, OnbStep::NerdFonts);
 
         let backend = ratatui::backend::TestBackend::new(100, 32);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         terminal.draw(|f| screen.render(f)).unwrap();
         let flat: String = terminal
             .backend()
@@ -1412,13 +1166,13 @@ mod tests {
     fn name_edit_mode_validates_and_lowercases() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         assert!(screen.name_editing);
         screen.handle_input(&key_event(KeyCode::Char('X')), &tx);
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert!(!screen.name_editing);
-        let (name, _) = screen.draft.workspace.clone().unwrap();
+        let (name, _) = screen.model.draft.workspace.clone().unwrap();
         assert_eq!(name, "kimun-notesx");
     }
 
@@ -1426,7 +1180,7 @@ mod tests {
     fn name_edit_rejects_invalid_name_and_stays_editing() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         assert!(screen.name_editing);
         // "?" is invalid on at least one major filesystem.
@@ -1434,7 +1188,7 @@ mod tests {
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert!(screen.name_editing, "invalid name must keep edit mode open");
         assert!(screen.flash.is_some(), "invalid name must flash");
-        let (name, _) = screen.draft.workspace.clone().unwrap();
+        let (name, _) = screen.model.draft.workspace.clone().unwrap();
         assert_eq!(name, "kimun-notes", "draft name unchanged on invalid input");
     }
 
@@ -1442,20 +1196,20 @@ mod tests {
     fn nerd_fonts_toggle_updates_draft_and_preview_icons() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        screen.step = OnbStep::NerdFonts;
-        assert!(!screen.draft.use_nerd_fonts);
+        screen.model.step = OnbStep::NerdFonts;
+        assert!(!screen.model.draft.use_nerd_fonts);
         screen.handle_input(&key_event(KeyCode::Down), &tx); // select "nerd fonts"
-        assert!(screen.draft.use_nerd_fonts);
+        assert!(screen.model.draft.use_nerd_fonts);
         assert!(!screen.icons.info.is_ascii(), "preview icons follow draft");
         screen.handle_input(&key_event(KeyCode::Up), &tx);
-        assert!(!screen.draft.use_nerd_fonts);
+        assert!(!screen.model.draft.use_nerd_fonts);
         assert!(screen.icons.info.is_ascii());
     }
 
     #[test]
     fn nerd_fonts_step_renders_both_sample_rows() {
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        screen.step = OnbStep::NerdFonts;
+        screen.model.step = OnbStep::NerdFonts;
         let backend = ratatui::backend::TestBackend::new(100, 32);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| screen.render(f)).unwrap();
@@ -1474,17 +1228,20 @@ mod tests {
     fn theme_selection_updates_draft_and_live_preview() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        screen.step = OnbStep::Theme;
-        assert!(screen.themes.len() >= 2, "need at least two builtin themes");
-        screen.theme_idx = 0;
-        if let Some(t) = screen.themes.first() {
-            screen.draft.theme_name = t.name.clone();
+        screen.model.step = OnbStep::Theme;
+        assert!(
+            screen.model.themes.len() >= 2,
+            "need at least two builtin themes"
+        );
+        screen.model.theme_idx = 0;
+        if let Some(t) = screen.model.themes.first() {
+            screen.model.draft.theme_name = t.name.clone();
         }
-        let before = screen.draft.theme_name.clone();
+        let before = screen.model.draft.theme_name.clone();
         screen.handle_input(&key_event(KeyCode::Down), &tx);
-        assert_ne!(screen.draft.theme_name, before);
+        assert_ne!(screen.model.draft.theme_name, before);
         assert_eq!(
-            screen.theme.name, screen.draft.theme_name,
+            screen.theme.name, screen.model.draft.theme_name,
             "dialog restyles live"
         );
     }
@@ -1493,19 +1250,22 @@ mod tests {
     fn backend_selection_skips_unavailable_nvim() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        screen.step = OnbStep::Backend;
-        screen.nvim_available = false;
-        screen.backend_idx = 1; // vim
-        screen.draft.editor_backend = EditorBackendSetting::Vim;
+        screen.model.step = OnbStep::Backend;
+        screen.model.nvim_available = false;
+        screen.model.backend_idx = 1; // vim
+        screen.model.draft.editor_backend = EditorBackendSetting::Vim;
         screen.handle_input(&key_event(KeyCode::Down), &tx);
         assert_eq!(
-            screen.draft.editor_backend,
+            screen.model.draft.editor_backend,
             EditorBackendSetting::Vim,
             "selection must not land on disabled nvim"
         );
-        screen.nvim_available = true;
+        screen.model.nvim_available = true;
         screen.handle_input(&key_event(KeyCode::Down), &tx);
-        assert_eq!(screen.draft.editor_backend, EditorBackendSetting::Nvim);
+        assert_eq!(
+            screen.model.draft.editor_backend,
+            EditorBackendSetting::Nvim
+        );
     }
 
     #[test]
@@ -1516,7 +1276,7 @@ mod tests {
         let mut screen = OnboardingScreen::new(shared_defaults());
         screen.overlay = OnbOverlay::Browser(FileBrowserState::load(tmp.join("My-Vault")));
         screen.handle_input(&key_event(KeyCode::Char('c')), &tx);
-        let (name, path) = screen.draft.workspace.clone().unwrap();
+        let (name, path) = screen.model.draft.workspace.clone().unwrap();
         assert_eq!(path, tmp.join("My-Vault"));
         assert_eq!(name, "my-vault");
         assert!(matches!(screen.overlay, OnbOverlay::None));
@@ -1532,10 +1292,10 @@ mod tests {
         let cfg = std::env::temp_dir().join(format!("kimun_onb_cfg_{}.toml", std::process::id()));
         settings.write().unwrap().config_file = Some(cfg.clone());
         let mut screen = OnboardingScreen::new(settings.clone());
-        screen.draft.workspace = Some(("myws".to_string(), tmp.clone()));
-        screen.draft.use_nerd_fonts = true;
-        screen.draft.editor_backend = EditorBackendSetting::Vim;
-        screen.step = OnbStep::Summary;
+        screen.model.draft.workspace = Some(("myws".to_string(), tmp.clone()));
+        screen.model.draft.use_nerd_fonts = true;
+        screen.model.draft.editor_backend = EditorBackendSetting::Vim;
+        screen.model.step = OnbStep::Summary;
 
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
 
@@ -1544,7 +1304,7 @@ mod tests {
         assert!(s.use_nerd_fonts);
         assert_eq!(s.editor_backend, EditorBackendSetting::Vim);
         assert_eq!(s.current_workspace_name().as_deref(), Some("myws"));
-        assert_eq!(s.theme, screen.draft.theme_name);
+        assert_eq!(s.theme, screen.model.draft.theme_name);
         drop(s);
         let mut got_finished = false;
         while let Ok(msg) = rx.try_recv() {
@@ -1554,44 +1314,6 @@ mod tests {
         }
         assert!(got_finished);
         std::fs::remove_dir_all(&tmp).ok();
-        std::fs::remove_file(&cfg).ok();
-    }
-
-    #[tokio::test]
-    async fn rerun_finish_never_touches_workspaces() {
-        let (tx, _rx) = unbounded_channel();
-        let settings = shared_with_workspace();
-        let cfg = std::env::temp_dir().join(format!("kimun_onb_cfg_r_{}.toml", std::process::id()));
-        settings.write().unwrap().config_file = Some(cfg.clone());
-        let names_before: Vec<String> = settings
-            .read()
-            .unwrap()
-            .workspace_config
-            .as_ref()
-            .unwrap()
-            .workspaces
-            .keys()
-            .cloned()
-            .collect();
-        let mut screen = OnboardingScreen::new(settings.clone());
-        screen.draft.use_nerd_fonts = true;
-        screen.step = OnbStep::Summary;
-        screen.handle_input(&key_event(KeyCode::Enter), &tx);
-        let names_after: Vec<String> = settings
-            .read()
-            .unwrap()
-            .workspace_config
-            .as_ref()
-            .unwrap()
-            .workspaces
-            .keys()
-            .cloned()
-            .collect();
-        assert_eq!(names_before, names_after);
-        assert!(
-            settings.read().unwrap().use_nerd_fonts,
-            "fonts applied on rerun finish"
-        );
         std::fs::remove_file(&cfg).ok();
     }
 
@@ -1655,7 +1377,7 @@ mod tests {
         settings.write().unwrap().config_file = Some(cfg.clone());
         let mut screen = OnboardingScreen::new(settings.clone());
         // Point the suggested workspace at a scratch dir.
-        screen.draft.workspace = Some(("walkthrough".to_string(), tmp.clone()));
+        screen.model.draft.workspace = Some(("walkthrough".to_string(), tmp.clone()));
 
         for _ in 0..7 {
             screen.handle_input(&key_event(KeyCode::Enter), &tx);
@@ -1735,7 +1457,7 @@ mod tests {
     fn welcome_step_enter_advances_and_renders_intro() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_with_workspace());
-        assert_eq!(screen.step, OnbStep::Welcome);
+        assert_eq!(screen.model.step, OnbStep::Welcome);
         let backend = ratatui::backend::TestBackend::new(100, 32);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| screen.render(f)).unwrap();
@@ -1749,19 +1471,19 @@ mod tests {
         assert!(flat.contains("Welcome"));
         assert!(flat.contains("guided setup"));
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
-        assert_eq!(screen.step, OnbStep::Workspace);
+        assert_eq!(screen.model.step, OnbStep::Workspace);
     }
 
     #[test]
     fn esc_in_name_edit_cancels_without_committing() {
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         screen.handle_input(&key_event(KeyCode::Char('?')), &tx);
         screen.handle_input(&key_event(KeyCode::Esc), &tx);
         assert!(!screen.name_editing, "Esc must always exit edit mode");
-        let (name, _) = screen.draft.workspace.clone().unwrap();
+        let (name, _) = screen.model.draft.workspace.clone().unwrap();
         assert_eq!(name, "kimun-notes", "Esc must not commit the buffer");
         assert!(
             matches!(screen.overlay, OnbOverlay::None),
@@ -1775,13 +1497,13 @@ mod tests {
         std::fs::create_dir_all(tmp.join("My-Vault")).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
+        screen.model.step = OnbStep::Workspace;
         screen.handle_input(&key_event(KeyCode::Char('e')), &tx);
         screen.handle_input(&key_event(KeyCode::Char('z')), &tx);
         screen.handle_input(&key_event(KeyCode::Enter), &tx);
         screen.overlay = OnbOverlay::Browser(FileBrowserState::load(tmp.join("My-Vault")));
         screen.handle_input(&key_event(KeyCode::Char('c')), &tx);
-        let (name, path) = screen.draft.workspace.clone().unwrap();
+        let (name, path) = screen.model.draft.workspace.clone().unwrap();
         assert_eq!(path, tmp.join("My-Vault"));
         assert_eq!(
             name, "kimun-notesz",
@@ -1795,8 +1517,8 @@ mod tests {
         use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared_defaults());
-        screen.step = OnbStep::Workspace;
-        screen.draft.workspace = None;
+        screen.model.step = OnbStep::Workspace;
+        screen.model.draft.workspace = None;
         screen.overlay = OnbOverlay::Browser(FileBrowserState::load(std::env::temp_dir()));
         let ctrl_c = InputEvent::Key(KeyEvent {
             code: KeyCode::Char('c'),
@@ -1806,43 +1528,13 @@ mod tests {
         });
         screen.handle_input(&ctrl_c, &tx);
         assert!(
-            screen.draft.workspace.is_none(),
+            screen.model.draft.workspace.is_none(),
             "Ctrl+C must not confirm the directory"
         );
         assert!(
             matches!(screen.overlay, OnbOverlay::Browser(_)),
             "browser must stay open"
         );
-    }
-
-    #[test]
-    fn missing_theme_keeps_configured_name_and_stays_clean() {
-        let shared = shared_with_workspace();
-        shared.write().unwrap().theme = "ghost-theme".to_string();
-        let screen = OnboardingScreen::new(shared);
-        assert_eq!(
-            screen.draft.theme_name, "ghost-theme",
-            "draft must not substitute a fallback for a missing theme"
-        );
-        assert!(!screen.dirty(), "untouched screen must not report changes");
-    }
-
-    #[test]
-    fn unavailable_nvim_keeps_configured_backend_and_stays_clean() {
-        let shared = shared_with_workspace();
-        {
-            let mut s = shared.write().unwrap();
-            s.editor_backend = EditorBackendSetting::Nvim;
-            s.nvim_path = Some(std::path::PathBuf::from("/nonexistent/nvim-binary"));
-        }
-        let screen = OnboardingScreen::new(shared);
-        assert!(!screen.nvim_available);
-        assert_eq!(
-            screen.draft.editor_backend,
-            EditorBackendSetting::Nvim,
-            "constructor must not rewrite the configured backend"
-        );
-        assert!(!screen.dirty(), "untouched screen must not report changes");
     }
 
     #[tokio::test]
@@ -1863,13 +1555,13 @@ mod tests {
         };
         let (tx, _rx) = unbounded_channel();
         let mut screen = OnboardingScreen::new(shared);
-        assert!(screen.first_run);
+        assert!(screen.model.first_run);
         let new_dir = tmp.join("fresh");
-        screen.draft.workspace = Some(("notes".to_string(), new_dir.clone()));
-        screen.step = OnbStep::Summary;
+        screen.model.draft.workspace = Some(("notes".to_string(), new_dir.clone()));
+        screen.model.step = OnbStep::Summary;
         screen.finish(&tx);
         assert!(screen.flash.is_some(), "duplicate name must flash an error");
-        assert_eq!(screen.step, OnbStep::Workspace);
+        assert_eq!(screen.model.step, OnbStep::Workspace);
         assert!(
             !new_dir.exists(),
             "directory created by finish must be rolled back"

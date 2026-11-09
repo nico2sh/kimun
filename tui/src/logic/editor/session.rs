@@ -38,6 +38,8 @@ pub struct EditorSession {
     /// The host's wake-up hook. The background parse/layout tasks call it on
     /// completion so the host redraws without waiting for the next keystroke.
     pub notifier: Option<Notifier>,
+    /// The last frame drew a **replace preview** instead of the buffer.
+    showed_preview: bool,
 }
 
 /// What the caller supplies for one frame.
@@ -101,6 +103,7 @@ impl EditorSession {
             display: EditorDisplay::new(),
             jobs: BackgroundJobs::new(),
             notifier: None,
+            showed_preview: false,
         }
     }
 
@@ -112,8 +115,8 @@ impl EditorSession {
     ///    dirty tracking would follow the preview);
     /// 3. update the display (against the preview's lines when one is showing);
     /// 4. drop stale needles, then hand the rest to the display;
-    /// 5. set the overlays: selection, preview spans, and (no preview only)
-    ///    find matches;
+    /// 5. set the overlays: the preview's spans while one shows, else the
+    ///    selection and the find matches;
     /// 6. spawn the real parse / layout if the update deferred one.
     pub fn prepare_frame(&mut self, input: FrameInput) {
         let FrameInput {
@@ -128,6 +131,12 @@ impl EditorSession {
         self.jobs.pump(&mut self.display);
 
         self.revs.adopt(snap.content_revision);
+        // A preview swapping in, changing or out is no edit of the text the
+        // display last drew (see `note_swapped_snapshot`).
+        if preview.is_some() || self.showed_preview {
+            self.display.note_swapped_snapshot();
+        }
+        self.showed_preview = preview.is_some();
         match &preview {
             None => self.display.update_sized(&snap, width, height),
             Some(lines) => {
@@ -146,7 +155,16 @@ impl EditorSession {
         }
         self.display.set_needles(self.needles.clone());
 
-        let mut overlays = selection_overlays(selection);
+        // The selection is in the buffer's columns; a preview row is other
+        // text. While a preview shows, the current match is marked by its own
+        // `PreviewCurrent` span (in the preview's columns), so the selection
+        // (the bar's current match, in the real columns) must not paint: with
+        // a replacement shorter than the match it lit the cells after it.
+        let mut overlays = if preview.is_some() {
+            Vec::new()
+        } else {
+            selection_overlays(selection)
+        };
         if preview.is_some() {
             overlays.extend(preview_overlays);
         } else {

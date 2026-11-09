@@ -40,7 +40,7 @@ pub async fn run(check_only: bool) -> Result<()> {
     }
 
     println!("Downloading and installing {}...", status.latest);
-    update::install(latest).await?;
+    update::install(latest, update::Product::Terminal).await?;
     println!(
         "Updated to {}. Restart kimün to use the new version.",
         status.latest

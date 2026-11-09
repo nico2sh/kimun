@@ -3,7 +3,6 @@ pub mod ask_sources;
 pub mod ask_thread;
 pub mod attachment_view;
 pub mod autocomplete;
-pub mod autosave_timer;
 pub mod button_row;
 pub mod clickable;
 pub mod command_palette;

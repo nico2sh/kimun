@@ -58,6 +58,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install GPUI system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -100,6 +107,15 @@ jobs:
         if: matrix.lint
         run: bash .github/scripts/check-logic-layer.sh
 
+      # The desktop app's launcher entry (assets/packaging). Nothing installs it
+      # yet, so nothing else would notice a malformed one.
+      - name: Desktop entry is valid
+        if: matrix.lint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+          desktop-file-validate assets/packaging/linux/kimun.desktop
+
       # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
       # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
       # step keeps it true. Needs more than a grep: test code is exempt, and
@@ -108,6 +124,33 @@ jobs:
       - name: Filesystem operations stay in nfs and system
         if: matrix.lint
         run: python3 .github/scripts/check-host-fs.py
+
+      # The release-notes tooling (release-notes/README.md).
+      - name: Release notes script tests
+        if: matrix.lint
+        run: python3 -m unittest discover -s .github/scripts
+
+      # What the release workflow checks before publishing (both apps, five
+      # platforms, names, checksums, archive contents), proven on a fake release.
+      - name: Release assets verifier tests
+        if: matrix.lint
+        run: bash .github/scripts/test-verify-release-assets.sh
+
+      # Assembling and packaging a release's assets, as the release workflow does it.
+      - name: Release packaging tests
+        if: matrix.lint
+        run: bash .github/scripts/test-release-dist.sh
+
+      # The macOS bundle and the signing sequence (dry run: no Apple tools here).
+      - name: macOS packaging tests
+        if: matrix.lint
+        run: bash .github/scripts/test-macos-packaging.sh
+
+      # install.sh against a fake release served from a directory: both apps,
+      # the Linux launcher files, the marker, a bad checksum, the options.
+      - name: Installer tests
+        if: matrix.lint
+        run: bash .github/scripts/test-install.sh
 
       - name: Clippy
         if: matrix.lint
@@ -173,6 +216,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install GPUI system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
