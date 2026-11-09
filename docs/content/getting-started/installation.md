@@ -27,7 +27,15 @@ curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
 
 If `~/.local/bin` isn't on your `PATH`, the script tells you how to add it.
 
-> **Windows:** the install script is Unix-only. Use the release archive from the
+> **Windows:** use the PowerShell installer. It needs no admin rights, installs into
+> `%LOCALAPPDATA%\Programs\kimun`, adds that folder to your user `PATH`, and records
+> the same install marker, so the app can update itself:
+>
+> ```powershell
+> irm https://kimun.2co.dev/install.ps1 | iex
+> ```
+>
+> Open a new terminal afterwards. You can also take the zip from the
 > [GitHub releases page](https://github.com/nico2sh/kimun/releases), or install
 > with Cargo (below).
 
@@ -58,10 +66,21 @@ On Linux the script also installs the app's launcher entry and icons under
 the plain binary (run `kimun-gui` from a terminal); for a double-clickable
 app, download the signed `kimun-gui-<version>-<platform>.dmg` from the
 [releases page](https://github.com/nico2sh/kimun/releases). Run the script once for each app you want: both can sit side by side
-and share one install marker. On Windows, download
-`kimun-gui-<version>-windows-x64.zip` from the
+and share one install marker.
+
+On Windows, the PowerShell installer takes a `-Gui` switch. `irm | iex` cannot
+pass one, so this is the form to paste:
+
+```powershell
+& ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui
+```
+
+or, in one line, `$env:KIMUN_GUI = 1; irm https://kimun.2co.dev/install.ps1 | iex`.
+It adds a Start-menu shortcut. Both apps share one folder and one marker, and the
+installer's overrides (`KIMUN_INSTALL_DIR`, `KIMUN_VERSION`) work as in `install.sh`.
+You can also take `kimun-gui-<version>-windows-x64.zip` from the
 [GitHub releases page](https://github.com/nico2sh/kimun/releases) and run
-`kimun-gui.exe`; there is no installer yet.
+`kimun-gui.exe`.
 
 ## Updating
 
