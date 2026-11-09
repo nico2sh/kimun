@@ -103,6 +103,14 @@ fn started_on(
         v.settings.clone(),
         vim,
     );
+    // Two presses are a double-click by the clock between them: freeze it, so a
+    // loaded machine cannot put 400 ms between two simulated presses.
+    cx.update(|cx| {
+        let editor = started.workspace.read(cx).editor.clone();
+        editor.update(cx, |view, _| {
+            view.set_clock(crate::editor_view::frozen_clock)
+        });
+    });
     let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
     drive(rt, cx, |cx| {
         started.text(cx) == want && !started.indexing(cx)

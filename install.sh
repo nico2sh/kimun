@@ -145,8 +145,10 @@ install_desktop_files() {
   if have update-desktop-database; then
     update-desktop-database "$data/applications" >/dev/null 2>&1 || true
   fi
-  if have gtk-update-icon-cache && [ -d "$data/icons/hicolor" ]; then
-    gtk-update-icon-cache -q -t "$data/icons/hicolor" >/dev/null 2>&1 || true
+  # Only when a cache already exists: creating one in the user's hicolor tree would
+  # be a side effect on every other icon there.
+  if have gtk-update-icon-cache && [ -f "$data/icons/hicolor/icon-theme.cache" ]; then
+    gtk-update-icon-cache -f -t "$data/icons/hicolor" >/dev/null 2>&1 || true
   fi
   info "Installed the launcher entry and icons under $data"
 }

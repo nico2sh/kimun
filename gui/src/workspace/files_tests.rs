@@ -495,8 +495,9 @@ fn a_created_note_refreshes_the_listing(cx: &mut TestAppContext) {
         AppMessage::FileOp(FileOp::Created(path("sub/echo.md"))),
         cx,
     );
+    // The listing streams in: echo.md can be there before a.md is. Wait for all of it.
     drive(&rt, cx, |cx| {
-        started.rows(cx).contains(&"echo.md".to_string())
+        started.rows(cx).contains(&"echo.md".to_string()) && started.listed(cx)
     });
     assert_eq!(
         started.marked(cx),

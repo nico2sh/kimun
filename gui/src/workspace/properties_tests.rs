@@ -449,6 +449,11 @@ fn known_keys_are_suggested(cx: &mut TestAppContext) {
         "a.md",
     );
     open_loaded(&rt, &started, cx);
+    // The vault's keys load beside the note's properties: typing before they
+    // land would suggest from nothing (and then, as they land, suggest).
+    drive(&rt, cx, |cx| {
+        with_dialog(&started, cx, |d, _| !d.known_keys().is_empty())
+    });
     press(&started, "a", cx);
     type_in(&started, "dead", cx);
     assert_eq!(

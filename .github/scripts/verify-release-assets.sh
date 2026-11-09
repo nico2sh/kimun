@@ -71,6 +71,37 @@ for p in macos-x64 macos-arm64; do
   fi
 done
 
+# What the raw binaries really are, when `file` can tell (a placeholder in a test is
+# skipped): the right system and CPU for the name, and on Windows the desktop app a GUI
+# program (no console window) and the terminal app a console one. A cross-build that
+# came out for the wrong target, or a missing windows_subsystem, is caught here.
+if command -v file >/dev/null 2>&1; then
+  for p in $platforms; do
+    ext=""
+    case "$p" in windows-*) ext=".exe" ;; esac
+    for app in kimun kimun-gui; do
+      f="$app-$version-$p$ext"
+      [ -s "$f" ] || continue
+      kind="$(file -b "$f")"
+      case "$p:$kind" in
+        linux-x64:ELF*) case "$kind" in *x86-64*) ;; *) err "$f is not an x86-64 ELF: $kind" ;; esac ;;
+        linux-arm64:ELF*) case "$kind" in *aarch64*) ;; *) err "$f is not an aarch64 ELF: $kind" ;; esac ;;
+        macos-x64:Mach-O*) case "$kind" in *x86_64*) ;; *) err "$f is not an x86_64 Mach-O: $kind" ;; esac ;;
+        macos-arm64:Mach-O*) case "$kind" in *arm64*) ;; *) err "$f is not an arm64 Mach-O: $kind" ;; esac ;;
+        windows-x64:PE32+*)
+          case "$kind" in *x86-64*) ;; *) err "$f is not an x86-64 PE: $kind" ;; esac
+          if [ "$app" = kimun-gui ]; then
+            case "$kind" in *"(GUI)"*) ;; *) err "$f is a console program: the desktop app must be a GUI program (windows_subsystem): $kind" ;; esac
+          else
+            case "$kind" in *"(console)"*) ;; *) err "$f should be a console program: $kind" ;; esac
+          fi
+          ;;
+        *:ELF* | *:Mach-O* | *:PE32*) err "$f does not look like a $p binary: $kind" ;;
+      esac
+    done
+  done
+fi
+
 # Nothing else under the app's names: a stray or misnamed asset would be uploaded too.
 for f in kimun-*; do
   [ -e "$f" ] || continue

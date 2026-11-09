@@ -29,7 +29,10 @@ impl TestVault {
 }
 
 /// Settings naming a workspace at `workspace` (which may not exist), with
-/// the config, history and index under `dir`.
+/// the config, history and index under `dir`. Autosave is set far out: its tick is
+/// real time, so on a loaded machine a test that takes seconds would have a tick
+/// (and a save, or a spawn after the test body) it never asked for. A test of the
+/// tick sets the interval itself.
 pub(crate) fn settings_for(dir: &std::path::Path, workspace: &std::path::Path) -> SharedSettings {
     let config = dir.join("config.toml");
     let path = toml::Value::String(workspace.to_string_lossy().into_owned());
@@ -39,6 +42,7 @@ pub(crate) fn settings_for(dir: &std::path::Path, workspace: &std::path::Path) -
             "config_version = 7\n\
              cache_dir = \"cache\"\n\
              history_dir = \"history\"\n\
+             autosave_interval_secs = 120\n\
              [global]\n\
              current_workspace = \"{NAME}\"\n\
              [workspaces.{NAME}]\n\
