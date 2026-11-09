@@ -366,7 +366,10 @@ impl Workspace {
             .unwrap_or_default();
         let workspace = cx.entity().downgrade();
         let view = cx.new(|cx| WorkspaceSwitcher::new(rows, workspace, cx));
-        self.switcher = Some(view.downgrade());
+        #[cfg(test)]
+        {
+            self.switcher = Some(view.downgrade());
+        }
         let workspace = cx.entity().downgrade();
         self.show_modal(
             Slot::Own(ModalKind::WorkspaceSwitcher),

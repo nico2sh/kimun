@@ -314,6 +314,8 @@ impl Workspace {
         }
         self.reset_modal_state(cx);
         self.file_status = None;
+        // The old workspace's git state is not the next one's.
+        self.status.git = None;
         self.cancel_leader(cx);
         // The open note (already flushed): no tick, no path, an empty clean
         // buffer, no search emphasis or find bar from the old text.

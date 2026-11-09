@@ -7,6 +7,7 @@
 //! them makes each rule unit-testable by feeding events and asserting
 //! segments, with no screen, vault contents, or terminal involved.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use kimun_core::note::scan::LinkSpanKind;
 use crate::logic::editor::claim::FollowTarget;
 use crate::logic::follow::{self, FollowOutcome};
 use crate::logic::message::{AppMessage, AppTx};
+use crate::util::git_status::GitSummary;
 
 pub struct DocMeta {
     vault: Arc<NoteVault>,
@@ -31,7 +33,7 @@ pub struct DocMeta {
     /// Frontmatter property count of the open note (status line 2).
     property_count: Option<usize>,
     /// Workspace git summary for the status bar, `None` when unknown/absent.
-    git_status: Option<String>,
+    git_status: Option<GitSummary>,
     /// When the last git fetch was spawned — throttles the per-event
     /// subprocess (rapid navigation must not fork one `git status` per note).
     last_git_fetch: Option<std::time::Instant>,
@@ -39,6 +41,9 @@ pub struct DocMeta {
     /// once a minute instead of once per open, but a `git init` mid-session
     /// still gets picked up.
     git_unavailable_since: Option<std::time::Instant>,
+    /// A refresh asked for inside the throttle window is waiting for its
+    /// delayed fetch, so the last change before a quiet spell is never lost.
+    git_trailing: bool,
     /// Link-under-cursor affordance cache: `(target, kind, backlink count
     /// once loaded)`. Refreshed when the cursor enters a different link.
     link_meta: Option<(String, LinkSpanKind, Option<usize>)>,
@@ -54,6 +59,7 @@ impl DocMeta {
             git_status: None,
             last_git_fetch: None,
             git_unavailable_since: None,
+            git_trailing: false,
             link_meta: None,
         }
     }
@@ -80,8 +86,13 @@ impl DocMeta {
         self.property_count
     }
 
-    pub fn git(&self) -> Option<&String> {
+    pub fn git(&self) -> Option<&GitSummary> {
         self.git_status.as_ref()
+    }
+
+    /// The footer's git segment, worded.
+    pub fn git_label(&self) -> Option<String> {
+        self.git_status.as_ref().map(GitSummary::label)
     }
 
     // ── Note lifecycle ──────────────────────────────────────────────────
@@ -136,9 +147,34 @@ impl DocMeta {
         });
     }
 
+    /// A git summary fetch for `root` landed (`None`: no repo, no `git`, or
+    /// a failed run). A fetch for another workspace (a late answer after a
+    /// switch) is dropped.
+    pub fn git_loaded(&mut self, root: &Path, status: Option<GitSummary>) {
+        if root != self.vault.workspace_path().as_path() {
+            return;
+        }
+        self.git_trailing = false;
+        match (&self.git_status, status) {
+            // No repo (or no git): back off to a slow probe.
+            (None, None) => {
+                self.git_unavailable_since = Some(std::time::Instant::now());
+            }
+            // Had a value, fetch failed (index.lock contention, …):
+            // keep showing the last known state.
+            (Some(_), None) => {}
+            (_, some) => {
+                self.git_status = some;
+                self.git_unavailable_since = None;
+            }
+        }
+    }
+
     /// Spawn the workspace git summary fetch, throttled: at most one
     /// subprocess per couple of seconds, since rapid navigation would
-    /// otherwise fork a whole-tree `git status` per note open.
+    /// otherwise fork a whole-tree `git status` per note open. A request
+    /// inside the window is not dropped: one delayed fetch picks it up, so
+    /// the footer settles on the state after the last change.
     pub fn refresh_git(&mut self, tx: &AppTx) {
         const GIT_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
         const GIT_UNAVAILABLE_BACKOFF: Duration = Duration::from_secs(60);
@@ -149,18 +185,47 @@ impl DocMeta {
         {
             return;
         }
-        if self
+        let wait = self
             .last_git_fetch
-            .is_some_and(|t| now.duration_since(t) < GIT_FETCH_MIN_INTERVAL)
-        {
-            return;
+            .and_then(|t| GIT_FETCH_MIN_INTERVAL.checked_sub(now.duration_since(t)));
+        match wait {
+            None => {
+                self.last_git_fetch = Some(now);
+                self.spawn_git_fetch(tx, Duration::ZERO);
+            }
+            Some(_) if self.git_trailing => {}
+            Some(wait) => {
+                self.git_trailing = true;
+                self.last_git_fetch = Some(now + wait);
+                self.spawn_git_fetch(tx, wait);
+            }
         }
-        self.last_git_fetch = Some(now);
+    }
+
+    /// Fetch now, whatever the throttle and the "unavailable" backoff say:
+    /// the user asked (a `git init` since the last probe must show).
+    pub fn refresh_git_now(&mut self, tx: &AppTx) {
+        self.begin_git_probe();
+        self.spawn_git_fetch(tx, Duration::ZERO);
+    }
+
+    /// The caller runs the git fetch itself (and reports it as
+    /// `GitStatusLoaded`): lift the "unavailable" backoff and count it as
+    /// this window's fetch.
+    pub fn begin_git_probe(&mut self) {
+        self.git_unavailable_since = None;
+        self.last_git_fetch = Some(std::time::Instant::now());
+    }
+
+    fn spawn_git_fetch(&self, tx: &AppTx, delay: Duration) {
         let root = self.vault.workspace_path().as_path().to_path_buf();
         let tx2 = tx.clone();
         self.spawn(async move {
-            let status = crate::util::git_status::fetch(root).await;
-            tx2.send(AppMessage::GitStatusLoaded(status)).ok();
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let status = crate::util::git_status::fetch(root.clone()).await;
+            tx2.send(AppMessage::GitStatusLoaded { root, status }).ok();
         });
     }
 
@@ -263,20 +328,8 @@ impl DocMeta {
                 }
                 None
             }
-            AppMessage::GitStatusLoaded(status) => {
-                match (&self.git_status, status) {
-                    // No repo (or no git): back off to a slow probe.
-                    (None, None) => {
-                        self.git_unavailable_since = Some(std::time::Instant::now());
-                    }
-                    // Had a value, fetch failed (index.lock contention, …):
-                    // keep showing the last known state.
-                    (Some(_), None) => {}
-                    (_, some) => {
-                        self.git_status = some;
-                        self.git_unavailable_since = None;
-                    }
-                }
+            AppMessage::GitStatusLoaded { root, status } => {
+                self.git_loaded(&root, status);
                 None
             }
             other => Some(other),
@@ -333,13 +386,27 @@ mod tests {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
         // First None → unavailable: probing backs off.
-        dm.handle(AppMessage::GitStatusLoaded(None), &current);
+        let root = dm.vault.workspace_path().as_path().to_path_buf();
+        let loaded = |status| AppMessage::GitStatusLoaded {
+            root: root.clone(),
+            status,
+        };
+        dm.handle(loaded(None), &current);
         assert!(dm.git_unavailable_since.is_some());
         // A value followed by a failure keeps the last value.
         dm.git_unavailable_since = None;
-        dm.handle(AppMessage::GitStatusLoaded(Some("git ✓".into())), &current);
-        dm.handle(AppMessage::GitStatusLoaded(None), &current);
-        assert_eq!(dm.git().map(String::as_str), Some("git ✓"));
+        dm.handle(loaded(Some(GitSummary { changed: 0 })), &current);
+        dm.handle(loaded(None), &current);
+        assert_eq!(dm.git_label().as_deref(), Some("git ✓"));
+        // A late answer for another workspace is not this one's.
+        dm.handle(
+            AppMessage::GitStatusLoaded {
+                root: "/elsewhere".into(),
+                status: Some(GitSummary { changed: 9 }),
+            },
+            &current,
+        );
+        assert_eq!(dm.git_label().as_deref(), Some("git ✓"));
     }
 
     #[tokio::test]

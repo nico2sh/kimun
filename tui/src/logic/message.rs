@@ -139,9 +139,13 @@ pub enum AppMessage {
         path: VaultPath,
         count: usize,
     },
-    /// Async-loaded workspace git summary for the status bar, `None` when
-    /// the workspace is not a git repository.
-    GitStatusLoaded(Option<String>),
+    /// Async-loaded git summary of the workspace at `root` for the status
+    /// bar, `None` when it is not a git repository. `root` names which
+    /// workspace asked, so an answer that outlives a switch is not shown.
+    GitStatusLoaded {
+        root: std::path::PathBuf,
+        status: Option<crate::util::git_status::GitSummary>,
+    },
     /// Sent by PreferencesScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
     PreferencesSaved,

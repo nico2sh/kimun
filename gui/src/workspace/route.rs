@@ -172,10 +172,13 @@ impl Workspace {
             // A note dialog without a vault (not produced today: with no
             // vault there is no open note, the route is `NoNoteOpen`).
             LeaderRoute::NoteDialog(..) => Some(NO_WORKSPACE),
-            // Leader `g s`: the desktop app shows no git state. The other
-            // overlays are no leader leaf's route (the sort and query-help
-            // recipes, the quick note: chords and buttons open those).
-            LeaderRoute::Overlay(_) | LeaderRoute::GitStatus => Some(NOT_YET),
+            // Leader `g s`: the git summary of the workspace.
+            LeaderRoute::GitStatus if self.notes.is_some() => None,
+            LeaderRoute::GitStatus => Some(NO_WORKSPACE),
+            // The other overlays are no leader leaf's route (the sort and
+            // query-help recipes, the quick note: chords and buttons open
+            // those).
+            LeaderRoute::Overlay(_) => Some(NOT_YET),
         }
     }
 
@@ -256,8 +259,8 @@ impl Workspace {
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
             | LeaderRoute::Overlay(_)
-            | LeaderRoute::GitStatus
             | LeaderRoute::Soon(_) => {}
+            LeaderRoute::GitStatus => self.show_git_status(cx),
         }
         cx.notify();
     }
