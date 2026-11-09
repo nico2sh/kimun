@@ -1981,11 +1981,10 @@ impl EditorScreen {
             LeaderRoute::Layout(LayoutStep::ShrinkDrawer) => self.panels.adjust_drawer_width(-4),
             LeaderRoute::Job(job) => self.run_leader_job(job, tx),
             LeaderRoute::GitStatus => {
-                self.doc_meta.refresh_git(tx);
+                self.doc_meta.refresh_git_now(tx);
                 let msg = self
                     .doc_meta
-                    .git()
-                    .cloned()
+                    .git_label()
                     .unwrap_or_else(|| "not a git repository".to_string());
                 self.footer.flash(msg, tx);
             }
@@ -2315,7 +2314,7 @@ impl AppScreen for EditorScreen {
                 ln_col,
                 backlinks: self.doc_meta.backlinks(),
                 props: self.open_note().and(self.doc_meta.properties()),
-                git: self.doc_meta.git().cloned(),
+                git: self.doc_meta.git_label(),
                 matches,
                 link: link_segment,
                 update: self

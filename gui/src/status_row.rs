@@ -41,6 +41,7 @@ use gpui_kit::{
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::find_bar::MatchPosition;
 use kimun_notes::settings::themes::Theme;
+use kimun_notes::util::git_status::GitSummary;
 
 use crate::theme;
 
@@ -49,6 +50,8 @@ pub(crate) const ROW_ID: &str = "status-row";
 pub(crate) const PATH_ID: &str = "status-path";
 pub(crate) const SAVE_ID: &str = "status-save";
 pub(crate) const INDEXING_ID: &str = "status-indexing";
+/// The workspace's git summary.
+pub(crate) const GIT_ID: &str = "status-git";
 pub(crate) const READ_ONLY_ID: &str = "status-read-only";
 pub(crate) const CARET_ID: &str = "status-caret";
 pub(crate) const MATCHES_ID: &str = "status-matches";
@@ -82,6 +85,9 @@ pub(crate) struct Status {
     /// case; Preferences > Workspaces says so and offers a way out). Saves
     /// honour it.
     pub(crate) read_only: bool,
+    /// The workspace's git summary (the footer words it `git ✓`, `git ●3`);
+    /// `None` when the workspace is not a repository (or `git` is missing).
+    pub(crate) git: Option<GitSummary>,
     /// The kimün server's state as the TUI's footer words it
     /// (`RagStatus::label`: "rag: online", …); `None` with no server
     /// configured.
@@ -124,6 +130,10 @@ pub(crate) fn matches_label(find: MatchPosition) -> (String, String) {
         }
     }
 }
+
+/// What the git segment's tooltip explains: the count is every path
+/// `git status` lists, whatever became of it.
+pub(crate) const GIT_TIP: &str = "Paths git sees as changed: modified, added, deleted or untracked";
 
 /// `n` and the noun, singular for one.
 pub(crate) fn counted(n: usize, one: &str, many: &str) -> String {
@@ -217,6 +227,12 @@ pub(crate) fn render(
                 label(READ_ONLY_ID, "Read-only".into(), "Read-only".into())
                     .flex_none()
                     .text_color(theme::error(theme)),
+            )
+        })
+        .when_some(status.git, |bar, git| {
+            bar.right(
+                fixed(GIT_ID, (git.label(), git.spoken()))
+                    .tooltip(|window, cx| Tooltip::new(GIT_TIP).build(window, cx)),
             )
         })
         .when(status.indexing, |bar| {

@@ -279,7 +279,10 @@ impl Workspace {
         self.save_search = None;
         self.sort = None;
         self.forget_pinned_notes();
-        self.switcher = None;
+        #[cfg(test)]
+        {
+            self.switcher = None;
+        }
         self.forget_theme_picker(cx);
         self.forget_update_dialog();
     }

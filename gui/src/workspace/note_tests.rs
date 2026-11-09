@@ -16,7 +16,7 @@ use super::Closing;
 use super::note::DISCARD_WINDOW;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
-use crate::status_row::{PATH_ID, SAVE_ID};
+use crate::status_row::{GIT_ID, PATH_ID, SAVE_ID};
 use crate::test_vault::{TestVault, test_vault};
 
 fn path(p: &str) -> VaultPath {
@@ -651,4 +651,128 @@ fn the_workspace_editor_completes_wikilinks_from_its_vault(cx: &mut TestAppConte
     started.press("ctrl-s", cx);
     drive(&rt, cx, |cx| !started.dirty(cx));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("[[b]]alpha"));
+}
+
+// ── the git summary ──────────────────────────────────────────────────────
+
+/// Whether a usable `git` is on the machine (the summary shells out to it).
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+fn flashes(started: &Started, cx: &TestAppContext) -> Vec<String> {
+    cx.read(|cx| {
+        started
+            .workspace
+            .read(cx)
+            .flashes
+            .iter()
+            .map(|(text, _)| text.to_string())
+            .collect()
+    })
+}
+
+fn git_segment(started: &Started, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| started.workspace.read(cx).status.git.map(|g| g.label()))
+}
+
+/// A workspace that is a git repository: the Footer shows `git ●N` for its
+/// changed paths, and leader `g s` says the same in a toast.
+#[gpui_kit::test]
+fn a_git_workspace_shows_its_summary_and_leader_g_s_flashes_it(cx: &mut TestAppContext) {
+    if !git_available() {
+        return;
+    }
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    let init = std::process::Command::new("git")
+        .arg("-C")
+        .arg(v.workspace.as_path())
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(init.success());
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| git_segment(&started, cx).is_some());
+    let shown = git_segment(&started, cx).unwrap();
+    assert!(
+        shown.starts_with("git ●"),
+        "untracked notes are changes: {shown}"
+    );
+    assert!(started.shows(GIT_ID, cx), "the Footer has the segment");
+    started.press("ctrl-shift-b", cx);
+    started.type_text("gs", cx);
+    // The toast says more than the footer: the branch and the kinds.
+    drive(&rt, cx, |cx| {
+        flashes(&started, cx)
+            .iter()
+            .any(|t| t.starts_with("On ") && t.contains("untracked"))
+    });
+}
+
+/// Not a repository: no segment, and `g s` says so.
+#[gpui_kit::test]
+fn without_a_repository_there_is_no_segment_and_g_s_says_so(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    cx.run_until_parked();
+    assert_eq!(git_segment(&started, cx), None);
+    assert!(!started.shows(GIT_ID, cx));
+    started.press("ctrl-shift-b", cx);
+    started.type_text("gs", cx);
+    drive(&rt, cx, |cx| {
+        flashes(&started, cx).contains(&"Not a git repository".to_string())
+    });
+}
+
+// ── the server's update notice ───────────────────────────────────────────
+
+/// The server reporting a newer release of itself: one toast per news.
+#[gpui_kit::test]
+fn a_newer_server_release_is_toasted_once(cx: &mut TestAppContext) {
+    use kimun_notes::server_client::sync::ServerUpdate;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    let toasts = |cx: &TestAppContext| {
+        flashes(&started, cx)
+            .into_iter()
+            .filter(|t| t.contains("Kimün server"))
+            .collect::<Vec<_>>()
+    };
+    send(
+        &started,
+        AppMessage::ServerUpdate(Some(ServerUpdate::Newer("9.9.9".into()))),
+        cx,
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        toasts(cx),
+        ["Kimün server 9.9.9 is available. Update it the way you installed it."]
+    );
+    // The same news again: nothing new.
+    send(
+        &started,
+        AppMessage::ServerUpdate(Some(ServerUpdate::Newer("9.9.9".into()))),
+        cx,
+    );
+    // Gone, then back: the news is news again.
+    send(&started, AppMessage::ServerUpdate(None), cx);
+    send(
+        &started,
+        AppMessage::ServerUpdate(Some(ServerUpdate::Legacy)),
+        cx,
+    );
+    cx.run_until_parked();
+    assert_eq!(toasts(cx).len(), 2);
+    assert!(toasts(cx)[1].starts_with("A newer Kimün server is available"));
 }

@@ -28,7 +28,9 @@
 //! the window had back.
 //!
 //! **Welcome.** The logo and the wordmark "Kimün", whose two dots keep
-//! bouncing while the step shows (a GPUI repeating `with_animation`: a ~600 ms
+//! bouncing while the step shows (driven by the view's own timer, which wakes the
+//! view only during the spring, not by an animation loop that redraws the
+//! window all the time: a ~600 ms
 //! spring, then a rest, every 2.4 s); it moves by an offset only, in a fixed
 //! line box, so nothing beside it shifts. Reduced motion (`[gui] reduce_motion`,
 //! GPUI's `App::reduce_motion`: GPUI reads no OS hint) keeps it still.
@@ -48,11 +50,10 @@ use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
-    KeyDownEvent, ObjectFit, ParentElement, Render, Role, ScrollStrategy, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage as _, Subscription, Task,
-    UniformListScrollHandle, Window, div, img, px, rems, uniform_list,
+    AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit, ParentElement, Render,
+    Role, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, StyledImage as _,
+    Subscription, Task, UniformListScrollHandle, Window, div, img, px, rems, uniform_list,
 };
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::logic::input::{Key, KeyInput};
@@ -105,6 +106,12 @@ pub(crate) const WORDMARK_WEIGHT: FontWeight = FontWeight::BOLD;
 const BOUNCE_PERIOD: std::time::Duration = std::time::Duration::from_millis(2400);
 /// The share of the period the spring takes (≈ 600 ms).
 const BOUNCE_SHARE: f32 = 0.25;
+/// How often the bounce looks for Welcome (or motion) coming back while it
+/// has nothing to move.
+const IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+/// Frames the spring is drawn in: one redraw per step (≈ 60 fps), and none
+/// at all through the rest of the period.
+const SPRING_STEPS: u32 = 36;
 /// The spring's highest point, in ems of the wordmark (≈ 0.25 em).
 const BOUNCE_EMS: f32 = 0.25;
 
@@ -267,6 +274,12 @@ pub(crate) struct OnboardingView {
     finishing: Option<Task<()>>,
     theme_scroll: UniformListScrollHandle,
     _load: Option<Task<()>>,
+    /// How far along the ü's spring is (0 to 1), `None` through the rest
+    /// of the period (and always, with reduced motion).
+    spring: Option<f32>,
+    /// The timer that runs the spring: it wakes the view only while the
+    /// ü moves, so the window sits idle the rest of the time.
+    _bounce: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -301,6 +314,46 @@ impl OnboardingView {
             this.update_in(cx, |view, window, cx| view.loaded(loaded, window, cx))
                 .ok();
         });
+        let bounce = cx.spawn(async move |this, cx| {
+            let step = BOUNCE_PERIOD.mul_f32(BOUNCE_SHARE) / SPRING_STEPS;
+            let rest = BOUNCE_PERIOD - step * (SPRING_STEPS + 1);
+            'round: loop {
+                for i in 0..=SPRING_STEPS {
+                    let moved = this.update(cx, |view, cx| {
+                        // Only while Welcome shows, and only with motion on.
+                        let t = (view.step() == Some(OnbStep::Welcome) && !cx.reduce_motion())
+                            .then(|| i as f32 / SPRING_STEPS as f32);
+                        let changed = view.spring != t;
+                        view.spring = t;
+                        if changed {
+                            cx.notify();
+                        }
+                        t.is_some()
+                    });
+                    match moved {
+                        Err(_) => return,
+                        // Nothing moves (another step, or motion off): look
+                        // again at a slow poll, not once per spring frame.
+                        Ok(false) => {
+                            cx.background_executor().timer(IDLE_POLL).await;
+                            continue 'round;
+                        }
+                        Ok(true) => {}
+                    }
+                    cx.background_executor().timer(step).await;
+                }
+                // The rest: the dots sit still, nothing redraws.
+                let rested = this.update(cx, |view, cx| {
+                    if view.spring.take().is_some() {
+                        cx.notify();
+                    }
+                });
+                if rested.is_err() {
+                    return;
+                }
+                cx.background_executor().timer(rest).await;
+            }
+        });
         Self {
             settings,
             original,
@@ -316,6 +369,8 @@ impl OnboardingView {
             finishing: None,
             theme_scroll: UniformListScrollHandle::new(),
             _load: Some(load),
+            spring: None,
+            _bounce: bounce,
             _subscriptions: subscriptions,
         }
     }
@@ -930,6 +985,12 @@ impl OnboardingView {
             )
     }
 
+    /// Whether the ü's spring is running now (tests).
+    #[cfg(test)]
+    pub(crate) fn springing(&self) -> bool {
+        self.spring.is_some()
+    }
+
     /// The wordmark: "Kimün" in one fixed line box, its accessible name the
     /// whole word. The ü springs ([`bounce_offset`]) as a relative offset,
     /// which moves its paint and nothing else: its neighbours and the line
@@ -967,18 +1028,11 @@ impl OnboardingView {
             .flex_row()
             .justify_center()
             .child(DIAERESIS);
-        // Reduced motion needs no branch: `with_animation` draws the end
-        // state (`t` = 1, the resting glyph) when GPUI's switch is on.
-        let dots = dots.with_animation(
-            "onboarding-wordmark-bounce",
-            Animation::new(BOUNCE_PERIOD).repeat(),
-            |dots, t| {
-                // The spring fills the start of each period; the rest of it
-                // the dots sit still.
-                let spring = (t / BOUNCE_SHARE).min(1.);
-                dots.top(rems(bounce_offset(spring) * WORDMARK_REMS))
-            },
-        );
+        // The spring is the view's own timer's (see `spring`): at rest, and
+        // with reduced motion, the dots sit on the letter (`t` = 1).
+        let dots = dots.top(rems(
+            bounce_offset(self.spring.unwrap_or(1.)) * WORDMARK_REMS,
+        ));
         let glyph = div().relative().child(letter).child(dots);
         line.child(glyph).child(parts.after).into_any_element()
     }

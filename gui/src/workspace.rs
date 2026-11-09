@@ -480,6 +480,12 @@ pub(crate) struct Workspace {
     /// What the kimün server last reported (`Disabled`: none configured,
     /// or no report yet), and what it can do then ([`server`]).
     rag_status: RagStatus,
+    /// The newer server release the server last reported, so the same news
+    /// is told once.
+    server_update: Option<kimun_notes::server_client::sync::ServerUpdate>,
+    /// The vault the running server sync belongs to; `server_update` is
+    /// forgotten only when this changes.
+    rag_sync_root: Option<std::path::PathBuf>,
     rag_caps: Caps,
     /// The server sync, while one runs: at most one.
     rag_sync: TaskSlot,
@@ -554,7 +560,10 @@ pub(crate) struct Workspace {
     pub(crate) sort: Option<sort::SortOpen>,
     /// The pinned-notes dialog, while open ([`pinned`]).
     pub(crate) pinned: Option<pinned::PinnedOpen>,
-    /// The workspace switcher, while open ([`switcher`]).
+    /// The workspace switcher, while open ([`switcher`]). Tests reach the
+    /// view through it; the window never reads it back (the modal slot holds
+    /// the view).
+    #[cfg(test)]
     pub(crate) switcher: Option<WeakEntity<switcher::WorkspaceSwitcher>>,
     /// The write of the open note before a search result opens: the
     /// browser waits for it, and it holds the note like a file operation.
@@ -741,6 +750,8 @@ impl Workspace {
             semantic: None,
             _views_events: Vec::new(),
             rag_status: RagStatus::Disabled,
+            server_update: None,
+            rag_sync_root: None,
             rag_caps: Caps::default(),
             rag_sync: TaskSlot::default(),
             following: None,
@@ -771,6 +782,7 @@ impl Workspace {
             saved_searches: None,
             sort: None,
             pinned: None,
+            #[cfg(test)]
             switcher: None,
             save_search: None,
             save_task: None,
@@ -908,6 +920,7 @@ impl Workspace {
                 settings.clone(),
                 VaultPath::root(),
             )));
+            self.refresh_git();
             // The editor completes `[[` and `#` from this vault's notes and tags.
             self.editor.update(cx, |view, _| {
                 view.set_suggestions(Some(std::sync::Arc::new(
@@ -1042,7 +1055,10 @@ impl Workspace {
                 self.attachment_file_op(&op, cx);
                 self.views_file_op(&op, cx);
                 self.refresh_note_counts();
+                // Every result changed the working tree.
+                self.refresh_git();
             }
+            AppMessage::GitStatusLoaded { root, status } => self.git_loaded(&root, status, cx),
             // The Footer's counts for the open note.
             message @ (AppMessage::BacklinkCountLoaded { .. }
             | AppMessage::PropertyCountLoaded { .. }) => self.note_count_loaded(message),
@@ -1116,7 +1132,7 @@ impl Workspace {
             AppMessage::Ask(data) => self.ask_data(data, cx),
             // The server's own update notice (the TUI's footer hint): no
             // surface here ([`server`]).
-            AppMessage::ServerUpdate(_) => {}
+            AppMessage::ServerUpdate(update) => self.on_server_update(update, cx),
             // The configured workspace may have changed (the TUI rebuilds
             // the vault on these): enter it again ([`reopen`]).
             AppMessage::OnboardingFinished | AppMessage::PreferencesSaved => self.reopen(cx),

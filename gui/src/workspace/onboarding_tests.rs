@@ -14,8 +14,8 @@ use std::sync::{Arc, RwLock};
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Context, Entity, Focusable as _, TestAppContext, VisualTestContext, Window,
-    WindowOptions,
+    AppContext, Bounds, Context, Entity, Focusable as _, Pixels, TestAppContext, VisualTestContext,
+    Window, WindowOptions,
 };
 use kimun_core::system::SystemPath;
 use kimun_notes::logic::layout::{Panel, Side};
@@ -429,61 +429,94 @@ fn wordmark(
     .unwrap()
 }
 
-/// Whether Welcome asks for another frame now: the ü's spring is running.
-fn bounces(s: &Started, cx: &mut TestAppContext) -> bool {
+/// Whether the ü's spring is running now.
+fn springing(s: &Started, cx: &TestAppContext) -> bool {
+    s.ob_read_view(cx, |v| v.springing())
+}
+
+/// Frames the window asks for after drawing one: zero when it is idle.
+fn pending_frames(s: &Started, cx: &mut TestAppContext) -> usize {
     cx.update_window(s.handle, |_, window, cx| {
         window.render_frame(cx);
         window.simulate_next_frame(cx)
     })
     .unwrap()
-        > 0
 }
 
-/// "Kimün" reads as one word, and its ü keeps bouncing while Welcome
-/// shows: its line box holds while it moves, and it keeps asking for
-/// frames (it loops). The test platform draws a frame only when asked and
-/// its clock only moves when advanced, so nothing runs on its own.
+/// The ü's dots, as drawn now.
+fn dots(s: &Started, cx: &mut TestAppContext) -> Bounds<Pixels> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(WORDMARK_U_ID).bounds()
+    })
+    .unwrap()
+}
+
+/// Let `ms` of the test clock pass, timers firing.
+fn pass(ms: u64, cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(ms));
+    cx.run_until_parked();
+}
+
+/// "Kimün" reads as one word and its ü keeps bouncing while Welcome shows:
+/// its line box holds while the dots move, and the window is idle (no frame
+/// asked for) through the rest of every period: the spring is the view's
+/// timer's, not an animation loop that redraws all the time. The test
+/// platform's clock only moves when advanced, so nothing runs on its own.
 #[gpui_kit::test]
-fn the_wordmark_keeps_bouncing_and_keeps_its_place(cx: &mut TestAppContext) {
+fn the_wordmark_springs_then_rests_and_keeps_its_place(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let f = fresh();
     let s = first_run(cx, &rt, &f);
     assert!(!cx.read(|cx| cx.reduce_motion()), "motion is on by default");
-    assert!(bounces(&s, cx));
     let (label, at_rest) = wordmark(&s, cx);
     assert_eq!(label.as_deref(), Some(WORDMARK));
     assert_eq!(WORDMARK, "Kimün");
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(90));
-    assert_eq!(wordmark(&s, cx).1, at_rest, "the line box holds");
-    let running = cx
-        .update_window(s.handle, |_, window, cx| window.simulate_next_frame(cx))
-        .unwrap();
-    assert!(running > 0, "mid-spring it asks for the next frame");
-    // A long time on, it still loops.
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(30));
-    cx.run_until_parked();
-    let pending = cx
-        .update_window(s.handle, |_, window, cx| {
-            window.simulate_next_frame(cx);
-            window.render_frame(cx);
-            window.simulate_next_frame(cx)
-        })
-        .unwrap();
-    assert!(pending > 0, "it never stops asking for frames");
+    let dots_rest = dots(&s, cx);
 
+    // Mid-spring: the dots are up, the line box has not moved.
+    pass(150, cx);
+    assert!(springing(&s, cx));
+    assert_ne!(dots(&s, cx), dots_rest, "the dots moved");
+    assert_eq!(wordmark(&s, cx).1, at_rest, "the line box holds");
+
+    // The rest of the period: still, and nothing asks for a frame.
+    pass(1000, cx);
+    assert!(!springing(&s, cx));
+    assert_eq!(dots(&s, cx), dots_rest, "the dots sit on the letter");
+    assert_eq!(pending_frames(&s, cx), 0, "idle between springs");
+
+    // It loops: a spring comes round again, however long on.
+    pass(30_000, cx);
+    let mut again = false;
+    for _ in 0..30 {
+        pass(100, cx);
+        again |= springing(&s, cx);
+    }
+    assert!(again, "it never stops springing");
+
+    // Off Welcome it is still; back on Welcome it springs again.
     s.ob_press("right", cx);
     assert_eq!(s.ob_step(cx), OnbStep::Workspace);
+    for _ in 0..30 {
+        pass(100, cx);
+        assert!(!springing(&s, cx), "no spring off Welcome");
+    }
     s.ob_press("left", cx);
     assert_eq!(s.ob_step(cx), OnbStep::Welcome);
-    assert!(bounces(&s, cx), "back on Welcome it bounces again");
+    let mut back = false;
+    for _ in 0..30 {
+        pass(100, cx);
+        back |= springing(&s, cx);
+    }
+    assert!(back, "back on Welcome it springs again");
     assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
 }
 
 /// `[gui] reduce_motion = true` sets GPUI's switch: the wordmark is drawn
-/// still, its text unchanged.
+/// still and never wakes the window, its text unchanged.
 #[gpui_kit::test]
 fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -494,7 +527,13 @@ fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
     cx.update(|cx| crate::apply_reduce_motion(gui.reduce_motion(), cx));
     assert!(cx.read(|cx| cx.reduce_motion()));
     let s = first_run(cx, &rt, &f);
-    assert!(!bounces(&s, cx));
+    let rest = dots(&s, cx);
+    for _ in 0..50 {
+        pass(100, cx);
+        assert!(!springing(&s, cx));
+    }
+    assert_eq!(dots(&s, cx), rest);
+    assert_eq!(pending_frames(&s, cx), 0);
     assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
     // Unset again, the default: motion.
     cx.update(|cx| crate::apply_reduce_motion(GuiSettings::default().reduce_motion(), cx));

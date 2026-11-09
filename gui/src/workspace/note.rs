@@ -28,6 +28,7 @@
 //! the window open with a flash saying so; closing again discards them.
 
 use std::num::NonZeroU64;
+use std::path::Path;
 use std::time::Duration;
 
 use gpui_kit::{App, AppContext, Context, SharedString, Task, Window};
@@ -37,6 +38,7 @@ use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::session::{
     FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
 };
+use kimun_notes::util::git_status::GitSummary;
 use tokio::task::JoinError;
 
 use super::Workspace;
@@ -653,6 +655,10 @@ impl Workspace {
         if completion.is_open_note {
             self.refresh_note_properties();
         }
+        // A write changed the working tree.
+        if completion.wrote {
+            self.refresh_git();
+        }
         if completion.wrote && matches!(self.closing, Closing::Discard(_)) {
             self.closing = Closing::Open;
         }
@@ -688,6 +694,65 @@ impl Workspace {
             host.meta.refresh_backlinks(&note, tx);
             host.meta.refresh_properties(&note, tx);
         }
+    }
+
+    /// Re-read the workspace's git summary (throttled; a no-op with no
+    /// repository to look at).
+    pub(crate) fn refresh_git(&mut self) {
+        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
+            host.meta.refresh_git(tx);
+        }
+    }
+
+    /// A git summary fetch landed: the Footer shows what the note meta keeps
+    /// (a failed fetch keeps the last known state).
+    pub(crate) fn git_loaded(
+        &mut self,
+        root: &Path,
+        status: Option<GitSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self.notes.as_mut() else {
+            return;
+        };
+        host.meta.git_loaded(root, status);
+        let shown = host.meta.git().copied();
+        if self.status.git != shown {
+            self.status.git = shown;
+            cx.notify();
+        }
+    }
+
+    /// Leader `g s`: look again at the footer's summary, and toast the full
+    /// state: the branch, how far it is from its upstream, and the changed
+    /// paths by kind. Read off the UI thread; the toast arrives on the app
+    /// channel.
+    pub(crate) fn show_git_status(&mut self, cx: &mut Context<Self>) {
+        let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.clone()) else {
+            return;
+        };
+        // The one `git status` run answers both: the toast and the footer.
+        host.meta.begin_git_probe();
+        let root = host
+            .session
+            .vault()
+            .workspace_path()
+            .as_path()
+            .to_path_buf();
+        tokio::spawn(async move {
+            let detail = kimun_notes::util::git_status::detail(root.clone()).await;
+            let text = match &detail {
+                Some(detail) => detail.describe(),
+                None => "Not a git repository".to_string(),
+            };
+            tx.send(AppMessage::GitStatusLoaded {
+                root,
+                status: detail.as_ref().map(GitSummary::from),
+            })
+            .ok();
+            tx.send(AppMessage::FlashMessage(text)).ok();
+        });
+        cx.notify();
     }
 
     /// A count fetched in the background: kept when it is for the open note.
