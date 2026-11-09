@@ -1,15 +1,14 @@
-pub mod controller;
-pub mod host;
-pub mod popup;
-pub mod state;
-pub mod trigger;
+//! The TUI half of autocomplete: the popup's drawing and the key/mouse
+//! mapping. The rules live in [`crate::logic::autocomplete`]; its public
+//! names are re-exported here so hosts keep one import path.
 
-pub use controller::{
-    AcceptAction, AutocompleteController, AutocompleteMode, HandleKeyOutcome, RedrawCallback,
+pub mod controller;
+pub mod popup;
+
+pub use crate::logic::autocomplete::{
+    AcceptAction, AutocompleteHost, AutocompleteMode, AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS,
+    HandleKeyOutcome, PopupAction, PopupOutcome, RedrawCallback, Suggestion, TriggerContext,
+    TriggerKind, TriggerOptions, detect_trigger, detect_trigger_with,
 };
-pub use host::AutocompleteHost;
-pub use popup::{PopupAction, PopupOutcome, handle_key, render};
-pub use state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
-pub use trigger::{
-    TriggerContext, TriggerKind, TriggerOptions, detect_trigger, detect_trigger_with,
-};
+pub use controller::AutocompleteController;
+pub use popup::render;

@@ -71,7 +71,7 @@ use kimun_core::NoteVault;
 
 use crate::components::Component;
 use crate::components::autocomplete::{
-    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
+    AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
@@ -1397,14 +1397,16 @@ impl Component for TextEditorComponent {
         // preserved, so the popup reappears at the correct position
         // once the cursor scrolls back into view.
         let live_anchor = self.painter.last_cursor_screen;
-        if let Some(state) = self.autocomplete.as_mut().and_then(|c| c.state_mut()) {
+        if let Some(ac) = self.autocomplete.as_mut() {
             match live_anchor {
                 Some(anchor) => {
-                    state.anchor = anchor;
-                    autocomplete::render(f, state, editor_rect, theme);
+                    if let Some(state) = ac.state_mut() {
+                        state.anchor = anchor;
+                    }
+                    ac.render(f, editor_rect, theme);
                 }
                 // Not drawn this frame, so nothing of it may be clickable.
-                None => state.rows_rect = Rect::default(),
+                None => ac.clear_rows_rect(),
             }
         }
     }
@@ -1539,8 +1541,7 @@ mod tests {
         let rows = editor
             .autocomplete
             .as_ref()
-            .and_then(|c| c.state())
-            .map(|st| st.rows_rect)
+            .map(|c| c.rows_rect())
             .filter(|r| !r.is_empty())
             .expect("popup drawn");
         editor.handle_input(&crate::test_support::mouse_down_at(rows.x + 1, rows.y), &tx);
