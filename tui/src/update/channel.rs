@@ -227,7 +227,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kimun-channel-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(MARKER_FILE), "channel = \"bundle\"\n").unwrap();
-        assert_eq!(channel_from_marker(&dir, None), Some(InstallChannel::Bundle));
+        assert_eq!(
+            channel_from_marker(&dir, None),
+            Some(InstallChannel::Bundle)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -240,11 +243,18 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::write(
             dir.join(MARKER_FILE),
-            format!("channel = \"script\"\ninstall_dir = \"{}\"\n", here.display()),
+            format!(
+                "channel = \"script\"\ninstall_dir = \"{}\"\n",
+                here.display()
+            ),
         )
         .unwrap();
-        let here_canon = kimun_core::SystemPath::canonical(&here).unwrap().into_path_buf();
-        let else_canon = kimun_core::SystemPath::canonical(&elsewhere).unwrap().into_path_buf();
+        let here_canon = kimun_core::SystemPath::canonical(&here)
+            .unwrap()
+            .into_path_buf();
+        let else_canon = kimun_core::SystemPath::canonical(&elsewhere)
+            .unwrap()
+            .into_path_buf();
         assert_eq!(
             channel_from_marker(&dir, Some(&here_canon)),
             Some(InstallChannel::Script)
