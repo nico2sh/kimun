@@ -254,6 +254,8 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
+        // The sequence takes the keys; a view's drag under way ends.
+        self.end_view_drag(window, cx);
         self.leader.engine.start();
         self.leader.gateway = gateway.into();
         self.restart_reveal(cx);

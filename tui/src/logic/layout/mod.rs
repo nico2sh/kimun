@@ -64,6 +64,14 @@ impl Side {
             Side::Right => Side::Left,
         }
     }
+
+    /// The direction that points out to this side of the editor.
+    pub fn dir(self) -> Dir {
+        match self {
+            Side::Left => Dir::Left,
+            Side::Right => Dir::Right,
+        }
+    }
 }
 
 /// A persistent panel in the layout.

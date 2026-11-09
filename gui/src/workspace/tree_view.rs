@@ -18,7 +18,9 @@
 //! the window grows; the tree, its weights and the saved layout never
 //! change. Where the minimums fit, every cell keeps its own; a slot that
 //! still ends up under its view's minimum (inside the editor's subtree,
-//! which cannot collapse) shows [`TOO_SMALL`] under its header.
+//! which cannot collapse) shows [`TOO_SMALL`] under its header. Only a
+//! placement that makes a slot changes weights for room, once, so the new
+//! slot is not collapsed ([`Workspace::make_room`], ADR-0054 §8).
 //!
 //! **Dividers.** One pixel of window background separates drawn
 //! neighbours, and between two drawn children of one split that pixel is a
@@ -67,10 +69,13 @@ use gpui_kit::{
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Rgba, Role,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
-use kimun_notes::logic::layout_tree::{Axis, Fit, Focus, Leaf, SlotId, TreeShape, UnitRect};
+use kimun_notes::logic::layout_tree::{
+    Axis, Fit, Focus, LayoutTree, Leaf, SlotId, TreeShape, UnitRect,
+};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
+use super::drop_zones::ViewDrag;
 use super::{Workspace, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -329,17 +334,84 @@ impl Workspace {
     ///
     /// [`LayoutTree::fit`]: kimun_notes::logic::layout_tree::LayoutTree::fit
     pub(crate) fn fit(&self, window: &Window) -> Fit<Leaf> {
-        let rem = f64::from(window.rem_size());
-        let (width, height) = self.tree_area(window);
-        let gap = GAP / rem;
-        self.layout.fit(
-            UnitRect::new(0.0, 0.0, width / rem, height / rem),
-            &|leaf| {
-                let (w, h) = self.leaf_min(leaf);
-                (w + gap, h + gap)
-            },
+        self.fit_tree(&self.layout, window)
+    }
+
+    /// [`Self::fit`] for `tree`, a copy of the layout differing from it in
+    /// weights only (the minimums and what is drawn are read from the
+    /// layout).
+    fn fit_tree(&self, tree: &LayoutTree<DrawerView>, window: &Window) -> Fit<Leaf> {
+        tree.fit(
+            self.fit_area(window),
+            &|leaf| self.fit_min(leaf, window),
             &|leaf| self.leaf_drawn(leaf),
         )
+    }
+
+    /// The tree's area in rems, as [`Self::fit`] measures it.
+    fn fit_area(&self, window: &Window) -> UnitRect {
+        let rem = f64::from(window.rem_size());
+        let (width, height) = self.tree_area(window);
+        UnitRect::new(0.0, 0.0, width / rem, height / rem)
+    }
+
+    /// `leaf`'s minimum in rems with the px of gap beside it, as
+    /// [`Self::fit`] counts it.
+    fn fit_min(&self, leaf: Leaf, window: &Window) -> (f64, f64) {
+        let gap = GAP / f64::from(window.rem_size());
+        let (w, h) = self.leaf_min(leaf);
+        (w + gap, h + gap)
+    }
+
+    /// Make the window's room for the new slot `new` (ADR-0054 §8): while
+    /// [`Self::fit`] collapses it or a leaf of `visible_before` (what was
+    /// on screen before the placement, still drawn), grow the cell holding
+    /// the split that collapses it, taking from its siblings only what
+    /// each has above its minimum ([`LayoutTree::make_room`]). Kept only
+    /// when `new` is then visible and no leaf of `visible_before`
+    /// collapsed; false otherwise, the layout unchanged.
+    ///
+    /// [`LayoutTree::make_room`]: kimun_notes::logic::layout_tree::LayoutTree::make_room
+    pub(super) fn make_room(
+        &mut self,
+        new: SlotId,
+        visible_before: &[Leaf],
+        window: &Window,
+    ) -> bool {
+        // A leaf gone or undrawn since (the slot the view left) needs no room.
+        let leaves: Vec<Leaf> = std::iter::once(Leaf::Slot(new))
+            .chain(
+                visible_before
+                    .iter()
+                    .copied()
+                    .filter(|leaf| self.leaf_drawn(*leaf)),
+            )
+            .collect();
+        let mut grown = self.layout.clone();
+        let room = grown.make_room(
+            &leaves,
+            self.fit_area(window),
+            &|leaf| self.fit_min(leaf, window),
+            &|leaf| self.leaf_drawn(leaf),
+        );
+        if !room {
+            return false;
+        }
+        let fit = self.fit_tree(&grown, window);
+        if leaves.iter().any(|leaf| fit.collapsed.contains(leaf)) {
+            return false;
+        }
+        self.layout = grown;
+        true
+    }
+
+    /// The leaves [`Self::fit`] has room for now (zoom aside).
+    pub(super) fn fitting_leaves(&self, window: &Window) -> Vec<Leaf> {
+        self.fit(window)
+            .rects
+            .into_iter()
+            .map(|(leaf, _)| leaf)
+            .collect()
     }
 
     /// Fit the tree to the window for this frame: remember what collapsed
@@ -956,39 +1028,61 @@ impl Workspace {
                     this.focus_slot(slot, window, cx)
                 }))
                 .child(self.render_slot_header(slot, view, cx))
-                .map(|el| match self.view_content(view).filter(|_| !small) {
-                    Some(content) => el.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .p(CONTENT_PADDING)
-                            .child(content),
-                    ),
-                    None if small => el.child(
-                        div()
-                            .id(TOO_SMALL_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(TOO_SMALL)
-                            .p(CONTENT_PADDING)
-                            .text_sm()
-                            .text_color(theme::muted(&theme::current(cx)))
-                            .child(TOO_SMALL),
-                    ),
-                    // Every view is built; one without content needs a vault.
-                    None => el.child(
-                        div()
-                            .p(CONTENT_PADDING)
-                            .text_sm()
-                            .text_color(theme::muted(&theme::current(cx)))
-                            .child(route::NO_WORKSPACE),
-                    ),
-                }),
+                // The body, under the header: while a view is dragged its
+                // zones lie over it (not the header, so a drag released
+                // where it started changes nothing).
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .child(self.render_slot_body(view, small, cx))
+                        .children(self.zone_layer(slot, cx)),
+                ),
             )
             .into_any_element()
+    }
+
+    /// What a drawn slot shows under its header: `view` (or, for a view
+    /// that needs a workspace while none is open, a line saying so;
+    /// [`TOO_SMALL`] when `small`: under the view's minimum).
+    fn render_slot_body(
+        &self,
+        view: DrawerView,
+        small: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match self.view_content(view).filter(|_| !small) {
+            Some(content) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .p(CONTENT_PADDING)
+                .child(content)
+                .into_any_element(),
+            None if small => div()
+                .id(TOO_SMALL_ID)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(TOO_SMALL)
+                .p(CONTENT_PADDING)
+                .text_sm()
+                .text_color(theme::muted(&theme::current(cx)))
+                .child(TOO_SMALL)
+                .into_any_element(),
+            // Every view is built; one without content needs a vault.
+            None => div()
+                .p(CONTENT_PADDING)
+                .text_sm()
+                .text_color(theme::muted(&theme::current(cx)))
+                .child(route::NO_WORKSPACE)
+                .into_any_element(),
+        }
     }
 
     /// The strip at the top of a drawn slot: the title of the view it shows
@@ -1035,10 +1129,19 @@ impl Workspace {
                 theme::foreground(&theme)
             })
             .child(title);
+        // The strip is a drag source (ADR-0054 §8) through a wrapper whose
+        // id is stable: the strip's own id follows the focus, and a press
+        // that focuses the slot would lose the half-made drag with it. The
+        // `⋯` below is the wrapper's sibling, so it stays a plain click.
+        let strip = div()
+            .id(SharedString::from(format!("slot-drag-{}", view.id())))
+            .w_full()
+            .child(header)
+            .on_drag(ViewDrag(view), self.view_drag_ghost(cx));
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.
-        div().relative().w_full().flex_none().child(header).child(
+        div().relative().w_full().flex_none().child(strip).child(
             div()
                 .absolute()
                 .top_0()

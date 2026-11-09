@@ -79,6 +79,67 @@ pub(crate) type WeightedChildren<'a, L> = Vec<(f64, &'a Node<L>)>;
 /// Smallest share a ratio setter leaves either side of a split.
 pub(crate) const MIN_RATIO: f64 = 0.1;
 
+/// The least length `Node::make_room` leaves a cell it takes from, so a
+/// cell needing nothing keeps a weight above zero.
+const MIN_SPARE: f64 = 1e-6;
+
+/// The part of `size` (width, height) along `axis`.
+fn along(axis: Axis, size: (f64, f64)) -> f64 {
+    match axis {
+        Axis::Horizontal => size.0,
+        Axis::Vertical => size.1,
+    }
+}
+
+/// The rectangle of each `active` child of a split over `area` along
+/// `axis`: by weight among the active ones, in order. The one place that
+/// does this arithmetic for [`Node::layout_fit`] and the walk of
+/// [`Node::make_room`], so what `make_room` predicts is what `layout_fit`
+/// lays out.
+fn active_rects<L>(
+    axis: Axis,
+    area: UnitRect,
+    children: &[Child<L>],
+    active: &[usize],
+) -> Vec<(usize, UnitRect)> {
+    let total: f64 = active.iter().map(|&i| children[i].weight).sum();
+    let mut offset = 0.0;
+    active
+        .iter()
+        .map(|&i| {
+            let share = children[i].weight / total;
+            let rect = match axis {
+                Axis::Horizontal => {
+                    UnitRect::new(area.x + offset * area.w, area.y, share * area.w, area.h)
+                }
+                Axis::Vertical => {
+                    UnitRect::new(area.x, area.y + offset * area.h, area.w, share * area.h)
+                }
+            };
+            offset += share;
+            (i, rect)
+        })
+        .collect()
+}
+
+/// One split on the way to a leaf, as `Node::make_room` measures it.
+struct PathSplit {
+    /// The child indices from the root down to this split.
+    at: Vec<usize>,
+    axis: Axis,
+    /// The split's length along `axis`.
+    len: f64,
+    /// Its children holding a drawn leaf, in order.
+    drawn: Vec<usize>,
+    /// Of those, the ones that do not collapse, in order.
+    active: Vec<usize>,
+    /// Each child's need along `axis` (drawn leaves only).
+    needs: Vec<f64>,
+    weights: Vec<f64>,
+    /// The child on the way to the leaf.
+    toward: usize,
+}
+
 impl<L: Clone + PartialEq> Node<L> {
     /// A single leaf.
     pub(crate) fn leaf(id: L) -> Self {
@@ -401,43 +462,195 @@ impl<L: Clone + PartialEq> Node<L> {
             }
             Kind::Split { axis, children } => (*axis, children),
         };
-        let along = |size: (f64, f64)| match axis {
-            Axis::Horizontal => size.0,
-            Axis::Vertical => size.1,
-        };
-        let len = along((area.w, area.h));
+        let len = along(axis, (area.w, area.h));
         let needs: Vec<f64> = children
             .iter()
-            .map(|c| along(c.node.min_size(min)))
+            .map(|c| along(axis, c.node.min_size(min)))
             .collect();
-        let mut active: Vec<usize> = (0..children.len()).collect();
-        let mut sum: f64 = needs.iter().sum();
-        while sum > len + 1e-9 {
-            let Some(pos) = active
-                .iter()
-                .rposition(|&i| !children[i].node.leaves().into_iter().any(keep))
-            else {
-                break;
-            };
-            let i = active.remove(pos);
-            sum -= needs[i];
+        let (active, gone) = collapse(len, (0..children.len()).collect(), &needs, &|i: usize| {
+            children[i].node.leaves().into_iter().any(keep)
+        });
+        for i in gone {
             fit.collapsed
                 .extend(children[i].node.leaves().into_iter().rev().cloned());
         }
-        let total: f64 = active.iter().map(|&i| children[i].weight).sum();
-        let mut offset = 0.0;
-        for &i in &active {
-            let share = children[i].weight / total;
-            let rect = match axis {
-                Axis::Horizontal => {
-                    UnitRect::new(area.x + offset * area.w, area.y, share * area.w, area.h)
-                }
-                Axis::Vertical => {
-                    UnitRect::new(area.x, area.y + offset * area.h, area.w, share * area.h)
-                }
-            };
+        for (i, rect) in active_rects(axis, area, children, &active) {
             children[i].node.fit_into(rect, min, keep, fit);
-            offset += share;
+        }
+    }
+
+    /// Grow, by weight, the room `targets` get until [`Self::layout_fit`]
+    /// (with the leaves `drawn` rejects left out) collapses none of them.
+    /// Each round takes the first target still collapsed and the first
+    /// split on the way to it that collapses it, and widens the cell
+    /// holding that split, in the nearest split above it along the same
+    /// axis, to the split's full need. The room comes from the cell's
+    /// surviving siblings, each giving only what it has above its own
+    /// need, so none of them collapses there or (a `keep` one) goes under
+    /// its minimum; the split itself then fits whole.
+    ///
+    /// Bounded: a round leaves the splits above the widened one as they
+    /// were, only adds length inside the widened cell (where collapse can
+    /// only shrink), and fixes one collapsing split, so normally each round
+    /// removes a collapse and adds none. A new one can only appear in a
+    /// split nested inside a sibling that gave room, so the rounds are
+    /// also capped at one per leaf (plus one) for each target; at the cap
+    /// it gives up. True when no target collapses (already, or now);
+    /// false, the node unchanged, when a target is absent or not drawn,
+    /// collapses in a split with nothing above it along that axis that can
+    /// give, or the cap is reached.
+    pub(crate) fn make_room(
+        &mut self,
+        targets: &[L],
+        area: UnitRect,
+        min: &dyn Fn(&L) -> (f64, f64),
+        keep: &dyn Fn(&L) -> bool,
+        drawn: &dyn Fn(&L) -> bool,
+    ) -> bool {
+        let mut grown = self.clone();
+        let rounds = (self.leaves().len() + 1) * targets.len();
+        for round in 0..=rounds {
+            let mut collapsed = None;
+            for target in targets {
+                let Some((splits, collapsing)) = grown.path_to(target, area, min, keep, drawn)
+                else {
+                    return false;
+                };
+                if let Some(s) = collapsing {
+                    collapsed = Some((splits, s));
+                    break;
+                }
+            }
+            let Some((splits, s)) = collapsed else {
+                *self = grown;
+                return true;
+            };
+            if round == rounds {
+                // Out of rounds: the last widen was checked above.
+                return false;
+            }
+            let short = &splits[s];
+            let need: f64 = short.drawn.iter().map(|&i| short.needs[i]).sum();
+            let Some(above) = splits[..s].iter().rev().find(|p| p.axis == short.axis) else {
+                return false;
+            };
+            if !grown.widen(above, need - short.len) {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// The splits on the way from this node to `target` as
+    /// [`Self::layout_fit`] meets them with the leaves `drawn` rejects
+    /// left out (so a split with fewer than two drawn children is passed
+    /// through), and the index of the one that collapses `target`, if
+    /// any. `None` when `target` is absent or not drawn.
+    fn path_to(
+        &self,
+        target: &L,
+        area: UnitRect,
+        min: &dyn Fn(&L) -> (f64, f64),
+        keep: &dyn Fn(&L) -> bool,
+        drawn: &dyn Fn(&L) -> bool,
+    ) -> Option<(Vec<PathSplit>, Option<usize>)> {
+        if !drawn(target) {
+            return None;
+        }
+        let drawn_min = |leaf: &L| if drawn(leaf) { min(leaf) } else { (0.0, 0.0) };
+        let mut splits = Vec::new();
+        let (mut node, mut area, mut at) = (self, area, Vec::new());
+        loop {
+            let (axis, children) = match &node.kind {
+                Kind::Leaf(id) => return (id == target).then_some((splits, None)),
+                Kind::Split { axis, children } => (*axis, children),
+            };
+            let toward = children.iter().position(|c| c.node.contains(target))?;
+            let shown: Vec<usize> = (0..children.len())
+                .filter(|&i| children[i].node.leaves().into_iter().any(drawn))
+                .collect();
+            if shown.len() >= 2 {
+                let len = along(axis, (area.w, area.h));
+                let needs: Vec<f64> = children
+                    .iter()
+                    .map(|c| along(axis, c.node.min_size(&drawn_min)))
+                    .collect();
+                let kept = |i: usize| {
+                    children[i]
+                        .node
+                        .leaves()
+                        .into_iter()
+                        .any(|l| drawn(l) && keep(l))
+                };
+                let (active, _) = collapse(len, shown.clone(), &needs, &kept);
+                let toward_rect = active_rects(axis, area, children, &active)
+                    .into_iter()
+                    .find(|&(i, _)| i == toward)
+                    .map(|(_, rect)| rect);
+                splits.push(PathSplit {
+                    at: at.clone(),
+                    axis,
+                    len,
+                    drawn: shown,
+                    active,
+                    needs,
+                    weights: children.iter().map(|c| c.weight).collect(),
+                    toward,
+                });
+                // Not among the active children: collapsed.
+                let Some(rect) = toward_rect else {
+                    let s = splits.len() - 1;
+                    return Some((splits, Some(s)));
+                };
+                area = rect;
+            }
+            at.push(toward);
+            node = &children[toward].node;
+        }
+    }
+
+    /// Give the child of `split` on the way to the leaf `more` of the
+    /// split's length, taken from its other surviving children in
+    /// proportion to what each has above its need (never below it, nor
+    /// to nothing). Undrawn and collapsed children keep their weights.
+    /// False when the others have nothing to give.
+    fn widen(&mut self, split: &PathSplit, more: f64) -> bool {
+        let total: f64 = split.active.iter().map(|&i| split.weights[i]).sum();
+        let spare = |i: usize| {
+            let len = split.weights[i] / total * split.len;
+            (len - split.needs[i].max(MIN_SPARE)).max(0.0)
+        };
+        let givers: Vec<usize> = split
+            .active
+            .iter()
+            .copied()
+            .filter(|&i| i != split.toward)
+            .collect();
+        let slack: f64 = givers.iter().map(|&i| spare(i)).sum();
+        if slack <= 0.0 || more.is_nan() || more <= 0.0 {
+            return false;
+        }
+        let gain = more.min(slack);
+        let per_len = total / split.len;
+        let Some(children) = self.children_at_mut(&split.at) else {
+            return false;
+        };
+        children[split.toward].weight += gain * per_len;
+        for i in givers {
+            children[i].weight -= gain * spare(i) / slack * per_len;
+        }
+        true
+    }
+
+    /// The children of the split reached from this node by the child
+    /// indices `path`; `None` when that is no split.
+    fn children_at_mut(&mut self, path: &[usize]) -> Option<&mut Vec<Child<L>>> {
+        let Kind::Split { children, .. } = &mut self.kind else {
+            return None;
+        };
+        match path.split_first() {
+            None => Some(children),
+            Some((&i, rest)) => children.get_mut(i)?.node.children_at_mut(rest),
         }
     }
 
@@ -470,6 +683,29 @@ impl<L: Clone + PartialEq> Node<L> {
             }
         }
     }
+}
+
+/// The collapse rule of `Node::layout_fit` for one split `len` long: of
+/// the children `candidates` (in order, `needs[i]` long each along the
+/// split), drop the last one not `kept` while their needs exceed `len`.
+/// The survivors in order, and the dropped ones in the order they went.
+fn collapse(
+    len: f64,
+    mut candidates: Vec<usize>,
+    needs: &[f64],
+    kept: &dyn Fn(usize) -> bool,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut gone = Vec::new();
+    let mut sum: f64 = candidates.iter().map(|&i| needs[i]).sum();
+    while sum > len + 1e-9 {
+        let Some(pos) = candidates.iter().rposition(|&i| !kept(i)) else {
+            break;
+        };
+        let i = candidates.remove(pos);
+        sum -= needs[i];
+        gone.push(i);
+    }
+    (candidates, gone)
 }
 
 /// `weights` scaled to sum 1. Positive finite weights whose sum overflows
@@ -738,5 +974,62 @@ mod tests {
         let f = n.layout_fit(area, &|_| (12.0, 1.0), &|_| true);
         assert!(f.collapsed.is_empty());
         assert_eq!(f.rects.len(), 3);
+    }
+
+    /// `make_room` predicts collapse with `path_to`; it must say what
+    /// `layout_fit` does over the tree with the undrawn leaves removed.
+    #[test]
+    fn path_to_agrees_with_layout_fit() {
+        let col = |a, b, c| {
+            Node::split(
+                Axis::Vertical,
+                vec![
+                    (1.0, Node::leaf(a)),
+                    (2.0, Node::leaf(b)),
+                    (1.0, Node::leaf(c)),
+                ],
+            )
+        };
+        let row = Node::split(
+            Axis::Horizontal,
+            vec![(1.0, Node::leaf('e')), (3.0, col('f', 'g', 'h'))],
+        );
+        let tree = Node::split(
+            Axis::Horizontal,
+            vec![
+                (1.0, col('a', 'b', 'c')),
+                (2.0, Node::leaf('d')),
+                (1.0, row),
+                (1.0, Node::leaf('i')),
+            ],
+        );
+        let min = |_: &char| (12.0, 3.0);
+        let keep = |l: &char| *l == 'd';
+        let undrawn_sets: [&[char]; 4] = [&[], &['b'], &['a', 'g', 'i'], &['e', 'f', 'h']];
+        for width in [20.0, 40.0, 70.0, 120.0] {
+            for height in [4.0, 9.0, 30.0] {
+                let area = UnitRect::new(0.0, 0.0, width, height);
+                for undrawn in undrawn_sets {
+                    let drawn = |l: &char| !undrawn.contains(l);
+                    let mut pruned = tree.clone();
+                    for l in undrawn {
+                        pruned.remove_leaf(l);
+                    }
+                    let fit = pruned.layout_fit(area, &min, &keep);
+                    for leaf in tree.leaves().into_iter().filter(|l| drawn(l)) {
+                        let predicted = tree
+                            .path_to(leaf, area, &min, &keep, &drawn)
+                            .expect("drawn leaf is in the tree")
+                            .1
+                            .is_some();
+                        assert_eq!(
+                            predicted,
+                            fit.collapsed.contains(leaf),
+                            "{leaf} in {width}x{height} without {undrawn:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

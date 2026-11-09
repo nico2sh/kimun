@@ -1189,6 +1189,47 @@ fn place_beside_an_absent_slot_changes_nothing() {
 }
 
 #[test]
+fn place_beside_group_puts_the_new_slot_at_the_editor_edge() {
+    let (mut t, _) = right_with_two();
+    let g = t.active_group();
+    let b = t.place_beside_group("x", g, Dir::Left).unwrap();
+    assert_eq!(t.view_slot(&"x"), Some(b));
+    assert_eq!(t.shown(b), Some("x"));
+    let group = t
+        .regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Group(g))
+        .map(|(_, r)| r)
+        .unwrap();
+    assert!((rect_of(&t, b).right() - group.x()).abs() < 1e-9);
+}
+
+#[test]
+fn place_beside_group_right_puts_the_new_slot_after_the_editor() {
+    let (mut t, _) = right_with_two();
+    let g = t.active_group();
+    let b = t.place_beside_group("x", g, Dir::Right).unwrap();
+    let group = t
+        .regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Group(g))
+        .map(|(_, r)| r)
+        .unwrap();
+    assert!((rect_of(&t, b).x() - group.right()).abs() < 1e-9);
+}
+
+#[test]
+fn place_beside_an_absent_group_changes_nothing() {
+    let (mut t, _) = right_with_two();
+    let before = t.clone();
+    assert_eq!(
+        t.place_beside_group("x", GroupId::new(99), Dir::Left),
+        Err(TreeError::NoSuchGroup)
+    );
+    assert_eq!(t, before);
+}
+
+#[test]
 fn place_beside_reuses_a_split_along_the_same_axis() {
     let (mut t, a) = right_with_two();
     let c = t.split_slot(a, Axis::Vertical).unwrap();
@@ -1261,4 +1302,203 @@ fn vacate_close_closes_a_slot_with_a_sibling_on_its_side() {
     let lower = t.place_beside("files", left, Dir::Down).unwrap();
     assert!(!t.slot_views(lower).is_empty());
     assert_eq!(t.vacate_close(lower), None);
+}
+
+// ── Making room ───────────────────────────────────────────────────────
+
+/// FILES (s0) and ASK (s1) side by side over FIND (s2) left, the group, and
+/// OUTLINE (s3) right, weighted `left : group : right`.
+fn ask_beside_files(left: f64, group: f64, right: f64) -> (Tree, [SlotId; 4], GroupId) {
+    let s = [0, 1, 2, 3].map(SlotId::new);
+    let g = GroupId::new(0);
+    let pair = Node::split(
+        Axis::Horizontal,
+        vec![
+            (1.0, Node::leaf(Leaf::Slot(s[0]))),
+            (1.0, Node::leaf(Leaf::Slot(s[1]))),
+        ],
+    );
+    let column = Node::split(
+        Axis::Vertical,
+        vec![(1.0, pair), (1.0, Node::leaf(Leaf::Slot(s[2])))],
+    );
+    let root = Node::split(
+        Axis::Horizontal,
+        vec![
+            (left, column),
+            (group, Node::leaf(Leaf::Group(g))),
+            (right, Node::leaf(Leaf::Slot(s[3]))),
+        ],
+    );
+    let slots = BTreeMap::from([
+        (s[0], (vec!["files"], Some("files"))),
+        (s[1], (vec!["ask"], Some("ask"))),
+        (s[2], (vec!["find"], Some("find"))),
+        (s[3], (vec!["outline"], Some("outline"))),
+    ]);
+    (Tree::from_parts(root, slots).unwrap(), s, g)
+}
+
+/// Group 20 wide, ASK (s1) 18 × 12, every other slot 10 × 6.
+fn room_min(leaf: Leaf) -> (f64, f64) {
+    match leaf {
+        Leaf::Group(_) => (20.0, 0.0),
+        Leaf::Slot(s) if s == SlotId::new(1) => (18.0, 12.0),
+        Leaf::Slot(_) => (10.0, 6.0),
+    }
+}
+
+fn fit_width(fit: &Fit<Leaf>, leaf: Leaf) -> f64 {
+    fit.rects
+        .iter()
+        .find(|(l, _)| *l == leaf)
+        .map(|(_, r)| r.width())
+        .expect("leaf has a rectangle")
+}
+
+/// The left column's 0.2 cannot hold FILES and ASK side by side (28
+/// wide), so ASK collapses. Making room grows the column, taking from
+/// the group and OUTLINE: ASK fits, nothing else collapses, and neither
+/// sibling goes under its minimum.
+#[test]
+fn make_room_grows_the_column_holding_a_collapsed_slot() {
+    let (mut t, s, g) = ask_beside_files(0.2, 0.6, 0.2);
+    let area = UnitRect::new(0.0, 0.0, 59.5, 27.5);
+    assert_eq!(
+        t.fit(area, &room_min, &|_| true).collapsed,
+        vec![Leaf::Slot(s[1])]
+    );
+    assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &|_| true));
+    let fit = t.fit(area, &room_min, &|_| true);
+    assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
+    let column = fit_width(&fit, Leaf::Slot(s[0])) + fit_width(&fit, Leaf::Slot(s[1]));
+    assert!(column >= 28.0 - 1e-9, "{column}");
+    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+    assert!(fit_width(&fit, Leaf::Slot(s[3])) >= 10.0 - 1e-9);
+}
+
+/// The group sits just above its minimum and OUTLINE has plenty: the room
+/// comes from what each sibling has above its minimum, not from its
+/// weight, so the group never goes under its minimum.
+#[test]
+fn make_room_never_shrinks_the_group_below_its_minimum() {
+    let (mut t, s, g) = ask_beside_files(0.2, 0.35, 0.45);
+    let area = UnitRect::new(0.0, 0.0, 59.5, 27.5);
+    assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &|_| true));
+    let fit = t.fit(area, &room_min, &|_| true);
+    assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
+    let group = fit_width(&fit, Leaf::Group(g));
+    assert!(group >= 20.0 - 1e-9, "{group}");
+}
+
+/// Too narrow for the column next to the group at all: the column
+/// collapses in the outermost split, which nothing can grow. False, and
+/// the tree is unchanged.
+#[test]
+fn make_room_without_room_changes_nothing() {
+    let (mut t, s, _) = ask_beside_files(0.2, 0.6, 0.2);
+    let before = t.clone();
+    let area = UnitRect::new(0.0, 0.0, 40.0, 27.5);
+    assert!(!t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &|_| true));
+    assert_eq!(t, before);
+}
+
+/// A leaf that already fits: true, the tree is unchanged.
+#[test]
+fn make_room_for_a_leaf_that_fits_changes_nothing() {
+    let (mut t, s, _) = ask_beside_files(0.4, 0.4, 0.2);
+    let before = t.clone();
+    let area = UnitRect::new(0.0, 0.0, 100.0, 27.5);
+    assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &|_| true));
+    assert_eq!(t, before);
+}
+
+/// OUTLINE is not drawn: it gives nothing and keeps its weight (its
+/// region, by weight over every leaf, is as wide as before); the room
+/// comes from the group.
+#[test]
+fn make_room_leaves_undrawn_leaves_alone() {
+    let (mut t, s, g) = ask_beside_files(0.2, 0.6, 0.2);
+    let area = UnitRect::new(0.0, 0.0, 59.5, 27.5);
+    let drawn = |leaf: Leaf| leaf != Leaf::Slot(s[3]);
+    let outline = rect_of(&t, s[3]).width();
+    assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &drawn));
+    let fit = t.fit(area, &room_min, &drawn);
+    assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
+    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+    assert!((rect_of(&t, s[3]).width() - outline).abs() < 1e-9);
+}
+
+/// X (s1) joins the cell's split between A (s0) and B (s2): the split now
+/// collapses B, not X. Making room for both grows the cell in the root
+/// split until neither collapses; making room for X alone leaves B
+/// collapsed, since X already fits.
+#[test]
+fn make_room_grows_for_every_leaf_it_is_given() {
+    let s = [0, 1, 2].map(SlotId::new);
+    let g = GroupId::new(0);
+    let cell = Node::split(
+        Axis::Horizontal,
+        vec![
+            (1.0, Node::leaf(Leaf::Slot(s[0]))),
+            (1.0, Node::leaf(Leaf::Slot(s[1]))),
+            (1.0, Node::leaf(Leaf::Slot(s[2]))),
+        ],
+    );
+    let root = Node::split(
+        Axis::Horizontal,
+        vec![(0.5, cell), (0.5, Node::leaf(Leaf::Group(g)))],
+    );
+    let slots = BTreeMap::from([
+        (s[0], (vec!["files"], Some("files"))),
+        (s[1], (vec!["ask"], Some("ask"))),
+        (s[2], (vec!["tags"], Some("tags"))),
+    ]);
+    let t = Tree::from_parts(root, slots).unwrap();
+    let area = UnitRect::new(0.0, 0.0, 59.5, 27.5);
+    let (x, b) = (Leaf::Slot(s[1]), Leaf::Slot(s[2]));
+    assert_eq!(t.fit(area, &room_min, &|_| true).collapsed, vec![b]);
+
+    let mut alone = t.clone();
+    assert!(alone.make_room(&[x], area, &room_min, &|_| true));
+    assert_eq!(alone, t, "X fits already");
+
+    let mut both = t.clone();
+    assert!(both.make_room(&[x, b], area, &room_min, &|_| true));
+    let fit = both.fit(area, &room_min, &|_| true);
+    assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
+    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+}
+
+/// Left slot, group A, a slot between the groups, group B (active).
+fn slot_between_two_groups() -> (Tree, GroupId, GroupId, SlotId, SlotId) {
+    let mut t = tree();
+    let a = t.active_group();
+    let b = t.split_group(a, Axis::Horizontal).unwrap();
+    let mid = t.place_beside_group("mid", b, Dir::Left).unwrap();
+    t.focus(Focus::Leaf(Leaf::Group(b)));
+    assert_eq!(t.active_group(), b);
+    (t, a, b, sides(&tree()).0, mid)
+}
+
+#[test]
+fn edge_group_is_the_outermost_one_whichever_is_active() {
+    let (mut t, a, b, _, _) = slot_between_two_groups();
+    assert_eq!(t.edge_group(Side::Left), Some(a));
+    assert_eq!(t.edge_group(Side::Right), Some(b));
+    t.focus(Focus::Leaf(Leaf::Group(a)));
+    assert_eq!(t.edge_group(Side::Left), Some(a));
+    assert_eq!(t.edge_group(Side::Right), Some(b));
+}
+
+#[test]
+fn edge_slots_exclude_slots_between_groups_and_ignore_the_active_group() {
+    let (mut t, a, _, _, mid) = slot_between_two_groups();
+    let left = t.edge_slots(Side::Left);
+    assert_eq!(left.len(), 1);
+    assert!(!left.contains(&mid));
+    // Relative to the active group B, the slot between the groups counts.
+    assert!(t.side_slots(Side::Left).contains(&mid));
+    t.focus(Focus::Leaf(Leaf::Group(a)));
+    assert_eq!(t.edge_slots(Side::Left), left);
 }
