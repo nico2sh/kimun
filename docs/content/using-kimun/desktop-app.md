@@ -19,7 +19,13 @@ curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
 
 On Linux it also puts the app in your application menu (a launcher entry and icons under `~/.local/share`). On macOS it installs the plain binary: run `kimun-gui` from a terminal. For a double-clickable app, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases) and drag Kimün to Applications. The script installs into `~/.local/bin` (set `KIMUN_INSTALL_DIR` to change it), checks the download's checksum, and leaves an install marker so the app can update itself. It can sit beside the terminal app.
 
-**Windows:** download `kimun-gui-<version>-windows-x64.zip` from the [releases page](https://github.com/nico2sh/kimun/releases), unzip it and run `kimun-gui.exe`. There is no installer yet.
+**Windows:** the PowerShell installer, with `-Gui`:
+
+```powershell
+& ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui
+```
+
+It needs no admin rights, installs into `%LOCALAPPDATA%\Programs\kimun`, adds a Start-menu shortcut and puts the folder on your user `PATH` (open a new terminal to use it). Or download `kimun-gui-<version>-windows-x64.zip` from the [releases page](https://github.com/nico2sh/kimun/releases), unzip it and run `kimun-gui.exe`.
 
 **From source,** in a checkout of the repository:
 

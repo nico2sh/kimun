@@ -59,6 +59,7 @@ jobs:
       - name: Publish install.sh
         run: |
           cp install.sh docs/public/install.sh
+          cp install.ps1 docs/public/install.ps1
           cp install-server.sh docs/public/install-server.sh
 
       - name: Upload Pages artifact
