@@ -39,6 +39,15 @@ $ProgressPreference = "SilentlyContinue"
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "kimun: $why" }
 
+# Releases carry checksums-sha256.txt.minisig, a minisign signature of their checksums file
+# (.github/RELEASING.md, "Signing"). $signingPubKey is release-signing.pub, line 2; empty means
+# signing is not live yet and nothing is checked. With a key and minisign installed the signature
+# is checked and the digest comes from the file it signed. A missing signature is an error for the
+# latest release (what the unsigned manifest names) and a warning for a version pinned with
+# KIMUN_VERSION, which may predate signing. Without minisign the install goes on on the sha256
+# alone, and says so.
+$signingPubKey = ""
+
 $repo = "nico2sh/kimun"
 $tagPrefix = "kimun-notes-v"
 $bin = if ($WantGui) { "kimun-gui" } else { "kimun" }
@@ -132,14 +141,40 @@ try {
         Fail "failed to download $archive (is $version a release? A release published minutes ago may still be attaching its files: try again shortly)"
     }
 
-    # Verify the checksum: the manifest's, or else the release's published checksums file
-    # (an exact name match). The digest is from .NET (Get-FileHash fails when PowerShell 7
-    # starts 5.1).
+    # Verify the checksum: the signed list when minisign can check it, else the manifest's,
+    # else the release's published checksums file (an exact name match). The digest is from
+    # .NET (Get-FileHash fails when PowerShell 7 starts 5.1).
     Write-Host "Verifying checksum..."
+    $signed = $false
+    $sums = "$tmp\checksums-sha256.txt"
+    $minisign = Get-Command minisign.exe -ErrorAction SilentlyContinue
+    $haveSums = $false
+    if (-not $signingPubKey) {
+        # signing is not live yet
+    } elseif (-not $minisign) {
+        Write-Warning "minisign is not installed: the release signature was not checked (sha256 only)"
+    } else {
+        # No -S and no redirects: under Stop, Windows PowerShell 5.1 turns redirected native stderr into an error.
+        curl.exe -fsL "$base/checksums-sha256.txt" -o $sums
+        $haveSums = -not $LASTEXITCODE
+        curl.exe -fsL "$base/checksums-sha256.txt.minisig" -o "$sums.minisig"
+        if ($haveSums -and -not $LASTEXITCODE) {
+            & $minisign.Source -V -q -P $signingPubKey -m $sums -x "$sums.minisig" | Out-Null
+            if ($LASTEXITCODE) { Fail "the signature of checksums-sha256.txt is NOT valid: refusing to install" }
+            $expected = $null   # the signed list is the authority, not the manifest
+            $signed = $true
+        } elseif ($env:KIMUN_VERSION) {
+            Write-Warning "this release has no signature (it may predate signing): sha256 only"
+        } else {
+            Fail "the latest release should be signed but its signature could not be fetched: refusing to install"
+        }
+    }
     if (-not $expected) {
-        curl.exe -fsSL "$base/checksums-sha256.txt" -o "$tmp\checksums-sha256.txt"
-        if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
-        foreach ($line in Get-Content "$tmp\checksums-sha256.txt") {
+        if (-not $haveSums) {
+            curl.exe -fsSL "$base/checksums-sha256.txt" -o $sums
+            if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
+        }
+        foreach ($line in Get-Content $sums) {
             $f = $line.Trim() -split "\s+", 2
             if ($f.Count -eq 2 -and $f[1].TrimStart("*") -eq $archive) { $expected = $f[0].ToLowerInvariant(); break }
         }

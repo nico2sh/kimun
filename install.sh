@@ -55,6 +55,36 @@ usage() {
   fi
 }
 
+# --- release signature ----------------------------------------------------
+# Releases carry checksums-sha256.txt.minisig, a minisign signature of their checksums file
+# (see .github/RELEASING.md, "Signing"). SIGNING_PUBKEY is release-signing.pub, line 2; empty
+# means signing is not live yet and nothing is checked. With a key and minisign installed the
+# signature is checked and the digest comes from the file it signed. A missing signature is an
+# error for the latest release (what the unsigned manifest names) and a warning for a version
+# pinned with KIMUN_VERSION, which may predate signing. Without minisign the install goes on
+# on the sha256 alone, and says so. install-server.sh carries the same block: keep them identical.
+SIGNING_PUBKEY=""
+# verify_signature BASE_URL TMP PINNED: sets SIGNED_LIST to the verified checksums file, or
+# "" when nothing was verified. PINNED=1 when the user chose the version.
+verify_signature() {
+  SIGNED_LIST=""
+  [ -n "$SIGNING_PUBKEY" ] || return 0
+  if ! have minisign; then
+    warn "minisign is not installed: the release signature was not checked (sha256 only)"
+    return 0
+  fi
+  if download "$1/checksums-sha256.txt" "$2/checksums-sha256.txt" 2>/dev/null \
+     && download "$1/checksums-sha256.txt.minisig" "$2/checksums-sha256.txt.minisig" 2>/dev/null; then
+    minisign -V -q -P "$SIGNING_PUBKEY" -m "$2/checksums-sha256.txt" -x "$2/checksums-sha256.txt.minisig" >/dev/null 2>&1 \
+      || err "the signature of checksums-sha256.txt is NOT valid: refusing to install"
+    SIGNED_LIST="$2/checksums-sha256.txt"
+  elif [ "$3" = 1 ]; then
+    warn "this release has no signature (it may predate signing): sha256 only"
+  else
+    err "the latest release should be signed but its signature could not be fetched: refusing to install"
+  fi
+}
+
 # --- detect platform -------------------------------------------------------
 detect_platform() {
   os="$(uname -s)"
@@ -277,15 +307,25 @@ main() {
     err "failed to download $ARCHIVE (is $VERSION a release?)"
   fi
 
-  # Verify the checksum: the manifest's, or else the release's published checksums file.
+  # Verify the checksum: the signed list when minisign can check it, else the manifest's,
+  # else the release's published checksums file.
   info "Verifying checksum..."
   expected="$EXPECTED"
+  verify_signature "$BASE_URL" "$tmp" "$([ -n "${KIMUN_VERSION:-}" ] && echo 1 || echo 0)"
+  if [ -n "$SIGNED_LIST" ]; then
+    expected=""
+    SUMS="$SIGNED_LIST"
+  else
+    SUMS="$tmp/checksums-sha256.txt"
+    if [ -z "$expected" ] && [ ! -s "$SUMS" ]; then
+      download "$BASE_URL/checksums-sha256.txt" "$SUMS" \
+        || err "failed to download checksums-sha256.txt"
+    fi
+  fi
   if [ -z "$expected" ]; then
-    download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" \
-      || err "failed to download checksums-sha256.txt"
     # Exact filename match (field 2), not a regex — the archive name contains '.'
     # which would otherwise act as a wildcard.
-    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$tmp/checksums-sha256.txt")"
+    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$SUMS")"
   fi
   [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
   actual="$(sha256_of "$tmp/$ARCHIVE")"

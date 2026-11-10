@@ -203,6 +203,16 @@ jobs:
           cat checksums-sha256.txt
         shell: bash
 
+      # One minisign signature over checksums-sha256.txt covers every file.
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Sign the checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          REQUIRE_SIGNATURE: "1"
+        run: bash .github/scripts/sign-release.sh release-artifacts
+
       # Attach binaries to the release release-plz created as a DRAFT (so
       # install-server.sh never sees it before its files are here), and publish
       # it: `draft: false` is what makes it visible. No `body:` / `name:` here:
@@ -222,5 +232,6 @@ jobs:
             release-artifacts/kimun-server-*.zip
             release-artifacts/kimun-server-*.tar.gz
             release-artifacts/checksums-sha256.txt
+            release-artifacts/checksums-sha256.txt.minisig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -146,6 +146,12 @@ jobs:
         if: matrix.lint
         run: bash .github/scripts/test-macos-packaging.sh
 
+      # minisign: the installer tests check signatures with a throwaway key, and the
+      # signing script is tested with it.
+      - name: Install minisign
+        if: matrix.lint
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
       # install.sh against a fake release served from a directory: both apps,
       # the Linux launcher files, the marker, a bad checksum, the options.
       - name: Installer tests
@@ -157,6 +163,11 @@ jobs:
       - name: Server installer tests
         if: matrix.lint
         run: bash .github/scripts/test-install-server.sh
+
+      # sign-release.sh with a throwaway key: signs, verifies, breaks on tampering.
+      - name: Release signing tests
+        if: matrix.lint
+        run: bash .github/scripts/test-sign-release.sh
 
       # install.ps1 on a real Windows host, in both shells people use: Windows
       # PowerShell 5.1 (what `powershell` starts) and PowerShell 7. A fake release
