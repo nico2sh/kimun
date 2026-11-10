@@ -29,15 +29,20 @@ readers() { # SCRIPT -> the two awk readers, without indentation
   || fail "the latest.json readers in install.sh and install-server.sh differ: keep them identical"
 ok "install.sh and install-server.sh read latest.json with the same code"
 
-# The key they pin must be the committed one.
-if [ -f release-signing.pub ]; then
-  key="$(sed -n 2p release-signing.pub)"
-  for f in install.sh install-server.sh; do
-    grep -qx "SIGNING_PUBKEY=\"$key\"" "$f" || fail "$f does not pin the key in release-signing.pub"
-  done
-  ok "the installers pin the key in release-signing.pub"
+# The key the installers pin: empty while signing is not live, else the committed one. All
+# three scripts must agree (all empty, or all the key in release-signing.pub).
+pinned() { # FILE -> the pinned key, or nothing
+  sed -n -e 's/^SIGNING_PUBKEY="\(.*\)"$/\1/p' -e 's/^\$signingPubKey = "\(.*\)"\r\{0,1\}$/\1/p' "$1"
+}
+pins="$(for f in install.sh install-server.sh install.ps1; do printf '[%s]\n' "$(pinned "$f")"; done | sort -u)"
+[ "$(printf '%s\n' "$pins" | wc -l)" = 1 ] || fail "install.sh, install-server.sh and install.ps1 pin different keys: $pins"
+key="$(pinned install.sh)"
+if [ -z "$key" ]; then
+  ok "the installers pin no key yet: signature checking is off"
 else
-  echo "note: release-signing.pub is not committed yet: the installers pin no key"
+  [ -f release-signing.pub ] || fail "the installers pin a key but release-signing.pub is missing"
+  [ "$key" = "$(sed -n 2p release-signing.pub)" ] || fail "the installers pin a key that is not in release-signing.pub"
+  ok "the installers pin the key in release-signing.pub"
 fi
 
 # A release: the server's archive for every platform the script can pick, and checksums.
