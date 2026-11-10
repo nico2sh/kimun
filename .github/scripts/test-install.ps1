@@ -254,6 +254,27 @@ try {
         if ($r.Output -notmatch "could not reach the GitHub releases API") { Fail "no manifest, no API said: $($r.Output)" }
         Ok "no manifest and no API: a plain error"
     }
+    # 9. The release signature. The runner has no minisign (the shell installers' tests cover
+    # the check itself), so this is the policy around it: with a key pinned and no minisign, the
+    # install goes on on its sha256 with a warning; with no key pinned, quietly.
+    if (Get-Command minisign.exe -ErrorAction SilentlyContinue) {
+        Write-Host "skipped: minisign is installed here, the no-minisign cases do not apply"
+    } else {
+        $savedScript = $script
+        foreach ($case in @(@("on", $true), @("off", $false))) {
+            $patched = Join-Path $work "install-$($case[0]).ps1"
+            $pinned = if ($case[1]) { "AAAA" } else { "" }
+            [IO.File]::WriteAllText($patched, ((Get-Content -Raw $savedScript) -replace '(?m)^\$signingPubKey = ".*"\r?$', "`$signingPubKey = `"$pinned`""), (New-Object Text.UTF8Encoding $false))
+            if ($case[1] -and (Get-Content -Raw $patched) -notmatch 'signingPubKey = "AAAA"') { Fail "the test could not set signingPubKey in the script copy" }
+            $script = $patched
+            $r = Invoke-Install (Join-Path $work "sg-$($case[0])") $rel "file"
+            $script = $savedScript
+            if ($r.Code -ne 0) { Fail "no minisign, signing $($case[0]): exited $($r.Code):`n$($r.Output)" }
+            $warned = $r.Output -match "minisign\s+is\s+not\s+installed"
+            if ($warned -ne $case[1]) { Fail "no minisign, signing $($case[0]): warned=$warned, wanted $($case[1]):`n$($r.Output)" }
+        }
+        Ok "without minisign: a pinned key warns that the signature was not checked, no key is quiet"
+    }
 } finally {
     # Put back what was changed on this machine.
     $env:USERPROFILE = $userprofile

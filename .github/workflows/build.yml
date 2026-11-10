@@ -223,6 +223,17 @@ jobs:
           EXPECT_DMG: ${{ secrets.APPLE_CERT_P12 != '' && '1' || '0' }}
         run: bash .github/scripts/verify-release-assets.sh release-artifacts "$VERSION"
 
+      # One minisign signature over checksums-sha256.txt covers every file. A real release
+      # without the key fails here, before anything is published; a dry run only warns.
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Sign the checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          REQUIRE_SIGNATURE: ${{ github.event_name != 'workflow_dispatch' && '1' || '0' }}
+        run: bash .github/scripts/sign-release.sh release-artifacts
+
       # A manual dry run stops here: the assets are kept as a workflow artifact
       # to download and try, and nothing below runs.
       - name: Keep the assets (dry run)
@@ -233,6 +244,7 @@ jobs:
           path: |
             release-artifacts/kimun-*
             release-artifacts/checksums-sha256.txt
+            release-artifacts/checksums-sha256.txt.minisig
 
       - name: Upload checksums for downstream jobs
         uses: actions/upload-artifact@v4
@@ -269,6 +281,7 @@ jobs:
             release-artifacts/kimun-*-macos-arm64
             release-artifacts/kimun-*-windows-x64.exe
             release-artifacts/checksums-sha256.txt
+            release-artifacts/checksums-sha256.txt.minisig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

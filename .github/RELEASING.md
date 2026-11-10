@@ -38,6 +38,31 @@ one-line warning and use the API as before. The site rebuilds when `release-plz`
 release only once the draft has been published with its files. After a release, check `curl -fsS https://kimun.2co.dev/latest.json`
 names the new version; if not, look at the `Publish latest.json` step of the last `docs` run (it cannot fail the deploy, only leave the file out).
 
+## Signing
+
+Every release carries `checksums-sha256.txt.minisig`: a [minisign](https://jedisct1.github.io/minisign/) signature of
+`checksums-sha256.txt`, which lists the sha256 of every other file, so one signature covers the release. `build.yml` and
+`build-server.yml` sign it (`.github/scripts/sign-release.sh`) before anything is published. A real release without the key
+**fails at that step**; a manual dry run only warns. The manifest carries `checksums_url` and `signature_url` for each series.
+
+The **installers** (`install.sh`, `install-server.sh`, `install.ps1`) check it when `minisign` is installed. The in-app updater does
+**not** check it yet: it still trusts the sha256 in `latest.json`. Each installer pins the public key in `SIGNING_PUBKEY`; while that is
+empty, signing is not live and nothing is checked. With a key pinned and minisign installed, a bad signature refuses the install, and so
+does a missing one on the latest release (a version pinned with `KIMUN_VERSION` only warns, since it may predate signing). Without
+minisign they install on the sha256 and warn. `test-install-server.sh` checks the shell installers pin the same key as `release-signing.pub`.
+
+One-time setup, on your own machine (never in CI):
+
+1. `minisign -G -p release-signing.pub -s kimun-release.key` (pick a password).
+2. Commit `release-signing.pub` at the repository root. `sign-release.sh` checks every new signature against it and fails the release if
+   `MINISIGN_SECRET_KEY` is not its key.
+3. Repository secrets: `MINISIGN_SECRET_KEY` = the contents of `kimun-release.key`, `MINISIGN_PASSWORD` = its password.
+4. Keep `kimun-release.key` and the password somewhere safe and offline. Losing the key means shipping a new public key in a new release.
+
+To turn checking on, in the release PR of the **first signed release**, paste line 2 of `release-signing.pub` into `SIGNING_PUBKEY` in all
+three installers. Until that release is published, `latest` is unsigned and the installers would refuse it, so merge the PR and publish
+the release together.
+
 ## Rehearse without publishing
 
 - **On this machine, this platform:** `bash .github/scripts/rehearse-release.sh`. Builds both apps in release mode, packages them with
