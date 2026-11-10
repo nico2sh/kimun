@@ -1,7 +1,7 @@
 //! Update awareness and (where permitted) self-update.
 //!
-//! On launch the app asks GitHub whether a newer stable `kimun-notes-v*` exists
-//! and surfaces the result; on self-update-eligible channels it can also swap
+//! On launch the app asks the release manifest (and, failing that, GitHub) whether a newer
+//! stable `kimun-notes-v*` exists and surfaces the result; on self-update-eligible channels it can also swap
 //! the binary in place. All network and filesystem work here is **blocking** —
 //! callers run it on `tokio::task::spawn_blocking` so the TUI never stalls.
 //!
@@ -14,6 +14,7 @@
 mod apply;
 mod channel;
 mod github;
+mod manifest;
 mod platform;
 mod provider;
 mod state;
@@ -26,6 +27,9 @@ pub use state::UpdateState;
 /// The active release backend. **Single switch point** for *where* releases are
 /// fetched from: implement [`ReleaseProvider`] elsewhere and return it here.
 ///
+/// Today: the static release manifest (`latest.json` on the docs site), and the GitHub
+/// releases API whenever the manifest cannot be used.
+///
 /// Scope: the trait covers release discovery and the human releases URL only.
 /// Asset *naming* — the raw-binary filename ([`platform::binary_asset_name`])
 /// and the `checksums-sha256.txt` name in [`apply()`] — is a property of this
@@ -33,7 +37,7 @@ pub use state::UpdateState;
 /// not part of the trait. A provider for a different repo layout would also
 /// adjust those.
 fn provider() -> impl ReleaseProvider {
-    github::GitHubProvider
+    manifest::ManifestProvider
 }
 
 /// Human-facing releases page for the active provider (shown when self-update

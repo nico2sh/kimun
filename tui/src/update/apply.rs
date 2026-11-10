@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::UpdateError;
 use super::platform::{self, Product};
-use super::provider::LatestRelease;
+use super::provider::{Asset, LatestRelease};
 
 const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
 
@@ -29,15 +29,9 @@ pub fn self_update(latest: &LatestRelease, product: Product) -> Result<(), Updat
     let binary_asset = latest
         .asset(&asset_name)
         .ok_or_else(|| UpdateError::MissingAsset(asset_name.clone()))?;
-    let checksums_asset = latest
-        .asset(CHECKSUMS_ASSET)
-        .ok_or_else(|| UpdateError::MissingAsset(CHECKSUMS_ASSET.to_string()))?;
 
     // Resolve the expected digest before downloading the (larger) binary.
-    let checksums_bytes = download_bytes(&checksums_asset.url)?;
-    let checksums = String::from_utf8_lossy(&checksums_bytes);
-    let expected = checksum_for(&checksums, &asset_name)
-        .ok_or_else(|| UpdateError::NoChecksum(asset_name.clone()))?;
+    let expected = expected_digest(latest, binary_asset, download_bytes)?;
 
     let bytes = download_bytes(&binary_asset.url)?;
     let actual = hex_sha256(&bytes);
@@ -59,6 +53,26 @@ pub fn self_update(latest: &LatestRelease, product: Product) -> Result<(), Updat
     // Clean up the staging file regardless of outcome.
     let _ = kimun_core::system::remove_file(&staged);
     result
+}
+
+/// The digest `binary_asset` must have: the one the provider already knows (the release
+/// manifest lists it), else the one in the release's `checksums-sha256.txt`, which is
+/// fetched with `download`.
+fn expected_digest(
+    latest: &LatestRelease,
+    binary_asset: &Asset,
+    download: impl FnOnce(&str) -> Result<Vec<u8>, UpdateError>,
+) -> Result<String, UpdateError> {
+    if let Some(digest) = &binary_asset.sha256 {
+        return Ok(digest.clone());
+    }
+    let checksums_asset = latest
+        .asset(CHECKSUMS_ASSET)
+        .ok_or_else(|| UpdateError::MissingAsset(CHECKSUMS_ASSET.to_string()))?;
+    let checksums_bytes = download(&checksums_asset.url)?;
+    let checksums = String::from_utf8_lossy(&checksums_bytes);
+    checksum_for(&checksums, &binary_asset.name)
+        .ok_or_else(|| UpdateError::NoChecksum(binary_asset.name.clone()))
 }
 
 /// Upper bound on any single download, guarding against an unbounded read from
@@ -92,4 +106,62 @@ fn hex_sha256(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH: &str = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12";
+
+    fn asset(name: &str, sha256: Option<&str>) -> Asset {
+        Asset {
+            name: name.to_string(),
+            url: format!("https://dl.example/{name}"),
+            sha256: sha256.map(str::to_string),
+        }
+    }
+
+    fn release(assets: Vec<Asset>) -> LatestRelease {
+        LatestRelease {
+            version: "1.2.3".to_string(),
+            assets,
+        }
+    }
+
+    #[test]
+    fn a_digest_the_provider_knows_is_used_without_any_download() {
+        let bin = asset("kimun-1.2.3-linux-x64", Some(HASH));
+        let latest = release(vec![bin.clone()]);
+        let got = expected_digest(&latest, &bin, |_| panic!("nothing should be downloaded"));
+        assert_eq!(got.unwrap(), HASH);
+    }
+
+    #[test]
+    fn without_one_it_reads_the_checksums_file() {
+        let bin = asset("kimun-1.2.3-linux-x64", None);
+        let sums = asset(CHECKSUMS_ASSET, None);
+        let latest = release(vec![bin.clone(), sums]);
+        let got = expected_digest(&latest, &bin, |url| {
+            assert_eq!(url, "https://dl.example/checksums-sha256.txt");
+            Ok(format!("{HASH}  kimun-1.2.3-linux-x64\nffff  other\n").into_bytes())
+        });
+        assert_eq!(got.unwrap(), HASH);
+    }
+
+    #[test]
+    fn no_known_digest_and_no_checksums_file_is_a_missing_asset() {
+        let bin = asset("kimun-1.2.3-linux-x64", None);
+        let latest = release(vec![bin.clone()]);
+        let got = expected_digest(&latest, &bin, |_| panic!("no checksums asset to download"));
+        assert!(matches!(got, Err(UpdateError::MissingAsset(n)) if n == CHECKSUMS_ASSET));
+    }
+
+    #[test]
+    fn a_checksums_file_without_the_binary_is_no_checksum() {
+        let bin = asset("kimun-1.2.3-linux-x64", None);
+        let latest = release(vec![bin.clone(), asset(CHECKSUMS_ASSET, None)]);
+        let got = expected_digest(&latest, &bin, |_| Ok(b"ffff  something-else\n".to_vec()));
+        assert!(matches!(got, Err(UpdateError::NoChecksum(n)) if n == "kimun-1.2.3-linux-x64"));
+    }
 }

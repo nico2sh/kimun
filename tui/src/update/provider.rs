@@ -15,6 +15,10 @@ pub struct Asset {
     pub name: String,
     /// Direct download URL.
     pub url: String,
+    /// The file's sha256 (lowercase hex) when the provider knows it, as the release
+    /// manifest does. Without one the downloader reads the release's
+    /// `checksums-sha256.txt` instead (the GitHub provider's way).
+    pub sha256: Option<String>,
 }
 
 /// The newest stable app release and everything needed to download it.

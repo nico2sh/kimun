@@ -20,6 +20,10 @@
 #                       (a pre-release too, e.g. 0.25.0-beta.1)
 #   KIMUN_DOWNLOAD_BASE where the release's files are fetched from (default: the
 #                       release's GitHub download URL); for testing
+#   KIMUN_MANIFEST_URL  the release manifest (default: https://kimun.2co.dev/latest.json);
+#                       for testing
+#   KIMUN_RELEASES_API  the GitHub releases list used when the manifest cannot be read
+#                       (default: the repository's api.github.com URL); for testing
 #
 # The desktop app also gets a Start-menu shortcut. The folder is added to your
 # user PATH, so `kimun` and `kimun-gui` work in a new terminal.
@@ -57,24 +61,43 @@ if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue) -or -not (Test-Pat
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "kimun-install-$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 try {
-    # The latest *stable* app release. /releases/latest cannot be used: this repo
-    # publishes several tag series (kimun-notes-v* for the app, kimun_core-v*,
-    # kimun_server-v*), and "latest" is the newest of any. List them (newest first)
-    # and take the first app tag with no pre-release suffix (a hyphen).
+    # The latest *stable* app release: from the manifest (latest.json, see
+    # .github/scripts/release_manifest.py), else from the GitHub API. The API's
+    # /releases/latest cannot be used: this repo publishes several tag series
+    # (kimun-notes-v* for the app, kimun_core-v*, kimun_server-v*), and "latest" is the
+    # newest of any. So that list (newest first, and only the newest 100 across all
+    # series) is scanned for the first app tag with no pre-release suffix (a hyphen).
+    $manifestUrl = if ($env:KIMUN_MANIFEST_URL) { $env:KIMUN_MANIFEST_URL } else { "https://kimun.2co.dev/latest.json" }
+    $releasesApi = if ($env:KIMUN_RELEASES_API) { $env:KIMUN_RELEASES_API } else { "https://api.github.com/repos/$repo/releases?per_page=100" }
+    $app = $null   # the manifest's "app" section, when it was used
     $version = $env:KIMUN_VERSION
     if ($version) {
         Write-Host "Version (pinned): $version"
     } else {
         Write-Host "Resolving latest release..."
-        curl.exe -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" -o "$tmp\releases.json"
-        if ($LASTEXITCODE) { Fail "could not reach the GitHub releases API" }
-        $releases = Get-Content -Raw "$tmp\releases.json" | ConvertFrom-Json
-        $version = $releases | ForEach-Object { $_.tag_name } |
-            Where-Object { $_ -like "$tagPrefix*" } |
-            ForEach-Object { $_.Substring($tagPrefix.Length) } |
-            Where-Object { $_ -notmatch "-" } |
-            Select-Object -First 1
-        if (-not $version) { Fail "could not find a stable $tagPrefix* release" }
+        # Anything unexpected about the manifest is not an error: say why and use the API.
+        $why = $null
+        curl.exe -fsL $manifestUrl -o "$tmp\latest.json"
+        if ($LASTEXITCODE) {
+            $why = "cannot reach $manifestUrl"
+        } else {
+            try { $m = Get-Content -Raw "$tmp\latest.json" | ConvertFrom-Json } catch { $m = $null }
+            if (-not $m -or $m.schema -ne 1) { $why = "$manifestUrl is in a format this installer does not know" }
+            elseif (-not $m.app -or $m.app.version -notmatch '^[0-9A-Za-z.+-]+$') { $why = "$manifestUrl names no app release" }
+            else { $app = $m.app; $version = $m.app.version }
+        }
+        if ($why) {
+            Write-Warning "$why; using the GitHub API"
+            curl.exe -fsSL $releasesApi -o "$tmp\releases.json"
+            if ($LASTEXITCODE) { Fail "could not reach the GitHub releases API" }
+            $releases = Get-Content -Raw "$tmp\releases.json" | ConvertFrom-Json
+            $version = $releases | ForEach-Object { $_.tag_name } |
+                Where-Object { $_ -like "$tagPrefix*" } |
+                ForEach-Object { $_.Substring($tagPrefix.Length) } |
+                Where-Object { $_ -notmatch "-" } |
+                Select-Object -First 1
+            if (-not $version) { Fail "could not find a stable $tagPrefix* release" }
+        }
         Write-Host "Latest version: $version"
     }
     $tag = "$tagPrefix$version"
@@ -82,8 +105,21 @@ try {
     $archive = "$bin-$version-$platform.zip"
     $base = if ($env:KIMUN_DOWNLOAD_BASE) { $env:KIMUN_DOWNLOAD_BASE.TrimEnd("/") } else { "https://github.com/$repo/releases/download/$tag" }
 
+    # The manifest names this file's url and sha256: use them, unless the files are being
+    # fetched from somewhere else (KIMUN_DOWNLOAD_BASE). A file it does not list is looked
+    # for the usual way, so the errors below stay the same.
+    $archiveUrl = "$base/$archive"
+    $expected = $null
+    if ($app -and -not $env:KIMUN_DOWNLOAD_BASE) {
+        $entry = $app.assets.PSObject.Properties[$archive]
+        if ($entry -and $entry.Value.url -and $entry.Value.sha256) {
+            $archiveUrl = $entry.Value.url
+            $expected = ([string]$entry.Value.sha256).ToLowerInvariant()
+        }
+    }
+
     Write-Host "Downloading $archive..."
-    curl.exe -fsSL "$base/$archive" -o "$tmp\$archive"
+    curl.exe -fsSL $archiveUrl -o "$tmp\$archive"
     if ($LASTEXITCODE) {
         # The release is there (its checksums are) but this app's build is not,
         # or the release is so new its files are still being attached.
@@ -96,15 +132,17 @@ try {
         Fail "failed to download $archive (is $version a release? A release published minutes ago may still be attaching its files: try again shortly)"
     }
 
-    # Verify against the published checksums file: an exact name match, the digest
-    # from .NET (Get-FileHash fails when PowerShell 7 starts 5.1).
+    # Verify the checksum: the manifest's, or else the release's published checksums file
+    # (an exact name match). The digest is from .NET (Get-FileHash fails when PowerShell 7
+    # starts 5.1).
     Write-Host "Verifying checksum..."
-    curl.exe -fsSL "$base/checksums-sha256.txt" -o "$tmp\checksums-sha256.txt"
-    if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
-    $expected = $null
-    foreach ($line in Get-Content "$tmp\checksums-sha256.txt") {
-        $f = $line.Trim() -split "\s+", 2
-        if ($f.Count -eq 2 -and $f[1].TrimStart("*") -eq $archive) { $expected = $f[0].ToLowerInvariant(); break }
+    if (-not $expected) {
+        curl.exe -fsSL "$base/checksums-sha256.txt" -o "$tmp\checksums-sha256.txt"
+        if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
+        foreach ($line in Get-Content "$tmp\checksums-sha256.txt") {
+            $f = $line.Trim() -split "\s+", 2
+            if ($f.Count -eq 2 -and $f[1].TrimStart("*") -eq $archive) { $expected = $f[0].ToLowerInvariant(); break }
+        }
     }
     if (-not $expected) { Fail "no checksum found for $archive" }
     $stream = [IO.File]::OpenRead("$tmp\$archive")

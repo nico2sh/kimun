@@ -40,6 +40,13 @@ git_release_latest = false
 name = "kimun-notes"
 git_tag_name = "kimun-notes-v{{ version }}"
 semver_check = false
+# A draft until the build has attached its files. The release is created here, at
+# the tag, but its assets come from build.yml minutes later; published, it was the
+# newest stable release with nothing to download, and install.sh / install.ps1 /
+# the updater (which read only published releases) got a 404 for ~13 minutes.
+# build.yml publishes it (`draft: false`) once the assets are verified and
+# attached. The tag exists from the start, so that workflow still triggers.
+git_release_draft = true
 
 # Server ships as GitHub release binaries only (build-server.yml triggers on the
 # tag); it is a binary, not a library, so no crates.io publish. `publish = false`
@@ -52,6 +59,8 @@ git_tag_name = "kimun_server-v{{ version }}"
 git_release_latest = false
 publish = false
 git_only = true
+# A draft until build-server.yml has attached the binaries: see kimun-notes above.
+git_release_draft = true
 
 # The native GUI frontend (ADR-0049) is not published anywhere yet: no crates.io
 # release, no binaries attached to a tag. `release = false` keeps release-plz from

@@ -152,6 +152,12 @@ jobs:
         if: matrix.lint
         run: bash .github/scripts/test-install.sh
 
+      # install-server.sh: the same release manifest and API fallback, for the
+      # server's archive.
+      - name: Server installer tests
+        if: matrix.lint
+        run: bash .github/scripts/test-install-server.sh
+
       # install.ps1 on a real Windows host, in both shells people use: Windows
       # PowerShell 5.1 (what `powershell` starts) and PowerShell 7. A fake release
       # served from a directory: both apps, the shortcut, the marker, the PATH.

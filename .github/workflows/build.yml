@@ -240,8 +240,10 @@ jobs:
           name: checksums
           path: release-artifacts/checksums-sha256.txt
 
-      # Attach binaries to the release created by release-plz. No `name:`
-      # here. The body is the hand-written notes when they exist
+      # Attach binaries to the release release-plz created as a DRAFT (so no
+      # installer sees it before its files are here), and publish it: `draft:
+      # false` is what makes it visible. Nothing above got this far unless the
+      # assets were verified. No `name:` here. The body is the hand-written notes when they exist
       # (`body_path`), else release-plz's changelog stays; `append_body` is off
       # so the two are never mixed.
       - name: Attach release assets
