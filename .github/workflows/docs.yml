@@ -6,6 +6,11 @@
 #     release). workflow_run always runs in the default-branch context, so the
 #     github-pages environment's branch protection allows it — unlike a release
 #     event, which runs under the tag ref and gets rejected.
+#   - successful release and release-server runs (the tag builds): latest.json
+#     names the newest stable release that has its files, and a release is only
+#     published once build.yml / build-server.yml have attached them. The
+#     release-plz run is too early for that (it ends at the tag, when the
+#     release is still a draft), so the manifest must be rebuilt after the build.
 #   - manual dispatch
 on:
   push:
@@ -13,9 +18,10 @@ on:
     paths:
       - "docs/**"
   workflow_run:
-    workflows: ["release-plz"]
+    # No `branches:` filter: a tag build's head branch is the tag, not main. The
+    # job's `if:` below keeps out failures and manual dry runs instead.
+    workflows: ["release-plz", "release", "release-server"]
     types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 name: docs
@@ -34,8 +40,9 @@ jobs:
   deploy:
     name: Build and Deploy Docs
     runs-on: ubuntu-latest
-    # Skip if triggered by a failed release-plz run
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    # Skip a failed run, and a manual dry run of the release workflow (it
+    # publishes nothing, so there is nothing new to put on the site).
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'workflow_dispatch') }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -61,6 +68,19 @@ jobs:
           cp install.sh docs/public/install.sh
           cp install.ps1 docs/public/install.ps1
           cp install-server.sh docs/public/install-server.sh
+
+      # latest.json: the newest stable app and server release with their files'
+      # URLs and sha256, for the installers and the updater (one small file
+      # instead of paging the GitHub API). Built from the published releases, so a
+      # draft never shows up. It must not stop the docs deploying: when it cannot
+      # be built the file is simply absent, and its readers fall back to the API.
+      - name: Publish latest.json
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
+          python3 .github/scripts/release_manifest.py releases.json docs/public/latest.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
