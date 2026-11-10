@@ -81,6 +81,26 @@ impl Started {
         VisualTestContext::from_window(self.handle, cx).simulate_close()
     }
 
+    /// Pretend to be macOS (`true`: the app stays in the dock when its window
+    /// closes) or any other system.
+    fn stays_in_dock(&self, stays: bool, cx: &mut TestAppContext) {
+        cx.update(|cx| self.workspace.update(cx, |w, _| w.stays_in_dock = stays));
+    }
+
+    /// How many times the app was asked to end.
+    fn quits(&self, cx: &TestAppContext) -> usize {
+        cx.read(|cx| self.workspace.read(cx).quits)
+    }
+
+    /// The user quits the app (the Quit chord, the palette, the leader).
+    fn quit(&self, cx: &mut TestAppContext) {
+        cx.update_window(self.handle, |_, window, cx| {
+            self.workspace
+                .update(cx, |w, cx| w.request_quit(window, cx))
+        })
+        .unwrap();
+    }
+
     fn is_closed(&self, cx: &mut TestAppContext) -> bool {
         cx.update_window(self.handle, |_, _, _| ()).is_err()
     }
@@ -340,6 +360,93 @@ fn closing_during_a_switch_saves_and_closes(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| started.is_closed(cx));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+}
+
+// ── quit and the dock ─────────────────────────────────────────────────────
+
+/// On macOS the close button closes the window and the app stays in the dock.
+#[gpui_kit::test]
+fn the_close_button_leaves_the_app_in_the_dock(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    assert!(
+        started.close(cx),
+        "nothing to save: the window closes at once"
+    );
+    assert_eq!(started.quits(cx), 0, "the app was not asked to end");
+}
+
+/// Quitting inside the app ends it, dock or not.
+#[gpui_kit::test]
+fn quitting_ends_the_app_even_in_the_dock(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    started.quit(cx);
+    assert_eq!(started.quits(cx), 1);
+    assert!(
+        !started.is_closed(cx),
+        "the app ends, the window is not removed first"
+    );
+}
+
+/// A quit with unsaved edits saves them, then ends the app: once.
+#[gpui_kit::test]
+fn quitting_with_unsaved_edits_saves_then_ends_the_app(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    started.type_text("X", cx);
+    started.quit(cx);
+    assert_eq!(started.quits(cx), 0, "the app waits for the save");
+    drive(&rt, cx, |cx| started.quits(cx) > 0);
+    assert_eq!(started.quits(cx), 1);
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+}
+
+/// The menu bar's Quit (and Cmd+Q with no focus in the window) goes through the
+/// workspace, so the open note is saved before the app ends.
+#[gpui_kit::test]
+fn the_app_level_quit_saves_first(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.type_text("X", cx);
+    cx.update(|cx| {
+        crate::dock::set_main(cx, started.handle, started.workspace.downgrade());
+        crate::dock::quit_app(cx);
+    });
+    assert_eq!(started.quits(cx), 0, "the app waits for the save");
+    drive(&rt, cx, |cx| started.quits(cx) > 0);
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+}
+
+/// Off macOS the app ends with its window.
+#[gpui_kit::test]
+fn off_macos_the_close_button_ends_the_app(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(false, cx);
+    assert!(started.close(cx));
+    assert_eq!(started.quits(cx), 1);
+}
+
+/// A quit that did not go through (the flag stays set) must not turn the next
+/// close-button click into a quit.
+#[gpui_kit::test]
+fn a_refused_quit_does_not_make_the_close_button_quit(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    cx.update(|cx| started.workspace.update(cx, |w, _| w.quit_on_close = true));
+    assert!(started.close(cx));
+    assert_eq!(started.quits(cx), 0);
 }
 
 // ── fix wave (review-g1-g2) ──────────────────────────────────────────────
