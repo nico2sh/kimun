@@ -9,12 +9,23 @@
 //! Everywhere else closing the window ends the app, as before, and none of this is
 //! installed.
 
-use gpui_kit::{AnyWindowHandle, App, Global, WeakEntity, actions};
+use gpui_kit::{AnyWindowHandle, App, Context, Global, WeakEntity, Window, actions};
 
 use crate::Launch;
 use crate::workspace::Workspace;
 
-actions!(kimun, [QuitApp, NewWindow]);
+actions!(
+    kimun,
+    [
+        QuitApp,
+        NewWindow,
+        CloseWindow,
+        HideApp,
+        HideOthers,
+        MinimizeWindow,
+        ZoomWindow
+    ]
+);
 
 /// The main window, for the app-level quit to reach its workspace.
 #[derive(Default)]
@@ -27,22 +38,60 @@ pub(crate) fn set_main(cx: &mut App, window: AnyWindowHandle, workspace: WeakEnt
     cx.set_global(MainWindow(Some((window, workspace))));
 }
 
-/// Quit the app: through the main window's workspace when there is one, so the open
-/// note is saved first; at once when there is none.
-pub(crate) fn quit_app(cx: &mut App) {
+/// Run `f` on the main window's workspace, once the action that asked is over. An
+/// app-level action runs inside the active window's own update, where that window is
+/// taken out of the app: a nested `window.update` would fail. `fallback` runs when the
+/// window is gone or out of reach, so the request is never silently dropped.
+fn on_main_workspace(
+    cx: &mut App,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    fallback: impl FnOnce(&mut App) + 'static,
+) {
     let main = cx.try_global::<MainWindow>().and_then(|m| m.0.clone());
     match main {
         Some((window, workspace)) if cx.windows().contains(&window) => {
-            window
-                .update(cx, |_, window, cx| {
+            cx.defer(move |cx| {
+                let reached = window.update(cx, |_, window, cx| {
                     workspace
-                        .update(cx, |workspace, cx| workspace.request_quit(window, cx))
-                        .ok();
-                })
-                .ok();
+                        .update(cx, |workspace, cx| f(workspace, window, cx))
+                        .is_ok()
+                });
+                if !matches!(reached, Ok(true)) {
+                    fallback(cx);
+                }
+            });
         }
-        _ => cx.quit(),
+        _ => fallback(cx),
     }
+}
+
+/// Quit the app: through the main window's workspace when there is one, so the open
+/// note is saved first; at once when there is none.
+pub(crate) fn quit_app(cx: &mut App) {
+    on_main_workspace(
+        cx,
+        |workspace, window, cx| workspace.request_quit(window, cx),
+        |cx| cx.quit(),
+    );
+}
+
+/// Close the main window as its close button does: the open note is saved first, and
+/// the app stays in the dock.
+pub(crate) fn close_window(cx: &mut App) {
+    on_main_workspace(
+        cx,
+        |workspace, window, cx| workspace.request_close(window, cx),
+        |_| {},
+    );
+}
+
+/// Run `f` on the active window, once the action that asked is over.
+fn on_active_window(cx: &mut App, f: impl FnOnce(&mut Window) + 'static) {
+    cx.defer(move |cx| {
+        if let Some(window) = cx.active_window() {
+            window.update(cx, |_, window, _| f(window)).ok();
+        }
+    });
 }
 
 /// The menu bar, Cmd+Q, and "New Window". macOS only (see the module docs).
@@ -53,16 +102,43 @@ pub(crate) fn install(cx: &mut App, launch: &Launch) {
     cx.on_action(|_: &QuitApp, cx| quit_app(cx));
     let launch = launch.clone();
     cx.on_action(move |_: &NewWindow, cx| crate::reopen(&launch, cx));
-    cx.bind_keys([gpui_kit::KeyBinding::new("cmd-q", QuitApp, None)]);
+    cx.on_action(|_: &CloseWindow, cx| close_window(cx));
+    cx.on_action(|_: &HideApp, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &MinimizeWindow, cx| on_active_window(cx, |w| w.minimize_window()));
+    cx.on_action(|_: &ZoomWindow, cx| on_active_window(cx, |w| w.zoom_window()));
+    cx.bind_keys([
+        gpui_kit::KeyBinding::new("cmd-q", QuitApp, None),
+        gpui_kit::KeyBinding::new("cmd-w", CloseWindow, None),
+        gpui_kit::KeyBinding::new("cmd-h", HideApp, None),
+        gpui_kit::KeyBinding::new("cmd-alt-h", HideOthers, None),
+        gpui_kit::KeyBinding::new("cmd-m", MinimizeWindow, None),
+    ]);
     cx.set_menus([
         gpui_kit::Menu {
             name: "Kimün".into(),
-            items: vec![gpui_kit::MenuItem::action("Quit Kimün", QuitApp)],
+            items: vec![
+                gpui_kit::MenuItem::action("Hide Kimün", HideApp),
+                gpui_kit::MenuItem::action("Hide Others", HideOthers),
+                gpui_kit::MenuItem::separator(),
+                gpui_kit::MenuItem::action("Quit Kimün", QuitApp),
+            ],
             disabled: false,
         },
         gpui_kit::Menu {
             name: "File".into(),
-            items: vec![gpui_kit::MenuItem::action("New Window", NewWindow)],
+            items: vec![
+                gpui_kit::MenuItem::action("New Window", NewWindow),
+                gpui_kit::MenuItem::action("Close Window", CloseWindow),
+            ],
+            disabled: false,
+        },
+        gpui_kit::Menu {
+            name: "Window".into(),
+            items: vec![
+                gpui_kit::MenuItem::action("Minimize", MinimizeWindow),
+                gpui_kit::MenuItem::action("Zoom", ZoomWindow),
+            ],
             disabled: false,
         },
     ]);
