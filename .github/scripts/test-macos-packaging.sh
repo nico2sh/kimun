@@ -21,13 +21,31 @@ python3 - "$app/Contents/Info.plist" <<'P' || fail "Info.plist"
 import plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 assert p["CFBundleExecutable"] == "kimun-gui"
-assert p["CFBundleIconFile"] == "kimun"
+assert p["CFBundleIconFile"] == "kimun" and p["CFBundleIconName"] == "kimun"
 assert p["CFBundleIdentifier"] == "dev.2co.kimun"
 assert p["CFBundleShortVersionString"] == "1.2.3" and p["CFBundleVersion"] == "1.2.3"
 assert p["CFBundlePackageType"] == "APPL" and p["NSHighResolutionCapable"] is True
 assert "@" not in repr(p), "an unfilled placeholder"
 P
 ok "the bundle: executable, icon, a valid Info.plist"
+
+# The Icon Composer file: its json parses and every image it names is there. Where Xcode 26
+# is installed the bundle must also hold the compiled Assets.car.
+python3 - assets/packaging/macos/kimun.icon <<'P' || fail "kimun.icon"
+import json, os, sys
+d = sys.argv[1]
+icon = json.load(open(os.path.join(d, "icon.json")))
+names = [l["image-name"] for g in icon["groups"] for l in g["layers"]]
+assert names, "no layers"
+for n in names:
+    assert os.path.isfile(os.path.join(d, "Assets", n)), f"missing Assets/{n}"
+P
+if command -v xcrun >/dev/null 2>&1 && xcrun --find actool >/dev/null 2>&1; then
+  [ -f "$app/Contents/Resources/Assets.car" ] || fail "actool is installed but the bundle has no Assets.car"
+  ok "the icon: kimun.icon compiled into Assets.car"
+else
+  ok "the icon: kimun.icon is well formed (no actool here: not compiled)"
+fi
 
 bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3-beta.4 "$work/pre" >/dev/null
 python3 - "$work/pre/Kimun.app/Contents/Info.plist" <<'P' || fail "pre-release version"

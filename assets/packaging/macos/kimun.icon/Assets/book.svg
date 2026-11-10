@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Kimün icon, foreground layer for Icon Composer: the page and the cover, on a transparent
+     canvas the same size as background.svg. Made from assets/logo.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="12.852206 12.395834 185.20833 185.20833" width="1024" height="1024">
+  <defs>
+    <linearGradient id="g6"><stop offset="0" stop-color="#ea5b6f"/><stop offset="1" stop-color="#32070e"/></linearGradient>
+    <linearGradient id="g3"><stop offset="0" stop-color="#77bef0"/><stop offset="0.75" stop-color="#77bef0"/><stop offset="1" stop-color="#9bcff3"/></linearGradient>
+    <linearGradient id="page" xlink:href="#g6" x1="149.34294" y1="149.01678" x2="60.713146" y2="93.63475" gradientUnits="userSpaceOnUse"/>
+    <linearGradient id="cover" xlink:href="#g3" x1="92.330307" y1="155.25197" x2="117.6136" y2="53.846195" gradientUnits="userSpaceOnUse"/>
+  </defs>
+  <path d="M 155.29892,182.17992 H 54.75725 V 60.47161 l 56.07152,17.70693 z" fill="url(#page)"/>
+  <path d="M 155.24287,27.819942 54.7012,59.56994 v 121.70833 l 56.07152,-17.70693 z" fill="url(#cover)"/>
+</svg>
