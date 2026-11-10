@@ -29,8 +29,7 @@ assert "@" not in repr(p), "an unfilled placeholder"
 P
 ok "the bundle: executable, icon, a valid Info.plist"
 
-# The Icon Composer file: its json parses and every image it names is there. Where Xcode 26
-# is installed the bundle must also hold the compiled Assets.car.
+# The Icon Composer file: its json parses and every image it names is there.
 python3 - assets/packaging/macos/kimun.icon <<'P' || fail "kimun.icon"
 import json, os, sys
 d = sys.argv[1]
@@ -40,11 +39,25 @@ assert names, "no layers"
 for n in names:
     assert os.path.isfile(os.path.join(d, "Assets", n)), f"missing Assets/{n}"
 P
-if command -v xcrun >/dev/null 2>&1 && xcrun --find actool >/dev/null 2>&1; then
-  [ -f "$app/Contents/Resources/Assets.car" ] || fail "actool is installed but the bundle has no Assets.car"
-  ok "the icon: kimun.icon compiled into Assets.car"
+ok "kimun.icon is well formed"
+
+# The committed Assets.car (the Tahoe icon) must be the one built from today's kimun.icon, and
+# the bundle must carry it. Missing: said, not failed (make-icon.sh makes it, on a Mac); the
+# release itself refuses a bundle without it (REQUIRE_ICON_CAR).
+pkg=assets/packaging/macos
+if [ -f "$pkg/Assets.car" ]; then
+  [ "$(cat "$pkg/Assets.car.source-sha256" 2>/dev/null)" = "$(bash "$pkg/make-icon.sh" hash)" ] \
+    || fail "kimun.icon changed since Assets.car was built: run assets/packaging/macos/make-icon.sh on a Mac and commit the result"
+  cmp -s "$pkg/Assets.car" "$app/Contents/Resources/Assets.car" || fail "the bundle's Assets.car is not the committed one"
+  ok "Assets.car matches kimun.icon and is in the bundle"
 else
-  ok "the icon: kimun.icon is well formed (no actool here: not compiled)"
+  echo "note: no committed Assets.car yet (run $pkg/make-icon.sh on a Mac)"
+fi
+if [ ! -f "$pkg/Assets.car" ]; then
+  # No car: a release bundle must be refused.
+  REQUIRE_ICON_CAR=1 bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3 "$work/req" >/dev/null 2>&1 \
+    && fail "a release bundle without Assets.car was accepted"
+  ok "a release bundle needs Assets.car"
 fi
 
 bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3-beta.4 "$work/pre" >/dev/null
