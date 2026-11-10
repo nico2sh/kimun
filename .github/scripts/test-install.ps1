@@ -263,7 +263,8 @@ try {
         $savedScript = $script
         foreach ($case in @(@("0.0.1", $true), @("99.0.0", $false))) {
             $patched = Join-Path $work "install-$($case[0]).ps1"
-            [IO.File]::WriteAllText($patched, ((Get-Content -Raw $savedScript) -replace '(?m)^\$firstSigned = ".*"$', "`$firstSigned = `"$($case[0])`""), (New-Object Text.UTF8Encoding $false))
+            [IO.File]::WriteAllText($patched, ((Get-Content -Raw $savedScript) -replace '(?m)^\$firstSigned = ".*"\r?$', "`$firstSigned = `"$($case[0])`""), (New-Object Text.UTF8Encoding $false))
+            if ((Get-Content -Raw $patched) -notmatch "firstSigned = `"$([regex]::Escape($case[0]))`"") { Fail "the test could not set firstSigned in the script copy" }
             $script = $patched
             $r = Invoke-Install (Join-Path $work "sg-$($case[0])") $rel "file"
             $script = $savedScript
