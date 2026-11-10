@@ -226,7 +226,7 @@ jobs:
       # One minisign signature over checksums-sha256.txt covers every file. A real release
       # without the key fails here, before anything is published; a dry run only warns.
       - name: Install minisign
-        run: sudo apt-get install -y minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Sign the checksums
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}

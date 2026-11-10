@@ -29,11 +29,7 @@ readers() { # SCRIPT -> the two awk readers, without indentation
   || fail "the latest.json readers in install.sh and install-server.sh differ: keep them identical"
 ok "install.sh and install-server.sh read latest.json with the same code"
 
-# The signature check is copied the same way. And the key they pin must be the committed one.
-sigblock() { awk '/^# --- release signature/ { on = 1 } /^# --- detect platform/ { on = 0 } on' "$1" | grep -v '^FIRST_SIGNED='; }
-[ -n "$(sigblock install.sh)" ] || fail "found no signature block in install.sh"
-[ "$(sigblock install.sh)" = "$(sigblock install-server.sh)" ] \
-  || fail "the signature checks in install.sh and install-server.sh differ: keep them identical"
+# The key they pin must be the committed one.
 if [ -f release-signing.pub ]; then
   key="$(sed -n 2p release-signing.pub)"
   for f in install.sh install-server.sh; do
@@ -43,7 +39,6 @@ if [ -f release-signing.pub ]; then
 else
   echo "note: release-signing.pub is not committed yet: the installers pin no key"
 fi
-ok "install.sh and install-server.sh check signatures with the same code"
 
 # A release: the server's archive for every platform the script can pick, and checksums.
 rel="$work/rel"; mkdir -p "$rel"
@@ -120,8 +115,8 @@ else
     rm -rf "$1"; cp -r "$rel" "$1"
     minisign -S -s "$work/s.key" -m "$1/checksums-sha256.txt" -x "$1/checksums-sha256.txt.minisig" >/dev/null
   }
-  patched() { # NAME FIRST_SIGNED: a copy of the script that trusts the throwaway key
-    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" -e "s|^FIRST_SIGNED=.*|FIRST_SIGNED=\"$2\"|" install-server.sh >"$work/$1.sh"
+  patched() { # NAME: a copy of the script that trusts the throwaway key
+    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" install-server.sh >"$work/$1.sh"
   }
   run_signed() { # NAME REL HOME [PATH]: install into a fresh home; prints the output
     mkdir -p "$3"
@@ -130,7 +125,7 @@ else
   }
 
   # a. Signed, and the key is right: installs; the digest is the signed list's.
-  signed_rel "$work/srel"; patched sig-ok 0.0.1
+  signed_rel "$work/srel"; patched sig-ok
   out="$(run_signed sig-ok "$work/srel" "$work/sg-a")" || fail "a validly signed release was refused: $out"
   [ -x "$work/sg-a/bin/kimun-server" ] || fail "signed install: no binary"
   echo "$out" | grep -qi "warning" && fail "a validly signed release warned: $out"
@@ -147,19 +142,18 @@ else
   [ ! -e "$work/sg-b/bin/kimun-server" ] || fail "an edited list still installed"
   ok "a signed list that was changed is refused"
 
-  # c. A release that must be signed and has no signature: refused.
-  patched sig-req 0.0.1
-  out="$(run_signed sig-req "$rel" "$work/sg-c")" && fail "an unsigned release was accepted although it must be signed"
-  echo "$out" | grep -q "should be signed" || fail "unsigned-but-required said: $out"
-  ok "a release at or above the first signed version must carry a signature"
+  # c. A release with no signature: refused (the latest release is what this installer takes).
+  out="$(run_signed sig-ok "$rel" "$work/sg-c")" && fail "an unsigned release was accepted although a key is pinned"
+  echo "$out" | grep -q "should be signed" || fail "unsigned said: $out"
+  ok "with a key pinned, a release without a signature is refused"
 
-  # d. An older release (before the first signed one), unsigned: installs, quietly.
-  patched sig-old 99.0.0
-  out="$(run_signed sig-old "$rel" "$work/sg-d")" || fail "an old unsigned release was refused: $out"
-  echo "$out" | grep -qi "warning" && fail "an old unsigned release warned: $out"
-  ok "a release before the first signed one needs no signature"
+  # d. No key pinned (signing not live): an unsigned release installs, quietly.
+  cp install-server.sh "$work/sig-off.sh"
+  out="$(run_signed sig-off "$rel" "$work/sg-d")" || fail "signing off: an unsigned release was refused: $out"
+  echo "$out" | grep -qi "warning" && fail "signing off: an unsigned release warned: $out"
+  ok "with no key pinned, nothing is checked"
 
-  # e. No minisign on the machine: a signed release installs on its sha256 and says it was not checked.
+  # e. No minisign on the machine: a release installs on its sha256 and says it was not checked.
   nm="$work/nominisign"; mkdir -p "$nm"
   for tool in sh uname curl cat mktemp rm awk sed grep tar gzip sha256sum mkdir mv chmod head dirname tr cut sort id ls cp date ln; do
     command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"

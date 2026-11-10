@@ -57,38 +57,32 @@ for arg in "$@"; do
 done
 
 # --- release signature ----------------------------------------------------
-# Every release from FIRST_SIGNED on carries checksums-sha256.txt.minisig, a minisign
-# signature of its checksums file (see .github/RELEASING.md, "Signing"). When minisign is
-# installed it is checked against SIGNING_PUBKEY (release-signing.pub, line 2) and the
-# digest comes from the file it signed. Without minisign the install goes on on the sha256
-# alone, and says so. install-server.sh carries the same block: keep them identical.
+# Releases carry checksums-sha256.txt.minisig, a minisign signature of their checksums file
+# (see .github/RELEASING.md, "Signing"). SIGNING_PUBKEY is release-signing.pub, line 2; empty
+# means signing is not live yet and nothing is checked. With a key and minisign installed the
+# signature is checked and the digest comes from the file it signed. A missing signature is an
+# error: this installer only takes the latest release, which the unsigned manifest names, so a
+# release without one is not skipped silently. Without minisign the install goes on on the
+# sha256 alone, and says so. install.sh carries the same block, except it only warns for a
+# version pinned with KIMUN_VERSION (which may predate signing).
 SIGNING_PUBKEY=""
-FIRST_SIGNED="9999.0.0"
-# version_ge A B: is plain version A at or above B? (a pre-release suffix is ignored)
-version_ge() {
-  awk -v a="${1%%-*}" -v b="${2%%-*}" 'BEGIN {
-    na = split(a, x, "."); nb = split(b, y, ".")
-    for (i = 1; i <= 3; i++) { if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0) }
-    exit 0 }'
-}
-# verify_signature VERSION FIRST_SIGNED BASE_URL TMP: sets SIGNED_LIST to the verified
-# checksums file, or "" when nothing was verified. Errors on a bad or required-but-missing one.
+# verify_signature BASE_URL TMP: sets SIGNED_LIST to the verified checksums file, or "" when
+# nothing was verified.
 verify_signature() {
   SIGNED_LIST=""
-  _signed_release=0
-  version_ge "$1" "$2" && _signed_release=1
-  if ! have minisign || [ -z "$SIGNING_PUBKEY" ]; then
-    [ "$_signed_release" = 0 ] || warn "minisign is not installed: release $1 is signed, but its signature was not checked (sha256 only)"
+  [ -n "$SIGNING_PUBKEY" ] || return 0
+  if ! have minisign; then
+    warn "minisign is not installed: the release signature was not checked (sha256 only)"
     return 0
   fi
-  if download "$3/checksums-sha256.txt" "$4/checksums-sha256.txt" 2>/dev/null \
-     && download "$3/checksums-sha256.txt.minisig" "$4/checksums-sha256.txt.minisig" 2>/dev/null; then
-    minisign -V -q -P "$SIGNING_PUBKEY" -m "$4/checksums-sha256.txt" -x "$4/checksums-sha256.txt.minisig" >/dev/null 2>&1 \
+  if download "$1/checksums-sha256.txt" "$2/checksums-sha256.txt" 2>/dev/null \
+     && download "$1/checksums-sha256.txt.minisig" "$2/checksums-sha256.txt.minisig" 2>/dev/null; then
+    minisign -V -q -P "$SIGNING_PUBKEY" -m "$2/checksums-sha256.txt" -x "$2/checksums-sha256.txt.minisig" >/dev/null 2>&1 \
       || err "the signature of checksums-sha256.txt is NOT valid: refusing to install"
-    SIGNED_LIST="$4/checksums-sha256.txt"
-    return 0
+    SIGNED_LIST="$2/checksums-sha256.txt"
+  else
+    err "the latest release should be signed but its signature could not be fetched: refusing to install"
   fi
-  [ "$_signed_release" = 0 ] || err "release $1 should be signed but its signature could not be fetched: refusing to install"
 }
 
 # --- detect platform -------------------------------------------------------
@@ -345,13 +339,13 @@ main() {
 
     info "Verifying checksum..."
     expected="$EXPECTED"
-    verify_signature "$VERSION" "$FIRST_SIGNED" "$BASE_URL" "$tmp"
+    verify_signature "$BASE_URL" "$tmp"
     if [ -n "$SIGNED_LIST" ]; then
       expected=""
       SUMS="$SIGNED_LIST"
     else
       SUMS="$tmp/checksums-sha256.txt"
-      if [ -z "$expected" ]; then
+      if [ -z "$expected" ] && [ ! -s "$SUMS" ]; then
         download "$BASE_URL/checksums-sha256.txt" "$SUMS" \
           || err "failed to download checksums-sha256.txt"
       fi

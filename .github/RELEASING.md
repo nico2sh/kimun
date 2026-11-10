@@ -45,17 +45,23 @@ Every release carries `checksums-sha256.txt.minisig`: a [minisign](https://jedis
 `build-server.yml` sign it (`.github/scripts/sign-release.sh`) before anything is published. A real release without the key
 **fails at that step**; a manual dry run only warns. The manifest carries `checksums_url` and `signature_url` for each series.
 
-The installers check it when `minisign` is installed (`SIGNING_PUBKEY`, `FIRST_SIGNED` in `install.sh`, `install-server.sh` and
-`install.ps1`): a bad signature, or a missing one at or above `FIRST_SIGNED`, refuses the install; without minisign they install on the
-sha256 and warn. **`FIRST_SIGNED` starts at `9999.0.0` (never strict): in the release PR of the first signed release, lower it to that
-release's version in all three scripts.** `test-install-server.sh` checks the three pin the same key as `release-signing.pub`.
+The **installers** (`install.sh`, `install-server.sh`, `install.ps1`) check it when `minisign` is installed. The in-app updater does
+**not** check it yet: it still trusts the sha256 in `latest.json`. Each installer pins the public key in `SIGNING_PUBKEY`; while that is
+empty, signing is not live and nothing is checked. With a key pinned and minisign installed, a bad signature refuses the install, and so
+does a missing one on the latest release (a version pinned with `KIMUN_VERSION` only warns, since it may predate signing). Without
+minisign they install on the sha256 and warn. `test-install-server.sh` checks the shell installers pin the same key as `release-signing.pub`.
 
 One-time setup, on your own machine (never in CI):
 
 1. `minisign -G -p release-signing.pub -s kimun-release.key` (pick a password).
-2. Commit `release-signing.pub` at the repository root. It is the public key the updater and installers pin.
+2. Commit `release-signing.pub` at the repository root. `sign-release.sh` checks every new signature against it and fails the release if
+   `MINISIGN_SECRET_KEY` is not its key.
 3. Repository secrets: `MINISIGN_SECRET_KEY` = the contents of `kimun-release.key`, `MINISIGN_PASSWORD` = its password.
 4. Keep `kimun-release.key` and the password somewhere safe and offline. Losing the key means shipping a new public key in a new release.
+
+To turn checking on, in the release PR of the **first signed release**, paste line 2 of `release-signing.pub` into `SIGNING_PUBKEY` in all
+three installers. Until that release is published, `latest` is unsigned and the installers would refuse it, so merge the PR and publish
+the release together.
 
 ## Rehearse without publishing
 
