@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.9](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.8...kimun-notes-v0.24.9) - 2026-11-10
+
+### Added
+
+- *(update)* the updater reads latest.json first, then the GitHub API
+
 ## [0.24.8](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.7...kimun-notes-v0.24.8) - 2026-11-09
 
 ### Added
