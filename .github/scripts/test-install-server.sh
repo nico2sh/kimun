@@ -32,6 +32,7 @@ ok "install.sh and install-server.sh read latest.json with the same code"
 # The key the installers pin: empty while signing is not live, else the committed one. All
 # three scripts must agree (all empty, or all the key in release-signing.pub).
 pinned() { # FILE -> the pinned key, or nothing
+  # shellcheck disable=SC2016  # the single quotes are on purpose: the text is a sed program
   sed -n -e 's/^SIGNING_PUBKEY="\(.*\)"$/\1/p' -e 's/^\$signingPubKey = "\(.*\)"\r\{0,1\}$/\1/p' "$1"
 }
 pins="$(for f in install.sh install-server.sh install.ps1; do printf '[%s]\n' "$(pinned "$f")"; done | sort -u)"
@@ -164,6 +165,7 @@ else
     command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"
   done
   out="$(run_signed sig-ok "$work/srel" "$work/sg-e" "$nm")" || fail "no minisign: install failed: $out"
+  # shellcheck disable=SC2015  # the first test is a plain grep: the failure message only runs when a check fails
   echo "$out" | grep -q "minisign is not installed" && echo "$out" | grep -q "not checked" || fail "no minisign: no warning: $out"
   ok "without minisign: installs on the sha256 alone, with a warning"
 fi

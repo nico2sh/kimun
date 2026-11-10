@@ -42,6 +42,7 @@ bash .github/scripts/release-dist.sh assemble "$platform" "$bin_dir" "$work/out"
 mv "$work/out/dist" "$art/dist-$platform"
 mv "$work/out/dist-gui" "$art/distgui-$platform"
 bash .github/scripts/release-dist.sh package "$art" "$version" >/dev/null
+# shellcheck disable=SC2012  # only reads our own release file names
 (cd "$art" && ls -lh kimun-* | awk '{print "   " $5 "  " $9}')
 PLATFORMS="$platform" EXPECT_DMG=0 bash .github/scripts/verify-release-assets.sh "$art" "$version"
 

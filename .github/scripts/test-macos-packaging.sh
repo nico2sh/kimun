@@ -74,7 +74,9 @@ ok "a bad version or a missing binary is refused"
 
 # --- the signing sequence (dry run) -----------------------------------------------
 export SIGN_DRY_RUN=1
-export APPLE_CERT_P12="$(printf 'cert' | base64)" APPLE_NOTARY_KEY="$(printf 'key' | base64)"
+APPLE_CERT_P12="$(printf 'cert' | base64)"
+APPLE_NOTARY_KEY="$(printf 'key' | base64)"
+export APPLE_CERT_P12 APPLE_NOTARY_KEY
 export APPLE_CERT_PASSWORD="s3cret-pass" APPLE_SIGNING_IDENTITY="Developer ID Application: Test (ABCDE12345)"
 export APPLE_NOTARY_KEY_ID="KEYID123" APPLE_NOTARY_ISSUER_ID="issuer-uuid"
 log="$(bash .github/scripts/macos-sign.sh "$app" "$work/dmg/out.dmg")" || fail "the dry run failed: $log"
