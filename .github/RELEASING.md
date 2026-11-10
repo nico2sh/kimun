@@ -10,12 +10,23 @@ users run). What is and is not verified is in `plans/m11/task-m11f*-report.md`; 
 2. A step in `release-plz.yml` adds an empty `release-notes/<version>.md` to that PR's branch. **Write the notes there**, in plain words
    for users (see `release-notes/README.md`). The `release-notes` check stays red until you have; make it a required check.
 3. Merge the PR. release-plz tags `kimun-notes-vX.Y.Z` (and `kimun_core-…` / `kimun_server-…` when those changed) and creates the
-   GitHub release.
+   GitHub release, as a **draft** for the app and the server (see "A draft until its assets exist" below). Nobody can install it yet.
 4. The app tag starts `build.yml`: both apps on five platforms, the macOS app signed and notarized when the Apple secrets exist
    (`assets/packaging/macos/SIGNING.md`), the assets assembled by `release-dist.sh` and **verified** by `verify-release-assets.sh`
-   before anything is attached; your notes become the release body; the Homebrew formula is pushed (stable only).
-5. Look at the release page: the 20 assets (+2 `.dmg` when signed) and `checksums-sha256.txt`, the body is your notes, the app's release
+   before anything is attached; your notes become the release body; then the draft is **published**, and the Homebrew formula is
+   pushed (stable only).
+5. Look at the release page (the release stays a draft, visible only to you, until step 4 succeeds): the 20 assets (+2 `.dmg` when signed) and `checksums-sha256.txt`, the body is your notes, the app's release
    wears "Latest". Then `curl -fsSL https://kimun.2co.dev/install.sh | sh` and `... | sh -s -- --gui` on a clean machine.
+
+## A draft until its assets exist
+
+release-plz creates the app's and the server's releases as drafts (`git_release_draft` in `release-plz.toml`). The tag exists at once, so
+the build starts; the build's last step attaches the files and publishes (`draft: false`). Until then the release is invisible to
+`install.sh`, `install.ps1`, the updater and anyone not signed in as a maintainer, so there is no window in which the newest release has
+nothing to download. `kimun_core` has no assets and is published at once.
+
+If a build fails, the release stays a draft: fix the cause and re-run the workflow from the tag (`gh run rerun <id>`), or delete the draft
+and tag (`gh release delete <tag> --cleanup-tag`) and re-tag. The previous stable release is what everyone gets meanwhile.
 
 ## Rehearse without publishing
 
@@ -33,15 +44,19 @@ users run). What is and is not verified is in `plans/m11/task-m11f*-report.md`; 
   HOME=$(mktemp -d) KIMUN_VERSION=0.0.0-dryrun KIMUN_DOWNLOAD_BASE=file:///tmp/dry sh install.sh --gui
   ```
 
-## The first desktop release: a pre-release first
+## Rehearsing a pipeline change on a pre-release
 
-A hyphenated version is a GitHub pre-release: it never wears "Latest", Homebrew skips it, `install.sh` and the updater ignore it. So:
+The first desktop release went out as stable 0.24.8 without a pre-release first: the manual dry run (above) had proven the assets, and a
+real install against 0.24.8 covers the download path. Use a pre-release when a change to the release pipeline itself needs a real run
+before anyone can be offered it (the first signed macOS build is the next such change).
+
+A hyphenated version is a GitHub pre-release: it never wears "Latest", Homebrew skips it, `install.sh`, `install.ps1` and the updater ignore it. So:
 
 1. `bash .github/scripts/release_notes.py scaffold 0.25.0-beta.1`, write the notes, commit them.
 2. Tag it outside release-plz: `git tag kimun-notes-v0.25.0-beta.1 && git push origin kimun-notes-v0.25.0-beta.1`. `build.yml` runs as for a
    real release and creates the pre-release.
 3. Install it for real, over the network: `KIMUN_VERSION=0.25.0-beta.1 sh -c "$(curl -fsSL https://kimun.2co.dev/install.sh)" -- --gui`
-   (and without `--gui`). Walk the checklist (`plans/m11/release-checklist.md`) on each platform you have.
+   (and without `--gui`; on Windows `$env:KIMUN_VERSION = "0.25.0-beta.1"` before `irm https://kimun.2co.dev/install.ps1 | iex`). Walk the checklist (`plans/m11/release-checklist.md`) on each platform you have.
 4. Clean up if you like: `gh release delete kimun-notes-v0.25.0-beta.1 --cleanup-tag`.
 
 ## Testing self-update for real
@@ -53,7 +68,7 @@ the flow, not the download from GitHub.
 
 ## Backing out
 
-- A bad release: `gh release delete <tag> --cleanup-tag`. The installer and the updater read the newest *stable* release, so they fall
+- A bad release (published, or a draft that must not go out): `gh release delete <tag> --cleanup-tag`. The installer and the updater read the newest *stable* release, so they fall
   back to the one before at once. Revert the Homebrew tap's commit if the formula was pushed.
 - Only the desktop builds are bad: set `DESKTOP_BINARY_PUBLISHED = false` in `tui/src/logic/update.rs` and ship a patch; the desktop app
   then offers the releases page instead of installing.
