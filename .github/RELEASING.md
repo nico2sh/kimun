@@ -38,6 +38,25 @@ one-line warning and use the API as before. The site rebuilds when `release-plz`
 release only once the draft has been published with its files. After a release, check `curl -fsS https://kimun.2co.dev/latest.json`
 names the new version; if not, look at the `Publish latest.json` step of the last `docs` run (it cannot fail the deploy, only leave the file out).
 
+## Signing
+
+Every release carries `checksums-sha256.txt.minisig`: a [minisign](https://jedisct1.github.io/minisign/) signature of
+`checksums-sha256.txt`, which lists the sha256 of every other file, so one signature covers the release. `build.yml` and
+`build-server.yml` sign it (`.github/scripts/sign-release.sh`) before anything is published. A real release without the key
+**fails at that step**; a manual dry run only warns. The manifest carries `checksums_url` and `signature_url` for each series.
+
+The installers check it when `minisign` is installed (`SIGNING_PUBKEY`, `FIRST_SIGNED` in `install.sh`, `install-server.sh` and
+`install.ps1`): a bad signature, or a missing one at or above `FIRST_SIGNED`, refuses the install; without minisign they install on the
+sha256 and warn. **`FIRST_SIGNED` starts at `9999.0.0` (never strict): in the release PR of the first signed release, lower it to that
+release's version in all three scripts.** `test-install-server.sh` checks the three pin the same key as `release-signing.pub`.
+
+One-time setup, on your own machine (never in CI):
+
+1. `minisign -G -p release-signing.pub -s kimun-release.key` (pick a password).
+2. Commit `release-signing.pub` at the repository root. It is the public key the updater and installers pin.
+3. Repository secrets: `MINISIGN_SECRET_KEY` = the contents of `kimun-release.key`, `MINISIGN_PASSWORD` = its password.
+4. Keep `kimun-release.key` and the password somewhere safe and offline. Losing the key means shipping a new public key in a new release.
+
 ## Rehearse without publishing
 
 - **On this machine, this platform:** `bash .github/scripts/rehearse-release.sh`. Builds both apps in release mode, packages them with

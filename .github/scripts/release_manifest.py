@@ -38,6 +38,7 @@ from typing import Callable
 
 SCHEMA = 1
 CHECKSUMS = "checksums-sha256.txt"
+SIGNATURE = CHECKSUMS + ".minisig"
 # manifest key -> tag prefix. kimun_core has no assets and no installer, so it is not here.
 SERIES = {"app": "kimun-notes-v", "server": "kimun_server-v"}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -106,21 +107,27 @@ def describe(
     # Only files that are both attached and checksummed: a name in only one of the two
     # cannot be installed safely.
     for name in sorted(assets):
-        if name != CHECKSUMS and name not in sums:
+        if name not in (CHECKSUMS, SIGNATURE) and name not in sums:
             warn(f"release {version}: {name} is attached but has no checksum, left out")
     listed = {
         name: {"url": assets[name], "sha256": sums[name]}
         for name in sorted(assets)
-        if name != CHECKSUMS and name in sums
+        if name not in (CHECKSUMS, SIGNATURE) and name in sums
     }
     if not listed:
         raise SeriesError(f"release {version} has no file with a checksum")
-    return {
+    series = {
         "version": version,
         "published": release.get("published_at") or "",
         "page": release.get("html_url") or "",
-        "assets": listed,
+        # What a consumer verifies: the minisign signature of the checksums file, whose
+        # digests the `assets` below repeat. Absent for a release that was not signed.
+        "checksums_url": assets[CHECKSUMS],
     }
+    if SIGNATURE in assets:
+        series["signature_url"] = assets[SIGNATURE]
+    series["assets"] = listed
+    return series
 
 
 def build(releases: list, fetch_text: Callable[[str], str], warn: Callable[[str], None]) -> dict:

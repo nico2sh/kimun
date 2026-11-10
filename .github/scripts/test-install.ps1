@@ -254,6 +254,25 @@ try {
         if ($r.Output -notmatch "could not reach the GitHub releases API") { Fail "no manifest, no API said: $($r.Output)" }
         Ok "no manifest and no API: a plain error"
     }
+    # 9. The release signature. The runner has no minisign (the shell installers' tests
+    # cover the check itself), so this is the policy around it: a release from the first
+    # signed version on installs on its sha256 with a warning, an older one without.
+    if (Get-Command minisign.exe -ErrorAction SilentlyContinue) {
+        Write-Host "skipped: minisign is installed here, the no-minisign cases do not apply"
+    } else {
+        $savedScript = $script
+        foreach ($case in @(@("0.0.1", $true), @("99.0.0", $false))) {
+            $patched = Join-Path $work "install-$($case[0]).ps1"
+            [IO.File]::WriteAllText($patched, ((Get-Content -Raw $savedScript) -replace '(?m)^\$firstSigned = ".*"$', "`$firstSigned = `"$($case[0])`""), (New-Object Text.UTF8Encoding $false))
+            $script = $patched
+            $r = Invoke-Install (Join-Path $work "sg-$($case[0])") $rel "file"
+            $script = $savedScript
+            if ($r.Code -ne 0) { Fail "no minisign, first signed $($case[0]): exited $($r.Code):`n$($r.Output)" }
+            $warned = $r.Output -match "minisign\s+is\s+not\s+installed"
+            if ($warned -ne $case[1]) { Fail "no minisign, first signed $($case[0]): warned=$warned, wanted $($case[1]):`n$($r.Output)" }
+        }
+        Ok "without minisign: a signed release installs with a warning, an older one quietly"
+    }
 } finally {
     # Put back what was changed on this machine.
     $env:USERPROFILE = $userprofile

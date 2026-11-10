@@ -111,6 +111,18 @@ class Build(unittest.TestCase):
         self.assertEqual(m["server"]["version"], "0.3.1")
         self.assertEqual(self.warnings, [])
 
+    def test_signature_url_only_when_the_release_was_signed(self):
+        sums = {f"https://dl/{rm.CHECKSUMS}": f"{H}  a.zip\n"}
+        signed = [release("kimun-notes-v1.0.0", ["a.zip", rm.CHECKSUMS, rm.SIGNATURE])]
+        app = rm.build(signed, fetcher(sums), self.warn)["app"]
+        self.assertEqual(app["checksums_url"], f"https://dl/{rm.CHECKSUMS}")
+        self.assertEqual(app["signature_url"], f"https://dl/{rm.SIGNATURE}")
+        self.assertEqual(list(app["assets"]), ["a.zip"])  # the .minisig is not a listed file
+        unsigned = [release("kimun-notes-v1.0.0", ["a.zip", rm.CHECKSUMS])]
+        app = rm.build(unsigned, fetcher(sums), self.warn)["app"]
+        self.assertNotIn("signature_url", app)
+        self.assertEqual([w for w in self.warnings if w.startswith("app")], [])
+
     def test_only_files_both_attached_and_checksummed(self):
         rels = [release("kimun-notes-v1.0.0", ["a.zip", "b.zip", rm.CHECKSUMS])]
         sums = {f"https://dl/{rm.CHECKSUMS}": f"{H}  a.zip\n{H2}  not-attached.zip\n"}
