@@ -112,6 +112,8 @@ jobs:
         if: runner.os == 'macOS'
         env:
           VERSION: ${{ steps.appver.outputs.version }}
+          # The Tahoe icon is a committed file (assets/packaging/macos/make-icon.sh).
+          REQUIRE_ICON_CAR: "1"
         run: bash .github/scripts/macos-bundle.sh target/${{ matrix.target }}/release/kimun-gui "$VERSION" bundle
 
       - name: Apple signing configured?

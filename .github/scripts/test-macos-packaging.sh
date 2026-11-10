@@ -21,13 +21,44 @@ python3 - "$app/Contents/Info.plist" <<'P' || fail "Info.plist"
 import plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 assert p["CFBundleExecutable"] == "kimun-gui"
-assert p["CFBundleIconFile"] == "kimun"
+assert p["CFBundleIconFile"] == "kimun" and p["CFBundleIconName"] == "kimun"
 assert p["CFBundleIdentifier"] == "dev.2co.kimun"
 assert p["CFBundleShortVersionString"] == "1.2.3" and p["CFBundleVersion"] == "1.2.3"
 assert p["CFBundlePackageType"] == "APPL" and p["NSHighResolutionCapable"] is True
 assert "@" not in repr(p), "an unfilled placeholder"
 P
 ok "the bundle: executable, icon, a valid Info.plist"
+
+# The Icon Composer file: its json parses and every image it names is there.
+python3 - assets/packaging/macos/kimun.icon <<'P' || fail "kimun.icon"
+import json, os, sys
+d = sys.argv[1]
+icon = json.load(open(os.path.join(d, "icon.json")))
+names = [l["image-name"] for g in icon["groups"] for l in g["layers"]]
+assert names, "no layers"
+for n in names:
+    assert os.path.isfile(os.path.join(d, "Assets", n)), f"missing Assets/{n}"
+P
+ok "kimun.icon is well formed"
+
+# The committed Assets.car (the Tahoe icon) must be the one built from today's kimun.icon, and
+# the bundle must carry it. Missing: said, not failed (make-icon.sh makes it, on a Mac); the
+# release itself refuses a bundle without it (REQUIRE_ICON_CAR).
+pkg=assets/packaging/macos
+if [ -f "$pkg/Assets.car" ]; then
+  [ "$(cat "$pkg/Assets.car.source-sha256" 2>/dev/null)" = "$(bash "$pkg/make-icon.sh" hash)" ] \
+    || fail "kimun.icon changed since Assets.car was built: run assets/packaging/macos/make-icon.sh on a Mac and commit the result"
+  cmp -s "$pkg/Assets.car" "$app/Contents/Resources/Assets.car" || fail "the bundle's Assets.car is not the committed one"
+  ok "Assets.car matches kimun.icon and is in the bundle"
+else
+  echo "note: no committed Assets.car yet (run $pkg/make-icon.sh on a Mac)"
+fi
+if [ ! -f "$pkg/Assets.car" ]; then
+  # No car: a release bundle must be refused.
+  REQUIRE_ICON_CAR=1 bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3 "$work/req" >/dev/null 2>&1 \
+    && fail "a release bundle without Assets.car was accepted"
+  ok "a release bundle needs Assets.car"
+fi
 
 bash .github/scripts/macos-bundle.sh "$work/kimun-gui" 1.2.3-beta.4 "$work/pre" >/dev/null
 python3 - "$work/pre/Kimun.app/Contents/Info.plist" <<'P' || fail "pre-release version"
