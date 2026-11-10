@@ -62,6 +62,7 @@ impl ReleaseProvider for GitHubProvider {
                         .map(|a| Asset {
                             name: a.name,
                             url: a.browser_download_url,
+                            sha256: None,
                         })
                         .collect(),
                 })

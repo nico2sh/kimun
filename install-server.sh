@@ -14,6 +14,14 @@
 #
 # Env overrides:
 #   KIMUN_SERVER_INSTALL_DIR   install location (default: $HOME/.local/bin)
+#   KIMUN_DOWNLOAD_BASE        where the release's files are fetched from, when the
+#                              manifest is not used (default: the release's GitHub
+#                              download URL); for testing
+#   KIMUN_MANIFEST_URL         the release manifest (default:
+#                              https://kimun.2co.dev/latest.json); for testing
+#   KIMUN_RELEASES_API         the GitHub releases list used when the manifest cannot
+#                              be read (default: the repository's api.github.com URL);
+#                              for testing
 #
 # Unix only (Linux, macOS Apple Silicon). Windows users: use the release
 # archive directly. Intel Macs: no prebuilt binary (the ONNX runtime dropped
@@ -38,6 +46,7 @@ SYSTEMD_UNIT="$HOME/.config/systemd/user/kimun-server.service"
 
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
 info() { printf '%s\n' "$1"; }
+warn() { printf 'warning: %s\n' "$1" >&2; }
 
 SETUP_SERVICE=0
 for arg in "$@"; do
@@ -203,26 +212,65 @@ restart_service_if_present() {
   esac
 }
 
+# --- the release manifest ---------------------------------------------------
+# https://kimun.2co.dev/latest.json names the newest stable release of each series and
+# each of its files with a url and sha256 (see .github/scripts/release_manifest.py). It
+# is pretty-printed, one key per line, and read here with awk: no jq needed. Anything
+# unexpected about it is not an error: the installer falls back to the GitHub API.
+manifest_version() { # manifest_version SECTION -> its version, or nothing
+  printf '%s\n' "$MANIFEST" | awk -v s="$1" '
+    $0 == "  \"" s "\": {" { on = 1; next }
+    on && /^  }/ { exit }
+    on && /^    "version": "/ { v = $0; sub(/^    "version": "/, "", v); sub(/".*/, "", v); print v; exit }'
+}
+manifest_asset() { # manifest_asset SECTION NAME FIELD -> url or sha256 of that file, or nothing
+  printf '%s\n' "$MANIFEST" | awk -v s="$1" -v n="$2" -v f="$3" '
+    $0 == "  \"" s "\": {" { on = 1; next }
+    on && /^  }/ { exit }
+    on && $0 == "      \"" n "\": {" { hit = 1; next }
+    hit && /^      }/ { exit }
+    hit { p = "        \"" f "\": \""; if (index($0, p) == 1) { v = substr($0, length(p) + 1); sub(/".*/, "", v); print v; exit } }'
+}
+# Read the manifest and take the server's version from it. On failure sets MANIFEST_WHY.
+resolve_from_manifest() {
+  MANIFEST="$(fetch_stdout "$MANIFEST_URL" 2>/dev/null)" || { MANIFEST_WHY="cannot reach $MANIFEST_URL"; return 1; }
+  printf '%s\n' "$MANIFEST" | grep -q '^  "schema": 1,\{0,1\}$' \
+    || { MANIFEST_WHY="$MANIFEST_URL is in a format this installer does not know"; return 1; }
+  VERSION="$(manifest_version server)"
+  case "$VERSION" in
+    "" | *[!0-9A-Za-z.+-]*) VERSION=""; MANIFEST_WHY="$MANIFEST_URL names no server release"; return 1 ;;
+  esac
+}
+
 main() {
   PLATFORM="$(detect_platform)"
   info "Detected platform: $PLATFORM"
 
-  # Resolve the latest *stable* server release. NOTE: /releases/latest cannot
-  # be used — this repo publishes several tag series and "latest" is the newest
-  # of any of them. List releases (newest-first) and take the first
-  # kimun_server-v* tag whose version has no pre-release suffix (a hyphen).
+  # Resolve the latest *stable* server release: from the manifest, else from the GitHub
+  # API. The API's /releases/latest cannot be used: this repo publishes several tag
+  # series and "latest" is the newest of any of them. So that list (newest-first, and
+  # only the newest 100 across all series) is scanned for the first kimun_server-v* tag
+  # whose version has no pre-release suffix (a hyphen).
+  MANIFEST_URL="${KIMUN_MANIFEST_URL:-https://kimun.2co.dev/latest.json}"
+  RELEASES_API="${KIMUN_RELEASES_API:-https://api.github.com/repos/$REPO/releases?per_page=100}"
+  FROM_MANIFEST=0
   info "Resolving latest server release..."
-  api_json="$(fetch_stdout "https://api.github.com/repos/$REPO/releases?per_page=100")" \
-    || err "could not reach the GitHub releases API"
-  # grep -o extracts each "tag_name":"..." token individually, so this works
-  # even if the API returns the JSON minified onto a single line.
-  VERSION="$(printf '%s' "$api_json" \
-    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/' \
-    | sed -n "s/^${TAG_PREFIX}//p" \
-    | grep -v '[-]' \
-    | head -n1)"
-  [ -n "$VERSION" ] || err "could not find a stable ${TAG_PREFIX}* release"
+  if resolve_from_manifest; then
+    FROM_MANIFEST=1
+  else
+    warn "$MANIFEST_WHY; using the GitHub API"
+    api_json="$(fetch_stdout "$RELEASES_API")" \
+      || err "could not reach the GitHub releases API"
+    # grep -o extracts each "tag_name":"..." token individually, so this works
+    # even if the API returns the JSON minified onto a single line.
+    VERSION="$(printf '%s' "$api_json" \
+      | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/' \
+      | sed -n "s/^${TAG_PREFIX}//p" \
+      | grep -v '[-]' \
+      | head -n1)"
+    [ -n "$VERSION" ] || err "could not find a stable ${TAG_PREFIX}* release"
+  fi
   TAG="${TAG_PREFIX}${VERSION}"
   info "Latest version: $VERSION"
 
@@ -238,21 +286,37 @@ main() {
     UPDATED=0
   else
     ARCHIVE="kimun-server-${VERSION}-${PLATFORM}.tar.gz"
-    BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+    BASE_URL="${KIMUN_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download/$TAG}"
+
+    # The manifest names this file's url and sha256: use them, unless the files are
+    # being fetched from somewhere else (KIMUN_DOWNLOAD_BASE).
+    ARCHIVE_URL="$BASE_URL/$ARCHIVE"
+    EXPECTED=""
+    if [ "$FROM_MANIFEST" = 1 ] && [ -z "${KIMUN_DOWNLOAD_BASE:-}" ]; then
+      m_url="$(manifest_asset server "$ARCHIVE" url)"
+      m_sha="$(manifest_asset server "$ARCHIVE" sha256)"
+      if [ -n "$m_url" ] && [ -n "$m_sha" ]; then
+        ARCHIVE_URL="$m_url"
+        EXPECTED="$m_sha"
+      fi
+    fi
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
     info "Downloading $ARCHIVE..."
-    download "$BASE_URL/$ARCHIVE" "$tmp/$ARCHIVE" \
+    download "$ARCHIVE_URL" "$tmp/$ARCHIVE" \
       || err "failed to download $ARCHIVE"
 
     info "Verifying checksum..."
-    download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" \
-      || err "failed to download checksums-sha256.txt"
-    # Exact filename match (field 2), not a regex — the archive name contains
-    # '.' which would otherwise act as a wildcard.
-    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$tmp/checksums-sha256.txt")"
+    expected="$EXPECTED"
+    if [ -z "$expected" ]; then
+      download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" \
+        || err "failed to download checksums-sha256.txt"
+      # Exact filename match (field 2), not a regex — the archive name contains
+      # '.' which would otherwise act as a wildcard.
+      expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$tmp/checksums-sha256.txt")"
+    fi
     [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
     actual="$(sha256_of "$tmp/$ARCHIVE")"
     [ "$expected" = "$actual" ] \
