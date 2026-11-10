@@ -49,6 +49,7 @@ Give it a note to open on the command line (`kimun-gui path/to/note.md`) or run 
 - **Slots.** Views live in slots on either side of the editor. Drag a view by its slot header to another slot, or onto an edge of the window to give it a new slot; the places it can land light up as you drag. Drag the dividers to resize.
 - **Zoom.** `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window; the same chord restores it.
 - **Presets.** The layout is saved as you leave it. To start from a layout you author yourself, put it in a `layouts.toml` next to `config.toml` and apply it from the command palette (`Apply layout preset`).
+- **Closing (macOS).** The red button closes the window and leaves Kimün running in the Dock. Click the Dock icon, or choose File > New Window, to open a window again. `Cmd+Q`, Kimün > Quit, the command palette's `Quit` and the leader's quit end the app. On Linux and Windows, closing the window ends the app.
 - **Footer.** The note's path, caret position, backlink and property counts, saved or unsaved, and a git summary (`git ✓` when clean, `git ●3` for three changed paths) when the workspace is a git repository. Leader `g s` (see [Keyboard](#keyboard)) says it in full.
 
 The editor is the same as the terminal app's: plain or [vim](@/using-kimun/vim-mode.md) mode, wikilinks (double-click a link to follow it), `#hashtags`, and a find bar.

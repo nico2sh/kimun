@@ -447,9 +447,9 @@ fn async_focus_does_not_steal_from_the_palette(cx: &mut TestAppContext) {
     assert!(query_focused(&shell, cx));
 }
 
-/// The quit chord closes the window (nothing to save in this shell).
+/// The palette's quit ends the app (nothing to save in this shell).
 #[gpui_kit::test]
-fn quit_closes_the_window(cx: &mut TestAppContext) {
+fn quit_ends_the_app(cx: &mut TestAppContext) {
     let shell = open_default(cx, "hello");
     open_palette(&shell, cx);
     type_text(&shell, "quit", cx);
@@ -458,7 +458,7 @@ fn quit_closes_the_window(cx: &mut TestAppContext) {
         Some("quit kimün")
     );
     press(&shell, "enter", cx);
-    assert!(cx.update_window(shell.handle, |_, _, _| ()).is_err());
+    assert_eq!(cx.read(|cx| shell.workspace.read(cx).quits), 1);
 }
 
 // ── with a vault ─────────────────────────────────────────────────────────
