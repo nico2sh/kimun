@@ -206,7 +206,7 @@ try {
         if ($r.Code -ne 0) { Fail "install from the manifest exited $($r.Code):`n$($r.Output)" }
         if (-not (Test-Path (Join-Path $h8 "bin\kimun.exe"))) { Fail "manifest install: no exe" }
         if ((Get-Content -Raw (Join-Path $h8 "kimun\install.toml")) -notmatch "version = `"$v`"") { Fail "manifest install: marker version" }
-        if ($r.Output -match "using the GitHub API") { Fail "manifest install fell back: $($r.Output)" }
+        if ($r.Output -match "using\s+the\s+GitHub\s+API") { Fail "manifest install fell back: $($r.Output)" }
         $h8g = Join-Path $work "m1g"
         $r = Invoke-Install $h8g $rel "file-gui" @("KIMUN_MANIFEST_URL=$(FileUrl $manifest)", "KIMUN_RELEASES_API=$noApi") -Unpinned
         if ($r.Code -ne 0) { Fail "desktop install from the manifest exited $($r.Code):`n$($r.Output)" }
@@ -231,6 +231,8 @@ try {
         [IO.File]::WriteAllText($schema2, ((Get-Content -Raw $manifest) -replace '"schema": 1', '"schema": 2'), (New-Object Text.UTF8Encoding $false))
         $empty = Join-Path $work "empty.json"
         [IO.File]::WriteAllText($empty, "{`n  `"schema`": 1`n}`n", (New-Object Text.UTF8Encoding $false))
+        # A warning longer than the console is wrapped by PowerShell's host (a newline mid-sentence),
+        # so the matches here take any whitespace between the words.
         $i = 0
         foreach ($case in @(
                 @{ Name = "unreachable"; Url = (FileUrl (Join-Path $work "no-such-manifest.json")); Why = "cannot reach" },
@@ -240,7 +242,7 @@ try {
             $hf = Join-Path $work "fb$i"
             $r = Invoke-Install $hf $rel "file" @("KIMUN_MANIFEST_URL=$($case.Url)", "KIMUN_RELEASES_API=$(FileUrl $api)", "KIMUN_DOWNLOAD_BASE=$(FileUrl $rel)") -Unpinned
             if ($r.Code -ne 0) { Fail "fallback ($($case.Name)) exited $($r.Code):`n$($r.Output)" }
-            if ($r.Output -notmatch "$($case.Why)[\s\S]*using the GitHub API") { Fail "fallback ($($case.Name)) did not say why: $($r.Output)" }
+            if ($r.Output -notmatch "$($case.Why)[\s\S]*using\s+the\s+GitHub\s+API") { Fail "fallback ($($case.Name)) did not say why: $($r.Output)" }
             if (-not (Test-Path (Join-Path $hf "bin\kimun.exe"))) { Fail "fallback ($($case.Name)): no exe" }
             if ((Get-Content -Raw (Join-Path $hf "kimun\install.toml")) -notmatch "version = `"$v`"") { Fail "fallback ($($case.Name)): marker version" }
         }
