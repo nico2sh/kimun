@@ -55,6 +55,41 @@ usage() {
   fi
 }
 
+# --- release signature ----------------------------------------------------
+# Every release from FIRST_SIGNED on carries checksums-sha256.txt.minisig, a minisign
+# signature of its checksums file (see .github/RELEASING.md, "Signing"). When minisign is
+# installed it is checked against SIGNING_PUBKEY (release-signing.pub, line 2) and the
+# digest comes from the file it signed. Without minisign the install goes on on the sha256
+# alone, and says so. install-server.sh carries the same block: keep them identical.
+SIGNING_PUBKEY=""
+FIRST_SIGNED="9999.0.0"
+# version_ge A B: is plain version A at or above B? (a pre-release suffix is ignored)
+version_ge() {
+  awk -v a="${1%%-*}" -v b="${2%%-*}" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, ".")
+    for (i = 1; i <= 3; i++) { if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0) }
+    exit 0 }'
+}
+# verify_signature VERSION FIRST_SIGNED BASE_URL TMP: sets SIGNED_LIST to the verified
+# checksums file, or "" when nothing was verified. Errors on a bad or required-but-missing one.
+verify_signature() {
+  SIGNED_LIST=""
+  _signed_release=0
+  version_ge "$1" "$2" && _signed_release=1
+  if ! have minisign || [ -z "$SIGNING_PUBKEY" ]; then
+    [ "$_signed_release" = 0 ] || warn "minisign is not installed: release $1 is signed, but its signature was not checked (sha256 only)"
+    return 0
+  fi
+  if download "$3/checksums-sha256.txt" "$4/checksums-sha256.txt" 2>/dev/null \
+     && download "$3/checksums-sha256.txt.minisig" "$4/checksums-sha256.txt.minisig" 2>/dev/null; then
+    minisign -V -q -P "$SIGNING_PUBKEY" -m "$4/checksums-sha256.txt" -x "$4/checksums-sha256.txt.minisig" >/dev/null 2>&1 \
+      || err "the signature of checksums-sha256.txt is NOT valid: refusing to install"
+    SIGNED_LIST="$4/checksums-sha256.txt"
+    return 0
+  fi
+  [ "$_signed_release" = 0 ] || err "release $1 should be signed but its signature could not be fetched: refusing to install"
+}
+
 # --- detect platform -------------------------------------------------------
 detect_platform() {
   os="$(uname -s)"
@@ -277,15 +312,25 @@ main() {
     err "failed to download $ARCHIVE (is $VERSION a release?)"
   fi
 
-  # Verify the checksum: the manifest's, or else the release's published checksums file.
+  # Verify the checksum: the signed list when minisign can check it, else the manifest's,
+  # else the release's published checksums file.
   info "Verifying checksum..."
   expected="$EXPECTED"
+  verify_signature "$VERSION" "$FIRST_SIGNED" "$BASE_URL" "$tmp"
+  if [ -n "$SIGNED_LIST" ]; then
+    expected=""
+    SUMS="$SIGNED_LIST"
+  else
+    SUMS="$tmp/checksums-sha256.txt"
+    if [ -z "$expected" ]; then
+      download "$BASE_URL/checksums-sha256.txt" "$SUMS" \
+        || err "failed to download checksums-sha256.txt"
+    fi
+  fi
   if [ -z "$expected" ]; then
-    download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" \
-      || err "failed to download checksums-sha256.txt"
     # Exact filename match (field 2), not a regex — the archive name contains '.'
     # which would otherwise act as a wildcard.
-    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$tmp/checksums-sha256.txt")"
+    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$SUMS")"
   fi
   [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
   actual="$(sha256_of "$tmp/$ARCHIVE")"

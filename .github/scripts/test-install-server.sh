@@ -29,6 +29,22 @@ readers() { # SCRIPT -> the two awk readers, without indentation
   || fail "the latest.json readers in install.sh and install-server.sh differ: keep them identical"
 ok "install.sh and install-server.sh read latest.json with the same code"
 
+# The signature check is copied the same way. And the key they pin must be the committed one.
+sigblock() { awk '/^# --- release signature/ { on = 1 } /^# --- detect platform/ { on = 0 } on' "$1" | grep -v '^FIRST_SIGNED='; }
+[ -n "$(sigblock install.sh)" ] || fail "found no signature block in install.sh"
+[ "$(sigblock install.sh)" = "$(sigblock install-server.sh)" ] \
+  || fail "the signature checks in install.sh and install-server.sh differ: keep them identical"
+if [ -f release-signing.pub ]; then
+  key="$(sed -n 2p release-signing.pub)"
+  for f in install.sh install-server.sh; do
+    grep -qx "SIGNING_PUBKEY=\"$key\"" "$f" || fail "$f does not pin the key in release-signing.pub"
+  done
+  ok "the installers pin the key in release-signing.pub"
+else
+  echo "note: release-signing.pub is not committed yet: the installers pin no key"
+fi
+ok "install.sh and install-server.sh check signatures with the same code"
+
 # A release: the server's archive for every platform the script can pick, and checksums.
 rel="$work/rel"; mkdir -p "$rel"
 for p in linux-x64 linux-arm64 macos-arm64; do
@@ -93,5 +109,64 @@ h="$work/h4"; mkdir -p "$h"
 out="$(run "$h" "file://$work/no-such-manifest.json" 2>&1)" && fail "installed with no manifest and no API"
 echo "$out" | grep -q "could not reach the GitHub releases API" || fail "no manifest, no API said: $out"
 ok "no manifest and no API: a plain error"
+
+# 12. The release signature (minisign), against a throwaway key written into a copy of the script.
+if ! command -v minisign >/dev/null; then
+  echo "skipped: the signature tests need minisign"
+else
+  minisign -G -W -f -p "$work/s.pub" -s "$work/s.key" >/dev/null
+  pub="$(sed -n 2p "$work/s.pub")"
+  signed_rel() { # DIR: a signed copy of the release
+    rm -rf "$1"; cp -r "$rel" "$1"
+    minisign -S -s "$work/s.key" -m "$1/checksums-sha256.txt" -x "$1/checksums-sha256.txt.minisig" >/dev/null
+  }
+  patched() { # NAME FIRST_SIGNED: a copy of the script that trusts the throwaway key
+    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" -e "s|^FIRST_SIGNED=.*|FIRST_SIGNED=\"$2\"|" install-server.sh >"$work/$1.sh"
+  }
+  run_signed() { # NAME REL HOME [PATH]: install into a fresh home; prints the output
+    mkdir -p "$3"
+    PATH="${4:-$PATH}" HOME="$3" KIMUN_SERVER_INSTALL_DIR="$3/bin" KIMUN_MANIFEST_URL="file://$work/latest.json" KIMUN_RELEASES_API="file://$work/no-such-api.json" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$2" \
+      "$(command -v sh)" "$work/$1.sh" 2>&1
+  }
+
+  # a. Signed, and the key is right: installs; the digest is the signed list's.
+  signed_rel "$work/srel"; patched sig-ok 0.0.1
+  out="$(run_signed sig-ok "$work/srel" "$work/sg-a")" || fail "a validly signed release was refused: $out"
+  [ -x "$work/sg-a/bin/kimun-server" ] || fail "signed install: no binary"
+  echo "$out" | grep -qi "warning" && fail "a validly signed release warned: $out"
+  ok "signed release: installs, no warning"
+
+  # b. The list was edited after signing (archive and list changed together): refused, nothing installed.
+  signed_rel "$work/trel"
+  tmpd="$(mktemp -d)"; printf '#!/bin/sh\necho evil\n' >"$tmpd/kimun-server"; chmod +x "$tmpd/kimun-server"
+  arch="$work/trel/kimun-server-$v-$platform.tar.gz"
+  tar -czf "$arch" -C "$tmpd" .
+  (cd "$work/trel" && grep -v "$(basename "$arch")" checksums-sha256.txt >c.new; sha256sum "$(basename "$arch")" >>c.new; mv c.new checksums-sha256.txt)
+  out="$(run_signed sig-ok "$work/trel" "$work/sg-b")" && fail "an edited checksums list was accepted"
+  echo "$out" | grep -q "NOT valid" || fail "an edited list said: $out"
+  [ ! -e "$work/sg-b/bin/kimun-server" ] || fail "an edited list still installed"
+  ok "a signed list that was changed is refused"
+
+  # c. A release that must be signed and has no signature: refused.
+  patched sig-req 0.0.1
+  out="$(run_signed sig-req "$rel" "$work/sg-c")" && fail "an unsigned release was accepted although it must be signed"
+  echo "$out" | grep -q "should be signed" || fail "unsigned-but-required said: $out"
+  ok "a release at or above the first signed version must carry a signature"
+
+  # d. An older release (before the first signed one), unsigned: installs, quietly.
+  patched sig-old 99.0.0
+  out="$(run_signed sig-old "$rel" "$work/sg-d")" || fail "an old unsigned release was refused: $out"
+  echo "$out" | grep -qi "warning" && fail "an old unsigned release warned: $out"
+  ok "a release before the first signed one needs no signature"
+
+  # e. No minisign on the machine: a signed release installs on its sha256 and says it was not checked.
+  nm="$work/nominisign"; mkdir -p "$nm"
+  for tool in sh uname curl cat mktemp rm awk sed grep tar gzip sha256sum mkdir mv chmod head dirname tr cut sort id ls cp date ln; do
+    command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"
+  done
+  out="$(run_signed sig-ok "$work/srel" "$work/sg-e" "$nm")" || fail "no minisign: install failed: $out"
+  echo "$out" | grep -q "minisign is not installed" && echo "$out" | grep -q "not checked" || fail "no minisign: no warning: $out"
+  ok "without minisign: installs on the sha256 alone, with a warning"
+fi
 
 echo "install-server.sh behaves"

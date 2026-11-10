@@ -39,6 +39,13 @@ $ProgressPreference = "SilentlyContinue"
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "kimun: $why" }
 
+# Every release from $firstSigned on carries checksums-sha256.txt.minisig, a minisign signature
+# of its checksums file (.github/RELEASING.md, "Signing"). When minisign is installed it is
+# checked against $signingPubKey (release-signing.pub, line 2) and the digest comes from the
+# file it signed. Without minisign the install goes on on the sha256 alone, and says so.
+$signingPubKey = ""
+$firstSigned = "9999.0.0"
+
 $repo = "nico2sh/kimun"
 $tagPrefix = "kimun-notes-v"
 $bin = if ($WantGui) { "kimun-gui" } else { "kimun" }
@@ -132,14 +139,36 @@ try {
         Fail "failed to download $archive (is $version a release? A release published minutes ago may still be attaching its files: try again shortly)"
     }
 
-    # Verify the checksum: the manifest's, or else the release's published checksums file
-    # (an exact name match). The digest is from .NET (Get-FileHash fails when PowerShell 7
-    # starts 5.1).
+    # Verify the checksum: the signed list when minisign can check it, else the manifest's,
+    # else the release's published checksums file (an exact name match). The digest is from
+    # .NET (Get-FileHash fails when PowerShell 7 starts 5.1).
     Write-Host "Verifying checksum..."
+    $signedRelease = ([version](($version -split "-")[0])) -ge ([version]$firstSigned)
+    $signed = $false
+    $sums = "$tmp\checksums-sha256.txt"
+    $minisign = Get-Command minisign.exe -ErrorAction SilentlyContinue
+    if (-not $minisign -or -not $signingPubKey) {
+        if ($signedRelease) { Write-Warning "minisign is not installed: release $version is signed, but its signature was not checked (sha256 only)" }
+    } else {
+        # No -S and no redirects: under Stop, Windows PowerShell 5.1 turns redirected native stderr into an error.
+        curl.exe -fsL "$base/checksums-sha256.txt" -o $sums
+        $haveSums = -not $LASTEXITCODE
+        curl.exe -fsL "$base/checksums-sha256.txt.minisig" -o "$sums.minisig"
+        if ($haveSums -and -not $LASTEXITCODE) {
+            & $minisign.Source -V -q -P $signingPubKey -m $sums -x "$sums.minisig" | Out-Null
+            if ($LASTEXITCODE) { Fail "the signature of checksums-sha256.txt is NOT valid: refusing to install" }
+            $expected = $null   # the signed list is the authority, not the manifest
+            $signed = $true
+        } elseif ($signedRelease) {
+            Fail "release $version should be signed but its signature could not be fetched: refusing to install"
+        }
+    }
     if (-not $expected) {
-        curl.exe -fsSL "$base/checksums-sha256.txt" -o "$tmp\checksums-sha256.txt"
-        if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
-        foreach ($line in Get-Content "$tmp\checksums-sha256.txt") {
+        if (-not $signed) {
+            curl.exe -fsSL "$base/checksums-sha256.txt" -o $sums
+            if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
+        }
+        foreach ($line in Get-Content $sums) {
             $f = $line.Trim() -split "\s+", 2
             if ($f.Count -eq 2 -and $f[1].TrimStart("*") -eq $archive) { $expected = $f[0].ToLowerInvariant(); break }
         }
