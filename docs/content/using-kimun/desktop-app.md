@@ -5,81 +5,89 @@ weight = 16
 
 # Desktop app
 
-Kimün also has a desktop app, `kimun-gui`: a native window over the same notes, the same `config.toml`, the same themes and the same [search](@/using-kimun/search.md) as the [terminal UI](@/using-kimun/tui.md). You can use both on one workspace.
+Kimün also has a desktop app, `kimun-gui`. It is a native window. It uses the same notes, the same `config.toml`, the same themes, and the same [search](@/using-kimun/search.md) as the [terminal UI](@/using-kimun/tui.md). You can use both apps on one workspace.
 
-> **Status.** The desktop app is new. It is developed and tried on Linux; Windows and macOS builds come from the same code but have not been verified there yet. Expect rough edges, and see [what is not there yet](#not-in-the-desktop-app-yet).
+> Status: The desktop app is new. The developer builds and tests it on Linux. The Windows and macOS builds come from the same code, but nobody verified them on those systems yet. Expect rough edges. See [what is not there yet](#not-in-the-desktop-app-yet).
 
 ## Install and run
 
-**macOS and Linux:** the install script, with `--gui`:
+On macOS and Linux, run the install script with `--gui`:
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
 ```
 
-On Linux it also puts the app in your application menu (a launcher entry and icons under `~/.local/share`). On macOS it installs the plain binary: run `kimun-gui` from a terminal. For a double-clickable app, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases) and drag Kimün to Applications. The script installs into `~/.local/bin` (set `KIMUN_INSTALL_DIR` to change it), checks the download's checksum, and leaves an install marker so the app can update itself. It can sit beside the terminal app.
+On Linux, the script also adds the app to your application menu. It creates a launcher entry and icons under `~/.local/share`. On macOS, the script installs the plain binary, and you run `kimun-gui` from a terminal. For an app that you can double-click, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases). Then drag Kimün to Applications.
 
-**Windows:** the PowerShell installer, with `-Gui`:
+The script installs into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. The script makes sure that the checksum of the download is correct. It also leaves an install marker, so the app can update itself. The app can sit beside the terminal app.
+
+On Windows, run the PowerShell installer with `-Gui`:
 
 ```powershell
 & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui
 ```
 
-It needs no admin rights, installs into `%LOCALAPPDATA%\Programs\kimun`, adds a Start-menu shortcut and puts the folder on your user `PATH` (open a new terminal to use it). Or download `kimun-gui-<version>-windows-x64.zip` from the [releases page](https://github.com/nico2sh/kimun/releases), unzip it and run `kimun-gui.exe`.
+The installer needs no admin rights. It installs into `%LOCALAPPDATA%\Programs\kimun`, adds a Start-menu shortcut, and adds the folder to your user `PATH`. To use the new `PATH`, open a new terminal. Or download `kimun-gui-<version>-windows-x64.zip` from the [releases page](https://github.com/nico2sh/kimun/releases), unzip it, and run `kimun-gui.exe`.
 
-**From source,** in a checkout of the repository:
+To build from source, run these commands in a checkout of the repository:
 
 ```sh
 cargo build --release -p kimun-gui
 ./target/release/kimun-gui
 ```
 
-On Linux you need the usual development libraries for a native window first. On Debian and Ubuntu:
+On Linux, you first need the development libraries for a native window. On Debian and Ubuntu, install them with this command:
 
 ```sh
 sudo apt-get install pkg-config libwayland-dev libfontconfig-dev \
   libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 ```
 
-Give it a note to open on the command line (`kimun-gui path/to/note.md`) or run it bare to start where you left off. The first time, with no workspace configured, a short setup assistant walks you through it.
+To open a note, give its path on the command line (`kimun-gui path/to/note.md`). To start where you left off, run the app with no argument. The first time, when no workspace exists in the configuration, a short setup assistant guides you.
 
 ## The window
 
-- **Rail.** The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE, and, when a [Kimün server](@/using-kimun/server.md) is connected, SEM and ASK. Click one to show it.
-- **Slots.** Views live in slots on either side of the editor. Drag a view by its slot header to another slot, or onto an edge of the window to give it a new slot; the places it can land light up as you drag. Drag the dividers to resize.
-- **Zoom.** `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window; the same chord restores it.
-- **Presets.** The layout is saved as you leave it. To start from a layout you author yourself, put it in a `layouts.toml` next to `config.toml` and apply it from the command palette (`Apply layout preset`).
-- **Closing (macOS).** The red button closes the window and leaves Kimün running in the Dock. Click the Dock icon, or choose File > New Window, to open a window again. `Cmd+Q`, Kimün > Quit, the command palette's `Quit` and the leader's quit end the app. On Linux and Windows, closing the window ends the app.
-- **Footer.** The note's path, caret position, backlink and property counts, saved or unsaved, and a git summary (`git ✓` when clean, `git ●3` for three changed paths) when the workspace is a git repository. Leader `g s` (see [Keyboard](#keyboard)) says it in full.
+- Rail: The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE. When a [Kimün server](@/using-kimun/server.md) is connected, it also lists SEM and ASK. Click a view to show it.
+- Slots: Views live in slots on either side of the editor. To move a view, drag it by its slot header to another slot. To give it a new slot, drag it onto an edge of the window. The places where it can land light up while you drag. Drag the dividers to resize the slots.
+- Zoom: `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window. The same chord restores it.
+- Presets: Kimün saves the layout when you leave it. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`).
+- Closing (macOS): The red button closes the window, and Kimün keeps running in the Dock. To open a window again, click the Dock icon, or choose File > New Window. These actions end the app: `Cmd+Q`, Kimün > Quit, `Quit` in the command palette, and the quit command of the leader. On Linux and Windows, closing the window ends the app.
+- Footer: The footer shows the path of the note, the caret position, the backlink count, the property count, and the saved or unsaved state. When the workspace is a git repository, it also shows a git summary: `git ✓` when clean, and `git ●3` for three changed paths. Leader `g s` (see [Keyboard](#keyboard)) shows the full summary.
 
-The editor is the same as the terminal app's: plain or [vim](@/using-kimun/vim-mode.md) mode, wikilinks (double-click a link to follow it), `#hashtags`, and a find bar.
+The editor is the same as the editor of the terminal app. It has plain mode or [vim](@/using-kimun/vim-mode.md) mode, wikilinks, `#hashtags`, and a find bar. To follow a wikilink, double-click it.
 
 ### Completion
 
-Typing `[[` in a note offers the vault's notes, and `#` offers its tags. In FIND, in the search browser (`Ctrl+K`) and in the note finder, `#` completes tags, `<`, `>` and `=` complete note names in link filters, and a leading `?` completes a saved search's name and expands to its query. `Up` and `Down` move through the list, `Tab` or `Enter` accepts, and `Esc` closes it.
+When you type `[[` in a note, Kimün offers the notes of the vault. When you type `#`, it offers the tags. In FIND, in the search browser (`Ctrl+K`), and in the note finder, these rules apply:
+
+- `#` completes tags.
+- `<`, `>`, and `=` complete note names in link filters.
+- A leading `?` completes the name of a saved search and expands to its query.
+
+`Up` and `Down` move through the list. `Tab` or `Enter` accepts an item. `Esc` closes the list.
 
 ## Workspaces
 
-The title bar shows which workspace is open, as a button: click it, or press `F5` (or leader `v s`), to open the workspace switcher. With system window decorations, or in fullscreen, the button moves to the left end of the footer. Switching saves the open note first. Workspaces are managed in Preferences > Workspaces, and are the same ones the terminal app uses.
+A button in the title bar shows which workspace is open. To open the workspace switcher, click the button, or press `F5` (or leader `v s`). With system window decorations, or in fullscreen, the button moves to the left end of the footer. When you switch, Kimün first saves the open note. You manage workspaces in Preferences > Workspaces. They are the same workspaces that the terminal app uses.
 
 ## Preferences
 
-`F4` (or `Ctrl+,`) opens Preferences. What it saves is `config.toml`, the file the terminal app reads too (see [Configuration](@/getting-started/configuration.md)), plus the desktop app's own display options such as **Reduce motion**. Leader `v t` opens the theme picker.
+`F4` (or `Ctrl+,`) opens Preferences. Preferences saves to `config.toml`, the file that the terminal app also reads (see [Configuration](@/getting-started/configuration.md)). It also saves the display options of the desktop app, such as Reduce motion. Leader `v t` opens the theme picker.
 
 ## Keyboard
 
-Press `F1` for the keyboard reference: every command with the chord it has now, including your own overrides. Some chords worth knowing (`Ctrl` is `Cmd` on macOS):
+Press `F1` for the keyboard reference. It lists every command with its current chord, including your own overrides. These chords are the most useful (`Ctrl` is `Cmd` on macOS):
 
 | Chord | Does |
 |---|---|
-| `Ctrl+Shift+B` | the leader: then a short sequence reaches any command, as in the terminal app (`Ctrl+Shift+B f f` opens the note finder) |
+| `Ctrl+Shift+B` | the leader. A short sequence after it reaches any command, as in the terminal app (`Ctrl+Shift+B f f` opens the note finder) |
 | `Ctrl+Shift+P` | command palette |
 | `Ctrl+K` | search browser |
 | `Ctrl+S` | save |
 | `F5` | switch workspace |
 | `F4` | Preferences |
 
-Chords are overridden in a `[gui.keys]` table of `config.toml`. The key is the action's name, the value one chord or a list; an empty list unbinds. A chord joins modifiers and one key with `+`: `primary` is `Ctrl` (`Cmd` on macOS), the others are `cmd`, `ctrl`, `alt` and `shift`.
+To override a chord, use the `[gui.keys]` table of `config.toml`. The key is the name of the action. The value is one chord or a list of chords. An empty list removes the binding. A chord joins the modifiers and one key with `+`. `primary` is `Ctrl` (`Cmd` on macOS). The other modifiers are `cmd`, `ctrl`, `alt`, and `shift`.
 
 ```toml
 [gui.keys]
@@ -88,33 +96,35 @@ OpenFileBrowser = ["primary+e", "f7"]
 OpenQueryInSidebar = []
 ```
 
-A chord or action the app does not know is skipped and logged; the rest still apply. The desktop app has its own key table: the terminal app's `[key_bindings]` do not apply to it.
+The app skips a chord or an action that it does not know, and it writes the problem to the log. The other overrides still apply. The desktop app has its own key table. The `[key_bindings]` of the terminal app do not apply to it.
 
 ## Display options in `config.toml`
 
-All under `[gui]`; Preferences writes them for you.
+All keys are under `[gui]`. Preferences writes them for you.
 
 | Key | Values | Meaning |
 |---|---|---|
-| `window_decorations` | `"client"` (default), `"system"` | Who draws the title bar. `"client"` is Kimün's own, in the theme's colours. `"system"` is the operating system's, the way out if the custom bar misbehaves on your desktop. Read at start; restart to change. macOS always keeps its native window buttons. |
-| `reduce_motion` | `true`, `false` (default) | Keeps decorative motion (the welcome screen's bouncing dots, spinners) still. The system's own setting is not read. |
-| `layout_preset` | a preset's name | The preset the saved layout started from. |
+| `window_decorations` | `"client"` (default), `"system"` | Sets which program draws the title bar. `"client"` is the title bar of Kimün, in the colors of the theme. `"system"` is the title bar of the operating system. Use it if the custom bar fails on your desktop. The app reads this key at start, so restart the app to change it. macOS always keeps its native window buttons. |
+| `reduce_motion` | `true`, `false` (default) | Stops decorative motion, such as the bouncing dots of the welcome screen and the spinners. The app does not read the setting of the operating system. |
+| `layout_preset` | the name of a preset | The preset that the saved layout started from. |
 
-`[gui.layout]` is the saved layout itself; leave it to the app.
+`[gui.layout]` is the saved layout. Leave it to the app.
 
 ## Fonts
 
-The interface uses [Inter](https://rsms.me/inter/), embedded in the app and licensed under the SIL Open Font License. The editor uses your theme's monospace font.
+The interface uses [Inter](https://rsms.me/inter/). The app embeds the font, and the SIL Open Font License covers it. The editor uses the monospace font of your theme.
 
 ## Updates
 
-The desktop app checks for a new Kimün release when it starts (turn it off with `update_check` in `config.toml`) and tells you in a toast. **Preferences > Display > Check now**, or leader `v u`, checks on demand. The update dialog's `Install update` downloads the desktop app's own release binary (`kimun-gui-<version>-<platform>`), checks its checksum and replaces the running one; restart to use it. That is only offered for a copy installed by the install script or placed by you. Under Homebrew, `cargo install` or a system package, and for the macOS `.app` (from the `.dmg`), the dialog points you at the right way to update instead. A release that has no desktop build for your system says so instead of failing quietly.
+When the desktop app starts, it looks for a new Kimün release and tells you in a toast. To turn this off, use `update_check` in `config.toml`. To look for a release at any time, use Preferences > Display > Check now, or leader `v u`.
 
-If a [Kimün server](@/using-kimun/server.md) reports a newer release of itself, you get a toast saying so. Update the server the way you installed it.
+The `Install update` button of the update dialog downloads the release binary of the desktop app (`kimun-gui-<version>-<platform>`). It makes sure that the checksum is correct, and then it replaces the running binary. Restart the app to use the new version. The dialog offers this only for a copy that the install script installed or that you placed yourself. In these cases, the dialog shows you the correct way to update instead: Homebrew, `cargo install`, a system package, and the macOS `.app` from the `.dmg`. If a release has no desktop build for your system, the dialog says so.
+
+If a [Kimün server](@/using-kimun/server.md) reports a newer release of itself, you get a toast. Update the server the same way that you installed it.
 
 ## Not in the desktop app yet
 
-The leader tree lists these, but they are not built, in the desktop app or in the terminal app:
+The leader tree lists these items, but neither the desktop app nor the terminal app has them yet:
 
 - note from a template
 - local graph

@@ -5,7 +5,7 @@ weight = 2
 
 # Piping Output
 
-Kimün's CLI reads from stdin and writes plain text or JSON to stdout, so it works with Unix pipes. This guide shows common ways to combine kimun with tools such as `less`, `bat`, and `fzf`.
+The Kimün CLI reads from stdin and writes plain text or JSON to stdout, so it works with Unix pipes. This guide shows how to combine `kimun` with tools such as `less`, `bat`, and `fzf`.
 
 ## Basic piping
 
@@ -21,25 +21,25 @@ kimun search "standup" | head -1 | kimun note show
 kimun note show journal/2024-01-15
 ```
 
-`kimun note show` accepts a path via stdin (one path per line) or as an argument.
+`kimun note show` accepts a path from stdin (one path per line) or as an argument.
 
 ## Viewing output
 
 ### Pipe into a pager
 
-Page through search results or note content:
+To read search results or note content page by page, use a pager:
 
 ```sh
 kimun note show journal/2024-01-15 | less
 ```
 
-For syntax-highlighted viewing (requires `bat` to be installed):
+To see syntax highlighting, use `bat`. You must install `bat` first:
 
 ```sh
 kimun note show journal/2024-01-15 | bat
 ```
 
-Combine JSON output with a pager:
+To combine JSON output with a pager, run:
 
 ```sh
 kimun search "project" --format json | jq '.' | less
@@ -47,7 +47,7 @@ kimun search "project" --format json | jq '.' | less
 
 ## Interactive selection with `fzf`
 
-[`fzf`](https://github.com/junegunn/fzf) is a command-line fuzzy finder. Use it with kimun to pick notes interactively.
+[`fzf`](https://github.com/junegunn/fzf) is a command-line fuzzy finder. Use it with `kimun` to pick notes interactively.
 
 ### Interactively pick a note and display it
 
@@ -61,7 +61,7 @@ kimun search "meeting" --format paths | fzf | kimun note show
 
 ### Preview note content while selecting
 
-Use fzf's `--preview` option to show note content:
+To show note content, use the `--preview` option of `fzf`:
 
 ```sh
 kimun notes --format paths | fzf --preview 'kimun note show {}' | kimun note show
@@ -69,11 +69,11 @@ kimun notes --format paths | fzf --preview 'kimun note show {}' | kimun note sho
 
 ## Shell aliases and functions
 
-Add these to your `~/.zshrc` or `~/.bashrc`:
+Add these lines to your `~/.zshrc` or `~/.bashrc`:
 
 ### Quick capture
 
-Save a thought from the terminal with one short command:
+With one short command, you can save a thought from the terminal:
 
 ```sh
 # One-letter alias for instant capture
@@ -119,7 +119,7 @@ alias ki='kimun note triage'
 
 ## Piping into the journal
 
-When stdin is not a terminal, `kimun journal` appends the piped input to your daily entry. Use this to log command output:
+If stdin is not a terminal, `kimun journal` appends the piped input to your daily entry. Use this to log command output:
 
 ```sh
 # Timestamped log line
@@ -135,7 +135,7 @@ kimun search "todo" --format paths | kimun journal
 echo "Late entry" | kimun journal --date 2024-01-15
 ```
 
-Run it from cron to log something every day:
+To log something every day, run the command from cron:
 
 ```sh
 @daily echo "$(hostname): $(uptime)" | kimun journal
@@ -143,4 +143,4 @@ Run it from cron to log something every day:
 
 ## Tips
 
-Pipes work with both plain text and JSON output. To filter on specific fields, use `--format json` with `jq` (see [Scripting with JSON](@/guides/scripting.md)). Try a pipeline on the command line before saving it as an alias.
+Pipes work with plain text output and with JSON output. To filter on specific fields, use `--format json` with `jq` (see [Scripting with JSON](@/guides/scripting.md)). Try a pipeline on the command line before you save it as an alias.

@@ -9,9 +9,9 @@ Kimün is a note-taking app for the terminal.
 
 ![Kimün TUI screenshot](img/screenshot-tui.png)
 
-- Notes are plain `.md` files in a directory you own. You can open them with any editor and sync them with any tool.
-- A local SQLite index handles full-text and structured queries (by name, section, path, label, and links).
-- Everything stays on your machine. There is no cloud service, account, or tracking, and if you stop using Kimün your notes stay as they are.
+- Notes are plain `.md` files in a directory that you own. You can open them with any editor and sync them with any tool.
+- A local SQLite index answers full-text and structured queries (by name, section, path, label, and links).
+- Everything stays on your machine. Kimün has no cloud service, no account, and no tracking. If you stop using Kimün, your notes stay as they are.
 
 ## Quick Start
 
@@ -21,7 +21,7 @@ Kimün is a note-taking app for the terminal.
 kimun
 ```
 
-Or explore the command-line interface:
+To see the command-line interface, run:
 
 ```sh
 kimun --help
@@ -31,15 +31,15 @@ kimun --help
 
 Your workspace directory holds only your `.md` files.
 
-Kimün's own files live under your config directory, separate from your notes:
+Kimün stores its own files in your configuration directory, separate from your notes:
 
-- **Linux/macOS:** `~/.config/kimun/`
-- **Windows:** `%USERPROFILE%\kimun\`
+- Linux and macOS: `~/.config/kimun/`
+- Windows: `%USERPROFILE%\kimun\`
 
-That directory contains:
+This directory contains:
 
-- `config.toml`: your settings and workspace configuration
-- `<workspace>.kimuncache`: the per-workspace search index (regenerable, safe to delete)
-- `history/<workspace>.txt`: the per-workspace history of recently opened notes
+- `config.toml`: your configuration, including your workspaces
+- `<workspace>.kimuncache`: the search index of each workspace (Kimün can rebuild it, so you can delete it)
+- `history/<workspace>.txt`: the history of recently opened notes of each workspace
 
-The cache and history locations are configurable. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+You can change the cache and history locations. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
