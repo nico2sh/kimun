@@ -14,6 +14,7 @@
 #
 # Env overrides:
 #   KIMUN_INSTALL_DIR   install location (default: $HOME/.local/bin)
+#   KIMUN_APP_DIR       where Kimun.app goes on macOS (default: $HOME/Applications)
 #   KIMUN_VERSION       install this version instead of the latest stable release
 #                       (a pre-release too, e.g. 0.25.0-beta.1)
 #   KIMUN_DOWNLOAD_BASE where the release's files are fetched from (default: the
@@ -24,9 +25,10 @@
 #                       (default: the repository's api.github.com URL); for testing
 #
 # The desktop app on Linux also gets its launcher entry and icons, under
-# $XDG_DATA_HOME (default: $HOME/.local/share). On macOS it is the raw binary: run
-# `kimun-gui` from a terminal. For a double-clickable app, download the signed
-# kimun-gui-<version>-<platform>.dmg from the release page instead.
+# $XDG_DATA_HOME (default: $HOME/.local/share). On macOS it is the signed Kimun.app,
+# taken from the release's kimun-gui-<version>-<platform>.dmg and copied to
+# $HOME/Applications (open it from Launchpad or Spotlight). A release with no .dmg
+# gets the raw kimun-gui binary instead, like the terminal app.
 #
 # Unix only (Linux, macOS). Windows users: install.ps1, or the release archive.
 
@@ -217,10 +219,94 @@ resolve_from_manifest() {
   esac
 }
 
+# Remove the temp dir. A mounted .dmg lives under it and must be detached first.
+cleanup() {
+  if [ -n "${MOUNT:-}" ]; then hdiutil detach -quiet "$MOUNT" >/dev/null 2>&1 || hdiutil detach -force -quiet "$MOUNT" >/dev/null 2>&1 || true; fi
+  rm -rf "$tmp"
+}
+
+# macOS desktop app: mount the .dmg, copy Kimun.app next to the user's other apps, and
+# check that its signature holds. It is copied to a hidden folder first, so a failed copy
+# or a bad signature never replaces a working install. A download carries no quarantine
+# flag, so Gatekeeper does not ask; the signature check is ours.
+install_macos_app() {
+  apps="${KIMUN_APP_DIR:-$HOME/Applications}"
+  mnt="$tmp/mnt"
+  mkdir -p "$mnt" || err "could not create the mount point $mnt"
+  mkdir -p "$apps" || err "could not create $apps"
+  # MOUNT is set only once the attach worked, so cleanup detaches only a real mount.
+  hdiutil attach -nobrowse -readonly -noverify -mountpoint "$mnt" "$tmp/$ARCHIVE" >/dev/null \
+    || err "could not mount $ARCHIVE"
+  MOUNT="$mnt"
+  [ -d "$MOUNT/Kimun.app" ] || err "Kimun.app not found in $ARCHIVE"
+  # The staging folder keeps the name Kimun.app inside it, so codesign sees a real bundle name.
+  stagedir="$apps/.Kimun.new"
+  staged="$stagedir/Kimun.app"
+  rm -rf "$stagedir"
+  mkdir -p "$stagedir" || err "could not create $stagedir"
+  ditto "$MOUNT/Kimun.app" "$staged" || { rm -rf "$stagedir"; err "could not copy the app to $apps (is it writable?)"; }
+  # The seal must be intact AND the signature must chain to Apple as a Developer ID
+  # Application certificate (not ad-hoc, not self-signed). Notarization is not checked.
+  devid="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+  if ! codesign --verify --deep --strict -R "=$devid" "$staged" >/dev/null 2>&1; then
+    rm -rf "$stagedir"
+    err "Kimun.app is not validly signed with an Apple Developer ID certificate: refusing to install"
+  fi
+  # Swap with a backup, so a failed move leaves the previous app in place.
+  backup=""
+  if [ -e "$apps/Kimun.app" ]; then
+    backup="$apps/.Kimun.app.old"
+    rm -rf "$backup"
+    mv "$apps/Kimun.app" "$backup" || { rm -rf "$stagedir"; err "could not replace the existing Kimun.app in $apps (is it running or read-only?)"; }
+  fi
+  if ! mv "$staged" "$apps/Kimun.app"; then
+    rm -rf "$stagedir"
+    [ -z "$backup" ] || mv "$backup" "$apps/Kimun.app" || true
+    err "could not install to $apps"
+  fi
+  rm -rf "$stagedir"
+  [ -z "$backup" ] || rm -rf "$backup"
+  # Best effort: tell Launch Services about the app so Spotlight and Launchpad find it now.
+  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [ -x "$lsregister" ] && "$lsregister" -f "$apps/Kimun.app" >/dev/null 2>&1 || true
+  info "Installed Kimun.app to $apps/Kimun.app"
+}
+
 # Fail early and plainly when a tool the install needs is missing.
 check_tools() {
   have curl || have wget || err "needs curl or wget to download"
   have tar || err "needs tar to unpack the download"
+}
+
+# fetch_archive NAME [quiet]: download release file NAME into $tmp. Sets ARCHIVE and EXPECTED
+# (the sha256 the manifest gives, or empty). The manifest names a file's url and sha256: they
+# are used unless the files come from somewhere else (KIMUN_DOWNLOAD_BASE). A file it does not
+# list is looked for the usual way, so the errors in main stay the same. Needs BASE_URL, FROM_MANIFEST and tmp.
+fetch_archive() {
+  ARCHIVE="$1"
+  EXPECTED=""
+  _url="$BASE_URL/$ARCHIVE"
+  if [ "$FROM_MANIFEST" = 1 ] && [ -z "${KIMUN_DOWNLOAD_BASE:-}" ]; then
+    _m_url="$(manifest_asset app "$ARCHIVE" url)"
+    _m_sha="$(manifest_asset app "$ARCHIVE" sha256)"
+    if [ -n "$_m_url" ] && [ -n "$_m_sha" ]; then
+      _url="$_m_url"
+      EXPECTED="$_m_sha"
+    fi
+  fi
+  info "Downloading $ARCHIVE..."
+  if [ "${2:-}" = quiet ]; then
+    download "$_url" "$tmp/$ARCHIVE" 2>/dev/null
+  else
+    download "$_url" "$tmp/$ARCHIVE"
+  fi
+}
+
+# release_lists NAME: does the release's checksums file list NAME? Returns 0 when it does,
+# 1 when the file is reachable and does not, 2 when it cannot be fetched.
+release_lists() {
+  download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" 2>/dev/null || return 2
+  awk -v f="$1" '$2 == f { found = 1 } END { exit !found }' "$tmp/checksums-sha256.txt"
 }
 
 main() {
@@ -274,31 +360,37 @@ main() {
   TAG="${TAG_PREFIX}${VERSION}"
 
   # Each app has its own archive: kimun-<v>-<platform> and kimun-gui-<v>-<platform>.
-  ARCHIVE="${BIN}-${VERSION}-${PLATFORM}.tar.gz"
+  # On macOS the desktop app is the .dmg when the release has one.
   BASE_URL="${KIMUN_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download/$TAG}"
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  # cleanup runs on every exit. INT and TERM must exit, or the script would keep running
+  # after cleanup removed the temp dir and detached the .dmg.
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
-  # The manifest names this file's url and sha256: use them, unless the files are being
-  # fetched from somewhere else (KIMUN_DOWNLOAD_BASE). A file it does not list is looked
-  # for the usual way, so the errors below stay the same.
-  ARCHIVE_URL="$BASE_URL/$ARCHIVE"
-  EXPECTED=""
-  if [ "$FROM_MANIFEST" = 1 ] && [ -z "${KIMUN_DOWNLOAD_BASE:-}" ]; then
-    m_url="$(manifest_asset app "$ARCHIVE" url)"
-    m_sha="$(manifest_asset app "$ARCHIVE" sha256)"
-    if [ -n "$m_url" ] && [ -n "$m_sha" ]; then
-      ARCHIVE_URL="$m_url"
-      EXPECTED="$m_sha"
+  MAC_APP=0
+  if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = "Darwin" ]; then
+    if fetch_archive "${BIN}-${VERSION}-${PLATFORM}.dmg" quiet; then
+      MAC_APP=1
+    else
+      # Fall back to the raw binary only when the release is confirmed to have no .dmg.
+      # Any other failure (network, a 5xx, a rate limit) must not change the install type.
+      rc=0; release_lists "$ARCHIVE" || rc=$?
+      case "$rc" in
+        1) warn "release $VERSION has no macOS app (.dmg): installing the raw binary instead" ;;
+        0) err "failed to download $ARCHIVE (it is listed in release $VERSION). Try again" ;;
+        *) err "failed to download $ARCHIVE, and could not check whether release $VERSION has one. Try again" ;;
+      esac
     fi
   fi
 
-  info "Downloading $ARCHIVE..."
-  if ! download "$ARCHIVE_URL" "$tmp/$ARCHIVE"; then
-    # The release is there (its checksums are) but this app's build for this
-    # system is not: say so, rather than a bare failed download.
-    if download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" 2>/dev/null; then
+  if [ "$MAC_APP" = 0 ] && ! fetch_archive "${BIN}-${VERSION}-${PLATFORM}.tar.gz"; then
+    # When the release is there (its checksums are) but this app's build for this system
+    # is not, say so, rather than a bare failed download.
+    rc=0; release_lists "$ARCHIVE" || rc=$?
+    if [ "$rc" = 1 ]; then
       if [ "$BIN" = "kimun-gui" ]; then
         err "release $VERSION has no desktop app build for $PLATFORM. Not every release has one yet: see https://github.com/$REPO/releases, or pin a release that does with KIMUN_VERSION"
       fi
@@ -331,6 +423,15 @@ main() {
   actual="$(sha256_of "$tmp/$ARCHIVE")"
   [ "$expected" = "$actual" ] \
     || err "checksum mismatch for $ARCHIVE (expected $expected, got $actual)"
+
+  if [ "$MAC_APP" = 1 ]; then
+    install_macos_app
+    # No install marker: a binary inside Kimun.app is the Bundle channel, found from its
+    # path. A marker would also overwrite the terminal app's.
+    info ""
+    info "Done. Open Kimun from Launchpad or Spotlight, or run: open -a Kimun"
+    return 0
+  fi
 
   # Extract the binary.
   info "Extracting..."
@@ -369,7 +470,7 @@ EOF
   info ""
   info "Done. Run '$BIN' to start."
   if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = "Darwin" ]; then
-    info "(On macOS this is the raw binary: run it from a terminal. For the signed app, get the .dmg from https://github.com/$REPO/releases)"
+    info "(This release has no macOS app, so this is the raw binary: run it from a terminal.)"
   fi
 }
 

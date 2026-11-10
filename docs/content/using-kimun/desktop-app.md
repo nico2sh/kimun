@@ -17,9 +17,9 @@ On macOS and Linux, run the install script with `--gui`:
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
 ```
 
-On Linux, the script also adds the app to your application menu. It creates a launcher entry and icons under `~/.local/share`. On macOS, the script installs the plain binary, and you run `kimun-gui` from a terminal. For an app that you can double-click, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases). Then drag Kimün to Applications.
+On Linux, the script also adds the app to your application menu. It creates a launcher entry and icons under `~/.local/share`. On macOS, the script installs the signed `Kimun.app` in `~/Applications`. Open it from Launchpad or Spotlight. You can also download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases) and drag Kimün to Applications.
 
-The script installs into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. The script makes sure that the checksum of the download is correct. It also leaves an install marker, so the app can update itself. The app can sit beside the terminal app.
+On Linux, the script installs into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. It also leaves an install marker, so the app can update itself. On macOS, set `KIMUN_APP_DIR` to install `Kimun.app` in another folder. The app does not update itself in place there. To update it, run the script again. On both systems, the script makes sure that the checksum of the download is correct. The app can sit beside the terminal app.
 
 On Windows, run the PowerShell installer with `-Gui`:
 
@@ -43,16 +43,16 @@ sudo apt-get install pkg-config libwayland-dev libfontconfig-dev \
   libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 ```
 
-To open a note, give its path on the command line (`kimun-gui path/to/note.md`). To start where you left off, run the app with no argument. The first time, when no workspace exists in the configuration, a short setup assistant guides you.
+To open a note, give its path on the command line (`kimun-gui path/to/note.md`). To start where you left off, run the app with no argument. If no workspace exists in the configuration, a short setup assistant guides you the first time.
 
 ## The window
 
 - Rail: The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE. When a [Kimün server](@/using-kimun/server.md) is connected, it also lists SEM and ASK. Click a view to show it.
 - Slots: Views live in slots on either side of the editor. To move a view, drag it by its slot header to another slot. To give it a new slot, drag it onto an edge of the window. The places where it can land light up while you drag. Drag the dividers to resize the slots.
 - Zoom: `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window. The same chord restores it.
-- Presets: Kimün saves the layout when you leave it. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`).
+- Presets: When you leave Kimün, it saves the layout. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`).
 - Closing (macOS): The red button closes the window, and Kimün keeps running in the Dock. To open a window again, click the Dock icon, or choose File > New Window. These actions end the app: `Cmd+Q`, Kimün > Quit, `Quit` in the command palette, and the quit command of the leader. On Linux and Windows, closing the window ends the app.
-- Footer: The footer shows the path of the note, the caret position, the backlink count, the property count, and the saved or unsaved state. When the workspace is a git repository, it also shows a git summary: `git ✓` when clean, and `git ●3` for three changed paths. Leader `g s` (see [Keyboard](#keyboard)) shows the full summary.
+- Footer: The footer shows the path of the note, the caret position, the backlink count, the property count, and the saved or unsaved state. When the workspace is a git repository, it also shows a git summary. The summary reads `git ✓` for a clean repository and `git ●3` for three changed paths. Leader `g s` (see [Keyboard](#keyboard)) shows the full summary.
 
 The editor is the same as the editor of the terminal app. It has plain mode or [vim](@/using-kimun/vim-mode.md) mode, wikilinks, `#hashtags`, and a find bar. To follow a wikilink, double-click it.
 
@@ -104,7 +104,7 @@ All keys are under `[gui]`. Preferences writes them for you.
 
 | Key | Values | Meaning |
 |---|---|---|
-| `window_decorations` | `"client"` (default), `"system"` | Sets which program draws the title bar. `"client"` is the title bar of Kimün, in the colors of the theme. `"system"` is the title bar of the operating system. Use it if the custom bar fails on your desktop. The app reads this key at start, so restart the app to change it. macOS always keeps its native window buttons. |
+| `window_decorations` | `"client"` (default), `"system"` | Sets which program draws the title bar. `"client"` is the title bar of Kimün, in the colors of the theme. `"system"` is the title bar of the operating system. If the custom bar fails on your desktop, use this value. The app reads this key at start, so restart the app to change it. macOS always keeps its native window buttons. |
 | `reduce_motion` | `true`, `false` (default) | Stops decorative motion, such as the bouncing dots of the welcome screen and the spinners. The app does not read the setting of the operating system. |
 | `layout_preset` | the name of a preset | The preset that the saved layout started from. |
 
