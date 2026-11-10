@@ -317,7 +317,10 @@ pub(crate) fn close_hook(
     workspace: Entity<Workspace>,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     move |_, window, cx| {
-        workspace.update(cx, |this, cx| this.request_close(window, cx));
+        workspace.update(cx, |this, cx| {
+            // The close button closes the window; it never quits the app by itself.
+            this.request_close(window, cx)
+        });
     }
 }
 

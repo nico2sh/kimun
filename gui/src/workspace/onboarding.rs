@@ -1694,7 +1694,7 @@ impl Workspace {
                 self.apply_theme(t.clone(), cx);
                 self.close_onboarding(window, cx);
             }
-            OnboardingEvent::Quit => self.request_close(window, cx),
+            OnboardingEvent::Quit => self.request_quit(window, cx),
             OnboardingEvent::Finished {
                 theme: t,
                 first_run,
