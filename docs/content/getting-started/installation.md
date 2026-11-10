@@ -24,7 +24,7 @@ curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
 If `~/.local/bin` is not on your `PATH`, the script tells you how to add it.
 
 > Windows: use the PowerShell installer. It needs no admin rights. It installs into
-> `%LOCALAPPDATA%\Programs\kimun`, adds that folder to your user `PATH`, and records
+> `%LOCALAPPDATA%\Programs\kimun` and adds that folder to your user `PATH`. It also records
 > the same install marker, so the app can update itself:
 >
 > ```powershell
@@ -56,7 +56,7 @@ To install the desktop app, `kimun-gui`, use the same script with `--gui`. The [
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
 ```
 
-On Linux, the script also installs the launcher entry and the icons of the app under `~/.local/share`, so the app appears in your application menu. On macOS, the script installs the plain binary. Run `kimun-gui` from a terminal. For an app that you can double-click, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases). Run the script once for each app that you want. Both apps can be installed side by side and share one install marker.
+On Linux, the script also installs the launcher entry and the icons of the app under `~/.local/share`. The app then appears in your application menu. On macOS, the script installs the signed `Kimun.app` in `~/Applications`. Open it from Launchpad or Spotlight. To install it in another folder, set `KIMUN_APP_DIR`. If a release has no `.dmg` file, the script installs the plain binary instead. Then you run `kimun-gui` from a terminal. Run the script once for each app that you want. On Linux, both apps can be installed side by side and share one install marker. On macOS, the app has no install marker. To update it, run the script again.
 
 On Windows, the PowerShell installer takes a `-Gui` switch. The `irm | iex` form cannot pass a switch, so paste this command:
 
@@ -79,7 +79,7 @@ curl -fsSL https://kimun.2co.dev/install.sh | sh                # the terminal a
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui    # the desktop app
 ```
 
-The desktop app updates itself the same way if the install script installed it.
+If the install script installed the desktop app, it updates itself the same way.
 
 If you installed with Homebrew or Cargo, use the same tool to update:
 
@@ -90,7 +90,7 @@ cargo install kimun-notes # Cargo (reinstalls the latest)
 
 ## First Run
 
-If you start Kimün for the first time and no workspace exists, a guided setup dialog opens. The dialog asks you to choose a notes directory, Nerd Fonts, a theme, and an editor. Kimün writes nothing until you confirm at the end.
+If you start Kimün for the first time and no workspace exists, a guided setup dialog opens. The dialog asks you to choose a notes directory, Nerd Fonts, a theme, and an editor. Kimün writes nothing until you accept the choices at the end.
 
 ```sh
 kimun

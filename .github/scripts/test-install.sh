@@ -2,7 +2,8 @@
 # Self-test for install.sh against a fake release served from a local directory
 # (file:// URLs, a pinned version): the terminal app, the desktop app and its
 # Linux launcher files, the shared marker, a bad checksum, an archive with no
-# launcher files, the options. Linux only (the desktop files are Linux's).
+# launcher files, the options. The macOS desktop app is covered with stubbed hdiutil, ditto and codesign,
+# so the real tools are not exercised here (see rehearse-release.sh for that).
 # Run: bash .github/scripts/test-install.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -150,6 +151,79 @@ fakebin "$work/f5" MINGW64_NT-10.0 x86_64 0 0
 out="$(PATH="$work/f5:$PATH" HOME="$work/h" sh install.sh 2>&1)" && fail "Windows shell installed"
 echo "$out" | grep -q "windows-x64.zip" || fail "Windows hint missing the zip: $out"
 ok "a Windows shell is pointed at the zip"
+
+# 8b. The macOS desktop app: --gui on a (fake) Mac takes the .dmg, mounts it, copies Kimun.app. The
+# stubs: uname/sysctl say Darwin; hdiutil "mounts" a .dmg that is a tar of its contents; ditto is cp;
+# codesign passes unless CODESIGN_FAIL is set, and, like the real one, also fails when the bundle
+# path does not end in .app or when no -R requirement is given.
+macbin="$work/macbin"; fakebin "$macbin" Darwin arm64 1 0
+cat >"$macbin/hdiutil" <<'STUB'
+#!/bin/sh
+case "$1" in
+  attach) for last; do :; done; while [ $# -gt 0 ]; do [ "$1" = -mountpoint ] && mp="$2"; shift; done
+          tar -xf "$last" -C "$mp" || exit 1; echo "$mp" >"${HDIUTIL_LOG:-/dev/null}" ;;
+  detach) echo "detach $*" >>"${HDIUTIL_LOG:-/dev/null}" ;;
+esac
+STUB
+printf '#!/bin/sh\ncp -R "$1" "$2"\n' >"$macbin/ditto"
+cat >"$macbin/codesign" <<'STUB'
+#!/bin/sh
+[ -z "${CODESIGN_FAIL:-}" ] || exit 1
+req=0; for last; do [ "$prev" = -R ] && req=1; prev="$last"; done
+[ "$req" = 1 ] || exit 1
+case "$last" in *.app) exit 0 ;; *) exit 1 ;; esac
+STUB
+chmod +x "$macbin/hdiutil" "$macbin/ditto" "$macbin/codesign"
+macrel="$work/macrel"; make_release "$macrel"
+stage="$(mktemp -d)"; mkdir -p "$stage/Kimun.app/Contents/MacOS"; printf '#!/bin/sh\necho app\n' >"$stage/Kimun.app/Contents/MacOS/kimun-gui"; chmod +x "$stage/Kimun.app/Contents/MacOS/kimun-gui"
+ln -s /Applications "$stage/Applications"
+tar -cf "$macrel/kimun-gui-$v-macos-arm64.dmg" -C "$stage" .; rm -rf "$stage"
+(cd "$macrel" && sha256sum kimun-*.tar.gz kimun-*.dmg >checksums-sha256.txt)
+mac_install() { # HOME [args]
+  local h="$1"; shift
+  PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" \
+    HDIUTIL_LOG="$h/hdiutil.log" sh install.sh --gui "$@"
+}
+h="$work/m1"; mkdir -p "$h"
+mac_install "$h" >"$work/m1.out" 2>&1 || fail "macOS app install failed: $(cat "$work/m1.out")"
+[ -x "$h/Applications/Kimun.app/Contents/MacOS/kimun-gui" ] || fail "Kimun.app not in ~/Applications: $(cat "$work/m1.out"; find "$h" -maxdepth 3)"
+[ ! -e "$h/Applications/.Kimun.new" ] || fail "staging copy left behind"
+[ ! -e "$h/bin/kimun-gui" ] || fail "the macOS app install also put a raw binary in place"
+[ ! -e "$h/.config/kimun/install.toml" ] || fail "the macOS app install wrote a marker"
+grep -q '^detach' "$h/hdiutil.log" || fail "the .dmg was not detached"
+ok "macOS --gui: Kimun.app copied to ~/Applications, .dmg detached, no marker, no raw binary"
+# A bad signature: refused, and the app already there is untouched.
+h="$work/m2"; mkdir -p "$h/Applications/Kimun.app"; echo old >"$h/Applications/Kimun.app/old"
+if out="$(CODESIGN_FAIL=1 mac_install "$h" 2>&1)"; then fail "a bad signature was accepted"; fi
+echo "$out" | grep -q "not validly signed with an Apple Developer ID" || fail "bad signature said: $out"
+[ -f "$h/Applications/Kimun.app/old" ] || fail "a bad signature replaced the installed app"
+[ ! -e "$h/Applications/.Kimun.new" ] || fail "staging copy left after a bad signature"
+ok "macOS --gui: a bad signature is refused and the installed app stays"
+# A re-install replaces the app, and KIMUN_APP_DIR moves it.
+h="$work/m3"; mkdir -p "$h/Applications/Kimun.app"; echo old >"$h/Applications/Kimun.app/old"
+mac_install "$h" >/dev/null 2>&1 || fail "re-install failed"
+[ ! -e "$h/Applications/Kimun.app/old" ] || fail "re-install kept stale files"
+KIMUN_APP_DIR="$h/elsewhere" mac_install "$h" >/dev/null 2>&1 || fail "KIMUN_APP_DIR install failed"
+[ -d "$h/elsewhere/Kimun.app" ] || fail "KIMUN_APP_DIR ignored"
+ok "macOS --gui: a re-install replaces the app; KIMUN_APP_DIR is honored"
+# A corrupted .dmg: checksum mismatch, nothing installed.
+cp -R "$macrel" "$work/macbad"; echo x >>"$work/macbad/kimun-gui-$v-macos-arm64.dmg"
+h="$work/m4"; mkdir -p "$h"
+if PATH="$macbin:$PATH" HOME="$h" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$work/macbad" sh install.sh --gui >/dev/null 2>&1; then fail "a corrupt .dmg installed"; fi
+[ ! -e "$h/Applications/Kimun.app" ] || fail "a corrupt .dmg still installed"
+ok "macOS --gui: a corrupt .dmg fails the checksum"
+# A release with no .dmg: the raw binary, with a note.
+rm "$macrel/kimun-gui-$v-macos-arm64.dmg"; (cd "$macrel" && sha256sum kimun-*.tar.gz >checksums-sha256.txt)
+h="$work/m5"; mkdir -p "$h"
+out="$(mac_install "$h" 2>&1)" || fail "no-.dmg release failed: $out"
+[ -x "$h/bin/kimun-gui" ] || fail "no-.dmg release: raw binary missing"
+echo "$out" | grep -q "no macOS app" || fail "no-.dmg release did not say so: $out"
+ok "macOS --gui: a release with no .dmg falls back to the raw binary"
+# The terminal app on a Mac is not affected.
+h="$work/m6"; mkdir -p "$h"
+PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" sh install.sh >/dev/null 2>&1 || fail "terminal install on a Mac failed"
+[ -x "$h/bin/kimun" ] && [ ! -e "$h/Applications" ] || fail "terminal install on a Mac changed"
+ok "macOS: the terminal app install is unchanged"
 
 # 9. Missing tools are named up front.
 nt="$work/notar"; mkdir -p "$nt"; for tool in sh uname; do ln -s "$(command -v $tool)" "$nt/$tool"; done
