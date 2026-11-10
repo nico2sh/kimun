@@ -9,6 +9,10 @@
 //!   theme falls back to the built-in ANSI theme's role→slot mapping (the
 //!   single source of truth for "which ANSI slot does each role get") and the
 //!   user's terminal palette supplies the actual colors.
+//!
+//! Depth comes from `COLORTERM`, then `TERM`. When neither says anything, a
+//! native Windows console that accepts VT sequences (PowerShell, cmd) counts
+//! as truecolor; anything else is treated as 16-color.
 
 use super::{Theme, ThemeColor};
 
@@ -29,56 +33,70 @@ pub enum ColorDepth {
 /// runs in cannot change mid-session.
 pub fn detect() -> ColorDepth {
     static DEPTH: std::sync::OnceLock<ColorDepth> = std::sync::OnceLock::new();
-    *DEPTH.get_or_init(|| {
-        from_env(
-            std::env::var("COLORTERM").ok().as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-            std::env::var_os("WT_SESSION").is_some(),
-            cfg!(windows),
-        )
-    })
+    *DEPTH.get_or_init(|| TermEnv::current().color_depth())
 }
 
-/// Pure detection logic, separated from the environment for testability.
-///
-/// `windows_terminal` is whether `WT_SESSION` is set (Windows Terminal, also
-/// visible from WSL shells running inside it). `windows` is whether the
-/// process runs on Windows.
-fn from_env(
-    colorterm: Option<&str>,
-    term: Option<&str>,
-    windows_terminal: bool,
-    windows: bool,
-) -> ColorDepth {
-    if let Some(ct) = colorterm {
-        let ct = ct.to_ascii_lowercase();
-        if ct.contains("truecolor") || ct.contains("24bit") {
+/// The inputs color-depth detection reads, gathered in one place so the
+/// decision itself ([`TermEnv::color_depth`]) is pure and testable.
+#[derive(Debug)]
+struct TermEnv {
+    /// `COLORTERM`, lowercased; empty when unset.
+    colorterm: String,
+    /// `TERM`, lowercased; empty when unset.
+    term: String,
+    /// A native Windows console that accepted virtual terminal processing.
+    /// Such consoles (PowerShell or cmd, in conhost or Windows Terminal) set
+    /// no `TERM`, yet render 24-bit color.
+    windows_vt_console: bool,
+}
+
+impl TermEnv {
+    /// Read the environment of the running process.
+    fn current() -> Self {
+        let var = |name| std::env::var(name).unwrap_or_default().to_ascii_lowercase();
+        Self {
+            colorterm: var("COLORTERM"),
+            term: var("TERM"),
+            windows_vt_console: windows_vt_console(),
+        }
+    }
+
+    fn color_depth(&self) -> ColorDepth {
+        if self.colorterm.contains("truecolor") || self.colorterm.contains("24bit") {
             return ColorDepth::TrueColor;
         }
-    }
-    // Windows Terminal renders 24-bit color but advertises it through neither
-    // COLORTERM nor TERM.
-    if windows_terminal {
-        return ColorDepth::TrueColor;
-    }
-    // Native Windows consoles (PowerShell, cmd — conhost or Windows Terminal)
-    // set no TERM at all, yet have supported 24-bit VT sequences since
-    // Windows 10 1703. Without this every theme collapses onto the same 16
-    // ANSI slots and switching themes appears to do nothing.
-    if windows && term.is_none() {
-        return ColorDepth::TrueColor;
-    }
-    if let Some(t) = term {
-        let t = t.to_ascii_lowercase();
-        // Some terminals advertise truecolor via TERM (e.g. xterm-direct).
-        if t.contains("direct") || t.contains("truecolor") {
+        // An explicit TERM wins over platform guesses: a multiplexer or a
+        // user forcing fewer colors must be respected.
+        if !self.term.is_empty() {
+            // Some terminals advertise truecolor via TERM (e.g. xterm-direct).
+            if self.term.contains("direct") || self.term.contains("truecolor") {
+                return ColorDepth::TrueColor;
+            }
+            if self.term.contains("256color") {
+                return ColorDepth::Ansi256;
+            }
+            return ColorDepth::Ansi16;
+        }
+        // Without this, every theme collapses onto the same 16 ANSI slots in
+        // PowerShell and switching themes appears to do nothing.
+        if self.windows_vt_console {
             return ColorDepth::TrueColor;
         }
-        if t.contains("256color") {
-            return ColorDepth::Ansi256;
-        }
+        ColorDepth::Ansi16
     }
-    ColorDepth::Ansi16
+}
+
+/// Whether stdout is a Windows console with VT processing enabled. Legacy
+/// consoles that refuse it fall back to crossterm's WinAPI backend, which
+/// cannot render RGB, so they keep the 16-color mapping.
+#[cfg(windows)]
+fn windows_vt_console() -> bool {
+    crossterm::ansi_support::supports_ansi()
+}
+
+#[cfg(not(windows))]
+fn windows_vt_console() -> bool {
+    false
 }
 
 impl Theme {
@@ -212,69 +230,54 @@ fn nearest_256(r: u8, g: u8, b: u8) -> u8 {
 mod tests {
     use super::*;
 
+    /// Detected depth for the given `COLORTERM`/`TERM` (empty = unset) on a
+    /// console that is or isn't a VT-capable Windows console.
+    fn depth(colorterm: &str, term: &str, windows_vt_console: bool) -> ColorDepth {
+        TermEnv {
+            colorterm: colorterm.into(),
+            term: term.into(),
+            windows_vt_console,
+        }
+        .color_depth()
+    }
+
     #[test]
     fn detects_truecolor_from_colorterm() {
         assert_eq!(
-            from_env(Some("truecolor"), Some("xterm-256color"), false, false),
+            depth("truecolor", "xterm-256color", false),
             ColorDepth::TrueColor
         );
-        assert_eq!(
-            from_env(Some("24bit"), None, false, false),
-            ColorDepth::TrueColor
-        );
+        assert_eq!(depth("24bit", "", false), ColorDepth::TrueColor);
     }
 
     #[test]
     fn detects_truecolor_from_term_direct() {
-        assert_eq!(
-            from_env(None, Some("xterm-direct"), false, false),
-            ColorDepth::TrueColor
-        );
+        assert_eq!(depth("", "xterm-direct", false), ColorDepth::TrueColor);
     }
 
     #[test]
     fn detects_256color_from_term() {
-        assert_eq!(
-            from_env(None, Some("xterm-256color"), false, false),
-            ColorDepth::Ansi256
-        );
-        assert_eq!(
-            from_env(Some(""), Some("screen-256color"), false, false),
-            ColorDepth::Ansi256
-        );
+        assert_eq!(depth("", "xterm-256color", false), ColorDepth::Ansi256);
+        assert_eq!(depth("", "screen-256color", false), ColorDepth::Ansi256);
     }
 
     #[test]
     fn falls_back_to_ansi16() {
-        assert_eq!(
-            from_env(None, Some("xterm"), false, false),
-            ColorDepth::Ansi16
-        );
-        assert_eq!(from_env(None, None, false, false), ColorDepth::Ansi16);
-        assert_eq!(
-            from_env(Some("yes"), Some("vt100"), false, false),
-            ColorDepth::Ansi16
-        );
+        assert_eq!(depth("", "xterm", false), ColorDepth::Ansi16);
+        assert_eq!(depth("", "", false), ColorDepth::Ansi16);
+        assert_eq!(depth("yes", "vt100", false), ColorDepth::Ansi16);
     }
 
     #[test]
-    fn windows_terminal_is_truecolor() {
-        assert_eq!(from_env(None, None, true, true), ColorDepth::TrueColor);
-        // WSL inside Windows Terminal: TERM says 256, WT_SESSION says more.
-        assert_eq!(
-            from_env(None, Some("xterm-256color"), true, false),
-            ColorDepth::TrueColor
-        );
+    fn windows_vt_console_without_term_is_truecolor() {
+        assert_eq!(depth("", "", true), ColorDepth::TrueColor);
     }
 
     #[test]
-    fn native_windows_console_without_term_is_truecolor() {
-        assert_eq!(from_env(None, None, false, true), ColorDepth::TrueColor);
-        // A Windows shell that does set TERM (mintty, MSYS) keeps TERM rules.
-        assert_eq!(
-            from_env(None, Some("xterm-256color"), false, true),
-            ColorDepth::Ansi256
-        );
+    fn explicit_term_wins_over_windows_console() {
+        // mintty/MSYS, or a user forcing fewer colors, keep TERM rules.
+        assert_eq!(depth("", "xterm-256color", true), ColorDepth::Ansi256);
+        assert_eq!(depth("", "screen", true), ColorDepth::Ansi16);
     }
 
     #[test]
