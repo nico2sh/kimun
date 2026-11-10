@@ -319,7 +319,6 @@ pub(crate) fn close_hook(
     move |_, window, cx| {
         workspace.update(cx, |this, cx| {
             // The close button closes the window; it never quits the app by itself.
-            this.quit_on_close = false;
             this.request_close(window, cx)
         });
     }

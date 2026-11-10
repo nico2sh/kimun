@@ -467,6 +467,9 @@ pub(crate) struct Workspace {
     /// How many times the app was asked to end (the test platform's quit is a no-op).
     #[cfg(test)]
     pub(crate) quits: usize,
+    /// How many times a window close waited for the layout's last write.
+    #[cfg(test)]
+    pub(crate) layout_flushes: usize,
     /// The window, for closing it once the close flush has written.
     window: Option<AnyWindowHandle>,
     /// The restore will land on the history's newest note: the editor Panel
@@ -753,6 +756,8 @@ impl Workspace {
             stays_in_dock: cfg!(any(test, target_os = "macos")),
             #[cfg(test)]
             quits: 0,
+            #[cfg(test)]
+            layout_flushes: 0,
             // Captured now: an app-channel message (no `Window` of its own)
             // may need it to open or close a modal ([`Self::with_window`]).
             window: Some(window.window_handle()),

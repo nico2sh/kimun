@@ -779,12 +779,14 @@ impl Workspace {
         window.on_window_should_close(cx, move |_, cx| {
             // The operating system's close button (or Cmd+W): the window, not the app.
             this.update(cx, |workspace, cx| {
-                workspace.quit_on_close = false;
+                workspace.set_close_intent(false);
                 let close = workspace.should_close(cx);
                 // Off macOS the app ends with its window. The window goes by itself
                 // now that the guard said yes: only the app has to be asked to end.
                 if close && workspace.closes_app() {
                     workspace.end_app(cx);
+                } else if close {
+                    workspace.flush_layout();
                 }
                 close
             })
@@ -810,6 +812,26 @@ impl Workspace {
     /// so the open note is flushed first and the flush closes the window once
     /// written. Whether the app ends with it is [`Self::closes_app`].
     pub(crate) fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_close_intent(false);
+        self.begin_close(window, cx);
+    }
+
+    /// Record what the close about to start is for: a window close (`false`) or a
+    /// quit (`true`). Every way in states its own intent, so a quit that was refused
+    /// cannot turn a later window close into a quit. While a close is already under
+    /// way (waiting on a switch, or on its flush) only a quit can change it, to a
+    /// quit: a window close arriving then must not downgrade a quit, or the flush
+    /// would end with only the window gone and the app left in the dock.
+    fn set_close_intent(&mut self, quit: bool) {
+        let under_way = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        self.quit_on_close = if under_way {
+            self.quit_on_close || quit
+        } else {
+            quit
+        };
+    }
+
+    fn begin_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.should_close(cx) {
             self.finish_close(window, cx);
         }
@@ -818,8 +840,8 @@ impl Workspace {
     /// Quit the app (the Quit chord, the palette's quit, the leader's quit): the
     /// same close, and the app ends with the window on every platform.
     pub(crate) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.quit_on_close = true;
-        self.request_close(window, cx);
+        self.set_close_intent(true);
+        self.begin_close(window, cx);
     }
 
     /// Whether the close in progress ends the app: a quit always does, a window
@@ -835,8 +857,21 @@ impl Workspace {
         if self.closes_app() {
             self.end_app(cx);
         } else {
+            self.flush_layout();
             window.remove_window();
         }
+    }
+
+    /// Wait for the layout's last write before this window goes. Removing the window
+    /// drops the workspace, and with it the app-quit hook that flushes the writer: the
+    /// window the app opens next from the dock reads the config file, and it must find
+    /// the layout this one left.
+    fn flush_layout(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_flushes += 1;
+        }
+        self.layout_writer.flush();
     }
 
     /// End the app. The one place that asks the platform to quit, so the tests
@@ -960,6 +995,8 @@ impl Workspace {
                     let quit = workspace.closes_app();
                     if quit {
                         workspace.end_app(cx);
+                    } else {
+                        workspace.flush_layout();
                     }
                     Some(quit)
                 })

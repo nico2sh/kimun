@@ -418,7 +418,11 @@ fn the_app_level_quit_saves_first(cx: &mut TestAppContext) {
     started.type_text("X", cx);
     cx.update(|cx| {
         crate::dock::set_main(cx, started.handle, started.workspace.downgrade());
-        crate::dock::quit_app(cx);
+        // As the menu does: from inside the active window's own update.
+        started
+            .handle
+            .update(cx, |_, _, cx| crate::dock::quit_app(cx))
+            .unwrap();
     });
     assert_eq!(started.quits(cx), 0, "the app waits for the save");
     drive(&rt, cx, |cx| started.quits(cx) > 0);
@@ -882,4 +886,83 @@ fn a_newer_server_release_is_toasted_once(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(toasts(cx).len(), 2);
     assert!(toasts(cx)[1].starts_with("A newer Kimün server is available"));
+}
+
+/// A window that closes while the app stays in the dock waits for the layout's last
+/// write: the window opened next reads the config file and must find it.
+#[gpui_kit::test]
+fn closing_a_window_in_the_dock_flushes_the_layout(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    assert!(started.close(cx));
+    assert_eq!(cx.read(|cx| started.workspace.read(cx).layout_flushes), 1);
+}
+
+/// The same when the close has to save the note first.
+#[gpui_kit::test]
+fn closing_a_dirty_window_in_the_dock_flushes_the_layout(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    started.type_text("X", cx);
+    assert!(!started.close(cx), "the note is saved first");
+    drive(&rt, cx, |cx| started.is_closed(cx));
+    assert_eq!(cx.read(|cx| started.workspace.read(cx).layout_flushes), 1);
+}
+
+/// Quit with edits to save, then the red button while the save runs: the app still
+/// ends with the save, it is not left in the dock.
+#[gpui_kit::test]
+fn the_close_button_during_a_quit_flush_does_not_cancel_the_quit(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    started.type_text("X", cx);
+    started.quit(cx);
+    assert!(!started.close(cx), "the flush is still running");
+    drive(&rt, cx, |cx| started.quits(cx) > 0);
+    assert_eq!(started.quits(cx), 1, "the quit went through");
+}
+
+/// A quit that was refused leaves no intent behind: Preferences closing the window
+/// later is a window close, not a quit.
+#[gpui_kit::test]
+fn a_refused_quit_does_not_make_a_later_window_close_a_quit(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    cx.update(|cx| started.workspace.update(cx, |w, _| w.quit_on_close = true));
+    cx.update_window(started.handle, |_, window, cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.request_close(window, cx))
+    })
+    .unwrap();
+    assert_eq!(started.quits(cx), 0, "a window close, not a quit");
+}
+
+/// The menu's Close Window (Cmd+W) closes the window as the red button does: the
+/// open note is saved, and the app stays in the dock.
+#[gpui_kit::test]
+fn the_app_level_close_window_saves_and_leaves_the_app(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
+    started.stays_in_dock(true, cx);
+    started.type_text("X", cx);
+    cx.update(|cx| {
+        crate::dock::set_main(cx, started.handle, started.workspace.downgrade());
+        started
+            .handle
+            .update(cx, |_, _, cx| crate::dock::close_window(cx))
+            .unwrap();
+    });
+    drive(&rt, cx, |cx| started.is_closed(cx));
+    assert_eq!(started.quits(cx), 0, "the app stays");
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
 }

@@ -153,7 +153,6 @@ fn main() {
     let _log = kimun_notes::app::init_file_logging();
     let settings = load_settings();
     let theme = load_theme(&settings);
-    let vim = uses_vim(settings.editor_backend);
     let keymap = load_keymap(&settings);
     let layout = shell_tree::restore(&settings.gui, shell_tree::RESTORE_CAPS);
     // Read once: changing who draws the title bar needs a restart.
@@ -171,7 +170,6 @@ fn main() {
     let launch = Launch {
         runtime: runtime.handle().clone(),
         settings,
-        vim,
         chrome,
     };
     let app = gpui_kit::application().with_assets(AppAssets);
@@ -208,7 +206,6 @@ pub(crate) struct Launch {
     /// Shared with every window: reloaded from disk before a window opens again, since
     /// the first one saved its layout and history through the config file.
     settings: SharedSettings,
-    vim: bool,
     chrome: titlebar::Chrome,
 }
 
@@ -227,7 +224,16 @@ fn open_main_window(
         icon: assets::window_icon(),
         ..titlebar::window_options(launch.chrome, title)
     };
-    let (vim, chrome, settings) = (launch.vim, launch.chrome, launch.settings.clone());
+    let (chrome, settings) = (launch.chrome, launch.settings.clone());
+    // Read from the shared settings each time a window opens, not once at startup: the
+    // editor backend can change in Preferences while the app runs, and a window opened
+    // again from the dock must follow it.
+    let vim = uses_vim(
+        settings
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .editor_backend,
+    );
     gpui_kit::open_window(options, cx, move |window, cx| {
         // The window's one app channel: the editor reports on it, the
         // workspace drains it.
@@ -268,6 +274,10 @@ pub(crate) fn reopen(launch: &Launch, cx: &mut App) {
         cx.activate(true);
         return;
     }
+    // One window comes back, however many times the icon is clicked meanwhile.
+    if REOPENING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let fresh = load_settings();
     let theme = load_theme(&fresh);
     let layout = shell_tree::restore(&fresh.gui, shell_tree::RESTORE_CAPS);
@@ -276,11 +286,35 @@ pub(crate) fn reopen(launch: &Launch, cx: &mut App) {
         .settings
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
-    let opened = launch.runtime.block_on(try_open_vault(&launch.settings));
-    let start = startup::decide(opened, name, None, current_dir().as_ref());
-    open_main_window(launch, start, theme, layout, cx);
-    cx.activate(true);
+    // The vault opens off the UI thread: with no window there is nothing to show a slow
+    // volume or a locked index, and a blocked main thread looks like a hung app.
+    let settings = launch.settings.clone();
+    let opening = launch
+        .runtime
+        .spawn(async move { try_open_vault(&settings).await });
+    let launch = launch.clone();
+    cx.spawn(async move |cx| {
+        let opened = opening.await;
+        cx.update(|cx| {
+            REOPENING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // A window opened some other way while the vault was opening is the one.
+            if !cx.windows().is_empty() {
+                return;
+            }
+            let opened = match opened {
+                Ok(opened) => opened,
+                Err(e) => kimun_notes::logic::startup::VaultOpen::Failed(e.to_string()),
+            };
+            let start = startup::decide(opened, name, None, current_dir().as_ref());
+            open_main_window(&launch, start, theme, layout, cx);
+            cx.activate(true);
+        });
+    })
+    .detach();
 }
+
+/// A window is being opened again (see [`reopen`]).
+static REOPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 mod tests {
