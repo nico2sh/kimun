@@ -205,7 +205,7 @@ impl Workspace {
                 self.open_file_browser(window, cx);
                 self.flash("Type a name — Enter creates", cx);
             }
-            LeaderRoute::Quit => self.request_close(window, cx),
+            LeaderRoute::Quit => self.request_quit(window, cx),
             LeaderRoute::Yank { text, label } => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 self.flash(label, cx);

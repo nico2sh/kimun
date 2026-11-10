@@ -456,6 +456,20 @@ pub(crate) struct Workspace {
     toasts: VecDeque<SharedString>,
     /// Where closing the window stands.
     pub(crate) closing: Closing,
+    /// The close in progress is a quit (Cmd+Q, the palette's quit, the leader's
+    /// quit), not the window's close button. On macOS only a quit ends the app:
+    /// closing the window leaves it running in the dock, to open again from there.
+    /// Everywhere else closing the window ends the app anyway.
+    pub(crate) quit_on_close: bool,
+    /// This is macOS: the app lives on in the dock when its window closes. A field,
+    /// not a `cfg!` at each use, so the tests run both behaviors on any platform.
+    pub(crate) stays_in_dock: bool,
+    /// How many times the app was asked to end (the test platform's quit is a no-op).
+    #[cfg(test)]
+    pub(crate) quits: usize,
+    /// How many times a window close waited for the layout's last write.
+    #[cfg(test)]
+    pub(crate) layout_flushes: usize,
     /// The window, for closing it once the close flush has written.
     window: Option<AnyWindowHandle>,
     /// The restore will land on the history's newest note: the editor Panel
@@ -736,6 +750,14 @@ impl Workspace {
             flashes: Vec::new(),
             toasts: VecDeque::new(),
             closing: Closing::Open,
+            quit_on_close: false,
+            // The tests run the macOS behavior (the window goes, the app stays) unless
+            // one says otherwise: most of them are about the window closing.
+            stays_in_dock: cfg!(any(test, target_os = "macos")),
+            #[cfg(test)]
+            quits: 0,
+            #[cfg(test)]
+            layout_flushes: 0,
             // Captured now: an app-channel message (no `Window` of its own)
             // may need it to open or close a modal ([`Self::with_window`]).
             window: Some(window.window_handle()),
@@ -2380,7 +2402,7 @@ impl Workspace {
                 let gateway = self.leader_chord_label();
                 self.start_leader(gateway, window, cx);
             }
-            ActionShortcuts::Quit => self.request_close(window, cx),
+            ActionShortcuts::Quit => self.request_quit(window, cx),
             ActionShortcuts::ToggleSidebar => self.toggle_side(Side::Left, window, cx),
             ActionShortcuts::ToggleRightDrawer => self.toggle_side(Side::Right, window, cx),
             ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {

@@ -22,6 +22,7 @@ mod assets;
 mod autocomplete;
 #[cfg(test)]
 mod autocomplete_tests;
+mod dock;
 mod editor_element;
 mod editor_view;
 mod find_bar;
@@ -52,6 +53,8 @@ use std::sync::{Arc, RwLock};
 
 use gpui_kit::*;
 use kimun_core::system::SystemPath;
+use kimun_notes::logic::layout_tree::LayoutTree;
+use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::startup::try_open_vault;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
@@ -150,7 +153,6 @@ fn main() {
     let _log = kimun_notes::app::init_file_logging();
     let settings = load_settings();
     let theme = load_theme(&settings);
-    let vim = uses_vim(settings.editor_backend);
     let keymap = load_keymap(&settings);
     let layout = shell_tree::restore(&settings.gui, shell_tree::RESTORE_CAPS);
     // Read once: changing who draws the title bar needs a restart.
@@ -165,60 +167,154 @@ fn main() {
     let opened = runtime.block_on(try_open_vault(&settings));
     let arg = std::env::args_os().nth(1);
     let start = startup::decide(opened, name, arg.as_deref(), current_dir().as_ref());
+    let launch = Launch {
+        runtime: runtime.handle().clone(),
+        settings,
+        chrome,
+    };
+    let app = gpui_kit::application().with_assets(AppAssets);
+    // The dock icon clicked while the app runs with no window (macOS).
+    let reopening = launch.clone();
+    app.on_reopen(move |cx| reopen(&reopening, cx));
+    app.run(move |cx| {
+        gpui_kit::init(cx);
+        // Inter, before the kit theme names it and before any window
+        // renders; on failure the kit keeps the system font.
+        ui_font::install(cx);
+        apply_reduce_motion(reduce_motion, cx);
+        // The kit's components (the palette dialog, the FILES filter) read the
+        // kit theme, which is not kimün's: hand them kimün's colours. The
+        // dialog's fade is dropped: a palette should appear and go at once.
+        // `update`, not `global_mut`: it carries the colours over to the kit's
+        // per-component tokens too (the dialog surface reads those).
+        gpui_kit::component::Theme::update(cx, |kit| {
+            theme::apply_to_kit(&theme, kit);
+            kit.motion.duration_normal = std::time::Duration::ZERO;
+        });
+        editor_view::init(cx);
+        keymap::init(cx, keymap);
+        dock::install(cx, &launch);
+        open_main_window(&launch, start, theme, layout, cx);
+    });
+}
+
+/// What opening the main window needs again later: the app opened from the dock after
+/// its window was closed.
+#[derive(Clone)]
+pub(crate) struct Launch {
+    runtime: tokio::runtime::Handle,
+    /// Shared with every window: reloaded from disk before a window opens again, since
+    /// the first one saved its layout and history through the config file.
+    settings: SharedSettings,
+    chrome: titlebar::Chrome,
+}
+
+/// Open the main window on `start`, in `theme`, with `layout`.
+fn open_main_window(
+    launch: &Launch,
+    start: startup::Start,
+    theme: Theme,
+    layout: LayoutTree<DrawerView>,
+    cx: &mut App,
+) {
     let title: SharedString = startup::window_title(&start).into();
     let options = WindowOptions {
         // The X11 icon, decoded from the embedded PNG before the event loop.
         #[cfg(target_os = "linux")]
         icon: assets::window_icon(),
-        ..titlebar::window_options(chrome, title)
+        ..titlebar::window_options(launch.chrome, title)
     };
-    gpui_kit::application()
-        .with_assets(AppAssets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            // Inter, before the kit theme names it and before any window
-            // renders; on failure the kit keeps the system font.
-            ui_font::install(cx);
-            apply_reduce_motion(reduce_motion, cx);
-            // The kit's components (the palette dialog, the FILES filter) read the
-            // kit theme, which is not kimün's: hand them kimün's colours. The
-            // dialog's fade is dropped: a palette should appear and go at once.
-            // `update`, not `global_mut`: it carries the colours over to the kit's
-            // per-component tokens too (the dialog surface reads those).
-            gpui_kit::component::Theme::update(cx, |kit| {
-                theme::apply_to_kit(&theme, kit);
-                kit.motion.duration_normal = std::time::Duration::ZERO;
-            });
-            editor_view::init(cx);
-            keymap::init(cx, keymap);
-            gpui_kit::open_window(options, cx, |window, cx| {
-                // The window's one app channel: the editor reports on it, the
-                // workspace drains it.
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                let editor = cx.new(|cx| EditorView::on_channel(vim, tx.clone(), cx));
-                let workspace = cx.new(|cx| {
-                    let mut workspace =
-                        Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);
-                    workspace.set_chrome(chrome);
-                    // The manual gate's faked release, when asked for.
-                    #[cfg(feature = "fake-update")]
-                    if let Some(fake) = workspace::fake_update_backend_from_env() {
-                        workspace.set_update_backend(fake);
-                    }
-                    workspace.start(start, settings, tx, rx, window, cx);
-                    workspace
-                });
-                // The layout starts with the editor focused. Closing the
-                // window saves the open note first.
-                workspace.update(cx, |workspace, cx| {
-                    workspace.apply_focus(window, cx);
-                    workspace.guard_close(window, cx);
-                });
-                workspace
-            })
-            .expect("failed to open window");
+    let (chrome, settings) = (launch.chrome, launch.settings.clone());
+    // Read from the shared settings each time a window opens, not once at startup: the
+    // editor backend can change in Preferences while the app runs, and a window opened
+    // again from the dock must follow it.
+    let vim = uses_vim(
+        settings
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .editor_backend,
+    );
+    gpui_kit::open_window(options, cx, move |window, cx| {
+        // The window's one app channel: the editor reports on it, the
+        // workspace drains it.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let editor = cx.new(|cx| EditorView::on_channel(vim, tx.clone(), cx));
+        let workspace = cx.new(|cx| {
+            let mut workspace =
+                Workspace::new(editor, theme, layout, LayoutStore::UserConfig, window, cx);
+            workspace.set_chrome(chrome);
+            // The manual gate's faked release, when asked for.
+            #[cfg(feature = "fake-update")]
+            if let Some(fake) = workspace::fake_update_backend_from_env() {
+                workspace.set_update_backend(fake);
+            }
+            workspace.start(start, settings, tx, rx, window, cx);
+            workspace
         });
+        // The layout starts with the editor focused. Closing the
+        // window saves the open note first.
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_focus(window, cx);
+            workspace.guard_close(window, cx);
+        });
+        dock::set_main(cx, window.window_handle(), workspace.downgrade());
+        workspace
+    })
+    .expect("failed to open window");
 }
+
+/// The app was opened again while it runs (macOS: the dock icon clicked, or File > New
+/// Window). With a window open it comes forward. With none, a new one opens the way
+/// the app starts, on the workspace and layout as the config file has them now.
+pub(crate) fn reopen(launch: &Launch, cx: &mut App) {
+    if let Some(window) = cx.windows().into_iter().next() {
+        window
+            .update(cx, |_, window, _| window.activate_window())
+            .ok();
+        cx.activate(true);
+        return;
+    }
+    // One window comes back, however many times the icon is clicked meanwhile.
+    if REOPENING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let fresh = load_settings();
+    let theme = load_theme(&fresh);
+    let layout = shell_tree::restore(&fresh.gui, shell_tree::RESTORE_CAPS);
+    let name = fresh.current_workspace_name();
+    *launch
+        .settings
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    // The vault opens off the UI thread: with no window there is nothing to show a slow
+    // volume or a locked index, and a blocked main thread looks like a hung app.
+    let settings = launch.settings.clone();
+    let opening = launch
+        .runtime
+        .spawn(async move { try_open_vault(&settings).await });
+    let launch = launch.clone();
+    cx.spawn(async move |cx| {
+        let opened = opening.await;
+        cx.update(|cx| {
+            REOPENING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // A window opened some other way while the vault was opening is the one.
+            if !cx.windows().is_empty() {
+                return;
+            }
+            let opened = match opened {
+                Ok(opened) => opened,
+                Err(e) => kimun_notes::logic::startup::VaultOpen::Failed(e.to_string()),
+            };
+            let start = startup::decide(opened, name, None, current_dir().as_ref());
+            open_main_window(&launch, start, theme, layout, cx);
+            cx.activate(true);
+        });
+    })
+    .detach();
+}
+
+/// A window is being opened again (see [`reopen`]).
+static REOPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 mod tests {

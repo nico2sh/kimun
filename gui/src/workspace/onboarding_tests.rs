@@ -1104,8 +1104,7 @@ fn a_rerun_finish_never_touches_the_workspaces(cx: &mut TestAppContext) {
 
 // ── leaving ─────────────────────────────────────────────────────────────────
 
-/// The first run asks before quitting: no keeps the setup, yes closes the
-/// window.
+/// The first run asks before quitting: no keeps the setup, yes ends the app.
 #[gpui_kit::test]
 fn leaving_the_first_run_asks_before_quitting(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -1123,9 +1122,10 @@ fn leaving_the_first_run_asks_before_quitting(cx: &mut TestAppContext) {
     assert!(s.ob_is_open(cx));
     s.ob_press("escape", cx);
     s.ob_press("enter", cx);
-    assert!(
-        cx.update_window(s.handle, |_, _, _| ()).is_err(),
-        "the window is closed"
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).quits),
+        1,
+        "the app was asked to end"
     );
 }
 

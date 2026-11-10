@@ -26,6 +26,9 @@
 //! (bounded by the session's timeouts) and closes once it is written. A
 //! failed flush, or edits that cannot be saved (read-only, no note), keep
 //! the window open with a flash saying so; closing again discards them.
+//! What the close ends is [`Workspace::closes_app`]: on macOS only a quit
+//! (Cmd+Q, the palette, the leader) ends the app, and the close button leaves
+//! it in the dock to open again; elsewhere any close ends it.
 
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -774,8 +777,20 @@ impl Workspace {
         self.window = Some(window.window_handle());
         let this = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
-            this.update(cx, |workspace, cx| workspace.should_close(cx))
-                .unwrap_or(true)
+            // The operating system's close button (or Cmd+W): the window, not the app.
+            this.update(cx, |workspace, cx| {
+                workspace.set_close_intent(false);
+                let close = workspace.should_close(cx);
+                // Off macOS the app ends with its window. The window goes by itself
+                // now that the guard said yes: only the app has to be asked to end.
+                if close && workspace.closes_app() {
+                    workspace.end_app(cx);
+                } else if close {
+                    workspace.flush_layout();
+                }
+                close
+            })
+            .unwrap_or(true)
         });
         self._on_quit = Some(cx.on_app_quit(|workspace, cx| {
             if workspace.editor_dirty(cx) {
@@ -793,13 +808,80 @@ impl Workspace {
         }));
     }
 
-    /// Close the window as its close button does (the Quit chord, the
-    /// palette's quit): through [`Self::should_close`], so the open note is
-    /// flushed first and the flush closes the window once written.
+    /// Close the window as its close button does: through [`Self::should_close`],
+    /// so the open note is flushed first and the flush closes the window once
+    /// written. Whether the app ends with it is [`Self::closes_app`].
     pub(crate) fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_close_intent(false);
+        self.begin_close(window, cx);
+    }
+
+    /// Record what the close about to start is for: a window close (`false`) or a
+    /// quit (`true`). Every way in states its own intent, so a quit that was refused
+    /// cannot turn a later window close into a quit. While a close is already under
+    /// way (waiting on a switch, or on its flush) only a quit can change it, to a
+    /// quit: a window close arriving then must not downgrade a quit, or the flush
+    /// would end with only the window gone and the app left in the dock.
+    fn set_close_intent(&mut self, quit: bool) {
+        let under_way = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        self.quit_on_close = if under_way {
+            self.quit_on_close || quit
+        } else {
+            quit
+        };
+    }
+
+    fn begin_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.should_close(cx) {
+            self.finish_close(window, cx);
+        }
+    }
+
+    /// Quit the app (the Quit chord, the palette's quit, the leader's quit): the
+    /// same close, and the app ends with the window on every platform.
+    pub(crate) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_close_intent(true);
+        self.begin_close(window, cx);
+    }
+
+    /// Whether the close in progress ends the app: a quit always does, a window
+    /// close only off macOS (where the app stays in the dock to open again).
+    pub(crate) fn closes_app(&self) -> bool {
+        self.quit_on_close || !self.stays_in_dock
+    }
+
+    /// The close is allowed and nothing is left to write: end the app, or just
+    /// the window. Quitting rather than removing the window keeps this workspace
+    /// alive for the app's quit hook (the layout's last write).
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closes_app() {
+            self.end_app(cx);
+        } else {
+            self.flush_layout();
             window.remove_window();
         }
+    }
+
+    /// Wait for the layout's last write before this window goes. Removing the window
+    /// drops the workspace, and with it the app-quit hook that flushes the writer: the
+    /// window the app opens next from the dock reads the config file, and it must find
+    /// the layout this one left.
+    fn flush_layout(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_flushes += 1;
+        }
+        self.layout_writer.flush();
+    }
+
+    /// End the app. The one place that asks the platform to quit, so the tests
+    /// can count the asks (the test platform's quit does nothing).
+    fn end_app(&mut self, cx: &mut App) {
+        #[cfg(test)]
+        {
+            self.quits += 1;
+        }
+        cx.quit();
     }
 
     /// Whether the window may close now. With edits to write it starts the
@@ -903,10 +985,25 @@ impl Workspace {
         // cancel the task that removes it.
         cx.spawn(async move |this, cx| {
             let result = tokio::spawn(flush.run()).await;
-            let close = this
-                .update(cx, |workspace, cx| workspace.close_flushed(result, cx))
-                .unwrap_or(false);
-            if close && let Some(window) = window {
+            // `Some(true)`: the app was asked to end; `Some(false)`: only the window
+            // goes; `None`: the close did not go through.
+            let ended = this
+                .update(cx, |workspace, cx| {
+                    if !workspace.close_flushed(result, cx) {
+                        return None;
+                    }
+                    let quit = workspace.closes_app();
+                    if quit {
+                        workspace.end_app(cx);
+                    } else {
+                        workspace.flush_layout();
+                    }
+                    Some(quit)
+                })
+                .unwrap_or(None);
+            if ended == Some(false)
+                && let Some(window) = window
+            {
                 cx.update_window(window, |_, window, _| window.remove_window())
                     .ok();
             }
