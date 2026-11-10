@@ -70,6 +70,7 @@ grep -q 'channel = "script"' "$h/.config/kimun/install.toml" || fail "marker mis
 entry="$h/.local/share/applications/kimun.desktop"
 [ -f "$entry" ] || fail "launcher entry not installed"
 grep -qx "Exec=\"$h/bin/kimun-gui\" %F" "$entry" || fail "Exec not rewritten to the absolute path: $(grep '^Exec=' "$entry")"
+# shellcheck disable=SC2015  # the first test is a plain grep: the failure message only runs when a check fails
 grep -qx "Icon=kimun" "$entry" && grep -qx "StartupWMClass=kimun" "$entry" || fail "entry lost its Icon/StartupWMClass"
 [ -f "$h/.local/share/icons/hicolor/512x512/apps/kimun.png" ] || fail "icon not installed"
 command -v desktop-file-validate >/dev/null && { desktop-file-validate "$entry" || fail "the installed entry does not validate"; }
@@ -133,7 +134,9 @@ ok "a missing release: a failed-download message"
 # 8. Platform detection with a fake uname / sysctl on PATH: Rosetta, Intel Mac, Windows shells.
 fakebin() { # DIR OS ARCH ARM64 TRANSLATED
   mkdir -p "$1"
+  # shellcheck disable=SC2016  # the single quotes are on purpose: this is the text of a stub script
   printf '#!/bin/sh\ncase "$1" in -s) echo %s;; -m) echo %s;; *) echo %s;; esac\n' "$2" "$3" "$2" >"$1/uname"
+  # shellcheck disable=SC2016  # the single quotes are on purpose: this is the text of a stub script
   printf '#!/bin/sh\ncase "$2" in hw.optional.arm64) echo %s;; sysctl.proc_translated) echo %s;; *) exit 1;; esac\n' "$4" "$5" >"$1/sysctl"
   chmod +x "$1/uname" "$1/sysctl"
 }
@@ -165,6 +168,7 @@ case "$1" in
   detach) echo "detach $*" >>"${HDIUTIL_LOG:-/dev/null}" ;;
 esac
 STUB
+# shellcheck disable=SC2016  # the single quotes are on purpose: this is the text of a stub script
 printf '#!/bin/sh\ncp -R "$1" "$2"\n' >"$macbin/ditto"
 cat >"$macbin/codesign" <<'STUB'
 #!/bin/sh
@@ -364,6 +368,7 @@ else
     command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"
   done
   out="$(run_signed sig-ok "$work/srel" "$work/sg-e" "$nm")" || fail "no minisign: install failed: $out"
+  # shellcheck disable=SC2015  # the first test is a plain grep: the failure message only runs when a check fails
   echo "$out" | grep -q "minisign is not installed" && echo "$out" | grep -q "not checked" || fail "no minisign: no warning: $out"
   ok "without minisign: installs on the sha256 alone, with a warning"
 fi

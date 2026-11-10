@@ -21,6 +21,7 @@ if [ -n "$back" ]; then
 fi
 # Brace imports (`use crate::{components::X, ...}`, possibly multi-line) dodge the
 # literal-path grep above, so scan each `use crate::{ ... };` block's top-level heads.
+# shellcheck disable=SC2016  # the single quotes are on purpose: the script is perl code
 brace=$(find tui/src/logic -name '*.rs' -print0 | xargs -0 perl -0777 -ne '
   s{^\s*//.*$}{}mg;
   while (/use\s+crate::\{(.*?)\};/sg) {
