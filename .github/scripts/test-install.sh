@@ -238,8 +238,8 @@ else
     rm -rf "$1"; cp -r "$rel" "$1"
     minisign -S -s "$work/s.key" -m "$1/checksums-sha256.txt" -x "$1/checksums-sha256.txt.minisig" >/dev/null
   }
-  patched() { # NAME FIRST_SIGNED: a copy of the script that trusts the throwaway key
-    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" -e "s|^FIRST_SIGNED=.*|FIRST_SIGNED=\"$2\"|" install.sh >"$work/$1.sh"
+  patched() { # NAME: a copy of the script that trusts the throwaway key
+    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" install.sh >"$work/$1.sh"
   }
   run_signed() { # NAME REL HOME [PATH]: install into a fresh home; prints the output
     mkdir -p "$3"
@@ -248,7 +248,7 @@ else
   }
 
   # a. Signed, and the key is right: installs; the digest is the signed list's.
-  signed_rel "$work/srel"; patched sig-ok 0.0.1
+  signed_rel "$work/srel"; patched sig-ok
   out="$(run_signed sig-ok "$work/srel" "$work/sg-a")" || fail "a validly signed release was refused: $out"
   [ -x "$work/sg-a/bin/kimun" ] || fail "signed install: no binary"
   echo "$out" | grep -qi "warning" && fail "a validly signed release warned: $out"
@@ -265,19 +265,26 @@ else
   [ ! -e "$work/sg-b/bin/kimun" ] || fail "an edited list still installed"
   ok "a signed list that was changed is refused"
 
-  # c. A release that must be signed and has no signature: refused.
-  patched sig-req 0.0.1
-  out="$(run_signed sig-req "$rel" "$work/sg-c")" && fail "an unsigned release was accepted although it must be signed"
-  echo "$out" | grep -q "should be signed" || fail "unsigned-but-required said: $out"
-  ok "a release at or above the first signed version must carry a signature"
+  # c. A pinned version with no signature (it may predate signing): installs, with a warning.
+  out="$(run_signed sig-ok "$rel" "$work/sg-c")" || fail "a pinned unsigned release was refused: $out"
+  echo "$out" | grep -q "no signature" || fail "a pinned unsigned release did not warn: $out"
+  ok "a pinned version without a signature installs on its sha256, with a warning"
 
-  # d. An older release (before the first signed one), unsigned: installs, quietly.
-  patched sig-old 99.0.0
-  out="$(run_signed sig-old "$rel" "$work/sg-d")" || fail "an old unsigned release was refused: $out"
-  echo "$out" | grep -qi "warning" && fail "an old unsigned release warned: $out"
-  ok "a release before the first signed one needs no signature"
+  # d. The latest release (not pinned) with no signature: refused, nothing installed.
+  h="$work/sg-d"; mkdir -p "$h"
+  out="$(HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_MANIFEST_URL="file://$work/latest.json" KIMUN_RELEASES_API="file://$work/no-such-api.json" \
+    KIMUN_DOWNLOAD_BASE="file://$rel" sh "$work/sig-ok.sh" 2>&1)" && fail "an unsigned latest release was accepted although a key is pinned"
+  echo "$out" | grep -q "should be signed" || fail "unsigned latest said: $out"
+  [ ! -e "$h/bin/kimun" ] || fail "an unsigned latest release still installed"
+  ok "the latest release without a signature is refused"
 
-  # e. No minisign on the machine: a signed release installs on its sha256 and says it was not checked.
+  # d2. No key pinned (signing not live): nothing is checked, nothing said.
+  cp install.sh "$work/sig-off.sh"
+  out="$(run_signed sig-off "$rel" "$work/sg-d2")" || fail "signing off: an unsigned release was refused: $out"
+  echo "$out" | grep -qi "warning" && fail "signing off: an unsigned release warned: $out"
+  ok "with no key pinned, nothing is checked"
+
+  # e. No minisign on the machine: a release installs on its sha256 and says it was not checked.
   nm="$work/nominisign"; mkdir -p "$nm"
   for tool in sh uname curl cat mktemp rm awk sed grep tar gzip sha256sum mkdir mv chmod head dirname tr cut sort id ls cp date ln; do
     command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"

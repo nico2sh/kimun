@@ -150,7 +150,7 @@ jobs:
       # signing script is tested with it.
       - name: Install minisign
         if: matrix.lint
-        run: sudo apt-get install -y minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
 
       # install.sh against a fake release served from a directory: both apps,
       # the Linux launcher files, the marker, a bad checksum, the options.

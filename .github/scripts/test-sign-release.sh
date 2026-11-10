@@ -19,7 +19,7 @@ minisign -G -W -f -p "$work/open.pub" -s "$work/open.key" >/dev/null
 printf 'hunter2\nhunter2\n' | minisign -G -f -p "$work/locked.pub" -s "$work/locked.key" >/dev/null
 
 # 1. Signs, and the signature verifies against the public key.
-MINISIGN_SECRET_KEY="$(cat "$work/open.key")" bash .github/scripts/sign-release.sh "$rel" >/dev/null
+PUBLIC_KEY_FILE="$work/open.pub" MINISIGN_SECRET_KEY="$(cat "$work/open.key")" bash .github/scripts/sign-release.sh "$rel" >/dev/null
 [ -s "$rel/checksums-sha256.txt.minisig" ] || fail "no signature written"
 minisign -V -p "$work/open.pub" -m "$rel/checksums-sha256.txt" >/dev/null || fail "signature does not verify"
 ok "signs checksums-sha256.txt; the signature verifies"
@@ -34,12 +34,18 @@ ok "tampering or the wrong key is rejected"
 
 # 3. A key with a password.
 rm "$rel/checksums-sha256.txt.minisig"
-MINISIGN_SECRET_KEY="$(cat "$work/locked.key")" MINISIGN_PASSWORD=hunter2 bash .github/scripts/sign-release.sh "$rel" >/dev/null
+PUBLIC_KEY_FILE="$work/locked.pub" MINISIGN_SECRET_KEY="$(cat "$work/locked.key")" MINISIGN_PASSWORD=hunter2 bash .github/scripts/sign-release.sh "$rel" >/dev/null
 minisign -V -p "$work/locked.pub" -m "$rel/checksums-sha256.txt" >/dev/null || fail "password key: no valid signature"
 rm "$rel/checksums-sha256.txt.minisig"
-MINISIGN_SECRET_KEY="$(cat "$work/locked.key")" MINISIGN_PASSWORD=wrong bash .github/scripts/sign-release.sh "$rel" >/dev/null 2>&1 && fail "a wrong password signed"
+PUBLIC_KEY_FILE="$work/locked.pub" MINISIGN_SECRET_KEY="$(cat "$work/locked.key")" MINISIGN_PASSWORD=wrong bash .github/scripts/sign-release.sh "$rel" >/dev/null 2>&1 && fail "a wrong password signed"
 [ ! -s "$rel/checksums-sha256.txt.minisig" ] || fail "a wrong password left a signature"
 ok "a password-protected key works, a wrong password does not"
+
+# 3b. A secret key that is not the public key's: refused, and no signature is left behind.
+rm -f "$rel/checksums-sha256.txt.minisig"
+PUBLIC_KEY_FILE="$work/locked.pub" MINISIGN_SECRET_KEY="$(cat "$work/open.key")" bash .github/scripts/sign-release.sh "$rel" >/dev/null 2>&1 && fail "a key that does not match the public key was accepted"
+[ ! -e "$rel/checksums-sha256.txt.minisig" ] || fail "a mismatched key left a signature"
+ok "a secret key that does not match the public key is refused"
 
 # 4. No key: a warning and no signature, unless a signature is required.
 out="$(env -u MINISIGN_SECRET_KEY bash .github/scripts/sign-release.sh "$rel" 2>&1)" || fail "no key, not required, failed: $out"
