@@ -5,9 +5,9 @@ weight = 14
 
 # Themes
 
-Kimün ships with 67 built-in themes, and you can write your own as a small TOML file.
+Kimün ships with 67 built-in themes. You can write your own theme as a small TOML file.
 
-To pick one, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Type to filter the list by name; moving the selection restyles the app as you go; Enter saves the choice and Esc reverts it. You can also set the theme in your config:
+To pick a theme, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Type to filter the list by name. When you move the selection, the app changes style at once. Enter saves the choice, and Esc reverts it. You can also set the theme in your configuration:
 
 ```toml
 theme = "Nord"
@@ -17,7 +17,7 @@ theme = "Nord"
 
 | Family | Dark | Light |
 |---|---|---|
-| Gruvbox | **Gruvbox Dark** *(default)* | Gruvbox Light |
+| Gruvbox | Gruvbox Dark *(default)* | Gruvbox Light |
 | Catppuccin | Catppuccin Mocha, Catppuccin Macchiato, Catppuccin Frappé | Catppuccin Latte |
 | Tokyo Night | Tokyo Night, Tokyo Night Storm, Tokyo Night Moon | Tokyo Night Day |
 | Solarized | Solarized Dark | Solarized Light |
@@ -47,22 +47,22 @@ theme = "Nord"
 
 ### Color depth
 
-Themes adapt to what your terminal supports: truecolor where available, quantized to 256 colors otherwise, or mapped onto the 16 ANSI slots on basic terminals. On a 16-color terminal every theme behaves like the ANSI theme and follows your terminal's palette.
+Themes adapt to what your terminal supports. A theme uses truecolor where the terminal has it. Otherwise it uses 256 colors, or the 16 ANSI slots on basic terminals. On a 16-color terminal, every theme behaves like the ANSI theme and follows the palette of your terminal.
 
 ## Creating a Custom Theme
 
 ### Theme File Location
 
-Place custom theme files in the `themes/` subdirectory of your Kimün config directory:
+Put custom theme files in the `themes/` subdirectory of your Kimün configuration directory:
 
-- **Linux / macOS:** `~/.config/kimun/themes/`
-- **Windows:** `%USERPROFILE%\kimun\themes\`
+- Linux and macOS: `~/.config/kimun/themes/`
+- Windows: `%USERPROFILE%\kimun\themes\`
 
-Each file must have a `.toml` extension. The filename doesn't matter; the theme's display name comes from the `name` field inside the file.
+Each file must have a `.toml` extension. The filename does not matter. The display name of the theme comes from the `name` field inside the file.
 
 ### Theme File Format
 
-A theme file is a TOML file with a `name` field and up to 27 color roles. Only `name` and the core roles you want to change are required. Any role you omit is derived from a related one (for example, `bg_hard` and `bg_soft` derive from `bg`, `focus_border` from `green`, and `selection_fg` from `fg_bright`), so a minimal theme can be a few lines long.
+A theme file is a TOML file with a `name` field and up to 27 color roles. Only `name` and the core roles that you want to change are required. Kimün derives each role that you omit from a related role. For example, `bg_hard` and `bg_soft` derive from `bg`, `focus_border` derives from `green`, and `selection_fg` derives from `fg_bright`. A minimal theme can be a few lines long.
 
 ```toml
 name = "My Theme"
@@ -106,11 +106,11 @@ code_bg            = "#181825"  # fenced/indented code-block background
 color_replace_preview = "#3e3450"  # background behind replace-preview text
 ```
 
-`color_replace_preview` is a background color, so give it a muted shade rather than an accent color. It marks the text the replace preview shows in place of a match (text that is not in the note yet), so it should be clearly distinct from `selection_bg` and `code_bg`. If you omit it, it falls back to `accent`, which makes a very loud highlight.
+`color_replace_preview` is a background color, so use a muted shade and not an accent color. It marks the text that the replace preview shows in place of a match. That text is not in the note yet. The color must be clearly different from `selection_bg` and `code_bg`. If you omit it, Kimün uses `accent`, which makes a very loud highlight.
 
 ### Color Formats
 
-Colors can use these formats:
+A color can have one of these formats:
 
 | Format | Example | Notes |
 |---|---|---|
@@ -118,11 +118,11 @@ Colors can use these formats:
 | 3-digit hex (shorthand) | `"#abc"` | Expands to `#aabbcc` |
 | RGB function | `"rgb(30, 30, 46)"` | |
 | ANSI index | `"ansi:4"` | 0-255 |
-| Terminal default | `"reset"` | Uses the terminal's default fg or bg |
+| Terminal default | `"reset"` | Uses the default fg or bg of the terminal |
 
 ### Activating a Custom Theme
 
-Once the file is saved, start (or restart) Kimün. Your theme appears in the theme picker (`Ctrl+B v t`) alongside the built-in ones. You can also set it directly in `config.toml`:
+After you save the file, start Kimün, or restart it. Your theme appears in the theme picker (`Ctrl+B v t`) with the built-in themes. You can also set it in `config.toml`:
 
 ```toml
 theme = "My Theme"
@@ -132,11 +132,11 @@ The name must match the `name` field in your `.toml` file exactly.
 
 ### Overriding the Default Theme
 
-If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default. To make it the active theme, set the top-level `theme` key to its `name`, as shown above.
+If you save a file named `default.toml` in the themes directory, Kimün loads it as an additional theme. It does not replace the built-in default. To make it the active theme, set the top-level `theme` key to its `name`, as shown above.
 
 ## Example: Ayu Dark Theme (minimal)
 
-Derivation fills everything not listed:
+Kimün derives every role that the file does not list:
 
 ```toml
 name = "Ayu Dark"
@@ -159,6 +159,6 @@ aqua   = "#95e6cb"
 orange = "#ff8f40"
 ```
 
-Save this as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your config.
+Save this file as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your configuration.
 
-Theme files are plain TOML, so you can share them by copying the file. For other settings, see [Configuration](@/getting-started/configuration.md).
+Theme files are plain TOML, so you can share a theme by copying its file. For other configuration, see [Configuration](@/getting-started/configuration.md).

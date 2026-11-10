@@ -5,11 +5,11 @@ weight = 3
 
 # Scripting with JSON
 
-Kimün can print search results and note listings as JSON, which you can process with `jq` or other tools in scripts. This guide describes the JSON structure and gives recipes for common tasks.
+Kimün can print search results and note listings as JSON. In scripts, you can process the JSON with `jq` or other tools. This guide describes the JSON structure and gives recipes for common tasks.
 
 ## Enabling JSON output
 
-Use the `--format json` flag with commands that produce output:
+To get JSON output, use the `--format json` flag with a command that prints results:
 
 ```sh
 kimun search "query" --format json
@@ -18,12 +18,12 @@ kimun notes --format json
 
 ## JSON structure
 
-The output is a single JSON object with two top-level keys:
+The output is one JSON object with two top-level keys: `metadata` and `notes`.
 
 ### `metadata` object
 
 - `workspace`: active workspace name
-- `workspace_path`: absolute path to workspace directory
+- `workspace_path`: absolute path to the workspace directory
 - `total_results`: number of notes returned
 - `query`: the search query (null for `notes` listings)
 - `is_listing`: true for `notes`, false for `search`
@@ -34,16 +34,16 @@ The output is a single JSON object with two top-level keys:
 Each note object contains:
 
 - `path`: note path relative to workspace root (includes `.md`)
-- `title`: note title (extracted from first heading or filename)
+- `title`: note title (from the first heading or the file name)
 - `content`: full note content
 - `size`: file size in bytes
 - `modified`: last modified timestamp (Unix seconds)
-- `created`: creation timestamp (Unix seconds, currently same as modified)
+- `created`: creation timestamp (Unix seconds, currently the same as `modified`)
 - `hash`: content hash (hex string)
-- `journal_date`: date string `YYYY-MM-DD` if the note is a journal entry, otherwise absent
-- `metadata.tags`: array of `#tag` strings extracted from content
-- `metadata.links`: array of wikilink targets extracted from content
-- `metadata.headers`: array of `{level, text}` objects for each Markdown heading
+- `journal_date`: date string `YYYY-MM-DD` if the note is a journal entry. Otherwise this key is absent.
+- `metadata.tags`: array of `#tag` strings from the content
+- `metadata.links`: array of wikilink targets from the content
+- `metadata.headers`: array of `{level, text}` objects, one for each Markdown heading
 
 ## Common recipes
 
@@ -105,7 +105,7 @@ kimun search "project" --format json | jq '.notes[] | {path, headers: .metadata.
 
 ### Save to file
 
-Export all notes for backup or processing:
+To export all notes for a backup or for processing, run:
 
 ```sh
 kimun notes --format json > notes-backup.json
@@ -121,7 +121,7 @@ kimun notes --format json | jq '[.notes[] | select(.journal_date != null) | .jou
 
 ### Build custom reports
 
-Compute other figures from the JSON output:
+To calculate other values from the JSON output, run:
 
 ```sh
 # Get average note size
@@ -133,7 +133,7 @@ kimun notes --format json | jq '.notes[] | select(.created > (now | floor - 8640
 
 ## Quick note automation
 
-`kimun note quick` saves text as a timestamped note in your inbox, which is useful in scripts:
+`kimun note quick` saves text as a note in your inbox. The file name is a timestamp. The command is useful in scripts:
 
 ```sh
 # Log a command's output as a quick note
@@ -146,10 +146,10 @@ pbpaste | kimun note quick
 while IFS= read -r line; do kimun note quick "$line"; done < ideas.txt
 ```
 
-For shell aliases like `alias q='kimun note quick'`, see [Piping Output](@/guides/piping-output.md#shell-aliases-and-functions).
+For shell aliases such as `alias q='kimun note quick'`, see [Piping Output](@/guides/piping-output.md#shell-aliases-and-functions).
 
-List inbox contents with `kimun note triage`, or use the MCP `triage_inbox` prompt to let an AI organize them.
+To list the inbox contents, run `kimun note triage`. Or use the MCP `triage_inbox` prompt to let an AI organize the notes.
 
 ## Tips
 
-Test a query on a small result set before running it against a large workspace.
+Test a query on a small result set before you run it on a large workspace.
