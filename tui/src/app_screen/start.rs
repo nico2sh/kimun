@@ -123,7 +123,6 @@ mod tests {
     use super::*;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
-    use kimun_core::VaultConfig;
     use ratatui::crossterm::event::KeyCode;
     use std::sync::{Arc, RwLock};
     use tokio::sync::mpsc::unbounded_channel;
@@ -342,6 +341,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn on_enter_case_conflict_sends_vault_conflict_not_indexing_done() {
+        use kimun_core::VaultConfig;
+
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("note.md"), "a").unwrap();
         std::fs::write(tmp.path().join("Note.md"), "b").unwrap();

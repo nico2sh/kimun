@@ -49,6 +49,8 @@ theme = "Nord"
 
 Themes adapt to what your terminal supports. A theme uses truecolor where the terminal has it. Otherwise it uses 256 colors, or the 16 ANSI slots on basic terminals. On a 16-color terminal, every theme behaves like the ANSI theme and follows the palette of your terminal.
 
+Kimün reads the `COLORTERM` and `TERM` environment variables to find out what your terminal supports. PowerShell and cmd on Windows set neither, so there Kimün uses truecolor whenever the console accepts it. To force fewer colors, set `TERM`, for example `TERM=xterm-256color` for 256 colors.
+
 ## Creating a Custom Theme
 
 ### Theme File Location
