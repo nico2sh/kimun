@@ -41,6 +41,7 @@ CHECKSUMS = "checksums-sha256.txt"
 # manifest key -> tag prefix. kimun_core has no assets and no installer, so it is not here.
 SERIES = {"app": "kimun-notes-v", "server": "kimun_server-v"}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+PLAIN_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
 class SeriesError(Exception):
@@ -68,19 +69,33 @@ def parse_checksums(text: str) -> dict:
 
 
 def newest_stable(releases: list, prefix: str):
-    """The first (newest) published release of the series with no pre-release suffix."""
+    """The highest-versioned published release of the series with no pre-release suffix.
+
+    By version, not by list position: GitHub orders the list by the tagged commit's date, so a
+    release cut from an older commit (a hotfix branch, a re-tag) can sit above a newer version.
+    A version that is not a plain X.Y.Z is skipped (the consumers only trust that shape).
+    """
+    best = None
     for r in releases:
         tag = r.get("tag_name", "")
         if not tag.startswith(prefix) or r.get("draft"):
             continue
         version = tag[len(prefix):]
-        if "-" in version:
+        m = PLAIN_VERSION.match(version)
+        if not m:
             continue
-        return version, r
-    return None
+        key = tuple(int(g) for g in m.groups())
+        if best is None or key > best[0]:
+            best = (key, version, r)
+    return (best[1], best[2]) if best else None
 
 
-def describe(version: str, release: dict, fetch_text: Callable[[str], str]) -> dict:
+def describe(
+    version: str,
+    release: dict,
+    fetch_text: Callable[[str], str],
+    warn: Callable[[str], None] = lambda _m: None,
+) -> dict:
     assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
     if CHECKSUMS not in assets:
         raise SeriesError(f"release {version} has no {CHECKSUMS}")
@@ -90,6 +105,9 @@ def describe(version: str, release: dict, fetch_text: Callable[[str], str]) -> d
         raise SeriesError(f"cannot read {CHECKSUMS} of {version}: {e}") from e
     # Only files that are both attached and checksummed: a name in only one of the two
     # cannot be installed safely.
+    for name in sorted(assets):
+        if name != CHECKSUMS and name not in sums:
+            warn(f"release {version}: {name} is attached but has no checksum, left out")
     listed = {
         name: {"url": assets[name], "sha256": sums[name]}
         for name in sorted(assets)
@@ -114,7 +132,7 @@ def build(releases: list, fetch_text: Callable[[str], str], warn: Callable[[str]
             continue
         version, release = found
         try:
-            manifest[key] = describe(version, release, fetch_text)
+            manifest[key] = describe(version, release, fetch_text, lambda m: warn(f"{key}: {m}"))
         except SeriesError as e:
             warn(f"{key}: left out: {e}")
     return manifest

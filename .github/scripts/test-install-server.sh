@@ -19,6 +19,16 @@ trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 ok() { echo "ok: $*"; }
 
+# 0. install.sh and install-server.sh are each fetched alone (curl | sh), so neither can source a
+# shared file: the awk readers of latest.json are copied in both. They must not drift.
+readers() { # SCRIPT -> the two awk readers, without indentation
+  awk '/^ *manifest_version\(\)/ { on = 1 } /^# Read the manifest/ { on = 0 } on { sub(/^ +/, ""); print }' "$1"
+}
+[ -n "$(readers install.sh)" ] || fail "found no manifest readers in install.sh"
+[ "$(readers install.sh)" = "$(readers install-server.sh)" ] \
+  || fail "the latest.json readers in install.sh and install-server.sh differ: keep them identical"
+ok "install.sh and install-server.sh read latest.json with the same code"
+
 # A release: the server's archive for every platform the script can pick, and checksums.
 rel="$work/rel"; mkdir -p "$rel"
 for p in linux-x64 linux-arm64 macos-arm64; do

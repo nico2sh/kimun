@@ -63,6 +63,18 @@ class Pick(unittest.TestCase):
         self.assertEqual(version, "0.24.8")
         self.assertEqual(r["tag_name"], "kimun-notes-v0.24.8")
 
+    def test_highest_version_wins_over_list_order(self):
+        rels = [
+            release("kimun-notes-v0.24.9"),  # a hotfix cut from an older commit sorts first
+            release("kimun-notes-v0.24.10"),
+            release("kimun-notes-v0.24.8"),
+        ]
+        self.assertEqual(rm.newest_stable(rels, "kimun-notes-v")[0], "0.24.10")
+
+    def test_non_plain_versions_are_skipped(self):
+        rels = [release("kimun-notes-v1"), release("kimun-notes-v0.9.0")]
+        self.assertEqual(rm.newest_stable(rels, "kimun-notes-v")[0], "0.9.0")
+
     def test_none_when_the_series_has_nothing_stable(self):
         self.assertIsNone(rm.newest_stable([release("kimun-notes-v1.0.0-rc.1")], "kimun-notes-v"))
 
@@ -104,6 +116,7 @@ class Build(unittest.TestCase):
         sums = {f"https://dl/{rm.CHECKSUMS}": f"{H}  a.zip\n{H2}  not-attached.zip\n"}
         m = rm.build(rels, fetcher(sums), self.warn)
         self.assertEqual(list(m["app"]["assets"]), ["a.zip"])
+        self.assertTrue(any("b.zip" in w and "no checksum" in w for w in self.warnings), self.warnings)
 
     def test_series_without_checksums_is_left_out_not_filled_from_an_older_release(self):
         rels = [

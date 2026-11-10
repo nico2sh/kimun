@@ -6,7 +6,7 @@
 #     release). workflow_run always runs in the default-branch context, so the
 #     github-pages environment's branch protection allows it — unlike a release
 #     event, which runs under the tag ref and gets rejected.
-#   - successful release and release-server runs (the tag builds): latest.json
+#   - release and release-server runs (the tag builds), successful or not: latest.json
 #     names the newest stable release that has its files, and a release is only
 #     published once build.yml / build-server.yml have attached them. The
 #     release-plz run is too early for that (it ends at the tag, when the
@@ -40,9 +40,19 @@ jobs:
   deploy:
     name: Build and Deploy Docs
     runs-on: ubuntu-latest
-    # Skip a failed run, and a manual dry run of the release workflow (it
-    # publishes nothing, so there is nothing new to put on the site).
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'workflow_dispatch') }}
+    # Skip a cancelled run, a failed release-plz run, and a manual dry run of the
+    # release workflow (it publishes nothing, so there is nothing new to put on the
+    # site). A *failed* tag build still deploys: publishing the release is not its
+    # last step (the Homebrew tap update comes after), so a late failure must not
+    # leave latest.json naming the previous release. latest.json is built from what
+    # is published, so deploying after a build that published nothing is harmless.
+    if: >-
+      ${{ github.event_name != 'workflow_run' || (
+        github.event.workflow_run.event != 'workflow_dispatch' && (
+          github.event.workflow_run.conclusion == 'success' ||
+          (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.name != 'release-plz')
+        )
+      ) }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -72,15 +82,26 @@ jobs:
       # latest.json: the newest stable app and server release with their files'
       # URLs and sha256, for the installers and the updater (one small file
       # instead of paging the GitHub API). Built from the published releases, so a
-      # draft never shows up. It must not stop the docs deploying: when it cannot
-      # be built the file is simply absent, and its readers fall back to the API.
+      # draft never shows up. Every deploy replaces the whole site, so when it cannot
+      # be built (a flaky API call, a release without its checksums) the live one is
+      # carried forward rather than dropped. It never stops the docs deploying: with
+      # neither, the file is absent and its readers fall back to the API.
       - name: Publish latest.json
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json
-          python3 .github/scripts/release_manifest.py releases.json docs/public/latest.json
+          if gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > releases.json \
+            && python3 .github/scripts/release_manifest.py releases.json docs/public/latest.json; then
+            exit 0
+          fi
+          echo "::warning::latest.json could not be built; carrying the live one forward"
+          rm -f docs/public/latest.json
+          if curl -fsSL --retry 2 https://kimun.2co.dev/latest.json -o live.json \
+            && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["schema"] == 1' live.json; then
+            cp live.json docs/public/latest.json
+          else
+            echo "::warning::no usable live latest.json either; publishing without it"
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
