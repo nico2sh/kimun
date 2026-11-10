@@ -33,17 +33,40 @@ pub fn detect() -> ColorDepth {
         from_env(
             std::env::var("COLORTERM").ok().as_deref(),
             std::env::var("TERM").ok().as_deref(),
+            std::env::var_os("WT_SESSION").is_some(),
+            cfg!(windows),
         )
     })
 }
 
 /// Pure detection logic, separated from the environment for testability.
-fn from_env(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
+///
+/// `windows_terminal` is whether `WT_SESSION` is set (Windows Terminal, also
+/// visible from WSL shells running inside it). `windows` is whether the
+/// process runs on Windows.
+fn from_env(
+    colorterm: Option<&str>,
+    term: Option<&str>,
+    windows_terminal: bool,
+    windows: bool,
+) -> ColorDepth {
     if let Some(ct) = colorterm {
         let ct = ct.to_ascii_lowercase();
         if ct.contains("truecolor") || ct.contains("24bit") {
             return ColorDepth::TrueColor;
         }
+    }
+    // Windows Terminal renders 24-bit color but advertises it through neither
+    // COLORTERM nor TERM.
+    if windows_terminal {
+        return ColorDepth::TrueColor;
+    }
+    // Native Windows consoles (PowerShell, cmd — conhost or Windows Terminal)
+    // set no TERM at all, yet have supported 24-bit VT sequences since
+    // Windows 10 1703. Without this every theme collapses onto the same 16
+    // ANSI slots and switching themes appears to do nothing.
+    if windows && term.is_none() {
+        return ColorDepth::TrueColor;
     }
     if let Some(t) = term {
         let t = t.to_ascii_lowercase();
@@ -192,31 +215,66 @@ mod tests {
     #[test]
     fn detects_truecolor_from_colorterm() {
         assert_eq!(
-            from_env(Some("truecolor"), Some("xterm-256color")),
+            from_env(Some("truecolor"), Some("xterm-256color"), false, false),
             ColorDepth::TrueColor
         );
-        assert_eq!(from_env(Some("24bit"), None), ColorDepth::TrueColor);
+        assert_eq!(
+            from_env(Some("24bit"), None, false, false),
+            ColorDepth::TrueColor
+        );
     }
 
     #[test]
     fn detects_truecolor_from_term_direct() {
-        assert_eq!(from_env(None, Some("xterm-direct")), ColorDepth::TrueColor);
+        assert_eq!(
+            from_env(None, Some("xterm-direct"), false, false),
+            ColorDepth::TrueColor
+        );
     }
 
     #[test]
     fn detects_256color_from_term() {
-        assert_eq!(from_env(None, Some("xterm-256color")), ColorDepth::Ansi256);
         assert_eq!(
-            from_env(Some(""), Some("screen-256color")),
+            from_env(None, Some("xterm-256color"), false, false),
+            ColorDepth::Ansi256
+        );
+        assert_eq!(
+            from_env(Some(""), Some("screen-256color"), false, false),
             ColorDepth::Ansi256
         );
     }
 
     #[test]
     fn falls_back_to_ansi16() {
-        assert_eq!(from_env(None, Some("xterm")), ColorDepth::Ansi16);
-        assert_eq!(from_env(None, None), ColorDepth::Ansi16);
-        assert_eq!(from_env(Some("yes"), Some("vt100")), ColorDepth::Ansi16);
+        assert_eq!(
+            from_env(None, Some("xterm"), false, false),
+            ColorDepth::Ansi16
+        );
+        assert_eq!(from_env(None, None, false, false), ColorDepth::Ansi16);
+        assert_eq!(
+            from_env(Some("yes"), Some("vt100"), false, false),
+            ColorDepth::Ansi16
+        );
+    }
+
+    #[test]
+    fn windows_terminal_is_truecolor() {
+        assert_eq!(from_env(None, None, true, true), ColorDepth::TrueColor);
+        // WSL inside Windows Terminal: TERM says 256, WT_SESSION says more.
+        assert_eq!(
+            from_env(None, Some("xterm-256color"), true, false),
+            ColorDepth::TrueColor
+        );
+    }
+
+    #[test]
+    fn native_windows_console_without_term_is_truecolor() {
+        assert_eq!(from_env(None, None, false, true), ColorDepth::TrueColor);
+        // A Windows shell that does set TERM (mintty, MSYS) keeps TERM rules.
+        assert_eq!(
+            from_env(None, Some("xterm-256color"), false, true),
+            ColorDepth::Ansi256
+        );
     }
 
     #[test]
