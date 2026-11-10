@@ -28,6 +28,16 @@ nothing to download. `kimun_core` has no assets and is published at once.
 If a build fails, the release stays a draft: fix the cause and re-run the workflow from the tag (`gh run rerun <id>`), or delete the draft
 and tag (`gh release delete <tag> --cleanup-tag`) and re-tag. The previous stable release is what everyone gets meanwhile.
 
+## The release manifest
+
+`https://kimun.2co.dev/latest.json` names the newest stable app release and server release, every file of each with its URL and sha256
+(`.github/scripts/release_manifest.py`, built into the site by `docs.yml`). `install.sh`, `install-server.sh` and `install.ps1` read it
+first, so they neither page through the GitHub API (newest 100 releases across all three tag series; 60 calls an hour per address) nor
+download the checksums file. When it cannot be read (unreachable, a schema they do not know, no entry for the series) they print a
+one-line warning and use the API as before. The site rebuilds when `release-plz`, `release` or `release-server` finish, so it follows a
+release only once the draft has been published with its files. After a release, check `curl -fsS https://kimun.2co.dev/latest.json`
+names the new version; if not, look at the `Publish latest.json` step of the last `docs` run (it cannot fail the deploy, only leave the file out).
+
 ## Rehearse without publishing
 
 - **On this machine, this platform:** `bash .github/scripts/rehearse-release.sh`. Builds both apps in release mode, packages them with
