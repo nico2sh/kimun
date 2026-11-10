@@ -6,8 +6,8 @@ sort_by = "weight"
 
 # Guides
 
-These guides walk through common workflows and show how to use Kimün together with your other tools.
+These guides show common workflows and show how to use Kimün with your other tools.
 
-They cover journaling, scripting Kimün, and piping output through the CLI, and assume you have read *Getting Started* and *Using Kimün*.
+They cover journaling, scripting Kimün, and piping CLI output. Read *Getting Started* and *Using Kimün* first.
 
-**Start here:** [Journaling](@/guides/journaling.md)
+Start here: [Journaling](@/guides/journaling.md)

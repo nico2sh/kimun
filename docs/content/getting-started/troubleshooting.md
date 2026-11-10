@@ -5,94 +5,66 @@ weight = 10
 
 # Troubleshooting
 
-When something misbehaves, the log file usually records why. For anything
-key-related, start with `kimun doctor`:
+If Kimün does not work as you expect, the log file usually shows the reason. For a problem with keys, start with `kimun doctor`:
 
 ```sh
 kimun doctor
 ```
 
-It reports what your terminal can deliver and what becomes of every key
-binding. Run it in the terminal you use Kimün in; see [CLI →
-Doctor](@/using-kimun/cli.md#doctor).
+The command shows which keys your terminal can send and what happens to each key binding. Run it in the terminal that you use for Kimün. See [CLI → Doctor](@/using-kimun/cli.md#doctor).
 
 ## Ctrl+Enter Acts Like Plain Enter
 
-Most terminals can't tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active. Kimün requests it automatically, but the terminal has to support it and have it enabled:
+Most terminals cannot tell `Ctrl+Enter` from `Enter` unless the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active. Kimün requests the protocol automatically. The terminal must support the protocol and have it enabled:
 
-- **WezTerm** ships with it off. Enable it in `~/.wezterm.lua`:
+- WezTerm has the protocol off by default. To enable it, add this line to `~/.wezterm.lua`:
 
   ```lua
   config.enable_kitty_keyboard = true
   ```
 
-- **Kitty, Ghostty, foot** support it by default.
-- On terminals without the protocol, use `Ctrl+N`. It follows links the same way as `Ctrl+Enter`.
+- Kitty, Ghostty, and foot support the protocol by default.
+- If your terminal does not support the protocol, use `Ctrl+N`. It follows links the same way as `Ctrl+Enter`.
 
-## Ctrl+B Doesn't Make Text Bold
+## Ctrl+B Does Not Make Text Bold
 
-`Ctrl+B` is the leader gateway. For formatting, press it and then
-`t b` for bold, `t i` for italic, or `t s` for strikethrough.
+`Ctrl+B` is the leader gateway. For formatting, press `Ctrl+B` and then `t b` for bold, `t i` for italic, or `t s` for strikethrough.
 
-This is deliberate. `Ctrl+I` and `Tab` are the same byte (`0x09`) in ASCII,
-which is not something a terminal setting can change, so outside the [kitty keyboard
-protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) `Ctrl+I` can only
-indent. Instead of having `Ctrl+B` and `Ctrl+S` work directly while
-`Ctrl+I` did nothing, all three formatting commands moved to the leader's `+text` group,
-which works in every terminal.
+This is deliberate. In ASCII, `Ctrl+I` and `Tab` are the same byte (`0x09`). A terminal setting cannot change this. Without the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), `Ctrl+I` can only indent. Kimün does not give `Ctrl+B` and `Ctrl+S` a direct binding while `Ctrl+I` cannot work. Therefore all three formatting commands are in the `+text` group of the leader, which works in every terminal.
 
-If you want a chord anyway, bind one; see [Keybindings](@/using-kimun/keybindings.md#defaults).
-A binding on `Ctrl+I` will indent instead of italicise unless
-your terminal supports the kitty protocol. Kitty, Ghostty, foot, WezTerm with
-`enable_kitty_keyboard = true`, and Windows (whose console reports keys instead of
-bytes) support it. GNOME Terminal, Terminal.app, xterm, urxvt, and
-`tmux`/`screen` without extended keys do not. The same byte-level limit is why
-`Ctrl+Enter` needs the protocol too.
+If you want a direct chord, bind one. See [Keybindings](@/using-kimun/keybindings.md#defaults). A binding on `Ctrl+I` indents instead of italicizing, unless your terminal supports the kitty protocol. These terminals support the protocol: Kitty, Ghostty, foot, WezTerm with `enable_kitty_keyboard = true`, and Windows (the console of Windows reports keys instead of bytes). These terminals do not support it: GNOME Terminal, Terminal.app, xterm, urxvt, and `tmux` or `screen` without extended keys. The same byte-level limit is the reason that `Ctrl+Enter` needs the protocol.
 
 ## Backspace Moves Focus Instead of Deleting
 
-If pressing `Backspace` in the editor jumps focus to the drawer, your terminal
-is sending the older of the two backspace conventions. `Backspace` and `Ctrl+H`
-are the same byte (`0x08`) unless the [kitty keyboard
-protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active, and
-`Ctrl+H` is bound to focus left, so Kimün reads the key as the chord.
+If `Backspace` in the editor moves focus to the drawer, your terminal sends the older of the two backspace conventions. `Backspace` and `Ctrl+H` are the same byte (`0x08`), unless the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) is active. `Ctrl+H` is bound to focus left, so Kimün reads the key as the chord.
 
-The byte alone can't tell the two apart, so you choose which one Kimün uses:
+The byte cannot tell the two keys apart, so you choose which key Kimün uses:
 
 ```toml
 ctrl_h = "backspace"    # Backspace deletes; the Ctrl+H chord is unreachable
 ```
 
-Under the default `auto`, Kimün picks `backspace` by itself when the tty's
-erase character is `^H`. The footer says so the first time you open a note,
-and focus left then needs a new key or `ctrl_h = "chord"`.
+With the default value `auto`, Kimün picks `backspace` by itself when the erase character of the tty is `^H`. The first time that you open a note, the footer shows a message about this. Then focus left needs a new key or `ctrl_h = "chord"`.
 
-If you use focus left, rebind it to another key; see [Key
-Bindings](@/getting-started/configuration.md#key-bindings).
+If you use focus left, bind it to another key. See [Key Bindings](@/getting-started/configuration.md#key-bindings).
 
-Two other fixes, either of which keeps both keys working:
+There are two other fixes. Each fix keeps both keys working:
 
-- **Make your terminal send `0x7F`.** In Konsole, open *Settings → Edit Current
-  Profile → Keyboard* and pick a key-bindings set whose backspace is `^?` (the
-  "Default" table). `kimun doctor` prints the current erase character. You can
-  also run `cat -v` and press `Backspace`: `^?` is fine, `^H` is the problem.
-- **Use a terminal that supports the kitty protocol** (Kitty, Ghostty, foot,
-  WezTerm with `enable_kitty_keyboard = true`, recent Konsole). There the two
-  keys are distinct and no setting is needed.
+- Make your terminal send `0x7F`. In Konsole, open *Settings → Edit Current Profile → Keyboard* and pick a key-bindings set whose backspace is `^?` (the "Default" table). `kimun doctor` prints the current erase character. You can also run `cat -v` and press `Backspace`. The output `^?` is correct. The output `^H` is the problem.
+- Use a terminal that supports the kitty protocol (Kitty, Ghostty, foot, WezTerm with `enable_kitty_keyboard = true`, recent Konsole). In these terminals the two keys are different, and you do not need a setting.
 
-See [`ctrl_h`](@/getting-started/configuration.md#top-level-fields) for the
-full list of values.
+[`ctrl_h`](@/getting-started/configuration.md#top-level-fields) lists all values.
 
-## Middle-Click Paste or Drag-to-Select Doesn't Work
+## Middle-Click Paste or Drag-to-Select Does Not Work
 
-Kimün captures the mouse for panel dividers, list scrolling, and click-to-focus. While it does, your terminal's own mouse gestures are suppressed, including middle-click paste and drag-to-select-and-copy. A terminal either reports the mouse to the application or handles it itself; it cannot do both at once.
+Kimün captures the mouse for panel dividers, list scrolling, and click-to-focus. While Kimün does this, the mouse gestures of your terminal do not work. This includes middle-click paste and drag-to-select-and-copy. A terminal either reports the mouse to the application or handles the mouse itself. It cannot do both at the same time.
 
-- **Per gesture:** hold `Shift` to get the terminal's behaviour for one action. `Shift`+middle-click pastes and `Shift`+drag selects. This works in most terminals, including xterm.
-- **Permanently:** set `mouse = false` under `[global]` (or untick Preferences → Display → mouse) to give the mouse back to your terminal. This takes effect on the next launch. See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
+- For one action: hold `Shift` to get the behavior of the terminal. `Shift`+middle-click pastes and `Shift`+drag selects. This works in most terminals, including xterm.
+- For all actions: set `mouse = false` under `[global]` (or clear Preferences → Display → mouse) to give the mouse back to your terminal. The change takes effect the next time that you start Kimün. See [Configuration → Mouse](@/getting-started/configuration.md#mouse).
 
 ## Log Files
 
-Kimün writes a log file on every run. Release builds record only warnings and errors. Debug builds log everything.
+Kimün writes a log file on every run. Release builds record only warnings and errors. Debug builds record everything.
 
 ### Log file location
 
@@ -102,7 +74,7 @@ Kimün writes a log file on every run. Release builds record only warnings and e
 | Linux | `$XDG_DATA_HOME/kimun/kimun.log` (or `~/.local/share/kimun/kimun.log` if `XDG_DATA_HOME` is not set) |
 | Windows | `%APPDATA%\kimun\kimun.log` |
 
-The file is created automatically the first time Kimün runs. Each run appends to it and there is no rotation, so delete it by hand if it grows large.
+Kimün creates the file automatically the first time that it runs. Each run appends to the file. Kimün does not rotate the file, so delete it by hand if it becomes large.
 
 ### Reading the log
 
@@ -115,7 +87,7 @@ Open the file in any text editor. Each line is one event:
 
 ### Crash reports
 
-If Kimün crashes, the panic message and a full stack trace are appended to the same log file. Look for a line starting with `[PANIC]`:
+If Kimün crashes, it appends the panic message and a full stack trace to the same log file. Look for a line that starts with `[PANIC]`:
 
 ```
 [PANIC] panicked at 'index out of bounds: the len is 3 but the index is 5', src/...
@@ -123,11 +95,11 @@ If Kimün crashes, the panic message and a full stack trace are appended to the 
    1: ...
 ```
 
-When reporting a bug, please include the relevant section of `kimun.log`.
+When you report a bug, include the relevant section of `kimun.log`.
 
 ### Fallback location
 
-If Kimün cannot write to the platform directory (for example, because the home directory is unavailable), it falls back to the system temporary directory:
+If Kimün cannot write to the platform directory (for example, because the home directory is not available), it writes the log to the system temporary directory:
 
 | Platform | Fallback |
 |----------|---------|
@@ -136,4 +108,4 @@ If Kimün cannot write to the platform directory (for example, because the home 
 
 ## Reporting Issues
 
-[Open an issue](https://github.com/nico2sh/kimun/issues) with the relevant section of `kimun.log`, including any `[PANIC]` lines. If search returns wrong results, `kimun workspace reindex <name>` rebuilds the index from scratch, which fixes most index problems (see [Workspaces](@/getting-started/workspaces.md#rebuild-the-search-index-reindex)).
+[Open an issue](https://github.com/nico2sh/kimun/issues) and include the relevant section of `kimun.log` with any `[PANIC]` lines. If search returns wrong results, run `kimun workspace reindex <name>`. The command rebuilds the index from the beginning and fixes most index problems (see [Workspaces](@/getting-started/workspaces.md#rebuild-the-search-index-reindex)).

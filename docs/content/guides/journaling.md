@@ -7,25 +7,25 @@ weight = 1
 
 ## Journal Entries
 
-Kimün treats any note under a `journal/` directory as a journal entry. Name the file `YYYY-MM-DD.md` (e.g., `journal/2024-01-15.md`) so Kimün can read the journal date from it and include it in search results and JSON output.
+Kimün treats any note in a `journal/` directory as a journal entry. Name the file `YYYY-MM-DD.md` (for example, `journal/2024-01-15.md`). Then Kimün reads the journal date from the file name and includes the date in search results and JSON output.
 
 ## Creating a journal entry
 
 ### In the TUI
 
-Press `Ctrl+J` to create a new journal entry. Kimün creates a file named with today's date under `journal/` in the current workspace and opens it in the editor.
+Press `Ctrl+J` to create a new journal entry. Kimün creates a file in `journal/` in the current workspace. The file name is today's date. Kimün opens the file in the editor.
 
 ### In the CLI
 
 ```sh
-kimun journal               # Append to today's journal entry (creates it if it doesn't exist)
+kimun journal               # Append to today's journal entry (creates it if it does not exist)
 kimun journal "Quick note"  # Append inline content
 kimun journal show          # Display today's entry
 ```
 
 ### Piping content
 
-`kimun journal` reads from stdin when no content argument is provided and stdin is not a terminal, so you can pipe command output into your journal:
+If you give no content argument and stdin is not a terminal, `kimun journal` reads from stdin. You can pipe command output into your journal:
 
 ```sh
 # Pipe a timestamped line
@@ -53,7 +53,7 @@ echo "Late addition" | kimun journal --date 2024-01-15
 
 ## Writing in the editor
 
-A journal entry is a regular Markdown note. Headings help organise it:
+A journal entry is a regular Markdown note. Use headings to organize it:
 
 ```markdown
 # 2024-01-15
@@ -68,18 +68,18 @@ Reviewed the Q1 roadmap...
 
 ## Writing to a specific date
 
-`kimun journal` defaults to today. Use `--date` to target a different entry:
+By default, `kimun journal` writes to today's entry. To write to a different entry, use `--date`:
 
 ```sh
 kimun journal --date 2024-01-15 "Retroactive note for January 15th"
 kimun journal --date 2025-12-31 "New Year's Eve plans"
 ```
 
-The entry is created if it doesn't exist. The date must be in `YYYY-MM-DD` format.
+Kimün creates the entry if it does not exist. The date must be in `YYYY-MM-DD` format.
 
 ## Browsing journal entries
 
-In the FILES drawer, journal entries appear in reverse chronological order by default (newest first). You can change this in Configuration with `journal_sort_field` and `journal_sort_order`.
+In the FILES drawer, journal entries appear by default with the newest first. To change the order, set `journal_sort_field` and `journal_sort_order` in the configuration.
 
 ## Searching journal entries
 
@@ -99,9 +99,9 @@ kimun search "=2024"                # All journal entries from 2024
 
 ## Quick notes and the inbox
 
-For thoughts that don't belong in today's journal, use quick notes (`Ctrl+W` in the TUI or `kimun note quick` in the CLI). Each one is saved in the `/inbox` directory with a timestamp as its filename.
+For thoughts that do not belong in today's journal, use quick notes (`Ctrl+W` in the TUI or `kimun note quick` in the CLI). Kimün saves each quick note in the `/inbox` directory. The file name is a timestamp.
 
-Later, you can go through the inbox and move notes into the journal. If you use the [MCP server](@/using-kimun/ai-mcp-server.md), the `triage_inbox` prompt asks the AI to suggest where each inbox note should go: into the journal, into a proper note, or left in the inbox.
+Later, you can read the inbox and move notes into the journal. If you use the [MCP server](@/using-kimun/ai-mcp-server.md), the `triage_inbox` prompt asks the AI to suggest a place for each inbox note: the journal, a proper note, or the inbox.
 
 ### Search within sections
 
@@ -112,6 +112,6 @@ kimun search "/journal @tasks -done" # Tasks sections without "done"
 
 ## Tips
 
-- Use the same heading names across entries (e.g. always `## Tasks`) so section search finds them
-- The `*` wildcard helps with partial dates: `=2024-0*` matches Jan–Sep 2024
-- For scripts, use JSON output: `kimun search "/journal" --format json | jq '.notes[] | {date: .journal_date, title: .title}'`
+- Use the same heading names in all entries (for example, always `## Tasks`). Then section search finds them.
+- The `*` wildcard helps with partial dates. For example, `=2024-0*` matches January to September 2024.
+- In scripts, use JSON output: `kimun search "/journal" --format json | jq '.notes[] | {date: .journal_date, title: .title}'`

@@ -5,24 +5,24 @@ weight = 4
 
 # Workspaces
 
-A workspace is a notes directory with its own search index. Each workspace has its own files and index, so searches in one never return notes from another. For example:
+A workspace is a notes directory with its own search index. Each workspace has its own files and its own index, so a search in one workspace never returns notes from another workspace. For example:
 
-- **work**: projects, meeting notes, documentation
-- **personal**: journal, ideas, todo lists
-- **archive**: old notes you want to keep out of the way
+- `work`: projects, meeting notes, documentation
+- `personal`: journal, ideas, todo lists
+- `archive`: old notes that you want to keep out of the way
 
-The active workspace determines what you see and search. You can switch from the CLI or from the TUI's Preferences screen.
+The active workspace determines which notes you see and search. You can switch the workspace from the CLI or from the Preferences screen of the TUI.
 
-Each workspace's index is stored next to your `config.toml` as `<workspace>.kimuncache` (regenerable, safe to delete), with a `<workspace>.txt` history file under `<config_dir>/history/`. Both locations are configurable. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+Kimün stores the index of each workspace next to your `config.toml` as `<workspace>.kimuncache`. Kimün can rebuild this file, so you can delete it. The history file is `<workspace>.txt` in `<config_dir>/history/`. You can change both locations. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
 ## Quick Tour
 
-A multi-workspace setup in five commands:
+This example sets up two workspaces in five commands:
 
 ```sh
 kimun workspace init --name work ~/work-notes        # create
 kimun workspace init --name personal ~/personal-notes
-kimun workspace list                                 # see them ("work" is active — created first)
+kimun workspace list                                 # see them ("work" is active, because you created it first)
 kimun workspace use personal                         # switch
 kimun search "meeting"                               # searches ~/personal-notes only
 ```
@@ -42,7 +42,7 @@ personal  /Users/alice/personal-notes   (active)
 kimun workspace init --name <name> <path>
 ```
 
-Creates the config entry and the directory itself if it doesn't exist. The name is lowercased and validated against the [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules). Invalid names (for example, ones containing `/`) are rejected before anything is written.
+This command creates the configuration entry. It also creates the directory if the directory does not exist. Kimün changes the name to lowercase and checks it against the [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules). Kimün rejects an invalid name (for example, a name that contains `/`) before it writes anything.
 
 ### List workspaces (`list`)
 
@@ -50,7 +50,7 @@ Creates the config entry and the directory itself if it doesn't exist. The name 
 kimun workspace list
 ```
 
-Lists every configured workspace and marks the `(active)` one, which all other commands and the TUI use.
+This command lists every configured workspace and marks the `(active)` workspace. All other commands and the TUI use the active workspace.
 
 ### Switch the active workspace (`use`)
 
@@ -58,7 +58,7 @@ Lists every configured workspace and marks the `(active)` one, which all other c
 kimun workspace use <name>
 ```
 
-From then on, search, note listing, and the TUI all use that workspace.
+After this command, search, note listing, and the TUI use that workspace.
 
 ### Rename a workspace (`rename`)
 
@@ -66,7 +66,7 @@ From then on, search, note listing, and the TUI all use that workspace.
 kimun workspace rename <old-name> <new-name>
 ```
 
-Renames the key in `config.toml` and moves the cache (`<old>.kimuncache` → `<new>.kimuncache`) and history (`<old>.txt` → `<new>.txt`) files with it. Your notes directory is not touched. The new name is validated like any other; if a cache or history file already exists at the new name, the rename aborts before any change so nothing is overwritten.
+This command renames the key in `config.toml`. It also moves the cache file (`<old>.kimuncache` → `<new>.kimuncache`) and the history file (`<old>.txt` → `<new>.txt`). Kimün does not change your notes directory. Kimün checks the new name like any other name. If a cache file or a history file already exists with the new name, the command stops before it changes anything, so nothing is overwritten.
 
 ### Remove a workspace (`remove`)
 
@@ -74,7 +74,7 @@ Renames the key in `config.toml` and moves the cache (`<old>.kimuncache` → `<n
 kimun workspace remove <name>
 ```
 
-Removes the config entry and deletes the workspace's cache and history files. Your notes directory is not touched. If you add the workspace again, the index is rebuilt from scratch.
+This command removes the configuration entry and deletes the cache file and the history file of the workspace. Kimün does not change your notes directory. If you add the workspace again, Kimün rebuilds the index from the beginning.
 
 ### Rebuild the search index (`reindex`)
 
@@ -82,22 +82,22 @@ Removes the config entry and deletes the workspace's cache and history files. Yo
 kimun workspace reindex <name>
 ```
 
-Rebuilds the SQLite search database at the configured location (`<cache_dir>/<workspace>.kimuncache`). Use it if the index gets corrupted, or after editing notes outside Kimün.
+This command rebuilds the SQLite search database at the configured location (`<cache_dir>/<workspace>.kimuncache`). Use it if the index is corrupted, or after you edit notes outside Kimün.
 
 ## Legacy Migration
 
-When you upgrade from an older version of Kimün, the config is migrated automatically on first run:
+When you upgrade from an older version of Kimün, Kimün migrates the configuration automatically on the first run:
 
-- **Single-workspace (pre-`config_version = 2`):** your `workspace_dir` and `last_paths` become a `default` workspace block.
-- **Multi-workspace `config_version = 2`:** cache files move to `cache_dir`, history is extracted, and a backup of the original config lands at `config.toml.bak.v2`. Full details in [Configuration → Upgrading](@/getting-started/configuration.md#upgrading-from-config-version-2).
+- Single workspace (before `config_version = 2`): your `workspace_dir` and `last_paths` become a `default` workspace block.
+- Multiple workspaces (`config_version = 2`): Kimün moves the cache files to `cache_dir`, extracts the history, and saves a backup of the original configuration at `config.toml.bak.v2`. For details, see [Configuration → Upgrading](@/getting-started/configuration.md#upgrading-from-config-version-2).
 
-You don't need to do anything, unless an existing workspace name breaks the [name rules](@/getting-started/configuration.md#workspace-name-rules). In that case Kimün stops with an error listing every invalid name, so you can rename them and relaunch.
+You do not need to do anything, unless an existing workspace name breaks the [name rules](@/getting-started/configuration.md#workspace-name-rules). In that case, Kimün stops with an error that lists every invalid name. Rename the workspaces and start Kimün again.
 
 ## TUI vs CLI
 
 You can switch the active workspace in two ways:
 
-- **CLI:** `kimun workspace use <name>`
-- **TUI:** Preferences screen (`Ctrl+,`) → pick from the workspace list
+- CLI: `kimun workspace use <name>`
+- TUI: open the Preferences screen (`Ctrl+,`) and pick a workspace from the list
 
-Both write the same `config.toml`, so a change made in one shows up in the other.
+Both ways write the same `config.toml`, so a change in one way also appears in the other.

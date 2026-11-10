@@ -5,18 +5,18 @@ weight = 11
 
 # Keybindings
 
-All default key bindings. To change a binding, see [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
+This page lists all default key bindings. To change a binding, see [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
 
-> In the app, `F1` opens help and `Ctrl+B ?` shows this cheatsheet with your custom bindings applied.
+In the app, `F1` opens help and `Ctrl+B ?` shows this cheatsheet with your custom bindings applied.
 
-> A `[key_bindings]` section in your config replaces the entire keymap instead of merging with the defaults. Any action you don't list ends up unbound (only `Quit` is restored automatically). To change one key, copy the full table below into your config and edit the lines you want. Details in [Configuration → Key Bindings](@/getting-started/configuration.md#overrides-replace-the-defaults).
+A `[key_bindings]` section in your configuration replaces the entire keymap. It does not merge with the defaults. Any action that you do not list is unbound. Only `Quit` is restored automatically. To change one key, copy the full table below into your configuration and edit the lines that you want. For details, see [Configuration → Key Bindings](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## Defaults
 
 | Action | Default |
 | ------ | ------- |
 | Quit | `Ctrl+Q` |
-| **Leader** (command sequences) | `Ctrl+B` |
+| Leader (command sequences) | `Ctrl+B` |
 | Command palette | `Ctrl+P` |
 | Preferences | `F4` / `Ctrl+,` |
 | Query search (telescope) | `Ctrl+K` |
@@ -37,27 +37,20 @@ All default key bindings. To change a binding, see [Configuration → Key Bindin
 | Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` (see below¹) |
 | Help | `F1` (cheatsheet: `Ctrl+B ?`). Over FIND or the `Ctrl+K` search, it shows the query syntax |
 
-¹ Formatting has no `Ctrl` chord by design. `Ctrl+I` and `Tab` send the same
-byte (`0x09`) on every terminal without the [kitty keyboard
-protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/), so `Ctrl+I`
-can't work everywhere. Having `Ctrl+B` and `Ctrl+S` format text while `Ctrl+I`
-indented would be inconsistent, so all three live in the leader's `+text`
-group, which works in every terminal.
+¹ Formatting has no `Ctrl` chord by design. `Ctrl+I` and `Tab` send the same byte (`0x09`) on every terminal without the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). For this reason, `Ctrl+I` cannot work everywhere. If `Ctrl+B` and `Ctrl+S` formatted text while `Ctrl+I` indented, the keys would be inconsistent. All three actions are in the `+text` group of the leader, which works in every terminal.
 
-You can still bind a chord to these actions, except `Ctrl+B`, which is the
-leader key by default:
+You can still bind a chord to these actions, except `Ctrl+B`, which is the leader key by default:
 
 ```toml
 [key_bindings]
 TextEditor-Bold = ["ctrl&S"]
 ```
 
-Remember that a `[key_bindings]` section [replaces the whole
-keymap](@/getting-started/configuration.md#overrides-replace-the-defaults).
+Remember that a `[key_bindings]` section [replaces the whole keymap](@/getting-started/configuration.md#overrides-replace-the-defaults).
 
 ## The Leader Tree
 
-Everything else lives behind the leader: press `Ctrl+B`, then a short sequence. Pause mid-sequence and the which-key panel shows you what's next.
+All other commands are behind the leader. Press `Ctrl+B`, then a short sequence. If you pause in the middle of a sequence, the which-key panel shows the next keys.
 
 | Group | Keys | Examples |
 | ----- | ---- | -------- |
@@ -74,4 +67,4 @@ Everything else lives behind the leader: press `Ctrl+B`, then a short sequence. 
 | `?` | help / cheatsheet |
 | `1`–`9` | open pinned note 1–9 |
 
-How the leader works, and how to remap the whole tree, is covered in the [TUI guide](@/using-kimun/tui.md#the-leader-key) and [Leader Tree Overrides](@/getting-started/configuration.md#leader-tree-overrides).
+The [TUI guide](@/using-kimun/tui.md#the-leader-key) explains how the leader works. [Leader Tree Overrides](@/getting-started/configuration.md#leader-tree-overrides) explains how to remap the whole tree.

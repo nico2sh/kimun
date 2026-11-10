@@ -13,21 +13,17 @@ weight = 2
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
 
-The script downloads the latest stable release, verifies its SHA-256 checksum,
-and installs the binary into `~/.local/bin` (override with the
-`KIMUN_INSTALL_DIR` environment variable). It also records an install marker
-that enables in-app self-update, so you can upgrade from inside Kimün instead
-of re-running the installer.
+The script downloads the latest stable release and makes sure that its SHA-256 checksum is correct. Then it installs the binary into `~/.local/bin`. To use a different directory, set the `KIMUN_INSTALL_DIR` environment variable. The script also records an install marker (a file that tells Kimün how you installed it). The marker enables in-app self-update, so you can upgrade from inside Kimün and do not need to run the installer again.
 
-To read the script before running it, download it first:
+To read the script before you run it, download it first:
 
 ```sh
 curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
 ```
 
-If `~/.local/bin` isn't on your `PATH`, the script tells you how to add it.
+If `~/.local/bin` is not on your `PATH`, the script tells you how to add it.
 
-> **Windows:** use the PowerShell installer. It needs no admin rights, installs into
+> Windows: use the PowerShell installer. It needs no admin rights. It installs into
 > `%LOCALAPPDATA%\Programs\kimun`, adds that folder to your user `PATH`, and records
 > the same install marker, so the app can update itself:
 >
@@ -35,7 +31,7 @@ If `~/.local/bin` isn't on your `PATH`, the script tells you how to add it.
 > irm https://kimun.2co.dev/install.ps1 | iex
 > ```
 >
-> Open a new terminal afterwards. You can also take the zip from the
+> Afterwards, open a new terminal. You can also download the zip from the
 > [GitHub releases page](https://github.com/nico2sh/kimun/releases), or install
 > with Cargo (below).
 
@@ -54,49 +50,38 @@ cargo install kimun-notes
 
 ## Desktop app
 
-The desktop app, `kimun-gui`, is installed the same way with `--gui`. See the
-[Desktop app](@/using-kimun/desktop-app.md) page for what it is.
+To install the desktop app, `kimun-gui`, use the same script with `--gui`. The [Desktop app](@/using-kimun/desktop-app.md) page describes the app.
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
 ```
 
-On Linux the script also installs the app's launcher entry and icons under
-`~/.local/share`, so it shows up in your application menu. On macOS it installs
-the plain binary (run `kimun-gui` from a terminal); for a double-clickable
-app, download the signed `kimun-gui-<version>-<platform>.dmg` from the
-[releases page](https://github.com/nico2sh/kimun/releases). Run the script once for each app you want: both can sit side by side
-and share one install marker.
+On Linux, the script also installs the launcher entry and the icons of the app under `~/.local/share`, so the app appears in your application menu. On macOS, the script installs the plain binary. Run `kimun-gui` from a terminal. For an app that you can double-click, download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases). Run the script once for each app that you want. Both apps can be installed side by side and share one install marker.
 
-On Windows, the PowerShell installer takes a `-Gui` switch. `irm | iex` cannot
-pass one, so this is the form to paste:
+On Windows, the PowerShell installer takes a `-Gui` switch. The `irm | iex` form cannot pass a switch, so paste this command:
 
 ```powershell
 & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui
 ```
 
-or, in one line, `$env:KIMUN_GUI = 1; irm https://kimun.2co.dev/install.ps1 | iex`.
-It adds a Start-menu shortcut. Both apps share one folder and one marker, and the
-installer's overrides (`KIMUN_INSTALL_DIR`, `KIMUN_VERSION`) work as in `install.sh`.
-You can also take `kimun-gui-<version>-windows-x64.zip` from the
+Or use this one-line form: `$env:KIMUN_GUI = 1; irm https://kimun.2co.dev/install.ps1 | iex`.
+The installer adds a Start-menu shortcut. Both apps share one folder and one marker. The overrides of the installer (`KIMUN_INSTALL_DIR`, `KIMUN_VERSION`) work as in `install.sh`.
+You can also download `kimun-gui-<version>-windows-x64.zip` from the
 [GitHub releases page](https://github.com/nico2sh/kimun/releases) and run
 `kimun-gui.exe`.
 
 ## Updating
 
-If you installed with the install script, Kimün can update itself in place,
-because the install marker tells the app it is on the `script` channel. You can
-also re-run the install command at any time to get the latest stable release:
+If you installed with the install script, Kimün can update itself in place. The install marker tells the app that it is on the `script` channel. You can also run the install command again at any time to get the latest stable release:
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install.sh | sh                # the terminal app
 curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui    # the desktop app
 ```
 
-The desktop app updates itself the same way when the install script put it
-there.
+The desktop app updates itself the same way if the install script installed it.
 
-If you installed with Homebrew or Cargo, update with the same tool:
+If you installed with Homebrew or Cargo, use the same tool to update:
 
 ```sh
 brew upgrade kimun        # Homebrew
@@ -105,22 +90,22 @@ cargo install kimun-notes # Cargo (reinstalls the latest)
 
 ## First Run
 
-When you launch Kimün for the first time with no workspace configured, a guided setup dialog walks you through choosing a notes directory, Nerd Fonts, a theme, and an editor. Nothing is written until you confirm at the end.
+If you start Kimün for the first time and no workspace exists, a guided setup dialog opens. The dialog asks you to choose a notes directory, Nerd Fonts, a theme, and an editor. Kimün writes nothing until you confirm at the end.
 
 ```sh
 kimun
 ```
 
-See [Guided Setup](@/getting-started/configuration.md#guided-setup) for a step-by-step breakdown.
+[Guided Setup](@/getting-started/configuration.md#guided-setup) describes each step.
 
 ## Configuration File
 
-The config file is created automatically on first run:
+Kimün creates the configuration file automatically on the first run:
 
-- **Linux / macOS:** `~/.config/kimun/config.toml`
-- **Windows:** `%USERPROFILE%\kimun\config.toml`
+- Linux and macOS: `~/.config/kimun/config.toml`
+- Windows: `%USERPROFILE%\kimun\config.toml`
 
-You can also specify a custom config path:
+To use a custom configuration path, run:
 
 ```sh
 kimun --config /path/to/my-config.toml
@@ -128,7 +113,7 @@ kimun --config /path/to/my-config.toml
 
 ## Workspace Index
 
-Kimün creates a SQLite search index for each workspace, at `<config_dir>/<workspace>.kimuncache` by default. It holds only the index. Your notes are plain `.md` files inside the workspace directory. You can delete the cache file safely, and Kimün rebuilds it the next time it runs.
+Kimün creates a SQLite search index for each workspace. By default, the index is at `<config_dir>/<workspace>.kimuncache`. The file holds only the index. Your notes are plain `.md` files in the workspace directory. You can delete the cache file. Kimün rebuilds it the next time that it runs.
 
 ```
 ~/.config/kimun/                ← Config directory
@@ -144,15 +129,12 @@ your-workspace/                 ← Your workspace directory
     └── my-project.md
 ```
 
-The cache and history locations are configurable. See [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+You can change the cache and history locations. See [Configuration → Files Kimün Stores on Disk](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
 ## Optional: the Kimün Server
 
-An optional companion server adds semantic search and AI question answering
-over your notes. It is a separate binary, currently installed with Cargo only.
-See [Semantic Search & Ask](@/using-kimun/server.md) for installation and setup.
-Kimün works fully without it.
+An optional companion server adds semantic search and AI question answering for your notes. It is a separate binary. Currently you can install it with Cargo only. [Semantic Search & Ask](@/using-kimun/server.md) describes the installation and the setup. Kimün works fully without the server.
 
-## What's Next
+## Next Steps
 
-Next, learn your way around the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work and personal notes.
+Read about the [Terminal UI](@/using-kimun/tui.md), or set up separate [Workspaces](@/getting-started/workspaces.md) for work notes and personal notes.
