@@ -203,8 +203,10 @@ jobs:
           cat checksums-sha256.txt
         shell: bash
 
-      # Attach binaries to the release created by release-plz. No `body:` /
-      # `name:` here: release-plz owns the changelog, we only add assets.
+      # Attach binaries to the release release-plz created as a DRAFT (so
+      # install-server.sh never sees it before its files are here), and publish
+      # it: `draft: false` is what makes it visible. No `body:` / `name:` here:
+      # release-plz owns the changelog, we only add assets.
       - name: Attach release assets
         uses: softprops/action-gh-release@v2
         with:
