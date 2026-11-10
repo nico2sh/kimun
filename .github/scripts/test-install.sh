@@ -166,4 +166,66 @@ sh install.sh --help | grep -q -- "--gui" || fail "--help does not mention --gui
 cat install.sh | sh -s -- --help | grep -qi "gui" || fail "--help when piped"
 ok "options"
 
+# 11. The release manifest (latest.json, built by release_manifest.py) and the GitHub API fallback.
+# No network: the manifest and the fake API are files, and the real generator writes the manifest.
+if ! command -v python3 >/dev/null; then
+  echo "skipped: the manifest tests need python3"
+else
+  python3 - "$rel" "$work/releases.json" <<'PY'
+import json, os, sys
+rel, out = sys.argv[1], sys.argv[2]
+assets = [{"name": n, "browser_download_url": f"file://{rel}/{n}"} for n in sorted(os.listdir(rel))]
+json.dump([[{"tag_name": "kimun-notes-v9.9.9", "draft": False, "published_at": "2026-01-01T00:00:00Z",
+             "html_url": "https://example.test/9.9.9", "assets": assets}]], open(out, "w"))
+PY
+  python3 -I .github/scripts/release_manifest.py "$work/releases.json" "$work/latest.json" >/dev/null 2>&1
+  # Unpinned, the files not redirected: everything must come from the manifest's own urls.
+  install_unpinned() { # HOME MANIFEST_URL [args...]  (extra env from the caller)
+    local home="$1" manifest="$2"; shift 2
+    HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_MANIFEST_URL="$manifest" \
+      KIMUN_RELEASES_API="file://$work/no-such-api.json" sh install.sh "$@"
+  }
+
+  h="$work/m1"; mkdir -p "$h"
+  out="$(install_unpinned "$h" "file://$work/latest.json" 2>&1)" || fail "install from the manifest failed: $out"
+  [ -x "$h/bin/kimun" ] || fail "manifest install: no binary"
+  grep -q "version = \"$v\"" "$h/.config/kimun/install.toml" || fail "manifest install: marker version"
+  echo "$out" | grep -qi "warning" && fail "manifest install warned: $out"
+  h="$work/m1g"; mkdir -p "$h"
+  install_unpinned "$h" "file://$work/latest.json" --gui >/dev/null 2>&1 || fail "desktop install from the manifest failed"
+  [ -x "$h/bin/kimun-gui" ] || fail "manifest install: no desktop binary"
+  ok "manifest: the version, the urls and the checksum come from it, no API call"
+
+  # The manifest's sha256 is the one checked: change it and the install is refused.
+  sed "s/\"sha256\": \"[0-9a-f]*\"/\"sha256\": \"$(printf '0%.0s' $(seq 64))\"/" "$work/latest.json" >"$work/bad.json"
+  h="$work/m2"; mkdir -p "$h"
+  out="$(install_unpinned "$h" "file://$work/bad.json" 2>&1)" && fail "a wrong manifest checksum was accepted"
+  echo "$out" | grep -q "checksum mismatch" || fail "wrong manifest checksum said: $out"
+  [ ! -e "$h/bin/kimun" ] || fail "a wrong manifest checksum still installed"
+  ok "manifest: its checksum is enforced"
+
+  # Fallback: unreachable, another schema, no app in it. Each one warns and uses the API (a file here).
+  fallback() { # NAME MANIFEST_URL WHY-PATTERN
+    h="$work/fb-$1"; mkdir -p "$h"
+    out="$(HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_MANIFEST_URL="$2" KIMUN_RELEASES_API="file://$work/api.json" \
+      KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh 2>&1)" || fail "fallback ($1) failed: $out"
+    echo "$out" | grep -q "warning: .*$3.*using the GitHub API" || fail "fallback ($1) did not say why: $out"
+    [ -x "$h/bin/kimun" ] || fail "fallback ($1): no binary"
+    grep -q "version = \"$v\"" "$h/.config/kimun/install.toml" || fail "fallback ($1): marker version"
+  }
+  printf '[{"tag_name":"kimun_core-v9.0.0"},{"tag_name":"kimun-notes-v9.9.9-beta.1"},{"tag_name":"kimun-notes-v%s"}]\n' "$v" >"$work/api.json"
+  fallback unreachable "file://$work/no-such-manifest.json" "cannot reach"
+  sed 's/"schema": 1/"schema": 2/' "$work/latest.json" >"$work/schema2.json"
+  fallback schema "file://$work/schema2.json" "format"
+  printf '{\n  "schema": 1\n}\n' >"$work/empty.json"
+  fallback empty "file://$work/empty.json" "names no app release"
+  ok "manifest unreachable, unknown or empty: a warning, then the GitHub API"
+
+  # With nothing to fall back to either, the failure says so.
+  h="$work/m3"; mkdir -p "$h"
+  out="$(install_unpinned "$h" "file://$work/no-such-manifest.json" 2>&1)" && fail "installed with no manifest and no API"
+  echo "$out" | grep -q "could not reach the GitHub releases API" || fail "no manifest, no API said: $out"
+  ok "no manifest and no API: a plain error"
+fi
+
 echo "install.sh behaves"

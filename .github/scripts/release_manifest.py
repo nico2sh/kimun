@@ -16,6 +16,10 @@ all three tag series, and allows 60 unauthenticated calls an hour per address).
                 "assets": {"kimun-0.24.8-linux-x64.tar.gz": {"url": "...", "sha256": "..."}, ...}},
      "server": {...}}
 
+The file is pretty-printed with two-space indentation and one key per line, and that layout is
+a contract: install.sh and install-server.sh read it with awk (no jq on a stock machine), by
+line shape. test_release_manifest.py pins it. Change the layout and those readers change too.
+
 Assets are keyed by their exact file name, the name every consumer already builds, so no naming
 rule is repeated here. The sha256 comes from the release's own `checksums-sha256.txt`.
 

@@ -151,6 +151,33 @@ class Cli(unittest.TestCase):
             )
             return p, (json.loads(out.read_text()) if out.exists() else None)
 
+    def test_the_layout_the_shell_installers_read_with_awk(self):
+        rels = [[release("kimun-notes-v1.2.3", ["a.zip", "b.zip", rm.CHECKSUMS])]]
+        with tempfile.TemporaryDirectory() as d:
+            sums = Path(d, "sums.txt")
+            sums.write_text(f"{H}  a.zip\n{H2}  b.zip\n")
+            for page in rels:
+                for r in page:
+                    for a in r["assets"]:
+                        a["browser_download_url"] = sums.as_uri() if a["name"] == rm.CHECKSUMS else f"https://dl/{a['name']}"
+            src, out = Path(d, "r.json"), Path(d, "latest.json")
+            src.write_text(json.dumps(rels))
+            p = subprocess.run([sys.executable, "-I", str(Path(rm.__file__)), str(src), str(out)],
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            lines = out.read_text().splitlines()
+        for want in (
+            '  "schema": 1,',
+            '  "app": {',
+            '    "version": "1.2.3",',
+            '    "assets": {',
+            '      "a.zip": {',
+            '        "url": "https://dl/a.zip",',
+            f'        "sha256": "{H2}"',
+            '      "b.zip": {',
+        ):
+            self.assertIn(want, lines)
+
     def test_exit_1_and_no_file_when_nothing_can_be_described(self):
         p, out = self.run_cli([[release("kimun-notes-v1.0.0-beta.1")]])
         self.assertEqual(p.returncode, 1, p.stderr)
