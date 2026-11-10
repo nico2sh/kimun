@@ -8,6 +8,8 @@
 	<string>kimun-gui</string>
 	<key>CFBundleIconFile</key>
 	<string>kimun</string>
+	<key>CFBundleIconName</key>
+	<string>kimun</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.2co.kimun</string>
 	<key>CFBundleInfoDictionaryVersion</key>

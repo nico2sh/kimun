@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Kimün icon, background layer for Icon Composer: the logo's tile cut to a full-bleed
+     square (macOS applies the rounded shape itself). Made from assets/logo.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="12.852206 12.395834 185.20833 185.20833" width="1024" height="1024">
+  <defs>
+    <linearGradient id="g11"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f1f1f1"/></linearGradient>
+    <radialGradient id="bgfill" xlink:href="#g11" cx="104.54362" cy="105" fx="104.54362" fy="105" r="94.588539" gradientUnits="userSpaceOnUse" gradientTransform="translate(0.91274643)"/>
+  </defs>
+  <rect x="12.852206" y="12.395834" width="185.20833" height="185.20833" fill="url(#bgfill)"/>
+  <rect x="12.852206" y="91.770836" width="185.20833" height="105.83333" fill="#ffcb61"/>
+  <path d="M 12.852445 91.770624 L 187.47744 91.770624 C 190.48944 91.770624 193.19973 93.016762 195.12349 95.023138 A 192.22353 72.047371 0 0 1 12.852445 148.16821 z" fill="#ffffff" fill-opacity="0.36627907"/>
+</svg>
