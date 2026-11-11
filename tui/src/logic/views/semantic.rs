@@ -24,7 +24,11 @@ const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 /// chunk the server matched in it, so a preview can mark that section.
 #[derive(Debug, Clone)]
 pub struct SemanticHit {
+    /// The note's row, as the TUI lists it (`<no title>` for a blank title).
     pub entry: FileListEntry,
+    /// The matched section's breadcrumb, as read: blank when the chunk has
+    /// none (a frontend shows the filename then).
+    pub title: String,
     /// The matched section's innermost heading: what locates it in the note.
     pub heading: String,
     /// The matched chunk's text.
@@ -45,56 +49,84 @@ impl ListRow for SemanticHit {
     }
 }
 
-/// One hit per unique note among the server's chunk results, in result
-/// order (best first), deduplicated by canonical path: a note keeps its
-/// first (best) chunk. A hit's title is that chunk's title (the matched
-/// section's breadcrumb), `<no title>` when blank; it opens its note. An
-/// absent ordinal (`0`) becomes the chunk's 1-based position in `chunks`.
-pub fn chunks_to_hits(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<SemanticHit> {
-    let mut seen: HashSet<VaultPath> = HashSet::new();
-    let mut out = Vec::new();
-    for (position, chunk) in chunks.into_iter().enumerate() {
-        let path = VaultPath::new(&chunk.path);
-        // Dedup by canonical identity; keep the first (highest-ranked) chunk.
-        if !seen.insert(path.flatten().absolute()) {
-            continue;
-        }
-        let filename = path.get_parent_path().1;
-        // The chunk title is the matched section's breadcrumb — informative for
-        // "which part matched".
-        let title = crate::ask::readable_heading(&chunk.title);
-        let title = if title.trim().is_empty() {
-            "<no title>".to_string()
-        } else {
-            title
-        };
-        let journal_date = vault.journal_date(&path).map(format_journal_date);
-        // The Source reader's reading of a chunk: the heading without its
-        // journal date, the ordinal normalized.
-        let source = AskSource::from_chunk(position, chunk);
-        out.push(SemanticHit {
-            entry: FileListEntry::Note {
-                path,
-                title,
-                filename,
-                journal_date,
-                is_open: false,
-            },
-            heading: source.match_heading().to_string(),
-            chunk: source.text,
-            ordinal: source.ordinal,
-            score: source.score,
-        });
-    }
-    out
+/// The best chunk of one note: its 0-based position among the results, the
+/// chunk itself, its readable title (possibly blank) and the note's row.
+struct NoteChunk {
+    position: usize,
+    chunk: ChunkResult,
+    title: String,
+    entry: FileListEntry,
 }
 
-/// The note rows of [`chunks_to_hits`] alone (the TUI's SEM rows).
-pub fn chunks_to_entries(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<FileListEntry> {
-    chunks_to_hits(chunks, vault)
+/// One [`NoteChunk`] per unique note among the server's chunk results, in
+/// result order (best first), deduplicated by canonical path: a note keeps
+/// its first (best) chunk. A row's title is that chunk's title (the matched
+/// section's breadcrumb), `<no title>` when blank; it opens its note.
+fn note_chunks(
+    chunks: Vec<ChunkResult>,
+    vault: &NoteVault,
+) -> impl Iterator<Item = NoteChunk> + '_ {
+    let mut seen: HashSet<VaultPath> = HashSet::new();
+    chunks
         .into_iter()
-        .map(|hit| hit.entry)
+        .enumerate()
+        .filter_map(move |(position, chunk)| {
+            let path = VaultPath::new(&chunk.path);
+            // Dedup by canonical identity; keep the first (highest-ranked) chunk.
+            if !seen.insert(path.flatten().absolute()) {
+                return None;
+            }
+            let filename = path.get_parent_path().1;
+            // The chunk title is the matched section's breadcrumb — informative
+            // for "which part matched".
+            let title = crate::ask::readable_heading(&chunk.title);
+            let shown = if title.trim().is_empty() {
+                "<no title>".to_string()
+            } else {
+                title.clone()
+            };
+            let journal_date = vault.journal_date(&path).map(format_journal_date);
+            Some(NoteChunk {
+                position,
+                chunk,
+                title,
+                entry: FileListEntry::Note {
+                    path,
+                    title: shown,
+                    filename,
+                    journal_date,
+                    is_open: false,
+                },
+            })
+        })
+}
+
+/// One hit per unique note among the server's chunk results (see
+/// [`note_chunks`]), keeping its best chunk for a preview. A hit's `title`
+/// is the chunk's own, blank when it has none. An absent ordinal (`0`)
+/// becomes the chunk's 1-based position in `chunks`.
+pub fn chunks_to_hits(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<SemanticHit> {
+    note_chunks(chunks, vault)
+        .map(|note| {
+            // The Source reader's reading of a chunk: the heading without its
+            // journal date, the ordinal normalized.
+            let source = AskSource::from_chunk(note.position, note.chunk);
+            SemanticHit {
+                entry: note.entry,
+                title: note.title,
+                heading: source.match_heading().to_string(),
+                chunk: source.text,
+                ordinal: source.ordinal,
+                score: source.score,
+            }
+        })
         .collect()
+}
+
+/// The note rows alone (the TUI's SEM rows): [`chunks_to_hits`]' entries,
+/// without reading the chunks for a preview.
+pub fn chunks_to_entries(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<FileListEntry> {
+    note_chunks(chunks, vault).map(|note| note.entry).collect()
 }
 
 /// Where the source gets its client for each load.
@@ -139,9 +171,9 @@ impl SemanticSource {
         }
     }
 
-    /// The hits for `query`: none for a blank query (the server is not
-    /// asked) or a failed search.
-    async fn hits(&self, query: &str) -> Vec<SemanticHit> {
+    /// The server's chunks for `query`: none for a blank query (the
+    /// server is not asked) or a failed search.
+    async fn search(&self, query: &str) -> Vec<ChunkResult> {
         if query.trim().is_empty() {
             return Vec::new();
         }
@@ -151,7 +183,7 @@ impl SemanticSource {
         tokio::time::sleep(DEBOUNCE).await;
         match self.client().await {
             Some(client) => match client.search(query, None).await {
-                Ok(chunks) => chunks_to_hits(chunks, &self.vault),
+                Ok(chunks) => chunks,
                 // Offline / server error → no rows (the surface shows empty; the
                 // status indicator tells the user the server is unreachable).
                 Err(e) => {
@@ -167,14 +199,15 @@ impl SemanticSource {
 #[async_trait]
 impl RowSource<FileListEntry> for SemanticSource {
     async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
-        let entries = self.hits(query).await.into_iter().map(|hit| hit.entry);
-        emit.replace(entries.collect());
+        let chunks = self.search(query).await;
+        emit.replace(chunks_to_entries(chunks, &self.vault));
     }
 }
 
 #[async_trait]
 impl RowSource<SemanticHit> for SemanticSource {
     async fn load(&self, query: &str, emit: Emit<SemanticHit>) {
-        emit.replace(self.hits(query).await);
+        let chunks = self.search(query).await;
+        emit.replace(chunks_to_hits(chunks, &self.vault));
     }
 }
