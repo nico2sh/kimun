@@ -65,11 +65,14 @@ with_timeout() {
   flag="$(mktemp)"
   "$@" &
   pid=$!
-  ( sleep "$secs"; echo 1 >"$flag"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  # Flag a timeout only if the command is still running: killing this sleep when the
+  # command ends early must not look like a timeout.
+  ( sleep "$secs"; if kill -0 "$pid" 2>/dev/null; then echo 1 >"$flag"; kill "$pid" 2>/dev/null; fi ) >/dev/null 2>&1 &
   watcher=$!
   wait "$pid" || rc=$?
   pkill -P "$watcher" 2>/dev/null || true
   kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true # reaps it, so bash prints no "Terminated" line
   if [ -s "$flag" ]; then
     rc=124
     echo "::error::timed out after ${secs}s: ${*:1:3}" >&2
@@ -103,14 +106,14 @@ else
 fi
 
 # Submit FILE to Apple and wait; anything but "Accepted" prints the log and fails.
-# Two calls, so the submission id is in the log as soon as the upload ends: if the wait
-# is slow, ask Apple about that id from any Mac (`xcrun notarytool info ID ...`).
+# Upload, then poll, so the submission id is in the log as soon as the upload ends: if
+# Apple is slow, ask Apple about that id from any Mac (`xcrun notarytool info ID ...`).
 notarize() {
-  local file="$1" result="$work/notarize.json" id status
+  local file="$1" result="$work/notarize.json" id status deadline
   local up_s=$(( ${NOTARY_UPLOAD_MINUTES:-15} * 60 )) wait_m="${NOTARY_WAIT_MINUTES:-40}"
   if [ "$dry" = 1 ]; then
     echo "+ xcrun notarytool submit $file --key <key> --key-id $APPLE_NOTARY_KEY_ID --issuer $APPLE_NOTARY_ISSUER_ID --verbose"
-    echo "+ xcrun notarytool wait <submission id> --timeout ${wait_m}m"
+    echo "+ xcrun notarytool info <submission id> (every 30 s, up to ${wait_m} minutes)"
     return 0
   fi
   say "uploading $(basename "$file") to Apple"
@@ -120,10 +123,23 @@ notarize() {
     --issuer "$APPLE_NOTARY_ISSUER_ID" --verbose --output-format json | tee "$result" || true
   id="$(jq -r '.id // empty' "$result" 2>/dev/null || true)"
   [ -n "$id" ] || { echo "::error::the upload of $file gave no submission id" >&2; exit 1; }
-  say "submission id: $id (waiting up to ${wait_m} minutes)"
-  with_timeout $(( wait_m * 60 + 120 )) xcrun notarytool wait "$id" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
-    --issuer "$APPLE_NOTARY_ISSUER_ID" --timeout "${wait_m}m" --output-format json | tee "$result" || true
-  status="$(jq -r '.status // "no result"' "$result" 2>/dev/null || echo "no result")"
+  say "submission id: $id (polling Apple for up to ${wait_m} minutes)"
+  # Polling `notarytool info`, not `notarytool wait`: wait printed nothing here and the
+  # script read that as a failure. A poll logs every status and bounds the time.
+  deadline=$(( $(date +%s) + wait_m * 60 ))
+  while :; do
+    with_timeout 90 xcrun notarytool info "$id" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
+      --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json >"$result" 2>"$work/info.err" || true
+    status="$(jq -r '.status // "no result"' "$result" 2>/dev/null || echo "no result")"
+    say "status: $status"
+    [ "$status" != "no result" ] || cat "$work/info.err" >&2
+    case "$status" in Accepted | Invalid | Rejected) break ;; esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "::error::notarization of $file is still '$status' after ${wait_m} minutes (submission $id)" >&2
+      exit 1
+    fi
+    sleep "${NOTARY_POLL_SECONDS:-30}"
+  done
   if [ "$status" != "Accepted" ]; then
     echo "::error::notarization of $file ended '$status' (submission $id)" >&2
     xcrun notarytool log "$id" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" >&2 || true
