@@ -3,15 +3,24 @@
 # installs the binary into a user-writable directory, and records an install
 # marker so the app knows it may self-update (the "script" channel).
 #
-#   curl -fsSL https://kimun.2co.dev/install.sh | sh                 # the terminal app
-#   curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui     # the desktop app
+#   curl -fsSL https://kimun.2co.dev/install.sh | sh                 # both apps
+#   curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --tui     # the terminal app only
+#   curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui     # the desktop app only
 #
-# Run it once for each app you want; both record their install dir in one shared marker.
+# With no option the script installs both apps, or updates the one that is already there when only
+# one is installed. The desktop app is best effort then: when
+# it cannot be installed the terminal app stays installed, the script prints a warning and
+# exits 0. On a Linux machine with no display (no DISPLAY or WAYLAND_DISPLAY, such as a
+# server) the desktop app is skipped, with a note. Name an app with --tui or --gui and
+# that app must install, or the script fails. Both apps record their install dir in one
+# shared marker.
 #
 # Options:
-#   --gui               install the desktop app (kimun-gui) instead of the terminal app
-#   --uninstall         remove what this script installed (the terminal app, or with --gui the
-#                       desktop app). Your notes and configuration are not touched
+#   --tui               install only the terminal app (kimun)
+#   --gui               install only the desktop app (kimun-gui). With both --tui and --gui
+#                       both apps are installed and both must succeed
+#   --uninstall         remove what this script installed: both apps, or only the one that
+#                       --tui or --gui names. Your notes and configuration are not touched
 #   -h, --help          show this help
 #
 # Env overrides:
@@ -29,8 +38,9 @@
 # The desktop app on Linux also gets its launcher entry and icons, under
 # $XDG_DATA_HOME (default: $HOME/.local/share). On macOS it is the signed Kimun.app,
 # taken from the release's kimun-gui-<version>-<platform>.dmg and copied to
-# $HOME/Applications (open it from Launchpad or Spotlight). A release with no .dmg
-# gets the raw kimun-gui binary instead, like the terminal app.
+# $HOME/Applications (open it from Launchpad or Spotlight). With --gui alone, a release with
+# no .dmg gets the raw kimun-gui binary instead, like the terminal app. Without it the app
+# is skipped with a warning.
 #
 # Unix only (Linux, macOS). Windows users: install.ps1, or the release archive.
 
@@ -44,10 +54,16 @@ INSTALL_DIR="${KIMUN_INSTALL_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="$HOME/.config/kimun"
 MARKER="$CONFIG_DIR/install.toml"
 UNINSTALL=0
+WANT_TUI=0
+WANT_GUI=0
+GUI_RETRY="curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui"
 # Launch Services tool: install registers the app with it, uninstall unregisters it.
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
-err() { printf 'error: %s\n' "$1" >&2; exit 1; }
+err() {
+  printf 'error: %s\n' "$1" >&2
+  exit 1
+}
 info() { printf '%s\n' "$1"; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
 
@@ -57,7 +73,7 @@ usage() {
   if [ -r "$0" ]; then
     sed -n '/^#   curl/,/^# Unix only/p' "$0" | sed 's/^# \{0,1\}//'
   else
-    info "Usage: install.sh [--gui] [--uninstall]    (--gui: the desktop app; --uninstall: remove it; see the script's header)"
+    info "Usage: install.sh [--tui] [--gui] [--uninstall]    (no option: both apps; see the script's header)"
     info "https://github.com/$REPO/blob/main/install.sh"
   fi
 }
@@ -231,30 +247,37 @@ marker_dir() {
   fi
 }
 
-# Remove what this script installed: the terminal app, or with --gui the desktop app.
+# resolve_uninstall_dir: sets UDIR (the dir to remove from) and UMARKER_DIR (the dir the marker
+# records, if any), once, before the first app goes: removing the terminal app can remove the
+# marker, and the desktop app's pass must still see the same dir.
+resolve_uninstall_dir() {
+  # The dir the marker records, if any. The marker only goes when it belongs to this dir.
+  UMARKER_DIR="$(marker_dir)"
+  UMARKER_DIR="${UMARKER_DIR%/}"
+  UDIR="${KIMUN_INSTALL_DIR:-}"
+  if [ -z "$UDIR" ]; then
+    UDIR="$UMARKER_DIR"
+    if [ -z "$UDIR" ] && [ -f "$MARKER" ]; then
+      warn "could not read install_dir from $MARKER: using $HOME/.local/bin"
+    fi
+  fi
+  [ -n "$UDIR" ] || UDIR="$HOME/.local/bin"
+}
+
+# Remove what this script installed for the app named in BIN (main calls it for each app).
 # It only removes files the installer puts in place, never your notes or your
 # configuration (config.toml and the rest of ~/.config/kimun stay). The install
 # marker goes when neither app is left in its install dir. The dir is the one the
 # marker records, unless KIMUN_INSTALL_DIR says otherwise.
 uninstall() {
-  # The dir the marker records, if any. The marker only goes when it belongs to this dir.
-  mdir="$(marker_dir)"
-  mdir="${mdir%/}"
-  dir="${KIMUN_INSTALL_DIR:-}"
-  if [ -z "$dir" ]; then
-    dir="$mdir"
-    if [ -z "$dir" ] && [ -f "$MARKER" ]; then
-      warn "could not read install_dir from $MARKER: using $HOME/.local/bin"
-    fi
-  fi
-  [ -n "$dir" ] || dir="$HOME/.local/bin"
-  removed=0
+  dir="$UDIR"
+  mdir="$UMARKER_DIR"
   remove() { # remove PATH...: a file or a directory this script created
     for target in "$@"; do
       if [ -e "$target" ] || [ -L "$target" ]; then
         rm -rf "$target" || err "could not remove $target"
         info "Removed $target"
-        removed=1
+        ANY_REMOVED=1
       fi
     done
   }
@@ -287,15 +310,6 @@ uninstall() {
   if [ -f "$MARKER" ] && [ ! -e "$dir/kimun" ] && [ ! -e "$dir/kimun-gui" ] \
     && { [ -z "$mdir" ] || [ "$mdir" = "${dir%/}" ]; }; then
     remove "$MARKER"
-  fi
-  if [ "$removed" = 0 ]; then
-    info "Nothing to remove: no $BIN found in $dir."
-    # The app install leaves no marker, so a custom KIMUN_APP_DIR is not remembered.
-    if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = Darwin ]; then
-      info "Kimun.app is not in $apps. If you installed it with KIMUN_APP_DIR, run the uninstall with the same KIMUN_APP_DIR."
-    fi
-  else
-    info "Done. Your notes and configuration in $CONFIG_DIR were not touched."
   fi
 }
 
@@ -384,14 +398,140 @@ fetch_archive() {
 # release_lists NAME: does the release's checksums file list NAME? Returns 0 when it does,
 # 1 when the file is reachable and does not, 2 when it cannot be fetched.
 release_lists() {
-  download "$BASE_URL/checksums-sha256.txt" "$tmp/checksums-sha256.txt" 2>/dev/null || return 2
-  awk -v f="$1" '$2 == f { found = 1 } END { exit !found }' "$tmp/checksums-sha256.txt"
+  # A separate file: the one in RELTMP may be the signed list the next app is checked against.
+  download "$BASE_URL/checksums-sha256.txt" "$tmp/listing.txt" 2>/dev/null || return 2
+  awk -v f="$1" '$2 == f { found = 1 } END { exit !found }' "$tmp/listing.txt"
+}
+
+# Install one app (BIN is kimun or kimun-gui) from the release main resolved. main runs it
+# in a subshell, so an err exits only this install and the temp dir and mount are cleaned
+# up here. install_one NAME [soft]: with soft, the release having no macOS .dmg is an error
+# (no raw-binary fallback), and main reports a failed install as a warning.
+install_one() {
+  set -e
+  BIN="$1"
+  SOFT_APP="${2:-}"
+  tmp="$(mktemp -d)"
+  # cleanup runs on every exit. INT and TERM must exit, or the script would keep running
+  # after cleanup removed the temp dir and detached the .dmg.
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  MAC_APP=0
+  if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = "Darwin" ]; then
+    if fetch_archive "${BIN}-${VERSION}-${PLATFORM}.dmg" quiet; then
+      MAC_APP=1
+    else
+      # Fall back to the raw binary only when the release is confirmed to have no .dmg.
+      # Any other failure (network, a 5xx, a rate limit) must not change the install type.
+      rc=0; release_lists "$ARCHIVE" || rc=$?
+      case "$rc" in
+        1)
+          # Only a named --gui falls back to the raw binary: in a default run it would be a
+          # half-installed app, with no icon and no bundle.
+          [ "$SOFT_APP" != soft ] || err "release $VERSION has no macOS app (.dmg) for $PLATFORM"
+          warn "release $VERSION has no macOS app (.dmg): installing the raw binary instead" ;;
+        0) err "failed to download $ARCHIVE (it is listed in release $VERSION). Try again" ;;
+        *) err "failed to download $ARCHIVE, and could not check whether release $VERSION has one. Try again" ;;
+      esac
+    fi
+  fi
+
+  if [ "$MAC_APP" = 0 ] && ! fetch_archive "${BIN}-${VERSION}-${PLATFORM}.tar.gz"; then
+    # When the release is there (its checksums are) but this app's build for this system
+    # is not, say so, rather than a bare failed download.
+    rc=0; release_lists "$ARCHIVE" || rc=$?
+    if [ "$rc" = 1 ]; then
+      if [ "$BIN" = "kimun-gui" ]; then
+        err "release $VERSION has no desktop app build for $PLATFORM. Not every release has one yet: see https://github.com/$REPO/releases, or pin a release that does with KIMUN_VERSION"
+      fi
+      err "release $VERSION has no $BIN build for $PLATFORM (see https://github.com/$REPO/releases)"
+    fi
+    err "failed to download $ARCHIVE (is $VERSION a release?)"
+  fi
+
+  # Verify the checksum: the signed list when minisign can check it, else the manifest's,
+  # else the release's published checksums file. main fetched and checked that file once.
+  info "Verifying checksum..."
+  expected="$EXPECTED"
+  if [ -n "$SIGNED_LIST" ]; then
+    expected=""
+  fi
+  SUMS="$RELTMP/checksums-sha256.txt"
+  if [ -z "$expected" ] && [ ! -s "$SUMS" ]; then
+    download "$BASE_URL/checksums-sha256.txt" "$SUMS" \
+      || err "failed to download checksums-sha256.txt"
+  fi
+  if [ -z "$expected" ]; then
+    # Exact filename match (field 2), not a regex — the archive name contains '.'
+    # which would otherwise act as a wildcard.
+    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$SUMS")"
+  fi
+  [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
+  actual="$(sha256_of "$tmp/$ARCHIVE")"
+  [ "$expected" = "$actual" ] \
+    || err "checksum mismatch for $ARCHIVE (expected $expected, got $actual)"
+
+  if [ "$MAC_APP" = 1 ]; then
+    install_macos_app
+    # No install marker: a binary inside Kimun.app is the Bundle channel, found from its
+    # path. A marker would also overwrite the terminal app's.
+    # An older install put a raw kimun-gui in $INSTALL_DIR (and wrote the marker). Left in
+    # place it would be a second, diverging copy that still updates itself.
+    if [ -e "$INSTALL_DIR/kimun-gui" ] || [ -L "$INSTALL_DIR/kimun-gui" ]; then
+      rm -f "$INSTALL_DIR/kimun-gui" && info "Removed the old binary $INSTALL_DIR/kimun-gui: Kimun.app replaces it"
+      # The marker goes with it unless the terminal app is still there or it names another dir.
+      old_mdir="$(marker_dir)"; old_mdir="${old_mdir%/}"
+      if [ -f "$MARKER" ] && [ ! -e "$INSTALL_DIR/kimun" ] \
+        && { [ -z "$old_mdir" ] || [ "$old_mdir" = "${INSTALL_DIR%/}" ]; }; then
+        rm -f "$MARKER" && info "Removed the old install marker $MARKER"
+      fi
+    fi
+    info "Open Kimun from Launchpad or Spotlight, or run: open -a Kimun"
+    return 0
+  fi
+
+  # Extract the binary.
+  info "Extracting..."
+  tar -xzf "$tmp/$ARCHIVE" -C "$tmp" || err "failed to extract $ARCHIVE"
+  [ -f "$tmp/$BIN" ] || err "binary '$BIN' not found in archive"
+  chmod +x "$tmp/$BIN"
+
+  # Install.
+  mkdir -p "$INSTALL_DIR" || err "could not create install dir: $INSTALL_DIR"
+  mv -f "$tmp/$BIN" "$INSTALL_DIR/$BIN" \
+    || err "could not install to $INSTALL_DIR (is it writable?)"
+  info "Installed $BIN to $INSTALL_DIR/$BIN"
+  install_desktop_files
+
+  # Write the install marker (the "script" channel contract read by the app).
+  mkdir -p "$CONFIG_DIR" || err "could not create config dir: $CONFIG_DIR"
+  cat > "$MARKER" <<EOF
+# Kimün install marker — written by install.sh. Safe to delete; the app will
+# then fall back to detecting the install channel from the binary path.
+channel = "script"
+install_dir = "$INSTALL_DIR"
+version = "$VERSION"
+EOF
+  info "Wrote install marker: $MARKER"
+
+  if [ "$BIN" = "kimun-gui" ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+      info "This release has no macOS app, so this is the raw binary: run it from a terminal."
+    else
+      info "Open Kimün from your application menu, or run: $BIN"
+    fi
+  else
+    info "Run '$BIN' to start."
+  fi
 }
 
 main() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --gui) BIN="kimun-gui" ;;
+      --tui) WANT_TUI=1 ;;
+      --gui) WANT_GUI=1 ;;
       --uninstall) UNINSTALL=1 ;;
       -h | --help) usage; exit 0 ;;
       *) err "unknown option: $1 (try --help)" ;;
@@ -399,9 +539,52 @@ main() {
     shift
   done
 
+  # No option: both apps on a new install. When only one app is already installed, only that
+  # one is updated: a re-run of the update command must not add an app nobody asked for.
+  # Naming an app makes it required.
+  GUI_NAMED=$WANT_GUI
+  if [ "$WANT_TUI" = 0 ] && [ "$WANT_GUI" = 0 ] && [ "$UNINSTALL" = 0 ]; then
+    have_tui=0; have_gui=0
+    [ -e "$INSTALL_DIR/kimun" ] && have_tui=1
+    if [ -e "$INSTALL_DIR/kimun-gui" ] || [ -d "${KIMUN_APP_DIR:-$HOME/Applications}/Kimun.app" ]; then have_gui=1; fi
+    if [ "$have_tui" = 1 ] && [ "$have_gui" = 0 ]; then
+      WANT_TUI=1
+      info "Updating the terminal app. To add the desktop app: $GUI_RETRY"
+    elif [ "$have_gui" = 1 ] && [ "$have_tui" = 0 ]; then
+      WANT_GUI=1
+      GUI_NAMED=1
+      info "Updating the desktop app. To add the terminal app: ${GUI_RETRY%--gui}--tui"
+    fi
+  fi
+  if [ "$WANT_TUI" = 0 ] && [ "$WANT_GUI" = 0 ]; then
+    WANT_TUI=1
+    WANT_GUI=1
+  fi
+
   if [ "$UNINSTALL" = 1 ]; then
-    uninstall
+    ANY_REMOVED=0
+    resolve_uninstall_dir
+    if [ "$WANT_TUI" = 1 ]; then BIN=kimun; uninstall; fi
+    if [ "$WANT_GUI" = 1 ]; then BIN=kimun-gui; uninstall; fi
+    if [ "$ANY_REMOVED" = 0 ]; then
+      info "Nothing to remove: no app found in $UDIR."
+      # The app install leaves no marker, so a custom KIMUN_APP_DIR is not remembered.
+      if [ "$WANT_GUI" = 1 ] && [ "$(uname -s)" = Darwin ]; then
+        info "Kimun.app is not in ${KIMUN_APP_DIR:-$HOME/Applications}. If you installed it with KIMUN_APP_DIR, run the uninstall with the same KIMUN_APP_DIR."
+      fi
+    else
+      info "Done. Your notes and configuration in $CONFIG_DIR were not touched."
+    fi
     exit 0
+  fi
+
+  # A default run skips the desktop app where there is no desktop to open it: a Linux
+  # machine with neither an X nor a Wayland display (a server, an SSH session).
+  if [ "$GUI_NAMED" = 0 ] && [ "$WANT_GUI" = 1 ] && [ "$(uname -s)" = Linux ] \
+    && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    WANT_GUI=0
+    info "No display found (DISPLAY and WAYLAND_DISPLAY are empty): skipping the desktop app."
+    info "To install it anyway: $GUI_RETRY"
   fi
 
   check_tools
@@ -448,125 +631,54 @@ main() {
   # On macOS the desktop app is the .dmg when the release has one.
   BASE_URL="${KIMUN_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download/$TAG}"
 
-  tmp="$(mktemp -d)"
-  # cleanup runs on every exit. INT and TERM must exit, or the script would keep running
-  # after cleanup removed the temp dir and detached the .dmg.
-  trap cleanup EXIT
+
+  # The release's checksums file, fetched and checked once for both apps. RELTMP holds it.
+  RELTMP="$(mktemp -d)"
+  trap 'rm -rf "$RELTMP"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  verify_signature "$BASE_URL" "$RELTMP" "$([ -n "${KIMUN_VERSION:-}" ] && echo 1 || echo 0)"
 
-  MAC_APP=0
-  if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = "Darwin" ]; then
-    if fetch_archive "${BIN}-${VERSION}-${PLATFORM}.dmg" quiet; then
-      MAC_APP=1
+  # The terminal app first, and it must install. The desktop app is best effort in a
+  # default run: a failure is a warning and the terminal app stays. --gui names it: then
+  # it must install.
+  GUI_FAILED=0
+  if [ "$WANT_TUI" = 1 ]; then
+    ( install_one kimun )
+  fi
+  if [ "$WANT_GUI" = 1 ]; then
+    if [ "$GUI_NAMED" = 1 ]; then
+      ( install_one kimun-gui )
     else
-      # Fall back to the raw binary only when the release is confirmed to have no .dmg.
-      # Any other failure (network, a 5xx, a rate limit) must not change the install type.
-      rc=0; release_lists "$ARCHIVE" || rc=$?
-      case "$rc" in
-        1) warn "release $VERSION has no macOS app (.dmg): installing the raw binary instead" ;;
-        0) err "failed to download $ARCHIVE (it is listed in release $VERSION). Try again" ;;
-        *) err "failed to download $ARCHIVE, and could not check whether release $VERSION has one. Try again" ;;
-      esac
-    fi
-  fi
-
-  if [ "$MAC_APP" = 0 ] && ! fetch_archive "${BIN}-${VERSION}-${PLATFORM}.tar.gz"; then
-    # When the release is there (its checksums are) but this app's build for this system
-    # is not, say so, rather than a bare failed download.
-    rc=0; release_lists "$ARCHIVE" || rc=$?
-    if [ "$rc" = 1 ]; then
-      if [ "$BIN" = "kimun-gui" ]; then
-        err "release $VERSION has no desktop app build for $PLATFORM. Not every release has one yet: see https://github.com/$REPO/releases, or pin a release that does with KIMUN_VERSION"
-      fi
-      err "release $VERSION has no $BIN build for $PLATFORM (see https://github.com/$REPO/releases)"
-    fi
-    err "failed to download $ARCHIVE (is $VERSION a release?)"
-  fi
-
-  # Verify the checksum: the signed list when minisign can check it, else the manifest's,
-  # else the release's published checksums file.
-  info "Verifying checksum..."
-  expected="$EXPECTED"
-  verify_signature "$BASE_URL" "$tmp" "$([ -n "${KIMUN_VERSION:-}" ] && echo 1 || echo 0)"
-  if [ -n "$SIGNED_LIST" ]; then
-    expected=""
-    SUMS="$SIGNED_LIST"
-  else
-    SUMS="$tmp/checksums-sha256.txt"
-    if [ -z "$expected" ] && [ ! -s "$SUMS" ]; then
-      download "$BASE_URL/checksums-sha256.txt" "$SUMS" \
-        || err "failed to download checksums-sha256.txt"
-    fi
-  fi
-  if [ -z "$expected" ]; then
-    # Exact filename match (field 2), not a regex — the archive name contains '.'
-    # which would otherwise act as a wildcard.
-    expected="$(awk -v f="$ARCHIVE" '$2 == f { print $1 }' "$SUMS")"
-  fi
-  [ -n "$expected" ] || err "no checksum found for $ARCHIVE"
-  actual="$(sha256_of "$tmp/$ARCHIVE")"
-  [ "$expected" = "$actual" ] \
-    || err "checksum mismatch for $ARCHIVE (expected $expected, got $actual)"
-
-  if [ "$MAC_APP" = 1 ]; then
-    install_macos_app
-    # No install marker: a binary inside Kimun.app is the Bundle channel, found from its
-    # path. A marker would also overwrite the terminal app's.
-    # An older install put a raw kimun-gui in $INSTALL_DIR (and wrote the marker). Left in
-    # place it would be a second, diverging copy that still updates itself.
-    if [ -e "$INSTALL_DIR/kimun-gui" ] || [ -L "$INSTALL_DIR/kimun-gui" ]; then
-      rm -f "$INSTALL_DIR/kimun-gui" && info "Removed the old binary $INSTALL_DIR/kimun-gui: Kimun.app replaces it"
-      # The marker goes with it unless the terminal app is still there or it names another dir.
-      old_mdir="$(marker_dir)"; old_mdir="${old_mdir%/}"
-      if [ -f "$MARKER" ] && [ ! -e "$INSTALL_DIR/kimun" ] \
-        && { [ -z "$old_mdir" ] || [ "$old_mdir" = "${INSTALL_DIR%/}" ]; }; then
-        rm -f "$MARKER" && info "Removed the old install marker $MARKER"
+      # No -e around it: a failed subshell must not stop the script. Any failure counts,
+      # also one that printed nothing (a signal, a missing tool).
+      rc=0
+      ( install_one kimun-gui soft ) || rc=$?
+      if [ "$rc" != 0 ]; then
+        GUI_FAILED=1
+        warn "the desktop app was not installed (see the message above)."
+        info "To try it again: $GUI_RETRY"
       fi
     fi
-    info ""
-    info "Done. Open Kimun from Launchpad or Spotlight, or run: open -a Kimun"
-    return 0
   fi
 
-  # Extract the binary.
-  info "Extracting..."
-  tar -xzf "$tmp/$ARCHIVE" -C "$tmp" || err "failed to extract $ARCHIVE"
-  [ -f "$tmp/$BIN" ] || err "binary '$BIN' not found in archive"
-  chmod +x "$tmp/$BIN"
-
-  # Install.
-  mkdir -p "$INSTALL_DIR" || err "could not create install dir: $INSTALL_DIR"
-  mv -f "$tmp/$BIN" "$INSTALL_DIR/$BIN" \
-    || err "could not install to $INSTALL_DIR (is it writable?)"
-  info "Installed $BIN to $INSTALL_DIR/$BIN"
-  install_desktop_files
-
-  # Write the install marker (the "script" channel contract read by the app).
-  mkdir -p "$CONFIG_DIR" || err "could not create config dir: $CONFIG_DIR"
-  cat > "$MARKER" <<EOF
-# Kimün install marker — written by install.sh. Safe to delete; the app will
-# then fall back to detecting the install channel from the binary path.
-channel = "script"
-install_dir = "$INSTALL_DIR"
-version = "$VERSION"
-EOF
-  info "Wrote install marker: $MARKER"
-
-  # PATH check.
-  case ":$PATH:" in
-    *":$INSTALL_DIR:"*) : ;;
-    *)
-      info ""
-      info "NOTE: $INSTALL_DIR is not on your PATH. Add it, e.g.:"
-      info "  export PATH=\"$INSTALL_DIR:\$PATH\""
-      ;;
-  esac
+  # PATH check, once, when a binary went into the install dir.
+  if [ -e "$INSTALL_DIR/kimun" ] || [ -e "$INSTALL_DIR/kimun-gui" ]; then
+    case ":$PATH:" in
+      *":$INSTALL_DIR:"*) : ;;
+      *)
+        info ""
+        info "NOTE: $INSTALL_DIR is not on your PATH. Add it, e.g.:"
+        info "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        ;;
+    esac
+  fi
 
   info ""
-  info "Done. Run '$BIN' to start."
-  if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = "Darwin" ]; then
-    info "(This release has no macOS app, so this is the raw binary: run it from a terminal.)"
+  if [ "$GUI_FAILED" = 1 ]; then
+    info "Done, without the desktop app."
+  else
+    info "Done."
   fi
 }
 

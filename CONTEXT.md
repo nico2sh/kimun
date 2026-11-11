@@ -333,7 +333,8 @@ _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation resul
 
 **GUI**:
 The native desktop frontend built on GPUI (the `gpui-kit` crate), a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawers or slots, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
-_Avoid_: desktop app, egui app, GPUI app, GUI TUI (it is not a terminal emulator hosting the TUI).
+In text for end users, the GUI is the **desktop app** and the TUI is the **terminal app**. Installer output and the docs use these names for readers who do not know the acronyms. Code, ADRs and this glossary say GUI and TUI.
+_Avoid_: egui app, GPUI app, GUI TUI (it is not a terminal emulator hosting the TUI).
 
 **Logic layer**:
 A feature's state, rules and intents, free of any UI crate — it never names ratatui, crossterm, egui or gpui, enforced by a CI grep over the whole tree. Takes intents, exposes state; knows nothing of how it is drawn or which key produced the intent. The **TUI** and the **GUI** each wrap it in a **Renderer**.

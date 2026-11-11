@@ -11,17 +11,19 @@ Kimün also has a desktop app, `kimun-gui`. It is a native window. It uses the s
 
 ## Install and run
 
-On macOS and Linux, run the install script with `--gui`:
+On macOS and Linux, the install script installs the desktop app together with the terminal app:
 
 ```sh
-curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --gui
+curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
+
+To install only the desktop app, add `-s -- --gui` after `sh`. On a Linux machine with no display, the script skips the desktop app unless you use `--gui`.
 
 On Linux, the script also adds the app to your application menu. It creates a launcher entry and icons under `~/.local/share`. On macOS, the script installs the signed `Kimun.app` in `~/Applications`. Open it from Launchpad or Spotlight. You can also download the signed `kimun-gui-<version>-<platform>.dmg` from the [releases page](https://github.com/nico2sh/kimun/releases) and drag Kimün to Applications.
 
 On Linux, the script installs into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. It also leaves an install marker, so the app can update itself. On macOS, set `KIMUN_APP_DIR` to install `Kimun.app` in another folder. The app does not update itself in place there. To update it, run the script again. On both systems, the script makes sure that the checksum of the download is correct. The app can sit beside the terminal app.
 
-On Windows, run the PowerShell installer with `-Gui`:
+On Windows, the PowerShell installer installs both apps too. To install only the desktop app, run it with `-Gui`:
 
 ```powershell
 & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui
