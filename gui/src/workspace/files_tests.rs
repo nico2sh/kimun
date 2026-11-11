@@ -221,6 +221,54 @@ fn an_empty_history_lists_the_root(cx: &mut TestAppContext) {
 
 // ── keys ─────────────────────────────────────────────────────────────────
 
+/// Page Down and Page Up move the selection one page (the rows the list
+/// shows) while the filter has the keyboard, clamped at either end; with a
+/// modifier they do nothing to the list.
+#[gpui_kit::test]
+fn page_keys_move_the_files_selection_one_page(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let names: Vec<(String, String)> = (0..60)
+        .map(|i| (format!("n{i:02}.md"), format!("Note {i}")))
+        .collect();
+    let notes: Vec<(&str, &str)> = names
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    let v = rt.block_on(test_vault(&notes, &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("n00.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Note 0" && started.listed(cx)
+    });
+    focus_files(&started, cx);
+    cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let pos = |cx: &TestAppContext| started.files(cx, |pane| pane.model().core()?.selected());
+    let page = started.files(cx, |pane| pane.page());
+    assert!(page > 1, "the list shows several rows ({page})");
+    let from = pos(cx).unwrap();
+    let last = started.rows(cx).len() - 1;
+    started.press_key("pagedown", cx);
+    assert_eq!(pos(cx), Some(from + page));
+    started.press_key("shift-pagedown", cx);
+    assert_eq!(pos(cx), Some(from + page), "a modifier: nothing");
+    for _ in 0..10 {
+        started.press_key("pagedown", cx);
+    }
+    assert_eq!(pos(cx), Some(last), "stops on the last row");
+    started.press_key("pageup", cx);
+    assert_eq!(pos(cx), Some(last - page));
+    for _ in 0..10 {
+        started.press_key("pageup", cx);
+    }
+    assert_eq!(pos(cx), Some(0), "stops on the first row");
+    assert_eq!(started.focused(cx), Panel::Drawer(Side::Left));
+}
+
 /// Up/Down move the selection; Enter on a note opens it, gives the editor
 /// the keyboard, and the marker follows the open note.
 #[gpui_kit::test]

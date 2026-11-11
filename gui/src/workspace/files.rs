@@ -9,7 +9,8 @@
 //! [`InputState`] and is handed to the model on every change.
 //!
 //! **Keys.** The filter has the keyboard while FILES has it, so typing
-//! filters. Up/Down move the selection and Enter activates it; Left goes up a folder while the filter is empty (it moves the caret otherwise);
+//! filters. Up/Down move the selection, Page Up/Page Down move it a page
+//! (the rows the list shows) and Enter activates it; Left goes up a folder while the filter is empty (it moves the caret otherwise);
 //! Escape clears the filter, then gives the keyboard back to the editor.
 //! These are the filter's own actions, caught on their way to it.
 //!
@@ -34,7 +35,8 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::input::{
-    Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MoveUp,
+    Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MovePageDown,
+    MovePageUp, MoveUp,
 };
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -57,6 +59,7 @@ use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
+use super::drawer_list::{page_of, page_target};
 use super::file_dialogs::FileOpKind;
 use super::query_field::query_field;
 use super::sort::{chip_label, sort_chip};
@@ -457,6 +460,24 @@ impl FilesPane {
         }
         self.reveal_selection();
         cx.notify();
+    }
+
+    /// Move the selection one page down (`down`) or up: the rows the list
+    /// shows, clamped to the ends.
+    fn select_page(&mut self, down: bool, cx: &mut Context<Self>) {
+        let page = self.page();
+        if let Some(core) = self.model.core_mut() {
+            let to = page_target(core.selected(), core.visible_len(), page, down);
+            core.move_selection(to);
+        }
+        self.reveal_selection();
+        cx.notify();
+    }
+
+    /// The rows a page holds, as last laid out.
+    pub(super) fn page(&self) -> usize {
+        let len = self.model.core().map_or(0, |core| core.visible_len());
+        page_of(&self.scroll, len)
     }
 
     fn reveal_selection(&self) {
@@ -1046,6 +1067,14 @@ impl Render for FilesPane {
             }))
             .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
                 this.select_next(cx);
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageUp, _, cx| {
+                this.select_page(false, cx);
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageDown, _, cx| {
+                this.select_page(true, cx);
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(|this, _: &Enter, window, cx| {

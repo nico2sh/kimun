@@ -871,6 +871,12 @@ fn the_reader_grows_and_reuses_a_read_note(cx: &mut TestAppContext) {
     assert_eq!(reader_state(&started, cx), (false, false, true));
     press(&started, "down", cx);
     assert_eq!(selected_row(&started, cx), Some(1), "Down scrolls in Full");
+    press(&started, "pageup", cx);
+    assert_eq!(
+        selected_row(&started, cx),
+        Some(1),
+        "Page Up leaves the hidden list alone in Full"
+    );
     assert!(focused(&started, LIST_ROWS_ID, cx));
     press(&started, "left", cx);
     press(&started, "left", cx);

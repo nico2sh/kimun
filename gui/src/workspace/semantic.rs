@@ -451,7 +451,8 @@ impl SemanticView {
     // ---- Keys ------------------------------------------------------------------
 
     /// Keys the results must see before the list does: in Full, Up/Down
-    /// scroll the preview; Up on the first row (or with none selected)
+    /// scroll the preview and Page Up/Page Down do nothing (the list is
+    /// hidden); Up on the first row (or with none selected)
     /// returns to the field. True when the key was taken.
     fn capture_key(
         &mut self,
@@ -463,12 +464,18 @@ impl SemanticView {
             && self.list_focused(window, cx)
             && let Some(key) = input::key_down_input(event)
             && key.mods == Mods::NONE
-            && matches!(key.key, Key::Up | Key::Down)
         {
-            let rows = if key.key == Key::Up { -1 } else { 1 };
-            self.preview
-                .update(cx, |preview, cx| preview.scroll_rows(rows, cx));
-            return true;
+            match key.key {
+                Key::Up | Key::Down => {
+                    let rows = if key.key == Key::Up { -1 } else { 1 };
+                    self.preview
+                        .update(cx, |preview, cx| preview.scroll_rows(rows, cx));
+                    return true;
+                }
+                // The list is hidden: the page keys must not move it.
+                Key::PageUp | Key::PageDown => return true,
+                _ => {}
+            }
         }
         query_field::up_returns_to_field(&self.list, &self.input, event, window, cx)
     }
