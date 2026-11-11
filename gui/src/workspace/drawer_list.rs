@@ -497,10 +497,13 @@ impl<R: DrawerRow> DrawerList<R> {
     /// Move the selection one page down (`down`) or up: the rows the list
     /// shows ([`page_of`]), clamped to the ends.
     fn page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let page = page_of(&self.scroll, self.len());
+        let Some(len) = self.core.as_ref().map(|core| core.visible_len()) else {
+            return;
+        };
+        let page = page_of(&self.scroll, len);
         self.select(
             |core| {
-                let to = page_target(core.selected(), core.visible_len(), page, down);
+                let to = page_target(core.selected(), len, page, down);
                 core.move_selection(to);
             },
             cx,
