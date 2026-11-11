@@ -129,8 +129,12 @@ jobs:
             echo "::notice::no Apple signing secrets: no macOS .dmg is built; the raw macOS binary ships unsigned"
           fi
 
+      # Bounded: two Apple submissions, each waits up to 40 minutes at most
+      # (macos-sign.sh). A stuck call fails the step and does not hold the runner for the
+      # 6-hour default.
       - name: Sign, notarize and package the macOS app
         if: steps.apple.outputs.ready == 'true'
+        timeout-minutes: 120
         env:
           VERSION: ${{ steps.appver.outputs.version }}
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}

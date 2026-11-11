@@ -18,6 +18,11 @@
 #   APPLE_NOTARY_KEY_ID      its key id
 #   APPLE_NOTARY_ISSUER_ID   the issuer id
 #
+# NOTARY_WAIT_MINUTES (default 40) is how long to wait for Apple's answer to one
+# submission. The upload is bounded too (NOTARY_UPLOAD_MINUTES, default 15), and so is
+# each codesign call. Without bounds a stuck call holds the runner for six hours and the
+# log stays empty: every step prints a "==>" line first, so the log names the last one.
+#
 # SIGN_DRY_RUN=1 prints each Apple command (secrets masked) instead of running it:
 # the sequence is tested that way on any machine.
 set -euo pipefail
@@ -48,6 +53,29 @@ mask() { # stdin -> stdout, secrets replaced
     printf '%s\n' "$line"
   done
 }
+say() { printf '==> %s\n' "$*"; }
+
+# with_timeout SECONDS COMMAND...: run COMMAND, kill it after SECONDS (macOS has no
+# `timeout`). Returns the command's status, or 124 when it was killed.
+with_timeout() {
+  local secs="$1" pid watcher rc=0 flag
+  shift
+  flag="$(mktemp)"
+  "$@" &
+  pid=$!
+  ( sleep "$secs"; echo 1 >"$flag"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  watcher=$!
+  wait "$pid" || rc=$?
+  pkill -P "$watcher" 2>/dev/null || true
+  kill "$watcher" 2>/dev/null || true
+  if [ -s "$flag" ]; then
+    rc=124
+    echo "::error::timed out after ${secs}s: ${*:1:3}" >&2
+  fi
+  rm -f "$flag"
+  return "$rc"
+}
+
 run() {
   if [ "$dry" = 1 ]; then
     echo "+ $*" | mask
@@ -59,6 +87,7 @@ run() {
 # --- the certificate, in its own keychain ---------------------------------------
 printf '%s' "$APPLE_CERT_P12" | base64 --decode >"$work/cert.p12"
 printf '%s' "$APPLE_NOTARY_KEY" | base64 --decode >"$work/notary.p8"
+say "importing the certificate into a throw-away keychain"
 run security create-keychain -p "$keychain_password" "$keychain"
 run security set-keychain-settings -lut 21600 "$keychain"
 run security unlock-keychain -p "$keychain_password" "$keychain"
@@ -72,31 +101,44 @@ else
 fi
 
 # Submit FILE to Apple and wait; anything but "Accepted" prints the log and fails.
+# Two calls, so the submission id is in the log as soon as the upload ends: if the wait
+# is slow, ask Apple about that id from any Mac (`xcrun notarytool info ID ...`).
 notarize() {
   local file="$1" result="$work/notarize.json" id status
+  local up_s=$(( ${NOTARY_UPLOAD_MINUTES:-15} * 60 )) wait_m="${NOTARY_WAIT_MINUTES:-40}"
   if [ "$dry" = 1 ]; then
-    echo "+ xcrun notarytool submit $file --key <key> --key-id $APPLE_NOTARY_KEY_ID --issuer $APPLE_NOTARY_ISSUER_ID --wait"
+    echo "+ xcrun notarytool submit $file --key <key> --key-id $APPLE_NOTARY_KEY_ID --issuer $APPLE_NOTARY_ISSUER_ID --verbose"
+    echo "+ xcrun notarytool wait <submission id> --timeout ${wait_m}m"
     return 0
   fi
-  # notarytool exits non-zero on an Invalid/Rejected result; under pipefail
-  # that would kill the script before the log below. Judge by the JSON status.
-  xcrun notarytool submit "$file" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
-    --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --output-format json | tee "$result" || true
+  say "uploading $(basename "$file") to Apple"
+  # notarytool exits non-zero on a failed submit; under pipefail that would kill the
+  # script before the message below. Judge by the JSON.
+  with_timeout "$up_s" xcrun notarytool submit "$file" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
+    --issuer "$APPLE_NOTARY_ISSUER_ID" --verbose --output-format json | tee "$result" || true
   id="$(jq -r '.id // empty' "$result" 2>/dev/null || true)"
+  [ -n "$id" ] || { echo "::error::the upload of $file gave no submission id" >&2; exit 1; }
+  say "submission id: $id (waiting up to ${wait_m} minutes)"
+  with_timeout $(( wait_m * 60 + 120 )) xcrun notarytool wait "$id" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
+    --issuer "$APPLE_NOTARY_ISSUER_ID" --timeout "${wait_m}m" --output-format json | tee "$result" || true
   status="$(jq -r '.status // "no result"' "$result" 2>/dev/null || echo "no result")"
   if [ "$status" != "Accepted" ]; then
-    [ -n "$id" ] || { echo "::error::notarization of $file failed before a submission id was issued ('$status')" >&2; exit 1; }
-    echo "::error::notarization of $file ended '$status'" >&2
+    echo "::error::notarization of $file ended '$status' (submission $id)" >&2
     xcrun notarytool log "$id" --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" >&2 || true
     exit 1
   fi
+  say "accepted: $(basename "$file")"
 }
 
 # --- the app --------------------------------------------------------------------
-run codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$app"
+say "signing the app"
+run with_timeout 300 codesign --force --options runtime --timestamp --verbose --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$app"
+say "checking the app's signature"
 run codesign --verify --strict --verbose=2 "$app"
+say "zipping the app"
 run ditto -c -k --keepParent "$app" "$work/app.zip"
 notarize "$work/app.zip"
+say "stapling the app"
 run xcrun stapler staple "$app"
 run xcrun stapler validate "$app"
 
@@ -106,9 +148,12 @@ mkdir -p "$stage"
 run cp -R "$app" "$stage/"
 run ln -s /Applications "$stage/Applications"
 mkdir -p "$(dirname "$out")"
+say "building the .dmg"
 run hdiutil create -volname "Kimün" -srcfolder "$stage" -ov -format UDZO "$out"
-run codesign --force --timestamp --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$out"
+say "signing the .dmg"
+run with_timeout 300 codesign --force --timestamp --verbose --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$out"
 notarize "$out"
+say "stapling the .dmg"
 run xcrun stapler staple "$out"
 run xcrun stapler validate "$out"
 run spctl --assess --type open --context context:primary-signature --verbose=2 "$out"
