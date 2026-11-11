@@ -23,6 +23,10 @@ name: release
 jobs:
   build:
     strategy:
+      # Every platform finishes. One flaky runner (an apt mirror outage on Linux)
+      # must not cancel the others, least of all the slow macOS signing jobs.
+      # create-release still needs all of them to pass.
+      fail-fast: false
       matrix:
         include:
           # `platform` is the release asset platform string; it flows through
