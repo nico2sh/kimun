@@ -233,8 +233,12 @@ The FIND **drawer view**: a query input over the list of notes matching the acti
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 **Preview pane**:
-The note-preview surface the **Query panel** and the **Sources view** show for their selected row, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
+The note-preview surface the **Query panel**, the **Sources view** and the SEM view show for their selected row, owning one expand state — **Collapsed** (list only), **Context** (half-height preview below the list), **Full** (preview takes the whole panel) — and the content scroll. The scroll is either *anchored* (the render places it on the first needle match each frame; SEM anchors on the matched section instead) or *user-owned* once a wheel/key tick moves it; a query edit re-arms the anchor. Context sticks across selection moves (re-anchoring on the new row); Full and a vanished selection collapse. Composed by the panel (which keeps the result list and the engine's wheel-routing region), so the scroll/anchor state machine is testable without a vault.
 _Avoid_: expand state (names one field), content view, preview widget.
+
+**Expand chevron**:
+The one pointer control every expandable result list shares for its **Preview pane**, drawn on the selected row and on the hovered row (never on other rows) and pointing the way of the arrow key that takes the next step: right while the pane can grow (Collapsed, Context), left once it is Full. Clicking it selects its row and steps the pane; it never opens the note, whatever the list's click does. The open pane's header carries the same control. Together the two replace every per-list button for the same job.
+_Avoid_: expand button, preview button, row action (the general hover-label mechanism the chevron replaces for this job).
 
 ### Editor input
 
