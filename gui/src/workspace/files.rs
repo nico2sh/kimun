@@ -156,10 +156,10 @@ pub(crate) struct FilesPane {
     note_counts: (VaultPath, NoteCounts),
     /// The counts are read: until then a folder's second line is blank.
     counts_loaded: bool,
-    /// Counts a load finished with, taken up by [`Self::poll`] on the UI
-    /// thread, each with the folder it was loaded for.
     /// The newest count load started: older ones are dropped.
     counts_gen: u64,
+    /// Counts a load finished with, taken up by [`Self::poll`] on the UI
+    /// thread, each with the folder and the generation it was loaded for.
     counts_inbox: Arc<Mutex<Vec<(VaultPath, u64, NoteCounts)>>>,
     _filter_events: Subscription,
 }
@@ -280,21 +280,36 @@ impl FilesPane {
 
     /// Something changed in `dir`: list it again if it is the one shown.
     pub(crate) fn refresh_if_showing(&mut self, dir: &VaultPath, cx: &mut Context<Self>) {
-        if dir.is_like(self.model.current_dir()) {
+        self.changed_in(&[dir], false, cx);
+    }
+
+    /// Something changed in each of `dirs` (one file operation): the shown
+    /// folder is listed again if it is one of them, and its counts are read
+    /// again, once, if one of them is the shown folder or (`below`) a folder
+    /// under it, whose notes count in a folder row of this listing.
+    fn changed_in(&mut self, dirs: &[&VaultPath], below: bool, cx: &mut Context<Self>) {
+        let shown = self.model.current_dir().clone();
+        let showing = dirs.iter().find(|dir| dir.is_like(&shown));
+        let under = below
+            && !self.model.is_empty()
+            && dirs.iter().any(|dir| shown.is_ancestor_of(dir));
+        if let Some(dir) = showing {
             self.model.refresh_if_showing(dir, &self.tx);
+        }
+        if showing.is_some() || under {
             self.load_counts();
+        }
+        if showing.is_some() {
             self.after_rebuild(cx);
+        } else if under {
+            cx.notify();
         }
     }
 
-    /// Something changed in `dir`, a folder at or below the one shown: its
-    /// notes count in a folder row of this listing, so read the counts again.
-    /// (A change in the shown folder itself already did, through
-    /// [`Self::refresh_if_showing`]; one more load is harmless, the newest
-    /// wins.)
-    fn reload_counts_under(&mut self, dir: &VaultPath, cx: &mut Context<Self>) {
-        let shown = self.model.current_dir();
-        if !self.model.is_empty() && shown.is_ancestor_of(dir) {
+    /// The index changed under the listing (indexing finished): read the
+    /// shown folder's counts again. Nothing before the first listing.
+    pub(crate) fn reload_counts(&mut self, cx: &mut Context<Self>) {
+        if !self.model.is_empty() {
             self.load_counts();
             cx.notify();
         }
@@ -464,15 +479,13 @@ impl FilesPane {
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {
-                self.refresh_if_showing(&path.get_parent_path().0, cx);
-                self.reload_counts_under(&path.get_parent_path().0, cx);
+                self.changed_in(&[&path.get_parent_path().0], true, cx);
             }
-            // Gone from one folder, arrived in another: either may be shown.
+            // Gone from one folder, arrived in another: either may be shown,
+            // or under the one shown.
             FileOp::Moved { from, to } => {
-                self.refresh_if_showing(&from.get_parent_path().0, cx);
-                self.refresh_if_showing(&to.get_parent_path().0, cx);
-                self.reload_counts_under(&from.get_parent_path().0, cx);
-                self.reload_counts_under(&to.get_parent_path().0, cx);
+                let (from, to) = (from.get_parent_path().0, to.get_parent_path().0);
+                self.changed_in(&[&from, &to], true, cx);
             }
             FileOp::Renamed { from, to } if from.is_note() => {
                 self.model.rename_note_row(from, to);
@@ -1205,6 +1218,13 @@ impl Workspace {
     pub(super) fn poll_files(&mut self, cx: &mut Context<Self>) {
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, cx| pane.poll(cx));
+        }
+    }
+
+    /// Indexing finished: FILES' counts, read while it ran, are read again.
+    pub(super) fn files_reload_counts(&mut self, cx: &mut Context<Self>) {
+        if let Some(files) = self.files.as_ref() {
+            files.update(cx, |pane, cx| pane.reload_counts(cx));
         }
     }
 

@@ -1026,10 +1026,12 @@ impl Workspace {
                 self.status.indexing = false;
                 match result {
                     // A note opened while the index caught up counted its
-                    // backlinks against the old one; so did LINKS.
+                    // backlinks against the old one; so did LINKS, and
+                    // FILES its folders' note counts.
                     Ok(_) => {
                         self.refresh_note_counts();
                         self.invalidate_views(cx);
+                        self.files_reload_counts(cx);
                     }
                     Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
                 }

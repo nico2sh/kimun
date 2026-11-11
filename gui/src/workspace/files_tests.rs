@@ -1007,6 +1007,73 @@ fn counts_reload_when_a_note_moves_between_child_folders(cx: &mut TestAppContext
     });
 }
 
+/// One file operation starts one count load, even a move between two child
+/// folders of the folder shown (both ends are under it); both counts still
+/// update.
+#[gpui_kit::test]
+fn a_move_between_child_folders_starts_one_count_load(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[
+            ("top.md", "Top"),
+            ("one/a.md", "A"),
+            ("one/b.md", "B"),
+            ("two/c.md", "C"),
+        ],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("top.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Top" && started.listed(cx)
+    });
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("2 notes")
+            && started.second_line("two/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.rename_note(&path("one/a.md"), &path("two/a.md")))
+        .unwrap();
+    let files = cx.read(|cx| started.workspace.read(cx).files.clone().unwrap());
+    let before = files.read_with(cx, |pane, _| pane.counts_generation());
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Moved {
+            from: path("one/a.md"),
+            to: path("two/a.md"),
+        }),
+        cx,
+    );
+    let after = files.read_with(cx, |pane, _| pane.counts_generation());
+    assert_eq!(after - before, 1, "one load for the whole move");
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("1 note")
+            && started.second_line("two/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// A workspace can open while its index is still building: the counts read
+/// then are read again when indexing finishes.
+#[gpui_kit::test]
+fn counts_reload_when_indexing_finishes(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        !started.indexing(cx) && started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    // The index changes behind FILES' back (no file operation reaches it).
+    rt.block_on(v.vault.create_note(&path("sub/deeper/d.md"), "Delta"))
+        .unwrap();
+    send(&started, AppMessage::IndexingDone(Ok(Default::default())), cx);
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("2 notes")
+    });
+}
+
 /// Loads of one folder can end out of order: an older one never replaces
 /// the result of a newer one.
 #[gpui_kit::test]
