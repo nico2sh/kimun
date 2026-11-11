@@ -9,17 +9,17 @@ use std::sync::Arc;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Bounds, Context, Div, Entity, InputEvent as _, InteractiveElement as _,
+    AppContext as _, Bounds, Context, Div, Entity, Hsla, InputEvent as _, InteractiveElement as _,
     IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels,
-    Render, SharedString, Stateful, Styled as _, TestAppContext, VisualTestContext, Window, div,
-    px,
+    Render, Rgba, SharedString, Stateful, StyleRefinement, Styled as _, TestAppContext,
+    VisualTestContext, Window, div, px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::list::ListRow;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::chevron::{CHEVRON_REMS, ChevronLook, Reach};
+use super::chevron::{CHEVRON_REMS, ChevronLook, Reach, chevron, chevron_hover};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
 use super::result_row::{ROW_REMS, result_row, score_id};
@@ -331,7 +331,12 @@ fn chevron_does_not_cover_the_first_line_of_a_three_line_row(cx: &mut TestAppCon
         !chevron.intersects(&score),
         "the chevron {chevron:?} covers the score {score:?}"
     );
-    assert!(score.bottom() <= chevron.top(), "{score:?} {chevron:?}");
+    // At 16 px a rem: the score's line box ends at 20 px, the 18 px button
+    // spans 21 to 39 px of the 60 px row; a gap, not just no overlap.
+    assert!(
+        chevron.top() - score.bottom() >= px(1.),
+        "no gap between {score:?} and {chevron:?}"
+    );
     // Compact, centred, at the right end, inside the row.
     assert_eq!(chevron.size.width, rem * CHEVRON_REMS);
     assert_eq!(chevron.size.height, rem * CHEVRON_REMS);
@@ -346,22 +351,121 @@ fn chevron_does_not_cover_the_first_line_of_a_three_line_row(cx: &mut TestAppCon
     );
 }
 
-/// The clickable area shows: the button has a fill and a hairline border
-/// from the theme at rest, a stronger fill and the text colour under the
-/// pointer. Read off [`ChevronLook`], the colours [`chevron`] draws with
-/// (the test window cannot read styles back), for every built-in theme.
+/// The least distance two colours must keep to read as different here:
+/// the straight-line distance between them in sRGB, each channel 0 to 1
+/// (black to white is about 1.73). 0.05 is a little more than a step of
+/// 12 of 255 on every channel: clearly visible, while the theme's own
+/// hover tint lies about 0.05 to 0.1 off the panel.
+const MIN_DISTANCE: f32 = 0.05;
+
+fn distance(a: Rgba, b: Rgba) -> f32 {
+    ((a.r - b.r).powi(2) + (a.g - b.g).powi(2) + (a.b - b.b).powi(2)).sqrt()
+}
+
+/// `color` as drawn over the opaque `under`.
+fn over(color: Rgba, under: Rgba) -> Rgba {
+    let mix = |c: f32, u: f32| u + (c - u) * color.a;
+    Rgba {
+        r: mix(color.r, under.r),
+        g: mix(color.g, under.g),
+        b: mix(color.b, under.b),
+        a: 1.,
+    }
+}
+
+/// The button reads as clickable on a selected row and on a hovered row in
+/// every built-in theme: its fill, its hover fill and its border, as drawn
+/// over either row, stand off both rows' fills, and the border and the
+/// hover fill stand off the rest fill, by [`MIN_DISTANCE`] at least.
+#[test]
+fn chevron_reads_as_clickable_on_every_row() {
+    for t in Theme::builtins() {
+        let look = ChevronLook::of(&t);
+        let rows = [
+            ("hovered", theme::hover_background(&t)),
+            ("selected", theme::selected_background(&t)),
+        ];
+        for (kind, under) in rows {
+            let (fill, hover, border) = (
+                over(look.fill, under),
+                over(look.hover_fill, under),
+                over(look.border, under),
+            );
+            for (part, color) in [("fill", fill), ("hover fill", hover), ("border", border)] {
+                for (other, row) in rows {
+                    let gap = distance(color, row);
+                    assert!(
+                        gap >= MIN_DISTANCE,
+                        "{}: the {part} on a {kind} row is {gap:.3} off a {other} row",
+                        t.name
+                    );
+                }
+            }
+            let gap = distance(border, fill);
+            assert!(
+                gap >= MIN_DISTANCE,
+                "{}: border {gap:.3} off the fill ({kind})",
+                t.name
+            );
+            let gap = distance(hover, fill);
+            assert!(
+                gap >= MIN_DISTANCE,
+                "{}: hover {gap:.3} off the fill ({kind})",
+                t.name
+            );
+        }
+    }
+}
+
+/// The element [`chevron`] returns carries the [`ChevronLook`]: a fill, a
+/// border of a real width in the border colour, the glyph colour; and the
+/// hover refinement it installs ([`chevron_hover`]) swaps in the stronger
+/// fill and the text colour.
 #[test]
 fn chevron_button_has_a_visible_surface() {
     for t in Theme::builtins() {
         let look = ChevronLook::of(&t);
         let name = &t.name;
-        assert_eq!(look.fill, theme::hover_background(&t), "{name}");
-        assert_eq!(look.border, theme::divider(&t), "{name}");
-        assert_eq!(look.glyph, theme::secondary(&t), "{name}");
-        assert_eq!(look.hover_fill, theme::selected_background(&t), "{name}");
-        assert_eq!(look.hover_glyph, theme::foreground(&t), "{name}");
-        assert!(look.fill.a > 0. && look.border.a > 0., "{name}: {look:?}");
-        assert_ne!(look.hover_fill, look.fill, "{name}: the hover is stronger");
+        let mut button = chevron("chevron-style".into(), Reach::Grow, &t);
+        let style = button.style();
+        let fill = style.background.as_ref().and_then(|fill| fill.color());
+        assert_eq!(
+            fill.and_then(|fill| fill.as_solid()),
+            Some(Hsla::from(look.fill)),
+            "{name}: fill"
+        );
+        assert_eq!(style.border_color, Some(Hsla::from(look.border)), "{name}");
+        let widths = &style.border_widths;
+        for (side, width) in [
+            ("top", widths.top),
+            ("right", widths.right),
+            ("bottom", widths.bottom),
+            ("left", widths.left),
+        ] {
+            let width = width.map(|width| width.to_pixels(px(16.)));
+            assert!(
+                width.is_some_and(|width| width > px(0.)),
+                "{name}: {side} border {width:?}"
+            );
+        }
+        assert_eq!(
+            style.text.color,
+            Some(Hsla::from(look.glyph)),
+            "{name}: glyph"
+        );
+
+        let hover = chevron_hover(look, StyleRefinement::default());
+        let fill = hover.background.as_ref().and_then(|fill| fill.color());
+        assert_eq!(
+            fill.and_then(|fill| fill.as_solid()),
+            Some(Hsla::from(look.hover_fill)),
+            "{name}: hover fill"
+        );
+        assert_eq!(
+            hover.text.color,
+            Some(Hsla::from(look.hover_glyph)),
+            "{name}: hover glyph"
+        );
     }
 }
 

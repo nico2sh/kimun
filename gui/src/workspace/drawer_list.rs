@@ -288,9 +288,9 @@ impl<R: DrawerRow> DrawerList<R> {
     }
 
     /// Show the expand chevron stepping `reach` on the selected and the
-    /// hovered row from now on, or (`None`) none. A click on it reaches the owner as
-    /// `Verb(row, EXPAND)`; the owner then gives the list the keyboard
-    /// ([`EXPAND`]).
+    /// hovered row from now on, or (`None`) none. A click on it reaches
+    /// the owner as `Verb(row, EXPAND)`; the owner then gives the list the
+    /// keyboard ([`EXPAND`]).
     pub(crate) fn set_chevron(&mut self, reach: Option<Reach>, cx: &mut Context<Self>) {
         if self.chevron != reach {
             self.chevron = reach;
