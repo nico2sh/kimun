@@ -1,5 +1,7 @@
 //! Tests for the **Expand chevron** ([`super::chevron`]) on a bare drawer
-//! list: which rows draw it, and what a click on it does (and does not do).
+//! list: which rows draw its zone, where the zone sits and how it looks,
+//! where a row's score goes now that the zone covers the row's right end,
+//! and what a click on the zone does (and does not do).
 #![cfg(test)]
 
 use std::cell::RefCell;
@@ -12,17 +14,19 @@ use gpui_kit::{
     AppContext as _, Bounds, Context, Div, Entity, Hsla, InputEvent as _, InteractiveElement as _,
     IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels,
     Render, Rgba, SharedString, Stateful, StyleRefinement, Styled as _, TestAppContext,
-    VisualTestContext, Window, div, px,
+    VisualTestContext, Window, div, px, size,
 };
 use kimun_core::nfs::VaultPath;
+use kimun_notes::ask::AskSource;
 use kimun_notes::logic::list::ListRow;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::chevron::{CHEVRON_REMS, ChevronLook, Reach, chevron, chevron_hover};
+use super::ask_sources::SourceRow;
+use super::chevron::{ChevronLook, Reach, ZONE_REMS, chevron, chevron_hover, preview_header};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
-use super::result_row::{ROW_REMS, result_row, score_id};
+use super::result_row::{ROW_REMS, result_row, score_id, title_id};
 use crate::theme;
 
 #[derive(Debug, Clone)]
@@ -155,7 +159,7 @@ fn reach_is_grow_until_full() {
 /// At rest only the selected row draws the chevron; the hovered row draws
 /// it too; a list with no chevron draws none, and Shrink names itself.
 #[gpui_kit::test]
-fn chevron_shows_on_selected_row_only_at_rest(cx: &mut TestAppContext) {
+fn zone_shows_on_selected_and_hovered_rows_only(cx: &mut TestAppContext) {
     let (list, _, cx) = three_rows(cx, ClickPolicy::Select);
     let grow = Some(Reach::Grow.tooltip().to_string());
     assert_eq!(shown(0, cx), None);
@@ -188,7 +192,7 @@ fn chevron_shows_on_selected_row_only_at_rest(cx: &mut TestAppContext) {
 /// A click on another row's chevron selects that row, then sends it with
 /// [`EXPAND`]: nothing else.
 #[gpui_kit::test]
-fn chevron_click_selects_row_and_sends_expand_verb(cx: &mut TestAppContext) {
+fn zone_click_selects_row_and_sends_expand_verb(cx: &mut TestAppContext) {
     let (list, seen, cx) = three_rows(cx, ClickPolicy::Select);
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -213,7 +217,7 @@ fn chevron_click_selects_row_and_sends_expand_verb(cx: &mut TestAppContext) {
 /// Under `Open` a click on a row activates it, but a click on its chevron
 /// never does, and a double-click on it sends one verb and opens nothing.
 #[gpui_kit::test]
-fn chevron_click_does_not_activate_row(cx: &mut TestAppContext) {
+fn zone_click_does_not_open_the_note(cx: &mut TestAppContext) {
     let (list, seen, cx) = three_rows(cx, ClickPolicy::Open);
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -294,61 +298,223 @@ impl DrawerRow for Hit {
     }
 }
 
-struct HitHost {
-    list: Entity<DrawerList<Hit>>,
+/// A Sources view row, drawn by the real row: a heading long enough to be
+/// cut short.
+fn source(rank: usize) -> SourceRow {
+    SourceRow::new(
+        rank,
+        AskSource {
+            path: VaultPath::new("a-source.md"),
+            heading: "A heading long enough to reach the right end of its row, and then more"
+                .into(),
+            date: None,
+            score: 0.87,
+            text: "the chunk".into(),
+            ordinal: rank,
+        },
+    )
 }
 
-impl Render for HitHost {
+/// A list of `R` filling the window.
+struct ListHost<R: DrawerRow> {
+    list: Entity<DrawerList<R>>,
+}
+
+impl<R: DrawerRow> Render for ListHost<R> {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().size_full().flex().flex_col().child(self.list.clone())
     }
 }
 
-/// On a three-line row (FIND, SEM: 3.75 rem) the chevron is a compact
-/// button centred on the row: it leaves the first line's right end (SEM's
-/// score) uncovered.
-#[gpui_kit::test]
-fn chevron_does_not_cover_the_first_line_of_a_three_line_row(cx: &mut TestAppContext) {
+/// A list of `rows` filling the window, the first selected, the chevron on.
+fn list_of<R: DrawerRow>(
+    cx: &mut TestAppContext,
+    rows: Vec<R>,
+) -> (Entity<DrawerList<R>>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     let (host, cx) = cx.add_window_view(|_, cx| {
-        let list = cx.new(|cx| DrawerList::new("chevron-test-hits", "Hits", Arc::new(|| {}), cx));
-        HitHost { list }
+        let list = cx.new(|cx| DrawerList::new("chevron-test-list", "Rows", Arc::new(|| {}), cx));
+        ListHost { list }
     });
     let list = host.read_with(cx, |host, _| host.list.clone());
     list.update(cx, |list, cx| {
-        list.set_rows((0..2).map(Hit).collect(), "none", cx);
+        list.set_rows(rows, "none", cx);
         list.select_at(0, cx);
         list.set_chevron(Some(Reach::Grow), cx);
     });
     cx.run_until_parked();
+    (list, cx)
+}
+
+/// Move the pointer onto the element `id`.
+fn hover(id: SharedString, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.hover(id, cx);
+    });
+}
+
+/// Whether the last frame painted a quad over `zone` (layout pixels,
+/// within 1 px) with a left border and no other: the zone's divider, drawn
+/// where the layout put it.
+fn painted_divider_at(zone: Bounds<Pixels>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window.painted_quads().iter().any(|quad| {
+            let b = quad.bounds;
+            let near = |a: f32, b: Pixels| (a / scale - f32::from(b)).abs() <= 1.;
+            let w = quad.border_widths;
+            near(b.origin.x.0, zone.left())
+                && near(b.origin.y.0, zone.top())
+                && near(b.size.width.0, zone.size.width)
+                && near(b.size.height.0, zone.size.height)
+                && w.left.0 > 0.
+                && w.top.0 == 0.
+                && w.right.0 == 0.
+                && w.bottom.0 == 0.
+        })
+    })
+}
+
+/// The zone of the row `id` sits flush with the row's right end and runs
+/// its full height, [`ZONE_REMS`] wide, laid out and painted there: never
+/// at the row's left side.
+fn assert_flush_right(id: &SharedString, cx: &mut VisualTestContext) {
     let rem = cx.update(|window, _| window.rem_size());
-    let id = Hit(0).element_id();
     let row = bounds(id.clone(), cx).expect("row");
-    let score = bounds(score_id(&id), cx).expect("score");
-    let chevron = bounds(chevron_id(&id), cx).expect("chevron");
-    assert_eq!(row.size.height, rem * ROW_REMS, "a three-line row");
+    let zone = bounds(chevron_id(id), cx).expect("zone");
     assert!(
-        !chevron.intersects(&score),
-        "the chevron {chevron:?} covers the score {score:?}"
+        (zone.right() - row.right()).abs() <= px(1.),
+        "{id}: zone {zone:?} flush right in {row:?}"
     );
-    // At 16 px a rem: the score's line box ends at 20 px, the 18 px button
-    // spans 21 to 39 px of the 60 px row; a gap, not just no overlap.
     assert!(
-        chevron.top() - score.bottom() >= px(1.),
-        "no gap between {score:?} and {chevron:?}"
+        (zone.top() - row.top()).abs() <= px(1.)
+            && (zone.size.height - row.size.height).abs() <= px(1.),
+        "{id}: zone {zone:?} as tall as {row:?}"
     );
-    // Compact, centred, at the right end, inside the row.
-    assert_eq!(chevron.size.width, rem * CHEVRON_REMS);
-    assert_eq!(chevron.size.height, rem * CHEVRON_REMS);
     assert!(
-        (chevron.center().y - row.center().y).abs() <= px(1.),
-        "{chevron:?} centred on {row:?}"
+        (zone.size.width - rem * ZONE_REMS).abs() <= px(1.),
+        "{id}: zone {zone:?} {ZONE_REMS} rem wide"
     );
-    assert!(chevron.right() <= row.right(), "{chevron:?} in {row:?}");
     assert!(
-        chevron.left() > score.left(),
-        "{chevron:?} at the right end, {score:?}"
+        zone.left() > row.center().x,
+        "{id}: zone {zone:?} in the row's right half, {row:?}"
     );
+    assert!(
+        painted_divider_at(zone, cx),
+        "{id}: the divider painted at {zone:?}"
+    );
+}
+
+/// The zone of the selected row and of the hovered row, on a one-line row
+/// and on a three-line one (FIND, SEM), at the window's width and at a
+/// narrow one, and on the open preview's header: flush with the right end,
+/// as tall as the row (the header's line), at the right end once painted.
+#[gpui_kit::test]
+fn zone_is_flush_right_and_full_height(cx: &mut TestAppContext) {
+    let (_, _, cx) = three_rows(cx, ClickPolicy::Select);
+    assert_flush_right(&Row(1).element_id(), cx);
+    hover(Row(2).element_id(), cx);
+    assert_flush_right(&Row(2).element_id(), cx);
+    assert_flush_right(&Row(1).element_id(), cx);
+    cx.simulate_resize(size(px(320.), px(600.)));
+    cx.run_until_parked();
+    assert_flush_right(&Row(1).element_id(), cx);
+}
+
+#[gpui_kit::test]
+fn zone_is_flush_right_and_full_height_on_a_result_row(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, (0..3).map(Hit).collect());
+    let rem = cx.update(|window, _| window.rem_size());
+    let first = Hit(0).element_id();
+    assert_eq!(
+        bounds(first.clone(), cx).expect("row").size.height,
+        rem * ROW_REMS,
+        "a three-line row"
+    );
+    assert_flush_right(&first, cx);
+    hover(Hit(2).element_id(), cx);
+    assert_flush_right(&Hit(2).element_id(), cx);
+}
+
+/// The open preview's header, laid out as the views lay it out: a column
+/// above the preview.
+struct HeaderHost;
+
+const HEADER_ID: &str = "chevron-test-header";
+
+impl Render for HeaderHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current(cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                preview_header(HEADER_ID.into(), "A title".into(), Reach::Shrink, &t)
+                    .test_support(),
+            )
+            .child(div().flex_1())
+    }
+}
+
+#[gpui_kit::test]
+fn zone_is_flush_right_and_full_height_on_the_header(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|_, _| HeaderHost);
+    let header = SharedString::from(HEADER_ID);
+    assert_flush_right(&header, cx);
+    let title_room = bounds(header.clone(), cx).expect("header").size.width;
+    assert!(title_room > px(100.), "{title_room:?}");
+}
+
+/// The element [`chevron`] returns is the zone: a left border alone, in
+/// the divider colour; no fill at rest, the glyph in the dim text colour;
+/// under the pointer ([`chevron_hover`]) the faint fill and the text
+/// colour.
+#[test]
+fn zone_has_a_divider_on_its_left_edge() {
+    for t in Theme::builtins() {
+        let look = ChevronLook::of(&t);
+        let name = &t.name;
+        assert_eq!(look.glyph, theme::secondary(&t), "{name}: glyph token");
+        assert_eq!(look.hover_glyph, theme::foreground(&t), "{name}");
+        let mut zone = chevron("chevron-style".into(), Reach::Grow, &t);
+        let style = zone.style();
+        let widths = &style.border_widths;
+        let width = |side: Option<gpui_kit::AbsoluteLength>| {
+            side.map_or(px(0.), |width| width.to_pixels(px(16.)))
+        };
+        assert!(width(widths.left) > px(0.), "{name}: left border");
+        for (side, w) in [
+            ("top", widths.top),
+            ("right", widths.right),
+            ("bottom", widths.bottom),
+        ] {
+            assert_eq!(width(w), px(0.), "{name}: {side} border");
+        }
+        assert_eq!(style.border_color, Some(Hsla::from(look.divider)), "{name}");
+        assert!(style.background.is_none(), "{name}: no fill at rest");
+        assert_eq!(
+            style.text.color,
+            Some(Hsla::from(look.glyph)),
+            "{name}: glyph"
+        );
+
+        let hover = chevron_hover(look, StyleRefinement::default());
+        let fill = hover.background.as_ref().and_then(|fill| fill.color());
+        assert_eq!(
+            fill.and_then(|fill| fill.as_solid()),
+            Some(Hsla::from(look.hover_fill)),
+            "{name}: hover fill"
+        );
+        assert_eq!(
+            hover.text.color,
+            Some(Hsla::from(look.hover_glyph)),
+            "{name}: hover glyph"
+        );
+    }
 }
 
 /// The least distance two colours must keep to read as different here:
@@ -373,12 +539,13 @@ fn over(color: Rgba, under: Rgba) -> Rgba {
     }
 }
 
-/// The button reads as clickable on a selected row and on a hovered row in
-/// every built-in theme: its fill, its hover fill and its border, as drawn
-/// over either row, stand off both rows' fills, and the border and the
-/// hover fill stand off the rest fill, by [`MIN_DISTANCE`] at least.
+/// The zone reads on a selected row and on a hovered row in every built-in
+/// theme: its hover fill and its divider, each drawn over either row's
+/// fill, stand off that fill by [`MIN_DISTANCE`] at least. (Not off the
+/// other row's fill: the zone is never drawn over both at once, and a tint
+/// toward the text on the lighter fill may pass through the other one.)
 #[test]
-fn chevron_reads_as_clickable_on_every_row() {
+fn zone_reads_on_every_row() {
     for t in Theme::builtins() {
         let look = ChevronLook::of(&t);
         let rows = [
@@ -386,87 +553,87 @@ fn chevron_reads_as_clickable_on_every_row() {
             ("selected", theme::selected_background(&t)),
         ];
         for (kind, under) in rows {
-            let (fill, hover, border) = (
-                over(look.fill, under),
-                over(look.hover_fill, under),
-                over(look.border, under),
-            );
-            for (part, color) in [("fill", fill), ("hover fill", hover), ("border", border)] {
-                for (other, row) in rows {
-                    let gap = distance(color, row);
-                    assert!(
-                        gap >= MIN_DISTANCE,
-                        "{}: the {part} on a {kind} row is {gap:.3} off a {other} row",
-                        t.name
-                    );
-                }
+            for (part, color) in [("hover fill", look.hover_fill), ("divider", look.divider)] {
+                let gap = distance(over(color, under), under);
+                assert!(
+                    gap >= MIN_DISTANCE,
+                    "{}: the {part} on a {kind} row is {gap:.3} off it",
+                    t.name
+                );
             }
-            let gap = distance(border, fill);
-            assert!(
-                gap >= MIN_DISTANCE,
-                "{}: border {gap:.3} off the fill ({kind})",
-                t.name
-            );
-            let gap = distance(hover, fill);
-            assert!(
-                gap >= MIN_DISTANCE,
-                "{}: hover {gap:.3} off the fill ({kind})",
-                t.name
-            );
         }
     }
 }
 
-/// The element [`chevron`] returns carries the [`ChevronLook`]: a fill, a
-/// border of a real width in the border colour, the glyph colour; and the
-/// hover refinement it installs ([`chevron_hover`]) swaps in the stronger
-/// fill and the text colour.
-#[test]
-fn chevron_button_has_a_visible_surface() {
-    for t in Theme::builtins() {
-        let look = ChevronLook::of(&t);
-        let name = &t.name;
-        let mut button = chevron("chevron-style".into(), Reach::Grow, &t);
-        let style = button.style();
-        let fill = style.background.as_ref().and_then(|fill| fill.color());
-        assert_eq!(
-            fill.and_then(|fill| fill.as_solid()),
-            Some(Hsla::from(look.fill)),
-            "{name}: fill"
-        );
-        assert_eq!(style.border_color, Some(Hsla::from(look.border)), "{name}");
-        let widths = &style.border_widths;
-        for (side, width) in [
-            ("top", widths.top),
-            ("right", widths.right),
-            ("bottom", widths.bottom),
-            ("left", widths.left),
-        ] {
-            let width = width.map(|width| width.to_pixels(px(16.)));
-            assert!(
-                width.is_some_and(|width| width > px(0.)),
-                "{name}: {side} border {width:?}"
-            );
-        }
-        assert_eq!(
-            style.text.color,
-            Some(Hsla::from(look.glyph)),
-            "{name}: glyph"
-        );
+/// Where the row `id`'s title, score and zone lie.
+fn title_score_zone(
+    id: &SharedString,
+    cx: &mut VisualTestContext,
+) -> (Bounds<Pixels>, Bounds<Pixels>, Bounds<Pixels>) {
+    (
+        bounds(title_id(id), cx).expect("title"),
+        bounds(score_id(id), cx).expect("score"),
+        bounds(chevron_id(id), cx).expect("zone"),
+    )
+}
 
-        let hover = chevron_hover(look, StyleRefinement::default());
-        let fill = hover.background.as_ref().and_then(|fill| fill.color());
-        assert_eq!(
-            fill.and_then(|fill| fill.as_solid()),
-            Some(Hsla::from(look.hover_fill)),
-            "{name}: hover fill"
+/// The rows `first` (selected) and `second` (hovered) of `list`: wide, the
+/// score sits just after the whole title; narrow, the title is cut short
+/// (its box narrower than its text), the score keeps its whole width, and
+/// it ends left of the zone in both states.
+fn assert_score_beside_title(
+    first: SharedString,
+    second: SharedString,
+    cx: &mut VisualTestContext,
+) {
+    let rem = cx.update(|window, _| window.rem_size());
+    hover(second.clone(), cx);
+    let mut wide = Vec::new();
+    for id in [&first, &second] {
+        let (title, score, _) = title_score_zone(id, cx);
+        assert!(
+            score.left() >= title.right() && score.left() - title.right() <= rem,
+            "{id}: the score {score:?} just after the title {title:?}"
+        );
+        wide.push((title, score));
+    }
+    cx.simulate_resize(size(px(360.), px(600.)));
+    cx.run_until_parked();
+    hover(second.clone(), cx);
+    for (id, (wide_title, wide_score)) in [&first, &second].into_iter().zip(wide) {
+        let (title, score, zone) = title_score_zone(id, cx);
+        assert!(
+            title.size.width < wide_title.size.width,
+            "{id}: the title {title:?} cut short (its text is {wide_title:?})"
+        );
+        assert!(
+            score.left() >= title.right(),
+            "{id}: {score:?} after {title:?}"
         );
         assert_eq!(
-            hover.text.color,
-            Some(Hsla::from(look.hover_glyph)),
-            "{name}: hover glyph"
+            score.size.width, wide_score.size.width,
+            "{id}: the score keeps its width"
+        );
+        assert!(
+            score.right() <= zone.left() && !score.intersects(&zone),
+            "{id}: the score {score:?} left of the zone {zone:?}"
         );
     }
+}
+
+/// SEM's row and the Sources view's row put the score just after the
+/// title, never under the zone: a long title gives way (an ellipsis), the
+/// score does not.
+#[gpui_kit::test]
+fn score_sits_next_to_the_title_on_a_result_row(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, (0..2).map(Hit).collect());
+    assert_score_beside_title(Hit(0).element_id(), Hit(1).element_id(), cx);
+}
+
+#[gpui_kit::test]
+fn score_sits_next_to_the_title_on_a_source_row(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, vec![source(1), source(2)]);
+    assert_score_beside_title(source(1).element_id(), source(2).element_id(), cx);
 }
 
 /// A press on the row right after a chevron click (the OS counts it as

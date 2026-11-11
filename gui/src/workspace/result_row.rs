@@ -1,10 +1,11 @@
 //! The row FIND and SEM draw a search result with: one shape, so the two
 //! lists read alike and have one height ([`ROW_REMS`]).
 //!
-//! Line 1 is the note's title, with the similarity right-aligned when the
-//! result has one (SEM); line 2 the filename; line 3 one line of context
-//! (FIND's paragraph, SEM's matched chunk), its whitespace run together and
-//! cut to [`CONTEXT_CHARS`].
+//! Line 1 is the note's title, the similarity just after it when the
+//! result has one (SEM: `Coffee notes · 87%`; the title gives way first,
+//! and the line stays clear of the chevron's zone); line 2 the filename;
+//! line 3 one line of context (FIND's paragraph, SEM's matched chunk), its
+//! whitespace run together and cut to [`CONTEXT_CHARS`].
 
 use std::ops::Range;
 
@@ -20,6 +21,7 @@ use gpui_kit::{
 use kimun_notes::logic::text_match::match_ranges;
 use kimun_notes::settings::themes::Theme;
 
+use super::chevron::clear_of_zone;
 use super::files::{ellipsis, ellipsis_box, lane_row};
 use super::find::CONTEXT_CHARS;
 use crate::theme;
@@ -30,6 +32,11 @@ pub(crate) const ROW_REMS: f32 = 3.75;
 /// The element id of the score on the row `row_id` (tests).
 pub(crate) fn score_id(row_id: &SharedString) -> SharedString {
     format!("{row_id}:score").into()
+}
+
+/// The element id of the title on the row `row_id` (tests).
+pub(crate) fn title_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:title").into()
 }
 
 /// The element id of the context line on the row `row_id` (tests).
@@ -61,6 +68,28 @@ pub(crate) fn context_highlights(line: &str, marks: &[String]) -> Vec<Range<usiz
         .collect()
 }
 
+/// The score as it follows a title (SEM, the Sources view): `· 87%`, dim
+/// and never cut short (`flex_none`), `id` its element id and the score
+/// its accessible name.
+pub(crate) fn score_beside_title(
+    id: SharedString,
+    score: SharedString,
+    t: &Theme,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .aria_label(score.clone())
+        .flex()
+        .flex_none()
+        .gap_1()
+        .whitespace_nowrap()
+        .text_xs()
+        .text_color(theme::muted(t))
+        .child("·")
+        .child(score)
+}
+
 /// A search result's row (see the module docs): `title` (already the
 /// filename when the note has none), `filename`, `context` and, when
 /// present, `score` (`87%`). `marks` are the words to highlight, in the
@@ -82,29 +111,23 @@ pub(crate) fn result_row(
     let icon = Icon::new(IconName::FileText)
         .size_4()
         .text_color(theme::foreground(t));
+    // The title gives way (an ellipsis) before the score does; a line with
+    // a score stops short of the chevron's zone, so the score always shows
+    // (FIND's title-only line keeps its whole width).
     let first = div()
         .flex()
         .items_center()
         .gap_1()
         .min_w_0()
+        .when(score.is_some(), clear_of_zone)
         .child(
             ellipsis(title.clone())
-                .flex_1()
+                .id(title_id(&id))
+                .test_support()
                 .text_color(theme::foreground(t)),
         )
         .when_some(score, |line, score| {
-            let score = SharedString::from(score);
-            line.child(
-                div()
-                    .id(score_id(&id))
-                    .test_support()
-                    .aria_label(score.clone())
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_xs()
-                    .text_color(theme::muted(t))
-                    .child(score),
-            )
+            line.child(score_beside_title(score_id(&id), score.into(), t))
         });
     lane_row(
         id.clone(),
