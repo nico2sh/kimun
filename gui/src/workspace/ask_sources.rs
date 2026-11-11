@@ -99,6 +99,11 @@ fn score_percent(score: f64) -> u32 {
     (score.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
+/// The similarity as a row shows it: `87%` (the Sources view's and SEM's).
+pub(super) fn score_label(score: f64) -> String {
+    format!("{}%", score_percent(score))
+}
+
 /// One row: a turn's source and its 1-based rank in the turn's ranked list
 /// (kept on the row, so a filter does not renumber it).
 #[derive(Debug, Clone)]
@@ -192,7 +197,7 @@ impl DrawerRow for SourceRow {
                 .whitespace_nowrap()
                 .text_xs()
                 .text_color(theme::muted(t))
-                .child(format!("{}%", score_percent(source.score))),
+                .child(score_label(source.score)),
         )
     }
 }

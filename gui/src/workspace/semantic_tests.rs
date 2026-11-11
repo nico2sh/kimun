@@ -20,16 +20,20 @@ use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::views::SemanticHit;
 use kimun_notes::rag::{self, RagStatus};
 use kimun_notes::server_client::{
     AnswerResult, ChunkResult, ContextSize, QueryTransport, RagClient, RagError,
 };
 use tokio::runtime::Runtime;
 
-use super::drawer_list::DrawerList;
+use super::drawer_list::{DrawerList, chevron_id};
 use super::modal::ModalKind;
+use super::result_row::{ROW_REMS, context_id, score_id};
+use super::search::PREVIEW_DEBOUNCE;
 use super::semantic::{
-    BLANK_TEXT, NO_RESULTS_TEXT, SEMANTIC_INPUT_ID, SemanticView, semantic_row_id,
+    BLANK_TEXT, NO_RESULTS_TEXT, SEMANTIC_INPUT_ID, SEMANTIC_PREVIEW_HEADER_ID, SemanticView,
+    semantic_row_id,
 };
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::tests::{Shell, gui, open_default, open_shell, saved, temp_config};
@@ -84,18 +88,42 @@ fn path(p: &str) -> VaultPath {
 
 // ---- A stub server -------------------------------------------------------------
 
-/// Answers every search with `hits` (path, title), best first, or with
-/// `error`; counts the searches.
+/// Answers every search with `chunks`, best first, or with `error`; counts
+/// the searches.
 struct Stub {
-    hits: Vec<(&'static str, &'static str)>,
+    chunks: Vec<ChunkResult>,
     error: Option<&'static str>,
     searches: AtomicUsize,
 }
 
+/// A chunk of the note `p`: its title (the section's breadcrumb), its text
+/// and its similarity.
+fn chunk(p: &str, title: &str, content: &str, score: f64) -> ChunkResult {
+    ChunkResult {
+        path: path(p).to_string(),
+        title: title.to_string(),
+        date: None,
+        content: content.to_string(),
+        hash: String::new(),
+        similarity_score: score,
+        ordinal: 0,
+    }
+}
+
 impl Stub {
+    /// Hits (path, title) with no text, scored down from 1.0.
     fn new(hits: Vec<(&'static str, &'static str)>) -> Arc<Self> {
+        Self::chunks(
+            hits.iter()
+                .enumerate()
+                .map(|(i, (p, title))| chunk(p, title, "", 1.0 - i as f64 / 10.0))
+                .collect(),
+        )
+    }
+
+    fn chunks(chunks: Vec<ChunkResult>) -> Arc<Self> {
         Arc::new(Self {
-            hits,
+            chunks,
             error: None,
             searches: AtomicUsize::new(0),
         })
@@ -103,7 +131,7 @@ impl Stub {
 
     fn failing(error: &'static str) -> Arc<Self> {
         Arc::new(Self {
-            hits: Vec::new(),
+            chunks: Vec::new(),
             error: Some(error),
             searches: AtomicUsize::new(0),
         })
@@ -125,20 +153,7 @@ impl QueryTransport for Stub {
         if let Some(error) = self.error {
             return Err(RagError::Protocol(error.to_string()));
         }
-        Ok(self
-            .hits
-            .iter()
-            .enumerate()
-            .map(|(i, (p, title))| ChunkResult {
-                path: path(p).to_string(),
-                title: title.to_string(),
-                date: None,
-                content: String::new(),
-                hash: String::new(),
-                similarity_score: 1.0 - i as f64 / 10.0,
-                ordinal: 0,
-            })
-            .collect())
+        Ok(self.chunks.clone())
     }
 
     async fn ask(
@@ -157,7 +172,17 @@ const NOTES: &[(&str, &str)] = &[
     ("alpha.md", "# Alpha\nthe first note"),
     ("beta.md", "# Beta\nthe second note"),
     ("gamma.md", "# Gamma\nthe third note"),
+    ("delta.md", DELTA),
 ];
+
+/// A note with sections: SEM's preview marks the one that matched.
+const DELTA: &str = "# Delta\nan intro\n\n## Roast\ndark roast beans\n\n## Brew\npour over\n";
+
+/// The server's match in [`DELTA`]: its Roast section, scored 0.87.
+fn roast() -> ChunkResult {
+    let title = format!("Delta{}Roast", kimun_core::note::BREADCRUMB_SEP);
+    chunk("delta.md", &title, "dark roast beans", 0.87)
+}
 
 /// A vault holding [`NOTES`], started on `alpha.md`, indexed; SEM searches
 /// through `stub`.
@@ -181,7 +206,7 @@ fn semantic(s: &Started, cx: &TestAppContext) -> Entity<SemanticView> {
     cx.read(|cx| s.workspace.read(cx).semantic.clone().expect("SEM is built"))
 }
 
-fn semantic_list(s: &Started, cx: &TestAppContext) -> Entity<DrawerList<FileListEntry>> {
+fn semantic_list(s: &Started, cx: &TestAppContext) -> Entity<DrawerList<SemanticHit>> {
     let view = semantic(s, cx);
     cx.read(|cx| view.read(cx).list.clone())
 }
@@ -243,7 +268,7 @@ fn rows(s: &Started, rt: &Runtime, cx: &mut TestAppContext) -> Vec<String> {
         list.read(cx)
             .rows()
             .iter()
-            .map(|r| r.path().get_clean_name())
+            .map(|r| r.entry.path().get_clean_name())
             .collect()
     })
 }
@@ -543,7 +568,7 @@ fn a_query_lists_one_row_per_note_in_server_order(cx: &mut TestAppContext) {
         list.read(cx)
             .rows()
             .iter()
-            .map(|r| match r {
+            .map(|r| match &r.entry {
                 FileListEntry::Note { title, .. } => title.clone(),
                 _ => String::new(),
             })
@@ -669,4 +694,156 @@ fn a_result_clicks_open_and_has_the_entry_menu(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         open_note(&started, cx).is_some_and(|n| n.is_like(&path("gamma.md")))
     });
+}
+
+// ---- Rows and the preview --------------------------------------------------------
+
+/// The preview's state: (collapsed, context, full).
+fn expand(s: &Started, cx: &TestAppContext) -> (bool, bool, bool) {
+    let view = semantic(s, cx);
+    cx.read(|cx| {
+        let m = view.read(cx).preview_model();
+        (m.is_collapsed(), m.is_context(), m.is_full())
+    })
+}
+
+/// The label of the element `id` in a fresh frame.
+fn label(s: &Started, id: SharedString, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(id)
+            .and_then(|e| e.label().map(str::to_string))
+    })
+    .unwrap()
+}
+
+fn list_focused(s: &Started, cx: &mut TestAppContext) -> bool {
+    let list = semantic_list(s, cx);
+    cx.update_window(s.handle, |_, window, cx| {
+        list.read(cx).focus_handle(cx).is_focused(window)
+    })
+    .unwrap()
+}
+
+/// SEM on `stub`'s results for a typed query, the rows landed.
+fn searched(cx: &mut TestAppContext, rt: &Runtime, stub: Arc<Stub>) -> (TestVault, Started) {
+    let (v, started) = started_with(cx, rt, stub);
+    reveal(&started, cx);
+    type_in(&started, "coffee", cx);
+    assert!(!rows(&started, rt, cx).is_empty());
+    (v, started)
+}
+
+/// A row shows the similarity on its first line (the Sources view's
+/// `NN%`) and the matched chunk as its context line.
+#[gpui_kit::test]
+fn sem_row_shows_score_and_chunk_context(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let mut multiline = chunk("gamma.md", "Gamma", "the third\n  note", 0.5);
+    multiline.ordinal = 2;
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast(), multiline]));
+    let delta = semantic_row_id(&path("delta.md"));
+    assert_eq!(
+        label(&started, score_id(&delta), cx).as_deref(),
+        Some("87%")
+    );
+    assert_eq!(
+        label(&started, context_id(&delta), cx).as_deref(),
+        Some("dark roast beans")
+    );
+    let gamma = semantic_row_id(&path("gamma.md"));
+    assert_eq!(
+        label(&started, score_id(&gamma), cx).as_deref(),
+        Some("50%")
+    );
+    assert_eq!(
+        label(&started, context_id(&gamma), cx).as_deref(),
+        Some("the third note"),
+        "the chunk on one line"
+    );
+}
+
+/// A SEM row is exactly as tall as a FIND row.
+#[gpui_kit::test]
+fn sem_row_matches_find_row_height(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
+    let row = semantic_row_id(&path("delta.md"));
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let height = f32::from(window.find(row).bounds().size.height);
+        let want = f32::from(window.rem_size()) * ROW_REMS;
+        assert!((height - want).abs() < 0.5, "{height} vs {want}");
+    })
+    .unwrap();
+}
+
+/// Right on a result opens the preview to Context on the whole note, its
+/// matched section marked.
+#[gpui_kit::test]
+fn sem_right_opens_context_preview_marking_the_section(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
+    press(&started, "down", cx);
+    assert!(list_focused(&started, cx));
+    assert_eq!(expand(&started, cx), (true, false, false));
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    let view = semantic(&started, cx);
+    let preview = cx.read(|cx| view.read(cx).preview.clone());
+    for _ in 0..400 {
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(5)));
+        cx.run_until_parked();
+        if cx.read(|cx| preview.read(cx).shown_section()).is_some() {
+            break;
+        }
+    }
+    let section = cx.read(|cx| preview.read(cx).shown_section());
+    assert!(section.is_some(), "the matched section is marked");
+    // Left collapses again; Space cycles.
+    press(&started, "left", cx);
+    assert_eq!(expand(&started, cx), (true, false, false));
+    press(&started, "space", cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+}
+
+/// The row's chevron grows the preview without opening the note, and the
+/// list has the keyboard after; the header's chevron steps on to Full.
+#[gpui_kit::test]
+fn sem_chevron_expands_without_opening_the_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
+    let row = semantic_row_id(&path("delta.md"));
+    assert!(drawn(started.handle, chevron_id(&row), cx));
+    click(started.handle, chevron_id(&row), cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(list_focused(&started, cx));
+    assert!(
+        open_note(&started, cx).is_some_and(|n| n.is_like(&path("alpha.md"))),
+        "the note was not opened"
+    );
+    let header = SharedString::from(SEMANTIC_PREVIEW_HEADER_ID);
+    assert!(drawn(started.handle, header.clone(), cx));
+    click(started.handle, chevron_id(&header), cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(list_focused(&started, cx));
+}
+
+/// A click on a SEM row still opens its note (the chevron aside).
+#[gpui_kit::test]
+fn sem_click_still_opens_the_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
+    click(started.handle, semantic_row_id(&path("delta.md")), cx);
+    drive(&rt, cx, |cx| {
+        open_note(&started, cx).is_some_and(|n| n.is_like(&path("delta.md")))
+    });
+    assert_eq!(expand(&started, cx), (true, false, false));
 }

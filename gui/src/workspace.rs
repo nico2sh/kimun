@@ -3199,6 +3199,7 @@ mod presets;
 mod properties;
 mod query_field;
 mod reopen;
+mod result_row;
 mod route;
 mod saved_searches;
 mod search;
