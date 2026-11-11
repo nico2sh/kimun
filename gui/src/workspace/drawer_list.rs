@@ -30,11 +30,14 @@
 //! **The expand chevron** ([`super::chevron`]). A list whose rows have a
 //! preview shows the chevron ([`DrawerList::set_chevron`], off by default)
 //! at the right end of the selected row and of the hovered row (GPUI group
-//! hover), over the row's own background, taking no width from the row.
+//! hover). It sits in a trailing lane of its own that every row of such a
+//! list reserves, shown or not, so it never covers row content and nothing
+//! moves when it appears; a list without a chevron has no lane.
 //! A click on it selects the row and emits [`DrawerListEvent::Verb`] with
 //! [`EXPAND`], and never reaches the row's own click: no activation, no
-//! second select, and the press after it is not taken for a double-click
-//! on the row. It is a pointer shortcut only; the preview keeps its keys.
+//! second select, and a press on the row right after it is not taken for a
+//! double-click on the row. It is a pointer shortcut only; the preview
+//! keeps its keys.
 
 use std::sync::Arc;
 
@@ -45,7 +48,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
     Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, uniform_list,
+    UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::input::{Key, Mods};
@@ -96,8 +99,15 @@ pub(crate) type VerbId = &'static str;
 /// double-click does under [`ClickPolicy::Select`].
 pub(crate) const OPEN_NOTE: VerbId = "open-note";
 
-/// Step the row's preview: a click on the row's expand chevron.
+/// Step the row's preview: a click on the row's expand chevron. The owner
+/// steps the preview, then moves the keyboard focus to the list (as the
+/// Sources view's `chevron_step` does), or the arrows stay in its query
+/// field.
 pub(crate) const EXPAND: VerbId = "expand";
+
+/// The width of the chevron's trailing lane, in rems (`w_6`): the glyph
+/// and a comfortable click target.
+const CHEVRON_LANE_REMS: f32 = 1.5;
 
 /// The element id of the expand chevron on the row (or header) `row_id`.
 pub(crate) fn chevron_id(row_id: &SharedString) -> SharedString {
@@ -212,7 +222,10 @@ impl<R: DrawerRow> DrawerList<R> {
     }
 
     /// Show the expand chevron stepping `reach` on the selected and the
-    /// hovered row from now on, or (`None`) none.
+    /// hovered row from now on, every row reserving its lane, or (`None`)
+    /// none and no lane. A click on it reaches the owner as
+    /// `Verb(row, EXPAND)`; the owner then gives the list the keyboard
+    /// ([`EXPAND`]).
     pub(crate) fn set_chevron(&mut self, reach: Option<Reach>, cx: &mut Context<Self>) {
         if self.chevron != reach {
             self.chevron = reach;
@@ -463,9 +476,10 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
-    /// The chevron stepping `reach` on the row `row_id` at `pos`: drawn on
-    /// the selected row, and on any other only while the pointer is over it
-    /// ([`ROW_GROUP`]).
+    /// The trailing lane of the row `row_id` at `pos`, holding the chevron
+    /// stepping `reach`: drawn on the selected row, and on any other only
+    /// while the pointer is over it ([`ROW_GROUP`]); the lane is there
+    /// either way.
     fn render_chevron(
         &self,
         pos: usize,
@@ -476,22 +490,11 @@ impl<R: DrawerRow> DrawerList<R> {
     ) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        // It sits over the row's right end, on the row's own background, so
-        // it covers what is there rather than narrowing the row for everyone.
-        let cover = if selected {
-            theme::selected_background(t)
-        } else {
-            theme::hover_background(t)
-        };
-        chevron(chevron_id(row_id), reach, t)
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_0()
-            .pl_2()
-            .pr_2()
-            .rounded_md()
-            .bg(cover)
+        // The chevron fills its lane (the whole lane is the click target);
+        // the lane is the row's last child, beside its content, never over it.
+        let chevron = chevron(chevron_id(row_id), reach, t)
+            .size_full()
+            .justify_center()
             .text_sm()
             .when(!selected, |chevron| {
                 chevron
@@ -506,7 +509,14 @@ impl<R: DrawerRow> DrawerList<R> {
                     this.click_chevron(pos, cx);
                 }
             }))
-            .test_support()
+            .test_support();
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .w(rems(CHEVRON_LANE_REMS))
+            .h_full()
+            .child(chevron)
             .into_any_element()
     }
 
@@ -546,7 +556,7 @@ impl<R: DrawerRow> DrawerList<R> {
         let mut element = row.render_row(selected, &theme::current(cx));
         if let Some(reach) = self.chevron {
             let chevron = self.render_chevron(pos, &row.element_id(), selected, reach, cx);
-            element = element.group(ROW_GROUP).relative().child(chevron);
+            element = element.group(ROW_GROUP).child(chevron);
         }
         let element = with_click_cursor(element, self.click, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
