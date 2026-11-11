@@ -83,7 +83,7 @@ impl DrawerRow for FileListEntry {
     /// A note as FILES draws it: its title (the best-matching section's),
     /// its filename and journal date under it.
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
-        entry_row(self.element_id(), self, selected, true, t)
+        entry_row(self.element_id(), self, selected, true, None, t)
     }
 
     fn menu_target(&self) -> Option<VaultPath> {
