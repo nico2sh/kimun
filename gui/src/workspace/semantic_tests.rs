@@ -32,8 +32,8 @@ use super::modal::ModalKind;
 use super::result_row::{ROW_REMS, context_id, score_id};
 use super::search::PREVIEW_DEBOUNCE;
 use super::semantic::{
-    BLANK_TEXT, NO_RESULTS_TEXT, SEMANTIC_INPUT_ID, SEMANTIC_PREVIEW_HEADER_ID, SemanticView,
-    semantic_row_id,
+    BLANK_TEXT, NO_RESULTS_TEXT, SEMANTIC_BAR_ID, SEMANTIC_INPUT_ID, SEMANTIC_PREVIEW_HEADER_ID,
+    SemanticView, semantic_row_id,
 };
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::tests::{Shell, gui, open_default, open_shell, saved, temp_config};
@@ -603,6 +603,85 @@ fn a_failed_search_lists_nothing_and_says_why(cx: &mut TestAppContext) {
     configure_server(&v);
     status(&started.workspace, RagStatus::Unauthorized, cx);
     assert_eq!(empty_text(&started, cx), UNREACHABLE);
+}
+
+/// The count bar's text in a fresh frame (`None`: not drawn).
+fn bar_text(s: &Started, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(SEMANTIC_BAR_ID)
+            .and_then(|e| e.label().map(str::to_string))
+    })
+    .unwrap()
+}
+
+/// After a search the bar counts the rows: "N notes".
+#[gpui_kit::test]
+fn sem_bar_shows_result_count_after_search(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let stub = Stub::new(vec![("gamma.md", "Gamma"), ("beta.md", "Beta")]);
+    let (_v, started) = started_with(cx, &rt, stub);
+    reveal(&started, cx);
+    type_in(&started, "third", cx);
+    assert_eq!(rows(&started, &rt, cx).len(), 2);
+    assert_eq!(bar_text(&started, cx).as_deref(), Some("2 notes"));
+}
+
+/// One row reads "1 note".
+#[gpui_kit::test]
+fn sem_bar_says_1_note_for_one_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, Stub::new(vec![("gamma.md", "Gamma")]));
+    reveal(&started, cx);
+    type_in(&started, "third", cx);
+    assert_eq!(rows(&started, &rt, cx).len(), 1);
+    assert_eq!(bar_text(&started, cx).as_deref(), Some("1 note"));
+}
+
+/// No bar while searching or for a blank query.
+#[gpui_kit::test]
+fn sem_bar_hidden_while_searching_and_for_blank_query(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let stub = Stub::new(vec![("gamma.md", "Gamma")]);
+    let (_v, started) = started_with(cx, &rt, stub);
+    reveal(&started, cx);
+    assert_eq!(bar_text(&started, cx), None, "blank query");
+    type_in(&started, "third", cx);
+    assert_eq!(bar_text(&started, cx), None, "searching");
+    assert_eq!(rows(&started, &rt, cx).len(), 1);
+    assert!(bar_text(&started, cx).is_some());
+}
+
+/// Zero results: the list says "No results", the bar stays hidden.
+#[gpui_kit::test]
+fn sem_bar_hidden_for_zero_results(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, Stub::new(Vec::new()));
+    reveal(&started, cx);
+    type_in(&started, "nothing", cx);
+    assert!(rows(&started, &rt, cx).is_empty());
+    assert_eq!(empty_text(&started, cx), NO_RESULTS_TEXT);
+    assert_eq!(bar_text(&started, cx), None);
+}
+
+/// While the server cannot search the bar is hidden, though rows stay.
+#[gpui_kit::test]
+fn sem_bar_hidden_while_the_server_is_unavailable(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, Stub::new(vec![("gamma.md", "Gamma")]));
+    reveal(&started, cx);
+    type_in(&started, "third", cx);
+    assert_eq!(rows(&started, &rt, cx).len(), 1);
+    assert!(bar_text(&started, cx).is_some());
+    status(&started.workspace, RagStatus::Offline, cx);
+    assert!(shown(&started.workspace, DrawerView::Semantic, cx));
+    assert_eq!(bar_text(&started, cx), None);
 }
 
 /// Enter on a result opens its note (Down takes the keyboard from the
