@@ -237,7 +237,7 @@ The note-preview surface the **Query panel**, the **Sources view** and the SEM v
 _Avoid_: expand state (names one field), content view, preview widget.
 
 **Expand chevron**:
-The one pointer control every expandable result list shares for its **Preview pane**, drawn on the selected row and on the hovered row (never on other rows) and pointing the way of the arrow key that takes the next step: right while the pane can grow (Collapsed, Context), left once it is Full. Clicking it selects its row and steps the pane; it never opens the note, whatever the list's click does. The open pane's header carries the same control. It is drawn as a small bordered button laid over the end of the row, so it reads as clickable and takes no width from the rows that do not show it. Together the two replace every per-list button for the same job.
+The one pointer control every expandable result list shares for its **Preview pane**, drawn on the selected row and on the hovered row (never on other rows) and pointing the way of the arrow key that takes the next step: right while the pane can grow (Collapsed, Context), left once it is Full. Clicking it selects its row and steps the pane; it never opens the note, whatever the list's click does. The open pane's header carries the same control. It is a zone at the row's right end, set off by a thin divider. Together the two replace every per-list button for the same job.
 _Avoid_: expand button, preview button, row action (the general hover-label mechanism the chevron replaces for this job).
 
 ### Editor input

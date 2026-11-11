@@ -7,9 +7,9 @@
 //!
 //! **Rows** are the turn's sources, built here and now (no load): the rank
 //! in the lane, the heading (a journal source's date beside it, a bare
-//! date when it has no heading), the score, the path under it. The filter
-//! above the list narrows them by heading and path (the TUI's fuzzy filter).
-//! No sources: the TUI's prompt alone.
+//! date when it has no heading) and the score just after it, the path under
+//! it. The filter above the list narrows them by heading and path (the
+//! TUI's fuzzy filter). No sources: the TUI's prompt alone.
 //!
 //! **The reader** is FIND's preview ([`SearchPreview`]) marking a section
 //! instead of needles, driven by the same `PreviewModel`: Collapsed (the
@@ -63,10 +63,11 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::chevron::{PreviewSteps, step_header, sync_chevron};
+use super::chevron::{PreviewSteps, clear_of_zone, step_header, sync_chevron};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, MenuItem, OPEN_NOTE};
 use super::files::{ClickPolicy, NOTE_ROW_REMS, ellipsis, lane_row};
 use super::query_field::{self, query_field};
+use super::result_row::{score_beside_title, score_id, title_id};
 use super::search::{Mark, SearchPreview, SectionMark};
 use crate::input;
 use crate::theme;
@@ -114,7 +115,7 @@ pub(crate) struct SourceRow {
 }
 
 impl SourceRow {
-    fn new(rank: usize, source: AskSource) -> Self {
+    pub(crate) fn new(rank: usize, source: AskSource) -> Self {
         let filter_text = format!("{} {}", source.heading, source.path);
         Self {
             rank,
@@ -156,12 +157,14 @@ impl DrawerRow for SourceRow {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(theme::accent(t))
             .child(self.rank.to_string());
-        let heading = div()
-            .flex()
-            .gap_1()
-            .min_w_0()
+        let id = self.element_id();
+        // The title gives way (an ellipsis) before the date and the score;
+        // the line stops short of the chevron's zone.
+        let heading = clear_of_zone(div().flex().items_center().gap_1().min_w_0())
             .child(
                 ellipsis(title)
+                    .id(title_id(&id))
+                    .test_support()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(title_color),
             )
@@ -174,9 +177,14 @@ impl DrawerRow for SourceRow {
                         .text_color(theme::journal_date(t))
                         .child(date),
                 )
-            });
+            })
+            .child(score_beside_title(
+                score_id(&id),
+                score_label(source.score).into(),
+                t,
+            ));
         lane_row(
-            self.element_id(),
+            id,
             label,
             selected,
             NOTE_ROW_REMS,
@@ -189,14 +197,6 @@ impl DrawerRow for SourceRow {
                     .into_any_element(),
             ],
             t,
-        )
-        .child(
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .text_xs()
-                .text_color(theme::muted(t))
-                .child(score_label(source.score)),
         )
     }
 }

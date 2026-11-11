@@ -4,8 +4,12 @@
 //! drawer list draws it over the right end of its selected row and of the
 //! hovered row ([`DrawerList::set_chevron`](super::drawer_list::DrawerList::set_chevron));
 //! the open preview carries it on its one-line header ([`preview_header`]).
-//! Both draw the one compact bordered button of [`chevron`], so it reads as
-//! clickable. It is a pointer shortcut only: the keys stay as they are.
+//! Both draw the one zone of [`chevron`]: a strip at the right end, as tall
+//! as the row (or the header line), set off by a thin divider on its left
+//! edge, the glyph centred in it; the whole zone takes the click. As the
+//! zone covers the right end of every line, a line that must keep its end
+//! in sight (a score) stays [`clear_of_zone`]. It is a pointer shortcut
+//! only: the keys stay as they are.
 //!
 //! A view with such a preview (FIND, SEM, the Sources view) takes its steps
 //! from [`PreviewSteps`], keeps its rows' chevron in step with
@@ -16,7 +20,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, div, rems,
+    StyleRefinement, Styled, Window, div, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
@@ -65,39 +69,34 @@ impl Reach {
     }
 }
 
-/// The chevron button's side, in rems: a compact square. Centred on a
-/// three-line row (3.75 rem) it stays clear of the first line, where SEM
-/// shows its score, with a little room to spare.
-pub(crate) const CHEVRON_REMS: f32 = 1.125;
+/// The zone's width, in rems. It runs the full height of what carries it
+/// (a row, the preview header).
+pub(crate) const ZONE_REMS: f32 = 1.5;
 
-/// The colours the chevron button draws with, so it reads as clickable: a
-/// subtle fill inside a hairline border at rest; a stronger fill and the
+/// The colours the zone draws with: a thin divider on its left edge and
+/// the glyph in the dim text colour at rest (no fill); a faint fill and the
 /// text colour for the glyph under the pointer.
 ///
-/// The fills and the border are the text colour, see-through: drawn over
-/// whatever is under the button (a hovered row, the selected row, the
-/// preview header) they always tint it toward the text, so the button
-/// stands off every surface it sits on. No single theme colour does that
-/// in every built-in theme: the hover and selection fills coincide with
-/// the dim border colour or with each other in several of them. The
-/// strengths below keep every part clear of both row fills in every
-/// built-in theme (`chevron_reads_as_clickable_on_every_row`); a weaker
-/// rest fill lands on the selected fill in some light themes.
+/// The divider and the fill are the text colour, see-through: drawn over
+/// whatever is under the zone (a hovered row, the selected row, the
+/// preview header) they always tint it toward the text, so both stand off
+/// every surface they sit on. The theme's own divider colour cannot do
+/// that: in several built-in themes it is the very colour of a hovered
+/// row. The strengths below keep both clear of both row fills in every
+/// built-in theme (`zone_reads_on_every_row`) and no stronger: a quiet
+/// line, a faint fill.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChevronLook {
-    pub(crate) fill: Rgba,
-    pub(crate) border: Rgba,
+    pub(crate) divider: Rgba,
     pub(crate) glyph: Rgba,
     pub(crate) hover_fill: Rgba,
     pub(crate) hover_glyph: Rgba,
 }
 
-/// How opaque the text colour is in the button's rest fill.
-const FILL_ALPHA: f32 = 0.24;
+/// How opaque the text colour is in the zone's divider.
+const DIVIDER_ALPHA: f32 = 0.2;
 /// ...in its fill under the pointer.
-const HOVER_FILL_ALPHA: f32 = 0.4;
-/// ...in its border.
-const BORDER_ALPHA: f32 = 0.55;
+const HOVER_FILL_ALPHA: f32 = 0.1;
 
 impl ChevronLook {
     pub(crate) fn of(t: &Theme) -> Self {
@@ -107,8 +106,7 @@ impl ChevronLook {
             ..text
         };
         Self {
-            fill: tint(FILL_ALPHA),
-            border: tint(BORDER_ALPHA),
+            divider: tint(DIVIDER_ALPHA),
             glyph: theme::secondary(t),
             hover_fill: tint(HOVER_FILL_ALPHA),
             hover_glyph: text,
@@ -116,10 +114,12 @@ impl ChevronLook {
     }
 }
 
-/// The chevron itself, `id` its element id: a compact bordered button
-/// ([`CHEVRON_REMS`] square, [`ChevronLook`]), quiet at rest, stronger
-/// under the pointer, its tooltip naming the step. The caller places it,
-/// takes its click and adds `test_support`.
+/// The chevron itself, `id` its element id: a zone [`ZONE_REMS`] wide laid
+/// over the right end of what carries it, flush with that end and as tall
+/// as it, a thin divider on its left edge, the glyph centred in it
+/// ([`ChevronLook`]). The whole zone is the click target; under the
+/// pointer it fills faintly, and its tooltip names the step. The carrier
+/// is `relative`; the caller takes the click and adds `test_support`.
 pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div> {
     let look = ChevronLook::of(t);
     let tip = reach.tooltip();
@@ -127,15 +127,17 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
         .id(id)
         .role(Role::Button)
         .aria_label(tip)
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right_0()
+        .w(rems(ZONE_REMS))
         .flex()
-        .flex_none()
         .items_center()
         .justify_center()
-        .size(rems(CHEVRON_REMS))
-        .rounded_md()
-        .border_1()
-        .border_color(look.border)
-        .bg(look.fill)
+        .border_l_1()
+        .border_color(look.divider)
+        .rounded_r_md()
         .text_sm()
         .whitespace_nowrap()
         .cursor_pointer()
@@ -145,16 +147,22 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
         .child(reach.glyph())
 }
 
-/// The chevron button under the pointer: `style` with the stronger fill
-/// and the text colour of `look`.
+/// The zone under the pointer: `style` with the faint fill and the text
+/// colour of `look`.
 pub(crate) fn chevron_hover(look: ChevronLook, style: StyleRefinement) -> StyleRefinement {
     style.bg(look.hover_fill).text_color(look.hover_glyph)
 }
 
+/// `line` kept clear of the zone: its right end stops short of where the
+/// zone lies, so what it ends with (a score) is never covered.
+pub(crate) fn clear_of_zone<E: Styled>(line: E) -> E {
+    line.pr(rems(ZONE_REMS))
+}
+
 /// The open preview's one-line header: `title` on the left, cut short with
-/// an ellipsis, the chevron on the right (its id [`chevron_id`] of `id`).
-/// The caller adds `on_click` (the whole line steps the preview), then
-/// `test_support`.
+/// an ellipsis before the zone, the chevron's zone at the right end (its
+/// id [`chevron_id`] of `id`). The caller adds `on_click` (the whole line
+/// steps the preview), then `test_support`.
 pub(crate) fn preview_header(
     id: SharedString,
     title: SharedString,
@@ -163,24 +171,26 @@ pub(crate) fn preview_header(
 ) -> Stateful<Div> {
     let chevron_id = chevron_id(&id);
     let hover = theme::foreground(t);
-    div()
-        .id(id)
-        .aria_label(title.clone())
-        .group(HEADER_GROUP)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap_2()
-        .px_2()
-        .py_0p5()
-        .text_xs()
-        .cursor_pointer()
-        .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
-        .child(
-            chevron(chevron_id, reach, t)
-                .group_hover(HEADER_GROUP, move |style| style.text_color(hover))
-                .test_support(),
-        )
+    clear_of_zone(
+        div()
+            .id(id)
+            .aria_label(title.clone())
+            .group(HEADER_GROUP)
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .pl_2()
+            .py_0p5()
+            .text_xs()
+            .cursor_pointer(),
+    )
+    .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
+    .child(
+        chevron(chevron_id, reach, t)
+            .group_hover(HEADER_GROUP, move |style| style.text_color(hover))
+            .test_support(),
+    )
 }
 
 /// A view whose preview of its selected row grows Collapsed → Context →

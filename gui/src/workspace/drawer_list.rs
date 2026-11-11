@@ -31,10 +31,11 @@
 //! **The expand chevron** ([`super::chevron`]). A list whose rows have a
 //! preview shows the chevron ([`DrawerList::set_chevron`], off by default)
 //! at the right end of the selected row and of the hovered row (GPUI group
-//! hover). It is a compact button laid over the row, centred on it: no row
-//! gives up width for it, and nothing moves when it appears. It covers the
-//! row only where it sits; on a three-line row it stays clear of the first
-//! line (SEM's score).
+//! hover). It is a zone laid over the row's right end, flush with it and
+//! as tall as the row, set off by a thin divider: no row gives up width for
+//! it, and nothing moves when it appears. It covers the right end of every
+//! line, so a row keeps nothing there that only it shows (SEM's and the
+//! Sources view's score sit beside the title instead).
 //! A click on it selects the row and emits [`DrawerListEvent::Verb`] with
 //! [`EXPAND`], and never reaches the row's own click: no activation, no
 //! second select, and a press on the row right after it is not taken for a
@@ -563,9 +564,9 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
-    /// The chevron stepping `reach` over the right end of the row `row_id`
-    /// at `pos`, centred on it: drawn on the selected row, and on any other
-    /// only while the pointer is over it ([`ROW_GROUP`]).
+    /// The chevron's zone stepping `reach` over the right end of the row
+    /// `row_id` at `pos`: drawn on the selected row, and on any other only
+    /// while the pointer is over it ([`ROW_GROUP`]).
     fn render_chevron(
         &self,
         pos: usize,
@@ -576,7 +577,9 @@ impl<R: DrawerRow> DrawerList<R> {
     ) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let chevron = chevron(chevron_id(row_id), reach, t)
+        // Out of the row's flow (it takes no width from the content): the
+        // zone lies over the row's right end, flush with it, full height.
+        chevron(chevron_id(row_id), reach, t)
             .when(!selected, |chevron| {
                 chevron
                     .opacity(0.)
@@ -590,18 +593,7 @@ impl<R: DrawerRow> DrawerList<R> {
                     this.click_chevron(pos, cx);
                 }
             }))
-            .test_support();
-        // Out of the row's flow (it takes no width from the content) and
-        // centred on the row's height; the holder has no hitbox, so only
-        // the button itself takes the pointer.
-        div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_1()
-            .flex()
-            .items_center()
-            .child(chevron)
+            .test_support()
             .into_any_element()
     }
 
