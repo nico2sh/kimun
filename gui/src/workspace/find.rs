@@ -135,6 +135,10 @@ impl DrawerRow for QueryHit {
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
+        self.render_marked_row(selected, t, &[])
+    }
+
+    fn render_marked_row(&self, selected: bool, t: &Theme, marks: &[String]) -> Stateful<Div> {
         let entry = &self.entry;
         result_row(
             self.element_id(),
@@ -143,7 +147,7 @@ impl DrawerRow for QueryHit {
             &entry.filename,
             &entry.context,
             None,
-            &[],
+            marks,
             t,
         )
     }
@@ -539,6 +543,8 @@ impl FindView {
             selected
         };
         let needles = self.needles(cx);
+        self.list
+            .update(cx, |list, cx| list.set_marks(needles.clone(), cx));
         self.preview
             .update(cx, |preview, cx| preview.show(wanted, needles, cx));
         self.sync_chevron(cx);

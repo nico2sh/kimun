@@ -966,12 +966,17 @@ where
 
 /// One line of text that ends in an ellipsis when it does not fit.
 pub(super) fn ellipsis(text: impl Into<SharedString>) -> Div {
+    ellipsis_box().child(text.into())
+}
+
+/// The box [`ellipsis`] puts its text in, for a child that is not plain
+/// text (a highlighted `StyledText` still ends in `…`).
+pub(super) fn ellipsis_box() -> Div {
     div()
         .min_w_0()
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
-        .child(text.into())
 }
 
 impl ClickRows for FilesPane {
