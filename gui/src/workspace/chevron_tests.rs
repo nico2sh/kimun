@@ -6,10 +6,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Context, Div, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Stateful, Styled as _, TestAppContext, VisualTestContext, Window, div, px,
+    AppContext as _, Bounds, Context, Div, Entity, InputEvent as _, InteractiveElement as _,
+    IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels,
+    Render, SharedString, Stateful, Styled as _, TestAppContext, VisualTestContext, Window, div,
+    px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::list::ListRow;
@@ -17,7 +20,7 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::chevron::Reach;
-use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, chevron_id};
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
 
 #[derive(Debug, Clone)]
@@ -32,7 +35,16 @@ impl DrawerRow for Row {
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let label = SharedString::from(format!("row {}", self.0));
-        row_frame(self.element_id(), label.clone(), selected, 2.0, t).child(label)
+        // The content takes all the width the row gives it, so its bounds
+        // say what is left beside the chevron's lane.
+        row_frame(self.element_id(), label.clone(), selected, 2.0, t).child(
+            div()
+                .id(text_of(self.0))
+                .flex_1()
+                .min_w_0()
+                .child(label)
+                .test_support(),
+        )
     }
 }
 
@@ -88,6 +100,18 @@ fn three_rows(
     });
     cx.run_until_parked();
     (list, seen, cx)
+}
+
+fn text_of(row: usize) -> SharedString {
+    format!("chevron-test-row:{row}:text").into()
+}
+
+/// Where `id` is laid out, drawn or not; `None` when it is not there.
+fn bounds(id: SharedString, cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).map(|e| e.bounds())
+    })
 }
 
 fn chevron_of(row: usize) -> SharedString {
@@ -215,4 +239,101 @@ fn chevron_click_does_not_activate_row(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(*seen.borrow(), ["activate:2".to_string()]);
+}
+
+/// Every row of a list with a chevron reserves its trailing lane, selected
+/// or not: the content is as wide on each row and ends where the lane
+/// starts, so the chevron sits beside it and covers none of it. A list
+/// with no chevron has no lane: its content takes the whole row.
+#[gpui_kit::test]
+fn chevron_lane_is_reserved_beside_the_content(cx: &mut TestAppContext) {
+    let (list, _, cx) = three_rows(cx, ClickPolicy::Select);
+    let text: Vec<_> = (0..3)
+        .map(|row| bounds(text_of(row), cx).expect("content"))
+        .collect();
+    let lanes: Vec<_> = (0..3)
+        .map(|row| bounds(chevron_of(row), cx).expect("lane on every row"))
+        .collect();
+    for row in 0..3 {
+        assert_eq!(text[row].size.width, text[1].size.width, "row {row}");
+        assert_eq!(lanes[row].size.width, lanes[1].size.width, "row {row}");
+        assert!(lanes[row].size.width > px(0.));
+        assert!(
+            text[row].right() <= lanes[row].left(),
+            "row {row}: content {:?} runs under the chevron {:?}",
+            text[row],
+            lanes[row]
+        );
+    }
+    // Hovering a row shows its chevron but moves nothing.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.hover(Row(2).element_id(), cx);
+    });
+    assert_eq!(bounds(text_of(2), cx), Some(text[2]));
+
+    list.update(cx, |list, cx| list.set_chevron(None, cx));
+    for row in 0..3 {
+        assert_eq!(bounds(chevron_of(row), cx), None, "row {row}");
+        let wide = bounds(text_of(row), cx).expect("content");
+        assert!(
+            wide.size.width >= text[row].size.width + lanes[row].size.width,
+            "row {row}: {wide:?} takes the lane back"
+        );
+    }
+}
+
+/// A press on the row right after a chevron click (the OS counts it as
+/// the second of a double-click) is a click of its own: it selects, and
+/// does not open the row's note.
+#[gpui_kit::test]
+fn a_row_press_after_the_chevron_is_no_double_click(cx: &mut TestAppContext) {
+    let (list, seen, cx) = three_rows(cx, ClickPolicy::Select);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.hover(Row(2).element_id(), cx);
+        window.render_frame(cx);
+        window.click(chevron_of(2), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(*seen.borrow(), [format!("verb:2:{EXPAND}")]);
+    seen.borrow_mut().clear();
+    let at = bounds(text_of(2), cx).expect("content").center();
+    cx.update(|window, cx| {
+        let modifiers = Modifiers::default();
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers,
+            click_count: 2,
+            first_mouse: false,
+        };
+        let up = MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers,
+            click_count: 2,
+        };
+        window.dispatch_event(down.to_platform_input(), cx);
+        window.dispatch_event(up.to_platform_input(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(selected(&list, cx), Some(2));
+    assert!(
+        !seen.borrow().contains(&format!("verb:2:{OPEN_NOTE}")),
+        "{:?}",
+        seen.borrow()
+    );
+
+    // Without the chevron before it, the same double press opens the note.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.double_click(text_of(0), cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        seen.borrow().contains(&format!("verb:0:{OPEN_NOTE}")),
+        "{:?}",
+        seen.borrow()
+    );
 }

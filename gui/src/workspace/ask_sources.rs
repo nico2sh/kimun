@@ -523,13 +523,18 @@ impl SourcesView {
     fn reader_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let title = reader_title(&self.list.read(cx).selected_row()?.source);
         Some(
-            preview_header(READER_HEADER_ID, title.into(), Reach::of(&self.model), t)
-                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                    if event.standard_click() {
-                        this.chevron_step(window, cx);
-                    }
-                }))
-                .test_support(),
+            preview_header(
+                READER_HEADER_ID.into(),
+                title.into(),
+                Reach::of(&self.model),
+                t,
+            )
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                if event.standard_click() {
+                    this.chevron_step(window, cx);
+                }
+            }))
+            .test_support(),
         )
     }
 

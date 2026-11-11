@@ -9,7 +9,7 @@
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    Div, ElementId, InteractiveElement as _, ParentElement as _, Role, SharedString, Stateful,
+    Div, InteractiveElement as _, ParentElement as _, Role, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, div,
 };
 use kimun_notes::logic::preview::PreviewModel;
@@ -84,13 +84,12 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
 /// The caller adds `on_click` (the whole line steps the preview), then
 /// `test_support`.
 pub(crate) fn preview_header(
-    id: impl Into<ElementId>,
+    id: SharedString,
     title: SharedString,
     reach: Reach,
     t: &Theme,
 ) -> Stateful<Div> {
-    let id = id.into();
-    let chevron_id = chevron_id(&SharedString::from(id.to_string()));
+    let chevron_id = chevron_id(&id);
     let hover = theme::foreground(t);
     div()
         .id(id)
