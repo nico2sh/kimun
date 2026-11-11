@@ -53,20 +53,25 @@ function New-Release($name, [switch]$NoGui) {
 
 # Run the installer in a child shell, in a fresh home, as the user would. $How picks
 # the invocation. Returns the exit code and what it printed.
-function Invoke-Install($home_, $rel, $How, [string[]]$Env = @(), [switch]$Unpinned) {
+function Invoke-Install($home_, $rel, $How, [string[]]$Env = @(), [switch]$Unpinned, [switch]$NoDir) {
     New-Item -ItemType Directory -Force $home_ | Out-Null
     $env:USERPROFILE = $home_
     $env:KIMUN_INSTALL_DIR = Join-Path $home_ "bin"
     $env:KIMUN_VERSION = $v
     $env:KIMUN_DOWNLOAD_BASE = "file:///" + ($rel -replace "\\", "/")
-    Remove-Item Env:KIMUN_GUI, Env:KIMUN_MANIFEST_URL, Env:KIMUN_RELEASES_API -ErrorAction SilentlyContinue
+    Remove-Item Env:KIMUN_GUI, Env:KIMUN_UNINSTALL, Env:KIMUN_MANIFEST_URL, Env:KIMUN_RELEASES_API -ErrorAction SilentlyContinue
     # Unpinned: the version and the files' urls must come from the manifest (or the API).
     if ($Unpinned) { Remove-Item Env:KIMUN_VERSION, Env:KIMUN_DOWNLOAD_BASE -ErrorAction SilentlyContinue }
+    # No KIMUN_INSTALL_DIR: the script finds its folder from the marker (uninstall).
+    if ($NoDir) { Remove-Item Env:KIMUN_INSTALL_DIR -ErrorAction SilentlyContinue }
     foreach ($e in $Env) { $k, $val = $e -split "=", 2; Set-Item "Env:$k" $val }
     $q = "'" + ($script -replace "'", "''") + "'"
     $args_ = switch ($How) {
         "file"        { @("-File", $script) }
         "file-gui"    { @("-File", $script, "-Gui") }
+        "uninstall"     { @("-File", $script, "-Uninstall") }
+        "uninstall-gui" { @("-File", $script, "-Uninstall", "-Gui") }
+        "uninstall-iex" { @("-Command", "Get-Content -Raw $q | Invoke-Expression") }
         "block-gui"   { @("-Command", "& ([scriptblock]::Create((Get-Content -Raw $q))) -Gui") }
         "iex"         { @("-Command", "Get-Content -Raw $q | Invoke-Expression") }
     }
@@ -77,7 +82,7 @@ function Invoke-Install($home_, $rel, $How, [string[]]$Env = @(), [switch]$Unpin
     $output = & $me -NoProfile -ExecutionPolicy Bypass @args_ 2>&1 | Out-String
     $code = $LASTEXITCODE
     $ErrorActionPreference = $saved
-    Remove-Item Env:KIMUN_GUI, Env:KIMUN_MANIFEST_URL, Env:KIMUN_RELEASES_API -ErrorAction SilentlyContinue
+    Remove-Item Env:KIMUN_GUI, Env:KIMUN_UNINSTALL, Env:KIMUN_MANIFEST_URL, Env:KIMUN_RELEASES_API -ErrorAction SilentlyContinue
     return [pscustomobject]@{ Code = $code; Output = $output }
 }
 
@@ -275,10 +280,51 @@ try {
         }
         Ok "without minisign: a pinned key warns that the signature was not checked, no key is quiet"
     }
+    # 13. -Uninstall: removes what the installer put in place, from the folder the marker names (no
+    # KIMUN_INSTALL_DIR), keeps the user's configuration, keeps the marker while the other app is there.
+    $hu = Join-Path $work "un1"
+    $r = Invoke-Install $hu $rel "file"; if ($r.Code -ne 0) { Fail "uninstall setup (terminal) exited $($r.Code):`n$($r.Output)" }
+    $r = Invoke-Install $hu $rel "file-gui"; if ($r.Code -ne 0) { Fail "uninstall setup (desktop) exited $($r.Code):`n$($r.Output)" }
+    $udir = Join-Path $hu "bin"; $umarker = Join-Path $hu "kimun\install.toml"
+    [IO.File]::WriteAllText((Join-Path $hu "kimun\config.toml"), "keep = 'me'")
+    $r = Invoke-Install $hu $rel "uninstall" -NoDir
+    if ($r.Code -ne 0) { Fail "terminal uninstall exited $($r.Code):`n$($r.Output)" }
+    if (Test-Path "$udir\kimun.exe") { Fail "uninstall left kimun.exe" }
+    if (-not (Test-Path "$udir\kimun-gui.exe")) { Fail "the terminal uninstall removed the desktop app" }
+    if (-not (Test-Path $umarker)) { Fail "the marker went while the desktop app is still installed" }
+    Ok "-Uninstall: removes the terminal app only; the marker stays for the desktop app"
+    $r = Invoke-Install $hu $rel "uninstall-gui" -NoDir
+    if ($r.Code -ne 0) { Fail "desktop uninstall exited $($r.Code):`n$($r.Output)" }
+    if (Test-Path "$udir\kimun-gui.exe") { Fail "uninstall left kimun-gui.exe" }
+    if (Test-Path $shortcut) { Fail "uninstall left the Start-menu shortcut" }
+    if (Test-Path $umarker) { Fail "the marker stayed after both apps were removed" }
+    if (@((Get-RawUserPath) -split ";" | Where-Object { $_.TrimEnd("\") -ieq $udir }).Count -ne 0) { Fail "uninstall left the folder on the PATH" }
+    if (Test-Path $udir) { Fail "uninstall left the empty folder" }
+    if ((Get-Content -Raw (Join-Path $hu "kimun\config.toml")) -notmatch "keep") { Fail "uninstall touched the configuration" }
+    Ok "-Uninstall -Gui: exe, shortcut, then marker, PATH entry and folder; configuration kept"
+    $r = Invoke-Install $hu $rel "uninstall" -NoDir
+    if ($r.Code -ne 0 -or $r.Output -notmatch "Nothing to remove") { Fail "a second uninstall: exit $($r.Code):`n$($r.Output)" }
+    Ok "-Uninstall with nothing installed: a plain message, exit 0"
+    $r = Invoke-Install $hu $rel "file"; if ($r.Code -ne 0) { Fail "reinstall exited $($r.Code):`n$($r.Output)" }
+    $r = Invoke-Install $hu $rel "uninstall-iex" -NoDir -Env @("KIMUN_UNINSTALL=1")
+    if ($r.Code -ne 0 -or (Test-Path "$udir\kimun.exe")) { Fail "KIMUN_UNINSTALL=1 with irm | iex: exit $($r.Code):`n$($r.Output)" }
+    Ok "KIMUN_UNINSTALL=1 works for the irm | iex form"
+    # The marker belongs to the install it names: uninstalling another folder leaves it.
+    $hm = Join-Path $work "un2"; $mcustom = Join-Path $hm "custom"
+    $r = Invoke-Install $hm $rel "file"; if ($r.Code -ne 0) { Fail "marker test setup (terminal) exited $($r.Code):`n$($r.Output)" }
+    $r = Invoke-Install $hm $rel "file-gui" -Env @("KIMUN_INSTALL_DIR=$mcustom"); if ($r.Code -ne 0) { Fail "marker test setup (desktop) exited $($r.Code):`n$($r.Output)" }
+    $r = Invoke-Install $hm $rel "uninstall"
+    if ($r.Code -ne 0) { Fail "uninstall of the other folder exited $($r.Code):`n$($r.Output)" }
+    if (Test-Path (Join-Path $hm "bin\kimun.exe")) { Fail "uninstall left kimun.exe" }
+    if (-not (Test-Path (Join-Path $hm "kimun\install.toml"))) { Fail "uninstalling another folder removed the marker of the desktop app" }
+    if (-not (Test-Path (Join-Path $mcustom "kimun-gui.exe"))) { Fail "uninstalling another folder touched the desktop app" }
+    Ok "-Uninstall: the marker of an install in another folder stays"
+    $r = Invoke-Install $hm $rel "uninstall-gui" -NoDir
+    if ($r.Code -ne 0 -or (Test-Path (Join-Path $mcustom "kimun-gui.exe"))) { Fail "uninstall from the marker's folder: exit $($r.Code):`n$($r.Output)" }
 } finally {
     # Put back what was changed on this machine.
     $env:USERPROFILE = $userprofile
-    foreach ($n in "KIMUN_INSTALL_DIR", "KIMUN_VERSION", "KIMUN_DOWNLOAD_BASE", "KIMUN_GUI", "KIMUN_MANIFEST_URL", "KIMUN_RELEASES_API") { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+    foreach ($n in "KIMUN_INSTALL_DIR", "KIMUN_VERSION", "KIMUN_DOWNLOAD_BASE", "KIMUN_GUI", "KIMUN_UNINSTALL", "KIMUN_MANIFEST_URL", "KIMUN_RELEASES_API") { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
     if (-not $shortcutBefore) { Remove-Item -Force $shortcut -ErrorAction SilentlyContinue }
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
     try {

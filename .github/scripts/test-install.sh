@@ -210,6 +210,21 @@ mac_install "$h" >/dev/null 2>&1 || fail "re-install failed"
 KIMUN_APP_DIR="$h/elsewhere" mac_install "$h" >/dev/null 2>&1 || fail "KIMUN_APP_DIR install failed"
 [ -d "$h/elsewhere/Kimun.app" ] || fail "KIMUN_APP_DIR ignored"
 ok "macOS --gui: a re-install replaces the app; KIMUN_APP_DIR is honored"
+# An older raw kimun-gui (and its marker) is replaced by Kimun.app, not left as a second copy.
+h="$work/mraw1"; mkdir -p "$h/bin" "$h/.config/kimun"; echo old >"$h/bin/kimun-gui"
+printf 'channel = "script"\ninstall_dir = "%s/bin"\n' "$h" >"$h/.config/kimun/install.toml"
+mac_install "$h" >"$work/mraw1.out" 2>&1 || fail "app install over a raw binary failed: $(cat "$work/mraw1.out")"
+[ -x "$h/Applications/Kimun.app/Contents/MacOS/kimun-gui" ] || fail "Kimun.app missing after an upgrade from the raw binary"
+[ ! -e "$h/bin/kimun-gui" ] || fail "the old raw kimun-gui was left next to Kimun.app"
+[ ! -e "$h/.config/kimun/install.toml" ] || fail "the old marker was left after the raw binary went"
+ok "macOS --gui: the old raw binary and its marker are removed when Kimun.app is installed"
+# ... but the terminal app and its marker stay.
+h="$work/mraw2"; mkdir -p "$h/bin" "$h/.config/kimun"; echo old >"$h/bin/kimun-gui"; echo t >"$h/bin/kimun"
+printf 'channel = "script"\ninstall_dir = "%s/bin"\n' "$h" >"$h/.config/kimun/install.toml"
+mac_install "$h" >/dev/null 2>&1 || fail "app install beside the terminal app failed"
+[ ! -e "$h/bin/kimun-gui" ] || fail "the old raw kimun-gui was left"
+[ -f "$h/bin/kimun" ] && [ -f "$h/.config/kimun/install.toml" ] || fail "the terminal app or its marker was removed"
+ok "macOS --gui: the terminal app and its marker are kept"
 # A corrupted .dmg: checksum mismatch, nothing installed.
 cp -R "$macrel" "$work/macbad"; echo x >>"$work/macbad/kimun-gui-$v-macos-arm64.dmg"
 h="$work/m4"; mkdir -p "$h"
@@ -228,6 +243,94 @@ h="$work/m6"; mkdir -p "$h"
 PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" sh install.sh >/dev/null 2>&1 || fail "terminal install on a Mac failed"
 [ -x "$h/bin/kimun" ] && [ ! -e "$h/Applications" ] || fail "terminal install on a Mac changed"
 ok "macOS: the terminal app install is unchanged"
+
+# 8c. --uninstall: removes what the installer put in place, keeps the user's data, keeps the marker
+# while the other app is there. It finds the install dir from the marker, with no KIMUN_INSTALL_DIR.
+uninstall_in() { # HOME [args...]
+  local h="$1"; shift
+  HOME="$h" sh install.sh --uninstall "$@"
+}
+h="$work/u1"; mkdir -p "$h"
+install_in "$h" "$rel" >/dev/null; install_in "$h" "$rel" --gui >/dev/null
+echo 'keep = "me"' >"$h/.config/kimun/config.toml"
+out="$(uninstall_in "$h" 2>&1)" || fail "terminal uninstall failed: $out"
+[ ! -e "$h/bin/kimun" ] || fail "uninstall left the terminal binary"
+[ -x "$h/bin/kimun-gui" ] || fail "the terminal uninstall removed the desktop app"
+[ -f "$h/.config/kimun/install.toml" ] || fail "the marker went while the desktop app is still installed"
+ok "--uninstall: removes the terminal app only; the marker stays for the desktop app"
+out="$(uninstall_in "$h" --gui 2>&1)" || fail "desktop uninstall failed: $out"
+[ ! -e "$h/bin/kimun-gui" ] || fail "uninstall left the desktop binary"
+if [ "$(uname -s)" = Linux ]; then # the launcher files are Linux's
+  [ ! -e "$h/.local/share/applications/kimun.desktop" ] || fail "uninstall left the launcher entry"
+  [ -z "$(find "$h/.local/share/icons" -name 'kimun.png' 2>/dev/null)" ] || fail "uninstall left icons"
+fi
+[ ! -e "$h/.config/kimun/install.toml" ] || fail "the marker stayed after both apps were removed"
+grep -q 'keep = "me"' "$h/.config/kimun/config.toml" || fail "uninstall touched the user's configuration"
+ok "--uninstall --gui: removes binary, launcher entry and icons, then the marker; config.toml is kept"
+out="$(uninstall_in "$h" 2>&1)" || fail "a second uninstall failed: $out"
+echo "$out" | grep -q "Nothing to remove" || fail "a second uninstall said: $out"
+ok "--uninstall with nothing installed: a plain message, exit 0"
+# Other launcher icons and entries are left alone; a custom dir is found from the marker.
+h="$work/u2"; mkdir -p "$h/.local/share/applications"; echo x >"$h/.local/share/applications/other.desktop"
+HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh >/dev/null
+[ -x "$h/custom/kimun" ] || fail "custom-dir install failed"
+uninstall_in "$h" >/dev/null || fail "uninstall from a marker's dir failed"
+[ ! -e "$h/custom/kimun" ] || fail "uninstall did not find the dir in the marker"
+[ -f "$h/.local/share/applications/other.desktop" ] || fail "uninstall removed another app's launcher entry"
+ok "--uninstall: finds a custom install dir from the marker and leaves other files alone"
+# macOS: the app is removed from ~/Applications; no network needed.
+h="$work/u3"; mkdir -p "$h/Applications/Kimun.app"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall failed: $out"
+[ ! -e "$h/Applications/Kimun.app" ] || fail "macOS uninstall left Kimun.app"
+ok "macOS --uninstall --gui: removes Kimun.app"
+# Nothing in the default dir: the message points at KIMUN_APP_DIR (no marker remembers it).
+h="$work/u3a"; mkdir -p "$h"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall with no app failed: $out"
+case "$out" in *"Nothing to remove"*"KIMUN_APP_DIR"*) ;; *) fail "the macOS hint about KIMUN_APP_DIR is missing: $out" ;; esac
+ok "macOS --uninstall --gui: with no app found, the message names KIMUN_APP_DIR"
+# What an interrupted upgrade leaves (the backup and the staging folder) goes too, even with no app.
+h="$work/u3b"; mkdir -p "$h/Applications/.Kimun.app.old" "$h/Applications/.Kimun.new/Kimun.app"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall of leftovers failed: $out"
+[ ! -e "$h/Applications/.Kimun.app.old" ] && [ ! -e "$h/Applications/.Kimun.new" ] || fail "uninstall left the upgrade leftovers"
+ok "macOS --uninstall --gui: also removes the leftovers of an interrupted upgrade"
+# Launch Services is told to forget the app (best effort), before it is removed.
+h="$work/u3c"; mkdir -p "$h/Applications/Kimun.app" "$work/fakels"
+printf '#!/bin/sh\necho "$*" >"%s/ls.log"\n' "$work/fakels" >"$work/fakels/lsregister"; chmod +x "$work/fakels/lsregister"
+sed "s|^LSREGISTER=.*|LSREGISTER=$work/fakels/lsregister|" install.sh >"$work/install-ls.sh"
+PATH="$macbin:$PATH" HOME="$h" sh "$work/install-ls.sh" --uninstall --gui >/dev/null 2>&1 || fail "uninstall with lsregister failed"
+grep -q -- "-u $h/Applications/Kimun.app" "$work/fakels/ls.log" || fail "lsregister -u was not called: $(cat "$work/fakels/ls.log" 2>&1)"
+ok "macOS --uninstall --gui: unregisters the app from Launch Services"
+# The marker belongs to the install it names: uninstalling another dir must not remove it.
+h="$work/u5"; mkdir -p "$h"
+install_in "$h" "$rel" >/dev/null
+HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh --gui >/dev/null
+grep -q "install_dir = \"$h/custom\"" "$h/.config/kimun/install.toml" || fail "setup: the marker does not name the custom dir"
+HOME="$h" KIMUN_INSTALL_DIR="$h/bin" sh install.sh --uninstall >/dev/null 2>&1 || fail "uninstall of the other dir failed"
+[ ! -e "$h/bin/kimun" ] || fail "uninstall left the terminal binary"
+[ -f "$h/.config/kimun/install.toml" ] || fail "uninstalling another dir removed the marker of the desktop app"
+[ -x "$h/custom/kimun-gui" ] || fail "uninstalling another dir touched the desktop app"
+ok "--uninstall: the marker of an install in another dir stays"
+# A marker that cannot be read: said aloud, the default dir is used.
+h="$work/u6"; mkdir -p "$h/.config/kimun"; printf "install_dir = 'x'\n" >"$h/.config/kimun/install.toml"
+out="$(HOME="$h" sh install.sh --uninstall 2>&1)" || fail "uninstall with an unreadable marker failed: $out"
+echo "$out" | grep -q "could not read install_dir" || fail "an unreadable marker was not reported: $out"
+ok "--uninstall: an unreadable marker is reported"
+# The icon cache is refreshed after the icons go, when one exists (Linux).
+if [ "$(uname -s)" = Linux ]; then
+  h="$work/u7"; mkdir -p "$h" "$work/gtkbin"
+  install_in "$h" "$rel" --gui >/dev/null
+  echo cache >"$h/.local/share/icons/hicolor/icon-theme.cache"
+  printf '#!/bin/sh\necho "$*" >"%s/gtk.log"\n' "$work/gtkbin" >"$work/gtkbin/gtk-update-icon-cache"; chmod +x "$work/gtkbin/gtk-update-icon-cache"
+  PATH="$work/gtkbin:$PATH" HOME="$h" sh install.sh --uninstall --gui >/dev/null 2>&1 || fail "uninstall with an icon cache failed"
+  [ -s "$work/gtkbin/gtk.log" ] || fail "the icon cache was not refreshed after the icons were removed"
+  ok "--uninstall --gui: refreshes an existing icon cache"
+fi
+# No network and no curl needed to uninstall.
+nt2="$work/nocurl"; mkdir -p "$nt2"
+for tool in sh uname rm sed head dirname; do ln -sf "$(command -v $tool)" "$nt2/$tool"; done
+h="$work/u4"; mkdir -p "$h"
+PATH="$nt2" HOME="$h" sh install.sh --uninstall >/dev/null 2>&1 || fail "uninstall needed a tool the install needs"
+ok "--uninstall needs no downloader"
 
 # 9. Missing tools are named up front.
 nt="$work/notar"; mkdir -p "$nt"; for tool in sh uname; do ln -s "$(command -v $tool)" "$nt/$tool"; done
