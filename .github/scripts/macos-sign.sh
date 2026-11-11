@@ -38,7 +38,9 @@ done
 
 work="$(mktemp -d)"
 keychain="$work/signing.keychain-db"
-keychain_password="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 32 || true)"
+# No `tr </dev/urandom | head`: on the macOS runner `tr` never saw the broken pipe and
+# ran forever, so the script hung before its first command with an empty log.
+keychain_password="$(openssl rand -hex 16)"
 cleanup() {
   [ "$dry" = 1 ] || security delete-keychain "$keychain" >/dev/null 2>&1 || true
   rm -rf "$work"
