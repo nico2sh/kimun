@@ -292,9 +292,8 @@ impl FilesPane {
     fn changed_in(&mut self, dirs: &[&VaultPath], below: bool, cx: &mut Context<Self>) {
         let shown = self.model.current_dir().clone();
         let showing = dirs.iter().find(|dir| dir.is_like(&shown));
-        let under = below
-            && !self.model.is_empty()
-            && dirs.iter().any(|dir| shown.is_ancestor_of(dir));
+        let under =
+            below && !self.model.is_empty() && dirs.iter().any(|dir| shown.is_ancestor_of(dir));
         if let Some(dir) = showing {
             self.model.refresh_if_showing(dir, &self.tx);
         }

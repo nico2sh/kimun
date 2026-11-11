@@ -13,8 +13,9 @@
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div,
+    App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Window, div,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
