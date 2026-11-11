@@ -24,6 +24,14 @@ use super::files::{ellipsis, ellipsis_box, lane_row};
 use super::find::CONTEXT_CHARS;
 use crate::theme;
 
+/// The count line FIND and SEM show over their lists: "1 note", "N notes".
+pub(crate) fn count_label(n: usize) -> String {
+    match n {
+        1 => "1 note".to_string(),
+        n => format!("{n} notes"),
+    }
+}
+
 /// A result row's height, in rems: title, filename and one line of context.
 pub(crate) const ROW_REMS: f32 = 3.75;
 

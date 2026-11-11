@@ -73,7 +73,7 @@ use super::chevron::{Reach, preview_header};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
 use super::files::display_title;
 use super::query_field::{self, query_field};
-use super::result_row::result_row;
+use super::result_row::{count_label, result_row};
 use super::search::{Mark, SearchPreview, SectionMark};
 use crate::input;
 use crate::theme;
@@ -82,6 +82,7 @@ use crate::theme;
 pub(crate) const SEMANTIC_ID: &str = "semantic";
 pub(crate) const SEMANTIC_INPUT_ID: &str = "semantic-input";
 pub(crate) const SEMANTIC_LIST_ID: &str = "semantic-list";
+pub(crate) const SEMANTIC_BAR_ID: &str = "semantic-bar";
 pub(crate) const SEMANTIC_PREVIEW_ID: &str = "semantic-preview";
 pub(crate) const SEMANTIC_PREVIEW_HEADER_ID: &str = "semantic-preview-header";
 pub(crate) const SEMANTIC_PREVIEW_ROW_ID: &str = "semantic-preview-row";
@@ -253,6 +254,32 @@ impl SemanticView {
             None if query.trim().is_empty() => BLANK_TEXT,
             None => NO_RESULTS_TEXT,
         }
+    }
+
+    /// The result count under the field: only once a search has landed
+    /// with rows (while loading, for a blank query, with the server
+    /// unavailable, or with no rows - the list says "No results" itself -
+    /// there is nothing to count).
+    fn count_bar(&self, t: &Theme, cx: &App) -> Option<impl IntoElement + use<>> {
+        let list = self.list.read(cx);
+        let counted = self.installed
+            && self.unavailable.is_none()
+            && !self.query(cx).trim().is_empty()
+            && !list.is_loading()
+            && list.len() > 0;
+        counted.then(|| {
+            let text = count_label(list.len());
+            div()
+                .id(SEMANTIC_BAR_ID)
+                .test_support()
+                .aria_label(text.clone())
+                .flex_none()
+                .px_3()
+                .pb_1()
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child(text)
+        })
     }
 
     /// The source a search runs through: the configured server, read per
@@ -491,6 +518,7 @@ impl Render for SemanticView {
             })
             .child(self.list.clone());
         let header = self.preview_header(t, cx);
+        let bar = self.count_bar(t, cx);
         let pane = (!self.model.is_collapsed()).then(|| {
             div()
                 .flex()
@@ -539,6 +567,7 @@ impl Render for SemanticView {
                 cx.stop_propagation();
             }))
             .child(query_field(&self.input, SEMANTIC_INPUT_ID, "Query", t))
+            .children(bar)
             .child(list)
             .children(pane)
     }
