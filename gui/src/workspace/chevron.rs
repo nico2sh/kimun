@@ -16,7 +16,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, Window, div, rems,
+    StyleRefinement, Styled as _, Window, div, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
@@ -67,12 +67,22 @@ impl Reach {
 
 /// The chevron button's side, in rems: a compact square. Centred on a
 /// three-line row (3.75 rem) it stays clear of the first line, where SEM
-/// shows its score.
-pub(crate) const CHEVRON_REMS: f32 = 1.25;
+/// shows its score, with a little room to spare.
+pub(crate) const CHEVRON_REMS: f32 = 1.125;
 
 /// The colours the chevron button draws with, so it reads as clickable: a
 /// subtle fill inside a hairline border at rest; a stronger fill and the
 /// text colour for the glyph under the pointer.
+///
+/// The fills and the border are the text colour, see-through: drawn over
+/// whatever is under the button (a hovered row, the selected row, the
+/// preview header) they always tint it toward the text, so the button
+/// stands off every surface it sits on. No single theme colour does that
+/// in every built-in theme: the hover and selection fills coincide with
+/// the dim border colour or with each other in several of them. The
+/// strengths below keep every part clear of both row fills in every
+/// built-in theme (`chevron_reads_as_clickable_on_every_row`); a weaker
+/// rest fill lands on the selected fill in some light themes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChevronLook {
     pub(crate) fill: Rgba,
@@ -82,14 +92,26 @@ pub(crate) struct ChevronLook {
     pub(crate) hover_glyph: Rgba,
 }
 
+/// How opaque the text colour is in the button's rest fill.
+const FILL_ALPHA: f32 = 0.24;
+/// ...in its fill under the pointer.
+const HOVER_FILL_ALPHA: f32 = 0.4;
+/// ...in its border.
+const BORDER_ALPHA: f32 = 0.55;
+
 impl ChevronLook {
     pub(crate) fn of(t: &Theme) -> Self {
+        let text = theme::foreground(t);
+        let tint = |a: f32| Rgba {
+            a: text.a * a,
+            ..text
+        };
         Self {
-            fill: theme::hover_background(t),
-            border: theme::divider(t),
+            fill: tint(FILL_ALPHA),
+            border: tint(BORDER_ALPHA),
             glyph: theme::secondary(t),
-            hover_fill: theme::selected_background(t),
-            hover_glyph: theme::foreground(t),
+            hover_fill: tint(HOVER_FILL_ALPHA),
+            hover_glyph: text,
         }
     }
 }
@@ -118,9 +140,15 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
         .whitespace_nowrap()
         .cursor_pointer()
         .text_color(look.glyph)
-        .hover(move |style| style.bg(look.hover_fill).text_color(look.hover_glyph))
+        .hover(move |style| chevron_hover(look, style))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .child(reach.glyph())
+}
+
+/// The chevron button under the pointer: `style` with the stronger fill
+/// and the text colour of `look`.
+pub(crate) fn chevron_hover(look: ChevronLook, style: StyleRefinement) -> StyleRefinement {
+    style.bg(look.hover_fill).text_color(look.hover_glyph)
 }
 
 /// The open preview's one-line header: `title` on the left, cut short with
