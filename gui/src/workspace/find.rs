@@ -77,7 +77,8 @@ use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
+use super::chevron::{Reach, preview_header};
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
 use super::files::{display_title, ellipsis, lane_row};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
@@ -103,12 +104,12 @@ pub(crate) const FIND_INPUT_ID: &str = "find-query";
 pub(crate) const FIND_LIST_ID: &str = "find-list";
 pub(crate) const FIND_TITLE_ID: &str = "find-title";
 pub(crate) const FIND_SORT_ID: &str = "find-sort";
-pub(crate) const FIND_EXPAND_ID: &str = "find-expand";
 pub(crate) const FIND_HELP_ID: &str = "find-help";
 pub(crate) const FIND_SAVE_ID: &str = "find-save";
 pub(crate) const FIND_ERROR_ID: &str = "find-query-error";
 pub(crate) const FIND_MORE_ID: &str = "find-more";
 pub(crate) const FIND_PREVIEW_ID: &str = "find-preview";
+pub(crate) const FIND_PREVIEW_HEADER_ID: &str = "find-preview-header";
 pub(crate) const FIND_PREVIEW_ROW_ID: &str = "find-preview-row";
 
 /// How long typing must pause before the query runs.
@@ -261,6 +262,7 @@ impl FindView {
                 cx.notify();
             }),
         ];
+        list.update(cx, |list, cx| list.set_chevron(Some(Reach::Grow), cx));
         Self {
             list,
             preview,
@@ -562,9 +564,51 @@ impl FindView {
         let needles = self.needles(cx);
         self.preview
             .update(cx, |preview, cx| preview.show(wanted, needles, cx));
+        self.sync_chevron(cx);
         if changed {
             cx.notify();
         }
+    }
+
+    /// The rows' chevron follows the preview: `›` until Full, `‹` there.
+    fn sync_chevron(&mut self, cx: &mut Context<Self>) {
+        let reach = Reach::of(&self.model);
+        self.list
+            .update(cx, |list, cx| list.set_chevron(Some(reach), cx));
+    }
+
+    /// A click on a chevron (a row's or the header's): Full shrinks as Left
+    /// does, else the preview grows as Right does; the list has the
+    /// keyboard after.
+    pub(crate) fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.is_full() {
+            self.shrink(cx);
+        } else {
+            self.grow(cx);
+        }
+        self.focus_list(window, cx);
+    }
+
+    /// The preview's one-line header: the selected note's title and the
+    /// chevron. `None` with no row selected.
+    fn preview_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let list = self.list.read(cx);
+        let entry = &list.selected_row()?.entry;
+        let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
+        Some(
+            preview_header(
+                FIND_PREVIEW_HEADER_ID.into(),
+                title,
+                Reach::of(&self.model),
+                t,
+            )
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                if event.standard_click() {
+                    this.chevron_step(window, cx);
+                }
+            }))
+            .test_support(),
+        )
     }
 
     /// Right: Collapsed → Context → Full (Full stays).
@@ -583,7 +627,7 @@ impl FindView {
         cx.notify();
     }
 
-    /// Space and the preview button: Collapsed → Context → Full → Collapsed.
+    /// Space: Collapsed → Context → Full → Collapsed.
     fn cycle(&mut self, cx: &mut Context<Self>) {
         self.model.toggle(self.selected_path(cx));
         self.sync_preview(cx);
@@ -686,25 +730,6 @@ impl FindView {
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Sort)))
                 .test_support()
         });
-        let (icon, tip) = if self.model.is_full() {
-            (IconName::Minimize, "Back to the results (Space)")
-        } else if self.model.is_context() {
-            (IconName::Maximize, "Fill the view with the preview (Right)")
-        } else {
-            (
-                IconName::PanelBottomOpen,
-                "Preview the selected note (Right)",
-            )
-        };
-        let expand = Button::new(FIND_EXPAND_ID)
-            .ghost()
-            .xsmall()
-            .icon(icon)
-            .tooltip(tip)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.cycle(cx);
-                this.focus_list(window, cx);
-            }));
         let save = Button::new(FIND_SAVE_ID)
             .ghost()
             .xsmall()
@@ -745,7 +770,6 @@ impl FindView {
                 )
             })
             .children(chip)
-            .child(expand)
             .child(save)
             .child(help)
     }
@@ -799,6 +823,7 @@ impl Render for FindView {
                 }
             })
             .child(self.list.clone());
+        let header = self.preview_header(&t, cx);
         let pane = (!self.model.is_collapsed()).then(|| {
             div()
                 .flex()
@@ -808,6 +833,7 @@ impl Render for FindView {
                 .when(!full, |pane| {
                     pane.border_t_1().border_color(theme::divider(&t))
                 })
+                .children(header)
                 .child(
                     self.preview
                         .clone()
@@ -926,6 +952,11 @@ impl Workspace {
             }
             DrawerListEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
+            }
+            DrawerListEvent::Verb(_, EXPAND) => {
+                if let Some(view) = self.find.clone() {
+                    view.update(cx, |view, cx| view.chevron_step(window, cx));
+                }
             }
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
