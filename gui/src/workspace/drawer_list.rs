@@ -59,7 +59,7 @@ use kimun_notes::logic::list::{ListCore, ListRow, ListSetup, RowSource, StaticRo
 use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
-use super::chevron::{Reach, chevron};
+use super::chevron::{Reach, ZoneOn, chevron};
 use super::file_dialogs::FileOpKind;
 use super::files::{ClickPolicy, ClickRows, RowClick, with_click_cursor, with_file_menu};
 use crate::input;
@@ -578,8 +578,9 @@ impl<R: DrawerRow> DrawerList<R> {
         let theme = theme::current(cx);
         let t = &*theme;
         // Out of the row's flow (it takes no width from the content): the
-        // zone lies over the row's right end, flush with it, full height.
-        chevron(chevron_id(row_id), reach, t)
+        // zone lies over the row's right end, flush with it, full height,
+        // opaque in the row's fill so the text beneath does not show.
+        chevron(chevron_id(row_id), reach, ZoneOn::row(selected), t)
             .when(!selected, |chevron| {
                 chevron
                     .opacity(0.)

@@ -17,6 +17,7 @@
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _,
@@ -73,20 +74,59 @@ impl Reach {
 /// (a row, the preview header).
 pub(crate) const ZONE_REMS: f32 = 1.5;
 
+/// What the zone lies over: its look depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoneOn {
+    /// The selected row.
+    SelectedRow,
+    /// A row that is not selected (the zone shows only while it is
+    /// hovered).
+    HoveredRow,
+    /// The open preview's header, which has no fill of its own.
+    Header,
+}
+
+impl ZoneOn {
+    /// The row a list draws: selected or not.
+    pub(crate) fn row(selected: bool) -> Self {
+        if selected {
+            Self::SelectedRow
+        } else {
+            Self::HoveredRow
+        }
+    }
+
+    /// The fill under the zone, as the row frame draws it
+    /// ([`row_frame`](super::files::row_frame)): `None` on the header.
+    pub(crate) fn fill(self, t: &Theme) -> Option<Rgba> {
+        match self {
+            Self::SelectedRow => Some(theme::selected_background(t)),
+            Self::HoveredRow => Some(theme::hover_background(t)),
+            Self::Header => None,
+        }
+    }
+}
+
 /// The colours the zone draws with: a thin divider on its left edge and
-/// the glyph in the dim text colour at rest (no fill); a faint fill and the
-/// text colour for the glyph under the pointer.
+/// the glyph in the dim text colour at rest; a faint fill and the text
+/// colour for the glyph under the pointer.
 ///
-/// The divider and the fill are the text colour, see-through: drawn over
-/// whatever is under the zone (a hovered row, the selected row, the
-/// preview header) they always tint it toward the text, so both stand off
-/// every surface they sit on. The theme's own divider colour cannot do
-/// that: in several built-in themes it is the very colour of a hovered
-/// row. The strengths below keep both clear of both row fills in every
-/// built-in theme (`zone_reads_on_every_row`) and no stronger: a quiet
-/// line, a faint fill.
+/// On a row, the zone is opaque in the row's own fill ([`ZoneOn::fill`]):
+/// it looks unfilled, yet masks the row's text that runs on beneath it (a
+/// context line nearly always does). Its hover fill is that fill tinted
+/// toward the text, opaque as well. The header has no fill and nothing
+/// under its zone (its title stops short, [`clear_of_zone`]), so there the
+/// zone has no rest fill and a see-through hover tint.
+///
+/// The divider is the text colour, see-through, over the zone's fill. The
+/// theme's own divider colour cannot do the job: in nine built-in themes it
+/// is the very colour of a hovered row. The strengths below keep the
+/// divider and the hover fill clear of the row fill they are drawn on in
+/// every built-in theme (`zone_reads_on_every_row`) and no stronger: a
+/// quiet line, a faint fill.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChevronLook {
+    pub(crate) fill: Option<Rgba>,
     pub(crate) divider: Rgba,
     pub(crate) glyph: Rgba,
     pub(crate) hover_fill: Rgba,
@@ -99,29 +139,35 @@ const DIVIDER_ALPHA: f32 = 0.2;
 const HOVER_FILL_ALPHA: f32 = 0.1;
 
 impl ChevronLook {
-    pub(crate) fn of(t: &Theme) -> Self {
+    pub(crate) fn of(t: &Theme, on: ZoneOn) -> Self {
         let text = theme::foreground(t);
         let tint = |a: f32| Rgba {
             a: text.a * a,
             ..text
         };
+        let fill = on.fill(t);
         Self {
+            fill,
             divider: tint(DIVIDER_ALPHA),
             glyph: theme::secondary(t),
-            hover_fill: tint(HOVER_FILL_ALPHA),
+            hover_fill: match fill {
+                Some(under) => theme::mix_rgba(under, text, HOVER_FILL_ALPHA * text.a),
+                None => tint(HOVER_FILL_ALPHA),
+            },
             hover_glyph: text,
         }
     }
 }
 
-/// The chevron itself, `id` its element id: a zone [`ZONE_REMS`] wide laid
-/// over the right end of what carries it, flush with that end and as tall
-/// as it, a thin divider on its left edge, the glyph centred in it
-/// ([`ChevronLook`]). The whole zone is the click target; under the
-/// pointer it fills faintly, and its tooltip names the step. The carrier
-/// is `relative`; the caller takes the click and adds `test_support`.
-pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div> {
-    let look = ChevronLook::of(t);
+/// The chevron itself, `id` its element id, over `on`: a zone [`ZONE_REMS`]
+/// wide laid over the right end of what carries it, flush with that end
+/// and as tall as it, a thin divider on its left edge, the glyph centred in
+/// it ([`ChevronLook`]). On a row its right corners round as the row's do.
+/// The whole zone is the click target; under the pointer it fills faintly,
+/// and its tooltip names the step. The carrier is `relative`; the caller
+/// takes the click and adds `test_support`.
+pub(crate) fn chevron(id: SharedString, reach: Reach, on: ZoneOn, t: &Theme) -> Stateful<Div> {
+    let look = ChevronLook::of(t, on);
     let tip = reach.tooltip();
     div()
         .id(id)
@@ -137,7 +183,8 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
         .justify_center()
         .border_l_1()
         .border_color(look.divider)
-        .rounded_r_md()
+        .when(on != ZoneOn::Header, |zone| zone.rounded_r_md())
+        .when_some(look.fill, |zone, fill| zone.bg(fill))
         .text_sm()
         .whitespace_nowrap()
         .cursor_pointer()
@@ -187,7 +234,7 @@ pub(crate) fn preview_header(
     )
     .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
     .child(
-        chevron(chevron_id, reach, t)
+        chevron(chevron_id, reach, ZoneOn::Header, t)
             .group_hover(HEADER_GROUP, move |style| style.text_color(hover))
             .test_support(),
     )

@@ -934,6 +934,11 @@ fn sources_header_shows_collapse_chevron_in_full(cx: &mut TestAppContext) {
         label_of_id(&started, header_chevron(), cx).as_deref(),
         Some(GROW)
     );
+    super::chevron_tests::assert_zone_flush_right_in(
+        started.handle,
+        SharedString::from(READER_HEADER_ID),
+        cx,
+    );
 
     // Grow: Full, the chevron flips, the selection and the keyboard stay.
     click(&started, header_chevron(), cx);
@@ -1027,6 +1032,9 @@ fn sources_row_chevron_grows_reader(cx: &mut TestAppContext) {
     }
     hover(&started, source_row_id(2), cx);
     assert_eq!(bounds_of(&started, row_chevron(2), cx), at_rest);
+    for rank in [1, 2] {
+        super::chevron_tests::assert_zone_flush_right_in(started.handle, source_row_id(rank), cx);
+    }
     assert!(!drawn(&started, READER_HEADER_ID, cx));
 
     // A right click on it: no expand.
