@@ -15,13 +15,13 @@
 //! instead of needles, driven by the same `PreviewModel`: Collapsed (the
 //! list only) → Context (under the list) → Full (the whole part, at its
 //! fixed open height under the turn; the list keeps the keyboard out of
-//! sight). While Collapsed each row shows `Expand →` at its
-//! right end under the pointer (the list's row action): a click selects
-//! that row and grows the reader to Context, as Right does, and the list
-//! has the keyboard after. Open, a one-line **header** sits on top of the
-//! reader: the source's title (its heading, else its path), cut short with
-//! an ellipsis, and the size action, `Expand →` in Context and `Collapse ←`
-//! in Full; a click on it does what Right / Left do, and the list keeps (or
+//! sight). The selected row and the hovered row show the **Expand
+//! chevron** ([`super::chevron`]) at their right end, `›` (`‹` in Full): a
+//! click selects that row and steps the reader as Right does (Left in
+//! Full), and the list has the keyboard after. Open, a one-line **header**
+//! ([`preview_header`]) sits on top of the reader: the source's title (its
+//! heading, else its path), cut short with an ellipsis, and the same
+//! chevron; a click on it does what Right / Left do, and the list keeps (or
 //! gets) the keyboard. The note is read on tokio, keyed by path and the
 //! source's ordinal: a newer pick replaces a read under way and its result
 //! never shows; another section of the note on screen is laid out again
@@ -47,12 +47,11 @@ use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    Role, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
     Subscription, Window, div,
 };
 use kimun_core::NoteVault;
@@ -65,9 +64,8 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::drawer_list::{
-    DrawerList, DrawerListEvent, DrawerRow, MenuItem, OPEN_NOTE, RowAction, VerbId,
-};
+use super::chevron::{Reach, preview_header};
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, MenuItem, OPEN_NOTE};
 use super::files::{ClickPolicy, NOTE_ROW_REMS, ellipsis, lane_row};
 use super::query_field::{self, query_field};
 use super::search::{Mark, SearchPreview, SectionMark};
@@ -81,18 +79,6 @@ pub(crate) const SOURCES_LIST_ID: &str = "ask-sources-list";
 pub(crate) const READER_ID: &str = "ask-reader";
 pub(crate) const READER_ROW_ID: &str = "ask-reader-row";
 pub(crate) const READER_HEADER_ID: &str = "ask-reader-header";
-pub(crate) const READER_ACTION_ID: &str = "ask-reader-action";
-
-/// The reader's size action (a row's while Collapsed, the header's open):
-/// its label and key hint growing, then shrinking from Full.
-pub(crate) const EXPAND: &str = "Expand";
-pub(crate) const COLLAPSE: &str = "Collapse";
-/// The verb of the row action `Expand →`.
-const EXPAND_VERB: VerbId = "expand";
-const EXPAND_KEY: &str = "→";
-const COLLAPSE_KEY: &str = "←";
-const EXPAND_TIP: &str = "Expand the reader";
-const COLLAPSE_TIP: &str = "Collapse the reader";
 
 /// What the view says with no source to list, and with none left by the
 /// filter (the TUI's words).
@@ -105,12 +91,6 @@ const FILTER_LABEL: &str = "filter";
 /// turn.
 pub(crate) fn source_row_id(rank: usize) -> SharedString {
     format!("ask-source:{rank}").into()
-}
-
-/// The element id of the Expand action on the row of the source ranked
-/// `rank` (shown while the reader is Collapsed).
-pub(crate) fn source_row_expand_id(rank: usize) -> SharedString {
-    format!("ask-source-expand:{rank}").into()
 }
 
 /// The similarity as a whole percentage (the TUI's: the server's
@@ -157,19 +137,6 @@ impl DrawerRow for SourceRow {
 
     fn menu_items(&self) -> Vec<MenuItem> {
         vec![MenuItem::open_note()]
-    }
-
-    /// `Expand →`, which the view shows only while its reader is Collapsed.
-    fn hover_action(&self) -> Option<RowAction> {
-        Some(
-            RowAction::new(
-                EXPAND_VERB,
-                source_row_expand_id(self.rank),
-                EXPAND,
-                EXPAND_TIP,
-            )
-            .with_key_hint(EXPAND_KEY),
-        )
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
@@ -312,7 +279,7 @@ impl SourcesView {
             _subscriptions: subscriptions,
         };
         view.rebuild(Vec::new(), cx);
-        view.sync_row_actions(cx);
+        view.sync_chevron(cx);
         view
     }
 
@@ -499,28 +466,19 @@ impl SourcesView {
             self.reader
                 .update(cx, |reader, cx| reader.show_marked(path, mark, cx));
         }
-        self.sync_row_actions(cx);
+        self.sync_chevron(cx);
         if changed {
             cx.notify();
         }
     }
 
-    /// The rows' Expand action shows exactly while the reader is Collapsed
-    /// (open, the header carries the size action). Every model change goes
-    /// through [`Self::sync_preview`], which calls this; the list redraws
-    /// only when the answer flips.
-    fn sync_row_actions(&mut self, cx: &mut Context<Self>) {
-        let collapsed = self.model.is_collapsed();
+    /// The rows' chevron follows the reader: `›` until Full, `‹` there.
+    /// Every model change goes through [`Self::sync_preview`], which calls
+    /// this; the list redraws only when the answer flips.
+    fn sync_chevron(&mut self, cx: &mut Context<Self>) {
+        let reach = Reach::of(&self.model);
         self.list
-            .update(cx, |list, cx| list.set_row_actions_enabled(collapsed, cx));
-    }
-
-    /// A click on a row's Expand action (the list selected the row): the
-    /// reader grows to Context as Right does, and the list has the
-    /// keyboard.
-    pub(crate) fn expand_from_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.grow(cx);
-        self.focus_list(window, cx);
+            .update(cx, |list, cx| list.set_chevron(Some(reach), cx));
     }
 
     /// Right: Collapsed → Context → Full (Full stays).
@@ -547,10 +505,11 @@ impl SourcesView {
         cx.notify();
     }
 
-    /// A click on the reader header's action: Context grows to Full as
-    /// Right does, Full shrinks to Context as Left does; the list has the
-    /// keyboard after, so the arrows the hint names keep working.
-    fn header_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// A click on a chevron (a row's, the list selected the row already, or
+    /// the header's): Full shrinks to Context as Left does, else the reader
+    /// grows as Right does; the list has the keyboard after, so the arrows
+    /// the tooltip names keep working.
+    pub(crate) fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.is_full() {
             self.shrink(cx);
         } else {
@@ -560,49 +519,17 @@ impl SourcesView {
     }
 
     /// The open reader's one-line header: the selected source's title and
-    /// the size action. `None` with no source selected.
+    /// the chevron. `None` with no source selected.
     fn reader_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let title = reader_title(&self.list.read(cx).selected_row()?.source);
-        let (label, key, tip) = if self.model.is_full() {
-            (COLLAPSE, COLLAPSE_KEY, COLLAPSE_TIP)
-        } else {
-            (EXPAND, EXPAND_KEY, EXPAND_TIP)
-        };
-        let hover = theme::foreground(t);
-        let action = div()
-            .id(READER_ACTION_ID)
-            .test_support()
-            .role(Role::Button)
-            .aria_label(label)
-            .flex()
-            .flex_none()
-            .gap_1()
-            .whitespace_nowrap()
-            .cursor_pointer()
-            .text_color(theme::secondary(t))
-            .hover(move |style| style.text_color(hover))
-            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.standard_click() {
-                    this.header_action(window, cx);
-                }
-            }))
-            .child(label)
-            .child(div().text_color(theme::muted(t)).child(key));
         Some(
-            div()
-                .id(READER_HEADER_ID)
-                .test_support()
-                .aria_label(SharedString::from(title.clone()))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_0p5()
-                .text_xs()
-                .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
-                .child(action),
+            preview_header(READER_HEADER_ID, title.into(), Reach::of(&self.model), t)
+                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    if event.standard_click() {
+                        this.chevron_step(window, cx);
+                    }
+                }))
+                .test_support(),
         )
     }
 
@@ -708,8 +635,7 @@ impl Render for SourcesView {
                 }
             })
             .child(self.list.clone());
-        // Collapsed: the list alone (its rows carry Expand); open, the
-        // header tops the reader.
+        // Collapsed: the list alone; open, the header tops the reader.
         let pane = (!self.model.is_collapsed()).then(|| {
             div()
                 .flex()
@@ -820,9 +746,9 @@ impl Workspace {
             DrawerListEvent::Verb(row, OPEN_NOTE) => {
                 self.open_source_note(row.source.path.clone(), window, cx)
             }
-            DrawerListEvent::Verb(_, EXPAND_VERB) => {
+            DrawerListEvent::Verb(_, EXPAND) => {
                 if let Some(view) = self.ask_sources.clone() {
-                    view.update(cx, |view, cx| view.expand_from_row(window, cx));
+                    view.update(cx, |view, cx| view.chevron_step(window, cx));
                 }
             }
             DrawerListEvent::Verb(..) => {}

@@ -3168,6 +3168,7 @@ fn conflict_flash(details: &str) -> String {
 mod ask;
 mod ask_sources;
 mod attachment;
+mod chevron;
 mod config;
 mod create;
 mod drawer_list;
@@ -3222,6 +3223,8 @@ mod ask_tests;
 mod attachment_tests;
 #[cfg(test)]
 mod cfg_tests;
+#[cfg(test)]
+mod chevron_tests;
 #[cfg(test)]
 mod drop_tests;
 #[cfg(test)]
