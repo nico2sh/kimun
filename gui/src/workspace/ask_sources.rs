@@ -19,7 +19,7 @@
 //! chevron** ([`super::chevron`]) at their right end, `›` (`‹` in Full): a
 //! click selects that row and steps the reader as Right does (Left in
 //! Full), and the list has the keyboard after. Open, a one-line **header**
-//! ([`preview_header`]) sits on top of the reader: the source's title (its
+//! ([`step_header`]) sits on top of the reader: the source's title (its
 //! heading, else its path), cut short with an ellipsis, and the same
 //! chevron; a click on it does what Right / Left do, and the list keeps (or
 //! gets) the keyboard. The note is read on tokio, keyed by path and the
@@ -49,9 +49,9 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    SharedString, Stateful, StyleRefinement, Styled as _,
     Subscription, Window, div,
 };
 use kimun_core::NoteVault;
@@ -64,7 +64,7 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::chevron::{Reach, preview_header};
+use super::chevron::{PreviewSteps, step_header, sync_chevron};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, MenuItem, OPEN_NOTE};
 use super::files::{ClickPolicy, NOTE_ROW_REMS, ellipsis, lane_row};
 use super::query_field::{self, query_field};
@@ -284,7 +284,7 @@ impl SourcesView {
             _subscriptions: subscriptions,
         };
         view.rebuild(Vec::new(), cx);
-        view.sync_chevron(cx);
+        sync_chevron(&view.list, &view.model, cx);
         view
     }
 
@@ -471,76 +471,32 @@ impl SourcesView {
             self.reader
                 .update(cx, |reader, cx| reader.show_marked(path, mark, cx));
         }
-        self.sync_chevron(cx);
+        // The rows' chevron follows the reader: every model change comes
+        // through here; the list redraws only when the answer flips.
+        sync_chevron(&self.list, &self.model, cx);
         if changed {
             cx.notify();
         }
     }
 
-    /// The rows' chevron follows the reader: `›` until Full, `‹` there.
-    /// Every model change goes through [`Self::sync_preview`], which calls
-    /// this; the list redraws only when the answer flips.
-    fn sync_chevron(&mut self, cx: &mut Context<Self>) {
-        let reach = Reach::of(&self.model);
-        self.list
-            .update(cx, |list, cx| list.set_chevron(Some(reach), cx));
-    }
-
-    /// Right: Collapsed → Context → Full (Full stays).
-    fn grow(&mut self, cx: &mut Context<Self>) {
-        if !self.model.is_full() {
-            self.model.toggle(self.selected_path(cx));
-        }
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Left (and Escape): Full → Context → Collapsed.
-    fn shrink(&mut self, cx: &mut Context<Self>) {
-        self.model.collapse_step(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
     /// Enter, Space: Collapsed → Context → Full → Collapsed
-    /// (the TUI's Enter).
+    /// (the TUI's Enter); Left and Escape shrink it, Right grows it
+    /// ([`PreviewSteps`]).
     pub(crate) fn cycle(&mut self, cx: &mut Context<Self>) {
-        self.model.toggle(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// A click on a chevron (a row's, the list selected the row already, or
-    /// the header's): Full shrinks to Context as Left does, else the reader
-    /// grows as Right does; the list has the keyboard after, so the arrows
-    /// the tooltip names keep working.
-    pub(crate) fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_full() {
-            self.shrink(cx);
-        } else {
-            self.grow(cx);
-        }
-        self.focus_list(window, cx);
+        PreviewSteps::cycle(self, cx);
     }
 
     /// The open reader's one-line header: the selected source's title and
     /// the chevron. `None` with no source selected.
     fn reader_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let title = reader_title(&self.list.read(cx).selected_row()?.source);
-        Some(
-            preview_header(
-                READER_HEADER_ID.into(),
-                title.into(),
-                Reach::of(&self.model),
-                t,
-            )
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.standard_click() {
-                    this.chevron_step(window, cx);
-                }
-            }))
-            .test_support(),
-        )
+        Some(step_header(
+            READER_HEADER_ID,
+            title.into(),
+            &self.model,
+            t,
+            cx,
+        ))
     }
 
     fn focus_list(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -620,6 +576,24 @@ impl SourcesView {
             _ => return false,
         }
         true
+    }
+}
+
+impl PreviewSteps for SourcesView {
+    fn steps_model(&mut self) -> &mut PreviewModel {
+        &mut self.model
+    }
+
+    fn steps_path(&self, cx: &App) -> Option<VaultPath> {
+        self.selected_path(cx)
+    }
+
+    fn steps_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_list(window, cx);
     }
 }
 

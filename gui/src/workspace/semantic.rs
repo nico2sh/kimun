@@ -47,7 +47,7 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
     Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window,
     div,
@@ -69,7 +69,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::ask_sources::score_label;
-use super::chevron::{Reach, preview_header};
+use super::chevron::{PreviewSteps, Reach, step_header, sync_chevron};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
 use super::files::{display_title, note_count_text};
 use super::query_field::{self, query_field};
@@ -374,29 +374,10 @@ impl SemanticView {
         };
         self.preview
             .update(cx, |preview, cx| preview.show_marked(path, mark, cx));
-        self.sync_chevron(cx);
+        sync_chevron(&self.list, &self.model, cx);
         if changed {
             cx.notify();
         }
-    }
-
-    /// The rows' chevron follows the preview: `›` until Full, `‹` there.
-    fn sync_chevron(&mut self, cx: &mut Context<Self>) {
-        let reach = Reach::of(&self.model);
-        self.list
-            .update(cx, |list, cx| list.set_chevron(Some(reach), cx));
-    }
-
-    /// A click on a chevron (a row's or the header's): Full shrinks as Left
-    /// does, else the preview grows as Right does; the list has the
-    /// keyboard after.
-    pub(crate) fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_full() {
-            self.shrink(cx);
-        } else {
-            self.grow(cx);
-        }
-        self.focus_list(window, cx);
     }
 
     /// The preview's one-line header: the selected note's title and the
@@ -404,43 +385,13 @@ impl SemanticView {
     fn preview_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let list = self.list.read(cx);
         let title = SharedString::from(hit_title(list.selected_row()?).to_string());
-        Some(
-            preview_header(
-                SEMANTIC_PREVIEW_HEADER_ID.into(),
-                title,
-                Reach::of(&self.model),
-                t,
-            )
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.standard_click() {
-                    this.chevron_step(window, cx);
-                }
-            }))
-            .test_support(),
-        )
-    }
-
-    /// Right: Collapsed → Context → Full (Full stays).
-    fn grow(&mut self, cx: &mut Context<Self>) {
-        if !self.model.is_full() {
-            self.model.toggle(self.selected_path(cx));
-        }
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Left: Full → Context → Collapsed.
-    fn shrink(&mut self, cx: &mut Context<Self>) {
-        self.model.collapse_step(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Space: Collapsed → Context → Full → Collapsed.
-    fn cycle(&mut self, cx: &mut Context<Self>) {
-        self.model.toggle(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
+        Some(step_header(
+            SEMANTIC_PREVIEW_HEADER_ID,
+            title,
+            &self.model,
+            t,
+            cx,
+        ))
     }
 
     // ---- Keys ------------------------------------------------------------------
@@ -491,6 +442,24 @@ impl SemanticView {
             _ => return false,
         }
         true
+    }
+}
+
+impl PreviewSteps for SemanticView {
+    fn steps_model(&mut self) -> &mut PreviewModel {
+        &mut self.model
+    }
+
+    fn steps_path(&self, cx: &App) -> Option<VaultPath> {
+        self.selected_path(cx)
+    }
+
+    fn steps_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_list(window, cx);
     }
 }
 

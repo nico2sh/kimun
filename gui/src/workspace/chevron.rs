@@ -5,17 +5,22 @@
 //! hovered row ([`DrawerList::set_chevron`](super::drawer_list::DrawerList::set_chevron));
 //! the open preview carries it on its one-line header ([`preview_header`]).
 //! It is a pointer shortcut only: the keys stay as they are.
+//!
+//! A view with such a preview (FIND, SEM, the Sources view) takes its steps
+//! from [`PreviewSteps`], keeps its rows' chevron in step with
+//! [`sync_chevron`] and draws its header with [`step_header`].
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    Div, InteractiveElement as _, ParentElement as _, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div,
+    App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div,
 };
+use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::drawer_list::chevron_id;
+use super::drawer_list::{DrawerList, DrawerRow, chevron_id};
 use super::files::ellipsis;
 use crate::theme;
 
@@ -110,4 +115,85 @@ pub(crate) fn preview_header(
                 .group_hover(HEADER_GROUP, move |style| style.text_color(hover))
                 .test_support(),
         )
+}
+
+/// A view whose preview of its selected row grows Collapsed → Context →
+/// Full: the steps the keys and the chevron take, written once. The view
+/// keeps its [`PreviewModel`] and draws its preview.
+pub(crate) trait PreviewSteps: Sized + 'static {
+    /// How much of the selected row shows.
+    fn steps_model(&mut self) -> &mut PreviewModel;
+    /// The selected row's note.
+    fn steps_path(&self, cx: &App) -> Option<VaultPath>;
+    /// The model changed: show what it says.
+    fn steps_sync(&mut self, cx: &mut Context<Self>);
+    /// Give the view's list the keyboard.
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>);
+
+    /// Right: Collapsed → Context → Full (Full stays).
+    fn grow(&mut self, cx: &mut Context<Self>) {
+        if !self.steps_model().is_full() {
+            let path = self.steps_path(cx);
+            self.steps_model().toggle(path);
+        }
+        self.steps_sync(cx);
+        cx.notify();
+    }
+
+    /// Left: Full → Context → Collapsed.
+    fn shrink(&mut self, cx: &mut Context<Self>) {
+        let path = self.steps_path(cx);
+        self.steps_model().collapse_step(path);
+        self.steps_sync(cx);
+        cx.notify();
+    }
+
+    /// Space: Collapsed → Context → Full → Collapsed.
+    fn cycle(&mut self, cx: &mut Context<Self>) {
+        let path = self.steps_path(cx);
+        self.steps_model().toggle(path);
+        self.steps_sync(cx);
+        cx.notify();
+    }
+
+    /// A click on a chevron (a row's or the header's): the step its
+    /// [`Reach`] names, Full shrinking as Left does, else growing as Right
+    /// does; the list has the keyboard after, so the arrows the tooltip
+    /// names keep working.
+    fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match Reach::of(self.steps_model()) {
+            Reach::Shrink => self.shrink(cx),
+            Reach::Grow => self.grow(cx),
+        }
+        self.steps_focus(window, cx);
+    }
+}
+
+/// The rows' chevron of `list` follows `model`: `›` until Full, `‹` there.
+pub(crate) fn sync_chevron<R: DrawerRow>(
+    list: &Entity<DrawerList<R>>,
+    model: &PreviewModel,
+    cx: &mut App,
+) {
+    let reach = Reach::of(model);
+    list.update(cx, |list, cx| list.set_chevron(Some(reach), cx));
+}
+
+/// The [`preview_header`] of a [`PreviewSteps`] view, `id` its element id
+/// and `title` its text: a click on it steps the preview
+/// ([`PreviewSteps::chevron_step`]).
+pub(crate) fn step_header<V: PreviewSteps>(
+    id: &'static str,
+    title: SharedString,
+    model: &PreviewModel,
+    t: &Theme,
+    cx: &Context<V>,
+) -> impl IntoElement + use<V> {
+    preview_header(id.into(), title, Reach::of(model), t)
+        .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+            if event.standard_click() {
+                this.chevron_step(window, cx);
+            }
+        }))
+        .test_support()
 }

@@ -77,7 +77,7 @@ use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::chevron::{Reach, preview_header};
+use super::chevron::{PreviewSteps, Reach, step_header, sync_chevron};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
 use super::files::{display_title, ellipsis, note_count_text};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
@@ -547,29 +547,10 @@ impl FindView {
             .update(cx, |list, cx| list.set_marks(needles.clone(), cx));
         self.preview
             .update(cx, |preview, cx| preview.show(wanted, needles, cx));
-        self.sync_chevron(cx);
+        sync_chevron(&self.list, &self.model, cx);
         if changed {
             cx.notify();
         }
-    }
-
-    /// The rows' chevron follows the preview: `›` until Full, `‹` there.
-    fn sync_chevron(&mut self, cx: &mut Context<Self>) {
-        let reach = Reach::of(&self.model);
-        self.list
-            .update(cx, |list, cx| list.set_chevron(Some(reach), cx));
-    }
-
-    /// A click on a chevron (a row's or the header's): Full shrinks as Left
-    /// does, else the preview grows as Right does; the list has the
-    /// keyboard after.
-    pub(crate) fn chevron_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_full() {
-            self.shrink(cx);
-        } else {
-            self.grow(cx);
-        }
-        self.focus_list(window, cx);
     }
 
     /// The preview's one-line header: the selected note's title and the
@@ -578,43 +559,13 @@ impl FindView {
         let list = self.list.read(cx);
         let entry = &list.selected_row()?.entry;
         let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
-        Some(
-            preview_header(
-                FIND_PREVIEW_HEADER_ID.into(),
-                title,
-                Reach::of(&self.model),
-                t,
-            )
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.standard_click() {
-                    this.chevron_step(window, cx);
-                }
-            }))
-            .test_support(),
-        )
-    }
-
-    /// Right: Collapsed → Context → Full (Full stays).
-    fn grow(&mut self, cx: &mut Context<Self>) {
-        if !self.model.is_full() {
-            self.model.toggle(self.selected_path(cx));
-        }
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Left: Full → Context → Collapsed.
-    fn shrink(&mut self, cx: &mut Context<Self>) {
-        self.model.collapse_step(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Space: Collapsed → Context → Full → Collapsed.
-    fn cycle(&mut self, cx: &mut Context<Self>) {
-        self.model.toggle(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
+        Some(step_header(
+            FIND_PREVIEW_HEADER_ID,
+            title,
+            &self.model,
+            t,
+            cx,
+        ))
     }
 
     // ---- Keys ------------------------------------------------------------------
@@ -767,6 +718,24 @@ impl QueryFieldOwner for FindView {
 
     fn accepted(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         self.typed(name, cx);
+    }
+}
+
+impl PreviewSteps for FindView {
+    fn steps_model(&mut self) -> &mut PreviewModel {
+        &mut self.model
+    }
+
+    fn steps_path(&self, cx: &App) -> Option<VaultPath> {
+        self.selected_path(cx)
+    }
+
+    fn steps_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_list(window, cx);
     }
 }
 
