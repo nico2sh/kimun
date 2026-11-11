@@ -620,7 +620,8 @@ impl FindView {
     // ---- Keys ------------------------------------------------------------------
 
     /// Keys the results must see before the list does: in Full, Up/Down
-    /// scroll the preview; Up from the first row returns to the field.
+    /// scroll the preview and Page Up/Page Down do nothing (the list is
+    /// hidden); Up from the first row returns to the field.
     fn capture_key(
         &mut self,
         event: &KeyDownEvent,
@@ -643,6 +644,8 @@ impl FindView {
                     .update(cx, |preview, cx| preview.scroll_rows(rows, cx));
                 true
             }
+            // The list is hidden: the page keys must not move it.
+            Key::PageUp | Key::PageDown if self.model.is_full() => true,
             Key::Up if query_field::at_top(&self.list, cx) => {
                 query_field::focus_input(&self.input, window, cx);
                 true

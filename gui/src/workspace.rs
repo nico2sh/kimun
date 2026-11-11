@@ -3247,6 +3247,8 @@ mod note_tests;
 #[cfg(test)]
 mod onboarding_tests;
 #[cfg(test)]
+mod paging_tests;
+#[cfg(test)]
 mod palette_tests;
 #[cfg(test)]
 mod picker_tests;

@@ -552,8 +552,9 @@ impl SourcesView {
     }
 
     /// Keys the list must not see first: in Full, Up/Down scroll the
-    /// reader; Up from the first row goes to the filter; Escape with the
-    /// reader open steps it back (the TUI's ladder).
+    /// reader and Page Up/Page Down do nothing (the list is hidden); Up
+    /// from the first row goes to the filter; Escape with the reader open
+    /// steps it back (the TUI's ladder).
     fn capture_key(
         &mut self,
         event: &KeyDownEvent,
@@ -576,6 +577,8 @@ impl SourcesView {
                     .update(cx, |reader, cx| reader.scroll_rows(rows, cx));
                 true
             }
+            // The list is hidden: the page keys must not move it.
+            Key::PageUp | Key::PageDown if self.model.is_full() => true,
             // The filter is drawn only while there are sources (the same
             // test as the render's); a filter that matches none still gets
             // the key.

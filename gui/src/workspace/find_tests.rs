@@ -404,6 +404,51 @@ fn the_preview_cycles_and_scrolls(cx: &mut TestAppContext) {
     );
 }
 
+/// In Full the list is hidden: Page Up and Page Down do nothing (the
+/// hidden selection stays, the preview does not move, the list keeps the
+/// keyboard). Out of Full they page the list.
+#[gpui_kit::test]
+fn page_keys_are_ignored_in_full_preview(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let long: String = (0..200).map(|i| format!("line {i} #rust\n")).collect();
+    let mut notes = NOTES.to_vec();
+    notes.push(("long.md", long.as_str()));
+    let (_v, started) = started_on(cx, &rt, &notes, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    press(&started, "down", cx);
+    assert!(find_list_focused(&started, cx));
+    let list = find_list(&started, cx);
+    let selected = |cx: &TestAppContext| cx.read(|cx| list.read(cx).selected());
+    let last = cx.read(|cx| list.read(cx).len()) - 1;
+    assert!(last > 0, "several hits");
+
+    press(&started, "right", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    settle_preview(&started, &rt, cx);
+    let preview = find_preview(&started, cx);
+    let top = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| preview.read(cx).top_row())
+    };
+    let (row, first) = (selected(cx), top(cx));
+    press(&started, "pagedown", cx);
+    press(&started, "pageup", cx);
+    press(&started, "pagedown", cx);
+    assert_eq!(selected(cx), row, "the hidden selection stays");
+    assert_eq!(top(cx), first, "the preview does not move");
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(find_list_focused(&started, cx));
+
+    press(&started, "left", cx);
+    press(&started, "home", cx);
+    press(&started, "pagedown", cx);
+    assert!(selected(cx).is_some_and(|pos| pos > 0), "Context: it pages");
+}
+
 fn drawn_find(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
     let id = id.into();
     cx.update_window(s.handle, |_, window, cx| {

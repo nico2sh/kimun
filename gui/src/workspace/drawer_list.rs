@@ -15,7 +15,8 @@
 //! visible rows are built (`uniform_list`).
 //!
 //! **Keys** (while the list has the keyboard; it has no text field): Up and
-//! Down move the selection, Home and End jump to the ends, Enter activates
+//! Down move the selection, Page Up and Page Down move it a page (the rows
+//! the list shows, [`page_rows`]), Home and End jump to the ends, Enter activates
 //! the selected row, Escape gives the keyboard back to the editor. Every
 //! other key bubbles on to the view around the list.
 //!
@@ -46,9 +47,9 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, rems, uniform_list,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels,
+    Render, Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::input::{Key, Mods};
@@ -154,6 +155,47 @@ pub(crate) enum DrawerListEvent<R> {
     Verb(R, VerbId),
     /// Escape: back to the editor.
     Dismiss,
+}
+
+/// The rows a page holds: as many whole rows of height `row` as the
+/// `viewport` shows, at least one (rows not measured yet, or a viewport
+/// smaller than a row).
+pub(super) fn page_rows(viewport: Pixels, row: Pixels) -> usize {
+    let (viewport, row) = (f32::from(viewport), f32::from(row));
+    if row <= 0.0 || viewport.is_nan() {
+        return 1;
+    }
+    ((viewport / row).floor() as usize).max(1)
+}
+
+/// The page of the `uniform_list` of `len` rows behind `scroll`, as last
+/// laid out: the list's viewport over its (uniform) row height. The handle
+/// keeps the viewport (`item`) and the whole content's size (`contents`,
+/// all `len` rows), so a row is the content's height over `len`. One row
+/// before the first layout.
+pub(super) fn page_of(scroll: &UniformListScrollHandle, len: usize) -> usize {
+    let state = scroll.0.borrow();
+    match state.last_item_size {
+        Some(size) if len > 0 => page_rows(size.item.height, size.contents.height / len as f32),
+        _ => 1,
+    }
+}
+
+/// Where a Page Down (`down`) or Page Up of `page` rows puts the selection
+/// `selected` in a list of `len` rows: clamped to the ends; with nothing
+/// selected, the first row (as the arrows do). `None` for no rows.
+pub(super) fn page_target(
+    selected: Option<usize>,
+    len: usize,
+    page: usize,
+    down: bool,
+) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match (selected, down) {
+        (None, _) => 0,
+        (Some(pos), true) => pos.saturating_add(page).min(last),
+        (Some(pos), false) => pos.saturating_sub(page).min(last),
+    })
 }
 
 /// One drawer list. See the module docs.
@@ -452,6 +494,19 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
+    /// Move the selection one page down (`down`) or up: the rows the list
+    /// shows ([`page_of`]), clamped to the ends.
+    fn page(&mut self, down: bool, cx: &mut Context<Self>) {
+        let page = page_of(&self.scroll, self.len());
+        self.select(
+            |core| {
+                let to = page_target(core.selected(), core.visible_len(), page, down);
+                core.move_selection(to);
+            },
+            cx,
+        );
+    }
+
     fn select(&mut self, pick: impl FnOnce(&mut ListCore<R>), cx: &mut Context<Self>) {
         let Some(core) = self.core.as_mut() else {
             return;
@@ -554,6 +609,8 @@ impl<R: DrawerRow> DrawerList<R> {
         match key.key {
             Key::Up => self.select(ListCore::select_prev, cx),
             Key::Down => self.select(ListCore::select_next, cx),
+            Key::PageUp => self.page(false, cx),
+            Key::PageDown => self.page(true, cx),
             Key::Home => self.select(|core| core.select(0), cx),
             Key::End => self.select(
                 |core| {

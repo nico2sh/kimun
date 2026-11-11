@@ -914,6 +914,34 @@ fn sem_chevron_expands_without_opening_the_note(cx: &mut TestAppContext) {
     assert!(list_focused(&started, cx));
 }
 
+/// In Full the list is hidden: Page Down leaves its selection alone; out
+/// of Full it pages the list.
+#[gpui_kit::test]
+fn sem_page_keys_are_ignored_in_full_preview(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let stub = Stub::new(vec![("gamma.md", "Gamma"), ("beta.md", "Beta")]);
+    let (_v, started) = started_with(cx, &rt, stub);
+    reveal(&started, cx);
+    type_in(&started, "third", cx);
+    assert_eq!(rows(&started, &rt, cx), ["gamma", "beta"]);
+    press(&started, "down", cx);
+    assert!(list_focused(&started, cx));
+    let list = semantic_list(&started, cx);
+    let selected = |cx: &TestAppContext| cx.read(|cx| list.read(cx).selected());
+    assert_eq!(selected(cx), Some(0));
+    press(&started, "right", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    press(&started, "pagedown", cx);
+    assert_eq!(selected(cx), Some(0), "the hidden selection stays");
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(list_focused(&started, cx));
+    press(&started, "left", cx);
+    press(&started, "pagedown", cx);
+    assert_eq!(selected(cx), Some(1), "Context: it pages");
+}
+
 /// A click on a SEM row still opens its note (the chevron aside).
 #[gpui_kit::test]
 fn sem_click_still_opens_the_note(cx: &mut TestAppContext) {
