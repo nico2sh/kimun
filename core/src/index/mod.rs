@@ -631,6 +631,27 @@ impl NoteIndex {
         rows.iter().map(row_to_note_entry).collect()
     }
 
+    /// Note counts grouped by containing directory (`basePath`), for every
+    /// note strictly inside `parent` at any depth, in one query. Notes that
+    /// sit directly in `parent` are included under `parent`'s own base path;
+    /// callers fold the rows into per-child totals.
+    pub(crate) async fn note_counts_by_base(
+        &self,
+        parent: &VaultPath,
+    ) -> Result<Vec<(String, i64)>, DBError> {
+        let parent = parent.canonical();
+        let rows = sqlx::query(
+            "SELECT basePath, COUNT(*) FROM notes \
+             WHERE path LIKE (? || '%') ESCAPE '\\' GROUP BY basePath",
+        )
+        .bind(escape_like_pattern(&dir_prefix(&parent)))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| Ok((row.try_get(0)?, row.try_get(1)?)))
+            .collect()
+    }
+
     pub(crate) async fn get_all_notes(
         &self,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
