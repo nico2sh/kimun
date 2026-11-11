@@ -3738,19 +3738,17 @@ mod tests {
     async fn child_note_counts_does_not_mix_like_wildcards() {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
-        note(&vault, "100%_done/a.md").await;
-        note(&vault, "100%_done2/a.md").await;
-        note(&vault, "100%_done2/b.md").await;
-
-        let counts = vault.child_note_counts(&VaultPath::root()).await.unwrap();
-        assert_eq!(counts.get(&VaultPath::new("/100%_done")), Some(&1));
-        assert_eq!(counts.get(&VaultPath::new("/100%_done2")), Some(&2));
+        note(&vault, "100%_done/sub/a.md").await;
+        // Match only if `%` / `_` in the parent act as LIKE wildcards.
+        note(&vault, "100xydone/sub/n.md").await;
+        note(&vault, "1000_done/sub/n.md").await;
 
         let counts = vault
             .child_note_counts(&VaultPath::new("/100%_done"))
             .await
             .unwrap();
-        assert!(counts.is_empty());
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get(&VaultPath::new("/100%_done/sub")), Some(&1));
     }
 
     #[tokio::test]
@@ -3758,14 +3756,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
         note(&vault, "Work/n.md").await;
+        note(&vault, "Work/Sub/n.md").await;
 
         let counts = vault.child_note_counts(&VaultPath::root()).await.unwrap();
-        assert_eq!(counts.get(&VaultPath::new("/work")), Some(&1));
+        assert_eq!(counts.get(&VaultPath::new("/work")), Some(&2));
         let counts = vault
             .child_note_counts(&VaultPath::new("/Work"))
             .await
             .unwrap();
-        assert!(counts.is_empty());
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get(&VaultPath::new("/work/sub")), Some(&1));
     }
 }
 
