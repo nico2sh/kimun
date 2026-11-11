@@ -79,11 +79,11 @@ use kimun_notes::settings::themes::Theme;
 use super::Workspace;
 use super::chevron::{Reach, preview_header};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
-use super::files::{display_title, ellipsis};
+use super::files::{display_title, ellipsis, note_count_text};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
-use super::result_row::{count_label, result_row};
+use super::result_row::result_row;
 use super::search::SearchPreview;
 use super::search::label_query;
 use super::sort::{chip_label, sort_chip};
@@ -702,7 +702,7 @@ impl FindView {
         let t = &*theme;
         let list = self.list.read(cx);
         let count = (self.started && !list.is_loading())
-            .then(|| count_label(list.first_row().map_or(0, |r| r.total)));
+            .then(|| note_count_text(list.first_row().map_or(0, |r| r.total)));
         let title = self.title(query);
         let querying = !query.trim().is_empty();
         let chip = querying.then(|| {

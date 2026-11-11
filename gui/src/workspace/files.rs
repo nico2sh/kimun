@@ -818,7 +818,8 @@ pub(super) fn entry_row(
     )
 }
 
-/// What a folder row says under its name in FILES: `1 note`, `3 notes`.
+/// `1 note`, `3 notes`: what a folder row says under its name in FILES,
+/// and the result count FIND and SEM show over their lists.
 pub(super) fn note_count_text(n: usize) -> SharedString {
     if n == 1 {
         "1 note".into()

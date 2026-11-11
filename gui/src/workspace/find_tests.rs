@@ -1347,6 +1347,27 @@ fn find_row_context_highlights_matched_words(cx: &mut TestAppContext) {
     );
 }
 
+/// The whitespace runs together before the cut: long runs of line breaks
+/// and indentation still leave the full cut length of visible text, cut
+/// on a character boundary (characters counted, not bytes).
+#[test]
+fn one_line_collapses_whitespace_before_the_cut() {
+    use super::find::CONTEXT_CHARS;
+    use super::result_row::one_line;
+    let word = "ab";
+    let spaced: String = (0..CONTEXT_CHARS)
+        .map(|_| format!("{word}\n\n        "))
+        .collect();
+    let line = one_line(&spaced);
+    assert_eq!(line.chars().count(), CONTEXT_CHARS);
+    assert!(line.starts_with("ab ab ab"));
+
+    let multibyte = "é".repeat(CONTEXT_CHARS + 50);
+    let line = one_line(&multibyte);
+    assert_eq!(line.chars().count(), CONTEXT_CHARS);
+    assert!(line.chars().all(|c| c == 'é'));
+}
+
 #[gpui_kit::test]
 fn find_row_without_needles_has_no_highlight(_cx: &mut TestAppContext) {
     use super::result_row::context_highlights;
