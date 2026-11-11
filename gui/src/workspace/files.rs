@@ -158,7 +158,9 @@ pub(crate) struct FilesPane {
     counts_loaded: bool,
     /// Counts a load finished with, taken up by [`Self::poll`] on the UI
     /// thread, each with the folder it was loaded for.
-    counts_inbox: Arc<Mutex<Vec<(VaultPath, NoteCounts)>>>,
+    /// The newest count load started: older ones are dropped.
+    counts_gen: u64,
+    counts_inbox: Arc<Mutex<Vec<(VaultPath, u64, NoteCounts)>>>,
     _filter_events: Subscription,
 }
 
@@ -217,6 +219,7 @@ impl FilesPane {
             root_name,
             note_counts: (VaultPath::root(), HashMap::new()),
             counts_loaded: false,
+            counts_gen: 0,
             counts_inbox: Arc::default(),
             _filter_events: filter_events,
         }
@@ -284,6 +287,19 @@ impl FilesPane {
         }
     }
 
+    /// Something changed in `dir`, a folder at or below the one shown: its
+    /// notes count in a folder row of this listing, so read the counts again.
+    /// (A change in the shown folder itself already did, through
+    /// [`Self::refresh_if_showing`]; one more load is harmless, the newest
+    /// wins.)
+    fn reload_counts_under(&mut self, dir: &VaultPath, cx: &mut Context<Self>) {
+        let shown = self.model.current_dir();
+        if !self.model.is_empty() && shown.is_ancestor_of(dir) {
+            self.load_counts();
+            cx.notify();
+        }
+    }
+
     /// A fresh listing starts with no query: give it the filter's, and start
     /// at its top.
     fn after_rebuild(&mut self, cx: &mut Context<Self>) {
@@ -304,6 +320,8 @@ impl FilesPane {
             self.forget_counts();
             self.note_counts.0 = dir.clone();
         }
+        self.counts_gen += 1;
+        let generation = self.counts_gen;
         let vault = self.model.vault().clone();
         let inbox = self.counts_inbox.clone();
         let tx = self.tx.clone();
@@ -311,13 +329,33 @@ impl FilesPane {
             match vault.child_note_counts(&dir).await {
                 Ok(counts) => {
                     if let Ok(mut inbox) = inbox.lock() {
-                        inbox.push((dir, counts));
+                        inbox.push((dir, generation, counts));
                     }
                     let _ = tx.send(AppMessage::Redraw);
                 }
                 Err(e) => tracing::warn!("note counts failed for {dir}: {e}"),
             }
         });
+    }
+
+    /// The generation of the newest count load (tests).
+    #[cfg(test)]
+    pub(crate) fn counts_generation(&self) -> u64 {
+        self.counts_gen
+    }
+
+    /// Show the counts of load `generation` for `dir`, unless a newer load
+    /// has started since (a slower, older one must not overwrite it).
+    pub(crate) fn accept_load(
+        &mut self,
+        dir: VaultPath,
+        generation: u64,
+        counts: NoteCounts,
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.counts_gen {
+            self.accept_counts(dir, counts, cx);
+        }
     }
 
     /// Show `counts`, loaded for `dir`, unless FILES has left `dir`.
@@ -357,8 +395,8 @@ impl FilesPane {
             .lock()
             .map(|mut inbox| std::mem::take(&mut *inbox))
             .unwrap_or_default();
-        for (dir, counts) in landed {
-            self.accept_counts(dir, counts, cx);
+        for (dir, generation, counts) in landed {
+            self.accept_load(dir, generation, counts, cx);
         }
         let polled = self.model.poll();
         if polled.changed {
@@ -427,11 +465,14 @@ impl FilesPane {
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {
                 self.refresh_if_showing(&path.get_parent_path().0, cx);
+                self.reload_counts_under(&path.get_parent_path().0, cx);
             }
             // Gone from one folder, arrived in another: either may be shown.
             FileOp::Moved { from, to } => {
                 self.refresh_if_showing(&from.get_parent_path().0, cx);
                 self.refresh_if_showing(&to.get_parent_path().0, cx);
+                self.reload_counts_under(&from.get_parent_path().0, cx);
+                self.reload_counts_under(&to.get_parent_path().0, cx);
             }
             FileOp::Renamed { from, to } if from.is_note() => {
                 self.model.rename_note_row(from, to);
@@ -650,9 +691,14 @@ impl FilesPane {
 /// icon lane, the title (a note's filename and journal date under it), and
 /// the open-note lane. `with_path` puts the note's full vault path under the
 /// title instead of its filename: FILES lists one folder, so the filename
-/// says where it is, but a result list (finder, links, SEM) mixes folders. Every row has the same height ([`NOTE_ROW_REMS`]): the
-/// lists over these rows are uniform. The caller adds the pointer handling
-/// and `test_support`.
+/// says where it is, but a result list (the pickers) mixes folders.
+///
+/// A folder row has a second line too, so a list's rows keep one height.
+/// `dir_line` is that line when the caller has one (FILES: the note count,
+/// blank until it is known); without one, the line is the folder's parent
+/// path. It is ignored for the other kinds of row. Every row has the same
+/// height ([`NOTE_ROW_REMS`]): the lists over these rows are uniform. The
+/// caller adds the pointer handling and `test_support`.
 pub(super) fn entry_row(
     id: SharedString,
     row: &FileListEntry,

@@ -905,14 +905,13 @@ impl gpui_kit::Render for OneRow {
     }
 }
 
-/// A list that mixes folders with notes shows where a folder is: its
-/// parent's path.
-#[gpui_kit::test]
-fn mixed_list_directory_row_shows_parent_path(cx: &mut TestAppContext) {
+/// The second line the row of the folder `dir` (named `name`) gets in a list
+/// that mixes folders with notes.
+fn mixed_line(dir: VaultPath, name: &str, cx: &mut TestAppContext) -> String {
     cx.update(gpui_kit::init);
     let row = FileListEntry::Directory {
-        path: path("projects/2026"),
-        name: "2026".into(),
+        path: dir,
+        name: name.into(),
     };
     let handle = cx
         .update(|cx| {
@@ -921,13 +920,18 @@ fn mixed_list_directory_row_shows_parent_path(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
-    let line = cx
-        .update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.find("row-detail").label().unwrap_or("").to_string()
-        })
-        .unwrap();
-    assert_eq!(line, "projects");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.find("row-detail").label().unwrap_or("").to_string()
+    })
+    .unwrap()
+}
+
+/// A list that mixes folders with notes shows where a folder is: its
+/// parent's path, as note rows show theirs (real entries are absolute).
+#[gpui_kit::test]
+fn mixed_list_directory_row_shows_parent_path(cx: &mut TestAppContext) {
+    assert_eq!(mixed_line(path("/projects/2026"), "2026", cx), "/projects");
 }
 
 #[test]
@@ -935,4 +939,102 @@ fn note_count_text_is_singular_for_one() {
     assert_eq!(super::files::note_count_text(0), "0 notes");
     assert_eq!(super::files::note_count_text(1), "1 note");
     assert_eq!(super::files::note_count_text(12), "12 notes");
+}
+
+// ── counts stay current ──────────────────────────────────────────────────
+
+/// A note made in a child folder of the folder shown changes that folder
+/// row's count (the parent of the note is not the folder on screen).
+#[gpui_kit::test]
+fn counts_reload_when_a_note_is_created_in_a_child_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.create_note(&path("sub/deeper/d.md"), "Delta"))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Created(path("sub/deeper/d.md"))),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// A move from one child folder to another updates both counts.
+#[gpui_kit::test]
+fn counts_reload_when_a_note_moves_between_child_folders(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[
+            ("top.md", "Top"),
+            ("one/a.md", "A"),
+            ("one/b.md", "B"),
+            ("two/c.md", "C"),
+        ],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("top.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Top" && started.listed(cx)
+    });
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("2 notes")
+            && started.second_line("two/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.rename_note(&path("one/a.md"), &path("two/a.md")))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Moved {
+            from: path("one/a.md"),
+            to: path("two/a.md"),
+        }),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("1 note")
+            && started.second_line("two/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// Loads of one folder can end out of order: an older one never replaces
+/// the result of a newer one.
+#[gpui_kit::test]
+fn an_older_count_load_for_the_same_folder_cannot_overwrite_a_newer_one(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    let files = cx.read(|cx| started.workspace.read(cx).files.clone().unwrap());
+    let latest = files.read_with(cx, |pane, _| pane.counts_generation());
+    let map = |n: usize| [(path("/sub/deeper"), n)].into_iter().collect();
+    files.update(cx, |pane, cx| {
+        pane.accept_load(path("sub"), latest, map(5), cx)
+    });
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("5 notes")
+    );
+    files.update(cx, |pane, cx| {
+        pane.accept_load(path("sub"), latest - 1, map(1), cx)
+    });
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("5 notes")
+    );
+}
+
+/// A top-level folder's parent is the vault root, drawn as the separator.
+#[gpui_kit::test]
+fn mixed_list_top_level_directory_row_shows_the_root(cx: &mut TestAppContext) {
+    assert_eq!(mixed_line(path("/projects"), "projects", cx), "/");
 }
