@@ -26,7 +26,8 @@
 //! window's app channel: the listing's redraws, file operations, and the
 //! note the editor opens and saves.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
@@ -48,7 +49,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::SortTarget;
-use kimun_notes::logic::message::{AppTx, FileOp};
+use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::Saved;
 use kimun_notes::logic::sort::{SortField, SortOrder, SortState};
@@ -136,6 +137,9 @@ pub(crate) enum FilesEvent {
     Sort,
 }
 
+/// Notes under each child folder of a folder, by the folder's path.
+type NoteCounts = HashMap<VaultPath, usize>;
+
 /// The FILES view. See the module docs.
 pub(crate) struct FilesPane {
     model: FilesModel,
@@ -144,6 +148,14 @@ pub(crate) struct FilesPane {
     tx: AppTx,
     /// The workspace's name: the breadcrumb's root.
     root_name: SharedString,
+    /// The folder the counts belong to and the notes under each of its
+    /// child folders (a folder with none is absent).
+    note_counts: (VaultPath, NoteCounts),
+    /// The counts are read: until then a folder's second line is blank.
+    counts_loaded: bool,
+    /// Counts a load finished with, taken up by [`Self::poll`] on the UI
+    /// thread, each with the folder it was loaded for.
+    counts_inbox: Arc<Mutex<Vec<(VaultPath, NoteCounts)>>>,
     _filter_events: Subscription,
 }
 
@@ -200,6 +212,9 @@ impl FilesPane {
             scroll: UniformListScrollHandle::new(),
             tx,
             root_name,
+            note_counts: (VaultPath::root(), HashMap::new()),
+            counts_loaded: false,
+            counts_inbox: Arc::default(),
             _filter_events: filter_events,
         }
     }
@@ -242,6 +257,7 @@ impl FilesPane {
     /// ask for here: the first note opened, a folder opened elsewhere).
     pub(crate) fn navigate(&mut self, dir: VaultPath, cx: &mut Context<Self>) {
         self.model.navigate(dir, &self.tx);
+        self.load_counts();
         self.after_rebuild(cx);
     }
 
@@ -260,6 +276,7 @@ impl FilesPane {
     pub(crate) fn refresh_if_showing(&mut self, dir: &VaultPath, cx: &mut Context<Self>) {
         if dir.is_like(self.model.current_dir()) {
             self.model.refresh_if_showing(dir, &self.tx);
+            self.load_counts();
             self.after_rebuild(cx);
         }
     }
@@ -275,8 +292,71 @@ impl FilesPane {
         cx.notify();
     }
 
+    /// Read the note counts under the folders of the folder shown, off the
+    /// UI thread. Another folder's counts go at once (they would be wrong
+    /// on these rows); the same folder's stay until the new ones land.
+    fn load_counts(&mut self) {
+        let dir = self.model.current_dir().clone();
+        if !dir.is_like(&self.note_counts.0) {
+            self.forget_counts();
+            self.note_counts.0 = dir.clone();
+        }
+        let vault = self.model.vault().clone();
+        let inbox = self.counts_inbox.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            match vault.child_note_counts(&dir).await {
+                Ok(counts) => {
+                    if let Ok(mut inbox) = inbox.lock() {
+                        inbox.push((dir, counts));
+                    }
+                    let _ = tx.send(AppMessage::Redraw);
+                }
+                Err(e) => tracing::warn!("note counts failed for {dir}: {e}"),
+            }
+        });
+    }
+
+    /// Show `counts`, loaded for `dir`, unless FILES has left `dir`.
+    pub(crate) fn accept_counts(
+        &mut self,
+        dir: VaultPath,
+        counts: NoteCounts,
+        cx: &mut Context<Self>,
+    ) {
+        if !dir.is_like(self.model.current_dir()) {
+            return;
+        }
+        self.note_counts = (dir, counts);
+        self.counts_loaded = true;
+        cx.notify();
+    }
+
+    /// The counts are not known (as before they land).
+    pub(crate) fn forget_counts(&mut self) {
+        self.note_counts.1.clear();
+        self.counts_loaded = false;
+    }
+
+    /// What the second line of the folder row `path` says: its note count,
+    /// blank until the counts land.
+    fn count_line(&self, path: &VaultPath) -> SharedString {
+        if !self.counts_loaded || !path.get_parent_path().0.is_like(&self.note_counts.0) {
+            return SharedString::default();
+        }
+        note_count_text(self.note_counts.1.get(path).copied().unwrap_or(0))
+    }
+
     /// Apply what the load delivered (on the redraw it sends).
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
+        let landed = self
+            .counts_inbox
+            .lock()
+            .map(|mut inbox| std::mem::take(&mut *inbox))
+            .unwrap_or_default();
+        for (dir, counts) in landed {
+            self.accept_counts(dir, counts, cx);
+        }
         let polled = self.model.poll();
         if polled.changed {
             if polled.restarted {
@@ -510,7 +590,18 @@ impl FilesPane {
             | FileListEntry::Attachment { .. } => Some(row.path().clone()),
             FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
         };
-        let row = entry_row(row_id(row), row, selected, false, &theme::current(cx));
+        let dir_line = match row {
+            FileListEntry::Directory { path, .. } => Some(self.count_line(path)),
+            _ => None,
+        };
+        let row = entry_row(
+            row_id(row),
+            row,
+            selected,
+            false,
+            dir_line,
+            &theme::current(cx),
+        );
         let row = with_click_cursor(row, ClickPolicy::Open, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 ClickPolicy::Open.apply(event, this, pos, window, cx)
@@ -546,15 +637,24 @@ pub(super) fn entry_row(
     row: &FileListEntry,
     selected: bool,
     with_path: bool,
+    dir_line: Option<SharedString>,
     t: &Theme,
 ) -> Stateful<Div> {
     let fg = theme::foreground(t);
     let muted = theme::muted(t);
     let (primary, secondary, glyph, text): (SharedString, Option<AnyElement>, _, _) = match row {
         FileListEntry::Up { .. } => ("..".into(), None, muted, muted),
-        FileListEntry::Directory { name, .. } => {
+        FileListEntry::Directory { name, path } => {
             let c = theme::directory(t);
-            (name.clone().into(), None, c, c)
+            let text = dir_line.unwrap_or_else(|| path.get_parent_path().0.to_string().into());
+            let line = ellipsis(text.clone())
+                .id(SharedString::from(format!("{id}-detail")))
+                .aria_label(text)
+                .test_support()
+                .text_xs()
+                .text_color(theme::secondary(t))
+                .into_any_element();
+            (name.clone().into(), Some(line), c, c)
         }
         FileListEntry::Note {
             path,
@@ -636,6 +736,15 @@ pub(super) fn entry_row(
                 )
             }),
     )
+}
+
+/// What a folder row says under its name in FILES: `1 note`, `3 notes`.
+pub(super) fn note_count_text(n: usize) -> SharedString {
+    if n == 1 {
+        "1 note".into()
+    } else {
+        format!("{n} notes").into()
+    }
 }
 
 /// How a list's rows take a left click — one policy for every list (C1).

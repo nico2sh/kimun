@@ -759,3 +759,132 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
     );
     assert!(started.filter_focused(cx));
 }
+
+// ── the second line of a directory row ───────────────────────────────────
+
+impl Started {
+    /// The text on the second line of the row `name` (see [`short`]) as the
+    /// last frame drew it: `None` when the row has no second line at all.
+    fn second_line(&self, name: &str, cx: &mut TestAppContext) -> Option<String> {
+        let id = format!("{}-detail", self.row(name, cx));
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id)
+                .map(|line| line.label().unwrap_or("").to_string())
+        })
+        .unwrap()
+    }
+
+    /// Forget the counts, as before they land.
+    fn forget_counts(&self, cx: &mut TestAppContext) {
+        let files = cx.read(|cx| self.workspace.read(cx).files.clone().unwrap());
+        files.update(cx, |pane, _| pane.forget_counts());
+    }
+
+    /// Hand FILES counts that were loaded for `dir`.
+    fn deliver_counts(&self, dir: VaultPath, counts: &[(&str, usize)], cx: &mut TestAppContext) {
+        let files = cx.read(|cx| self.workspace.read(cx).files.clone().unwrap());
+        let counts = counts.iter().map(|(p, n)| (path(p), *n)).collect();
+        files.update(cx, |pane, cx| pane.accept_counts(dir, counts, cx));
+    }
+}
+
+/// FILES' directory rows say how many notes they hold, once the count has
+/// been read off the UI thread.
+#[gpui_kit::test]
+fn directory_row_shows_note_count_on_second_line(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("sub/", cx).as_deref() == Some("3 notes")
+    });
+}
+
+/// Until the counts land, a directory row has its second line, blank: the
+/// row does not change height when the count arrives.
+#[gpui_kit::test]
+fn directory_row_without_count_keeps_the_second_line_blank(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    started.forget_counts(cx);
+    let line = started.second_line("sub/", cx);
+    assert_eq!(line.as_deref(), Some(""), "a blank line, not a missing one");
+    assert!(!line.unwrap().contains("notes"));
+}
+
+/// Counts that were loaded for a folder the user has left are dropped.
+#[gpui_kit::test]
+fn late_counts_for_a_left_folder_are_dropped(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    started.forget_counts(cx);
+    // The root was shown when this load began; FILES shows `sub` now.
+    started.deliver_counts(VaultPath::root(), &[("/sub/deeper", 9)], cx);
+    assert_eq!(started.second_line("deeper/", cx).as_deref(), Some(""));
+    // The folder shown takes its own.
+    started.deliver_counts(path("sub"), &[("/sub/deeper", 1)], cx);
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("1 note")
+    );
+}
+
+struct OneRow(FileListEntry);
+
+impl gpui_kit::Render for OneRow {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::base::TestSupportExt as _;
+        super::files::entry_row(
+            "row".into(),
+            &self.0,
+            false,
+            true,
+            None,
+            &kimun_notes::settings::themes::Theme::default(),
+        )
+        .test_support()
+    }
+}
+
+/// A list that mixes folders with notes shows where a folder is: its
+/// parent's path.
+#[gpui_kit::test]
+fn mixed_list_directory_row_shows_parent_path(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let row = FileListEntry::Directory {
+        path: path("projects/2026"),
+        name: "2026".into(),
+    };
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(gpui_kit::WindowOptions::default(), |_, cx| {
+                cx.new(|_| OneRow(row))
+            })
+        })
+        .unwrap();
+    let line = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find("row-detail").label().unwrap_or("").to_string()
+        })
+        .unwrap();
+    assert_eq!(line, "projects");
+}
+
+#[test]
+fn note_count_text_is_singular_for_one() {
+    assert_eq!(super::files::note_count_text(0), "0 notes");
+    assert_eq!(super::files::note_count_text(1), "1 note");
+    assert_eq!(super::files::note_count_text(12), "12 notes");
+}
