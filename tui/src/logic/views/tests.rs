@@ -543,6 +543,99 @@ mod semantic {
         assert_eq!(stub.queries.lock().unwrap().as_slice(), &["cats"]);
     }
 
+    fn chunk_with(
+        name: &str,
+        title: &str,
+        content: &str,
+        score: f64,
+        ordinal: usize,
+    ) -> ChunkResult {
+        ChunkResult {
+            content: content.to_string(),
+            similarity_score: score,
+            ordinal,
+            ..chunk(name, title)
+        }
+    }
+
+    #[tokio::test]
+    async fn chunks_to_hits_keeps_chunk_heading_and_score() {
+        let vault = crate::test_support::temp_vault("views-sem-hits").await;
+        let nested = format!("Coffee{}Beans", kimun_core::note::BREADCRUMB_SEP);
+        let hits = chunks_to_hits(
+            vec![
+                chunk_with("a", &nested, "arabica and robusta", 0.82, 0),
+                chunk_with("b", "Tea", "green tea", 0.4, 7),
+            ],
+            &vault,
+        );
+        assert_eq!(hits.len(), 2);
+        let a = &hits[0];
+        assert_eq!(
+            row(&a.entry),
+            ("a".to_string(), "Coffee \u{203a} Beans".to_string())
+        );
+        // The innermost heading: what locates the section in the note.
+        assert_eq!(a.heading, "Beans");
+        assert_eq!(a.chunk, "arabica and robusta");
+        assert_eq!(a.score, 0.82);
+        assert_eq!(a.ordinal, 1, "an absent ordinal is the 1-based position");
+        let b = &hits[1];
+        assert_eq!(b.heading, "Tea");
+        assert_eq!(b.chunk, "green tea");
+        assert_eq!(b.ordinal, 7, "the server's ordinal wins");
+        // A hit filters and yanks as its note does.
+        assert_eq!(a.match_text(), a.entry.match_text());
+        assert_eq!(
+            a.yank_target().map(|y| y.text),
+            a.entry.yank_target().map(|y| y.text)
+        );
+    }
+
+    #[tokio::test]
+    async fn chunks_to_hits_dedups_by_note_keeping_best() {
+        let vault = crate::test_support::temp_vault("views-sem-dedup").await;
+        let hits = chunks_to_hits(
+            vec![
+                chunk_with("b", "B › Intro", "the best chunk", 0.9, 0),
+                chunk_with("a", "", "", 0.8, 0),
+                chunk_with("B", "B › Later", "a worse chunk", 0.7, 0),
+            ],
+            &vault,
+        );
+        let names: Vec<_> = hits.iter().map(|h| row(&h.entry).0).collect();
+        assert_eq!(names, ["b", "a"]);
+        assert_eq!(hits[0].chunk, "the best chunk");
+        assert_eq!(hits[0].score, 0.9);
+        assert_eq!(hits[1].ordinal, 2);
+    }
+
+    #[tokio::test]
+    async fn chunks_to_entries_unchanged_for_tui() {
+        let vault = crate::test_support::temp_vault("views-sem-tui").await;
+        let chunks = vec![
+            chunk_with("b", "B › Intro", "x", 0.9, 0),
+            chunk_with("a", "", "y", 0.8, 0),
+            chunk_with("b", "B › Later", "z", 0.7, 0),
+        ];
+        let entries: Vec<_> = chunks_to_entries(chunks.clone(), &vault)
+            .iter()
+            .map(row)
+            .collect();
+        let hits: Vec<_> = chunks_to_hits(chunks, &vault)
+            .iter()
+            .map(|h| row(&h.entry))
+            .collect();
+        assert_eq!(entries, hits);
+        assert_eq!(
+            entries,
+            vec![
+                ("b".to_string(), "B › Intro".to_string()),
+                ("a".to_string(), "<no title>".to_string()),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn a_blank_query_skips_the_server_and_an_error_yields_no_rows() {
         let (source, stub) = source(None).await;
