@@ -70,6 +70,29 @@ You can also download `kimun-gui-<version>-windows-x64.zip` from the
 [GitHub releases page](https://github.com/nico2sh/kimun/releases) and run
 `kimun-gui.exe`.
 
+## Uninstalling
+
+To remove an app that the install script installed, run the script with `--uninstall`. Add `--gui` to remove the desktop app. Each command removes one app.
+
+```sh
+curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --uninstall
+curl -fsSL https://kimun.2co.dev/install.sh | sh -s -- --uninstall --gui
+```
+
+The script removes the binary. For the desktop app, it also removes the launcher entry and the icons on Linux, or `Kimun.app` on macOS. When no app is left, it removes the install marker. It does not remove your notes or your configuration. To remove the configuration too, delete the `~/.config/kimun` directory yourself.
+
+On Windows, the PowerShell installer takes an `-Uninstall` switch. As for the install, the `irm | iex` form cannot pass a switch, so paste this command. Add `-Gui` to remove the desktop app:
+
+```powershell
+& ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Uninstall
+```
+
+Or use this one-line form: `$env:KIMUN_UNINSTALL = 1; irm https://kimun.2co.dev/install.ps1 | iex`.
+
+The Windows uninstall removes the app, the Start-menu shortcut of the desktop app, and the folder if it is empty. When no app is left, it also removes the install marker and the folder entry in your user `PATH`. If the app is open, close it and run the command again. It does not remove your notes or your configuration in `%USERPROFILE%\kimun`.
+
+To remove the server, see [Server](@/using-kimun/server.md). If you installed Kimün with Homebrew or Cargo, use that tool to remove it.
+
 ## Updating
 
 If you installed with the install script, Kimün can update itself in place. The install marker tells the app that it is on the `script` channel. You can also run the install command again at any time to get the latest stable release:

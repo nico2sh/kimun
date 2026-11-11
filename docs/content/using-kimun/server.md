@@ -78,6 +78,12 @@ systemctl --user status kimun-server
 launchctl kickstart -k "gui/$(id -u)/dev.2co.kimun-server"
 ```
 
+To remove the server that the script installed, run it with `--uninstall`. The script stops and removes the user service if you set one up, and then it removes the binary. It does not remove your configuration (`~/.config/kimun/server.toml`) or your data. The data are the vector store and the embedding model under `~/.local/share/kimun`. Delete them yourself if you do not need them. You cannot combine `--uninstall` with `--service`.
+
+```sh
+curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --uninstall
+```
+
 ### Docker (homelab, NAS, VPS)
 
 The multi-arch images (amd64, arm64) are at `ghcr.io/nico2sh/kimun-server`. A single `/data` volume holds the configuration file, the vector store, and the embedding model cache. To update, run `docker pull`, or use a tool like Watchtower:

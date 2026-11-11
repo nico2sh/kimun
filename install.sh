@@ -10,6 +10,8 @@
 #
 # Options:
 #   --gui               install the desktop app (kimun-gui) instead of the terminal app
+#   --uninstall         remove what this script installed (the terminal app, or with --gui the
+#                       desktop app). Your notes and configuration are not touched
 #   -h, --help          show this help
 #
 # Env overrides:
@@ -41,6 +43,9 @@ INSTALL_DIR="${KIMUN_INSTALL_DIR:-$HOME/.local/bin}"
 # Config dir must match the app: $HOME/.config/kimun (no XDG_CONFIG_HOME lookup).
 CONFIG_DIR="$HOME/.config/kimun"
 MARKER="$CONFIG_DIR/install.toml"
+UNINSTALL=0
+# Launch Services tool: install registers the app with it, uninstall unregisters it.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
 info() { printf '%s\n' "$1"; }
@@ -52,7 +57,7 @@ usage() {
   if [ -r "$0" ]; then
     sed -n '/^#   curl/,/^# Unix only/p' "$0" | sed 's/^# \{0,1\}//'
   else
-    info "Usage: install.sh [--gui]    (--gui installs the desktop app; see the script's header)"
+    info "Usage: install.sh [--gui] [--uninstall]    (--gui: the desktop app; --uninstall: remove it; see the script's header)"
     info "https://github.com/$REPO/blob/main/install.sh"
   fi
 }
@@ -219,6 +224,81 @@ resolve_from_manifest() {
   esac
 }
 
+# The dir the install marker records ("" when there is no marker or it names none we can read).
+marker_dir() {
+  if [ -f "$MARKER" ]; then
+    sed -n 's/^install_dir = "\(.*\)"$/\1/p' "$MARKER" | head -n1
+  fi
+}
+
+# Remove what this script installed: the terminal app, or with --gui the desktop app.
+# It only removes files the installer puts in place, never your notes or your
+# configuration (config.toml and the rest of ~/.config/kimun stay). The install
+# marker goes when neither app is left in its install dir. The dir is the one the
+# marker records, unless KIMUN_INSTALL_DIR says otherwise.
+uninstall() {
+  # The dir the marker records, if any. The marker only goes when it belongs to this dir.
+  mdir="$(marker_dir)"
+  mdir="${mdir%/}"
+  dir="${KIMUN_INSTALL_DIR:-}"
+  if [ -z "$dir" ]; then
+    dir="$mdir"
+    if [ -z "$dir" ] && [ -f "$MARKER" ]; then
+      warn "could not read install_dir from $MARKER: using $HOME/.local/bin"
+    fi
+  fi
+  [ -n "$dir" ] || dir="$HOME/.local/bin"
+  removed=0
+  remove() { # remove PATH...: a file or a directory this script created
+    for target in "$@"; do
+      if [ -e "$target" ] || [ -L "$target" ]; then
+        rm -rf "$target" || err "could not remove $target"
+        info "Removed $target"
+        removed=1
+      fi
+    done
+  }
+  remove "$dir/$BIN"
+  if [ "$BIN" = "kimun-gui" ]; then
+    case "$(uname -s)" in
+      Darwin)
+        apps="${KIMUN_APP_DIR:-$HOME/Applications}"
+        # Best effort: drop the Launch Services entry before the app goes. The two hidden
+        # names are what an interrupted install leaves behind.
+        if [ -d "$apps/Kimun.app" ] && [ -x "$LSREGISTER" ]; then
+          "$LSREGISTER" -u "$apps/Kimun.app" >/dev/null 2>&1 || true
+        fi
+        remove "$apps/Kimun.app" "$apps/.Kimun.app.old" "$apps/.Kimun.new"
+        ;;
+      Linux)
+        data="${XDG_DATA_HOME:-$HOME/.local/share}"
+        remove "$data/applications/kimun.desktop"
+        for icon in "$data"/icons/hicolor/*/apps/kimun.png; do remove "$icon"; done
+        if have update-desktop-database; then
+          update-desktop-database "$data/applications" >/dev/null 2>&1 || true
+        fi
+        # As the install does: only when an icon cache already exists.
+        if have gtk-update-icon-cache && [ -f "$data/icons/hicolor/icon-theme.cache" ]; then
+          gtk-update-icon-cache -f -t "$data/icons/hicolor" >/dev/null 2>&1 || true
+        fi
+        ;;
+    esac
+  fi
+  if [ -f "$MARKER" ] && [ ! -e "$dir/kimun" ] && [ ! -e "$dir/kimun-gui" ] \
+    && { [ -z "$mdir" ] || [ "$mdir" = "${dir%/}" ]; }; then
+    remove "$MARKER"
+  fi
+  if [ "$removed" = 0 ]; then
+    info "Nothing to remove: no $BIN found in $dir."
+    # The app install leaves no marker, so a custom KIMUN_APP_DIR is not remembered.
+    if [ "$BIN" = "kimun-gui" ] && [ "$(uname -s)" = Darwin ]; then
+      info "Kimun.app is not in $apps. If you installed it with KIMUN_APP_DIR, run the uninstall with the same KIMUN_APP_DIR."
+    fi
+  else
+    info "Done. Your notes and configuration in $CONFIG_DIR were not touched."
+  fi
+}
+
 # Remove the temp dir. A mounted .dmg lives under it and must be detached first.
 cleanup() {
   if [ -n "${MOUNT:-}" ]; then hdiutil detach -quiet "$MOUNT" >/dev/null 2>&1 || hdiutil detach -force -quiet "$MOUNT" >/dev/null 2>&1 || true; fi
@@ -267,8 +347,7 @@ install_macos_app() {
   rm -rf "$stagedir"
   [ -z "$backup" ] || rm -rf "$backup"
   # Best effort: tell Launch Services about the app so Spotlight and Launchpad find it now.
-  lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-  [ -x "$lsregister" ] && "$lsregister" -f "$apps/Kimun.app" >/dev/null 2>&1 || true
+  [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$apps/Kimun.app" >/dev/null 2>&1 || true
   info "Installed Kimun.app to $apps/Kimun.app"
 }
 
@@ -313,11 +392,17 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --gui) BIN="kimun-gui" ;;
+      --uninstall) UNINSTALL=1 ;;
       -h | --help) usage; exit 0 ;;
       *) err "unknown option: $1 (try --help)" ;;
     esac
     shift
   done
+
+  if [ "$UNINSTALL" = 1 ]; then
+    uninstall
+    exit 0
+  fi
 
   check_tools
   PLATFORM="$(detect_platform)"
@@ -428,6 +513,17 @@ main() {
     install_macos_app
     # No install marker: a binary inside Kimun.app is the Bundle channel, found from its
     # path. A marker would also overwrite the terminal app's.
+    # An older install put a raw kimun-gui in $INSTALL_DIR (and wrote the marker). Left in
+    # place it would be a second, diverging copy that still updates itself.
+    if [ -e "$INSTALL_DIR/kimun-gui" ] || [ -L "$INSTALL_DIR/kimun-gui" ]; then
+      rm -f "$INSTALL_DIR/kimun-gui" && info "Removed the old binary $INSTALL_DIR/kimun-gui: Kimun.app replaces it"
+      # The marker goes with it unless the terminal app is still there or it names another dir.
+      old_mdir="$(marker_dir)"; old_mdir="${old_mdir%/}"
+      if [ -f "$MARKER" ] && [ ! -e "$INSTALL_DIR/kimun" ] \
+        && { [ -z "$old_mdir" ] || [ "$old_mdir" = "${INSTALL_DIR%/}" ]; }; then
+        rm -f "$MARKER" && info "Removed the old install marker $MARKER"
+      fi
+    fi
     info ""
     info "Done. Open Kimun from Launchpad or Spotlight, or run: open -a Kimun"
     return 0

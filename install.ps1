@@ -12,9 +12,12 @@
 #
 # Options:
 #   -Gui                install the desktop app (kimun-gui) instead of the terminal app
+#   -Uninstall          remove what this script installed (the terminal app, or with -Gui the
+#                       desktop app). Your notes and configuration are not touched
 #
 # Env overrides:
 #   KIMUN_GUI=1         the same as -Gui, for the `irm | iex` form
+#   KIMUN_UNINSTALL=1   the same as -Uninstall, for the `irm | iex` form
 #   KIMUN_INSTALL_DIR   install location (default: %LOCALAPPDATA%\Programs\kimun)
 #   KIMUN_VERSION       install this version instead of the latest stable release
 #                       (a pre-release too, e.g. 0.25.0-beta.1)
@@ -28,11 +31,14 @@
 # The desktop app also gets a Start-menu shortcut. The folder is added to your
 # user PATH, so `kimun` and `kimun-gui` work in a new terminal.
 
-param([switch]$Gui)
+param([switch]$Gui, [switch]$Uninstall)
 
 # Its own scope: under `irm | iex` it would otherwise set the caller's variables.
+# The try/finally clears the switches even when the script block throws: a left-over
+# KIMUN_UNINSTALL=1 would make the caller's next install run the uninstaller.
+try {
 & {
-param([bool]$WantGui)
+param([bool]$WantGui, [bool]$WantUninstall)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
@@ -56,6 +62,93 @@ $dir = if ($env:KIMUN_INSTALL_DIR) { $env:KIMUN_INSTALL_DIR.TrimEnd("\", "/") } 
 # Must match the app: %USERPROFILE%\kimun (see kimun_core::system::app_dir).
 $configDir = Join-Path $env:USERPROFILE "kimun"
 $marker = Join-Path $configDir "install.toml"
+
+if ($WantUninstall) {
+    # Remove what the installer put in place: the app's exe, for the desktop app its
+    # Start-menu shortcut, and, once neither app is left, the marker, the PATH entry and
+    # the folder (only if empty). Notes and configuration are not touched. The folder is
+    # the one the marker records, unless KIMUN_INSTALL_DIR says otherwise.
+    # The marker names the folder of the install it belongs to. The installer writes it as a
+    # TOML literal string (single quotes); a hand-edited double-quoted one is read too.
+    $markerDir = ""
+    if (Test-Path $marker) {
+        foreach ($l in Get-Content $marker) {
+            if ($l -match "^install_dir = '(.*)'\s*$") { $markerDir = $Matches[1]; break }
+            if ($l -match '^install_dir = "(.*)"\s*$') { $markerDir = $Matches[1].Replace('\\', '\').Replace('\"', '"'); break }
+        }
+        $markerDir = $markerDir.TrimEnd("\", "/")
+    }
+    if (-not $env:KIMUN_INSTALL_DIR) {
+        if ($markerDir) { $dir = $markerDir }
+        elseif (Test-Path $marker) { Write-Warning "could not read install_dir from $marker : using $dir" }
+    }
+    $removed = $false
+    # A running app's exe cannot be deleted but can be renamed: it goes to .old and the
+    # next install or uninstall removes it.
+    $exe = Join-Path $dir "$bin.exe"
+    foreach ($f in @("$exe.old", $exe)) {
+        if (Test-Path $f) {
+            try { Remove-Item -Force $f; Write-Host "Removed $f"; $removed = $true }
+            catch {
+                if ($f -eq $exe) {
+                    # The exe stays when this fails too, so the marker and PATH entry stay for the re-run.
+                    try {
+                        Move-Item -Force $exe "$exe.old"
+                        Write-Warning "$bin is running: close it, then run the uninstall again to remove $exe.old"
+                        $removed = $true
+                    } catch {
+                        Write-Warning "$bin is running and could not be renamed: close it, then run the uninstall again"
+                    }
+                } else {
+                    Write-Warning "could not remove $f : close the app, then run the uninstall again"
+                }
+            }
+        }
+    }
+    if ($WantGui) {
+        $programs = [Environment]::GetFolderPath("Programs")
+        if (-not $programs) { $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs" }
+        $menu = Join-Path $programs "Kim$([char]0xFC)n.lnk"
+        if (Test-Path $menu) { Remove-Item -Force $menu; Write-Host "Removed $menu"; $removed = $true }
+    }
+    # A leftover .old file is an app that is still there: the second run needs the marker and
+    # the PATH entry to find it.
+    $left = $false
+    foreach ($n in @("kimun.exe", "kimun-gui.exe", "kimun.exe.old", "kimun-gui.exe.old")) {
+        if (Test-Path (Join-Path $dir $n)) { $left = $true }
+    }
+    if (-not $left) {
+        # The marker goes only when it belongs to this folder (or names none we could read).
+        if ((Test-Path $marker) -and (-not $markerDir -or $markerDir -ieq $dir.TrimEnd("\", "/"))) {
+            Remove-Item -Force $marker; Write-Host "Removed $marker"; $removed = $true
+        }
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        try {
+            $raw = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $parts = @($raw -split ";" | Where-Object { $_ -ne "" })
+            # An entry matches as written or once its %VARIABLES% are expanded.
+            $target = $dir.TrimEnd("\")
+            $kept = @($parts | Where-Object {
+                $entry = $_.Trim().TrimEnd("\")
+                ($entry -ine $target) -and ([Environment]::ExpandEnvironmentVariables($entry).TrimEnd("\") -ine $target)
+            })
+            if ($kept.Count -ne $parts.Count) {
+                $kind = $key.GetValueKind("Path")
+                $key.SetValue("Path", ($kept -join ";"), $kind)
+                [Environment]::SetEnvironmentVariable("KIMUN_INSTALLING", "1", "User")
+                [Environment]::SetEnvironmentVariable("KIMUN_INSTALLING", $null, "User")
+                Write-Host "Removed $dir from your PATH"
+                $removed = $true
+            }
+        } finally {
+            $key.Close()
+        }
+        if ((Test-Path $dir) -and -not (Get-ChildItem -Force $dir)) { Remove-Item -Force $dir; Write-Host "Removed $dir" }
+    }
+    if ($removed) { Write-Host "Done. Your notes and configuration in $configDir were not touched." }
+    else { Write-Host "Nothing to remove: no $bin found in $dir." }
+    return
+}
 
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne "AMD64") { Fail "no build for $arch Windows yet (x64 only)" }
@@ -257,6 +350,9 @@ try {
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
-} -WantGui ($Gui.IsPresent -or $env:KIMUN_GUI -eq "1" -or $env:KIMUN_GUI -eq "true")
-# Not left behind in the caller's session (the `irm | iex` form runs in it).
-Remove-Item Env:KIMUN_GUI -ErrorAction SilentlyContinue
+} -WantGui ($Gui.IsPresent -or $env:KIMUN_GUI -eq "1" -or $env:KIMUN_GUI -eq "true") -WantUninstall ($Uninstall.IsPresent -or $env:KIMUN_UNINSTALL -eq "1" -or $env:KIMUN_UNINSTALL -eq "true")
+} finally {
+    # Not left behind in the caller's session (the `irm | iex` form runs in it).
+    Remove-Item Env:KIMUN_GUI -ErrorAction SilentlyContinue
+    Remove-Item Env:KIMUN_UNINSTALL -ErrorAction SilentlyContinue
+}
