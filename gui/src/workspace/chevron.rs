@@ -1,10 +1,11 @@
 //! The **Expand chevron** (CONTEXT.md): the one control that steps a
 //! list's preview by pointer. `›` while the Right key grows the preview
 //! (Collapsed, Context), `‹` in Full, where the Left key shrinks it. A
-//! drawer list draws it at the right end of its selected row and of the
+//! drawer list draws it over the right end of its selected row and of the
 //! hovered row ([`DrawerList::set_chevron`](super::drawer_list::DrawerList::set_chevron));
 //! the open preview carries it on its one-line header ([`preview_header`]).
-//! It is a pointer shortcut only: the keys stay as they are.
+//! Both draw the one compact bordered button of [`chevron`], so it reads as
+//! clickable. It is a pointer shortcut only: the keys stay as they are.
 //!
 //! A view with such a preview (FIND, SEM, the Sources view) takes its steps
 //! from [`PreviewSteps`], keeps its rows' chevron in step with
@@ -14,8 +15,8 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     App, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    Window, div,
+    ParentElement as _, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Window, div, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
@@ -64,11 +65,41 @@ impl Reach {
     }
 }
 
-/// The chevron itself, `id` its element id: quiet at rest, bright under the
-/// pointer, its tooltip naming the step. The caller places it, takes its
-/// click and adds `test_support`.
+/// The chevron button's side, in rems: a compact square. Centred on a
+/// three-line row (3.75 rem) it stays clear of the first line, where SEM
+/// shows its score.
+pub(crate) const CHEVRON_REMS: f32 = 1.25;
+
+/// The colours the chevron button draws with, so it reads as clickable: a
+/// subtle fill inside a hairline border at rest; a stronger fill and the
+/// text colour for the glyph under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ChevronLook {
+    pub(crate) fill: Rgba,
+    pub(crate) border: Rgba,
+    pub(crate) glyph: Rgba,
+    pub(crate) hover_fill: Rgba,
+    pub(crate) hover_glyph: Rgba,
+}
+
+impl ChevronLook {
+    pub(crate) fn of(t: &Theme) -> Self {
+        Self {
+            fill: theme::hover_background(t),
+            border: theme::divider(t),
+            glyph: theme::secondary(t),
+            hover_fill: theme::selected_background(t),
+            hover_glyph: theme::foreground(t),
+        }
+    }
+}
+
+/// The chevron itself, `id` its element id: a compact bordered button
+/// ([`CHEVRON_REMS`] square, [`ChevronLook`]), quiet at rest, stronger
+/// under the pointer, its tooltip naming the step. The caller places it,
+/// takes its click and adds `test_support`.
 pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div> {
-    let hover = theme::foreground(t);
+    let look = ChevronLook::of(t);
     let tip = reach.tooltip();
     div()
         .id(id)
@@ -77,10 +108,17 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, t: &Theme) -> Stateful<Div
         .flex()
         .flex_none()
         .items_center()
+        .justify_center()
+        .size(rems(CHEVRON_REMS))
+        .rounded_md()
+        .border_1()
+        .border_color(look.border)
+        .bg(look.fill)
+        .text_sm()
         .whitespace_nowrap()
         .cursor_pointer()
-        .text_color(theme::secondary(t))
-        .hover(move |style| style.text_color(hover))
+        .text_color(look.glyph)
+        .hover(move |style| style.bg(look.hover_fill).text_color(look.hover_glyph))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .child(reach.glyph())
 }
@@ -112,7 +150,6 @@ pub(crate) fn preview_header(
         .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
         .child(
             chevron(chevron_id, reach, t)
-                .text_sm()
                 .group_hover(HEADER_GROUP, move |style| style.text_color(hover))
                 .test_support(),
         )

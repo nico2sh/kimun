@@ -19,9 +19,11 @@ use kimun_notes::logic::list::ListRow;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::chevron::Reach;
+use super::chevron::{CHEVRON_REMS, ChevronLook, Reach};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
+use super::result_row::{ROW_REMS, result_row, score_id};
+use crate::theme;
 
 #[derive(Debug, Clone)]
 struct Row(usize);
@@ -36,7 +38,7 @@ impl DrawerRow for Row {
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let label = SharedString::from(format!("row {}", self.0));
         // The content takes all the width the row gives it, so its bounds
-        // say what is left beside the chevron's lane.
+        // say how wide the row's content is.
         row_frame(self.element_id(), label.clone(), selected, 2.0, t).child(
             div()
                 .id(text_of(self.0))
@@ -241,45 +243,125 @@ fn chevron_click_does_not_activate_row(cx: &mut TestAppContext) {
     assert_eq!(*seen.borrow(), ["activate:2".to_string()]);
 }
 
-/// Every row of a list with a chevron reserves its trailing lane, selected
-/// or not: the content is as wide on each row and ends where the lane
-/// starts, so the chevron sits beside it and covers none of it. A list
-/// with no chevron has no lane: its content takes the whole row.
+/// A row of a list with the chevron keeps the content width of a row of a
+/// list without one: selected, hovered or idle, the chevron reserves
+/// nothing and sits over the row instead.
 #[gpui_kit::test]
-fn chevron_lane_is_reserved_beside_the_content(cx: &mut TestAppContext) {
+fn idle_rows_keep_full_width(cx: &mut TestAppContext) {
     let (list, _, cx) = three_rows(cx, ClickPolicy::Select);
-    let text: Vec<_> = (0..3)
-        .map(|row| bounds(text_of(row), cx).expect("content"))
-        .collect();
-    let lanes: Vec<_> = (0..3)
-        .map(|row| bounds(chevron_of(row), cx).expect("lane on every row"))
-        .collect();
-    for row in 0..3 {
-        assert_eq!(text[row].size.width, text[1].size.width, "row {row}");
-        assert_eq!(lanes[row].size.width, lanes[1].size.width, "row {row}");
-        assert!(lanes[row].size.width > px(0.));
-        assert!(
-            text[row].right() <= lanes[row].left(),
-            "row {row}: content {:?} runs under the chevron {:?}",
-            text[row],
-            lanes[row]
-        );
-    }
-    // Hovering a row shows its chevron but moves nothing.
+    let widths = |cx: &mut VisualTestContext| -> Vec<Pixels> {
+        (0..3)
+            .map(|row| bounds(text_of(row), cx).expect("content").size.width)
+            .collect()
+    };
+    let with_chevron = widths(cx);
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.hover(Row(2).element_id(), cx);
     });
-    assert_eq!(bounds(text_of(2), cx), Some(text[2]));
-
+    let hovered = widths(cx);
     list.update(cx, |list, cx| list.set_chevron(None, cx));
+    let without = widths(cx);
     for row in 0..3 {
-        assert_eq!(bounds(chevron_of(row), cx), None, "row {row}");
-        let wide = bounds(text_of(row), cx).expect("content");
-        assert!(
-            wide.size.width >= text[row].size.width + lanes[row].size.width,
-            "row {row}: {wide:?} takes the lane back"
-        );
+        assert!(without[row] > px(0.), "row {row}");
+        assert_eq!(with_chevron[row], without[row], "row {row} at rest");
+        assert_eq!(hovered[row], without[row], "row {row}, row 2 hovered");
+    }
+}
+
+/// A search result row (FIND, SEM), drawn by the real row.
+#[derive(Debug, Clone)]
+struct Hit(usize);
+
+impl ListRow for Hit {}
+
+impl DrawerRow for Hit {
+    fn element_id(&self) -> SharedString {
+        format!("chevron-test-hit:{}", self.0).into()
+    }
+
+    fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
+        result_row(
+            self.element_id(),
+            selected,
+            "A title long enough to reach the right end of its row, and then some more",
+            "a-title.md",
+            "Some context that runs on and on until it is cut short at the end",
+            Some("87%".into()),
+            &[],
+            t,
+        )
+    }
+}
+
+struct HitHost {
+    list: Entity<DrawerList<Hit>>,
+}
+
+impl Render for HitHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().flex_col().child(self.list.clone())
+    }
+}
+
+/// On a three-line row (FIND, SEM: 3.75 rem) the chevron is a compact
+/// button centred on the row: it leaves the first line's right end (SEM's
+/// score) uncovered.
+#[gpui_kit::test]
+fn chevron_does_not_cover_the_first_line_of_a_three_line_row(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (host, cx) = cx.add_window_view(|_, cx| {
+        let list = cx.new(|cx| DrawerList::new("chevron-test-hits", "Hits", Arc::new(|| {}), cx));
+        HitHost { list }
+    });
+    let list = host.read_with(cx, |host, _| host.list.clone());
+    list.update(cx, |list, cx| {
+        list.set_rows((0..2).map(Hit).collect(), "none", cx);
+        list.select_at(0, cx);
+        list.set_chevron(Some(Reach::Grow), cx);
+    });
+    cx.run_until_parked();
+    let rem = cx.update(|window, _| window.rem_size());
+    let id = Hit(0).element_id();
+    let row = bounds(id.clone(), cx).expect("row");
+    let score = bounds(score_id(&id), cx).expect("score");
+    let chevron = bounds(chevron_id(&id), cx).expect("chevron");
+    assert_eq!(row.size.height, rem * ROW_REMS, "a three-line row");
+    assert!(
+        !chevron.intersects(&score),
+        "the chevron {chevron:?} covers the score {score:?}"
+    );
+    assert!(score.bottom() <= chevron.top(), "{score:?} {chevron:?}");
+    // Compact, centred, at the right end, inside the row.
+    assert_eq!(chevron.size.width, rem * CHEVRON_REMS);
+    assert_eq!(chevron.size.height, rem * CHEVRON_REMS);
+    assert!(
+        (chevron.center().y - row.center().y).abs() <= px(1.),
+        "{chevron:?} centred on {row:?}"
+    );
+    assert!(chevron.right() <= row.right(), "{chevron:?} in {row:?}");
+    assert!(
+        chevron.left() > score.left(),
+        "{chevron:?} at the right end, {score:?}"
+    );
+}
+
+/// The clickable area shows: the button has a fill and a hairline border
+/// from the theme at rest, a stronger fill and the text colour under the
+/// pointer. Read off [`ChevronLook`], the colours [`chevron`] draws with
+/// (the test window cannot read styles back), for every built-in theme.
+#[test]
+fn chevron_button_has_a_visible_surface() {
+    for t in Theme::builtins() {
+        let look = ChevronLook::of(&t);
+        let name = &t.name;
+        assert_eq!(look.fill, theme::hover_background(&t), "{name}");
+        assert_eq!(look.border, theme::divider(&t), "{name}");
+        assert_eq!(look.glyph, theme::secondary(&t), "{name}");
+        assert_eq!(look.hover_fill, theme::selected_background(&t), "{name}");
+        assert_eq!(look.hover_glyph, theme::foreground(&t), "{name}");
+        assert!(look.fill.a > 0. && look.border.a > 0., "{name}: {look:?}");
+        assert_ne!(look.hover_fill, look.fill, "{name}: the hover is stronger");
     }
 }
 
