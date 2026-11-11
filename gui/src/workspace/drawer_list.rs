@@ -72,6 +72,13 @@ pub(crate) trait DrawerRow: ListRow {
     /// pointer handling, the context menu and `test_support`.
     fn render_row(&self, selected: bool, theme: &Theme) -> Stateful<Div>;
 
+    /// [`render_row`](Self::render_row) with the words the list marks (FIND's
+    /// needles); a row with nothing to mark ignores them.
+    fn render_marked_row(&self, selected: bool, theme: &Theme, marks: &[String]) -> Stateful<Div> {
+        let _ = marks;
+        self.render_row(selected, theme)
+    }
+
     /// The vault entry the row stands for, when it has the FILES entry
     /// menu (Rename…, Move…, Delete…).
     fn menu_target(&self) -> Option<VaultPath> {
@@ -171,6 +178,8 @@ pub(crate) struct DrawerList<R: DrawerRow> {
     /// A chevron was the last press: the next row click is not the second
     /// half of a double-click.
     after_chevron: bool,
+    /// The words the rows mark (see [`DrawerRow::render_marked_row`]).
+    marks: Arc<[String]>,
 }
 
 impl<R: DrawerRow> EventEmitter<DrawerListEvent<R>> for DrawerList<R> {}
@@ -196,6 +205,7 @@ impl<R: DrawerRow> DrawerList<R> {
             click: ClickPolicy::Open,
             chevron: None,
             after_chevron: false,
+            marks: Arc::from(Vec::new()),
         }
     }
 
@@ -231,6 +241,19 @@ impl<R: DrawerRow> DrawerList<R> {
             self.chevron = reach;
             cx.notify();
         }
+    }
+
+    /// The words the rows mark, for the rows that mark any.
+    pub(crate) fn set_marks(&mut self, marks: Arc<[String]>, cx: &mut Context<Self>) {
+        if self.marks != marks {
+            self.marks = marks;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn marks(&self) -> &[String] {
+        &self.marks
     }
 
     /// Take clicks under `policy` instead of [`ClickPolicy::Open`].
@@ -553,7 +576,7 @@ impl<R: DrawerRow> DrawerList<R> {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut element = row.render_row(selected, &theme::current(cx));
+        let mut element = row.render_marked_row(selected, &theme::current(cx), &self.marks);
         if let Some(reach) = self.chevron {
             let chevron = self.render_chevron(pos, &row.element_id(), selected, reach, cx);
             element = element.group(ROW_GROUP).child(chevron);

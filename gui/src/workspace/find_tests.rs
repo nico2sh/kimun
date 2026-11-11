@@ -1261,3 +1261,64 @@ fn replacing_the_query_from_outside_closes_the_suggestions(cx: &mut TestAppConte
     // Enter commits the query; it does not accept a stale suggestion.
     assert_eq!(query(&started, cx), "#rust #be");
 }
+
+// ── FIND row highlights ──────────────────────────────────────────────────
+
+fn marks(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| w.to_string()).collect()
+}
+
+/// The matched words of the context line are the ranges drawn in the accent
+/// colour, found in the joined one-line text, and the list holds the needles
+/// of the query that produced its rows.
+#[gpui_kit::test]
+fn find_row_context_highlights_matched_words(cx: &mut TestAppContext) {
+    use super::result_row::{context_highlights, context_id, one_line};
+    let line = one_line("back to [[alpha]]\n   here  #rust");
+    assert_eq!(line, "back to [[alpha]] here #rust");
+    let ranges = context_highlights(&line, &marks(&["alpha", "rust"]));
+    let words: Vec<&str> = ranges.iter().map(|r| &line[r.clone()]).collect();
+    assert_eq!(words, ["alpha", "rust"]);
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    click(&started, rail_cell_id(DrawerView::Find), cx);
+    search(&started, &rt, "rust", cx);
+    let list = find_list(&started, cx);
+    assert!(
+        !cx.read(|cx| list.read(cx).marks().is_empty()),
+        "the list carries the needles of the query that ran"
+    );
+    let id = find_row_id(&path("/beta.md"));
+    let text = cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(context_id(&id)).label().map(str::to_string)
+    });
+    assert_eq!(
+        text.unwrap().as_deref(),
+        Some("back to [[alpha]] here #rust"),
+        "the aria label stays the plain text"
+    );
+}
+
+#[gpui_kit::test]
+fn find_row_without_needles_has_no_highlight(_cx: &mut TestAppContext) {
+    use super::result_row::context_highlights;
+    assert!(context_highlights("back to alpha", &[]).is_empty());
+    assert!(context_highlights("back to alpha", &marks(&["zzz"])).is_empty());
+}
+
+#[gpui_kit::test]
+fn find_row_highlight_handles_multibyte_context(_cx: &mut TestAppContext) {
+    use super::result_row::{context_highlights, one_line};
+    let line = one_line("café ☕ 🦀 naïve rust and Rust");
+    let ranges = context_highlights(&line, &marks(&["rust", "naïve"]));
+    assert!(!ranges.is_empty());
+    for r in &ranges {
+        assert!(line.is_char_boundary(r.start) && line.is_char_boundary(r.end));
+    }
+    let words: Vec<&str> = ranges.iter().map(|r| &line[r.clone()]).collect();
+    assert!(words.iter().any(|w| w.eq_ignore_ascii_case("rust")));
+    assert!(words.contains(&"naïve"));
+}

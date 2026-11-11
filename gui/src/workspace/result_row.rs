@@ -6,17 +6,21 @@
 //! (FIND's paragraph, SEM's matched chunk), its whitespace run together and
 //! cut to [`CONTEXT_CHARS`].
 
+use std::ops::Range;
+
+use gpui_kit::HighlightStyle;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div,
+    StatefulInteractiveElement as _, Styled as _, StyledText, div,
 };
+use kimun_notes::logic::text_match::match_ranges;
 use kimun_notes::settings::themes::Theme;
 
-use super::files::{ellipsis, lane_row};
+use super::files::{ellipsis, ellipsis_box, lane_row};
 use super::find::CONTEXT_CHARS;
 use crate::theme;
 
@@ -35,7 +39,7 @@ pub(crate) fn context_id(row_id: &SharedString) -> SharedString {
 
 /// `context` as one line: its first [`CONTEXT_CHARS`] characters, with
 /// every run of whitespace (line breaks too) one space.
-fn one_line(context: &str) -> String {
+pub(crate) fn one_line(context: &str) -> String {
     let cut = context
         .char_indices()
         .nth(CONTEXT_CHARS)
@@ -43,10 +47,23 @@ fn one_line(context: &str) -> String {
     cut.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The byte ranges of `line` (the displayed one-line context, not the
+/// original paragraph) the `marks` match; each lies on char boundaries.
+pub(crate) fn context_highlights(line: &str, marks: &[String]) -> Vec<Range<usize>> {
+    if marks.is_empty() {
+        return Vec::new();
+    }
+    match_ranges(line, marks)
+        .into_iter()
+        .filter(|&(from, to)| from < to && line.is_char_boundary(from) && line.is_char_boundary(to))
+        .map(|(from, to)| from..to)
+        .collect()
+}
+
 /// A search result's row (see the module docs): `title` (already the
 /// filename when the note has none), `filename`, `context` and, when
-/// present, `score` (`87%`). `marks` are the words to highlight in the
-/// context; none are drawn yet.
+/// present, `score` (`87%`). `marks` are the words to highlight, in the
+/// accent colour, in the context line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn result_row(
     id: SharedString,
@@ -58,9 +75,9 @@ pub(crate) fn result_row(
     marks: &[String],
     t: &Theme,
 ) -> Stateful<Div> {
-    let _ = marks;
     let title = SharedString::from(title.to_string());
     let context = SharedString::from(one_line(context));
+    let highlights = context_highlights(&context, marks);
     let icon = Icon::new(IconName::FileText)
         .size_4()
         .text_color(theme::foreground(t));
@@ -100,13 +117,24 @@ pub(crate) fn result_row(
                 .text_xs()
                 .text_color(theme::secondary(t))
                 .into_any_element(),
-            ellipsis(context.clone())
-                .id(context_id(&id))
-                .test_support()
-                .aria_label(context)
-                .text_xs()
-                .text_color(theme::muted(t))
-                .into_any_element(),
+            if highlights.is_empty() {
+                ellipsis(context.clone())
+            } else {
+                let mark = HighlightStyle {
+                    color: Some(theme::accent(t).into()),
+                    ..Default::default()
+                };
+                ellipsis_box().child(
+                    StyledText::new(context.clone())
+                        .with_highlights(highlights.into_iter().map(|range| (range, mark))),
+                )
+            }
+            .id(context_id(&id))
+            .test_support()
+            .aria_label(context)
+            .text_xs()
+            .text_color(theme::muted(t))
+            .into_any_element(),
         ],
         t,
     )
