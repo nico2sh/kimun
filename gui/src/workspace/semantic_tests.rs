@@ -844,6 +844,24 @@ fn sem_row_shows_score_and_chunk_context(cx: &mut TestAppContext) {
     );
 }
 
+/// A hit whose chunk has no title shows its filename, in the row and in the
+/// preview's header.
+#[gpui_kit::test]
+fn sem_blank_title_shows_the_filename(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let blank = chunk("beta.md", "", "the second note", 0.9);
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![blank]));
+    let row = semantic_row_id(&path("beta.md"));
+    assert_eq!(label(&started, row, cx).as_deref(), Some("beta.md"));
+    press(&started, "down", cx);
+    press(&started, "right", cx);
+    assert_eq!(
+        label(&started, SEMANTIC_PREVIEW_HEADER_ID.into(), cx).as_deref(),
+        Some("beta.md")
+    );
+}
+
 /// A SEM row is exactly as tall as a FIND row.
 #[gpui_kit::test]
 fn sem_row_matches_find_row_height(cx: &mut TestAppContext) {

@@ -636,6 +636,23 @@ mod semantic {
         );
     }
 
+    /// A hit keeps the chunk's own title, blank when it has none (a GUI
+    /// shows the filename then); its TUI row still says `<no title>`.
+    #[tokio::test]
+    async fn a_hit_keeps_a_blank_title_its_row_says_no_title() {
+        let vault = crate::test_support::temp_vault("views-sem-blank").await;
+        let chunks = vec![
+            chunk_with("a", "", "x", 0.9, 0),
+            chunk_with("b", "B › Intro", "y", 0.8, 0),
+        ];
+        let hits = chunks_to_hits(chunks.clone(), &vault);
+        assert_eq!(hits[0].title, "");
+        assert_eq!(row(&hits[0].entry).1, "<no title>");
+        assert_eq!(hits[1].title, "B › Intro");
+        let entries = chunks_to_entries(chunks, &vault);
+        assert_eq!(row(&entries[0]).1, "<no title>");
+    }
+
     #[tokio::test]
     async fn a_blank_query_skips_the_server_and_an_error_yields_no_rows() {
         let (source, stub) = source(None).await;

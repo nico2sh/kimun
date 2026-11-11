@@ -101,14 +101,9 @@ pub(crate) fn semantic_row_id(path: &VaultPath) -> SharedString {
 }
 
 /// A hit's title as its row shows it: the matched section's, else the
-/// filename.
+/// filename (the hit's own title, not its TUI row's `<no title>`).
 fn hit_title(hit: &SemanticHit) -> &str {
-    match &hit.entry {
-        FileListEntry::Note {
-            title, filename, ..
-        } => display_title(title, filename),
-        _ => "",
-    }
+    display_title(&hit.title, hit_filename(hit))
 }
 
 fn hit_filename(hit: &SemanticHit) -> &str {
