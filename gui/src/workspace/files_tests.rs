@@ -1068,7 +1068,11 @@ fn counts_reload_when_indexing_finishes(cx: &mut TestAppContext) {
     // The index changes behind FILES' back (no file operation reaches it).
     rt.block_on(v.vault.create_note(&path("sub/deeper/d.md"), "Delta"))
         .unwrap();
-    send(&started, AppMessage::IndexingDone(Ok(Default::default())), cx);
+    send(
+        &started,
+        AppMessage::IndexingDone(Ok(Default::default())),
+        cx,
+    );
     drive(&rt, cx, |cx| {
         started.second_line("deeper/", cx).as_deref() == Some("2 notes")
     });

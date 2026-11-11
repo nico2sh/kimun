@@ -49,10 +49,9 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    SharedString, Stateful, StyleRefinement, Styled as _,
-    Subscription, Window, div,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    Stateful, StyleRefinement, Styled as _, Subscription, Window, div,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
