@@ -59,7 +59,9 @@ use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::drawer_list::{page_of, page_target};
+use super::drawer_list::page_move;
+#[cfg(test)]
+use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
 use super::query_field::query_field;
 use super::sort::{chip_label, sort_chip};
@@ -519,16 +521,14 @@ impl FilesPane {
     /// Move the selection one page down (`down`) or up: the rows the list
     /// shows, clamped to the ends.
     fn select_page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let page = self.page();
         if let Some(core) = self.model.core_mut() {
-            let to = page_target(core.selected(), core.visible_len(), page, down);
-            core.move_selection(to);
+            page_move(core, &self.scroll, down);
         }
-        self.reveal_selection();
         cx.notify();
     }
 
-    /// The rows a page holds, as last laid out.
+    /// The rows a page holds, as last laid out (tests).
+    #[cfg(test)]
     pub(super) fn page(&self) -> usize {
         let len = self.model.core().map_or(0, |core| core.visible_len());
         page_of(&self.scroll, len)
