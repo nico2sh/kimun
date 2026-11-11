@@ -18,10 +18,10 @@ use kimun_notes::logic::query::QueryHit;
 use kimun_notes::logic::views::TagEntry;
 use tokio::runtime::Runtime;
 
-use super::drawer_list::DrawerList;
+use super::drawer_list::{DrawerList, chevron_id};
 use super::find::{
-    BLANK_TEXT, FIND_DEBOUNCE, FIND_ERROR_ID, FIND_EXPAND_ID, FIND_HELP_ID, FIND_ID, FIND_INPUT_ID,
-    FIND_MORE_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
+    BLANK_TEXT, FIND_DEBOUNCE, FIND_ERROR_ID, FIND_HELP_ID, FIND_ID, FIND_INPUT_ID, FIND_MORE_ID,
+    FIND_PREVIEW_HEADER_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
 };
 use super::modal::ModalKind;
 use super::picker::TO_FIND_BUTTON_ID;
@@ -394,12 +394,102 @@ fn the_preview_cycles_and_scrolls(cx: &mut TestAppContext) {
     assert_eq!(expand(&started, cx), (false, false, true));
     press(&started, "space", cx);
     assert_eq!(expand(&started, cx), (true, false, false));
-    click(&started, FIND_EXPAND_ID, cx);
+    let list = find_list(&started, cx);
+    let sel = cx.read(|cx| list.read(cx).selected_row().unwrap().entry.path.clone());
+    click(&started, chevron_id(&find_row_id(&sel)), cx);
     assert_eq!(
         expand(&started, cx),
         (false, true, false),
-        "the button cycles"
+        "the row's chevron grows it"
     );
+}
+
+fn drawn_find(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some_and(|e| e.visible())
+    })
+    .unwrap()
+}
+
+/// The toolbar has no expand button: the chevron replaced it.
+#[gpui_kit::test]
+fn find_has_no_toolbar_expand_button(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    assert!(!drawn_find(&started, "find-expand", cx));
+    assert!(drawn_find(&started, super::find::FIND_SAVE_ID, cx));
+    assert!(drawn_find(&started, FIND_HELP_ID, cx));
+}
+
+/// The selected row shows the chevron, the others do not (at rest).
+#[gpui_kit::test]
+fn find_selected_row_shows_chevron(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    let list = find_list(&started, cx);
+    let (sel, other) = cx.read(|cx| {
+        let l = list.read(cx);
+        let sel = l.selected_row().unwrap().entry.path.clone();
+        let other = l
+            .rows()
+            .into_iter()
+            .map(|r| r.entry.path.clone())
+            .find(|p| *p != sel)
+            .unwrap();
+        (sel, other)
+    });
+    assert!(drawn_find(&started, chevron_id(&find_row_id(&sel)), cx));
+    assert!(!drawn_find(&started, chevron_id(&find_row_id(&other)), cx));
+}
+
+/// A chevron click selects its row and grows the preview to Context; it
+/// does not open the note, and the list has the keyboard.
+#[gpui_kit::test]
+fn find_chevron_click_opens_context_preview(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    let list = find_list(&started, cx);
+    let sel = cx.read(|cx| list.read(cx).selected_row().unwrap().entry.path.clone());
+    assert_eq!(expand(&started, cx), (true, false, false));
+    click(&started, chevron_id(&find_row_id(&sel)), cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(find_list_focused(&started, cx));
+    assert!(on(&started, "alpha.md", cx), "the note was not opened");
+}
+
+/// In Context and Full the header names the note and its chevron steps
+/// Context -> Full -> Context; Full keeps it visible and clickable.
+#[gpui_kit::test]
+fn find_header_chevron_steps_context_to_full_then_back(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#go", cx);
+    assert!(!drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    press(&started, "down", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    let header_chevron = chevron_id(&SharedString::from(FIND_PREVIEW_HEADER_ID));
+    click(&started, header_chevron.clone(), cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    assert!(find_list_focused(&started, cx));
+    click(&started, header_chevron, cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(find_list_focused(&started, cx));
 }
 
 /// Enter in the results opens the note with the query's matches
