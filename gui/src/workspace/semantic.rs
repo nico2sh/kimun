@@ -71,9 +71,9 @@ use super::Workspace;
 use super::ask_sources::score_label;
 use super::chevron::{Reach, preview_header};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
-use super::files::display_title;
+use super::files::{display_title, note_count_text};
 use super::query_field::{self, query_field};
-use super::result_row::{count_label, result_row};
+use super::result_row::result_row;
 use super::search::{Mark, SearchPreview, SectionMark};
 use crate::input;
 use crate::theme;
@@ -268,7 +268,7 @@ impl SemanticView {
             && !list.is_loading()
             && list.len() > 0;
         counted.then(|| {
-            let text = count_label(list.len());
+            let text = note_count_text(list.len());
             div()
                 .id(SEMANTIC_BAR_ID)
                 .test_support()

@@ -24,14 +24,6 @@ use super::files::{ellipsis, ellipsis_box, lane_row};
 use super::find::CONTEXT_CHARS;
 use crate::theme;
 
-/// The count line FIND and SEM show over their lists: "1 note", "N notes".
-pub(crate) fn count_label(n: usize) -> String {
-    match n {
-        1 => "1 note".to_string(),
-        n => format!("{n} notes"),
-    }
-}
-
 /// A result row's height, in rems: title, filename and one line of context.
 pub(crate) const ROW_REMS: f32 = 3.75;
 
@@ -45,14 +37,15 @@ pub(crate) fn context_id(row_id: &SharedString) -> SharedString {
     format!("{row_id}:context").into()
 }
 
-/// `context` as one line: its first [`CONTEXT_CHARS`] characters, with
-/// every run of whitespace (line breaks too) one space.
+/// `context` as one line: every run of whitespace (line breaks too) one
+/// space, then its first [`CONTEXT_CHARS`] characters (characters, not
+/// bytes, so the cut is on a character boundary).
 pub(crate) fn one_line(context: &str) -> String {
-    let cut = context
-        .char_indices()
-        .nth(CONTEXT_CHARS)
-        .map_or(context, |(at, _)| &context[..at]);
-    cut.split_whitespace().collect::<Vec<_>>().join(" ")
+    let joined = context.split_whitespace().collect::<Vec<_>>().join(" ");
+    match joined.char_indices().nth(CONTEXT_CHARS) {
+        Some((at, _)) => joined[..at].to_string(),
+        None => joined,
+    }
 }
 
 /// The byte ranges of `line` (the displayed one-line context, not the
