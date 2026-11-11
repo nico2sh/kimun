@@ -493,6 +493,8 @@ fn find_selected_row_shows_chevron(cx: &mut TestAppContext) {
     });
     assert!(drawn_find(&started, chevron_id(&find_row_id(&sel)), cx));
     assert!(!drawn_find(&started, chevron_id(&find_row_id(&other)), cx));
+    // Where it lies in the real view: at the row's right end.
+    super::chevron_tests::assert_zone_flush_right_in(started.handle, find_row_id(&sel), cx);
 }
 
 /// A chevron click selects its row and grows the preview to Context; it

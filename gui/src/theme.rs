@@ -571,7 +571,9 @@ pub fn run_style(run: &Run, theme: &Theme) -> CellStyle {
     s
 }
 
-fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
+/// `a` moved toward `b` by `t` (0 to 1), opaque: `b` at alpha `t` drawn
+/// over the opaque `a`.
+pub fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let m = |x: f32, y: f32| x + (y - x) * t;
     Rgba {
         r: m(a.r, b.r),

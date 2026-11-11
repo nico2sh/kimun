@@ -918,6 +918,8 @@ fn sem_chevron_expands_without_opening_the_note(cx: &mut TestAppContext) {
     let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
     let row = semantic_row_id(&path("delta.md"));
     assert!(drawn(started.handle, chevron_id(&row), cx));
+    // Where it lies in the real view: at the row's right end.
+    super::chevron_tests::assert_zone_flush_right_in(started.handle, row.clone(), cx);
     click(started.handle, chevron_id(&row), cx);
     assert_eq!(expand(&started, cx), (false, true, false));
     assert!(list_focused(&started, cx));
@@ -927,6 +929,7 @@ fn sem_chevron_expands_without_opening_the_note(cx: &mut TestAppContext) {
     );
     let header = SharedString::from(SEMANTIC_PREVIEW_HEADER_ID);
     assert!(drawn(started.handle, header.clone(), cx));
+    super::chevron_tests::assert_zone_flush_right_in(started.handle, header.clone(), cx);
     click(started.handle, chevron_id(&header), cx);
     assert_eq!(expand(&started, cx), (false, false, true));
     assert!(list_focused(&started, cx));

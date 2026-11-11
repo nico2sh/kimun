@@ -93,6 +93,17 @@ pub(crate) fn source_row_id(rank: usize) -> SharedString {
     format!("ask-source:{rank}").into()
 }
 
+/// The element id of the journal date on the row `row_id` (tests).
+pub(crate) fn date_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:date").into()
+}
+
+/// How readily a row's journal date gives way, next to its title's 1: a
+/// tenth, so the title takes nearly all of the cut and the date gives way
+/// only once the title is all but gone. (A much smaller factor leaves the
+/// layout a few pixels over the line's end.)
+const DATE_SHRINK: f32 = 0.1;
+
 /// The similarity as a whole percentage (the TUI's: the server's
 /// `0.0..=1.0` score, clamped).
 fn score_percent(score: f64) -> u32 {
@@ -158,31 +169,34 @@ impl DrawerRow for SourceRow {
             .text_color(theme::accent(t))
             .child(self.rank.to_string());
         let id = self.element_id();
-        // The title gives way (an ellipsis) before the date and the score;
-        // the line stops short of the chevron's zone.
-        let heading = clear_of_zone(div().flex().items_center().gap_1().min_w_0())
-            .child(
-                ellipsis(title)
-                    .id(title_id(&id))
-                    .test_support()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(title_color),
-            )
-            .when_some(date, |line, date| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .text_xs()
-                        .text_color(theme::journal_date(t))
-                        .child(date),
-                )
-            })
-            .child(score_beside_title(
-                score_id(&id),
-                score_label(source.score).into(),
-                t,
-            ));
+        // The title gives way (an ellipsis) first, then the date; the score
+        // never does. The line stops short of the chevron's zone and clips
+        // there, however narrow the drawer.
+        let heading = clear_of_zone(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .overflow_hidden(),
+        )
+        .child(
+            ellipsis(title)
+                .id(title_id(&id))
+                .test_support()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(title_color),
+        )
+        .when_some(date, |line, date| {
+            let mut date = ellipsis(date).text_xs().text_color(theme::journal_date(t));
+            date.style().flex_shrink = Some(DATE_SHRINK);
+            line.child(date.id(date_id(&id)).test_support())
+        })
+        .child(score_beside_title(
+            score_id(&id),
+            score_label(source.score).into(),
+            t,
+        ));
         lane_row(
             id,
             label,

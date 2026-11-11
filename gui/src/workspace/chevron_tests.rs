@@ -22,11 +22,13 @@ use kimun_notes::logic::list::ListRow;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::ask_sources::SourceRow;
-use super::chevron::{ChevronLook, Reach, ZONE_REMS, chevron, chevron_hover, preview_header};
+use super::ask_sources::{SourceRow, date_id};
+use super::chevron::{
+    ChevronLook, Reach, ZONE_REMS, ZoneOn, chevron, chevron_hover, preview_header,
+};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
-use super::result_row::{ROW_REMS, result_row, score_id, title_id};
+use super::result_row::{ROW_REMS, context_id, result_row, score_id, title_id};
 use crate::theme;
 
 #[derive(Debug, Clone)]
@@ -315,6 +317,13 @@ fn source(rank: usize) -> SourceRow {
     )
 }
 
+/// [`source`], a journal entry: its date beside the heading.
+fn dated_source(rank: usize) -> SourceRow {
+    let mut row = source(rank);
+    row.source.date = Some("2026-04-08".into());
+    row
+}
+
 /// A list of `R` filling the window.
 struct ListHost<R: DrawerRow> {
     list: Entity<DrawerList<R>>,
@@ -470,50 +479,69 @@ fn zone_is_flush_right_and_full_height_on_the_header(cx: &mut TestAppContext) {
 }
 
 /// The element [`chevron`] returns is the zone: a left border alone, in
-/// the divider colour; no fill at rest, the glyph in the dim text colour;
-/// under the pointer ([`chevron_hover`]) the faint fill and the text
-/// colour.
+/// the divider colour, the glyph in the dim text colour; on a row the
+/// row's own fill, opaque, and the row's rounded right corners; on the
+/// header no fill and square corners. Under the pointer ([`chevron_hover`])
+/// the faint fill and the text colour.
 #[test]
 fn zone_has_a_divider_on_its_left_edge() {
     for t in Theme::builtins() {
-        let look = ChevronLook::of(&t);
-        let name = &t.name;
-        assert_eq!(look.glyph, theme::secondary(&t), "{name}: glyph token");
-        assert_eq!(look.hover_glyph, theme::foreground(&t), "{name}");
-        let mut zone = chevron("chevron-style".into(), Reach::Grow, &t);
-        let style = zone.style();
-        let widths = &style.border_widths;
-        let width = |side: Option<gpui_kit::AbsoluteLength>| {
-            side.map_or(px(0.), |width| width.to_pixels(px(16.)))
-        };
-        assert!(width(widths.left) > px(0.), "{name}: left border");
-        for (side, w) in [
-            ("top", widths.top),
-            ("right", widths.right),
-            ("bottom", widths.bottom),
-        ] {
-            assert_eq!(width(w), px(0.), "{name}: {side} border");
-        }
-        assert_eq!(style.border_color, Some(Hsla::from(look.divider)), "{name}");
-        assert!(style.background.is_none(), "{name}: no fill at rest");
-        assert_eq!(
-            style.text.color,
-            Some(Hsla::from(look.glyph)),
-            "{name}: glyph"
-        );
+        for on in [ZoneOn::SelectedRow, ZoneOn::HoveredRow, ZoneOn::Header] {
+            let look = ChevronLook::of(&t, on);
+            let name = format!("{} {on:?}", t.name);
+            assert_eq!(look.glyph, theme::secondary(&t), "{name}: glyph token");
+            assert_eq!(look.hover_glyph, theme::foreground(&t), "{name}");
+            let mut zone = chevron("chevron-style".into(), Reach::Grow, on, &t);
+            let style = zone.style();
+            let widths = &style.border_widths;
+            let width = |side: Option<gpui_kit::AbsoluteLength>| {
+                side.map_or(px(0.), |width| width.to_pixels(px(16.)))
+            };
+            assert!(width(widths.left) > px(0.), "{name}: left border");
+            for (side, w) in [
+                ("top", widths.top),
+                ("right", widths.right),
+                ("bottom", widths.bottom),
+            ] {
+                assert_eq!(width(w), px(0.), "{name}: {side} border");
+            }
+            assert_eq!(style.border_color, Some(Hsla::from(look.divider)), "{name}");
+            let fill = style
+                .background
+                .as_ref()
+                .and_then(|fill| fill.color())
+                .and_then(|fill| fill.as_solid());
+            assert_eq!(fill, on.fill(&t).map(Hsla::from), "{name}: rest fill");
+            let radii = &style.corner_radii;
+            let rounded = |r: Option<gpui_kit::AbsoluteLength>| {
+                r.is_some_and(|r| r.to_pixels(px(16.)) > px(0.))
+            };
+            let row = on != ZoneOn::Header;
+            assert_eq!(rounded(radii.top_right), row, "{name}: top right corner");
+            assert_eq!(rounded(radii.bottom_right), row, "{name}: bottom right");
+            assert!(
+                !rounded(radii.top_left) && !rounded(radii.bottom_left),
+                "{name}"
+            );
+            assert_eq!(
+                style.text.color,
+                Some(Hsla::from(look.glyph)),
+                "{name}: glyph"
+            );
 
-        let hover = chevron_hover(look, StyleRefinement::default());
-        let fill = hover.background.as_ref().and_then(|fill| fill.color());
-        assert_eq!(
-            fill.and_then(|fill| fill.as_solid()),
-            Some(Hsla::from(look.hover_fill)),
-            "{name}: hover fill"
-        );
-        assert_eq!(
-            hover.text.color,
-            Some(Hsla::from(look.hover_glyph)),
-            "{name}: hover glyph"
-        );
+            let hover = chevron_hover(look, StyleRefinement::default());
+            let fill = hover.background.as_ref().and_then(|fill| fill.color());
+            assert_eq!(
+                fill.and_then(|fill| fill.as_solid()),
+                Some(Hsla::from(look.hover_fill)),
+                "{name}: hover fill"
+            );
+            assert_eq!(
+                hover.text.color,
+                Some(Hsla::from(look.hover_glyph)),
+                "{name}: hover glyph"
+            );
+        }
     }
 }
 
@@ -540,28 +568,87 @@ fn over(color: Rgba, under: Rgba) -> Rgba {
 }
 
 /// The zone reads on a selected row and on a hovered row in every built-in
-/// theme: its hover fill and its divider, each drawn over either row's
-/// fill, stand off that fill by [`MIN_DISTANCE`] at least. (Not off the
-/// other row's fill: the zone is never drawn over both at once, and a tint
-/// toward the text on the lighter fill may pass through the other one.)
+/// theme. Its rest fill is the row's fill, opaque (it masks the text
+/// beneath); its hover fill is opaque too; that hover fill and the divider
+/// drawn over the rest fill stand off the row's fill by [`MIN_DISTANCE`]
+/// at least. (Each is measured against the fill of the row it is drawn on:
+/// the zone is never drawn over both rows at once.) On the header, which
+/// has no fill, the see-through hover tint and divider stand off the panel
+/// by as much.
 #[test]
 fn zone_reads_on_every_row() {
     for t in Theme::builtins() {
-        let look = ChevronLook::of(&t);
-        let rows = [
-            ("hovered", theme::hover_background(&t)),
-            ("selected", theme::selected_background(&t)),
-        ];
-        for (kind, under) in rows {
+        for on in [ZoneOn::HoveredRow, ZoneOn::SelectedRow, ZoneOn::Header] {
+            let look = ChevronLook::of(&t, on);
+            let name = format!("{} {on:?}", t.name);
+            let under = match on.fill(&t) {
+                Some(row) => {
+                    assert_eq!(look.fill, Some(row), "{name}: the row's fill");
+                    assert_eq!(row.a, 1., "{name}: an opaque rest fill");
+                    assert_eq!(look.hover_fill.a, 1., "{name}: an opaque hover fill");
+                    row
+                }
+                None => {
+                    assert_eq!(look.fill, None, "{name}");
+                    theme::background(&t)
+                }
+            };
             for (part, color) in [("hover fill", look.hover_fill), ("divider", look.divider)] {
                 let gap = distance(over(color, under), under);
                 assert!(
                     gap >= MIN_DISTANCE,
-                    "{}: the {part} on a {kind} row is {gap:.3} off it",
-                    t.name
+                    "{name}: the {part} is {gap:.3} off what it is drawn on"
                 );
             }
         }
+    }
+}
+
+/// The quad the last frame painted at `at` (layout pixels, within 1 px)
+/// filled in `fill`.
+fn quad_at(at: Bounds<Pixels>, fill: Hsla, cx: &mut VisualTestContext) -> Option<gpui_kit::Quad> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window.painted_quads().into_iter().find(|quad| {
+            let b = quad.bounds;
+            let near = |a: f32, b: Pixels| (a / scale - f32::from(b)).abs() <= 1.;
+            near(b.origin.x.0, at.left())
+                && near(b.origin.y.0, at.top())
+                && near(b.size.width.0, at.size.width)
+                && near(b.size.height.0, at.size.height)
+                && quad.background.as_solid() == Some(fill)
+        })
+    })
+}
+
+/// On a selected three-line row (FIND, SEM) the context line runs on under
+/// the zone, and the zone hides it: it is painted after the row's fill, in
+/// that very fill, fully opaque. (The scene does not say where text lies
+/// in the paint order; the zone is the row's last child, so GPUI paints it
+/// after the row's text.) So is the zone of a hovered row, in the hover
+/// fill.
+#[gpui_kit::test]
+fn zone_masks_the_text_beneath(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, (0..3).map(Hit).collect());
+    hover(Hit(2).element_id(), cx);
+    let t = cx.update(|_, cx| theme::current(cx));
+    for (row, on) in [(0, ZoneOn::SelectedRow), (2, ZoneOn::HoveredRow)] {
+        let id = Hit(row).element_id();
+        let row_bounds = bounds(id.clone(), cx).expect("row");
+        let zone = bounds(chevron_id(&id), cx).expect("zone");
+        let context = bounds(context_id(&id), cx).expect("context");
+        assert!(context.intersects(&zone), "{id}: text runs under {zone:?}");
+        let fill = Hsla::from(on.fill(&t).expect("a row fill"));
+        assert_eq!(fill.a, 1., "{id}: an opaque fill");
+        let painted = quad_at(zone, fill, cx).expect("the zone painted in the row's fill");
+        let under = quad_at(row_bounds, fill, cx).expect("the row's fill painted");
+        assert!(
+            painted.order > under.order,
+            "{id}: the zone {} over the row {}",
+            painted.order,
+            under.order
+        );
     }
 }
 
@@ -688,5 +775,67 @@ fn a_row_press_after_the_chevron_is_no_double_click(cx: &mut TestAppContext) {
         seen.borrow().contains(&format!("verb:0:{OPEN_NOTE}")),
         "{:?}",
         seen.borrow()
+    );
+}
+
+/// In a very narrow drawer a journal source's heading line (title, date,
+/// score) still ends short of the zone: the title gives way, then the date;
+/// nothing of the line reaches under the zone, selected or hovered.
+#[gpui_kit::test]
+fn a_dated_source_row_stays_clear_of_the_zone_when_narrow(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, vec![dated_source(1), dated_source(2)]);
+    let wide_score = bounds(score_id(&dated_source(1).element_id()), cx)
+        .expect("score")
+        .size
+        .width;
+    for width in [px(360.), px(240.), px(180.), px(150.)] {
+        cx.simulate_resize(size(width, px(600.)));
+        cx.run_until_parked();
+        hover(dated_source(2).element_id(), cx);
+        for rank in [1, 2] {
+            let id = dated_source(rank).element_id();
+            let zone = bounds(chevron_id(&id), cx).expect("zone");
+            let score = bounds(score_id(&id), cx).expect("score");
+            assert_eq!(
+                score.size.width, wide_score,
+                "{id} at {width:?}: whole score"
+            );
+            for (part, at) in [
+                ("title", bounds(title_id(&id), cx).expect("title")),
+                ("date", bounds(date_id(&id), cx).expect("date")),
+                ("score", score),
+            ] {
+                assert!(
+                    at.right() <= zone.left() && !at.intersects(&zone),
+                    "{id} at {width:?}: the {part} {at:?} reaches the zone {zone:?}"
+                );
+            }
+        }
+    }
+}
+
+/// In a real view's window `handle`: the zone of the row (or header) `id`
+/// lies inside it, its right edge within 1 px of the row's.
+pub(super) fn assert_zone_flush_right_in(
+    handle: gpui_kit::AnyWindowHandle,
+    id: SharedString,
+    cx: &mut TestAppContext,
+) {
+    let (row, zone) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(id.clone()).bounds(),
+                window.find(chevron_id(&id)).bounds(),
+            )
+        })
+        .unwrap();
+    assert!(
+        (zone.right() - row.right()).abs() <= px(1.),
+        "{id}: zone {zone:?} flush right in {row:?}"
+    );
+    assert!(
+        zone.left() >= row.left() && zone.top() >= row.top() && zone.bottom() <= row.bottom(),
+        "{id}: zone {zone:?} inside {row:?}"
     );
 }
