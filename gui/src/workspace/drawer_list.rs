@@ -97,7 +97,7 @@ pub(crate) trait DrawerRow: ListRow {
 }
 
 /// The group name a row with the chevron carries, for the chevron's hover.
-const ROW_GROUP: &str = "drawer-row";
+pub(crate) const ROW_GROUP: &str = "drawer-row";
 
 /// A row-level command the owner answers to: the one name a context-menu
 /// item, the expand chevron or a double-click carries in
