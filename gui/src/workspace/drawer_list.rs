@@ -198,6 +198,23 @@ pub(super) fn page_target(
     })
 }
 
+/// Page Down (`down`) or Page Up on `core`, the rows of the `uniform_list`
+/// behind `scroll`: the selection moves a page ([`page_of`],
+/// [`page_target`]) and the list scrolls to keep it in view. FILES and
+/// every drawer list page with it.
+pub(super) fn page_move<R: ListRow>(
+    core: &mut ListCore<R>,
+    scroll: &UniformListScrollHandle,
+    down: bool,
+) {
+    let len = core.visible_len();
+    let to = page_target(core.selected(), len, page_of(scroll, len), down);
+    core.move_selection(to);
+    if let Some(pos) = core.selected() {
+        scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
+    }
+}
+
 /// One drawer list. See the module docs.
 pub(crate) struct DrawerList<R: DrawerRow> {
     /// `None` until the first rows were asked for.
@@ -497,17 +514,10 @@ impl<R: DrawerRow> DrawerList<R> {
     /// Move the selection one page down (`down`) or up: the rows the list
     /// shows ([`page_of`]), clamped to the ends.
     fn page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let Some(len) = self.core.as_ref().map(|core| core.visible_len()) else {
-            return;
-        };
-        let page = page_of(&self.scroll, len);
-        self.select(
-            |core| {
-                let to = page_target(core.selected(), len, page, down);
-                core.move_selection(to);
-            },
-            cx,
-        );
+        if let Some(core) = self.core.as_mut() {
+            page_move(core, &self.scroll, down);
+            cx.notify();
+        }
     }
 
     fn select(&mut self, pick: impl FnOnce(&mut ListCore<R>), cx: &mut Context<Self>) {
