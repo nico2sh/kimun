@@ -29,8 +29,9 @@
 //! Desktop keys only, as LINKS and OUTLINE (decision 13).
 //!
 //! **Pointer.** A click opens a row, as Enter does (the pointing hand over
-//! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the preview button
-//! cycles the preview; `Save…` saves the query (as the `SaveCurrentQuery`
+//! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the chevron on
+//! the selected or hovered row, and the one on the preview's header, step
+//! the preview; `Save…` saves the query (as the `SaveCurrentQuery`
 //! chord does here); the `Syntax` button shows the query syntax; the sort
 //! chip opens the sort dialog, which rewrites the query's order directive
 //! (M7b G7, [`super::sort`]).
@@ -46,12 +47,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
-use gpui_kit::component::{Disableable as _, Icon};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
@@ -79,10 +79,11 @@ use kimun_notes::settings::themes::Theme;
 use super::Workspace;
 use super::chevron::{Reach, preview_header};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
-use super::files::{display_title, ellipsis, lane_row};
+use super::files::{display_title, ellipsis};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
+use super::result_row::result_row;
 use super::search::SearchPreview;
 use super::search::label_query;
 use super::sort::{chip_label, sort_chip};
@@ -118,8 +119,6 @@ pub(crate) const FIND_DEBOUNCE: Duration = Duration::from_millis(150);
 pub(crate) const ROW_CAP: usize = 500;
 /// The longest context paragraph a row keeps, in characters.
 pub(crate) const CONTEXT_CHARS: usize = 300;
-/// A row's height, in rems: title, filename and one line of context.
-const ROW_REMS: f32 = 3.75;
 
 /// What the list says for a blank query, and for a query without results.
 pub(crate) const BLANK_TEXT: &str = "Type a query to search the workspace (F1: syntax)";
@@ -137,36 +136,14 @@ impl DrawerRow for QueryHit {
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let entry = &self.entry;
-        let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
-        // One line of context: the paragraph's lines run together.
-        let context: SharedString = entry
-            .context
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .into();
-        let icon = Icon::new(IconName::FileText)
-            .size_4()
-            .text_color(theme::foreground(t));
-        lane_row(
+        result_row(
             self.element_id(),
-            title.clone(),
             selected,
-            ROW_REMS,
-            Some(icon.into_any_element()),
-            [
-                ellipsis(title)
-                    .text_color(theme::foreground(t))
-                    .into_any_element(),
-                ellipsis(entry.filename.clone())
-                    .text_xs()
-                    .text_color(theme::secondary(t))
-                    .into_any_element(),
-                ellipsis(context)
-                    .text_xs()
-                    .text_color(theme::muted(t))
-                    .into_any_element(),
-            ],
+            display_title(&entry.title, &entry.filename),
+            &entry.filename,
+            &entry.context,
+            None,
+            &[],
             t,
         )
     }
