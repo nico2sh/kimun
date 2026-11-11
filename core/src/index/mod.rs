@@ -632,8 +632,8 @@ impl NoteIndex {
     }
 
     /// Note counts grouped by containing directory (`basePath`), for every
-    /// note strictly inside `parent` at any depth, in one query. Notes that
-    /// sit directly in `parent` are included under `parent`'s own base path;
+    /// note inside `parent` at any depth, in one query. The rows include
+    /// `parent`'s own base path (notes sitting directly in `parent`);
     /// callers fold the rows into per-child totals.
     pub(crate) async fn note_counts_by_base(
         &self,
