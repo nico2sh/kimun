@@ -7,9 +7,11 @@
 //! Both draw the one zone of [`chevron`]: a strip at the right end, as tall
 //! as the row (or the header line), set off by a thin divider on its left
 //! edge, the glyph centred in it; the whole zone takes the click. As the
-//! zone covers the right end of every line, a line that must keep its end
-//! in sight (a score) stays [`clear_of_zone`]. It is a pointer shortcut
-//! only: the keys stay as they are.
+//! zone would cover the right end of every line, each text line of a row
+//! stays clear of it while it is there ([`clear_of_zone_while_shown`]), so a
+//! score and the `…` of a cut line stay in sight; the header's title stays
+//! [`clear_of_zone`]. It is a pointer shortcut only: the keys stay as they
+//! are.
 //!
 //! A view with such a preview (FIND, SEM, the Sources view) takes its steps
 //! from [`PreviewSteps`], keeps its rows' chevron in step with
@@ -27,7 +29,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
-use super::drawer_list::{DrawerList, DrawerRow, chevron_id};
+use super::drawer_list::{DrawerList, DrawerRow, ROW_GROUP, chevron_id};
 use super::files::ellipsis;
 use crate::theme;
 
@@ -206,6 +208,24 @@ pub(crate) fn clear_of_zone<E: Styled>(line: E) -> E {
     line.pr(rems(ZONE_REMS))
 }
 
+/// `line` of a list row kept clear of the zone while the zone is there: a
+/// margin as wide as the zone on the selected row (`selected`) and, through
+/// the row's hover group ([`ROW_GROUP`]), on the hovered one. An idle row's
+/// lines keep their whole width. The margin (not padding) puts the line's
+/// own edge, where it clips and ends in an ellipsis, left of the zone, so a
+/// line that is cut short keeps its `…` in sight.
+pub(crate) fn clear_of_zone_while_shown<E: Styled + gpui_kit::InteractiveElement>(
+    line: E,
+    selected: bool,
+) -> E {
+    let line = if selected {
+        line.mr(rems(ZONE_REMS))
+    } else {
+        line
+    };
+    line.group_hover(ROW_GROUP, |style| style.mr(rems(ZONE_REMS)))
+}
+
 /// The open preview's one-line header: `title` on the left, cut short with
 /// an ellipsis before the zone, the chevron's zone at the right end (its
 /// id [`chevron_id`] of `id`). The caller adds `on_click` (the whole line
@@ -314,7 +334,9 @@ pub(crate) fn step_header<V: PreviewSteps>(
 ) -> impl IntoElement + use<V> {
     preview_header(id.into(), title, Reach::of(model), t)
         .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-            if event.standard_click() {
+            // A double click steps once, with its first press, as the
+            // row's chevron does.
+            if event.standard_click() && event.click_count() == 1 {
                 this.chevron_step(window, cx);
             }
         }))

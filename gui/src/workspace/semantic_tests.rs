@@ -862,6 +862,26 @@ fn sem_blank_title_shows_the_filename(cx: &mut TestAppContext) {
     );
 }
 
+/// A journal chunk's title arrives with its date glued on
+/// (`2026-04-08Afternoon`): the row and the preview's header show the
+/// section without the date.
+#[gpui_kit::test]
+fn sem_journal_title_drops_the_glued_date(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let mut journal = chunk("beta.md", "2026-04-08Afternoon", "the second note", 0.9);
+    journal.date = Some("2026-04-08".into());
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![journal]));
+    let row = semantic_row_id(&path("beta.md"));
+    assert_eq!(label(&started, row, cx).as_deref(), Some("Afternoon"));
+    press(&started, "down", cx);
+    press(&started, "right", cx);
+    assert_eq!(
+        label(&started, SEMANTIC_PREVIEW_HEADER_ID.into(), cx).as_deref(),
+        Some("Afternoon")
+    );
+}
+
 /// A SEM row is exactly as tall as a FIND row.
 #[gpui_kit::test]
 fn sem_row_matches_find_row_height(cx: &mut TestAppContext) {
@@ -933,6 +953,56 @@ fn sem_chevron_expands_without_opening_the_note(cx: &mut TestAppContext) {
     click(started.handle, chevron_id(&header), cx);
     assert_eq!(expand(&started, cx), (false, false, true));
     assert!(list_focused(&started, cx));
+}
+
+/// One press and release of the left button at the middle of the element
+/// `id`, the OS counting it as press number `count` of a run.
+fn press_at(s: &Started, id: &SharedString, count: usize, cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let position = window.find(id.clone()).bounds().center();
+        let modifiers = Modifiers::default();
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: count,
+            first_mouse: false,
+        };
+        let up = MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: count,
+        };
+        window.dispatch_event(down.to_platform_input(), cx);
+        window.dispatch_event(up.to_platform_input(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// A double click on the preview's header (or its zone) steps the preview
+/// once, not twice (Context -> Full, not on to Context again).
+#[gpui_kit::test]
+fn sem_double_click_on_the_header_steps_once(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = searched(cx, &rt, Stub::chunks(vec![roast()]));
+    press(&started, "down", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    let header = SharedString::from(SEMANTIC_PREVIEW_HEADER_ID);
+    for id in [header.clone(), chevron_id(&header)] {
+        // The two presses of a real double click: the OS counts 1, then 2.
+        press_at(&started, &id, 1, cx);
+        press_at(&started, &id, 2, cx);
+        assert_eq!(expand(&started, cx), (false, false, true), "{id}");
+        // A single click steps back out of Full.
+        press_at(&started, &id, 1, cx);
+        assert_eq!(expand(&started, cx), (false, true, false), "{id}");
+    }
 }
 
 /// In Full the list is hidden: Page Down leaves its selection alone; out

@@ -26,8 +26,9 @@ const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(250);
 pub struct SemanticHit {
     /// The note's row, as the TUI lists it (`<no title>` for a blank title).
     pub entry: FileListEntry,
-    /// The matched section's breadcrumb, as read: blank when the chunk has
-    /// none (a frontend shows the filename then).
+    /// The matched section's breadcrumb, as read and without a journal
+    /// entry's date: blank when the chunk has none (a frontend shows the
+    /// filename then).
     pub title: String,
     /// The matched section's innermost heading: what locates it in the note.
     pub heading: String,
@@ -50,11 +51,10 @@ impl ListRow for SemanticHit {
 }
 
 /// The best chunk of one note: its 0-based position among the results, the
-/// chunk itself, its readable title (possibly blank) and the note's row.
+/// chunk itself and the note's row.
 struct NoteChunk {
     position: usize,
     chunk: ChunkResult,
-    title: String,
     entry: FileListEntry,
 }
 
@@ -83,13 +83,12 @@ fn note_chunks(
             let shown = if title.trim().is_empty() {
                 "<no title>".to_string()
             } else {
-                title.clone()
+                title
             };
             let journal_date = vault.journal_date(&path).map(format_journal_date);
             Some(NoteChunk {
                 position,
                 chunk,
-                title,
                 entry: FileListEntry::Note {
                     path,
                     title: shown,
@@ -115,7 +114,8 @@ pub fn chunks_to_hits(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<Semant
             let source = AskSource::from_chunk(note.position, note.chunk);
             SemanticHit {
                 entry: note.entry,
-                title: note.title,
+                // The Source reader's heading (date stripped), whole.
+                title: source.heading.clone(),
                 heading: source.match_heading().to_string(),
                 chunk: source.text,
                 ordinal: source.ordinal,

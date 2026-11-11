@@ -21,7 +21,7 @@ use gpui_kit::{
 use kimun_notes::logic::text_match::match_ranges;
 use kimun_notes::settings::themes::Theme;
 
-use super::chevron::clear_of_zone;
+use super::chevron::clear_of_zone_while_shown;
 use super::files::{ellipsis, ellipsis_box, lane_row};
 use super::find::CONTEXT_CHARS;
 use crate::theme;
@@ -34,9 +34,20 @@ pub(crate) fn score_id(row_id: &SharedString) -> SharedString {
     format!("{row_id}:score").into()
 }
 
+/// The element id of the first line (title and score) on the row `row_id`
+/// (tests).
+pub(crate) fn first_line_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:first-line").into()
+}
+
 /// The element id of the title on the row `row_id` (tests).
 pub(crate) fn title_id(row_id: &SharedString) -> SharedString {
     format!("{row_id}:title").into()
+}
+
+/// The element id of the filename line on the row `row_id` (tests).
+pub(crate) fn filename_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:filename").into()
 }
 
 /// The element id of the context line on the row `row_id` (tests).
@@ -111,24 +122,29 @@ pub(crate) fn result_row(
     let icon = Icon::new(IconName::FileText)
         .size_4()
         .text_color(theme::foreground(t));
-    // The title gives way (an ellipsis) before the score does; a line with
-    // a score stops short of the chevron's zone, so the score always shows
-    // (FIND's title-only line keeps its whole width).
-    let first = div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .min_w_0()
-        .when(score.is_some(), clear_of_zone)
-        .child(
-            ellipsis(title.clone())
-                .id(title_id(&id))
-                .test_support()
-                .text_color(theme::foreground(t)),
-        )
-        .when_some(score, |line, score| {
-            line.child(score_beside_title(score_id(&id), score.into(), t))
-        });
+    // The title gives way (an ellipsis) before the score does. Every line
+    // stops short of the chevron's zone while the zone is there, so the
+    // score always shows, and the line clips there, however narrow the row.
+    let first = clear_of_zone_while_shown(
+        div()
+            .id(first_line_id(&id))
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1()
+            .min_w_0()
+            .overflow_hidden(),
+        selected,
+    )
+    .child(
+        ellipsis(title.clone())
+            .id(title_id(&id))
+            .test_support()
+            .text_color(theme::foreground(t)),
+    )
+    .when_some(score, |line, score| {
+        line.child(score_beside_title(score_id(&id), score.into(), t))
+    });
     lane_row(
         id.clone(),
         title,
@@ -137,27 +153,35 @@ pub(crate) fn result_row(
         Some(icon.into_any_element()),
         [
             first.into_any_element(),
-            ellipsis(filename.to_string())
+            clear_of_zone_while_shown(
+                ellipsis(filename.to_string())
+                    .id(filename_id(&id))
+                    .test_support()
+                    .text_xs()
+                    .text_color(theme::secondary(t)),
+                selected,
+            )
+            .into_any_element(),
+            clear_of_zone_while_shown(
+                if highlights.is_empty() {
+                    ellipsis(context.clone())
+                } else {
+                    let mark = HighlightStyle {
+                        color: Some(theme::accent(t).into()),
+                        ..Default::default()
+                    };
+                    ellipsis_box().child(
+                        StyledText::new(context.clone())
+                            .with_highlights(highlights.into_iter().map(|range| (range, mark))),
+                    )
+                }
+                .id(context_id(&id))
+                .test_support()
+                .aria_label(context)
                 .text_xs()
-                .text_color(theme::secondary(t))
-                .into_any_element(),
-            if highlights.is_empty() {
-                ellipsis(context.clone())
-            } else {
-                let mark = HighlightStyle {
-                    color: Some(theme::accent(t).into()),
-                    ..Default::default()
-                };
-                ellipsis_box().child(
-                    StyledText::new(context.clone())
-                        .with_highlights(highlights.into_iter().map(|range| (range, mark))),
-                )
-            }
-            .id(context_id(&id))
-            .test_support()
-            .aria_label(context)
-            .text_xs()
-            .text_color(theme::muted(t))
+                .text_color(theme::muted(t)),
+                selected,
+            )
             .into_any_element(),
         ],
         t,

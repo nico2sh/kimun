@@ -28,7 +28,9 @@ use super::chevron::{
 };
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, OPEN_NOTE, chevron_id};
 use super::files::{ClickPolicy, row_frame};
-use super::result_row::{ROW_REMS, context_id, result_row, score_id, title_id};
+use super::result_row::{
+    ROW_REMS, context_id, filename_id, first_line_id, result_row, score_id, title_id,
+};
 use crate::theme;
 
 #[derive(Debug, Clone)]
@@ -622,12 +624,13 @@ fn quad_at(at: Bounds<Pixels>, fill: Hsla, cx: &mut VisualTestContext) -> Option
     })
 }
 
-/// On a selected three-line row (FIND, SEM) the context line runs on under
-/// the zone, and the zone hides it: it is painted after the row's fill, in
-/// that very fill, fully opaque. (The scene does not say where text lies
-/// in the paint order; the zone is the row's last child, so GPUI paints it
-/// after the row's text.) So is the zone of a hovered row, in the hover
-/// fill.
+/// On a selected three-line row (FIND, SEM) the zone is opaque: painted
+/// after the row's fill, in that very fill, so anything of the row that
+/// still reached under it would be hidden. (The text lines stop short of it
+/// now, [`every_line_of_a_result_row_ends_before_the_zone`]; the scene does
+/// not say where text lies in the paint order, but the zone is the row's
+/// last child, so GPUI paints it after the row's text.) So is the zone of a
+/// hovered row, in the hover fill.
 #[gpui_kit::test]
 fn zone_masks_the_text_beneath(cx: &mut TestAppContext) {
     let (_, cx) = list_of(cx, (0..3).map(Hit).collect());
@@ -637,8 +640,6 @@ fn zone_masks_the_text_beneath(cx: &mut TestAppContext) {
         let id = Hit(row).element_id();
         let row_bounds = bounds(id.clone(), cx).expect("row");
         let zone = bounds(chevron_id(&id), cx).expect("zone");
-        let context = bounds(context_id(&id), cx).expect("context");
-        assert!(context.intersects(&zone), "{id}: text runs under {zone:?}");
         let fill = Hsla::from(on.fill(&t).expect("a row fill"));
         assert_eq!(fill.a, 1., "{id}: an opaque fill");
         let painted = quad_at(zone, fill, cx).expect("the zone painted in the row's fill");
@@ -812,6 +813,127 @@ fn a_dated_source_row_stays_clear_of_the_zone_when_narrow(cx: &mut TestAppContex
             }
         }
     }
+}
+
+/// In a very narrow drawer a result row's first line (title, score) still
+/// ends short of the zone: the title gives way, the score keeps its width
+/// and ends left of the zone, selected or hovered.
+#[gpui_kit::test]
+fn a_result_row_score_stays_clear_of_the_zone_when_narrow(cx: &mut TestAppContext) {
+    let (_, cx) = list_of(cx, (0..2).map(Hit).collect());
+    let wide_score = bounds(score_id(&Hit(0).element_id()), cx)
+        .expect("score")
+        .size
+        .width;
+    for width in [px(360.), px(240.), px(180.), px(150.), px(120.), px(100.)] {
+        cx.simulate_resize(size(width, px(600.)));
+        cx.run_until_parked();
+        hover(Hit(1).element_id(), cx);
+        for row in [0, 1] {
+            let id = Hit(row).element_id();
+            let zone = bounds(chevron_id(&id), cx).expect("zone");
+            let score = bounds(score_id(&id), cx).expect("score");
+            let line = bounds(first_line_id(&id), cx).expect("first line");
+            assert_eq!(score.size.width, wide_score, "{id} at {width:?}");
+            assert!(
+                score.right() <= zone.left() && !score.intersects(&zone),
+                "{id} at {width:?}: the score {score:?} reaches the zone {zone:?}"
+            );
+            assert!(
+                line.right() <= zone.left(),
+                "{id} at {width:?}: the line {line:?} runs under the zone {zone:?}"
+            );
+        }
+    }
+}
+
+/// A FIND row: [`Hit`]'s, without a score.
+#[derive(Debug, Clone)]
+struct Found(usize);
+
+impl ListRow for Found {}
+
+impl DrawerRow for Found {
+    fn element_id(&self) -> SharedString {
+        format!("chevron-test-found:{}", self.0).into()
+    }
+
+    fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
+        result_row(
+            self.element_id(),
+            selected,
+            "A title long enough to reach the right end of its row, and then some more",
+            "a-title-that-is-just-as-long-as-the-title-is-and-runs-past-the-end.md",
+            "Some context that runs on and on until it is cut short at the end, and then it runs on again",
+            None,
+            &[],
+            t,
+        )
+    }
+}
+
+/// Every text line of a row ends left of the zone while the zone is there
+/// (the selected row, the hovered row), so a line cut short keeps its
+/// ellipsis in sight; an idle row's lines keep the row's whole width.
+fn assert_lines_clear_of_the_zone<R: DrawerRow>(
+    rows: Vec<R>,
+    lines: &[fn(&SharedString) -> SharedString],
+    cx: &mut TestAppContext,
+) {
+    let ids: Vec<SharedString> = rows.iter().map(DrawerRow::element_id).collect();
+    let (_, cx) = list_of(cx, rows);
+    let rem = cx.update(|window, _| window.rem_size());
+    hover(ids[1].clone(), cx);
+    for (at, id) in ids.iter().enumerate() {
+        let zone = bounds(chevron_id(id), cx);
+        let row = bounds(id.clone(), cx).expect("row");
+        for line in lines {
+            let line_id = line(id);
+            let line = bounds(line_id.clone(), cx).expect("line");
+            match at {
+                // 0 selected, 1 hovered: the zone is there.
+                0 | 1 => {
+                    let zone = zone.expect("zone");
+                    assert!(
+                        line.right() <= zone.left(),
+                        "{line_id}: {line:?} runs under the zone {zone:?}"
+                    );
+                }
+                // 2 idle: no zone; the line runs to the row's padding.
+                _ => assert!(
+                    line.right() >= row.right() - rem * 0.5 - px(1.),
+                    "{line_id}: {line:?} narrowed on the idle row {row:?}"
+                ),
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn every_line_of_a_result_row_ends_before_the_zone(cx: &mut TestAppContext) {
+    assert_lines_clear_of_the_zone(
+        (0..3).map(Hit).collect(),
+        &[first_line_id, filename_id, context_id],
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+fn every_line_of_a_find_row_ends_before_the_zone(cx: &mut TestAppContext) {
+    assert_lines_clear_of_the_zone(
+        (0..3).map(Found).collect(),
+        &[first_line_id, filename_id, context_id],
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+fn every_line_of_a_source_row_ends_before_the_zone(cx: &mut TestAppContext) {
+    assert_lines_clear_of_the_zone(
+        vec![source(1), source(2), source(3)],
+        &[first_line_id, filename_id],
+        cx,
+    );
 }
 
 /// In a real view's window `handle`: the zone of the row (or header) `id`

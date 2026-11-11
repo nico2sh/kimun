@@ -653,6 +653,28 @@ mod semantic {
         assert_eq!(row(&entries[0]).1, "<no title>");
     }
 
+    /// A journal chunk's title arrives date-prefixed: a hit's title is the
+    /// section without the date; its TUI row keeps what it always showed.
+    #[tokio::test]
+    async fn a_journal_hit_title_drops_the_glued_date() {
+        let vault = crate::test_support::temp_vault("views-sem-journal").await;
+        let mut dated = chunk_with("a", "2026-04-08Afternoon", "x", 0.9, 0);
+        dated.date = Some("2026-04-08".into());
+        let mut only_date = chunk_with("b", "2026-04-09", "y", 0.8, 0);
+        only_date.date = Some("2026-04-09".into());
+        let chunks = vec![dated, only_date];
+        let hits = chunks_to_hits(chunks.clone(), &vault);
+        assert_eq!(hits[0].title, "Afternoon");
+        assert_eq!(hits[1].title, "", "a blank title falls back to the file");
+        let entries = chunks_to_entries(chunks, &vault);
+        assert_eq!(
+            row(&entries[0]).1,
+            "2026-04-08Afternoon",
+            "the TUI is as it was"
+        );
+        assert_eq!(row(&hits[0].entry).1, "2026-04-08Afternoon");
+    }
+
     #[tokio::test]
     async fn a_blank_query_skips_the_server_and_an_error_yields_no_rows() {
         let (source, stub) = source(None).await;

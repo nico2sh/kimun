@@ -63,11 +63,11 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::chevron::{PreviewSteps, clear_of_zone, step_header, sync_chevron};
+use super::chevron::{PreviewSteps, clear_of_zone_while_shown, step_header, sync_chevron};
 use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, MenuItem, OPEN_NOTE};
 use super::files::{ClickPolicy, NOTE_ROW_REMS, ellipsis, lane_row};
 use super::query_field::{self, query_field};
-use super::result_row::{score_beside_title, score_id, title_id};
+use super::result_row::{filename_id, first_line_id, score_beside_title, score_id, title_id};
 use super::search::{Mark, SearchPreview, SectionMark};
 use crate::input;
 use crate::theme;
@@ -172,13 +172,16 @@ impl DrawerRow for SourceRow {
         // The title gives way (an ellipsis) first, then the date; the score
         // never does. The line stops short of the chevron's zone and clips
         // there, however narrow the drawer.
-        let heading = clear_of_zone(
+        let heading = clear_of_zone_while_shown(
             div()
+                .id(first_line_id(&id))
+                .test_support()
                 .flex()
                 .items_center()
                 .gap_1()
                 .min_w_0()
                 .overflow_hidden(),
+            selected,
         )
         .child(
             ellipsis(title)
@@ -197,19 +200,21 @@ impl DrawerRow for SourceRow {
             score_label(source.score).into(),
             t,
         ));
+        let path_line = clear_of_zone_while_shown(
+            ellipsis(source.path.to_string())
+                .id(filename_id(&id))
+                .test_support()
+                .text_xs()
+                .text_color(theme::secondary(t)),
+            selected,
+        );
         lane_row(
             id,
             label,
             selected,
             NOTE_ROW_REMS,
             Some(rank.into_any_element()),
-            [
-                heading.into_any_element(),
-                ellipsis(source.path.to_string())
-                    .text_xs()
-                    .text_color(theme::secondary(t))
-                    .into_any_element(),
-            ],
+            [heading.into_any_element(), path_line.into_any_element()],
             t,
         )
     }
