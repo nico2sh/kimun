@@ -62,7 +62,7 @@ Download a `.dmg` through a browser on a Mac that is not yours. The browser sets
 
 ## What this does not do (yet)
 
-When the release has a `.dmg`, `install.sh --gui` on macOS installs the signed bundle into `~/Applications`. Otherwise it installs the raw
-binary. The script checks that the bundle seal is intact and that the signature chains to an Apple Developer ID Application
+When the release has a `.dmg`, `install.sh` on macOS installs the signed bundle into `~/Applications`. Otherwise a default run (both apps)
+warns and installs only the terminal app, and `--gui` installs the raw binary. The script checks that the bundle seal is intact and that the signature chains to an Apple Developer ID Application
 certificate. It does not check notarization. The app updates from a bundle by a new download (the `Bundle` install channel), never in
 place. A Homebrew cask for the `.dmg` is not set up.

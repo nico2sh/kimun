@@ -90,7 +90,7 @@ The [documentation site](https://nico2sh.github.io/kimun/) has user guides, setu
 ```bash
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
-The script installs the latest release into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. The script also turns on in-app self-update. It verifies the SHA-256 of the download before it installs. To install the desktop app (`kimun-gui`) instead, add `-s -- --gui` after `sh`.
+The script installs the latest release into `~/.local/bin`. To change the folder, set `KIMUN_INSTALL_DIR`. The script also turns on in-app self-update. It verifies the SHA-256 of the download before it installs. The script installs both apps: the terminal app (`kimun`) and the desktop app (`kimun-gui`). On a Linux machine with no display, it skips the desktop app. To install only one app, add `-s -- --tui` or `-s -- --gui` after `sh`.
 
 To read the script before you run it, use these commands:
 ```bash
