@@ -101,10 +101,12 @@ fn note_chunks(
         })
 }
 
-/// One hit per unique note among the server's chunk results (see
-/// [`note_chunks`]), keeping its best chunk for a preview. A hit's `title`
-/// is the chunk's own, blank when it has none. An absent ordinal (`0`)
-/// becomes the chunk's 1-based position in `chunks`.
+/// One hit per unique note among the server's chunk results, in result
+/// order (best first), deduplicated by canonical path: a note keeps its
+/// first (best) chunk for a preview. A hit's `title` is that chunk's title
+/// (the matched section's breadcrumb), blank when it has none; its row's
+/// title says `<no title>` then, as [`chunks_to_entries`]' does. An absent
+/// ordinal (`0`) becomes the chunk's 1-based position in `chunks`.
 pub fn chunks_to_hits(chunks: Vec<ChunkResult>, vault: &NoteVault) -> Vec<SemanticHit> {
     note_chunks(chunks, vault)
         .map(|note| {
