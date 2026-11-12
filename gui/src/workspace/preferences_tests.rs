@@ -30,18 +30,22 @@ use tokio::runtime::Runtime;
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::preferences::{
-    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_ID, DISCARD_ID, KEEP_EDITING_ID, MESSAGE_ID,
-    PREFERENCES_ID, PreferencesView, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID, REDUCE_MOTION_ID,
-    SAVE_ID, SERVER_ERROR_ID, SERVER_ID, Section, UPDATE_CHECK_ID, needs_reopen, section_id,
-    theme_row_id,
+    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_ID, DISCARD_ID, FONT_DEFAULT_LABEL,
+    FONT_SIZE_ID, FONT_SIZE_UP_ID, KEEP_EDITING_ID, MESSAGE_ID, PREFERENCES_ID, PreferencesView,
+    REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID, REDUCE_MOTION_ID, SAVE_ID, SERVER_ERROR_ID,
+    SERVER_ID, Section, UPDATE_CHECK_ID, needs_reopen, section_id, theme_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
+use crate::editor_font::{self, EditorFontSetting};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
+use crate::mono_families::{self, MonoFamilies};
 use crate::startup::{FirstNote, Start, VaultStart};
 use crate::test_vault::{NAME, TestVault, test_vault};
 use crate::theme;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::select::SelectEvent;
 
 /// The window as `main` builds it, on `start`, saving to `store`.
 pub(super) fn open(
@@ -929,6 +933,272 @@ fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     }
     assert!(cx.read(|cx| cx.reduce_motion()), "applied at once");
     assert_eq!(s.files_id(cx), files, "no reopen");
+    settle(&rt, cx);
+}
+
+// ── Display > Font ──────────────────────────────────────────────────────────
+
+/// The theme's monospace size, rounded to whole points (the stepper's start).
+fn theme_font_size(cx: &TestAppContext) -> u8 {
+    cx.read(|cx| f32::from(cx.theme().mono_font_size).round() as u8)
+}
+
+/// The family list as the probe would leave it.
+fn families_ready(cx: &mut TestAppContext, names: &[&str]) {
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    cx.update(|cx| cx.set_global(MonoFamilies::Ready(names.into())));
+}
+
+/// `family` saved as `[gui] editor_font_family`, in memory and on disk.
+fn saved_family(v: &TestVault, family: &str) {
+    AppSettings::update_gui_at(config(v), |gui| gui.set_editor_font_family(Some(family))).unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_editor_font_family(Some(family));
+}
+
+impl Started {
+    /// The family dropdown's item labels and its selected label.
+    fn pf_font_choices(&self, cx: &TestAppContext) -> (Vec<String>, Option<String>) {
+        let view = self.pf_view(cx);
+        cx.read(|cx| view.read(cx).font_choices(cx))
+    }
+}
+
+/// Stepping the size dirties the draft; Save writes `editor_font_size`.
+#[gpui_kit::test]
+fn stepping_the_font_size_makes_the_draft_dirty_and_save_writes_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    assert!(s.pf_disabled(SAVE_ID, cx), "clean");
+    s.pf_click(FONT_SIZE_UP_ID, cx);
+    assert_eq!(s.pf_model(cx, |m| m.editor_font_size), Some(default + 1));
+    assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_size(), Some(default + 1));
+    }
+    settle(&rt, cx);
+}
+
+/// The size stepper takes the arrow keys, as the other steppers do.
+#[gpui_kit::test]
+fn the_font_size_stepper_takes_the_arrows(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &[]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(FONT_SIZE_ID, cx);
+    s.pf_press("left", cx);
+    assert_eq!(s.pf_model(cx, |m| m.editor_font_size), Some(default - 1));
+    settle(&rt, cx);
+}
+
+/// A family chosen in the dropdown is the draft's, and Save writes it.
+#[gpui_kit::test]
+fn choosing_a_family_is_written_on_save(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono", "X"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    // Through the dropdown's own event, as a pick in the menu sends it.
+    let select = s.pf_read(cx, |v| v.font_select().clone());
+    cx.update(|cx| {
+        select.update(cx, |_, cx| {
+            cx.emit(SelectEvent::Confirm(Some(Some("Alpha Mono".to_string()))))
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        s.pf_model(cx, |m| m.editor_font_family.clone()).as_deref(),
+        Some("Alpha Mono")
+    );
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("X".into()), cx)
+    });
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some("X"));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family().as_deref(), Some("X"));
+    }
+    settle(&rt, cx);
+}
+
+/// "Default (theme)" is `None`: Save removes the key.
+#[gpui_kit::test]
+fn choosing_default_removes_the_family_key(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Alpha Mono");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some("Alpha Mono"));
+    s.pf_with_view(cx, |v, _, cx| v.set_editor_font_family(None, cx));
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some(FONT_DEFAULT_LABEL));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family(), None);
+    }
+    assert!(
+        !std::fs::read_to_string(config(&v))
+            .unwrap()
+            .contains("editor_font_family")
+    );
+    settle(&rt, cx);
+}
+
+/// A saved family the system no longer has is shown, labelled, selected; a
+/// save of something else keeps it.
+#[gpui_kit::test]
+fn a_saved_family_that_is_not_installed_is_labeled_and_kept(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Gone");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(
+        labels,
+        [FONT_DEFAULT_LABEL, "Gone (not installed)", "Alpha Mono"]
+    );
+    assert_eq!(selected.as_deref(), Some("Gone (not installed)"));
+    assert!(s.pf_disabled(SAVE_ID, cx), "nothing changed");
+    // Away and back: the entry stays, and choosing it again is clean.
+    s.pf_with_view(cx, |v, _, cx| v.set_editor_font_family(None, cx));
+    assert!(
+        s.pf_font_choices(cx)
+            .0
+            .contains(&"Gone (not installed)".to_string())
+    );
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Gone".into()), cx)
+    });
+    assert!(s.pf_disabled(SAVE_ID, cx), "back to the saved value");
+    s.pf_click(UPDATE_CHECK_ID, cx);
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family().as_deref(), Some("Gone"));
+    }
+    settle(&rt, cx);
+}
+
+/// While the list is being read the dropdown holds the default and the
+/// saved family; once it is ready, the dropdown takes the whole list.
+#[gpui_kit::test]
+fn the_family_list_fills_in_when_it_is_ready(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Fira Code");
+    // The probe is under way: opening Display starts no other.
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Fira Code"]);
+    assert_eq!(selected.as_deref(), Some("Fira Code"), "never blank");
+    families_ready(cx, &["Alpha Mono", "Fira Code"]);
+    cx.run_until_parked();
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Alpha Mono", "Fira Code"]);
+    assert_eq!(selected.as_deref(), Some("Fira Code"));
+    settle(&rt, cx);
+}
+
+/// Opening Display starts the family probe.
+#[gpui_kit::test]
+fn opening_display_loads_the_family_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = with_prefs(cx, &rt, &v);
+    assert!(matches!(cx.read(mono_families::state), MonoFamilies::Idle));
+    s.pf_section(cx, Section::Display);
+    assert!(!matches!(cx.read(mono_families::state), MonoFamilies::Idle));
+    settle(&rt, cx);
+}
+
+/// Cancel and Discard: no font key is written, the editor font unchanged.
+#[gpui_kit::test]
+fn cancel_discards_the_font_draft(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let before = cx.read(|cx| cx.try_global::<EditorFontSetting>().cloned());
+    s.pf_section(cx, Section::Display);
+    s.pf_click(FONT_SIZE_UP_ID, cx);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Alpha Mono".into()), cx)
+    });
+    s.pf_click(CANCEL_ID, cx);
+    s.pf_click(DISCARD_ID, cx);
+    assert!(!s.pf_is_open(cx));
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family(), None);
+        assert_eq!(settings.gui.editor_font_size(), None);
+    }
+    assert_eq!(
+        cx.read(|cx| cx.try_global::<EditorFontSetting>().cloned()),
+        before
+    );
+    settle(&rt, cx);
+}
+
+/// Save hands the new font to the Edit surface at once.
+#[gpui_kit::test]
+fn saving_applies_the_font_without_a_restart(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(FONT_SIZE_UP_ID, cx);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Alpha Mono".into()), cx)
+    });
+    s.pf_save(&rt, cx);
+    let (_, family, size) = cx.read(editor_font::face_inputs);
+    assert_eq!(family.as_deref(), Some("Alpha Mono"));
+    assert_eq!(size, gpui_kit::px(f32::from(default + 1)));
+    settle(&rt, cx);
+}
+
+/// A save that leaves the font alone writes neither key.
+#[gpui_kit::test]
+fn an_untouched_save_never_adds_the_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(UPDATE_CHECK_ID, cx);
+    s.pf_save(&rt, cx);
+    let text = std::fs::read_to_string(config(&v)).unwrap();
+    assert!(!text.contains("editor_font"), "{text}");
+    let settings = v.settings.read().unwrap().clone();
+    assert_eq!(settings.gui.editor_font_family(), None);
+    assert_eq!(settings.gui.editor_font_size(), None);
     settle(&rt, cx);
 }
 

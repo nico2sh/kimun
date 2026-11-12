@@ -35,10 +35,6 @@ mod grid;
 mod identity_tests;
 mod input;
 mod keymap;
-#[expect(
-    dead_code,
-    reason = "read by the Preferences font dropdown, which is not wired yet"
-)]
 mod mono_families;
 mod row_cache;
 mod row_paint;

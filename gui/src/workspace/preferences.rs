@@ -26,7 +26,11 @@
 //! until another backend is chosen). Nerd Fonts and mouse capture are
 //! terminal-only and not shown; the draft carries them unchanged. Display's
 //! `Reduce motion` is the desktop app's own (`[gui] reduce_motion`, which the
-//! TUI never shows): applied as soon as it is saved, no restart.
+//! TUI never shows): applied as soon as it is saved, no restart. So is
+//! Display's Edit surface font (`[gui] editor_font_family`,
+//! `editor_font_size`): the family dropdown lists the installed monospace
+//! families ([`mono_families`](crate::mono_families), read in the background
+//! when Display first shows) and keeps a saved family that is not installed.
 //!
 //! **Save** is disabled while the draft is clean or invalid (a server
 //! address that is not `http://` / `https://`). It writes the settings with
@@ -50,6 +54,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{ActiveTheme as _, IndexPath};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -64,9 +70,13 @@ use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
     LEADER_DELAY_MIN_MS, PreferencesModel, SortSlot, backend_label, configured_server_url,
 };
+use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PT, EDITOR_FONT_MIN_PT};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use std::cell::Cell;
+use std::sync::Arc;
+
+use crate::mono_families::{self, MonoFamilies};
 
 use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
@@ -103,6 +113,14 @@ pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
 pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
 pub(crate) const REDUCE_MOTION_HELP: &str =
     "Stops the bouncing logo and loading spinners. Not read from your system settings.";
+/// Display's Edit surface font: the family dropdown, the size stepper, the
+/// dropdown's first entry (`None`: the theme's font) and the note.
+pub(crate) const FONT_FAMILY_ID: &str = "preferences-editor-font-family";
+pub(crate) const FONT_SIZE_ID: &str = "preferences-editor-font-size";
+pub(crate) const FONT_SIZE_DOWN_ID: &str = "preferences-editor-font-size-down";
+pub(crate) const FONT_SIZE_UP_ID: &str = "preferences-editor-font-size-up";
+pub(crate) const FONT_DEFAULT_LABEL: &str = "Default (theme)";
+const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -238,6 +256,69 @@ pub(crate) struct Discard {
     pub(crate) close_window: bool,
 }
 
+/// One entry of Display's font family dropdown: what it reads as, and the
+/// family it stands for (`None`: the theme's font).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FontChoice {
+    label: SharedString,
+    family: Option<String>,
+}
+
+impl SelectItem for FontChoice {
+    type Value = Option<String>;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.family
+    }
+}
+
+type FontSelect = SelectState<SearchableVec<FontChoice>>;
+
+/// The dropdown's entries: "Default (theme)" first. With the installed
+/// monospace families (`ready`): each family in `keep` (the saved and the
+/// draft family) the list lacks, as "<name> (not installed)", then the list.
+/// Without it (still being read): the `keep` families alone, so a chosen
+/// family is never shown blank.
+fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoice> {
+    let mut choices = vec![FontChoice {
+        label: FONT_DEFAULT_LABEL.into(),
+        family: None,
+    }];
+    for name in keep.iter().flatten() {
+        if choices.iter().any(|c| c.family.as_deref() == Some(*name)) {
+            continue;
+        }
+        let label = match ready {
+            Some(list) if list.iter().any(|f| f == name) => continue,
+            Some(_) => format!("{name} (not installed)"),
+            None => name.to_string(),
+        };
+        choices.push(FontChoice {
+            label: label.into(),
+            family: Some(name.to_string()),
+        });
+    }
+    for name in ready.unwrap_or_default() {
+        choices.push(FontChoice {
+            label: name.clone().into(),
+            family: Some(name.clone()),
+        });
+    }
+    choices
+}
+
+/// What the dropdown's entries were built from: rebuilt when any changes.
+#[derive(Clone, PartialEq)]
+struct FontInputs {
+    ready: Option<Arc<[String]>>,
+    saved: Option<String>,
+    draft: Option<String>,
+}
+
 /// The Preferences view. See the module docs.
 pub(crate) struct PreferencesView {
     settings: SharedSettings,
@@ -263,6 +344,14 @@ pub(crate) struct PreferencesView {
     themes_focus: FocusHandle,
     delay_focus: FocusHandle,
     autosave_focus: FocusHandle,
+    /// Display's font size stepper.
+    font_size_focus: FocusHandle,
+    /// Display's font family dropdown, and what its entries were built from
+    /// ([`Self::sync_font_choices`]).
+    font_family: Entity<FontSelect>,
+    font_inputs: Option<FontInputs>,
+    /// The entries the dropdown was last given.
+    font_items: Vec<FontChoice>,
     server_input: Entity<InputState>,
     server_error: Option<SharedString>,
     /// The inline problem line.
@@ -311,11 +400,35 @@ impl PreferencesView {
     ) -> Self {
         let server_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(DEFAULT_SERVER_URL_HINT));
+        let font_items = font_choices(None, &[]);
+        let font_family = cx.new(|cx| {
+            FontSelect::new(
+                SearchableVec::new(font_items.clone()),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         let subscriptions = vec![
             cx.subscribe(&server_input, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.server_changed(cx);
                 }
+            }),
+            cx.subscribe(
+                &font_family,
+                |this, _, event: &SelectEvent<SearchableVec<FontChoice>>, cx| {
+                    let SelectEvent::Confirm(Some(family)) = event else {
+                        return;
+                    };
+                    this.set_editor_font_family(family.clone(), cx);
+                },
+            ),
+            // The family list arrives in the background: the dropdown takes it.
+            cx.observe_global_in::<MonoFamilies>(window, |this, window, cx| {
+                this.sync_font_choices(window, cx);
+                cx.notify();
             }),
         ];
         let read = settings.clone();
@@ -342,6 +455,10 @@ impl PreferencesView {
             themes_focus: cx.focus_handle().tab_stop(true),
             delay_focus: cx.focus_handle().tab_stop(true),
             autosave_focus: cx.focus_handle().tab_stop(true),
+            font_size_focus: cx.focus_handle().tab_stop(true),
+            font_family,
+            font_inputs: None,
+            font_items,
             server_input,
             server_error: None,
             message: None,
@@ -375,6 +492,7 @@ impl PreferencesView {
                 self.server_input
                     .update(cx, |input, cx| input.set_value(url, window, cx));
                 self.server_error = None;
+                self.sync_font_choices(window, cx);
             }
             Err(e) => self.message = Some(format!("Couldn't read the preferences: {e}").into()),
         }
@@ -436,6 +554,30 @@ impl PreferencesView {
             self.autosave_focus.clone(),
             self.ws.focus.clone(),
         ]
+    }
+
+    /// Display's font family dropdown.
+    #[cfg(test)]
+    pub(crate) fn font_select(&self) -> &Entity<FontSelect> {
+        &self.font_family
+    }
+
+    /// The family dropdown's entry labels, and the selected entry's label.
+    #[cfg(test)]
+    pub(crate) fn font_choices(&self, cx: &gpui_kit::App) -> (Vec<String>, Option<String>) {
+        // The kit does not hand its entries back: these are the ones it was
+        // last given; the selection is the kit's own.
+        let labels = &self.font_items;
+        let selected = self
+            .font_family
+            .read(cx)
+            .selected_value()
+            .and_then(|value| labels.iter().find(|c| &c.family == value))
+            .map(|c| c.label.to_string());
+        (
+            labels.iter().map(|c| c.label.to_string()).collect(),
+            selected,
+        )
     }
 
     /// The root's handle (the questions and the progress panel hold it).
@@ -500,6 +642,10 @@ impl PreferencesView {
     ) {
         self.section = section;
         window.focus(&self.sections_focus, cx);
+        if section == Section::Display {
+            // The family dropdown's list: read once, in the background.
+            mono_families::ensure_loaded(cx);
+        }
         if section == Section::Appearance
             && let Some(model) = self.model.as_ref()
         {
@@ -558,6 +704,64 @@ impl PreferencesView {
             model.reduce_motion = on;
         }
         cx.notify();
+    }
+
+    /// Display's font family: `None` is the theme's font.
+    pub(crate) fn set_editor_font_family(
+        &mut self,
+        family: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(model) = self.model_mut() {
+            model.editor_font_family = family;
+        }
+        // The dropdown follows on the next frame (`sync_font_choices`).
+        cx.notify();
+    }
+
+    /// One step of Display's font size, from the theme's size while unset.
+    pub(crate) fn step_editor_font_size(&mut self, up: bool, cx: &mut Context<Self>) {
+        let theme_default = theme_font_size(cx);
+        if let Some(model) = self.model_mut() {
+            model.step_editor_font_size(up, theme_default);
+        }
+        cx.notify();
+    }
+
+    /// Give the family dropdown the entries the draft, the saved family and
+    /// the installed list call for, and select the draft's; nothing when
+    /// none of them changed since the last time.
+    fn sync_font_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let inputs = FontInputs {
+            ready: match mono_families::state(cx) {
+                MonoFamilies::Ready(list) => Some(list),
+                MonoFamilies::Idle | MonoFamilies::Loading => None,
+            },
+            saved: self
+                .opened
+                .as_ref()
+                .and_then(|s| s.gui.editor_font_family()),
+            draft: model.editor_font_family.clone(),
+        };
+        if self.font_inputs.as_ref() == Some(&inputs) {
+            return;
+        }
+        let items = font_choices(
+            inputs.ready.as_deref(),
+            &[inputs.saved.as_deref(), inputs.draft.as_deref()],
+        );
+        let draft = inputs.draft.clone();
+        self.font_inputs = Some(inputs);
+        self.font_items = items.clone();
+        self.font_family.update(cx, |state, cx| {
+            state.set_items(SearchableVec::new(items), window, cx);
+            if state.selected_value() != Some(&draft) {
+                state.set_selected_value(&draft, window, cx);
+            }
+        });
     }
 
     /// One step of the which-key delay.
@@ -900,7 +1104,7 @@ impl PreferencesView {
                 Key::Down => self.move_theme(true, cx),
                 _ => return false,
             }
-        } else if on(&self.delay_focus) || on(&self.autosave_focus) {
+        } else if on(&self.delay_focus) || on(&self.autosave_focus) || on(&self.font_size_focus) {
             let up = match key.key {
                 Key::Right | Key::Up => true,
                 Key::Left | Key::Down => false,
@@ -908,6 +1112,8 @@ impl PreferencesView {
             };
             if on(&self.delay_focus) {
                 self.step_delay(up, cx);
+            } else if on(&self.font_size_focus) {
+                self.step_editor_font_size(up, cx);
             } else {
                 self.step_autosave(up, cx);
             }
@@ -926,6 +1132,13 @@ fn para(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
         .text_sm()
         .text_color(theme::foreground(t))
         .child(text.into())
+}
+
+/// The theme's monospace size in whole points, within the setting's range:
+/// where the font size stepper starts while the setting is unset.
+fn theme_font_size(cx: &gpui_kit::App) -> u8 {
+    let size = f32::from(cx.theme().mono_font_size).round();
+    size.clamp(f32::from(EDITOR_FONT_MIN_PT), f32::from(EDITOR_FONT_MAX_PT)) as u8
 }
 
 /// A quieter note under a control.
@@ -1244,10 +1457,42 @@ impl PreferencesView {
             window,
             cx,
         );
+        let theme_size = theme_font_size(cx);
+        let font_size = self.render_stepper(
+            StepperSpec {
+                id: FONT_SIZE_ID,
+                down_id: FONT_SIZE_DOWN_ID,
+                up_id: FONT_SIZE_UP_ID,
+                name: "Edit surface font size",
+                value: u64::from(model.editor_font_size.unwrap_or(theme_size)),
+                min: u64::from(EDITOR_FONT_MIN_PT),
+                max: u64::from(EDITOR_FONT_MAX_PT),
+                unit: "pt",
+            },
+            &self.font_size_focus,
+            Self::step_editor_font_size,
+            window,
+            cx,
+        );
+        let font = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div().w(rems(18.)).child(
+                    Select::new(&self.font_family)
+                        .id(FONT_FAMILY_ID)
+                        .accessibility_label("Edit surface font family")
+                        .search_placeholder("Search fonts")
+                        .disabled(self.saving.is_some()),
+                ),
+            )
+            .child(font_size);
         div()
             .flex()
             .flex_col()
             .gap_6()
+            .child(field("Font", font, vec![FONT_HELP.into()], t))
             .child(
                 div()
                     .flex()
@@ -1723,6 +1968,10 @@ fn h_row() -> gpui_kit::Div {
 
 impl Render for PreferencesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.section == Section::Display {
+            // A draft family set outside the dropdown gets its entry.
+            self.sync_font_choices(window, cx);
+        }
         let t = theme::current(cx);
         let narrow = window.viewport_size().width < window.rem_size() * NARROW_REMS;
         let sections = self.render_sections(narrow, window, cx);
