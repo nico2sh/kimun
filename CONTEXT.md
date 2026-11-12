@@ -380,6 +380,10 @@ _Avoid_: event (ambiguous with input events), command (the **Vim command** and p
 The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not a toolkit text-edit widget, which has no motion layer and cannot host the vim engine.
 _Avoid_: text box, text area, TextEdit.
 
+**Edit surface font**:
+The monospace family and absolute size (8 to 32) the **Edit surface** paints in, chosen in **GUI** Preferences and applied when the user saves. It never changes the rest of the **GUI**'s text. A family without a real bold face keeps the user's choice and draws bold synthetically. Unset means the theme's default.
+_Avoid_: editor font (the TUI has no font of its own), UI font (that is the interface's Inter face).
+
 **Key input**:
 What the user typed, terminal-neutrally: a character (`$`, `é`) or a named key (Enter, Esc, arrows, F-keys) plus modifiers — the unit the editing engines consume. Distinct from a **key combo**, which names a physical key for the shortcut table.
 _Avoid_: key event (crossterm's type), keystroke.
