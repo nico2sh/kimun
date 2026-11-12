@@ -38,7 +38,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
         ("openai-local", "llm llm-url"),
     ];
     let current = c.llm.as_ref().map(|l| l.form_id()).unwrap_or("none");
-    let current_reasoning = c.llm.as_ref().and_then(|l| l.reasoning()).unwrap_or("");
+    let current_reasoning = c.llm.as_ref().and_then(|l| l.reasoning());
     let current_llm_url = c.llm.as_ref().and_then(|l| l.url()).unwrap_or("");
     let can_save = state.config_path.is_some();
     // Embedder section: "none" is the unconfigured sentinel; the
@@ -205,9 +205,9 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 div data-llm="llm-reasoning" {
                     label { "Reasoning effort" }
                     select name="llm_reasoning" {
-                        option value="" selected[current_reasoning.is_empty()] { "model default (not sent)" }
-                        @for e in crate::config::REASONING_EFFORTS {
-                            option value=(e) selected[e == current_reasoning] { (e) }
+                        option value="" selected[current_reasoning.is_none()] { "model default (not sent)" }
+                        @for e in crate::config::ReasoningEffort::ALL {
+                            option value=(e.as_str()) selected[Some(e) == current_reasoning] { (e.as_str()) }
                         }
                     }
                     p .muted { "OpenRouter only. Sent as reasoning.effort; models without reasoning ignore it." }

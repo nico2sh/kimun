@@ -193,12 +193,48 @@ pub enum LlmConfig {
         /// `high`. Absent: no `reasoning` object is sent and the model keeps
         /// its own default.
         #[serde(default)]
-        reasoning: Option<String>,
+        reasoning: Option<ReasoningEffort>,
     },
 }
 
-/// The reasoning efforts OpenRouter accepts in `reasoning.effort`.
-pub const REASONING_EFFORTS: [&str; 3] = ["low", "medium", "high"];
+/// The reasoning efforts OpenRouter accepts in `reasoning.effort`. A bad value
+/// in the TOML file fails when the config loads, like any other bad enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub const ALL: [ReasoningEffort; 3] = [Self::Low, Self::Medium, Self::High];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|e| e.as_str() == s)
+            .ok_or_else(|| {
+                let all: Vec<&str> = Self::ALL.iter().map(|e| e.as_str()).collect();
+                anyhow::anyhow!(
+                    "unknown reasoning effort: {s} (use one of: {})",
+                    all.join(", ")
+                )
+            })
+    }
+}
 
 impl LlmConfig {
     /// Short provider id (`gemini` | `mistral` | `claude` | `openai` | `openrouter`) — used by
@@ -249,9 +285,9 @@ impl LlmConfig {
     }
 
     /// The configured reasoning effort, if any (OpenRouter provider only).
-    pub fn reasoning(&self) -> Option<&str> {
+    pub fn reasoning(&self) -> Option<ReasoningEffort> {
         match self {
-            LlmConfig::OpenRouter { reasoning, .. } => reasoning.as_deref(),
+            LlmConfig::OpenRouter { reasoning, .. } => *reasoning,
             _ => None,
         }
     }
@@ -315,24 +351,16 @@ impl LlmConfig {
                 api_key: key,
                 url: url.filter(|u| !u.is_empty()),
             },
-            "openrouter" => {
-                let reasoning = reasoning.filter(|r| !r.is_empty());
-                if let Some(r) = &reasoning
-                    && !REASONING_EFFORTS.contains(&r.as_str())
-                {
-                    anyhow::bail!(
-                        "unknown reasoning effort: {r} (use one of: {})",
-                        REASONING_EFFORTS.join(", ")
-                    );
-                }
-                LlmConfig::OpenRouter {
-                    model: model
-                        .filter(|m| !m.is_empty())
-                        .unwrap_or_else(default_openrouter_model),
-                    api_key: key,
-                    reasoning,
-                }
-            }
+            "openrouter" => LlmConfig::OpenRouter {
+                model: model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(default_openrouter_model),
+                api_key: key,
+                reasoning: reasoning
+                    .filter(|r| !r.is_empty())
+                    .map(|r| r.parse())
+                    .transpose()?,
+            },
             other => anyhow::bail!("unknown LLM provider: {other}"),
         })
     }
@@ -722,14 +750,8 @@ impl RagConfig {
                 (f.provider.as_str(), None)
             };
             Some(
-                LlmConfig::from_parts(
-                    provider,
-                    Some(f.model),
-                    key,
-                    url,
-                    Some(f.llm_reasoning.trim().to_string()),
-                )
-                .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
+                LlmConfig::from_parts(provider, Some(f.model), key, url, Some(f.llm_reasoning))
+                    .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
             )
         };
 
@@ -1029,6 +1051,12 @@ provider = "gemini"
         assert!(cfg.reranker.url.is_none());
         assert_eq!(cfg.reranker.context_cut, ContextCut::ScoreRange);
         assert_eq!(cfg.reranker.score_range_cutoff, 0.4);
+
+        // A bad effort in the file fails at load, not on the first Ask request.
+        let bad = toml::from_str::<RagConfig>(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[llm]\nprovider = \"openrouter\"\nreasoning = \"hgih\"\n[reranker]\n",
+        );
+        assert!(bad.is_err());
 
         let cfg: RagConfig = toml::from_str(
             "[server]\n[vector_db]\ntype = \"qdrant\"\n[reranker]\nscore_range_cutoff = 0.5\n",
@@ -1640,7 +1668,7 @@ path = "/data/old_lance"
         let c = LlmConfig::from_parts("openrouter", None, None, None, Some("high".into())).unwrap();
         assert_eq!(c.provider(), "openrouter");
         assert_eq!(c.model(), &default_openrouter_model());
-        assert_eq!(c.reasoning(), Some("high"));
+        assert_eq!(c.reasoning(), Some(ReasoningEffort::High));
         assert_eq!(c.env_var(), "OPENROUTER_API_KEY");
         assert!(c.url().is_none());
 
@@ -1657,7 +1685,7 @@ path = "/data/old_lance"
         )
         .unwrap();
         let llm = cfg.llm.unwrap();
-        assert_eq!(llm.reasoning(), Some("medium"));
+        assert_eq!(llm.reasoning(), Some(ReasoningEffort::Medium));
         assert_eq!(llm.model(), "anthropic/claude-sonnet-4.5");
     }
 
