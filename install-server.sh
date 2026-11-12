@@ -69,7 +69,7 @@ done
 # release without one is not skipped silently. Without minisign the install goes on on the
 # sha256 alone, and says so. install.sh carries the same block, except it only warns for a
 # version pinned with KIMUN_VERSION (which may predate signing).
-SIGNING_PUBKEY=""
+SIGNING_PUBKEY="RWS64g2Q9vGQfwr3tC6fK3UgWdkKkLfz5KLmcTZhewdMmCHHkkfIgNf8"
 # verify_signature BASE_URL TMP: sets SIGNED_LIST to the verified checksums file, or "" when
 # nothing was verified.
 verify_signature() {
