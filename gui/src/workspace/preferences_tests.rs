@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt};
 use gpui_kit::{
     AppContext, Context, Entity, EntityId, Focusable as _, TestAppContext, Window, WindowOptions,
 };
@@ -30,10 +30,14 @@ use tokio::runtime::Runtime;
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::preferences::{
-    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_ID, DISCARD_ID, FONT_DEFAULT_LABEL,
-    FONT_SIZE_ID, FONT_SIZE_UP_ID, KEEP_EDITING_ID, MESSAGE_ID, PREFERENCES_ID, PreferencesView,
-    REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID, REDUCE_MOTION_ID, SAVE_ID, SERVER_ERROR_ID,
-    SERVER_ID, Section, UPDATE_CHECK_ID, needs_reopen, section_id, theme_row_id,
+    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_HELP, DELAY_HELP_ID, DELAY_ID, DISCARD_ID,
+    DISPLAY_BEHAVIOR_GROUP_ID, DISPLAY_FONT_GROUP_ID, DISPLAY_GROUPS, DISPLAY_MOTION_GROUP_ID,
+    DisplaySetting, FONT_DEFAULT_LABEL, FONT_FAMILY_ID, FONT_HELP, FONT_HELP_ID, FONT_LOADING_HELP,
+    FONT_LOADING_HELP_ID, FONT_SIZE_ID, KEEP_EDITING_ID, MESSAGE_ID, PREFERENCES_ID,
+    PreferencesView, RAIL_HELP, RAIL_HELP_ID, RAIL_ID, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID,
+    REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, SAVE_ID, SECTIONS_ID, SERVER_ERROR_ID, SERVER_ID,
+    Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID, UPDATE_CHECK_ID, UPDATE_CHECK_LABEL,
+    needs_reopen, section_id, stepper_down_id, stepper_up_id, theme_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -515,7 +519,7 @@ fn each_section_edits_the_draft_only(cx: &mut TestAppContext) {
     s.pf_press("right", cx);
     s.pf_press("right", cx);
     assert_eq!(s.pf_model(cx, |m| m.leader_timeout_ms), delay + 100);
-    s.pf_click(super::preferences::DELAY_DOWN_ID, cx);
+    s.pf_click(stepper_down_id(DELAY_ID), cx);
     assert_eq!(s.pf_model(cx, |m| m.leader_timeout_ms), delay + 50);
 
     // Sorting: the choices, as the radios set them.
@@ -540,7 +544,7 @@ fn each_section_edits_the_draft_only(cx: &mut TestAppContext) {
     s.pf_press("right", cx);
     s.pf_press("left", cx);
     assert_eq!(s.pf_model(cx, |m| m.autosave_interval_secs), autosave + 5);
-    s.pf_click(super::preferences::AUTOSAVE_UP_ID, cx);
+    s.pf_click(stepper_up_id(AUTOSAVE_ID), cx);
     assert_eq!(s.pf_model(cx, |m| m.autosave_interval_secs), autosave + 10);
     s.pf_with_view(cx, |v, _, cx| v.select_backend(1, cx));
     assert_eq!(
@@ -936,6 +940,257 @@ fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
+// ── Display > layout ────────────────────────────────────────────────────────
+
+impl Started {
+    /// The top edge of element `id` in the last frame.
+    fn pf_top(&self, id: &'static str, cx: &mut TestAppContext) -> f32 {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(id).bounds().origin.y)
+        })
+        .unwrap()
+    }
+
+    /// The accessible label and role of element `id`.
+    fn pf_named(
+        &self,
+        id: &'static str,
+        cx: &mut TestAppContext,
+    ) -> (Option<String>, Option<gpui_kit::Role>) {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let e = window.find(id);
+            (e.label().map(str::to_string), e.role())
+        })
+        .unwrap()
+    }
+}
+
+/// Display reads as three groups, each headed the same way, in this order:
+/// Editor font (family, size, then the help both share), Window and motion
+/// (reduce motion, rail position), Behavior (which-key delay, update check).
+#[gpui_kit::test]
+fn display_shows_its_groups_and_settings_in_order(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let order = [
+        DISPLAY_FONT_GROUP_ID,
+        FONT_FAMILY_ID,
+        FONT_SIZE_ID,
+        FONT_HELP_ID,
+        DISPLAY_MOTION_GROUP_ID,
+        REDUCE_MOTION_ID,
+        REDUCE_MOTION_HELP_ID,
+        RAIL_HELP_ID,
+        DISPLAY_BEHAVIOR_GROUP_ID,
+        DELAY_ID,
+        DELAY_HELP_ID,
+        UPDATE_CHECK_ID,
+        UPDATE_CHECK_HELP_ID,
+    ];
+    let tops: Vec<f32> = order.iter().map(|id| s.pf_top(id, cx)).collect();
+    for (pair, ids) in tops.windows(2).zip(order.windows(2)) {
+        assert!(pair[0] < pair[1], "{} above {}: {tops:?}", ids[0], ids[1]);
+    }
+    for (id, title) in [
+        (DISPLAY_FONT_GROUP_ID, "Editor font"),
+        (DISPLAY_MOTION_GROUP_ID, "Window and motion"),
+        (DISPLAY_BEHAVIOR_GROUP_ID, "Behavior"),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx),
+            (Some(title.to_string()), Some(gpui_kit::Role::Heading))
+        );
+    }
+    for (id, name) in [
+        (FONT_FAMILY_ID, "Editor font family"),
+        (FONT_SIZE_ID, "Editor font size"),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx).0.as_deref(),
+            Some(name),
+            "the accessible name matches the visible words"
+        );
+    }
+    // The checkboxes draw their label and set no accessible name of their
+    // own, so the kit names them by that label: the same words twice.
+    for (id, label, words) in [
+        (REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, "Reduce motion"),
+        (
+            UPDATE_CHECK_ID,
+            UPDATE_CHECK_LABEL,
+            "Check for updates on startup",
+        ),
+    ] {
+        assert_eq!(label, words, "{id}: the visible label");
+        assert_eq!(
+            s.pf_named(id, cx).0.as_deref(),
+            Some(label),
+            "{id}: the accessible name is the visible label"
+        );
+    }
+    settle(&rt, cx);
+}
+
+/// Every Display help line has its own element, read as a label.
+#[gpui_kit::test]
+fn every_display_help_line_is_a_labelled_element(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    for (id, text) in [
+        (FONT_HELP_ID, FONT_HELP),
+        (REDUCE_MOTION_HELP_ID, REDUCE_MOTION_HELP),
+        (RAIL_HELP_ID, RAIL_HELP),
+        (DELAY_HELP_ID, DELAY_HELP),
+        (UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx),
+            (Some(text.to_string()), Some(gpui_kit::Role::Label)),
+            "{id}"
+        );
+    }
+    settle(&rt, cx);
+}
+
+/// "Loading installed fonts..." shows only while the families are being
+/// read (`Loading`): not while the probe is `Idle` (not started yet, or reset
+/// after a panic), and not once the list is `Ready`.
+#[gpui_kit::test]
+fn the_font_loading_line_shows_only_while_loading(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    // Loading first, so opening Display starts no probe of its own.
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    assert_eq!(
+        s.pf_named(FONT_LOADING_HELP_ID, cx),
+        (
+            Some(FONT_LOADING_HELP.to_string()),
+            Some(gpui_kit::Role::Label)
+        ),
+        "shown while loading"
+    );
+    cx.update(|cx| cx.set_global(MonoFamilies::Idle));
+    cx.run_until_parked();
+    assert!(!s.pf_shows(FONT_LOADING_HELP_ID, cx), "not while idle");
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    cx.run_until_parked();
+    assert!(s.pf_shows(FONT_LOADING_HELP_ID, cx), "back while loading");
+    families_ready(cx, &["Alpha Mono"]);
+    cx.run_until_parked();
+    assert!(!s.pf_shows(FONT_LOADING_HELP_ID, cx), "gone once ready");
+    settle(&rt, cx);
+}
+
+/// The element that holds each Display setting's keyboard stop: Tab has
+/// landed on the setting when the focused element is this one or inside it.
+/// The rail's radios are tab stops of their own (the kit's `Radio`), one per
+/// position, so the rail is a run of stops inside [`RAIL_ID`].
+fn display_stop(setting: DisplaySetting) -> &'static str {
+    match setting {
+        DisplaySetting::FontFamily => FONT_FAMILY_ID,
+        DisplaySetting::FontSize => FONT_SIZE_ID,
+        DisplaySetting::ReduceMotion => REDUCE_MOTION_ID,
+        DisplaySetting::RailPosition => RAIL_ID,
+        DisplaySetting::WhichKeyDelay => DELAY_ID,
+        DisplaySetting::UpdateCheck => UPDATE_CHECK_ID,
+    }
+}
+
+/// Tab walks Display in the order it reads: from the section list, every
+/// setting's stop in [`DISPLAY_GROUPS`] order. Font family, then size,
+/// reduce motion, the rail radios, which-key delay, the update check.
+#[gpui_kit::test]
+fn tab_walks_display_in_reading_order(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let expected: Vec<&'static str> = DISPLAY_GROUPS
+        .iter()
+        .flat_map(|g| g.settings.iter().map(|setting| display_stop(*setting)))
+        .collect();
+    // The setting whose stop has the keyboard, if any.
+    let at = |s: &Started, cx: &mut TestAppContext| -> Option<&'static str> {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let focused: Vec<_> = window
+                .elements()
+                .into_iter()
+                .filter(|e| e.focused() == Some(true))
+                .collect();
+            expected.iter().copied().find(|id| {
+                let id = gpui_kit::ElementId::from(*id);
+                focused.iter().any(|e| e.path().contains(&id))
+            })
+        })
+        .unwrap()
+    };
+    let sections_focused = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(SECTIONS_ID).focused() == Some(true)
+        })
+        .unwrap();
+    assert!(sections_focused, "the section list has the keyboard");
+    // Each setting once, in the order Tab first reaches it (the rail's
+    // radios are consecutive stops of one setting).
+    let mut reached: Vec<&'static str> = Vec::new();
+    for _ in 0..16 {
+        s.pf_press("tab", cx);
+        if let Some(id) = at(&s, cx)
+            && reached.last() != Some(&id)
+        {
+            reached.push(id);
+        }
+        if reached.len() >= expected.len() {
+            break;
+        }
+    }
+    let missing = expected.iter().find(|id| !reached.contains(id));
+    assert!(
+        missing.is_none(),
+        "Tab never reached {missing:?} within 16 presses; reached {reached:?}"
+    );
+    assert_eq!(reached, expected, "Tab follows DISPLAY_GROUPS");
+    settle(&rt, cx);
+}
+
+/// Re-picking the saved family in the installed spelling ("fira code"
+/// saved, "Fira Code" picked) is no change: Save stays off.
+#[gpui_kit::test]
+fn re_picking_the_saved_family_in_another_case_is_clean(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "fira code");
+    families_ready(cx, &["Fira Code"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Fira Code".into()), cx)
+    });
+    assert!(
+        s.pf_disabled(SAVE_ID, cx),
+        "a case-only difference is clean"
+    );
+    settle(&rt, cx);
+}
+
 // ── Display > Font ──────────────────────────────────────────────────────────
 
 /// The theme's monospace size, rounded to whole pixels (the stepper's start).
@@ -978,7 +1233,7 @@ fn stepping_the_font_size_makes_the_draft_dirty_and_save_writes_it(cx: &mut Test
     let default = theme_font_size(cx);
     s.pf_section(cx, Section::Display);
     assert!(s.pf_disabled(SAVE_ID, cx), "clean");
-    s.pf_click(FONT_SIZE_UP_ID, cx);
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
     assert_eq!(s.pf_model(cx, |m| m.editor_font_size), Some(default + 1));
     assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
     s.pf_save(&rt, cx);
@@ -1256,7 +1511,7 @@ fn cancel_discards_the_font_draft(cx: &mut TestAppContext) {
     let s = with_prefs(cx, &rt, &v);
     let before = cx.read(|cx| cx.try_global::<EditorFontSetting>().cloned());
     s.pf_section(cx, Section::Display);
-    s.pf_click(FONT_SIZE_UP_ID, cx);
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
     s.pf_with_view(cx, |v, _, cx| {
         v.set_editor_font_family(Some("Alpha Mono".into()), cx)
     });
@@ -1284,7 +1539,7 @@ fn saving_applies_the_font_without_a_restart(cx: &mut TestAppContext) {
     let s = with_prefs(cx, &rt, &v);
     let default = theme_font_size(cx);
     s.pf_section(cx, Section::Display);
-    s.pf_click(FONT_SIZE_UP_ID, cx);
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
     s.pf_with_view(cx, |v, _, cx| {
         v.set_editor_font_family(Some("Alpha Mono".into()), cx)
     });

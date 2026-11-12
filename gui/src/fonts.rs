@@ -23,6 +23,7 @@
 //! width on one-cell clusters whichever face draws them.
 
 use gpui_kit::{Font, FontStyle, FontWeight, SharedString, TextSystem, font};
+use kimun_notes::logic::preferences::same_font_family;
 
 /// Well-known monospace families with separate bold (and mostly italic)
 /// faces, tried in order after the kit's own family. Only installed ones
@@ -108,10 +109,12 @@ pub fn choose(
     installed: &[String],
     probe: impl Fn(&str) -> FaceSupport,
 ) -> EditorFonts {
-    // Family names match whatever their capital letters; the installed
-    // spelling is the one painted with.
+    // Family names match whatever their capital letters (the one rule,
+    // shared with Preferences); the installed spelling is the one painted with.
     if let Some(p) = preferred
-        && let Some(name) = installed.iter().find(|n| n.eq_ignore_ascii_case(p))
+        && let Some(name) = installed
+            .iter()
+            .find(|n| same_font_family(Some(n), Some(p)))
     {
         return EditorFonts {
             family: SharedString::from(name.clone()),
