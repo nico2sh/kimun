@@ -1006,6 +1006,16 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
+        // macOS clipboard chords: Cmd+C/V/X do what Ctrl+C/V/X do. The GUI
+        // passes Cmd through as `sup` (never as Ctrl), so without this alias
+        // the native paste key reaches no engine at all.
+        let key = match key {
+            KeyInput {
+                key: Key::Char(c @ ('c' | 'v' | 'x')),
+                mods: Mods::SUPER,
+            } => KeyInput::new(Key::Char(c), Mods::CTRL),
+            other => other,
+        };
         // Every key acts at the cursor, so a wheel-scrolled view comes back to
         // it — even when the key leaves the cursor where it was (find-next onto
         // the same match, a motion at the buffer edge). Idempotent, so a host
@@ -1946,6 +1956,19 @@ mod tests {
 
     fn typed(c: char) -> KeyInput {
         KeyInput::plain(Key::Char(c))
+    }
+
+    #[test]
+    fn cmd_v_pastes_like_ctrl_v() {
+        for vim in [false, true] {
+            let _clip = crate::logic::clipboard::set_test_clipboard_text(Ok("pasted".into()));
+            let mut ed = Editor::new(vim);
+            if vim {
+                ed.handle_key(typed('i'), &tx());
+            }
+            ed.handle_key(KeyInput::new(Key::Char('v'), Mods::SUPER), &tx());
+            assert_eq!(ed.get_text(), "pasted", "vim = {vim}");
+        }
     }
 
     fn pointer(kind: PointerKind, col: u16, row: u16) -> PointerInput {
