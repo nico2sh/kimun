@@ -1938,6 +1938,8 @@ impl Workspace {
     /// - reduce motion: GPUI's switch is set at once
     ///   ([`crate::apply_reduce_motion`]), every animation honours it on the
     ///   next frame;
+    /// - editor font: the global is set at once ([`crate::editor_font::apply`]),
+    ///   the Edit surface paints in it on the next frame;
     /// - server address, editor engine: `reopen` ([`needs_reopen`]) sends
     ///   `PreferencesSaved`, so the vault is entered again (M8b). Nothing else
     ///   reopens.
@@ -1948,6 +1950,7 @@ impl Workspace {
         let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.leader.set_tree(snapshot.leader_tree());
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
+        crate::editor_font::apply(&snapshot.gui, cx);
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }

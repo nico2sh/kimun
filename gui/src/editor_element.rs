@@ -17,7 +17,6 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
     AnyElement, App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
@@ -28,6 +27,7 @@ use gpui_kit::{
 use kimun_notes::settings::themes::Theme;
 
 use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
+use crate::editor_font;
 use crate::editor_view::{CaretShape, EditorView, Painted};
 use crate::find_bar;
 use crate::fonts::EditorFonts;
@@ -38,7 +38,7 @@ use crate::theme::{self, CellStyle};
 
 /// Row height as a multiple of the font size; the result is rounded to whole
 /// pixels so rows tile without seams.
-const LINE_HEIGHT: f32 = 1.5;
+pub(crate) const LINE_HEIGHT: f32 = 1.5;
 
 /// Physical strokes, not layout, so fixed pixel sizes (the design guides'
 /// hairline exception): the caret bar, the blockquote bar, the horizontal
@@ -206,18 +206,11 @@ impl EditorElement {
     /// without the caret, which only prepaint finds.
     fn build_popup(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         self.view.read(cx).autocomplete_state()?;
-        let (font_family, font_size, line_height) = {
-            let t = cx.theme();
-            let size = t.mono_font_size;
-            (
-                t.mono_font_family.clone(),
-                size,
-                px((f32::from(size) * LINE_HEIGHT).round()),
-            )
-        };
+        let (kit_family, preferred, font_size) = editor_font::face_inputs(cx);
+        let line_height = px((f32::from(font_size) * LINE_HEIGHT).round());
         let text_system = window.text_system().clone();
         let cells = self.view.update(cx, |view, _| {
-            let fonts = view.editor_fonts(&font_family, &text_system);
+            let fonts = view.editor_fonts(&kit_family, preferred.as_ref(), &text_system);
             CellMetrics::from_text_system(
                 &text_system,
                 &fonts.face(false, false),
@@ -228,7 +221,7 @@ impl EditorElement {
         let theme = theme::current(cx);
         let style = PopupStyle {
             cells: &cells,
-            font_family,
+            font_family: kit_family,
             font_size,
             theme: &theme,
         };
@@ -366,12 +359,10 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // The kit theme supplies the installed monospace face and its size;
-        // every colour comes from the kimün theme (ADR-0049 §6).
-        let (kit_family, font_size) = {
-            let t = cx.theme();
-            (t.mono_font_family.clone(), t.mono_font_size)
-        };
+        // The user's font setting, else the kit theme's monospace face and
+        // size ([`editor_font::face_inputs`]); every colour comes from the
+        // kimün theme (ADR-0049 §6).
+        let (kit_family, preferred, font_size) = editor_font::face_inputs(cx);
         let line_height = px((f32::from(font_size) * LINE_HEIGHT).round());
         let scale = window.scale_factor();
         let text_system = window.text_system().clone();
@@ -380,7 +371,7 @@ impl Element for EditorElement {
         let origin = bounds.origin;
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
-            let fonts = view.editor_fonts(&kit_family, &text_system);
+            let fonts = view.editor_fonts(&kit_family, preferred.as_ref(), &text_system);
             let base_font = fonts.face(false, false);
             let cells =
                 CellMetrics::from_text_system(&text_system, &base_font, font_size, line_height);

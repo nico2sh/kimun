@@ -225,9 +225,9 @@ pub struct EditorView {
     /// App chords still resolve.
     pub(crate) input_blocked: bool,
     pub(crate) painted: Option<Painted>,
-    /// The face, chosen for the kit theme's monospace family (re-chosen if
-    /// that family changes).
-    fonts: Option<(SharedString, EditorFonts)>,
+    /// The face, chosen for the kit theme's monospace family and the user's
+    /// preferred family (re-chosen if either changes).
+    fonts: Option<(SharedString, Option<SharedString>, EditorFonts)>,
     /// Rows painted in recent frames, reused while their content is unchanged.
     pub(crate) row_cache: ShapedRows,
     /// Wikilink and hashtag autocomplete, once a vault supplies suggestions.
@@ -654,18 +654,22 @@ impl EditorView {
         }
     }
 
-    /// The editor's face for the kit's monospace `kit_family` (see
-    /// [`EditorFonts`]); probing the machine's fonts happens once.
+    /// The editor's face for the kit's monospace `kit_family` and the user's
+    /// `preferred` family (see [`EditorFonts`]); the machine's fonts are
+    /// probed again only when either changes.
     pub(crate) fn editor_fonts(
         &mut self,
         kit_family: &SharedString,
+        preferred: Option<&SharedString>,
         text_system: &TextSystem,
     ) -> EditorFonts {
         match &self.fonts {
-            Some((family, fonts)) if family == kit_family => fonts.clone(),
+            Some((kit, pref, fonts)) if kit == kit_family && pref.as_ref() == preferred => {
+                fonts.clone()
+            }
             _ => {
-                let fonts = EditorFonts::resolve(text_system, kit_family, None);
-                self.fonts = Some((kit_family.clone(), fonts.clone()));
+                let fonts = EditorFonts::resolve(text_system, kit_family, preferred);
+                self.fonts = Some((kit_family.clone(), preferred.cloned(), fonts.clone()));
                 fonts
             }
         }
