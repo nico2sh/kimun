@@ -17,7 +17,7 @@ use kimun_notes::logic::layout_tree::LayoutTree;
 use kimun_notes::logic::nav::DrawerView;
 
 use super::reopen::SETTINGS_WRITE;
-use super::{LayoutStore, PresetRecord};
+use super::{LayoutStore, PresetRecord, RailState};
 
 /// [`PresetRecord`] owned, to wait in the queue.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,8 +47,9 @@ impl Preset {
 
 #[derive(Default)]
 struct State {
-    /// The newest layout not written yet, and the preset record it carries.
-    pending: Option<(LayoutTree<DrawerView>, Preset)>,
+    /// The newest layout not written yet, and the preset record and rail
+    /// state it carries.
+    pending: Option<(LayoutTree<DrawerView>, Preset, RailState)>,
     /// A write thread is running (and will see `pending`).
     busy: bool,
 }
@@ -93,19 +94,24 @@ impl LayoutWriter {
 
     /// Save `layout`, recording `preset` as [`LayoutStore::save`] does. A
     /// `Keep` never undoes a preset record still waiting to be written.
-    pub(crate) fn submit(&self, layout: LayoutTree<DrawerView>, preset: PresetRecord<'_>) {
+    pub(crate) fn submit(
+        &self,
+        layout: LayoutTree<DrawerView>,
+        preset: PresetRecord<'_>,
+        rail: RailState,
+    ) {
         if self.inline {
-            write(&self.store, &layout, preset);
+            write(&self.store, &layout, preset, rail);
             return;
         }
         let mut preset = Preset::from(preset);
         let mut state = self.shared.lock();
         if preset == Preset::Keep
-            && let Some((_, waiting)) = &state.pending
+            && let Some((_, waiting, _)) = &state.pending
         {
             preset = waiting.clone();
         }
-        state.pending = Some((layout, preset));
+        state.pending = Some((layout, preset, rail));
         if state.busy {
             return;
         }
@@ -124,7 +130,7 @@ impl LayoutWriter {
                         }
                     }
                 };
-                write(&store, &job.0, job.1.as_record());
+                write(&store, &job.0, job.1.as_record(), job.2);
             }
         });
     }
@@ -143,9 +149,14 @@ impl LayoutWriter {
 }
 
 /// One write, in turn with the settings writes (`reopen::write_settings`).
-fn write(store: &LayoutStore, layout: &LayoutTree<DrawerView>, preset: PresetRecord<'_>) {
+fn write(
+    store: &LayoutStore,
+    layout: &LayoutTree<DrawerView>,
+    preset: PresetRecord<'_>,
+    rail: RailState,
+) {
     let _one_at_a_time = SETTINGS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    store.save(layout, preset);
+    store.save(layout, preset, rail);
 }
 
 #[cfg(test)]
@@ -170,9 +181,13 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "").unwrap();
         let writer = LayoutWriter::threaded(LayoutStore::File(path.clone()));
-        writer.submit(tree_with(&[]), PresetRecord::Set("focus"));
+        let rail = RailState {
+            position: kimun_notes::logic::layout_tree::RailPosition::Left,
+            hidden: false,
+        };
+        writer.submit(tree_with(&[]), PresetRecord::Set("focus"), rail);
         for _ in 0..50 {
-            writer.submit(tree_with(&[DrawerView::Tags]), PresetRecord::Keep);
+            writer.submit(tree_with(&[DrawerView::Tags]), PresetRecord::Keep, rail);
         }
         writer.flush();
         let settings = saved(&path);

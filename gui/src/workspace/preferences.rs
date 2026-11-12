@@ -65,6 +65,7 @@ use gpui_kit::{
     UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
+use kimun_notes::logic::layout_tree::RailPosition;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
@@ -122,6 +123,10 @@ pub(crate) const FONT_SIZE_DOWN_ID: &str = "preferences-editor-font-size-down";
 pub(crate) const FONT_SIZE_UP_ID: &str = "preferences-editor-font-size-up";
 pub(crate) const FONT_DEFAULT_LABEL: &str = "Default (theme)";
 const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
+/// Display's `Rail position` (`[gui] rail`, ADR-0055) and its help text.
+pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
+pub(crate) const RAIL_HELP: &str =
+    "Where the activity rail sits. Hide or show it with the button in the title bar.";
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -770,6 +775,14 @@ impl PreferencesView {
         let theme_default = theme_font_size(cx);
         if let Some(model) = self.model_mut() {
             model.step_editor_font_size(up, theme_default);
+        }
+        cx.notify();
+    }
+
+    /// Display's `Rail position`.
+    pub(crate) fn set_rail_position(&mut self, rail: RailPosition, cx: &mut Context<Self>) {
+        if let Some(model) = self.model_mut() {
+            model.rail = rail;
         }
         cx.notify();
     }
@@ -1615,6 +1628,40 @@ impl PreferencesView {
                             .child(note(REDUCE_MOTION_HELP, t)),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(note("Rail position", t))
+                    .child(
+                        RadioGroup::horizontal("preferences-rail")
+                            .selected_index(
+                                RailPosition::ALL
+                                    .iter()
+                                    .position(|rail| *rail == model.rail),
+                            )
+                            .disabled(self.saving.is_some())
+                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                if let Some(rail) = RailPosition::ALL.get(*ix) {
+                                    this.set_rail_position(*rail, cx)
+                                }
+                            }))
+                            .children(
+                                RailPosition::ALL
+                                    .into_iter()
+                                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(RAIL_HELP_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(RAIL_HELP)
+                            .child(note(RAIL_HELP, t)),
+                    ),
+            )
             .child(field(
                 "Which-key delay",
                 delay,
@@ -2258,6 +2305,9 @@ impl Workspace {
         self.leader.set_tree(snapshot.leader_tree());
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
         crate::editor_font::apply(&snapshot.gui, cx);
+        // The saved position moves the rail in this window now; the next
+        // layout save writes the same value.
+        self.rail = snapshot.gui.rail();
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }
