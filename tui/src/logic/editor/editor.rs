@@ -1006,15 +1006,23 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
-        // macOS clipboard chords: Cmd+C/V/X do what Ctrl+C/V/X do. The GUI
-        // passes Cmd through as `sup` (never as Ctrl), so without this alias
-        // the native paste key reaches no engine at all.
-        let key = match key {
-            KeyInput {
-                key: Key::Char(c @ ('c' | 'v' | 'x')),
-                mods: Mods::SUPER,
-            } => KeyInput::new(Key::Char(c), Mods::CTRL),
-            other => other,
+        // macOS chords: Cmd+A/C/V/X/Z/Y do what the Ctrl chord does, and
+        // Cmd+Shift+Z redoes. The GUI passes Cmd through as `sup` (never as
+        // Ctrl), so without this alias the native key reaches no engine at all.
+        // Cmd+arrows and Cmd+Backspace are not here: they have their own rows.
+        let key = match (key.key, key.mods) {
+            (Key::Char(c @ ('a' | 'c' | 'v' | 'x' | 'z' | 'y')), Mods::SUPER) => {
+                KeyInput::new(Key::Char(c), Mods::CTRL)
+            }
+            (Key::Char('z' | 'Z'), m)
+                if m == (Mods {
+                    shift: true,
+                    ..Mods::SUPER
+                }) =>
+            {
+                KeyInput::new(Key::Char('y'), Mods::CTRL)
+            }
+            _ => key,
         };
         // Every key acts at the cursor, so a wheel-scrolled view comes back to
         // it — even when the key leaves the cursor where it was (find-next onto
@@ -1956,6 +1964,29 @@ mod tests {
 
     fn typed(c: char) -> KeyInput {
         KeyInput::plain(Key::Char(c))
+    }
+
+    #[test]
+    fn cmd_chords_edit_like_their_ctrl_twins() {
+        let cmd = |c| KeyInput::new(Key::Char(c), Mods::SUPER);
+        let mut ed = Editor::new(false);
+        for c in "abc".chars() {
+            ed.handle_key(typed(c), &tx());
+        }
+        ed.handle_key(cmd('z'), &tx());
+        assert_eq!(ed.get_text(), "", "undo");
+        let shift_cmd_z = KeyInput::new(
+            Key::Char('z'),
+            Mods {
+                shift: true,
+                ..Mods::SUPER
+            },
+        );
+        ed.handle_key(shift_cmd_z, &tx());
+        assert_eq!(ed.get_text(), "abc", "redo");
+        ed.handle_key(cmd('a'), &tx());
+        ed.handle_key(typed('Q'), &tx());
+        assert_eq!(ed.get_text(), "Q", "select all replaced by typing");
     }
 
     #[test]
