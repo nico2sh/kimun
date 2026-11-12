@@ -69,6 +69,7 @@ use tokio::task::JoinError;
 use super::modal::{self, ModalKind, Slot};
 use super::note::Closing;
 use super::{ToastAction, Workspace};
+use crate::relaunch::Relauncher;
 use crate::tasks::blocking;
 use crate::theme;
 
@@ -119,6 +120,11 @@ pub(crate) struct UpdateHost {
     pub(super) flushing: Option<Task<()>>,
     /// The dialog in the modal slot, while it is open.
     pub(crate) dialog: Option<WeakEntity<UpdateDialog>>,
+    /// Starts the app again once it has ended.
+    pub(crate) relauncher: Arc<dyn Relauncher>,
+    /// An install landed: the app restarts when it ends (see
+    /// [`Workspace::end_app`]). Never set by a failed install.
+    pub(crate) restart_pending: bool,
 }
 
 impl UpdateHost {
@@ -132,7 +138,22 @@ impl UpdateHost {
             install: None,
             flushing: None,
             dialog: None,
+            relauncher: default_relauncher(),
+            restart_pending: false,
         }
+    }
+}
+
+/// The relauncher a window gets: the real one, or a recorder under `cfg(test)`
+/// (a test never starts a process).
+fn default_relauncher() -> Arc<dyn Relauncher> {
+    #[cfg(test)]
+    {
+        Arc::new(crate::relaunch::RecordingRelauncher::default())
+    }
+    #[cfg(not(test))]
+    {
+        Arc::new(crate::relaunch::SystemRelauncher::new())
     }
 }
 
@@ -349,7 +370,9 @@ impl Render for UpdateDialog {
             ));
         }
         let text: SharedString = match (&state.phase, &state.offer) {
-            (UpdatePhase::Installed { version }, _) => rules::installed_text(version).into(),
+            (UpdatePhase::Installed { version }, _) => {
+                rules::installed_restarting_text(version).into()
+            }
             _ if state.saving_note => SAVING_NOTE_TEXT.into(),
             (UpdatePhase::Installing(_), _) => rules::INSTALLING_TEXT.into(),
             _ if state.checking => rules::CHECKING_TEXT.into(),
@@ -403,6 +426,12 @@ impl Workspace {
     #[cfg(any(test, feature = "fake-update"))]
     pub(crate) fn set_update_backend(&mut self, backend: Arc<dyn UpdateBackend>) {
         self.updates.backend = Some(backend);
+    }
+
+    /// Replace the relauncher (the tests' recorder).
+    #[cfg(test)]
+    pub(crate) fn set_relauncher(&mut self, relauncher: Arc<dyn Relauncher>) {
+        self.updates.relauncher = relauncher;
     }
 
     /// Whether the install (or the note's flush before it) runs: the
@@ -788,12 +817,26 @@ impl Workspace {
         // The dialog went meanwhile (a modal reset): the toast says it.
         if !shown {
             match &result {
-                Ok(version) => self.flash(rules::installed_text(version), cx),
+                Ok(version) => self.flash(rules::installed_restarting_text(version), cx),
                 Err(e) => self.flash_error(rules::install_failed_text(e), cx),
             }
         }
+        let installed = result.is_ok();
         self.updates.machine.install_landed(result);
         self.refresh_update_dialog(cx);
+        if installed {
+            self.restart_into_update(cx);
+        }
+    }
+
+    /// The new version is in place: quit through the normal close (the
+    /// note was saved before the install, edits typed since are saved or
+    /// asked about first), and start the app again as it ends.
+    fn restart_into_update(&mut self, cx: &mut Context<Self>) {
+        self.updates.restart_pending = true;
+        self.with_window(cx, |workspace, window, cx| {
+            workspace.request_quit(window, cx)
+        });
     }
 
     /// The dialog's handle goes with the modal ([`Self::reset_modal_state`]);

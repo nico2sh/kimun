@@ -111,6 +111,12 @@ pub fn installed_text(version: &str) -> String {
     format!("Updated to {version}. Restart {PRODUCT} to use it.")
 }
 
+/// The install finished and the app starts again by itself (the desktop app;
+/// the terminal app only asks, see [`installed_text`]).
+pub fn installed_restarting_text(version: &str) -> String {
+    format!("Updated to {version}. Restarting {PRODUCT}…")
+}
+
 /// The install failed (or could not start).
 pub fn install_failed_text(error: &str) -> String {
     format!("Couldn't install the update: {error}")

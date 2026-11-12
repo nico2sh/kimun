@@ -11,7 +11,8 @@ The `docs/` directory is the Kimün user-facing documentation site. Only end-use
 
 ## Rules
 
-- All file modifications and path manipulation must be implemented in core, never in the TUI
+- Core is the layer for content operations between the user and the filesystem: every filesystem operation on the vault (notes, attachments, directories, backups, the index) and every path manipulation of vault content must be implemented in core, never in a frontend
+  - Frontend-specific filesystem work that does not touch vault content (for example the desktop app replacing its own `Kimun.app` bundle on update) belongs in that frontend, not in core
   - The TUI may still read files directly (`read_to_string`, `File::open`, `metadata`) — those behave the same on every platform. What it must not do is call `rename`, `copy`, `remove_file`, `remove_dir*`, `create_dir*`, `canonicalize`, `set_permissions` or a truncating `write`: those go through `kimun_core::system`. Enforced by `.github/scripts/check-host-fs.py` in CI (see `adr/0044`)
 - Never hardcode the `.md` extension or `/` path separator — use existing core functions for cleaning up note paths, removing extensions, or splitting paths into slices
 - If a new path or file operation is needed, implement it in core

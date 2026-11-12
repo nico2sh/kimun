@@ -28,6 +28,8 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::update::InstallChannel;
 use tokio::runtime::Runtime;
 
+use crate::relaunch::RecordingRelauncher;
+
 use super::modal::ModalKind;
 use super::note::Closing;
 use super::preferences::{CHECK_UPDATES_ID, Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID};
@@ -598,12 +600,17 @@ fn later_on_a_failure_during_a_check_cleans_it_up(cx: &mut TestAppContext) {
     set_update_check(&v, false);
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     s.up_found(&rt, cx);
     s.up_view(cx);
     s.up_click(UPDATE_INSTALL_ID, cx);
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
     });
+    cx.run_until_parked();
+    assert_eq!(relauncher.calls(), 0, "a failed install does not restart");
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
     fake.hold();
     fake.go_offline("network unreachable");
     s.up_on_window(cx, |w, _, cx| w.check_updates_now(cx));
@@ -810,12 +817,15 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     let fake =
         Arc::new(ScriptedUpdates::with_release(NEW).install_delay(Duration::from_millis(400)));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     cx.update_window(s.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
     cx.run_until_parked();
     assert!(cx.read(|cx| s.workspace.read(cx).editor_dirty(cx)));
     s.up_found(&rt, cx);
     s.up_view(cx);
+    assert_eq!(relauncher.calls(), 0, "nothing restarts before the install");
     // Enter: the primary button, Install.
     s.up_press("enter", cx);
     drive(&rt, cx, |cx| {
@@ -849,8 +859,11 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     assert_eq!(fake.installs(), 1);
     assert_eq!(
         s.up_label(UPDATE_TEXT_ID, cx),
-        Some(rules::installed_text(NEW))
+        Some(rules::installed_restarting_text(NEW))
     );
+    // The install ended the app, and asked for it to start again.
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(relauncher.calls(), 1, "the app restarts once");
     let dialog = s.up_dialog(cx).unwrap();
     let title = cx.read(|cx| dialog.read(cx).title());
     assert_eq!(title, TITLE_INSTALLED);
@@ -904,12 +917,17 @@ fn a_failed_install_offers_retry(cx: &mut TestAppContext) {
     set_update_check(&v, false);
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     s.up_found(&rt, cx);
     s.up_view(cx);
     s.up_click(UPDATE_INSTALL_ID, cx);
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
     });
+    cx.run_until_parked();
+    assert_eq!(relauncher.calls(), 0, "a failed install does not restart");
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
     assert_eq!(
         s.up_label(UPDATE_ERROR_ID, cx),
         Some(rules::install_failed_text("checksum mismatch"))
