@@ -518,7 +518,7 @@ A query to the GitHub releases API comparing the latest non-prerelease `kimun-no
 _Avoid_: version check (too narrow — the check also resolves the downloadable asset)
 
 **Self-update**:
-Replacing the running binary in place with a newer release: download the platform archive, verify it against `checksums-sha256.txt`, swap the executable, then prompt to restart. Only ever offered on self-update-eligible channels (script, direct).
+Replacing the running binary in place with a newer release: download the platform archive, verify it against `checksums-sha256.txt`, swap the executable, then restart into it. Only ever offered on self-update-eligible channels (script, direct) and, for the desktop app, the **bundle** channel, where the whole `Kimun.app` is replaced instead of a single executable. Always started by the user's confirmation, including a one-click confirmation from the **update notification**.
 _Avoid_: auto-update (reserve that for the unattended variant, if it ever exists — today self-update is always user-confirmed)
 
 **Update notification**:

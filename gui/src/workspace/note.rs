@@ -881,6 +881,13 @@ impl Workspace {
         {
             self.quits += 1;
         }
+        // An update replaced this app: start it again as this one ends. A
+        // failure only costs the user the manual start.
+        if self.updates.restart_pending
+            && let Err(e) = self.updates.relauncher.relaunch_after_exit()
+        {
+            tracing::warn!("could not restart after the update: {e}");
+        }
         cx.quit();
     }
 
