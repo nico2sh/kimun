@@ -22,6 +22,7 @@ pub mod indexing;
 pub mod key_picker;
 pub mod markdown_lines;
 pub mod note_browser;
+pub mod note_reader;
 pub mod overlay;
 pub mod panel;
 pub mod preferences;
