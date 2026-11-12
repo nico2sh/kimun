@@ -43,6 +43,7 @@ use kimun_notes::keys::leader::LeaderAction;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::KeyInput;
 use kimun_notes::logic::layout::{Dir, Panel};
+use kimun_notes::logic::layout_tree::RailPosition;
 use kimun_notes::logic::list::{ListRow, fuzzy_rank};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::palette::palette_rows;
@@ -71,6 +72,8 @@ pub(crate) enum PaletteRun {
     Chord(ActionShortcuts),
     /// A layout preset command ([`super::presets`]).
     Preset(PresetCommand),
+    /// Put the rail at this window edge (ADR-0055 §3).
+    RailAt(RailPosition),
     /// "Move view to…" for the focused slot
     /// ([`Workspace::open_move_chooser`]); no chord does it.
     MoveViewTo,
@@ -79,6 +82,19 @@ pub(crate) enum PaletteRun {
 /// The move chooser's row: after the move rows, before splitting (its
 /// place in [`chord_rows`]).
 const MOVE_VIEW_TO: &str = "+window · move view to…";
+
+/// Why the row for the rail's current position does nothing.
+const RAIL_ALREADY_HERE: &str = "The rail is already there";
+
+/// The palette row that puts the rail at `rail`.
+fn rail_row_label(rail: RailPosition) -> &'static str {
+    match rail {
+        RailPosition::Left => "Rail position: Left",
+        RailPosition::Right => "Rail position: Right",
+        RailPosition::Top => "Rail position: Top",
+        RailPosition::Bottom => "Rail position: Bottom",
+    }
+}
 
 /// One row of the palette.
 #[derive(Debug, Clone)]
@@ -204,6 +220,10 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
         (
             "+window · toggle zoom".into(),
             PaletteRun::Chord(A::ToggleZoom),
+        ),
+        (
+            "+window · toggle rail".into(),
+            PaletteRun::Chord(A::ToggleRail),
         ),
         (
             "+text · find in note".into(),
@@ -433,7 +453,18 @@ impl Workspace {
                 blocked,
                 run: PaletteRun::Preset(command),
             });
-        leaves.chain(chords).chain(presets).collect()
+        let rail_rows = RailPosition::ALL.into_iter().map(|rail| PaletteEntry {
+            label: rail_row_label(rail).into(),
+            hint: None,
+            sequence: None,
+            blocked: (self.rail == rail).then_some(RAIL_ALREADY_HERE),
+            run: PaletteRun::RailAt(rail),
+        });
+        leaves
+            .chain(chords)
+            .chain(presets)
+            .chain(rail_rows)
+            .collect()
     }
 
     /// Why one of the GUI's own chords cannot run from the palette now.
@@ -507,6 +538,7 @@ impl Workspace {
                 self.workspace_command(&action, None, window, cx);
             }
             PaletteRun::Preset(command) => self.run_preset_command(command, window, cx),
+            PaletteRun::RailAt(rail) => self.set_rail(rail, cx),
             PaletteRun::MoveViewTo => match self.focused_slot() {
                 Some(slot) => self.open_move_chooser(slot, window, cx),
                 None => self.flash("Focus a slot to move its view", cx),

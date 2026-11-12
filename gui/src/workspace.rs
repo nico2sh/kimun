@@ -198,7 +198,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, SlotId, TreeError, TreeFocusMove,
+    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeError, TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -251,6 +251,14 @@ pub(crate) enum LayoutStore {
     File(PathBuf),
 }
 
+/// The rail's place and visibility, saved with every layout write
+/// (ADR-0055).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RailState {
+    pub(crate) position: RailPosition,
+    pub(crate) hidden: bool,
+}
+
 /// What a layout save does with the recorded `layout_preset`.
 #[derive(Clone, Copy)]
 enum PresetRecord<'a> {
@@ -297,9 +305,11 @@ impl LayoutStore {
     /// the name of the preset it was applied from (`layout_preset`). A
     /// failure is logged and otherwise ignored: the layout in the window is
     /// still right.
-    fn save(&self, layout: &LayoutTree<DrawerView>, preset: PresetRecord<'_>) {
+    fn save(&self, layout: &LayoutTree<DrawerView>, preset: PresetRecord<'_>, rail: RailState) {
         let edit = |gui: &mut kimun_notes::settings::gui::GuiSettings| {
             shell_tree::record(layout, gui);
+            gui.set_rail(rail.position);
+            gui.set_rail_hidden(rail.hidden);
             match preset {
                 PresetRecord::Keep => {}
                 PresetRecord::Set(name) => gui.set_layout_preset(Some(name)),
@@ -429,6 +439,12 @@ pub(crate) struct Workspace {
     /// The preset the live layout was last applied from, as `[gui]`
     /// records it: what "Reset to preset" applies again.
     layout_preset: Option<String>,
+    /// The `rail` each loaded preset sets, by preset name (ADR-0055 §2).
+    preset_rails: BTreeMap<String, RailPosition>,
+    /// The window edge the rail sits on (ADR-0055), as `[gui]` records it.
+    rail: RailPosition,
+    /// Whether the rail is hidden (ADR-0055 §8), as `[gui]` records it.
+    rail_hidden: bool,
     /// Why the editor Panel shows no editor (no workspace, or it would not
     /// open). `None`: the editor.
     empty: Option<EmptyState>,
@@ -685,6 +701,9 @@ impl Workspace {
     ) -> Self {
         // The one theme every view of the window draws in.
         theme::set_current(cx, theme);
+        // The rail's place and visibility, as the config records them: read
+        // here so a window opens as it was left, whoever builds it.
+        let recorded_gui = store.recorded_gui();
         let rail_cursor = layout
             .slots()
             .into_iter()
@@ -740,6 +759,9 @@ impl Workspace {
             store,
             presets: BTreeMap::new(),
             layout_preset: None,
+            preset_rails: BTreeMap::new(),
+            rail: recorded_gui.rail(),
+            rail_hidden: recorded_gui.rail_hidden(),
             empty: None,
             status: Status::default(),
             notes: None,
@@ -1333,9 +1355,26 @@ impl Workspace {
         self.save_layout_with(PresetRecord::Clear, cx);
     }
 
+    /// The rail's place and visibility as they save.
+    fn rail_state(&self) -> RailState {
+        RailState {
+            position: self.rail,
+            hidden: self.rail_hidden,
+        }
+    }
+
     fn save_layout_with(&mut self, preset: PresetRecord<'_>, cx: &mut Context<Self>) {
         self.tidy_layout(cx);
-        self.layout_writer.submit(self.layout.clone(), preset);
+        self.layout_writer
+            .submit(self.layout.clone(), preset, self.rail_state());
+        // The shared settings follow what the layout save writes for the
+        // rail, so Preferences start from the position on screen and a
+        // later save of theirs does not move it back.
+        if let Some(settings) = &self.settings {
+            let mut settings = settings.write().unwrap_or_else(|e| e.into_inner());
+            settings.gui.set_rail(self.rail);
+            settings.gui.set_rail_hidden(self.rail_hidden);
+        }
         self.refresh_views(cx);
     }
 
@@ -1838,7 +1877,7 @@ impl Workspace {
     /// The first slot right of the rail (leftmost, then topmost): where a
     /// move from the rail lands.
     fn slot_beside_rail(&self) -> Option<SlotId> {
-        self.layout.slot_beside_rail()
+        self.layout.slot_beside_rail(self.rail)
     }
 
     /// `MoveViewToNeighbour(Left / Right)`: move the focused view to the
@@ -1850,9 +1889,10 @@ impl Workspace {
     /// slot the move empties closes ([`Self::close_if_vacated`]).
     /// Persisted.
     ///
-    /// From the rail the move is spatial: the rail sits at the window's
-    /// left edge, so Right moves and shows the cursor's view in the slot
-    /// beside the rail, and Left is not handled. The rail keeps the
+    /// From the rail the move is spatial: the direction from the rail into
+    /// the layout moves and shows the cursor's view in the slot beside the
+    /// rail, and any other is not handled (ADR-0055 §6; the directions along
+    /// the rail's axis are [`Self::place_from_rail`]'s). The rail keeps the
     /// keyboard.
     fn move_view(&mut self, dir: Dir, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(view) = self.arranged_view() else {
@@ -1861,9 +1901,10 @@ impl Workspace {
         let from = self.layout.view_slot(&view);
         match self.layout.focused() {
             Focus::Rail => {
-                let target = match dir {
-                    Dir::Right => self.slot_beside_rail(),
-                    _ => None,
+                let target = if dir == self.rail.toward() {
+                    self.slot_beside_rail()
+                } else {
+                    None
                 };
                 let Some(target) = target else {
                     return false;
@@ -2045,7 +2086,7 @@ impl Workspace {
     /// way: it goes to a new slot on that side when its slot holds other
     /// views ([`Self::spawn_beside`]); otherwise handled when slots are
     /// stacked there, else not handled, so the key passes on. From the rail
-    /// see [`Self::place_from_rail`]. A slot the move empties closes
+    /// see [`Self::move_view`] and [`Self::place_from_rail`]. A slot the move empties closes
     /// ([`Self::close_if_vacated`]). Persisted.
     fn move_view_vertically(
         &mut self,
@@ -2054,9 +2095,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let dir = if up { Dir::Up } else { Dir::Down };
-        if self.layout.focused() == Focus::Rail {
-            return self.place_from_rail(dir, window, cx);
-        }
         let Some((view, from)) = self
             .arranged_view()
             .and_then(|view| self.layout.view_slot(&view).map(|s| (view, s)))
@@ -2101,8 +2139,9 @@ impl Workspace {
         self.place(view, Placement::Beside(from, dir), window, cx) || self.stacked(from)
     }
 
-    /// Up / Down from the rail (ADR-0054 §3), on the cursor's view: the view
-    /// is placed in a new slot above (`Dir::Up`) or below the slot that last
+    /// A place direction from the rail (ADR-0054 §3, rotated by ADR-0055 §6:
+    /// Up and Down on a column, Left and Right on a row), on the cursor's
+    /// view: the view is placed in a new slot on that side of the slot that last
     /// held the keyboard, while it exists and is drawn, else the slot beside
     /// the rail ([`LayoutTree::place_beside`]); it leaves the slot it was
     /// in, which closes when emptied. Handled, with a flash and nothing changed, while
@@ -2244,14 +2283,20 @@ impl Workspace {
             .map(|(leaf, _)| leaf)
             .filter(|leaf| self.leaf_visible(*leaf))
             .collect();
+        let rail = (!self.rail_hidden).then_some(self.rail);
         self.layout
-            .focus_dir_among(dir, &|leaf| drawn.contains(&leaf))
+            .focus_dir_in(dir, &|leaf| drawn.contains(&leaf), rail)
     }
 
     /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail and
     /// the visible leaves in reading order, wrapping.
     fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
-        let mut order = vec![Focus::Rail];
+        // A hidden rail takes no keyboard focus (ADR-0055 §9).
+        let mut order = if self.rail_hidden {
+            Vec::new()
+        } else {
+            vec![Focus::Rail]
+        };
         order.extend(
             self.layout
                 .regions()
@@ -2407,6 +2452,16 @@ impl Workspace {
             ActionShortcuts::Quit => self.request_quit(window, cx),
             ActionShortcuts::ToggleSidebar => self.toggle_side(Side::Left, window, cx),
             ActionShortcuts::ToggleRightDrawer => self.toggle_side(Side::Right, window, cx),
+            // From the rail the chords turn with it (ADR-0055 §6): along its
+            // axis they place, toward the layout they show, and facing the
+            // rail they are not handled.
+            ActionShortcuts::MoveViewToNeighbour(dir) if self.layout.focused() == Focus::Rail => {
+                return if self.rail.place_dir(*dir) {
+                    self.place_from_rail(*dir, window, cx)
+                } else {
+                    self.move_view(*dir, window, cx)
+                };
+            }
             ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {
                 return self.move_view(*dir, window, cx);
             }
@@ -2424,6 +2479,7 @@ impl Workspace {
             }
             ActionShortcuts::CloseSlot => return self.close_focused_slot(window, cx),
             ActionShortcuts::ToggleZoom => self.toggle_zoom(window, cx),
+            ActionShortcuts::ToggleRail => self.toggle_rail(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
             ActionShortcuts::FileOperations => self.file_ops_chord(window, cx),
             ActionShortcuts::OpenNote => {
@@ -2541,15 +2597,24 @@ impl Workspace {
         }
     }
 
-    /// The rail's own keys: Up/Down move between cells, Enter or Space
-    /// activates one (as a click does).
+    /// The rail's own keys: the two arrows along its axis move between
+    /// cells, Enter or Space activates one (as a click does).
     fn rail_key(&mut self, key: KeyInput, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if key.mods != Mods::NONE {
             return false;
         }
+        // The cursor moves along the rail's axis: Up and Down on a column,
+        // Left and Right on a row (ADR-0055 §6).
+        let horizontal = self.rail.horizontal();
         match key.key {
-            Key::Up => self.rail_cursor = self.rail_cursor.saturating_sub(1),
-            Key::Down => self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1),
+            Key::Up if !horizontal => self.rail_cursor = self.rail_cursor.saturating_sub(1),
+            Key::Left if horizontal => self.rail_cursor = self.rail_cursor.saturating_sub(1),
+            Key::Down if !horizontal => {
+                self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1)
+            }
+            Key::Right if horizontal => {
+                self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1)
+            }
             Key::Enter | Key::Char(' ') => {
                 if let Some(view) = self.rail_cursor_view() {
                     self.activate_rail_view(view, window, cx);
@@ -2575,6 +2640,43 @@ impl Workspace {
         })
     }
 
+    /// `ToggleRail` (ADR-0055 §8, §9): hide the rail, or show it again.
+    /// Saved. Hiding while the rail has the keyboard moves it to the last
+    /// focused slot when that slot is drawn, else to the active editor
+    /// group; showing never moves it. The tree is refitted to the room the
+    /// rail leaves or takes.
+    fn toggle_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rail_hidden = !self.rail_hidden;
+        if self.rail_hidden && self.layout.focused() == Focus::Rail {
+            let leaf = self
+                .last_slot
+                .filter(|slot| self.slot_drawn(*slot))
+                .map_or(Leaf::Group(self.layout.active_group()), Leaf::Slot);
+            self.layout.focus(Focus::Leaf(leaf));
+        }
+        self.apply_focus(window, cx);
+        self.save_layout(cx);
+        cx.notify();
+    }
+
+    /// Put the rail at `rail` (ADR-0055 §3): from the palette, and from
+    /// Preferences once saved. Saved with the layout, which it does not
+    /// change; the keyboard and the hidden state stay as they are.
+    pub(super) fn set_rail(&mut self, rail: RailPosition, cx: &mut Context<Self>) {
+        if self.rail == rail {
+            return;
+        }
+        self.rail = rail;
+        self.save_layout(cx);
+        cx.notify();
+    }
+
+    /// Whether the rail comes before the tree in the body: at the left or
+    /// the top.
+    fn rail_leads(&self) -> bool {
+        matches!(self.rail, RailPosition::Left | RailPosition::Top)
+    }
+
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&theme::current(cx));
         let focused = self.layout.focused() == Focus::Rail;
@@ -2594,6 +2696,7 @@ impl Workspace {
             .map(|(i, v)| cell(i, *v, cx))
             .collect();
         let pinned = cell(views.len() - 1, pinned[0], cx);
+        let horizontal = self.rail.horizontal();
         div()
             .id("rail")
             .test_support()
@@ -2601,15 +2704,29 @@ impl Workspace {
             .role(Role::TabList)
             .aria_label("Activity rail")
             .flex()
-            .flex_col()
             .flex_none()
-            .h_full()
-            .w(rems(RAIL_REMS))
             .gap_1()
-            .py_1()
             .relative()
             .bg(panel_bg)
-            .border_r_1()
+            // A column for a left or right rail, a row for a top or bottom
+            // one; the thickness is the same (ADR-0055 §4, §5).
+            .when(horizontal, |rail| {
+                rail.flex_row()
+                    .items_center()
+                    .w_full()
+                    .h(rems(RAIL_REMS))
+                    .px_1()
+            })
+            .when(!horizontal, |rail| {
+                rail.flex_col().h_full().w(rems(RAIL_REMS)).py_1()
+            })
+            // The border is on the edge that faces the tree.
+            .map(|rail| match self.rail {
+                RailPosition::Left => rail.border_r_1(),
+                RailPosition::Right => rail.border_l_1(),
+                RailPosition::Top => rail.border_b_1(),
+                RailPosition::Bottom => rail.border_t_1(),
+            })
             .border_color(theme::divider(&theme::current(cx)))
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.focus_panel(Panel::Rail, window, cx)
@@ -2672,8 +2789,9 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .mx_1()
             .h_8()
+            .when(self.rail.horizontal(), |button| button.w_8().mx_0p5())
+            .when(!self.rail.horizontal(), |button| button.mx_1())
             .rounded_md()
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
@@ -2714,8 +2832,9 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
-            .mx_1()
             .h_10()
+            .when(self.rail.horizontal(), |cell| cell.w_10().mx_0p5())
+            .when(!self.rail.horizontal(), |cell| cell.mx_1())
             .rounded_md()
             // Selection is the cell's own surface (design guides): a
             // persistent fill plus the accent glyph, never an edge bar.
@@ -2859,6 +2978,18 @@ impl Workspace {
         } else {
             self.workspace_chip(theme::muted(&t), window, cx)
         };
+        let rail = status_row::RailSegment {
+            position: self.rail,
+            hidden: self.rail_hidden,
+            label: {
+                let verb = if self.rail_hidden { "Show" } else { "Hide" };
+                match keymap::chord_label(cx, &ActionShortcuts::ToggleRail) {
+                    Some(chord) => format!("{verb} rail ({chord})").into(),
+                    None => format!("{verb} rail").into(),
+                }
+            },
+            on_toggle: cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_rail(window, cx)),
+        };
         status_row::render(
             &self.status,
             &self.doc_facts(editor_shown, cx),
@@ -2869,8 +3000,11 @@ impl Workspace {
             cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.open_properties_for_open_note(window, cx)
             }),
-            zoom,
-            chip,
+            status_row::Leading {
+                rail,
+                workspace: chip,
+                zoom,
+            },
         )
         .into_any_element()
     }
@@ -3031,16 +3165,24 @@ impl Workspace {
                 cx.listener(|this, _, _, cx| this.end_resize(cx)),
             )
             .flex()
-            .flex_row()
+            // The rail's edge sets the direction (ADR-0055 §4): beside the
+            // tree for left and right, above or under it for top and bottom.
+            .when(self.rail.horizontal(), |body| body.flex_col())
+            .when(!self.rail.horizontal(), |body| body.flex_row())
             .items_stretch()
             .w_full()
             .flex_1()
             .min_h_0()
             .bg(theme::background(&theme::current(cx)))
-            .child(self.render_rail(cx))
+            .when(!self.rail_hidden && self.rail_leads(), |body| {
+                body.child(self.render_rail(cx))
+            })
             .child({
                 self.refit(window, cx);
                 self.render_tree(window, cx)
+            })
+            .when(!self.rail_hidden && !self.rail_leads(), |body| {
+                body.child(self.render_rail(cx))
             })
             .into_any_element()
     }
@@ -3266,6 +3408,8 @@ mod preferences_workspaces_tests;
 mod preset_tests;
 #[cfg(test)]
 mod properties_tests;
+#[cfg(test)]
+mod rail_tests;
 #[cfg(test)]
 mod reopen_tests;
 #[cfg(test)]

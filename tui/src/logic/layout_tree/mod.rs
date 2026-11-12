@@ -12,7 +12,10 @@
 
 use std::collections::BTreeMap;
 
+pub mod rail;
 pub mod spec;
+
+pub use rail::RailPosition;
 
 pub use crate::logic::layout::node::Fit;
 pub(crate) use crate::logic::layout::node::Node;
@@ -26,17 +29,30 @@ fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
     (a1.min(b1) - a0.max(b0)).max(0.0)
 }
 
-/// The leaf of `regions` that reads first: leftmost, then topmost.
-fn first_in_reading_order(regions: &[(Leaf, UnitRect)]) -> Option<Leaf> {
+/// The leaf of `regions` that touches `rail`'s edge first: nearest the
+/// edge, then leftmost (for a row) or topmost (for a column).
+fn first_at_rail(regions: &[(Leaf, UnitRect)], rail: RailPosition) -> Option<Leaf> {
+    use std::cmp::Ordering;
+    // Distance from the rail's edge, and the position along it.
+    let key = |r: &UnitRect| -> (f64, f64) {
+        match rail {
+            RailPosition::Left => (r.x(), r.y()),
+            RailPosition::Right => (1.0 - (r.x() + r.width()), r.y()),
+            RailPosition::Top => (r.y(), r.x()),
+            RailPosition::Bottom => (1.0 - (r.y() + r.height()), r.x()),
+        }
+    };
     regions
         .iter()
         .min_by(|a, b| {
-            let x = if (a.1.x() - b.1.x()).abs() <= EPS {
-                std::cmp::Ordering::Equal
+            let (ad, aa) = key(&a.1);
+            let (bd, ba) = key(&b.1);
+            let d = if (ad - bd).abs() <= EPS {
+                Ordering::Equal
             } else {
-                a.1.x().total_cmp(&b.1.x())
+                ad.total_cmp(&bd)
             };
-            x.then(a.1.y().total_cmp(&b.1.y()))
+            d.then(aa.total_cmp(&ba))
         })
         .map(|(l, _)| *l)
 }
@@ -415,6 +431,21 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// no place in the geometry: the rest is laid out as drawn. The zoomed
     /// leaf ignores `visible`.
     pub fn focus_dir_among(&mut self, dir: Dir, visible: &dyn Fn(Leaf) -> bool) -> TreeFocusMove {
+        self.focus_dir_in(dir, visible, Some(RailPosition::Left))
+    }
+
+    /// [`Self::focus_dir_among`] with the rail at `rail` (ADR-0055), or
+    /// `None` while it is hidden. From the rail, the direction into the
+    /// layout focuses the leaf that touches the rail's edge, the direction
+    /// away from it is the edge, and the two across are not the rail's. From
+    /// a leaf with nothing in the way, the direction facing the rail focuses
+    /// it; with no rail that is the edge.
+    pub fn focus_dir_in(
+        &mut self,
+        dir: Dir,
+        visible: &dyn Fn(Leaf) -> bool,
+        rail: Option<RailPosition>,
+    ) -> TreeFocusMove {
         let regions = match self.zoomed {
             Some(z) => vec![(z, UnitRect::new(0.0, 0.0, 1.0, 1.0))],
             None => self.visible_regions(visible),
@@ -422,19 +453,19 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let current = match self.focus {
             Focus::Leaf(l) => l,
             Focus::Rail => {
-                return match dir {
-                    Dir::Right => {
-                        let first = first_in_reading_order(&regions);
-                        match first {
-                            Some(l) => {
-                                self.focus(Focus::Leaf(l));
-                                TreeFocusMove::Moved(Focus::Leaf(l))
-                            }
-                            None => TreeFocusMove::AtEdge,
+                let at = rail.unwrap_or_default();
+                return if dir == at.toward() {
+                    match first_at_rail(&regions, at) {
+                        Some(l) => {
+                            self.focus(Focus::Leaf(l));
+                            TreeFocusMove::Moved(Focus::Leaf(l))
                         }
+                        None => TreeFocusMove::AtEdge,
                     }
-                    Dir::Left => TreeFocusMove::AtEdge,
-                    Dir::Up | Dir::Down => TreeFocusMove::NotHandled,
+                } else if dir == at.facing() {
+                    TreeFocusMove::AtEdge
+                } else {
+                    TreeFocusMove::NotHandled
                 };
             }
         };
@@ -450,12 +481,12 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                 self.focus(Focus::Leaf(l));
                 TreeFocusMove::Moved(Focus::Leaf(l))
             }
+            None if rail.is_some_and(|rail| rail.facing() == dir) => {
+                self.focus = Focus::Rail;
+                TreeFocusMove::Moved(Focus::Rail)
+            }
             None => match dir {
-                Dir::Left => {
-                    self.focus = Focus::Rail;
-                    TreeFocusMove::Moved(Focus::Rail)
-                }
-                Dir::Right => TreeFocusMove::AtEdge,
+                Dir::Left | Dir::Right => TreeFocusMove::AtEdge,
                 Dir::Up | Dir::Down => {
                     let stacked = regions.iter().any(|(l, c)| {
                         *l != current && overlap(c.x(), c.right(), cur.x(), cur.right()) > EPS
@@ -566,15 +597,17 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         }
     }
 
-    /// The first slot right of the rail (leftmost, then topmost), drawn
-    /// or not.
-    pub fn slot_beside_rail(&self) -> Option<SlotId> {
+    /// The slot that touches the rail's edge (ADR-0055 §7), drawn or not:
+    /// for `Left` the leftmost then topmost, `Right` the rightmost then
+    /// topmost, `Top` the topmost then leftmost, `Bottom` the bottommost
+    /// then leftmost.
+    pub fn slot_beside_rail(&self, rail: RailPosition) -> Option<SlotId> {
         let slots: Vec<_> = self
             .regions()
             .into_iter()
             .filter(|(leaf, _)| matches!(leaf, Leaf::Slot(_)))
             .collect();
-        match first_in_reading_order(&slots) {
+        match first_at_rail(&slots, rail) {
             Some(Leaf::Slot(slot)) => Some(slot),
             _ => None,
         }

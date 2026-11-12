@@ -17,6 +17,10 @@
 //! error, so a typo in `[gui]` cannot send the whole config down the
 //! corrupt-file path.
 //!
+//! `rail` (`left`, `right`, `top`, `bottom`) and `rail_hidden` place and hide
+//! the desktop app's Activity rail (ADR-0055); both default to the old
+//! behavior and the TUI ignores them.
+//!
 //! `reduce_motion = true` keeps the desktop app's decorative motion still (the
 //! Welcome wordmark's bounce, loading spinners). It is the desktop app's
 //! Preferences > Display > Reduce motion, applied as soon as it is saved; the
@@ -29,11 +33,15 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use toml::{Table, Value};
 
+use crate::logic::layout_tree::RailPosition;
+
 const KEYS: &str = "keys";
 const LAYOUT: &str = "layout";
 const LAYOUT_PRESET: &str = "layout_preset";
 const WINDOW_DECORATIONS: &str = "window_decorations";
 const REDUCE_MOTION: &str = "reduce_motion";
+const RAIL: &str = "rail";
+const RAIL_HIDDEN: &str = "rail_hidden";
 
 /// `window_decorations`: who draws the GUI window's title bar and frame.
 /// Read once, when the window opens (changing it needs a restart). macOS
@@ -162,6 +170,63 @@ impl GuiSettings {
     pub fn set_reduce_motion(&mut self, reduce: bool) {
         self.table
             .insert(REDUCE_MOTION.into(), Value::Boolean(reduce));
+    }
+
+    /// `rail`: the window edge the desktop app's Activity rail sits on
+    /// (ADR-0055): `"left"` (the default), `"right"`, `"top"` or `"bottom"`,
+    /// trimmed, any case. Missing reads as the default; any other value is
+    /// logged and reads as the default too.
+    pub fn rail(&self) -> RailPosition {
+        let Some(value) = self.table.get(RAIL) else {
+            return RailPosition::default();
+        };
+        let found = value.as_str().map(str::trim).and_then(|name| {
+            RailPosition::ALL
+                .into_iter()
+                .find(|rail| name.eq_ignore_ascii_case(rail.name()))
+        });
+        found.unwrap_or_else(|| {
+            tracing::warn!(
+                "[gui] rail: expected \"left\", \"right\", \"top\" or \"bottom\", got {value}; \
+                 using \"left\""
+            );
+            RailPosition::default()
+        })
+    }
+
+    /// Records `rail`; the default position removes the key.
+    pub fn set_rail(&mut self, rail: RailPosition) {
+        if rail == RailPosition::default() {
+            self.table.remove(RAIL);
+        } else {
+            self.table
+                .insert(RAIL.into(), Value::String(rail.name().into()));
+        }
+    }
+
+    /// `rail_hidden`: `true` hides the rail (ADR-0055). Missing reads as
+    /// `false`; any other value than a boolean is logged and reads as
+    /// `false` too.
+    pub fn rail_hidden(&self) -> bool {
+        match self.table.get(RAIL_HIDDEN) {
+            None => false,
+            Some(Value::Boolean(hidden)) => *hidden,
+            Some(other) => {
+                tracing::warn!(
+                    "[gui] rail_hidden: expected true or false, got {other}; using false"
+                );
+                false
+            }
+        }
+    }
+
+    /// Records `rail_hidden`; `false` removes the key.
+    pub fn set_rail_hidden(&mut self, hidden: bool) {
+        if hidden {
+            self.table.insert(RAIL_HIDDEN.into(), Value::Boolean(true));
+        } else {
+            self.table.remove(RAIL_HIDDEN);
+        }
     }
 
     /// Apply to this table the top-level keys `after` changed from `before`
@@ -443,6 +508,71 @@ views = ["files"]
         let back: AppSettings = toml::from_str(&written).unwrap();
         assert_eq!(back.gui.layout(), Some(layout));
         assert_eq!(back.gui, settings.gui);
+    }
+
+    #[test]
+    fn rail_reads_default_when_absent_blank_or_invalid() {
+        assert_eq!(GuiSettings::default().rail(), RailPosition::Left);
+        for bad in [
+            "rail = \"diagonal\"",
+            "rail = 3",
+            "rail = \"\"",
+            "rail = true",
+        ] {
+            assert_eq!(
+                gui(&format!("[gui]\n{bad}\n")).rail(),
+                RailPosition::Left,
+                "{bad}"
+            );
+        }
+        assert_eq!(gui("[gui]\nrail = \" Top \"\n").rail(), RailPosition::Top);
+    }
+
+    #[test]
+    fn rail_round_trips_and_default_removes_the_key() {
+        let mut g = GuiSettings::default();
+        for rail in [RailPosition::Right, RailPosition::Top, RailPosition::Bottom] {
+            g.set_rail(rail);
+            assert_eq!(g.rail(), rail);
+        }
+        g.set_rail(RailPosition::Left);
+        assert_eq!(g.rail(), RailPosition::Left);
+        assert!(g.is_empty(), "the default removes the key");
+    }
+
+    #[test]
+    fn rail_hidden_reads_default_false_and_round_trips() {
+        assert!(!GuiSettings::default().rail_hidden());
+        assert!(!gui("[gui]\nrail_hidden = \"yes\"\n").rail_hidden());
+        let mut g = GuiSettings::default();
+        g.set_rail_hidden(true);
+        assert!(g.rail_hidden());
+        g.set_rail_hidden(false);
+        assert!(!g.rail_hidden());
+        assert!(g.is_empty(), "the default removes the key");
+    }
+
+    #[test]
+    fn apply_changes_carries_rail_and_rail_hidden() {
+        let before = GuiSettings::default();
+        let mut after = before.clone();
+        after.set_rail(RailPosition::Bottom);
+        after.set_rail_hidden(true);
+        let mut disk = GuiSettings::default();
+        disk.set_layout_preset(Some("kept"));
+        disk.apply_changes(&before, &after);
+        assert_eq!(disk.rail(), RailPosition::Bottom);
+        assert!(disk.rail_hidden());
+        assert_eq!(disk.layout_preset().as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn other_gui_keys_are_left_alone_by_the_rail_keys() {
+        let mut g = gui("[gui]\nlayout_preset = \"a\"\nreduce_motion = true\n");
+        g.set_rail(RailPosition::Right);
+        g.set_rail_hidden(true);
+        assert_eq!(g.layout_preset().as_deref(), Some("a"));
+        assert!(g.reduce_motion());
     }
 
     #[test]
