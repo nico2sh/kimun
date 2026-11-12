@@ -121,7 +121,7 @@ All keys are under `[gui]`. Preferences writes them for you.
 
 The interface uses [Inter](https://rsms.me/inter/). The app embeds the font, and the SIL Open Font License covers it. The editor uses the monospace font of your theme, unless you choose another font.
 
-To choose the editor font, open Preferences > Display and use the Editor Font row. The dropdown lists only the monospace families that the app finds on your machine. You can type to search it. Use the size stepper to set a size from 8 to 32 pixels. The font applies to the editor only. It takes effect when you save in Preferences.
+To choose the editor font, open Preferences > Display and use the Editor font group. The Family dropdown lists only the monospace families that the app finds on your machine. While the app reads them, it shows "Loading installed fonts..." below the dropdown. You can type to search the dropdown. Use the Size stepper to set a size from 8 to 32 pixels. The font applies to the editor only. It takes effect when you save in Preferences.
 
 If the family has no bold style, the editor keeps your family. It then draws each bold character twice, with a small offset. If the family is not installed, the editor uses the theme font. The dropdown then shows the name with "(not installed)".
 

@@ -588,7 +588,10 @@ impl PreferencesModel {
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
             || self.reduce_motion != initial.gui.reduce_motion()
-            || self.editor_font_family != initial.gui.editor_font_family()
+            || !same_font_family(
+                self.editor_font_family.as_deref(),
+                initial.gui.editor_font_family().as_deref(),
+            )
             || self.editor_font_size != initial.gui.editor_font_size()
             || self.rail != initial.gui.rail()
             || self.leader_timeout_ms != initial.leader_timeout_ms
@@ -634,7 +637,10 @@ impl PreferencesModel {
         if s.gui.reduce_motion() != self.reduce_motion {
             s.gui.set_reduce_motion(self.reduce_motion);
         }
-        if s.gui.editor_font_family() != self.editor_font_family {
+        if !same_font_family(
+            s.gui.editor_font_family().as_deref(),
+            self.editor_font_family.as_deref(),
+        ) {
             s.gui
                 .set_editor_font_family(self.editor_font_family.as_deref());
         }
@@ -686,6 +692,18 @@ impl PreferencesModel {
         self.apply_editor(s);
         self.apply_server(s);
         theme_changed
+    }
+}
+
+/// Whether two editor font families are the same choice: both the theme's
+/// font (`None`), or names that match whatever their ASCII capital letters
+/// (font lookup ignores them too). A case-only difference is not a change,
+/// so the config keeps the user's spelling.
+pub fn same_font_family(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
     }
 }
 

@@ -1073,6 +1073,39 @@ fn editor_font_is_read_into_the_draft_and_written_only_when_changed() {
     assert_eq!(out.gui.editor_font_size(), None);
 }
 
+/// Family names match whatever their capital letters: a config
+/// `"fira code"` re-picked as the installed "Fira Code" is no change, so the
+/// draft is clean and the file keeps the user's spelling.
+#[test]
+fn a_family_differing_only_in_case_is_no_change() {
+    let mut s = with_workspaces(&["main"], "main");
+    s.gui.set_editor_font_family(Some("fira code"));
+    let mut m = PreferencesModel::new(&s);
+    m.editor_font_family = Some("Fira Code".into());
+    assert!(!m.dirty(&s), "a case-only difference is clean");
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(
+        out.gui.editor_font_family().as_deref(),
+        Some("fira code"),
+        "the user's spelling is kept"
+    );
+
+    m.editor_font_family = Some("Iosevka".into());
+    assert!(m.dirty(&s), "another family is a change");
+    m.editor_font_family = None;
+    assert!(m.dirty(&s), "the theme's font is a change");
+}
+
+#[test]
+fn same_font_family_ignores_ascii_case_only() {
+    assert!(same_font_family(None, None));
+    assert!(same_font_family(Some("Fira Code"), Some("fira code")));
+    assert!(!same_font_family(Some("Fira Code"), None));
+    assert!(!same_font_family(None, Some("Fira Code")));
+    assert!(!same_font_family(Some("Fira Code"), Some("Fira Mono")));
+}
+
 #[test]
 fn choosing_default_removes_the_keys() {
     let mut s = with_workspaces(&["main"], "main");

@@ -27,7 +27,7 @@
 //! terminal-only and not shown; the draft carries them unchanged. Display's
 //! `Reduce motion` is the desktop app's own (`[gui] reduce_motion`, which the
 //! TUI never shows): applied as soon as it is saved, no restart. So is
-//! Display's Edit surface font (`[gui] editor_font_family`,
+//! Display's editor font (`[gui] editor_font_family`,
 //! `editor_font_size`): the family dropdown lists the installed monospace
 //! families ([`mono_families`], read in the background
 //! when Display first shows) and keeps a saved family that is not installed.
@@ -70,6 +70,7 @@ use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
     LEADER_DELAY_MIN_MS, PreferencesModel, SortSlot, backend_label, configured_server_url,
+    same_font_family,
 };
 use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PX, EDITOR_FONT_MIN_PX, clamp_editor_font_size};
 use kimun_notes::settings::themes::Theme;
@@ -102,37 +103,55 @@ pub(crate) const MESSAGE_ID: &str = "preferences-message";
 pub(crate) const SECTIONS_ID: &str = "preferences-sections";
 /// The controls.
 pub(crate) const THEMES_ID: &str = "preferences-themes";
-pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
-/// Display's `Check now`: a manual update check.
-pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
-/// The update check's help text, and its element.
-pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
-pub(crate) const UPDATE_CHECK_HELP: &str =
-    "Checks GitHub for a newer release on startup. Check now looks right away.";
-/// Display's `Reduce motion` (`[gui] reduce_motion`), its help text and the
-/// help's element. GPUI reads no system hint, hence the second sentence.
+
+// Display. One convention: every control has an `*_ID`, every help line an
+// `*_HELP_ID` and its text in `*_HELP`. A stepper's buttons take their ids
+// from the stepper's ([`stepper_down_id`], [`stepper_up_id`]).
+
+/// Display's group headings ([`DISPLAY_GROUPS`]).
+pub(crate) const DISPLAY_FONT_GROUP_ID: &str = "preferences-display-editor-font";
+pub(crate) const DISPLAY_MOTION_GROUP_ID: &str = "preferences-display-window-motion";
+pub(crate) const DISPLAY_BEHAVIOR_GROUP_ID: &str = "preferences-display-behavior";
+/// Display's editor font (`[gui] editor_font_family`, `editor_font_size`):
+/// the family dropdown, its first entry (`None`: the theme's font), the size
+/// stepper, the help, and the line shown while the installed families are
+/// still being read.
+pub(crate) const FONT_FAMILY_ID: &str = "preferences-editor-font-family";
+pub(crate) const FONT_DEFAULT_LABEL: &str = "Default (theme)";
+pub(crate) const FONT_SIZE_ID: &str = "preferences-editor-font-size";
+pub(crate) const FONT_HELP_ID: &str = "preferences-editor-font-help";
+pub(crate) const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
+pub(crate) const FONT_LOADING_HELP_ID: &str = "preferences-editor-font-loading";
+pub(crate) const FONT_LOADING_HELP: &str = "Loading installed fonts...";
+/// Display's `Reduce motion` (`[gui] reduce_motion`). GPUI reads no system
+/// hint, hence the help's second sentence.
 pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
+/// The checkbox's visible label, which is also its accessible name.
+pub(crate) const REDUCE_MOTION_LABEL: &str = "Reduce motion";
 pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
 pub(crate) const REDUCE_MOTION_HELP: &str =
     "Stops the bouncing logo and loading spinners. Not read from your system settings.";
-/// Display's Edit surface font: the family dropdown, the size stepper, the
-/// dropdown's first entry (`None`: the theme's font) and the note.
-pub(crate) const FONT_FAMILY_ID: &str = "preferences-editor-font-family";
-pub(crate) const FONT_SIZE_ID: &str = "preferences-editor-font-size";
-pub(crate) const FONT_SIZE_DOWN_ID: &str = "preferences-editor-font-size-down";
-pub(crate) const FONT_SIZE_UP_ID: &str = "preferences-editor-font-size-up";
-pub(crate) const FONT_DEFAULT_LABEL: &str = "Default (theme)";
-const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
-/// Display's `Rail position` (`[gui] rail`, ADR-0055) and its help text.
+/// Display's `Rail position` (`[gui] rail`, ADR-0055).
+pub(crate) const RAIL_ID: &str = "preferences-rail";
 pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
 pub(crate) const RAIL_HELP: &str =
     "Where the activity rail sits. Hide or show it with the button in the title bar.";
+/// Display's `Which-key delay` (`leader_timeout_ms`).
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
-pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
-pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
+pub(crate) const DELAY_HELP_ID: &str = "preferences-leader-delay-help";
+pub(crate) const DELAY_HELP: &str = "How long the leader waits before it lists the keys that \
+     can follow. Takes effect when you save.";
+/// Display's update check (`update_check`), and `Check now`: a manual
+/// update check.
+pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
+/// The checkbox's visible label, which is also its accessible name.
+pub(crate) const UPDATE_CHECK_LABEL: &str = "Check for updates on startup";
+pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
+pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
+pub(crate) const UPDATE_CHECK_HELP: &str =
+    "Checks GitHub for a newer release on startup. Check now looks right away.";
+
 pub(crate) const AUTOSAVE_ID: &str = "preferences-autosave";
-pub(crate) const AUTOSAVE_DOWN_ID: &str = "preferences-autosave-down";
-pub(crate) const AUTOSAVE_UP_ID: &str = "preferences-autosave-up";
 pub(crate) const BACKENDS_ID: &str = "preferences-backends";
 /// The note that a configured nvim is kept.
 pub(crate) const BACKEND_KEPT_ID: &str = "preferences-backend-kept";
@@ -284,18 +303,12 @@ impl SelectItem for FontChoice {
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
-/// Whether `family` names `installed`: family names match whatever their
-/// capital letters, as [`crate::fonts::choose`] matches them.
-fn same_family(installed: &str, family: &str) -> bool {
-    installed.eq_ignore_ascii_case(family)
-}
-
 /// The dropdown's entries: "Default (theme)" first. With the installed
 /// monospace families (`ready`): each family in `keep` (the saved and the
 /// draft family) the list lacks, as `"<name> (not installed)"`, then the list.
 /// Without it (still being read): the `keep` families alone, so a chosen
 /// family is never shown blank. A family matches a listed one whatever its
-/// capital letters ([`same_family`]).
+/// capital letters ([`same_font_family`]).
 fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoice> {
     let mut choices = vec![FontChoice {
         label: FONT_DEFAULT_LABEL.into(),
@@ -304,12 +317,12 @@ fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoi
     for name in keep.iter().flatten() {
         if choices
             .iter()
-            .any(|c| c.family.as_deref().is_some_and(|f| same_family(f, name)))
+            .any(|c| same_font_family(c.family.as_deref(), Some(name)))
         {
             continue;
         }
         let label = match ready {
-            Some(list) if list.iter().any(|f| same_family(f, name)) => continue,
+            Some(list) if list.iter().any(|f| same_font_family(Some(f), Some(name))) => continue,
             Some(_) => format!("{name} (not installed)"),
             None => name.to_string(),
         };
@@ -328,13 +341,11 @@ fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoi
 }
 
 /// The entry of `items` that stands for `family`: the default for `None`,
-/// else the entry whose family matches it ([`same_family`]).
+/// else the entry whose family matches it ([`same_font_family`]).
 fn font_choice_for<'a>(items: &'a [FontChoice], family: Option<&str>) -> Option<&'a FontChoice> {
-    items.iter().find(|c| match (c.family.as_deref(), family) {
-        (None, None) => true,
-        (Some(f), Some(d)) => same_family(f, d),
-        _ => false,
-    })
+    items
+        .iter()
+        .find(|c| same_font_family(c.family.as_deref(), family))
 }
 
 /// What the dropdown's entries were built from: rebuilt when either
@@ -580,16 +591,18 @@ impl PreferencesView {
         self.saving.is_some()
     }
 
-    /// The handles of the section list, the theme list, the two steppers
-    /// and the workspace list, in that order.
+    /// The handles of the section list, the theme list, the which-key
+    /// delay and autosave steppers, the workspace list and the font size
+    /// stepper, in that order.
     #[cfg(test)]
-    pub(crate) fn handles(&self) -> [FocusHandle; 5] {
+    pub(crate) fn handles(&self) -> [FocusHandle; 6] {
         [
             self.sections_focus.clone(),
             self.themes_focus.clone(),
             self.delay_focus.clone(),
             self.autosave_focus.clone(),
             self.ws.focus.clone(),
+            self.font_size_focus.clone(),
         ]
     }
 
@@ -1229,11 +1242,24 @@ fn label(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
         .child(text.into())
 }
 
-/// One labelled control with its notes: label, control, notes, tight.
+/// A help line under a control: a quieter note with its own element `id`,
+/// read as a label by assistive tech and found by the tests.
+fn help(id: &'static str, text: &'static str, t: &Theme) -> impl IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Label)
+        .aria_label(text)
+        .child(note(text, t))
+}
+
+/// One setting: its heading ([`label`]), its control, then its help lines,
+/// tight. Every Display setting is drawn through here or, when the control
+/// names itself (a checkbox), through [`unheaded_field`].
 fn field(
     title: &'static str,
     control: impl IntoElement,
-    notes: Vec<SharedString>,
+    helps: impl IntoIterator<Item = impl IntoElement>,
     t: &Theme,
 ) -> impl IntoElement {
     div()
@@ -1242,14 +1268,104 @@ fn field(
         .gap_1()
         .child(label(title, t))
         .child(control)
-        .children(notes.into_iter().map(|n| note(n, t)))
+        .children(helps)
 }
 
-/// What a stepper shows and how it reads.
+/// A [`field`] without the heading: its control names the setting, as a
+/// checkbox's label does, so a heading would only repeat those words.
+fn unheaded_field(
+    control: impl IntoElement,
+    helps: impl IntoIterator<Item = impl IntoElement>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(control)
+        .children(helps)
+}
+
+/// A group of settings: a small heading over them. Read as a heading.
+fn group(
+    id: &'static str,
+    title: &'static str,
+    settings: Vec<AnyElement>,
+    t: &Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::Heading)
+                .aria_label(title)
+                .pb_1()
+                .border_b_1()
+                .border_color(theme::divider(t))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::muted(t))
+                .child(title),
+        )
+        .children(settings)
+}
+
+/// One setting of the Display section, in [`DISPLAY_GROUPS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplaySetting {
+    FontFamily,
+    FontSize,
+    ReduceMotion,
+    RailPosition,
+    WhichKeyDelay,
+    UpdateCheck,
+}
+
+/// A group of the Display section: its heading's id and title, and its
+/// settings in the order they show.
+pub(crate) struct DisplayGroup {
+    id: &'static str,
+    title: &'static str,
+    pub(crate) settings: &'static [DisplaySetting],
+}
+
+/// The Display section, top to bottom. The order on screen, and the Tab
+/// order with it, is this list's: to move a setting, move its entry.
+pub(crate) const DISPLAY_GROUPS: [DisplayGroup; 3] = [
+    DisplayGroup {
+        id: DISPLAY_FONT_GROUP_ID,
+        title: "Editor font",
+        settings: &[DisplaySetting::FontFamily, DisplaySetting::FontSize],
+    },
+    DisplayGroup {
+        id: DISPLAY_MOTION_GROUP_ID,
+        title: "Window and motion",
+        settings: &[DisplaySetting::ReduceMotion, DisplaySetting::RailPosition],
+    },
+    DisplayGroup {
+        id: DISPLAY_BEHAVIOR_GROUP_ID,
+        title: "Behavior",
+        settings: &[DisplaySetting::WhichKeyDelay, DisplaySetting::UpdateCheck],
+    },
+];
+
+/// The element id of the stepper `id`'s decrease button.
+pub(crate) fn stepper_down_id(id: &str) -> SharedString {
+    format!("{id}-down").into()
+}
+
+/// The element id of the stepper `id`'s increase button.
+pub(crate) fn stepper_up_id(id: &str) -> SharedString {
+    format!("{id}-up").into()
+}
+
+/// What a stepper shows and how it reads. Its buttons' ids come from `id`
+/// ([`stepper_down_id`], [`stepper_up_id`]).
 struct StepperSpec {
     id: &'static str,
-    down_id: &'static str,
-    up_id: &'static str,
     name: &'static str,
     value: u64,
     min: u64,
@@ -1364,7 +1480,7 @@ impl PreferencesView {
         h_row()
             .gap_2()
             .child(
-                Button::new(spec.down_id)
+                Button::new(stepper_down_id(spec.id))
                     .icon(IconName::Minus)
                     .small()
                     .tab_stop(false)
@@ -1406,7 +1522,7 @@ impl PreferencesView {
                     .child(text),
             )
             .child(
-                Button::new(spec.up_id)
+                Button::new(stepper_up_id(spec.id))
                     .icon(IconName::Plus)
                     .small()
                     .tab_stop(false)
@@ -1504,6 +1620,7 @@ impl PreferencesView {
             .into_any_element()
     }
 
+    /// The Display section: [`DISPLAY_GROUPS`], in order.
     fn render_display(
         &self,
         model: &PreferencesModel,
@@ -1512,11 +1629,145 @@ impl PreferencesView {
     ) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let delay = self.render_stepper(
+        let mut groups = Vec::with_capacity(DISPLAY_GROUPS.len());
+        for g in &DISPLAY_GROUPS {
+            let mut settings = Vec::with_capacity(g.settings.len());
+            for setting in g.settings {
+                settings.push(self.render_display_setting(*setting, model, window, cx));
+            }
+            groups.push(group(g.id, g.title, settings, t));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .children(groups)
+            .into_any_element()
+    }
+
+    fn render_display_setting(
+        &self,
+        setting: DisplaySetting,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match setting {
+            DisplaySetting::FontFamily => self.render_font_family(cx),
+            DisplaySetting::FontSize => self.render_font_size(model, window, cx),
+            DisplaySetting::ReduceMotion => self.render_reduce_motion(model, cx),
+            DisplaySetting::RailPosition => self.render_rail_position(model, cx),
+            DisplaySetting::WhichKeyDelay => self.render_which_key_delay(model, window, cx),
+            DisplaySetting::UpdateCheck => self.render_update_check(model, cx),
+        }
+    }
+
+    /// The editor font's family dropdown. While the installed families are
+    /// being read (`Loading`, not `Idle`), a line under it says so.
+    fn render_font_family(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let loading = matches!(mono_families::state(cx), MonoFamilies::Loading);
+        let select = div().w(rems(18.)).child(
+            Select::new(&self.font_family)
+                .id(FONT_FAMILY_ID)
+                .accessibility_label("Editor font family")
+                .search_placeholder("Search fonts")
+                .disabled(self.saving.is_some()),
+        );
+        let loading_help = loading.then(|| help(FONT_LOADING_HELP_ID, FONT_LOADING_HELP, t));
+        field("Family", select, loading_help, t).into_any_element()
+    }
+
+    /// The editor font's size stepper, from the theme's size while unset.
+    /// The font help under it is the whole group's: family and size.
+    fn render_font_size(
+        &self,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let theme_size = theme_font_size(cx);
+        let stepper = self.render_stepper(
+            StepperSpec {
+                id: FONT_SIZE_ID,
+                name: "Editor font size",
+                value: u64::from(model.editor_font_size.unwrap_or(theme_size)),
+                min: u64::from(EDITOR_FONT_MIN_PX),
+                max: u64::from(EDITOR_FONT_MAX_PX),
+                unit: "px",
+            },
+            &self.font_size_focus,
+            Self::step_editor_font_size,
+            window,
+            cx,
+        );
+        field("Size", stepper, [help(FONT_HELP_ID, FONT_HELP, t)], t).into_any_element()
+    }
+
+    /// `Reduce motion`. The checkbox's own label names the setting, so it
+    /// has no heading above it.
+    fn render_reduce_motion(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let checkbox = Checkbox::new(REDUCE_MOTION_ID)
+            .label(REDUCE_MOTION_LABEL)
+            .checked(model.reduce_motion)
+            .disabled(self.saving.is_some())
+            .on_click(
+                cx.listener(|this, checked: &bool, _, cx| this.set_reduce_motion(*checked, cx)),
+            );
+        unheaded_field(
+            checkbox,
+            [help(REDUCE_MOTION_HELP_ID, REDUCE_MOTION_HELP, t)],
+        )
+        .into_any_element()
+    }
+
+    /// `Rail position`: one radio per position.
+    fn render_rail_position(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let radios = RadioGroup::horizontal(RAIL_ID)
+            .selected_index(
+                RailPosition::ALL
+                    .iter()
+                    .position(|rail| *rail == model.rail),
+            )
+            .disabled(self.saving.is_some())
+            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                if let Some(rail) = RailPosition::ALL.get(*ix) {
+                    this.set_rail_position(*rail, cx)
+                }
+            }))
+            .children(
+                RailPosition::ALL
+                    .into_iter()
+                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
+            );
+        field(
+            "Rail position",
+            radios,
+            [help(RAIL_HELP_ID, RAIL_HELP, t)],
+            t,
+        )
+        .into_any_element()
+    }
+
+    /// `Which-key delay`.
+    fn render_which_key_delay(
+        &self,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let stepper = self.render_stepper(
             StepperSpec {
                 id: DELAY_ID,
-                down_id: DELAY_DOWN_ID,
-                up_id: DELAY_UP_ID,
                 name: "Which-key delay",
                 value: model.leader_timeout_ms,
                 min: LEADER_DELAY_MIN_MS,
@@ -1528,150 +1779,43 @@ impl PreferencesView {
             window,
             cx,
         );
-        let theme_size = theme_font_size(cx);
-        let font_size = self.render_stepper(
-            StepperSpec {
-                id: FONT_SIZE_ID,
-                down_id: FONT_SIZE_DOWN_ID,
-                up_id: FONT_SIZE_UP_ID,
-                name: "Edit surface font size",
-                value: u64::from(model.editor_font_size.unwrap_or(theme_size)),
-                min: u64::from(EDITOR_FONT_MIN_PX),
-                max: u64::from(EDITOR_FONT_MAX_PX),
-                unit: "px",
-            },
-            &self.font_size_focus,
-            Self::step_editor_font_size,
-            window,
-            cx,
-        );
-        let font = div()
-            .flex()
-            .flex_col()
-            .gap_2()
+        field(
+            "Which-key delay",
+            stepper,
+            [help(DELAY_HELP_ID, DELAY_HELP, t)],
+            t,
+        )
+        .into_any_element()
+    }
+
+    /// The update check on startup, and `Check now`. The checkbox's own
+    /// label names the setting, so it has no heading above it.
+    fn render_update_check(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let controls = h_row()
+            .flex_wrap()
+            .gap_3()
             .child(
-                div().w(rems(18.)).child(
-                    Select::new(&self.font_family)
-                        .id(FONT_FAMILY_ID)
-                        .accessibility_label("Edit surface font family")
-                        .search_placeholder("Search fonts")
-                        .disabled(self.saving.is_some()),
-                ),
-            )
-            .child(font_size);
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
-            .child(field("Editor Font", font, vec![FONT_HELP.into()], t))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Checkbox::new(UPDATE_CHECK_ID)
-                                    .label("Check for updates on startup")
-                                    .checked(model.update_check)
-                                    .disabled(self.saving.is_some())
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.set_update_check(*checked, cx)
-                                    })),
-                            )
-                            .child(
-                                // Acts now, saved or not: it is not a setting.
-                                Button::new(CHECK_UPDATES_ID)
-                                    .small()
-                                    .outline()
-                                    .label("Check now")
-                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                        cx.emit(PreferencesEvent::CheckForUpdates)
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(UPDATE_CHECK_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(UPDATE_CHECK_HELP)
-                            .child(note(UPDATE_CHECK_HELP, t)),
-                    ),
+                Checkbox::new(UPDATE_CHECK_ID)
+                    .label(UPDATE_CHECK_LABEL)
+                    .checked(model.update_check)
+                    .disabled(self.saving.is_some())
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.set_update_check(*checked, cx)
+                    })),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        Checkbox::new(REDUCE_MOTION_ID)
-                            .label("Reduce motion")
-                            .checked(model.reduce_motion)
-                            .disabled(self.saving.is_some())
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                this.set_reduce_motion(*checked, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(REDUCE_MOTION_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(REDUCE_MOTION_HELP)
-                            .child(note(REDUCE_MOTION_HELP, t)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(note("Rail position", t))
-                    .child(
-                        RadioGroup::horizontal("preferences-rail")
-                            .selected_index(
-                                RailPosition::ALL
-                                    .iter()
-                                    .position(|rail| *rail == model.rail),
-                            )
-                            .disabled(self.saving.is_some())
-                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                                if let Some(rail) = RailPosition::ALL.get(*ix) {
-                                    this.set_rail_position(*rail, cx)
-                                }
-                            }))
-                            .children(
-                                RailPosition::ALL
-                                    .into_iter()
-                                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(RAIL_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(RAIL_HELP)
-                            .child(note(RAIL_HELP, t)),
-                    ),
-            )
-            .child(field(
-                "Which-key delay",
-                delay,
-                vec![
-                    "How long the leader waits before it lists the keys that can follow. \
-                     Takes effect when you save."
-                        .into(),
-                ],
-                t,
-            ))
+                // Acts now, saved or not: it is not a setting.
+                Button::new(CHECK_UPDATES_ID)
+                    .small()
+                    .outline()
+                    .label("Check now")
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(PreferencesEvent::CheckForUpdates)
+                    })),
+            );
+        unheaded_field(controls, [help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t)])
             .into_any_element()
     }
 
@@ -1787,8 +1931,6 @@ impl PreferencesView {
         let autosave = self.render_stepper(
             StepperSpec {
                 id: AUTOSAVE_ID,
-                down_id: AUTOSAVE_DOWN_ID,
-                up_id: AUTOSAVE_UP_ID,
                 name: "Autosave interval",
                 value: model.autosave_interval_secs,
                 min: AUTOSAVE_MIN_SECS,
@@ -1834,21 +1976,21 @@ impl PreferencesView {
             .child(field(
                 "Autosave interval",
                 autosave,
-                vec![
+                [note(
                     "How often the open note is written while it has unsaved changes. Takes \
-                     effect when you save."
-                        .into(),
-                ],
+                     effect when you save.",
+                    t,
+                )],
                 t,
             ))
             .child(field(
                 "Editor backend",
                 backend,
-                vec![
+                [note(
                     "Changing it reopens the workspace when you save; the open note is saved \
-                     first."
-                        .into(),
-                ],
+                     first.",
+                    t,
+                )],
                 t,
             ))
             .into_any_element()
