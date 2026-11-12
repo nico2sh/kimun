@@ -180,10 +180,28 @@ pub enum LlmConfig {
         #[serde(default)]
         url: Option<String>,
     },
+    /// OpenRouter: an OpenAI-compatible endpoint with its own request
+    /// extensions (the `reasoning` object), so it gets its own provider rather
+    /// than the generic `openai` + `url` path.
+    #[serde(rename = "openrouter")]
+    OpenRouter {
+        #[serde(default = "default_openrouter_model")]
+        model: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        /// Reasoning effort sent as `reasoning.effort`: `low` | `medium` |
+        /// `high`. Absent: no `reasoning` object is sent and the model keeps
+        /// its own default.
+        #[serde(default)]
+        reasoning: Option<String>,
+    },
 }
 
+/// The reasoning efforts OpenRouter accepts in `reasoning.effort`.
+pub const REASONING_EFFORTS: [&str; 3] = ["low", "medium", "high"];
+
 impl LlmConfig {
-    /// Short provider id (`gemini` | `mistral` | `claude` | `openai`) — used by
+    /// Short provider id (`gemini` | `mistral` | `claude` | `openai` | `openrouter`) — used by
     /// the web UI form and the `/health` probe.
     pub fn provider(&self) -> &'static str {
         match self {
@@ -191,6 +209,7 @@ impl LlmConfig {
             LlmConfig::Mistral { .. } => "mistral",
             LlmConfig::Claude { .. } => "claude",
             LlmConfig::OpenAI { .. } => "openai",
+            LlmConfig::OpenRouter { .. } => "openrouter",
         }
     }
 
@@ -200,7 +219,8 @@ impl LlmConfig {
             LlmConfig::Gemini { model, .. }
             | LlmConfig::Mistral { model, .. }
             | LlmConfig::Claude { model, .. }
-            | LlmConfig::OpenAI { model, .. } => model,
+            | LlmConfig::OpenAI { model, .. }
+            | LlmConfig::OpenRouter { model, .. } => model,
         }
     }
 
@@ -213,6 +233,7 @@ impl LlmConfig {
             LlmConfig::Mistral { .. } => "MISTRAL_API_KEY",
             LlmConfig::Claude { .. } => "ANTHROPIC_API_KEY",
             LlmConfig::OpenAI { .. } => "OPENAI_API_KEY",
+            LlmConfig::OpenRouter { .. } => "OPENROUTER_API_KEY",
         }
     }
 
@@ -222,7 +243,16 @@ impl LlmConfig {
             LlmConfig::Gemini { api_key, .. }
             | LlmConfig::Mistral { api_key, .. }
             | LlmConfig::Claude { api_key, .. }
-            | LlmConfig::OpenAI { api_key, .. } => api_key.as_deref(),
+            | LlmConfig::OpenAI { api_key, .. }
+            | LlmConfig::OpenRouter { api_key, .. } => api_key.as_deref(),
+        }
+    }
+
+    /// The configured reasoning effort, if any (OpenRouter provider only).
+    pub fn reasoning(&self) -> Option<&str> {
+        match self {
+            LlmConfig::OpenRouter { reasoning, .. } => reasoning.as_deref(),
+            _ => None,
         }
     }
 
@@ -248,12 +278,15 @@ impl LlmConfig {
 
     /// Builds a config from web-form parts, defaulting the model per provider
     /// when blank. Unknown provider ids are rejected. `url` applies to the
-    /// openai provider only (the endpoint override); other providers ignore it.
+    /// openai provider only (the endpoint override) and `reasoning` to the
+    /// openrouter provider only; other providers ignore them. A `reasoning`
+    /// value that is not a known effort is rejected.
     pub fn from_parts(
         provider: &str,
         model: Option<String>,
         api_key: Option<String>,
         url: Option<String>,
+        reasoning: Option<String>,
     ) -> anyhow::Result<Self> {
         let key = api_key.filter(|k| !k.is_empty());
         Ok(match provider {
@@ -282,6 +315,24 @@ impl LlmConfig {
                 api_key: key,
                 url: url.filter(|u| !u.is_empty()),
             },
+            "openrouter" => {
+                let reasoning = reasoning.filter(|r| !r.is_empty());
+                if let Some(r) = &reasoning
+                    && !REASONING_EFFORTS.contains(&r.as_str())
+                {
+                    anyhow::bail!(
+                        "unknown reasoning effort: {r} (use one of: {})",
+                        REASONING_EFFORTS.join(", ")
+                    );
+                }
+                LlmConfig::OpenRouter {
+                    model: model
+                        .filter(|m| !m.is_empty())
+                        .unwrap_or_else(default_openrouter_model),
+                    api_key: key,
+                    reasoning,
+                }
+            }
             other => anyhow::bail!("unknown LLM provider: {other}"),
         })
     }
@@ -469,6 +520,10 @@ fn default_claude_model() -> String {
     "claude-3-5-sonnet-20241022".to_string()
 }
 
+fn default_openrouter_model() -> String {
+    "openrouter/auto".to_string()
+}
+
 fn default_openai_model() -> String {
     "gpt-4o-mini".to_string()
 }
@@ -572,6 +627,10 @@ pub struct ConfigForm {
     /// Defaulted so form posts predating the field still deserialize.
     #[serde(default)]
     pub llm_url: String,
+    /// Reasoning effort for the `openrouter` provider (`""` | `low` | `medium`
+    /// | `high`); ignored otherwise. Defaulted like `llm_url`.
+    #[serde(default)]
+    pub llm_reasoning: String,
     /// `none` | `fastembed` | `ollama` | `openai` — `none` clears the embedder
     /// (unconfigured server).
     pub embedder_provider: String,
@@ -663,8 +722,14 @@ impl RagConfig {
                 (f.provider.as_str(), None)
             };
             Some(
-                LlmConfig::from_parts(provider, Some(f.model), key, url)
-                    .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
+                LlmConfig::from_parts(
+                    provider,
+                    Some(f.model),
+                    key,
+                    url,
+                    Some(f.llm_reasoning.trim().to_string()),
+                )
+                .map_err(|e| anyhow::anyhow!("Invalid LLM settings: {e}"))?,
             )
         };
 
@@ -1307,6 +1372,7 @@ path = "/data/old_lance"
             model: "m".into(),
             api_key: api_key.into(),
             llm_url: String::new(),
+            llm_reasoning: String::new(),
             embedder_provider: "none".into(),
             fastembed_model: String::new(),
             embedder_url: String::new(),
@@ -1544,7 +1610,7 @@ path = "/data/old_lance"
 
     #[test]
     fn llm_from_parts_defaults_model_and_rejects_unknown() {
-        let c = LlmConfig::from_parts("openai", None, None, None).unwrap();
+        let c = LlmConfig::from_parts("openai", None, None, None, None).unwrap();
         assert_eq!(c.provider(), "openai");
         assert_eq!(c.model(), &default_openai_model());
         assert!(c.api_key().is_none());
@@ -1555,17 +1621,44 @@ path = "/data/old_lance"
             None,
             None,
             Some("http://localhost:11434/v1".into()),
+            None,
         )
         .unwrap();
         assert_eq!(c.url(), Some("http://localhost:11434/v1"));
 
-        let c =
-            LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into()), None).unwrap();
+        let c = LlmConfig::from_parts("gemini", Some(String::new()), Some("k".into()), None, None)
+            .unwrap();
         assert_eq!(c.model(), &default_gemini_model());
         assert_eq!(c.api_key(), Some("k"));
         assert!(c.url().is_none(), "url is openai-only");
 
-        assert!(LlmConfig::from_parts("bogus", None, None, None).is_err());
+        assert!(LlmConfig::from_parts("bogus", None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn openrouter_from_parts_and_toml() {
+        let c = LlmConfig::from_parts("openrouter", None, None, None, Some("high".into())).unwrap();
+        assert_eq!(c.provider(), "openrouter");
+        assert_eq!(c.model(), &default_openrouter_model());
+        assert_eq!(c.reasoning(), Some("high"));
+        assert_eq!(c.env_var(), "OPENROUTER_API_KEY");
+        assert!(c.url().is_none());
+
+        // Blank effort = not sent; other providers ignore it.
+        let c = LlmConfig::from_parts("openrouter", None, None, None, Some(String::new())).unwrap();
+        assert_eq!(c.reasoning(), None);
+        let c = LlmConfig::from_parts("claude", None, None, None, Some("high".into())).unwrap();
+        assert_eq!(c.reasoning(), None);
+
+        assert!(LlmConfig::from_parts("openrouter", None, None, None, Some("max".into())).is_err());
+
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[llm]\nprovider = \"openrouter\"\nmodel = \"anthropic/claude-sonnet-4.5\"\nreasoning = \"medium\"\n[reranker]\n",
+        )
+        .unwrap();
+        let llm = cfg.llm.unwrap();
+        assert_eq!(llm.reasoning(), Some("medium"));
+        assert_eq!(llm.model(), "anthropic/claude-sonnet-4.5");
     }
 
     #[test]
