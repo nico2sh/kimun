@@ -479,6 +479,36 @@ impl<R: SearchRow> SearchList<R> {
         self.offset
     }
 
+    /// Where the selected row sits on screen, from the recorded list rect,
+    /// the viewport offset and each row's `visual_height` (the engine does
+    /// not record row positions). `None` when nothing is selected or the row
+    /// is scrolled out of the rect; a row cut by the bottom edge is clipped
+    /// to what shows. Hosts overlay row controls (the expand chevron) here.
+    pub(crate) fn selected_row_rect(&self) -> Option<Rect> {
+        let sel = self.core.selected()?;
+        let r = self.list_rect;
+        if sel < self.offset || r.is_empty() {
+            return None;
+        }
+        let above: u16 = (self.offset..sel)
+            .map(|pos| {
+                self.core
+                    .visible_row(pos)
+                    .map_or(1, |row| row.visual_height())
+            })
+            .fold(0u16, |acc, h| acc.saturating_add(h));
+        if above >= r.height {
+            return None;
+        }
+        let height = self.core.visible_row(sel)?.visual_height().max(1);
+        Some(Rect::new(
+            r.x,
+            r.y + above,
+            r.width,
+            height.min(r.height - above),
+        ))
+    }
+
     /// Whether `key` is one of this list's yank chords. For surfaces that do
     /// NOT route every key into the engine (`ListPanelSpec::HAS_FILTER = false`,
     /// e.g. the LINKS drawer, where plain letters are the host's sub-view keys):
@@ -1274,6 +1304,34 @@ mod tests {
         let m = mouse_down_at(2, 1);
         list.handle_mouse(&m);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    // The selected row's screen rect follows the viewport offset and the
+    // rows' heights, and is absent when nothing shows it.
+    #[tokio::test]
+    async fn selected_row_rect_follows_offset_and_heights() {
+        use ratatui::layout::Rect;
+        let src = VecSource {
+            rows: (0..10).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // No rect recorded yet: nowhere to place the row.
+        assert_eq!(list.selected_row_rect(), None);
+        list.set_list_rect(Rect::new(3, 5, 20, 4));
+        list.select_next();
+        list.select_next();
+        assert_eq!(list.selected_row_rect(), Some(Rect::new(3, 7, 20, 1)));
+        // Wheel down carries the selection: it keeps its screen row.
+        list.scroll_down();
+        assert_eq!(list.scroll_offset(), 1);
+        assert_eq!(list.selected_row_rect(), Some(Rect::new(3, 7, 20, 1)));
+        // Keyboard selection past the viewport: not on screen.
+        for _ in 0..4 {
+            list.select_next();
+        }
+        assert_eq!(list.selected_row_rect(), None);
     }
 
     // Mouse-wheel scrolling moves the VIEWPORT, carrying the selection along
