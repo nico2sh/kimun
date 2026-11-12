@@ -2642,6 +2642,25 @@ impl Workspace {
         })
     }
 
+    /// The rail's button: hides or shows the rail, tooltip naming the chord.
+    /// In the title bar when it shows, else the footer's first segment.
+    pub(super) fn rail_segment(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> status_row::RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static> {
+        let verb = if self.rail_hidden { "Show" } else { "Hide" };
+        let label = match keymap::chord_label(cx, &ActionShortcuts::ToggleRail) {
+            Some(chord) => format!("{verb} rail ({chord})"),
+            None => format!("{verb} rail"),
+        };
+        status_row::RailSegment {
+            position: self.rail,
+            hidden: self.rail_hidden,
+            label: label.into(),
+            on_toggle: cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_rail(window, cx)),
+        }
+    }
+
     /// `ToggleRail` (ADR-0055 §8, §9): hide the rail, or show it again.
     /// Saved. Hiding while the rail has the keyboard moves it to the last
     /// focused slot when that slot is drawn, else to the active editor
@@ -2980,18 +2999,8 @@ impl Workspace {
         } else {
             self.workspace_chip(theme::muted(&t), window, cx)
         };
-        let rail = status_row::RailSegment {
-            position: self.rail,
-            hidden: self.rail_hidden,
-            label: {
-                let verb = if self.rail_hidden { "Show" } else { "Hide" };
-                match keymap::chord_label(cx, &ActionShortcuts::ToggleRail) {
-                    Some(chord) => format!("{verb} rail ({chord})").into(),
-                    None => format!("{verb} rail").into(),
-                }
-            },
-            on_toggle: cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_rail(window, cx)),
-        };
+        // With no title bar the footer carries the rail's button too.
+        let rail = (!self.bar_visible(window)).then(|| self.rail_segment(cx));
         status_row::render(
             &self.status,
             &self.doc_facts(editor_shown, cx),
