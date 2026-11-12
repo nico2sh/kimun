@@ -306,7 +306,10 @@ pub(crate) fn rail_toggle(
     rail: RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     theme: &Theme,
 ) -> impl IntoElement {
-    let hover = theme::foreground(theme);
+    // Hover is the cell's own surface, as the rail's side toggles have it:
+    // the icon sets its own colour, so a hover colour on the wrapper would
+    // never show.
+    let hover = theme::hover_background(theme);
     let glyph = if rail.hidden {
         theme::muted(theme)
     } else {
@@ -328,8 +331,14 @@ pub(crate) fn rail_toggle(
         .flex()
         .flex_none()
         .items_center()
+        .justify_center()
+        // A 20px target around the 16px icon, as high as the workspace chip:
+        // it fits the footer (29px) and the title bar (34px) without growing
+        // either (24px makes the footer 33px).
+        .size_5()
+        .rounded_md()
         .cursor_pointer()
-        .hover(move |style| style.text_color(hover))
+        .hover(move |style| style.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(rail.on_toggle)
         .child(

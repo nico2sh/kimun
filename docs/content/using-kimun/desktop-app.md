@@ -111,7 +111,7 @@ All keys are under `[gui]`. Preferences writes them for you.
 | `reduce_motion` | `true`, `false` (default) | Stops decorative motion, such as the bouncing dots of the welcome screen and the spinners. The app does not read the setting of the operating system. |
 | `layout_preset` | the name of a preset | The preset that the saved layout started from. |
 | `rail` | `"left"` (default), `"right"`, `"top"`, `"bottom"` | The window edge where the rail sits. |
-| `rail_hidden` | `true`, `false` (default) | Hides the rail. The footer button and `Ctrl+Shift+A` show it again. |
+| `rail_hidden` | `true`, `false` (default) | Hides the rail. The button in the title bar (in the footer when there is no title bar) and `Ctrl+Shift+A` show it again. |
 
 `[gui.layout]` is the saved layout. Leave it to the app.
 
