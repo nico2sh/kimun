@@ -55,6 +55,18 @@ pub fn binary_asset_name(product: Product, version: &str) -> Option<String> {
     Some(format!("{}-{version}-{platform}{ext}", product.stem()))
 }
 
+/// Name of the desktop app's signed macOS `.dmg` release asset for `version`
+/// on this platform, e.g. `kimun-gui-0.18.0-macos-arm64.dmg`. `None` on
+/// unsupported platforms. Must match what `build.yml` uploads (and
+/// `verify-release-assets.sh` checks).
+pub fn bundle_asset_name(version: &str) -> Option<String> {
+    let platform = platform()?;
+    Some(format!(
+        "{}-{version}-{platform}.dmg",
+        Product::Desktop.stem()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +86,15 @@ mod tests {
         assert_eq!(
             binary_asset_name(Product::Desktop, "1.2.3").as_deref(),
             Some(format!("kimun-gui-1.2.3-{platform}{ext}").as_str())
+        );
+    }
+
+    #[test]
+    fn the_bundle_asset_is_the_desktop_dmg() {
+        let Some(platform) = platform() else { return };
+        assert_eq!(
+            bundle_asset_name("1.2.3").as_deref(),
+            Some(format!("kimun-gui-1.2.3-{platform}.dmg").as_str())
         );
     }
 

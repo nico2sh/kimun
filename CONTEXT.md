@@ -512,7 +512,7 @@ _Avoid_: snapshot, version (those imply the TUI's own history, which is separate
 ### Updates
 
 **Install channel**:
-How a running kimün binary got onto the machine, which decides whether it may self-update. Four channels: **brew** (Homebrew tap), **cargo** (`cargo install`, built from source), **script** (the official `install.sh`), and **direct** (a manually downloaded release archive). brew and cargo are package-manager-owned — kimün never replaces those binaries, only notifies. script and direct are self-update eligible. The channel is read from an **install marker** when present, otherwise inferred from the canonicalised executable path.
+How a running kimün binary got onto the machine, which decides whether it may self-update. Five channels: **brew** (Homebrew tap), **cargo** (`cargo install`, built from source), **script** (the official `install.sh`), **direct** (a manually downloaded release archive), and **bundle** (the desktop app's signed `Kimun.app` on macOS, whatever put it there). brew and cargo are package-manager-owned — kimün never replaces those binaries, only notifies. script and direct are self-update eligible. bundle is eligible for the desktop app only, and only when the folder holding the app is writable; it replaces the whole app after checking that the new one is validly signed by the same developer team as the running one (see ADR-0056). The channel is read from an **install marker** when present, otherwise inferred from the canonicalised executable path.
 _Avoid_: install method (interchangeable, but pick one — the glossary term is _channel_), distribution
 
 **Install marker**:
@@ -523,12 +523,16 @@ A query to the GitHub releases API comparing the latest non-prerelease `kimun-no
 _Avoid_: version check (too narrow — the check also resolves the downloadable asset)
 
 **Self-update**:
-Replacing the running binary in place with a newer release: download the platform archive, verify it against `checksums-sha256.txt`, swap the executable, then prompt to restart. Only ever offered on self-update-eligible channels (script, direct).
+Replacing the running binary in place with a newer release: download the platform archive, verify it against `checksums-sha256.txt`, swap the executable, then restart into it. Only ever offered on self-update-eligible channels (script, direct) and, for the desktop app, the **bundle** channel, where the whole `Kimun.app` is replaced instead of a single executable. Always started by the user's confirmation, including a one-click confirmation from the **update notification**.
 _Avoid_: auto-update (reserve that for the unattended variant, if it ever exists — today self-update is always user-confirmed)
 
 **Update notification**:
 The non-blocking signal that an **update check** found a newer release, surfaced in the TUI. On package-manager channels it carries the upgrade command to run; on self-update-eligible channels it offers to **self-update**.
 _Avoid_: update prompt (notification is passive; it does not steal focus)
+
+**Stable download**:
+A copy of a release archive whose file name has no version, such as `kimun-gui-macos-arm64.dmg`. It is attached to every release next to the versioned file, so GitHub's `releases/latest/download/<name>` link always gives the newest stable release. The README and the site's download page link to these names. Only archives (and the `.dmg`) get one, never the raw binaries, which updaters find by their versioned names.
+_Avoid_: latest build, nightly (a stable download is never a build of unreleased code)
 
 ### Kimün server
 

@@ -111,6 +111,18 @@ class Build(unittest.TestCase):
         self.assertEqual(m["server"]["version"], "0.3.1")
         self.assertEqual(self.warnings, [])
 
+    def test_stable_downloads_are_listed_beside_the_versioned_files(self):
+        # ADR-0057: the versionless copies are ordinary checksummed files. They get their
+        # own entry, and the versioned names the installers look up stay as they were.
+        versioned, stable = "kimun-gui-1.0.0-macos-arm64.dmg", "kimun-gui-macos-arm64.dmg"
+        rels = [release("kimun-notes-v1.0.0", [versioned, stable, rm.CHECKSUMS])]
+        sums = {f"https://dl/{rm.CHECKSUMS}": f"{H}  {versioned}\n{H}  {stable}\n"}
+        m = rm.build(rels, fetcher(sums), self.warn)
+        self.assertEqual(list(m["app"]["assets"]), [versioned, stable])
+        self.assertEqual(m["app"]["assets"][stable]["sha256"], m["app"]["assets"][versioned]["sha256"])
+        self.assertEqual(m["app"]["assets"][stable]["url"], f"https://dl/{stable}")
+        self.assertEqual([w for w in self.warnings if w.startswith("app")], [])
+
     def test_signature_url_only_when_the_release_was_signed(self):
         sums = {f"https://dl/{rm.CHECKSUMS}": f"{H}  a.zip\n"}
         signed = [release("kimun-notes-v1.0.0", ["a.zip", rm.CHECKSUMS, rm.SIGNATURE])]

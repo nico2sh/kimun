@@ -1228,8 +1228,28 @@ impl Workspace {
         action: ToastAction,
         cx: &mut Context<Self>,
     ) {
-        let text = text.into();
-        self.show_flash(text.clone(), false, Some(action), cx);
+        self.flash_actionable(text.into(), false, action, cx);
+    }
+
+    /// [`Self::flash_with_action`] for a problem: an error toast with a button
+    /// (the update flow's `Retry`).
+    pub(crate) fn flash_error_with_action(
+        &mut self,
+        text: impl Into<SharedString>,
+        action: ToastAction,
+        cx: &mut Context<Self>,
+    ) {
+        self.flash_actionable(text.into(), true, action, cx);
+    }
+
+    fn flash_actionable(
+        &mut self,
+        text: SharedString,
+        error: bool,
+        action: ToastAction,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_flash(text.clone(), error, Some(action), cx);
         let key = text.clone();
         let timer = cx.spawn(async move |this, cx| {
             cx.background_executor()

@@ -49,6 +49,10 @@ CORE_PATTERN = re.compile(r"(?:std|tokio)::fs::\w+|(?<![\w:])fs::\w+\(")
 
 CORE_ALLOWED = ("core/src/nfs/", "core/src/system/")
 
+# The desktop app replacing its own macOS bundle: host-scoped, one frontend, one OS,
+# and no vault content, so it stays in the frontend (ADR-0056).
+GUI_EXEMPT = ("gui/src/bundle/",)
+
 COMMENT = re.compile(r"^\s*//")
 
 # Braces that are not code structure. Counting these desynced the depth
@@ -172,11 +176,12 @@ def main() -> int:
         print("\n".join(core))
         failures += 1
 
-    # Every frontend follows the same rule: gui/src is the other one.
+    # Every frontend follows the same rule: gui/src is the other one. The one
+    # exemption is host work that does not touch vault content (CLAUDE.md, ADR-0056).
     tui = [
         hit
-        for root in (Path("tui/src"), Path("gui/src"))
-        for hit in offenders(root, TUI_PATTERN)
+        for root, skip in ((Path("tui/src"), ()), (Path("gui/src"), GUI_EXEMPT))
+        for hit in offenders(root, TUI_PATTERN, skip=skip)
     ]
     if tui:
         print("::error::these belong in kimun_core::system (or nfs, for vault paths):")
