@@ -24,6 +24,7 @@ mod autocomplete;
 mod autocomplete_tests;
 mod dock;
 mod editor_element;
+mod editor_font;
 mod editor_view;
 mod find_bar;
 #[cfg(test)]
@@ -34,6 +35,7 @@ mod grid;
 mod identity_tests;
 mod input;
 mod keymap;
+mod mono_families;
 mod row_cache;
 mod row_paint;
 mod shell_layout;
@@ -157,9 +159,10 @@ fn main() {
     let layout = shell_tree::restore(&settings.gui, shell_tree::RESTORE_CAPS);
     // Read once: changing who draws the title bar needs a restart.
     let chrome = titlebar::chrome_for(settings.gui.window_decorations(), Os::current());
-    // The only `[gui]` scalar the app closure reads: captured alone, not the
+    // The `[gui]` scalars the app closure reads: captured alone, not the
     // whole table.
     let reduce_motion = settings.gui.reduce_motion();
+    let editor_font = editor_font::EditorFontSetting::from_settings(&settings.gui);
     let name = settings.current_workspace_name();
     let settings: SharedSettings = Arc::new(RwLock::new(settings));
     // Opening the vault (the index file) is quick; indexing, which is not,
@@ -182,6 +185,7 @@ fn main() {
         // renders; on failure the kit keeps the system font.
         ui_font::install(cx);
         apply_reduce_motion(reduce_motion, cx);
+        cx.set_global(editor_font);
         // The kit's components (the palette dialog, the FILES filter) read the
         // kit theme, which is not kimün's: hand them kimün's colours. The
         // dialog's fade is dropped: a palette should appear and go at once.

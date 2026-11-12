@@ -39,7 +39,7 @@ use gpui_kit::{
     App, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent,
-    SharedString, Styled, Task, TextSystem, UTF16Selection, Window, div,
+    Styled, Task, TextSystem, UTF16Selection, Window, div,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::autocomplete::{
@@ -57,6 +57,7 @@ use kimun_notes::logic::text_action::TextAction;
 
 use crate::autocomplete::EditorHost;
 use crate::editor_element::{EditorElement, ShapedRows};
+use crate::editor_font::FaceInputs;
 use crate::find_bar::{self, BarPaint};
 use crate::fonts::EditorFonts;
 use crate::grid::CellMetrics;
@@ -225,9 +226,9 @@ pub struct EditorView {
     /// App chords still resolve.
     pub(crate) input_blocked: bool,
     pub(crate) painted: Option<Painted>,
-    /// The face, chosen for the kit theme's monospace family (re-chosen if
-    /// that family changes).
-    fonts: Option<(SharedString, EditorFonts)>,
+    /// The face, and the inputs it was chosen for (re-chosen when they
+    /// change).
+    fonts: Option<(FaceInputs, EditorFonts)>,
     /// Rows painted in recent frames, reused while their content is unchanged.
     pub(crate) row_cache: ShapedRows,
     /// Wikilink and hashtag autocomplete, once a vault supplies suggestions.
@@ -654,18 +655,22 @@ impl EditorView {
         }
     }
 
-    /// The editor's face for the kit's monospace `kit_family` (see
-    /// [`EditorFonts`]); probing the machine's fonts happens once.
+    /// The editor's face for `inputs` (see [`EditorFonts`]); the machine's
+    /// fonts are probed again only when the inputs change.
     pub(crate) fn editor_fonts(
         &mut self,
-        kit_family: &SharedString,
+        inputs: &FaceInputs,
         text_system: &TextSystem,
     ) -> EditorFonts {
         match &self.fonts {
-            Some((family, fonts)) if family == kit_family => fonts.clone(),
+            Some((key, fonts)) if key == inputs => fonts.clone(),
             _ => {
-                let fonts = EditorFonts::resolve(text_system, kit_family);
-                self.fonts = Some((kit_family.clone(), fonts.clone()));
+                let fonts = EditorFonts::resolve(
+                    text_system,
+                    &inputs.kit_family,
+                    inputs.preferred.as_ref(),
+                );
+                self.fonts = Some((inputs.clone(), fonts.clone()));
                 fonts
             }
         }
@@ -1259,6 +1264,7 @@ fn char_to_utf16(s: &str, chars: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::SharedString;
 
     fn at(millis: u64) -> Instant {
         static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -1293,6 +1299,29 @@ mod tests {
         assert!(!run.completes_double(1, 1, at(0)));
         run.end();
         assert!(!run.completes_double(1, 1, at(100)));
+    }
+
+    /// Degraded: the headless GPUI text system has no fonts, so every
+    /// family resolves to the same fallback and the chosen family cannot
+    /// tell the calls apart. What is pinned is the cache key: a new
+    /// `preferred` with the same kit family must miss the cache and be
+    /// stored, so a key on the kit family alone fails here.
+    #[gpui_kit::test]
+    fn a_new_preferred_family_is_a_new_face_cache_key(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let text_system = cx.text_system().clone();
+        let view = cx.new(|cx| EditorView::new(None, false, cx));
+        let inputs = |preferred: Option<&str>| FaceInputs {
+            kit_family: "Kit Mono".into(),
+            preferred: preferred.map(SharedString::from),
+        };
+        let key = |view: &EditorView| view.fonts.as_ref().map(|(key, _)| key.clone());
+        view.update(cx, |view, _| {
+            for preferred in [Some("Alpha Mono"), Some("Beta Mono"), None] {
+                view.editor_fonts(&inputs(preferred), &text_system);
+                assert_eq!(key(view), Some(inputs(preferred)));
+            }
+        });
     }
 
     #[test]

@@ -6,6 +6,9 @@
 //! kit's Linux fallback) has a single face, so its bold and italic resolve to
 //! the regular face and paint upright and regular. The rule:
 //!
+//! 0. the user's preferred family, when it is installed (the name matches
+//!    whatever its capital letters): kept whatever its faces, with
+//!    synthetic bold when it has no real bold face;
 //! 1. the kit theme's monospace family, when it has a real bold face;
 //! 2. else the first installed well-known monospace family with real bold
 //!    and italic faces, then one with a real bold face;
@@ -20,6 +23,7 @@
 //! width on one-cell clusters whichever face draws them.
 
 use gpui_kit::{Font, FontStyle, FontWeight, SharedString, TextSystem, font};
+use kimun_notes::logic::preferences::same_font_family;
 
 /// Well-known monospace families with separate bold (and mostly italic)
 /// faces, tried in order after the kit's own family. Only installed ones
@@ -75,16 +79,25 @@ impl EditorFonts {
 
     /// Probe the machine's fonts (once per view; listing fonts is slow on
     /// macOS) and choose, starting from the kit theme's family.
-    pub fn resolve(text_system: &TextSystem, kit_family: &SharedString) -> Self {
+    pub fn resolve(
+        text_system: &TextSystem,
+        kit_family: &SharedString,
+        preferred: Option<&SharedString>,
+    ) -> Self {
         let installed = text_system.all_font_names();
-        choose(kit_family, &installed, |family| {
-            let regular = font(SharedString::from(family.to_string()));
-            let id = text_system.resolve_font(&regular);
-            FaceSupport {
-                bold: text_system.resolve_font(&regular.clone().bold()) != id,
-                italic: text_system.resolve_font(&regular.italic()) != id,
-            }
-        })
+        choose(
+            kit_family,
+            preferred.map(|p| p.as_ref()),
+            &installed,
+            |family| {
+                let regular = font(SharedString::from(family.to_string()));
+                let id = text_system.resolve_font(&regular);
+                FaceSupport {
+                    bold: text_system.resolve_font(&regular.clone().bold()) != id,
+                    italic: text_system.resolve_font(&regular.italic()) != id,
+                }
+            },
+        )
     }
 }
 
@@ -92,9 +105,22 @@ impl EditorFonts {
 /// family and installed candidates.
 pub fn choose(
     kit_family: &SharedString,
+    preferred: Option<&str>,
     installed: &[String],
     probe: impl Fn(&str) -> FaceSupport,
 ) -> EditorFonts {
+    // Family names match whatever their capital letters (the one rule,
+    // shared with Preferences); the installed spelling is the one painted with.
+    if let Some(p) = preferred
+        && let Some(name) = installed
+            .iter()
+            .find(|n| same_font_family(Some(n), Some(p)))
+    {
+        return EditorFonts {
+            family: SharedString::from(name.clone()),
+            faux_bold: !probe(name).bold,
+        };
+    }
     let kit = probe(kit_family);
     if kit.bold {
         return EditorFonts {
@@ -146,6 +172,7 @@ mod tests {
     fn a_kit_family_with_a_bold_face_is_kept() {
         let f = choose(
             &"Menlo".into(),
+            None,
             &installed(&["Menlo", "Liberation Mono"]),
             table(&[("Menlo", true, false), ("Liberation Mono", true, true)]),
         );
@@ -158,6 +185,7 @@ mod tests {
         // Noto Sans Mono as one variable font: no bold, no italic face.
         let f = choose(
             &"Noto Sans Mono".into(),
+            None,
             &installed(&["Noto Sans Mono", "Ubuntu Mono", "Liberation Mono"]),
             table(&[
                 ("Noto Sans Mono", false, false),
@@ -174,6 +202,7 @@ mod tests {
     fn a_bold_only_family_is_taken_when_none_has_both() {
         let f = choose(
             &"X".into(),
+            None,
             &installed(&["Ubuntu Mono"]),
             table(&[("Ubuntu Mono", true, false)]),
         );
@@ -188,11 +217,69 @@ mod tests {
         };
         let f = choose(
             &"X".into(),
+            None,
             &installed(&["Liberation Mono", "Other"]),
             probe,
         );
         assert_eq!(f.family.as_ref(), "X");
         assert!(f.faux_bold);
+    }
+
+    #[test]
+    fn a_preferred_family_with_a_bold_face_is_used() {
+        let f = choose(
+            &"Menlo".into(),
+            Some("A"),
+            &installed(&["A", "Menlo"]),
+            table(&[("A", true, false), ("Menlo", true, true)]),
+        );
+        assert_eq!(f.family.as_ref(), "A");
+        assert!(!f.faux_bold);
+    }
+
+    #[test]
+    fn a_preferred_family_without_bold_keeps_the_family_and_fakes_bold() {
+        let f = choose(
+            &"X".into(),
+            Some("A"),
+            &installed(&["A", "Liberation Mono"]),
+            table(&[("A", false, false), ("Liberation Mono", true, true)]),
+        );
+        assert_eq!(f.family.as_ref(), "A");
+        assert!(f.faux_bold);
+    }
+
+    #[test]
+    fn a_preferred_family_matches_ignoring_case_and_takes_the_installed_spelling() {
+        let probe = |family: &str| {
+            assert_eq!(family, "Fira Code", "probed by the installed spelling");
+            FaceSupport {
+                bold: true,
+                italic: false,
+            }
+        };
+        let f = choose(
+            &"X".into(),
+            Some("fira CODE"),
+            &installed(&["Fira Code", "Liberation Mono"]),
+            probe,
+        );
+        assert_eq!(f.family.as_ref(), "Fira Code");
+        assert!(!f.faux_bold);
+    }
+
+    #[test]
+    fn a_preferred_family_that_is_not_installed_falls_back_to_the_rule() {
+        let faces: &'static [(&str, bool, bool)] =
+            &[("X", false, false), ("Liberation Mono", true, true)];
+        let inst = installed(&["Liberation Mono"]);
+        let base = choose(&"X".into(), None, &inst, table(faces));
+        let probe = |family: &str| {
+            assert_ne!(family, "Gone");
+            table(faces)(family)
+        };
+        let f = choose(&"X".into(), Some("Gone"), &inst, probe);
+        assert_eq!(f, base);
     }
 
     #[test]
