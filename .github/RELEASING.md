@@ -16,7 +16,7 @@ users run). What is and is not verified is in `plans/m11/task-m11f*-report.md`; 
    before anything is attached; your notes become the release body; then the draft is **published**, and the Homebrew formula is
    pushed (stable only).
 5. Look at the release page (the release stays a draft, visible only to you, until step 4 succeeds): the 20 assets (+2 `.dmg` when signed) and `checksums-sha256.txt`, the body is your notes, the app's release
-   wears "Latest". Then `curl -fsSL https://kimun.2co.dev/install.sh | sh` and `... | sh -s -- --gui` on a clean machine.
+   wears "Latest". Then `curl -fsSL https://kimun.2co.dev/install.sh | sh` (both apps) and `... | sh -s -- --gui` (the strict desktop path) on a clean machine.
 
 ## A draft until its assets exist
 
@@ -91,7 +91,8 @@ A hyphenated version is a GitHub pre-release: it never wears "Latest", Homebrew 
 2. Tag it outside release-plz: `git tag kimun-notes-v0.25.0-beta.1 && git push origin kimun-notes-v0.25.0-beta.1`. `build.yml` runs as for a
    real release and creates the pre-release.
 3. Install it for real, over the network: `KIMUN_VERSION=0.25.0-beta.1 sh -c "$(curl -fsSL https://kimun.2co.dev/install.sh)" -- --gui`
-   (and without `--gui`; on Windows `$env:KIMUN_VERSION = "0.25.0-beta.1"` before `irm https://kimun.2co.dev/install.ps1 | iex`). Walk the checklist (`plans/m11/release-checklist.md`) on each platform you have.
+   and again with `--tui`. A bare run installs both apps and only warns when the desktop build is bad, so it does not test either path
+   alone. On Windows set `$env:KIMUN_VERSION = "0.25.0-beta.1"` and run the installer with `-Gui` and with `-Tui`. Walk the checklist (`plans/m11/release-checklist.md`) on each platform you have.
 4. Clean up if you like: `gh release delete kimun-notes-v0.25.0-beta.1 --cleanup-tag`.
 
 ## Testing self-update for real

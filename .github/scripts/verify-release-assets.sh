@@ -15,7 +15,7 @@ set -uo pipefail
 
 dir="${1:?usage: verify-release-assets.sh DIR VERSION}"
 version="${2:?usage: verify-release-assets.sh DIR VERSION}"
-cd "$dir"
+cd "$dir" || exit 1
 
 # PLATFORMS narrows the check to what a local rehearsal built (default: all five).
 platforms="${PLATFORMS:-linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64}"

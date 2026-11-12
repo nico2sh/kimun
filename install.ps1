@@ -2,19 +2,29 @@
 # checksum, installs the app into a user-writable folder, and records an install
 # marker so the app knows it may update itself (the "script" channel).
 #
-#   irm https://kimun.2co.dev/install.ps1 | iex                                           # the terminal app
-#   & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui                # the desktop app
+#   irm https://kimun.2co.dev/install.ps1 | iex                                           # both apps
+#   & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Tui                # the terminal app only
+#   & ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui                # the desktop app only
 #   $env:KIMUN_GUI = 1; irm https://kimun.2co.dev/install.ps1 | iex                        # the same, in one line
 #
-# Run it once for each app you want; both go in one folder and share one marker.
-# No admin needed. Running it again updates the app (an open one keeps running
-# until it quits).
+# With no option the script installs both apps, or updates the one that is already there when only
+# one is installed. The desktop app is best effort then: when
+# it cannot be installed the terminal app stays installed, the script prints a warning and
+# finishes without an error. Name an app with -Tui or -Gui and that app must install, or the
+# script fails. Both apps go in one folder and share one marker. No admin needed. Running it
+# again updates the apps (an open one keeps running until it quits).
 #
 # Options:
-#   -Gui                install the desktop app (kimun-gui) instead of the terminal app
+#   -Tui                install only the terminal app (kimun)
+#   -Gui                install only the desktop app (kimun-gui). With both -Tui and -Gui
+#                       both apps are installed and both must succeed
+#   -Uninstall          remove what this script installed: both apps, or only the one that
+#                       -Tui or -Gui names. Your notes and configuration are not touched
 #
 # Env overrides:
+#   KIMUN_TUI=1         the same as -Tui, for the `irm | iex` form
 #   KIMUN_GUI=1         the same as -Gui, for the `irm | iex` form
+#   KIMUN_UNINSTALL=1   the same as -Uninstall, for the `irm | iex` form
 #   KIMUN_INSTALL_DIR   install location (default: %LOCALAPPDATA%\Programs\kimun)
 #   KIMUN_VERSION       install this version instead of the latest stable release
 #                       (a pre-release too, e.g. 0.25.0-beta.1)
@@ -28,11 +38,14 @@
 # The desktop app also gets a Start-menu shortcut. The folder is added to your
 # user PATH, so `kimun` and `kimun-gui` work in a new terminal.
 
-param([switch]$Gui)
+param([switch]$Tui, [switch]$Gui, [switch]$Uninstall)
 
 # Its own scope: under `irm | iex` it would otherwise set the caller's variables.
+# The try/finally clears the switches even when the script block throws: a left-over
+# KIMUN_UNINSTALL=1 would make the caller's next install run the uninstaller.
+try {
 & {
-param([bool]$WantGui)
+param([bool]$WantTui, [bool]$WantGui, [bool]$WantUninstall)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
@@ -50,12 +63,136 @@ $signingPubKey = ""
 
 $repo = "nico2sh/kimun"
 $tagPrefix = "kimun-notes-v"
-$bin = if ($WantGui) { "kimun-gui" } else { "kimun" }
+$guiNamed = $WantGui
+$guiRetry = '& ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Gui'
+$tuiRetry = '& ([scriptblock]::Create((irm https://kimun.2co.dev/install.ps1))) -Tui'
+# What the functions below report back (a hashtable: they change it, not a copy of it).
+$state = @{ Removed = $false; Dir = ""; MarkerDir = "" }
 
 $dir = if ($env:KIMUN_INSTALL_DIR) { $env:KIMUN_INSTALL_DIR.TrimEnd("\", "/") } else { Join-Path $env:LOCALAPPDATA "Programs\kimun" }
 # Must match the app: %USERPROFILE%\kimun (see kimun_core::system::app_dir).
 $configDir = Join-Path $env:USERPROFILE "kimun"
 $marker = Join-Path $configDir "install.toml"
+
+# No option: both apps on a new install. When only one app is already installed, only that one
+# is updated: a re-run of the update command must not add an app nobody asked for. Naming an
+# app makes it required. (An uninstall with no option removes both.)
+if (-not $WantTui -and -not $WantGui) {
+    $WantTui = $true; $WantGui = $true
+    if (-not $WantUninstall) {
+        $haveTui = Test-Path (Join-Path $dir "kimun.exe")
+        $haveGui = Test-Path (Join-Path $dir "kimun-gui.exe")
+        if ($haveTui -and -not $haveGui) {
+            $WantGui = $false
+            Write-Host "Updating the terminal app. To add the desktop app: $guiRetry"
+        } elseif ($haveGui -and -not $haveTui) {
+            $WantTui = $false; $guiNamed = $true
+            Write-Host "Updating the desktop app. To add the terminal app: $tuiRetry"
+        }
+    }
+}
+
+# Resolve the folder to remove from, once, before the first app goes: removing the terminal
+# app can remove the marker, and the desktop app's pass must see the same folder.
+# The marker names the folder of the install it belongs to. The installer writes it as a
+# TOML literal string (single quotes); a hand-edited double-quoted one is read too.
+function Resolve-UninstallDir {
+    $markerDir = ""
+    if (Test-Path $marker) {
+        foreach ($l in Get-Content $marker) {
+            if ($l -match "^install_dir = '(.*)'\s*$") { $markerDir = $Matches[1]; break }
+            if ($l -match '^install_dir = "(.*)"\s*$') { $markerDir = $Matches[1].Replace('\\', '\').Replace('\"', '"'); break }
+        }
+        $markerDir = $markerDir.TrimEnd("\", "/")
+    }
+    $resolved = $dir
+    if (-not $env:KIMUN_INSTALL_DIR) {
+        if ($markerDir) { $resolved = $markerDir }
+        elseif (Test-Path $marker) { Write-Warning "could not read install_dir from $marker : using $dir" }
+    }
+    $state.Dir = $resolved
+    $state.MarkerDir = $markerDir
+}
+
+function Uninstall-App($bin) {
+    # Remove what the installer put in place for $bin: the app's exe, for the desktop app its
+    # Start-menu shortcut, and, once neither app is left, the marker, the PATH entry and
+    # the folder (only if empty). Notes and configuration are not touched. The folder is
+    # the one the marker records, unless KIMUN_INSTALL_DIR says otherwise.
+    $dir = $state.Dir
+    $markerDir = $state.MarkerDir
+    # A running app's exe cannot be deleted but can be renamed: it goes to .old and the
+    # next install or uninstall removes it.
+    $exe = Join-Path $dir "$bin.exe"
+    foreach ($f in @("$exe.old", $exe)) {
+        if (Test-Path $f) {
+            try { Remove-Item -Force $f; Write-Host "Removed $f"; $state.Removed = $true }
+            catch {
+                if ($f -eq $exe) {
+                    # The exe stays when this fails too, so the marker and PATH entry stay for the re-run.
+                    try {
+                        Move-Item -Force $exe "$exe.old"
+                        Write-Warning "$bin is running: close it, then run the uninstall again to remove $exe.old"
+                        $state.Removed = $true
+                    } catch {
+                        Write-Warning "$bin is running and could not be renamed: close it, then run the uninstall again"
+                    }
+                } else {
+                    Write-Warning "could not remove $f : close the app, then run the uninstall again"
+                }
+            }
+        }
+    }
+    if ($bin -eq "kimun-gui") {
+        $programs = [Environment]::GetFolderPath("Programs")
+        if (-not $programs) { $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs" }
+        $menu = Join-Path $programs "Kim$([char]0xFC)n.lnk"
+        if (Test-Path $menu) { Remove-Item -Force $menu; Write-Host "Removed $menu"; $state.Removed = $true }
+    }
+    # A leftover .old file is an app that is still there: the second run needs the marker and
+    # the PATH entry to find it.
+    $left = $false
+    foreach ($n in @("kimun.exe", "kimun-gui.exe", "kimun.exe.old", "kimun-gui.exe.old")) {
+        if (Test-Path (Join-Path $dir $n)) { $left = $true }
+    }
+    if (-not $left) {
+        # The marker goes only when it belongs to this folder (or names none we could read).
+        if ((Test-Path $marker) -and (-not $markerDir -or $markerDir -ieq $dir.TrimEnd("\", "/"))) {
+            Remove-Item -Force $marker; Write-Host "Removed $marker"; $state.Removed = $true
+        }
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        try {
+            $raw = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $parts = @($raw -split ";" | Where-Object { $_ -ne "" })
+            # An entry matches as written or once its %VARIABLES% are expanded.
+            $target = $dir.TrimEnd("\")
+            $kept = @($parts | Where-Object {
+                $entry = $_.Trim().TrimEnd("\")
+                ($entry -ine $target) -and ([Environment]::ExpandEnvironmentVariables($entry).TrimEnd("\") -ine $target)
+            })
+            if ($kept.Count -ne $parts.Count) {
+                $kind = $key.GetValueKind("Path")
+                $key.SetValue("Path", ($kept -join ";"), $kind)
+                [Environment]::SetEnvironmentVariable("KIMUN_INSTALLING", "1", "User")
+                [Environment]::SetEnvironmentVariable("KIMUN_INSTALLING", $null, "User")
+                Write-Host "Removed $dir from your PATH"
+                $state.Removed = $true
+            }
+        } finally {
+            $key.Close()
+        }
+        if ((Test-Path $dir) -and -not (Get-ChildItem -Force $dir)) { Remove-Item -Force $dir; Write-Host "Removed $dir" }
+    }
+}
+
+if ($WantUninstall) {
+    Resolve-UninstallDir
+    if ($WantTui) { Uninstall-App "kimun" }
+    if ($WantGui) { Uninstall-App "kimun-gui" }
+    if ($state.Removed) { Write-Host "Done. Your notes and configuration in $configDir were not touched." }
+    else { Write-Host "Nothing to remove: no app found in $($state.Dir)." }
+    return
+}
 
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne "AMD64") { Fail "no build for $arch Windows yet (x64 only)" }
@@ -111,9 +248,35 @@ try {
     }
     $tag = "$tagPrefix$version"
 
-    $archive = "$bin-$version-$platform.zip"
     $base = if ($env:KIMUN_DOWNLOAD_BASE) { $env:KIMUN_DOWNLOAD_BASE.TrimEnd("/") } else { "https://github.com/$repo/releases/download/$tag" }
 
+    # The release's checksums file, fetched and checked once for both apps.
+    $signed = $false
+    $sums = "$tmp\checksums-sha256.txt"
+    $minisign = Get-Command minisign.exe -ErrorAction SilentlyContinue
+    if (-not $signingPubKey) {
+        # signing is not live yet
+    } elseif (-not $minisign) {
+        Write-Warning "minisign is not installed: the release signature was not checked (sha256 only)"
+    } else {
+        # No -S and no redirects: under Stop, Windows PowerShell 5.1 turns redirected native stderr into an error.
+        curl.exe -fsL "$base/checksums-sha256.txt" -o $sums
+        $haveSums = -not $LASTEXITCODE
+        curl.exe -fsL "$base/checksums-sha256.txt.minisig" -o "$sums.minisig"
+        if ($haveSums -and -not $LASTEXITCODE) {
+            & $minisign.Source -V -q -P $signingPubKey -m $sums -x "$sums.minisig" | Out-Null
+            if ($LASTEXITCODE) { Fail "the signature of checksums-sha256.txt is NOT valid: refusing to install" }
+            $signed = $true
+        } elseif ($env:KIMUN_VERSION) {
+            Write-Warning "this release has no signature (it may predate signing): sha256 only"
+        } else {
+            Fail "the latest release should be signed but its signature could not be fetched: refusing to install"
+        }
+    }
+
+    # Install one app ($bin is kimun or kimun-gui) from the release resolved above.
+    function Install-App($bin) {
+    $archive = "$bin-$version-$platform.zip"
     # The manifest names this file's url and sha256: use them, unless the files are being
     # fetched from somewhere else (KIMUN_DOWNLOAD_BASE). A file it does not list is looked
     # for the usual way, so the errors below stay the same.
@@ -133,9 +296,10 @@ try {
         # The release is there (its checksums are) but this app's build is not,
         # or the release is so new its files are still being attached.
         # No -S and no 2>$null: under Stop, Windows PowerShell 5.1 turns redirected native stderr into an error.
-        curl.exe -fsL "$base/checksums-sha256.txt" -o "$tmp\checksums-sha256.txt"
+        # A separate file: $sums may be the signed list the next app is checked against.
+        curl.exe -fsL "$base/checksums-sha256.txt" -o "$tmp\listing.txt"
         if (-not $LASTEXITCODE) {
-            if ($WantGui) { Fail "release $version has no desktop app build for $platform. Not every release has one yet: see https://github.com/$repo/releases, or pin a release that does with `$env:KIMUN_VERSION" }
+            if ($bin -eq "kimun-gui") { Fail "release $version has no desktop app build for $platform. Not every release has one yet: see https://github.com/$repo/releases, or pin a release that does with `$env:KIMUN_VERSION" }
             Fail "release $version has no $bin build for $platform (see https://github.com/$repo/releases)"
         }
         Fail "failed to download $archive (is $version a release? A release published minutes ago may still be attaching its files: try again shortly)"
@@ -143,34 +307,11 @@ try {
 
     # Verify the checksum: the signed list when minisign can check it, else the manifest's,
     # else the release's published checksums file (an exact name match). The digest is from
-    # .NET (Get-FileHash fails when PowerShell 7 starts 5.1).
+    # .NET (Get-FileHash fails when PowerShell 7 starts 5.1). The signature was checked once, above.
     Write-Host "Verifying checksum..."
-    $signed = $false
-    $sums = "$tmp\checksums-sha256.txt"
-    $minisign = Get-Command minisign.exe -ErrorAction SilentlyContinue
-    $haveSums = $false
-    if (-not $signingPubKey) {
-        # signing is not live yet
-    } elseif (-not $minisign) {
-        Write-Warning "minisign is not installed: the release signature was not checked (sha256 only)"
-    } else {
-        # No -S and no redirects: under Stop, Windows PowerShell 5.1 turns redirected native stderr into an error.
-        curl.exe -fsL "$base/checksums-sha256.txt" -o $sums
-        $haveSums = -not $LASTEXITCODE
-        curl.exe -fsL "$base/checksums-sha256.txt.minisig" -o "$sums.minisig"
-        if ($haveSums -and -not $LASTEXITCODE) {
-            & $minisign.Source -V -q -P $signingPubKey -m $sums -x "$sums.minisig" | Out-Null
-            if ($LASTEXITCODE) { Fail "the signature of checksums-sha256.txt is NOT valid: refusing to install" }
-            $expected = $null   # the signed list is the authority, not the manifest
-            $signed = $true
-        } elseif ($env:KIMUN_VERSION) {
-            Write-Warning "this release has no signature (it may predate signing): sha256 only"
-        } else {
-            Fail "the latest release should be signed but its signature could not be fetched: refusing to install"
-        }
-    }
+    if ($signed) { $expected = $null }   # the signed list is the authority, not the manifest
     if (-not $expected) {
-        if (-not $haveSums) {
+        if (-not (Test-Path $sums)) {
             curl.exe -fsSL "$base/checksums-sha256.txt" -o $sums
             if ($LASTEXITCODE) { Fail "failed to download checksums-sha256.txt" }
         }
@@ -185,7 +326,7 @@ try {
     if ($actual -ne $expected) { Fail "checksum mismatch for $archive (expected $expected, got $actual)" }
 
     Write-Host "Extracting..."
-    $stage = Join-Path $tmp "stage"
+    $stage = Join-Path $tmp "stage-$bin"
     New-Item -ItemType Directory -Force $stage | Out-Null
     & $tar -xf "$tmp\$archive" -C $stage
     if ($LASTEXITCODE) { Fail "failed to extract $archive" }
@@ -202,7 +343,7 @@ try {
     Write-Host "Installed $bin to $exe"
 
     # Start-menu shortcut, desktop app only (a terminal app wants a terminal).
-    if ($WantGui) {
+    if ($bin -eq "kimun-gui") {
         # A shortcut is a convenience: failing to make one must not fail the install.
         try {
             $programs = [Environment]::GetFolderPath("Programs")
@@ -251,12 +392,34 @@ try {
     }
     if (($env:Path -split ";") -notcontains $dir) { $env:Path += ";$dir" }
 
+    if ($bin -eq "kimun-gui") { Write-Host "Open Kim$([char]0xFC)n from the Start menu, or run: $bin" }
+    else { Write-Host "Run '$bin' to start." }
+    }
+
+    # The terminal app first, and it must install. The desktop app is best effort in a default
+    # run: a failure is a warning and the terminal app stays. -Gui names it: then it must install.
+    $guiFailed = $false
+    if ($WantTui) { Install-App "kimun" }
+    if ($WantGui) {
+        if ($guiNamed) { Install-App "kimun-gui" }
+        else {
+            try { Install-App "kimun-gui" }
+            catch {
+                $guiFailed = $true
+                Write-Warning "the desktop app was not installed: $($_.Exception.Message -replace '^kimun: ', '')"
+                Write-Warning "To try it again: $guiRetry"
+            }
+        }
+    }
     Write-Host ""
-    if ($WantGui) { Write-Host "Done. Open Kim$([char]0xFC)n from the Start menu, or run: $bin" }
-    else { Write-Host "Done. Run '$bin' to start." }
+    if ($guiFailed) { Write-Host "Done, without the desktop app." } else { Write-Host "Done." }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
-} -WantGui ($Gui.IsPresent -or $env:KIMUN_GUI -eq "1" -or $env:KIMUN_GUI -eq "true")
-# Not left behind in the caller's session (the `irm | iex` form runs in it).
-Remove-Item Env:KIMUN_GUI -ErrorAction SilentlyContinue
+} -WantTui ($Tui.IsPresent -or $env:KIMUN_TUI -eq "1" -or $env:KIMUN_TUI -eq "true") -WantGui ($Gui.IsPresent -or $env:KIMUN_GUI -eq "1" -or $env:KIMUN_GUI -eq "true") -WantUninstall ($Uninstall.IsPresent -or $env:KIMUN_UNINSTALL -eq "1" -or $env:KIMUN_UNINSTALL -eq "true")
+} finally {
+    # Not left behind in the caller's session (the `irm | iex` form runs in it).
+    Remove-Item Env:KIMUN_TUI -ErrorAction SilentlyContinue
+    Remove-Item Env:KIMUN_GUI -ErrorAction SilentlyContinue
+    Remove-Item Env:KIMUN_UNINSTALL -ErrorAction SilentlyContinue
+}
