@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt};
 use gpui_kit::{
     AppContext, Context, Entity, EntityId, Focusable as _, TestAppContext, Window, WindowOptions,
 };
@@ -30,18 +30,26 @@ use tokio::runtime::Runtime;
 use super::modal::ModalKind;
 use super::palette::PaletteRun;
 use super::preferences::{
-    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_ID, DISCARD_ID, KEEP_EDITING_ID, MESSAGE_ID,
-    PREFERENCES_ID, PreferencesView, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID, REDUCE_MOTION_ID,
-    SAVE_ID, SERVER_ERROR_ID, SERVER_ID, Section, UPDATE_CHECK_ID, needs_reopen, section_id,
-    theme_row_id,
+    AUTOSAVE_ID, BACKEND_KEPT_ID, CANCEL_ID, DELAY_HELP, DELAY_HELP_ID, DELAY_ID, DISCARD_ID,
+    DISPLAY_BEHAVIOR_GROUP_ID, DISPLAY_FONT_GROUP_ID, DISPLAY_GROUPS, DISPLAY_MOTION_GROUP_ID,
+    DisplaySetting, FONT_DEFAULT_LABEL, FONT_FAMILY_ID, FONT_HELP, FONT_HELP_ID, FONT_LOADING_HELP,
+    FONT_LOADING_HELP_ID, FONT_SIZE_ID, KEEP_EDITING_ID, MESSAGE_ID, PREFERENCES_ID,
+    PreferencesView, RAIL_HELP, RAIL_HELP_ID, RAIL_ID, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID,
+    REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, SAVE_ID, SECTIONS_ID, SERVER_ERROR_ID, SERVER_ID,
+    Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID, UPDATE_CHECK_ID, UPDATE_CHECK_LABEL,
+    needs_reopen, section_id, stepper_down_id, stepper_up_id, theme_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
+use crate::editor_font::{self, EditorFontSetting};
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
+use crate::mono_families::{self, MonoFamilies};
 use crate::startup::{FirstNote, Start, VaultStart};
 use crate::test_vault::{NAME, TestVault, test_vault};
 use crate::theme;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::select::SelectEvent;
 
 /// The window as `main` builds it, on `start`, saving to `store`.
 pub(super) fn open(
@@ -511,7 +519,7 @@ fn each_section_edits_the_draft_only(cx: &mut TestAppContext) {
     s.pf_press("right", cx);
     s.pf_press("right", cx);
     assert_eq!(s.pf_model(cx, |m| m.leader_timeout_ms), delay + 100);
-    s.pf_click(super::preferences::DELAY_DOWN_ID, cx);
+    s.pf_click(stepper_down_id(DELAY_ID), cx);
     assert_eq!(s.pf_model(cx, |m| m.leader_timeout_ms), delay + 50);
 
     // Sorting: the choices, as the radios set them.
@@ -536,7 +544,7 @@ fn each_section_edits_the_draft_only(cx: &mut TestAppContext) {
     s.pf_press("right", cx);
     s.pf_press("left", cx);
     assert_eq!(s.pf_model(cx, |m| m.autosave_interval_secs), autosave + 5);
-    s.pf_click(super::preferences::AUTOSAVE_UP_ID, cx);
+    s.pf_click(stepper_up_id(AUTOSAVE_ID), cx);
     assert_eq!(s.pf_model(cx, |m| m.autosave_interval_secs), autosave + 10);
     s.pf_with_view(cx, |v, _, cx| v.select_backend(1, cx));
     assert_eq!(
@@ -929,6 +937,709 @@ fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     }
     assert!(cx.read(|cx| cx.reduce_motion()), "applied at once");
     assert_eq!(s.files_id(cx), files, "no reopen");
+    settle(&rt, cx);
+}
+
+// ── Display > layout ────────────────────────────────────────────────────────
+
+impl Started {
+    /// The top edge of element `id` in the last frame.
+    fn pf_top(&self, id: &'static str, cx: &mut TestAppContext) -> f32 {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(id).bounds().origin.y)
+        })
+        .unwrap()
+    }
+
+    /// The accessible label and role of element `id`.
+    fn pf_named(
+        &self,
+        id: &'static str,
+        cx: &mut TestAppContext,
+    ) -> (Option<String>, Option<gpui_kit::Role>) {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let e = window.find(id);
+            (e.label().map(str::to_string), e.role())
+        })
+        .unwrap()
+    }
+}
+
+/// Display reads as three groups, each headed the same way, in this order:
+/// Editor font (family, size, then the help both share), Window and motion
+/// (reduce motion, rail position), Behavior (which-key delay, update check).
+#[gpui_kit::test]
+fn display_shows_its_groups_and_settings_in_order(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let order = [
+        DISPLAY_FONT_GROUP_ID,
+        FONT_FAMILY_ID,
+        FONT_SIZE_ID,
+        FONT_HELP_ID,
+        DISPLAY_MOTION_GROUP_ID,
+        REDUCE_MOTION_ID,
+        REDUCE_MOTION_HELP_ID,
+        RAIL_HELP_ID,
+        DISPLAY_BEHAVIOR_GROUP_ID,
+        DELAY_ID,
+        DELAY_HELP_ID,
+        UPDATE_CHECK_ID,
+        UPDATE_CHECK_HELP_ID,
+    ];
+    let tops: Vec<f32> = order.iter().map(|id| s.pf_top(id, cx)).collect();
+    for (pair, ids) in tops.windows(2).zip(order.windows(2)) {
+        assert!(pair[0] < pair[1], "{} above {}: {tops:?}", ids[0], ids[1]);
+    }
+    for (id, title) in [
+        (DISPLAY_FONT_GROUP_ID, "Editor font"),
+        (DISPLAY_MOTION_GROUP_ID, "Window and motion"),
+        (DISPLAY_BEHAVIOR_GROUP_ID, "Behavior"),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx),
+            (Some(title.to_string()), Some(gpui_kit::Role::Heading))
+        );
+    }
+    for (id, name) in [
+        (FONT_FAMILY_ID, "Editor font family"),
+        (FONT_SIZE_ID, "Editor font size"),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx).0.as_deref(),
+            Some(name),
+            "the accessible name matches the visible words"
+        );
+    }
+    // The checkboxes draw their label and set no accessible name of their
+    // own, so the kit names them by that label: the same words twice.
+    for (id, label, words) in [
+        (REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, "Reduce motion"),
+        (
+            UPDATE_CHECK_ID,
+            UPDATE_CHECK_LABEL,
+            "Check for updates on startup",
+        ),
+    ] {
+        assert_eq!(label, words, "{id}: the visible label");
+        assert_eq!(
+            s.pf_named(id, cx).0.as_deref(),
+            Some(label),
+            "{id}: the accessible name is the visible label"
+        );
+    }
+    settle(&rt, cx);
+}
+
+/// Every Display help line has its own element, read as a label.
+#[gpui_kit::test]
+fn every_display_help_line_is_a_labelled_element(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    for (id, text) in [
+        (FONT_HELP_ID, FONT_HELP),
+        (REDUCE_MOTION_HELP_ID, REDUCE_MOTION_HELP),
+        (RAIL_HELP_ID, RAIL_HELP),
+        (DELAY_HELP_ID, DELAY_HELP),
+        (UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP),
+    ] {
+        assert_eq!(
+            s.pf_named(id, cx),
+            (Some(text.to_string()), Some(gpui_kit::Role::Label)),
+            "{id}"
+        );
+    }
+    settle(&rt, cx);
+}
+
+/// "Loading installed fonts..." shows only while the families are being
+/// read (`Loading`): not while the probe is `Idle` (not started yet, or reset
+/// after a panic), and not once the list is `Ready`.
+#[gpui_kit::test]
+fn the_font_loading_line_shows_only_while_loading(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    // Loading first, so opening Display starts no probe of its own.
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    assert_eq!(
+        s.pf_named(FONT_LOADING_HELP_ID, cx),
+        (
+            Some(FONT_LOADING_HELP.to_string()),
+            Some(gpui_kit::Role::Label)
+        ),
+        "shown while loading"
+    );
+    cx.update(|cx| cx.set_global(MonoFamilies::Idle));
+    cx.run_until_parked();
+    assert!(!s.pf_shows(FONT_LOADING_HELP_ID, cx), "not while idle");
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    cx.run_until_parked();
+    assert!(s.pf_shows(FONT_LOADING_HELP_ID, cx), "back while loading");
+    families_ready(cx, &["Alpha Mono"]);
+    cx.run_until_parked();
+    assert!(!s.pf_shows(FONT_LOADING_HELP_ID, cx), "gone once ready");
+    settle(&rt, cx);
+}
+
+/// The element that holds each Display setting's keyboard stop: Tab has
+/// landed on the setting when the focused element is this one or inside it.
+/// The rail's radios are tab stops of their own (the kit's `Radio`), one per
+/// position, so the rail is a run of stops inside [`RAIL_ID`].
+fn display_stop(setting: DisplaySetting) -> &'static str {
+    match setting {
+        DisplaySetting::FontFamily => FONT_FAMILY_ID,
+        DisplaySetting::FontSize => FONT_SIZE_ID,
+        DisplaySetting::ReduceMotion => REDUCE_MOTION_ID,
+        DisplaySetting::RailPosition => RAIL_ID,
+        DisplaySetting::WhichKeyDelay => DELAY_ID,
+        DisplaySetting::UpdateCheck => UPDATE_CHECK_ID,
+    }
+}
+
+/// Tab walks Display in the order it reads: from the section list, every
+/// setting's stop in [`DISPLAY_GROUPS`] order. Font family, then size,
+/// reduce motion, the rail radios, which-key delay, the update check.
+#[gpui_kit::test]
+fn tab_walks_display_in_reading_order(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let expected: Vec<&'static str> = DISPLAY_GROUPS
+        .iter()
+        .flat_map(|g| g.settings.iter().map(|setting| display_stop(*setting)))
+        .collect();
+    // The setting whose stop has the keyboard, if any.
+    let at = |s: &Started, cx: &mut TestAppContext| -> Option<&'static str> {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let focused: Vec<_> = window
+                .elements()
+                .into_iter()
+                .filter(|e| e.focused() == Some(true))
+                .collect();
+            expected.iter().copied().find(|id| {
+                let id = gpui_kit::ElementId::from(*id);
+                focused.iter().any(|e| e.path().contains(&id))
+            })
+        })
+        .unwrap()
+    };
+    let sections_focused = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(SECTIONS_ID).focused() == Some(true)
+        })
+        .unwrap();
+    assert!(sections_focused, "the section list has the keyboard");
+    // Each setting once, in the order Tab first reaches it (the rail's
+    // radios are consecutive stops of one setting).
+    let mut reached: Vec<&'static str> = Vec::new();
+    for _ in 0..16 {
+        s.pf_press("tab", cx);
+        if let Some(id) = at(&s, cx)
+            && reached.last() != Some(&id)
+        {
+            reached.push(id);
+        }
+        if reached.len() >= expected.len() {
+            break;
+        }
+    }
+    let missing = expected.iter().find(|id| !reached.contains(id));
+    assert!(
+        missing.is_none(),
+        "Tab never reached {missing:?} within 16 presses; reached {reached:?}"
+    );
+    assert_eq!(reached, expected, "Tab follows DISPLAY_GROUPS");
+    settle(&rt, cx);
+}
+
+/// Re-picking the saved family in the installed spelling ("fira code"
+/// saved, "Fira Code" picked) is no change: Save stays off.
+#[gpui_kit::test]
+fn re_picking_the_saved_family_in_another_case_is_clean(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "fira code");
+    families_ready(cx, &["Fira Code"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Fira Code".into()), cx)
+    });
+    assert!(
+        s.pf_disabled(SAVE_ID, cx),
+        "a case-only difference is clean"
+    );
+    settle(&rt, cx);
+}
+
+// ── Display > Font ──────────────────────────────────────────────────────────
+
+/// The theme's monospace size, rounded to whole pixels (the stepper's start).
+fn theme_font_size(cx: &TestAppContext) -> u8 {
+    cx.read(|cx| f32::from(cx.theme().mono_font_size).round() as u8)
+}
+
+/// The family list as the probe would leave it.
+fn families_ready(cx: &mut TestAppContext, names: &[&str]) {
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    cx.update(|cx| cx.set_global(MonoFamilies::Ready(names.into())));
+}
+
+/// `family` saved as `[gui] editor_font_family`, in memory and on disk.
+fn saved_family(v: &TestVault, family: &str) {
+    AppSettings::update_gui_at(config(v), |gui| gui.set_editor_font_family(Some(family))).unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_editor_font_family(Some(family));
+}
+
+impl Started {
+    /// The family dropdown's item labels and its selected label.
+    fn pf_font_choices(&self, cx: &TestAppContext) -> (Vec<String>, Option<String>) {
+        let view = self.pf_view(cx);
+        cx.read(|cx| view.read(cx).font_choices(cx))
+    }
+}
+
+/// Stepping the size dirties the draft; Save writes `editor_font_size`.
+#[gpui_kit::test]
+fn stepping_the_font_size_makes_the_draft_dirty_and_save_writes_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    assert!(s.pf_disabled(SAVE_ID, cx), "clean");
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
+    assert_eq!(s.pf_model(cx, |m| m.editor_font_size), Some(default + 1));
+    assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_size(), Some(default + 1));
+    }
+    settle(&rt, cx);
+}
+
+/// The size stepper takes the arrow keys, as the other steppers do.
+#[gpui_kit::test]
+fn the_font_size_stepper_takes_the_arrows(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &[]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(FONT_SIZE_ID, cx);
+    s.pf_press("left", cx);
+    assert_eq!(s.pf_model(cx, |m| m.editor_font_size), Some(default - 1));
+    settle(&rt, cx);
+}
+
+/// A family chosen in the dropdown is the draft's, and Save writes it.
+#[gpui_kit::test]
+fn choosing_a_family_is_written_on_save(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono", "X"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    // Through the dropdown's own event, as a pick in the menu sends it.
+    let select = s.pf_read(cx, |v| v.font_select().clone());
+    cx.update(|cx| {
+        select.update(cx, |_, cx| {
+            cx.emit(SelectEvent::Confirm(Some(Some("Alpha Mono".to_string()))))
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        s.pf_model(cx, |m| m.editor_font_family.clone()).as_deref(),
+        Some("Alpha Mono")
+    );
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("X".into()), cx)
+    });
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some("X"));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family().as_deref(), Some("X"));
+    }
+    settle(&rt, cx);
+}
+
+/// "Default (theme)" is `None`: Save removes the key.
+#[gpui_kit::test]
+fn choosing_default_removes_the_family_key(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Alpha Mono");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some("Alpha Mono"));
+    s.pf_with_view(cx, |v, _, cx| v.set_editor_font_family(None, cx));
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some(FONT_DEFAULT_LABEL));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family(), None);
+    }
+    assert!(
+        !std::fs::read_to_string(config(&v))
+            .unwrap()
+            .contains("editor_font_family")
+    );
+    settle(&rt, cx);
+}
+
+/// A saved family the system no longer has is shown, labelled, selected; a
+/// save of something else keeps it.
+#[gpui_kit::test]
+fn a_saved_family_that_is_not_installed_is_labeled_and_kept(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Gone");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(
+        labels,
+        [FONT_DEFAULT_LABEL, "Gone (not installed)", "Alpha Mono"]
+    );
+    assert_eq!(selected.as_deref(), Some("Gone (not installed)"));
+    assert!(s.pf_disabled(SAVE_ID, cx), "nothing changed");
+    // Away and back: the entry stays, and choosing it again is clean.
+    s.pf_with_view(cx, |v, _, cx| v.set_editor_font_family(None, cx));
+    assert!(
+        s.pf_font_choices(cx)
+            .0
+            .contains(&"Gone (not installed)".to_string())
+    );
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Gone".into()), cx)
+    });
+    assert!(s.pf_disabled(SAVE_ID, cx), "back to the saved value");
+    s.pf_click(UPDATE_CHECK_ID, cx);
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family().as_deref(), Some("Gone"));
+    }
+    settle(&rt, cx);
+}
+
+/// While the list is being read the dropdown holds the default and the
+/// saved family; once it is ready, the dropdown takes the whole list.
+#[gpui_kit::test]
+fn the_family_list_fills_in_when_it_is_ready(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Fira Code");
+    // The probe is under way: opening Display starts no other.
+    cx.update(|cx| cx.set_global(MonoFamilies::Loading));
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Fira Code"]);
+    assert_eq!(selected.as_deref(), Some("Fira Code"), "never blank");
+    families_ready(cx, &["Alpha Mono", "Fira Code"]);
+    cx.run_until_parked();
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Alpha Mono", "Fira Code"]);
+    assert_eq!(selected.as_deref(), Some("Fira Code"));
+    settle(&rt, cx);
+}
+
+/// The saved family is read from the settings once, when the view loads,
+/// not on every frame (a wrong-typed value would log a warning per frame):
+/// the settings changed behind the view's back leave the dropdown as it was.
+#[gpui_kit::test]
+fn the_saved_family_is_read_once_not_per_frame(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Gone");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let before = s.pf_font_choices(cx);
+    assert!(before.0.contains(&"Gone (not installed)".to_string()));
+    s.pf_with_view(cx, |v, _, cx| {
+        if let Some(opened) = v.opened_mut() {
+            opened.gui.set_editor_font_family(Some("Elsewhere"));
+        }
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(s.pf_font_choices(cx), before);
+    settle(&rt, cx);
+}
+
+/// A save that lands reads the saved family again: the old saved family's
+/// "(not installed)" entry goes, though the view entity is still alive.
+#[gpui_kit::test]
+fn a_save_refreshes_the_saved_family(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Gone");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let view = s.pf_view(cx);
+    assert!(
+        s.pf_font_choices(cx)
+            .0
+            .contains(&"Gone (not installed)".to_string())
+    );
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Alpha Mono".into()), cx)
+    });
+    s.pf_save(&rt, cx);
+    let (labels, selected) = cx.read(|cx| view.read(cx).font_choices(cx));
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Alpha Mono"]);
+    assert_eq!(selected.as_deref(), Some("Alpha Mono"));
+    settle(&rt, cx);
+}
+
+/// A saved family matches an installed one whatever its capital letters:
+/// "fira code" selects the "Fira Code" entry, with no "(not installed)"
+/// entry, and the file keeps the user's spelling.
+#[gpui_kit::test]
+fn a_saved_family_matches_the_installed_one_ignoring_case(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "fira code");
+    families_ready(cx, &["Alpha Mono", "Fira Code"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let (labels, selected) = s.pf_font_choices(cx);
+    assert_eq!(labels, [FONT_DEFAULT_LABEL, "Alpha Mono", "Fira Code"]);
+    assert_eq!(selected.as_deref(), Some("Fira Code"));
+    assert!(s.pf_disabled(SAVE_ID, cx), "nothing changed");
+    s.pf_click(UPDATE_CHECK_ID, cx);
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(
+            settings.gui.editor_font_family().as_deref(),
+            Some("fira code")
+        );
+    }
+    settle(&rt, cx);
+}
+
+/// Picking a family that already has an entry moves the selection only:
+/// the entries are not rebuilt (the same `Rc`, so `set_items` was not
+/// called).
+#[gpui_kit::test]
+fn picking_a_listed_family_does_not_rebuild_the_entries(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono", "Beta Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let before = s.pf_read(cx, |v| v.font_items());
+    for family in ["Alpha Mono", "Beta Mono"] {
+        s.pf_with_view(cx, |v, _, cx| {
+            v.set_editor_font_family(Some(family.into()), cx)
+        });
+        assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some(family));
+    }
+    s.pf_with_view(cx, |v, _, cx| v.set_editor_font_family(None, cx));
+    assert_eq!(s.pf_font_choices(cx).1.as_deref(), Some(FONT_DEFAULT_LABEL));
+    let after = s.pf_read(cx, |v| v.font_items());
+    assert!(std::rc::Rc::ptr_eq(&before, &after), "not rebuilt");
+    // A draft with no entry yet is the one case that rebuilds.
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Gone".into()), cx)
+    });
+    assert_eq!(
+        s.pf_font_choices(cx).1.as_deref(),
+        Some("Gone (not installed)")
+    );
+    settle(&rt, cx);
+}
+
+/// Opening Display starts the family probe.
+#[gpui_kit::test]
+fn opening_display_loads_the_family_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = with_prefs(cx, &rt, &v);
+    assert!(matches!(cx.read(mono_families::state), MonoFamilies::Idle));
+    s.pf_section(cx, Section::Display);
+    assert!(!matches!(cx.read(mono_families::state), MonoFamilies::Idle));
+    settle(&rt, cx);
+}
+
+/// Cancel and Discard: no font key is written, the editor font unchanged.
+#[gpui_kit::test]
+fn cancel_discards_the_font_draft(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let before = cx.read(|cx| cx.try_global::<EditorFontSetting>().cloned());
+    s.pf_section(cx, Section::Display);
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Alpha Mono".into()), cx)
+    });
+    s.pf_click(CANCEL_ID, cx);
+    s.pf_click(DISCARD_ID, cx);
+    assert!(!s.pf_is_open(cx));
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.editor_font_family(), None);
+        assert_eq!(settings.gui.editor_font_size(), None);
+    }
+    assert_eq!(
+        cx.read(|cx| cx.try_global::<EditorFontSetting>().cloned()),
+        before
+    );
+    settle(&rt, cx);
+}
+
+/// Save hands the new font to the Edit surface at once.
+#[gpui_kit::test]
+fn saving_applies_the_font_without_a_restart(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    let default = theme_font_size(cx);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(stepper_up_id(FONT_SIZE_ID), cx);
+    s.pf_with_view(cx, |v, _, cx| {
+        v.set_editor_font_family(Some("Alpha Mono".into()), cx)
+    });
+    s.pf_save(&rt, cx);
+    let family = cx.read(editor_font::face_inputs).preferred;
+    assert_eq!(family.as_deref(), Some("Alpha Mono"));
+    let size = cx.read(editor_font::font_size);
+    assert_eq!(size, gpui_kit::px(f32::from(default + 1)));
+    settle(&rt, cx);
+}
+
+/// A save that leaves the font alone writes neither key.
+#[gpui_kit::test]
+fn an_untouched_save_never_adds_the_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(UPDATE_CHECK_ID, cx);
+    s.pf_save(&rt, cx);
+    let text = std::fs::read_to_string(config(&v)).unwrap();
+    assert!(!text.contains("editor_font"), "{text}");
+    let settings = v.settings.read().unwrap().clone();
+    assert_eq!(settings.gui.editor_font_family(), None);
+    assert_eq!(settings.gui.editor_font_size(), None);
+    settle(&rt, cx);
+}
+
+/// Display > Rail position: part of the draft like Reduce motion, saved as
+/// `[gui] rail` with the rest of `[gui]` kept, and applied to the open window
+/// at once, without a reopen.
+#[gpui_kit::test]
+fn the_rail_position_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::RailPosition;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let system = kimun_notes::settings::gui::WindowDecorations::System;
+    AppSettings::update_gui_at(config(&v), |gui| gui.set_window_decorations(system)).unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_window_decorations(system);
+    let s = with_prefs(cx, &rt, &v);
+    let files = s.files_id(cx);
+    s.pf_section(cx, Section::Display);
+    assert!(s.pf_disabled(SAVE_ID, cx), "clean: Save is off");
+
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Top, cx));
+    assert_eq!(s.pf_model(cx, |m| m.rail), RailPosition::Top);
+    assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).rail),
+        RailPosition::Left,
+        "not applied before Save"
+    );
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Left, cx));
+    assert!(s.pf_disabled(SAVE_ID, cx), "picked back: clean");
+
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Top, cx));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.rail(), RailPosition::Top);
+        assert_eq!(
+            settings.gui.window_decorations(),
+            system,
+            "the rest of [gui] is kept"
+        );
+    }
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).rail),
+        RailPosition::Top,
+        "applied at once"
+    );
+    assert_eq!(s.files_id(cx), files, "no reopen");
+    settle(&rt, cx);
+}
+
+/// The rail moved from the palette or a preset before Preferences opened:
+/// Preferences start from that position, and saving another setting leaves
+/// the rail where it is (the shared settings follow every rail change).
+#[gpui_kit::test]
+fn a_rail_move_before_preferences_is_not_undone_by_saving_them(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::RailPosition;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = on_vault(cx, &rt, &v);
+    s.pf_on_window(cx, |w, _, cx| w.set_rail(RailPosition::Top, cx));
+    s.pf_route(cx);
+    s.pf_loaded(&rt, cx);
+    assert_eq!(s.pf_model(cx, |m| m.rail), RailPosition::Top);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(REDUCE_MOTION_ID, cx);
+    s.pf_save(&rt, cx);
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).rail), RailPosition::Top);
+    assert_eq!(on_disk(&v).gui.rail(), RailPosition::Top);
     settle(&rt, cx);
 }
 

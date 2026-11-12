@@ -316,15 +316,42 @@ impl Workspace {
         }
     }
 
-    /// The px the tree has: the window's width less the rail, its height
-    /// less the title bar (as last drawn).
+    /// The px the tree has: the window less the title bar (as last drawn)
+    /// and less the rail's thickness, taken from the width by a left or
+    /// right rail and from the height by a top or bottom one (ADR-0055 §4).
+    /// A hidden rail takes nothing.
     fn tree_area(&self, window: &Window) -> (f64, f64) {
         let viewport = window.viewport_size();
         let rem = f64::from(window.rem_size());
+        let rail = if self.rail_hidden {
+            0.0
+        } else {
+            f64::from(RAIL_REMS) * rem
+        };
+        let (across, down) = if self.rail.horizontal() {
+            (0.0, rail)
+        } else {
+            (rail, 0.0)
+        };
         (
-            (f64::from(viewport.width) - f64::from(RAIL_REMS) * rem).max(0.0),
-            (f64::from(viewport.height) - self.title_bar_height.get()).max(0.0),
+            (f64::from(viewport.width) - across).max(0.0),
+            (f64::from(viewport.height) - self.title_bar_height.get() - down).max(0.0),
         )
+    }
+
+    /// The frame of the layout tree: it fills what the rail leaves, in
+    /// whichever direction the body runs.
+    fn tree_frame(&self) -> impl IntoElement + ParentElement {
+        let horizontal = self.rail.horizontal();
+        div()
+            .id("layout-tree")
+            .test_support()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .when(horizontal, |frame| frame.w_full())
+            .when(!horizontal, |frame| frame.h_full())
     }
 
     /// Which leaves the window has room for (ADR-0052 §6, Ruling 12):
@@ -512,14 +539,7 @@ impl Workspace {
             // Every tree holds an editor group, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
             .unwrap_or_else(|| self.render_editor(window, cx).into_any_element());
-        div()
-            .id("layout-tree")
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .child(tree)
-            .into_any_element()
+        self.tree_frame().child(tree).into_any_element()
     }
 
     /// The zoomed `leaf` filling the tree's area: an editor group is the
@@ -556,14 +576,7 @@ impl Workspace {
                     .into_any_element()
             }
         };
-        div()
-            .id("layout-tree")
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .child(content)
-            .into_any_element()
+        self.tree_frame().child(content).into_any_element()
     }
 
     /// `shape`, drawn in `size` px, or `None` when nothing in it is

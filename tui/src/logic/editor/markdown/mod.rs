@@ -548,14 +548,15 @@ mod tests {
             .find(|p| p.start_char == img.start_char)
             .expect("placeholder for image");
         assert_eq!(ph.placeholder, "[img.png]");
-        for (pos, visible) in parsed
-            .content_vis
+        for (offset, visible) in parsed.content_vis[img.start_char..img.end_char]
             .iter()
             .enumerate()
-            .take(img.end_char)
-            .skip(img.start_char)
         {
-            assert!(!visible, "char {pos} should be hidden inside image span");
+            assert!(
+                !visible,
+                "char {} should be hidden inside image span",
+                img.start_char + offset
+            );
         }
     }
     #[test]

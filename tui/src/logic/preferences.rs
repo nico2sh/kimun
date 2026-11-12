@@ -20,6 +20,7 @@ use kimun_core::system::SystemPath;
 use kimun_core::{IndexFile, NoteVault, NotesValidation, VaultConfig};
 
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::layout_tree::RailPosition;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::history::HistoryFile;
 use crate::settings::themes::Theme;
@@ -345,6 +346,16 @@ pub struct PreferencesModel {
     /// unchanged; it is written only when it differs from the config's
     /// value, so a save that did not touch it never adds the key.
     pub reduce_motion: bool,
+    /// `[gui] editor_font_family`: `None` = the theme's font. Desktop-only,
+    /// written only when it differs from the config's value.
+    pub editor_font_family: Option<String>,
+    /// `[gui] editor_font_size` in pixels: `None` = the theme's size.
+    /// Desktop-only, written only when it differs from the config's value.
+    pub editor_font_size: Option<u8>,
+    /// `[gui] rail`: the window edge the desktop app's Activity rail sits
+    /// on (ADR-0055). Desktop-only, carried and written like
+    /// `reduce_motion`.
+    pub rail: RailPosition,
     /// Which-key reveal delay, see [`step_leader_delay`].
     pub leader_timeout_ms: u64,
     pub default_sort_field: SortFieldSetting,
@@ -373,6 +384,9 @@ impl PreferencesModel {
             update_check: s.update_check(),
             mouse: s.mouse(),
             reduce_motion: s.gui.reduce_motion(),
+            editor_font_family: s.gui.editor_font_family(),
+            editor_font_size: s.gui.editor_font_size(),
+            rail: s.gui.rail(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -429,6 +443,14 @@ impl PreferencesModel {
     /// Step the which-key delay, see [`step_leader_delay`].
     pub fn step_leader_delay(&mut self, up: bool) {
         self.leader_timeout_ms = step_leader_delay(self.leader_timeout_ms, up);
+    }
+
+    /// Step the editor font size by one pixel from the draft (or from
+    /// `theme_default` while unset), clamped to the allowed range.
+    pub fn step_editor_font_size(&mut self, up: bool, theme_default: u8) {
+        let current = i64::from(self.editor_font_size.unwrap_or(theme_default));
+        let next = if up { current + 1 } else { current - 1 };
+        self.editor_font_size = Some(crate::settings::gui::clamp_editor_font_size(next));
     }
 
     /// Cycle one sort setting to its next value.
@@ -566,6 +588,12 @@ impl PreferencesModel {
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
             || self.reduce_motion != initial.gui.reduce_motion()
+            || !same_font_family(
+                self.editor_font_family.as_deref(),
+                initial.gui.editor_font_family().as_deref(),
+            )
+            || self.editor_font_size != initial.gui.editor_font_size()
+            || self.rail != initial.gui.rail()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -609,6 +637,19 @@ impl PreferencesModel {
         if s.gui.reduce_motion() != self.reduce_motion {
             s.gui.set_reduce_motion(self.reduce_motion);
         }
+        if !same_font_family(
+            s.gui.editor_font_family().as_deref(),
+            self.editor_font_family.as_deref(),
+        ) {
+            s.gui
+                .set_editor_font_family(self.editor_font_family.as_deref());
+        }
+        if s.gui.editor_font_size() != self.editor_font_size {
+            s.gui.set_editor_font_size(self.editor_font_size);
+        }
+        if s.gui.rail() != self.rail {
+            s.gui.set_rail(self.rail);
+        }
         let global = &mut s
             .workspace_config
             .get_or_insert_with(WorkspaceConfig::new_empty)
@@ -651,6 +692,18 @@ impl PreferencesModel {
         self.apply_editor(s);
         self.apply_server(s);
         theme_changed
+    }
+}
+
+/// Whether two editor font families are the same choice: both the theme's
+/// font (`None`), or names that match whatever their ASCII capital letters
+/// (font lookup ignores them too). A case-only difference is not a change,
+/// so the config keeps the user's spelling.
+pub fn same_font_family(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
     }
 }
 

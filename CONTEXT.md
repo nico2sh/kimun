@@ -283,7 +283,7 @@ A persistent surface in the editor screen's column layout — the **Activity rai
 _Avoid_: pane, view, widget, component (too generic).
 
 **Activity rail**:
-The fixed-width icon strip on the far left of the editor screen. Each cell names a **drawer view**; selecting a cell (click, ↑/↓ + Enter, or later a leader path) switches the **Drawer** to that view. The active cell shows a green edge bar; CFG is pinned to the bottom.
+The fixed-thickness icon strip at an edge of the editor screen. Each cell names a **drawer view**; selecting a cell (click, arrows along the strip + Enter, or later a leader path) switches the **Drawer** to that view. The active cell shows a green edge bar; CFG is pinned to the end of the strip. In the TUI it is always at the left. In the GUI its position (left, right, top or bottom) and its visibility are window-level settings (`[gui] rail`, `rail_hidden`), not part of the **Layout tree**: the Preferences control and the palette rows set the position, a preset can set it, and the footer button or `ToggleRail` hides and shows it. A hidden rail takes no space and no keyboard focus.
 _Avoid_: sidebar (the pre-rail name for the file browser), icon bar, toolbar.
 
 **Drawer**:
@@ -291,7 +291,7 @@ The TUI's single panel between the **Activity rail** and the editor, holding **d
 _Avoid_: sidebar / Query panel as panel names (they are now drawer views), side panel, dock.
 
 **Layout tree**:
-The GUI's arrangement of the window to the right of the **Activity rail**: a recursive tree whose leaves are **slots** and **editor groups** and whose inner nodes split their area along an axis by relative weight. It always contains at least one editor group; the rail sits outside it. The built-in default arrangement reproduces today's layout (a left slot, the editor, an empty right slot, which takes no space until opened). Authored as named presets, nested to match the tree, in their own file, `layouts.toml` beside `config.toml`, which the app reads but never writes; applying a preset copies it into the live layout, which `config.toml` keeps as dragged and toggled along with the active preset's name. Resetting to the default restores the built-in arrangement and forgets the preset's name. When the window is too small for every minimum, slots collapse (never an editor group); collapse is recomputed from the window size, lasts only for the session and never changes the saved layout. The TUI does not use it.
+The GUI's arrangement of the window beside the **Activity rail** (the area the rail leaves, whichever edge it is on): a recursive tree whose leaves are **slots** and **editor groups** and whose inner nodes split their area along an axis by relative weight. It always contains at least one editor group; the rail sits outside it. The built-in default arrangement reproduces today's layout (a left slot, the editor, an empty right slot, which takes no space until opened). Authored as named presets, nested to match the tree, in their own file, `layouts.toml` beside `config.toml`, which the app reads but never writes; applying a preset copies it into the live layout, which `config.toml` keeps as dragged and toggled along with the active preset's name. Resetting to the default restores the built-in arrangement and forgets the preset's name. When the window is too small for every minimum, slots collapse (never an editor group); collapse is recomputed from the window size, lasts only for the session and never changes the saved layout. The TUI does not use it.
 _Avoid_: layout (too broad), dock layout, panel tree.
 
 **Slot**:
@@ -310,7 +310,7 @@ The collection of the editor screen's **Panels**. In the TUI a fixed left→righ
 _Avoid_: panel manager, layout, panel stack.
 
 **Zoom**:
-A layout state in which one focused **drawer view** (or the editor) takes over everything to the right of the **Activity rail** — every other **slot**, every **editor group** and the splits between them — while the footer stays to carry the exit hint. Available to any view, not only Ask. It is not a placement: the zoomed view keeps its slot, nothing is moved or hidden in the layout, and leaving zoom restores the previous arrangement exactly. Zoom ends by its own chord or the footer's restore button, or when a command gives another leaf the keyboard (a rail click into another slot, opening a note from the zoomed view, a side toggled on); Esc, the focus cycle and directional focus never end it. Session-only, never saved.
+A layout state in which one focused **drawer view** (or the editor) takes over everything beside the **Activity rail** — every other **slot**, every **editor group** and the splits between them — while the footer stays to carry the exit hint. Available to any view, not only Ask. It is not a placement: the zoomed view keeps its slot, nothing is moved or hidden in the layout, and leaving zoom restores the previous arrangement exactly. Zoom ends by its own chord or the footer's restore button, or when a command gives another leaf the keyboard (a rail click into another slot, opening a note from the zoomed view, a side toggled on); Esc, the focus cycle and directional focus never end it. Session-only, never saved.
 _Avoid_: maximize, fullscreen (names the OS window), tab (a persistent second instance in the editor area, a separate later feature tied to **editor group** splitting).
 
 **Editor group**:
@@ -379,6 +379,11 @@ _Avoid_: event (ambiguous with input events), command (the **Vim command** and p
 **Edit surface**:
 The **GUI**'s custom editor widget: paints the **edit buffer** with the buffer's own cell-grid layout in a monospace font and feeds key events to the same input interpreters (plain, **vim**) as the TUI. Not a toolkit text-edit widget, which has no motion layer and cannot host the vim engine.
 _Avoid_: text box, text area, TextEdit.
+
+**Edit surface font**:
+The monospace family and absolute size in pixels (8 to 32) the **Edit surface** paints in, chosen in **GUI** Preferences and applied when the user saves. It never changes the rest of the **GUI**'s text. A family without a real bold face keeps the user's choice and draws bold synthetically. Unset means the theme's default.
+The Preferences row that sets it is titled "Editor Font", a label for users; in code and this glossary the term is **Edit surface font**.
+_Avoid_: UI font (that is the interface's Inter face).
 
 **Key input**:
 What the user typed, terminal-neutrally: a character (`$`, `é`) or a named key (Enter, Esc, arrows, F-keys) plus modifiers — the unit the editing engines consume. Distinct from a **key combo**, which names a physical key for the shortcut table.
