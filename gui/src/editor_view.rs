@@ -664,7 +664,7 @@ impl EditorView {
         match &self.fonts {
             Some((family, fonts)) if family == kit_family => fonts.clone(),
             _ => {
-                let fonts = EditorFonts::resolve(text_system, kit_family);
+                let fonts = EditorFonts::resolve(text_system, kit_family, None);
                 self.fonts = Some((kit_family.clone(), fonts.clone()));
                 fonts
             }
