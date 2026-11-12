@@ -113,6 +113,8 @@ for f in kimun-*; do
     for app in kimun kimun-gui; do
       case "$f" in "$app-$version-$p$ext" | "$app-$version-$p.$arc") known=1 ;; esac
       case "$f" in "kimun-gui-$version-$p.dmg") known=1 ;; esac
+      # The stable downloads (ADR-0057): the archives and .dmg with no version.
+      case "$f" in "$app-$p.$arc" | "kimun-gui-$p.dmg") known=1 ;; esac
     done
   done
   [ "$known" = 1 ] || err "unexpected asset: $f"

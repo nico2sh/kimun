@@ -525,6 +525,10 @@ _Avoid_: auto-update (reserve that for the unattended variant, if it ever exists
 The non-blocking signal that an **update check** found a newer release, surfaced in the TUI. On package-manager channels it carries the upgrade command to run; on self-update-eligible channels it offers to **self-update**.
 _Avoid_: update prompt (notification is passive; it does not steal focus)
 
+**Stable download**:
+A copy of a release archive whose file name has no version, such as `kimun-gui-macos-arm64.dmg`. It is attached to every release next to the versioned file, so GitHub's `releases/latest/download/<name>` link always gives the newest stable release. The README and the site's download page link to these names. Only archives (and the `.dmg`) get one, never the raw binaries, which updaters find by their versioned names.
+_Avoid_: latest build, nightly (a stable download is never a build of unreleased code)
+
 ### Kimün server
 
 **Kimün server**:
