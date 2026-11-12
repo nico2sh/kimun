@@ -54,8 +54,9 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
     let embedder_providers = [
         ("none", ""),
         ("fastembed", "model"),
-        ("ollama", "http"),
-        ("openai", "http key"),
+        ("ollama", "url emodel"),
+        ("openai", "url emodel key keyhelp-openai"),
+        ("openrouter", "emodel key keyhelp-openrouter"),
     ];
     let current_embedder = c.embedder.as_ref().map(|e| e.provider()).unwrap_or("none");
     let fastembed_models = crate::dbembeddings::embedder::fastembedder::supported_models();
@@ -79,11 +80,17 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
         | Some(crate::config::EmbedderConfig::OpenAI { url, model, .. }) => {
             (String::new(), url.clone(), model.clone())
         }
+        Some(crate::config::EmbedderConfig::OpenRouter { model, .. }) => {
+            (String::new(), String::new(), model.clone())
+        }
         None => (String::new(), String::new(), String::new()),
     };
     let embedder_key_set = matches!(
         &c.embedder,
         Some(crate::config::EmbedderConfig::OpenAI {
+            api_key: Some(_),
+            ..
+        }) | Some(crate::config::EmbedderConfig::OpenRouter {
             api_key: Some(_),
             ..
         })
@@ -190,7 +197,7 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                 }
                 p .muted { "Changing the embedder invalidates all indexed data — on the next start the server wipes stored vectors and every vault re-indexes on its next sync." }
                 noscript {
-                    p .muted { "(Without JavaScript all fields are shown: Model applies to fastembed; URL and Model to ollama and openai; API key to openai only.)" }
+                    p .muted { "(Without JavaScript all fields are shown: Model applies to fastembed; URL to ollama and openai; Model to ollama, openai and openrouter; API key to openai and openrouter.)" }
                 }
                 // Provider-specific field groups: the script at the bottom of
                 // the page shows only the groups named by the selected option's
@@ -210,16 +217,28 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     // data-desc; hover on an option shows it too (title).
                     p .muted #fastembed-desc {}
                 }
-                div data-embedder="http" {
-                    div .row {
-                        div { label { "URL" } input type="text" name="embedder_url" value=(current_url); }
-                        div { label { "Model" } input type="text" name="embedder_model" value=(current_model); }
-                    }
+                // URL and model are separate groups so OpenRouter (fixed URL)
+                // shows the model alone; the row's flex layout lets it fill.
+                div .row {
+                    div data-embedder="url" { label { "URL" } input type="text" name="embedder_url" value=(current_url); }
+                    div data-embedder="emodel" { label { "Model" } input type="text" name="embedder_model" value=(current_model); }
+                }
+                div data-embedder="emodel" {
                     p .muted { "Instruction prefixes (doc_prefix / query_prefix) are file-only settings; a save here keeps them." }
                 }
+                // The placeholder states only what is true for every provider
+                // that shows this field; the env-var fallback differs per
+                // provider, so each gets its own help line.
                 div data-embedder="key" {
                     label { "API key" }
-                    input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
+                    input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "no key set" });
+                    p .muted { "Leave blank to keep the current key." }
+                }
+                div data-embedder="keyhelp-openai" {
+                    p .muted { "Sent as a bearer token. There is no environment-variable fallback; keyless endpoints work with no key." }
+                }
+                div data-embedder="keyhelp-openrouter" {
+                    p .muted { "If no key is set, the server reads OPENROUTER_API_KEY." }
                 }
             }
             details .card open {

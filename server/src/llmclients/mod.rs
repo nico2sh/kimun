@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{LlmConfig, ReasoningEffort};
+use crate::config::{LlmConfig, OPENROUTER_URL, ReasoningEffort};
 use crate::document::FlattenedChunk;
 
 #[allow(clippy::double_must_use)]
@@ -32,7 +32,6 @@ const OPENAI_URL: &str = "https://api.openai.com/v1";
 const MISTRAL_URL: &str = "https://api.mistral.ai/v1";
 const ANTHROPIC_URL: &str = "https://api.anthropic.com";
 const GEMINI_URL: &str = "https://generativelanguage.googleapis.com";
-const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 
 /// The provider's wire shape — the only thing that differs between providers.
 enum Wire {

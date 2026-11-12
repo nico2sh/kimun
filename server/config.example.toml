@@ -68,6 +68,11 @@ type = "fastembed"
 # model = "text-embedding-3-small"
 # api_key = "..."                    # sent as a bearer token; no env-var fallback
 
+# OpenRouter (fixed URL; the key falls back to OPENROUTER_API_KEY when omitted):
+# type = "openrouter"
+# model = "openai/text-embedding-3-small"
+# api_key = "..."
+
 # Mistral (native API is OpenAI-compatible), via the same "openai" type:
 # type = "openai"
 # url = "https://api.mistral.ai/v1"

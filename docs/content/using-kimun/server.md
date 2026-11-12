@@ -146,7 +146,7 @@ The first run downloads the embedding model (a few hundred MB). When the server 
 
 The configuration file is `~/.config/kimun/server.toml`. If the file does not exist, `--default-config` creates it. To choose the items below, edit the file, or use the Config page of the web UI:
 
-- Embedder: local [fastembed](https://github.com/Anush008/fastembed-rs) models (no network), or an external Ollama or OpenAI-compatible embeddings endpoint. The OpenAI-compatible option also covers cloud providers. Examples are [Mistral](https://docs.mistral.ai/api/endpoint/embeddings), whose native API is OpenAI-compatible, and [Google Gemini](https://ai.google.dev/gemini-api/docs/embeddings), through its OpenAI-compatibility endpoint:
+- Embedder: local [fastembed](https://github.com/Anush008/fastembed-rs) models (no network), an external Ollama or OpenAI-compatible embeddings endpoint, or OpenRouter. The OpenAI-compatible option also covers cloud providers. Examples are [Mistral](https://docs.mistral.ai/api/endpoint/embeddings), whose native API is OpenAI-compatible, and [Google Gemini](https://ai.google.dev/gemini-api/docs/embeddings), through its OpenAI-compatibility endpoint:
 
   ```toml
   # Mistral
