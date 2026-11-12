@@ -155,6 +155,15 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
         self.list.as_ref().and_then(|l| l.selected_row())
     }
 
+    /// Apply any rows a load has delivered (render does this too). A host
+    /// that reads the selection before rendering polls first, so it sees
+    /// the rows this frame will draw.
+    pub fn poll(&mut self) {
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+    }
+
     /// Where the selected row sits on screen (see
     /// [`SearchList::selected_row_rect`]), for a host's row controls.
     pub(crate) fn selected_row_rect(&self) -> Option<Rect> {

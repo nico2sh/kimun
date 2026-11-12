@@ -407,6 +407,9 @@ impl SemanticPanel {
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+        // New rows can move the selection: apply them before the preview
+        // follows the selection, so this frame's rows and preview agree.
+        self.body.poll();
         self.poll_load();
         self.sync_preview();
         self.ensure_loaded();
@@ -489,10 +492,17 @@ impl SemanticPanel {
             }) => (title.trim().to_string(), filename.clone()),
             _ => (String::new(), String::new()),
         };
+        let selected = self.selected_path();
         let Self {
             loaded, preview, ..
         } = self;
-        match loaded.as_ref().map(|l| &l.text) {
+        // Only the selected note's text is painted; another note's shows as
+        // still loading.
+        let text = loaded
+            .as_ref()
+            .filter(|l| selected.as_ref() == Some(&l.path))
+            .map(|l| &l.text);
+        match text {
             Some(PreviewText::Loaded { text, highlight }) => {
                 let highlight = Highlight::Range(highlight.as_ref());
                 if full {
@@ -983,6 +993,85 @@ mod tests {
             "the list selection did not move"
         );
         assert!(panel.preview.is_context());
+    }
+
+    /// The server's answer per query: `a` for a blank query, `b` otherwise.
+    struct SwapSource;
+    #[async_trait::async_trait]
+    impl crate::components::search_list::RowSource<SemanticHit> for SwapSource {
+        async fn load(&self, q: &str, emit: crate::components::search_list::Emit<SemanticHit>) {
+            let name = if q.is_empty() { "a" } else { "b" };
+            emit.replace(vec![note_hit(name, "Details", 0)]);
+        }
+    }
+
+    fn screen(buf: &Buffer) -> String {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// New results under an open Context preview move the selection to
+    /// another note: the frame that applies them never paints the old
+    /// note's text, and the new note's text shows once it loads.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_results_never_paint_the_old_notes_text() {
+        let (mut panel, tx, _rx) = panel_with("sem-swap", Vec::new()).await;
+        for (name, body) in [("a", "alpha body text"), ("b", "bravo body text")] {
+            panel
+                .vault
+                .create_note(&VaultPath::note_path_from(name), body)
+                .await
+                .unwrap();
+        }
+        panel.body.set_source(SwapSource, &tx);
+        panel.body.list_mut().unwrap().poll_until_idle().await;
+        panel.handle_input(&alt(KeyCode::Right), &tx);
+        settle_load(&mut panel).await;
+        let shown = screen(&draw(&mut panel, 40, 30));
+        assert!(shown.contains("alpha body text"), "{shown}");
+
+        // The new rows land unpolled; the next frame applies them.
+        panel.body.list_mut().unwrap().set_query("more");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let shown = screen(&draw(&mut panel, 40, 30));
+        assert_eq!(
+            panel.body.selected_row().map(|h| h.entry.path().clone()),
+            Some(VaultPath::note_path_from("b")),
+            "the new rows were applied"
+        );
+        assert!(!shown.contains("alpha body text"), "A under B:\n{shown}");
+
+        settle_load(&mut panel).await;
+        assert_eq!(panel.loaded_text(), Some("bravo body text"));
+        let shown = screen(&draw(&mut panel, 40, 30));
+        assert!(shown.contains("bravo body text"), "{shown}");
+        assert!(!shown.contains("alpha body text"), "{shown}");
+    }
+
+    /// With no rows the preview keys and the list keys do nothing, and no
+    /// chevron shows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_list_has_no_chevron_and_inert_keys() {
+        let (mut panel, tx, _rx) = panel_with("sem-empty", Vec::new()).await;
+        let buf = draw(&mut panel, 40, 30);
+        for code in [KeyCode::Right, KeyCode::Left] {
+            panel.handle_input(&alt(code), &tx);
+        }
+        for code in [KeyCode::Up, KeyCode::Down] {
+            panel.handle_input(&key(code), &tx);
+        }
+        assert!(panel.preview.is_collapsed());
+        let after = draw(&mut panel, 40, 30);
+        for b in [&buf, &after] {
+            assert!(cells(b, "\u{203A}").is_empty());
+            assert!(cells(b, "\u{2039}").is_empty());
+        }
     }
 
     /// The hint row names Enter Open and the chevron's key for the state.
