@@ -48,7 +48,39 @@ pub struct Editor {
     find: Option<FindBar>,
 }
 
+/// macOS chords: Cmd+A/C/V/X/Z/Y do what the Ctrl chord does, and Cmd+Shift+Z
+/// redoes. The GUI passes Cmd through as `sup` (never as Ctrl), so without this
+/// alias the native key reaches no engine at all. Cmd+arrows and Cmd+Backspace
+/// are not here: they have their own rows.
+///
+/// `select_all` is `false` for the find bar, where Ctrl+A means replace-all:
+/// Cmd+A must not trigger that.
+pub(crate) fn cmd_as_ctrl(key: KeyInput, select_all: bool) -> KeyInput {
+    match (key.key, key.mods) {
+        (Key::Char('a'), Mods::SUPER) if !select_all => key,
+        (Key::Char(c @ ('a' | 'c' | 'v' | 'x' | 'z' | 'y')), Mods::SUPER) => {
+            KeyInput::new(Key::Char(c), Mods::CTRL)
+        }
+        (Key::Char('z' | 'Z'), m)
+            if m == (Mods {
+                shift: true,
+                ..Mods::SUPER
+            }) =>
+        {
+            KeyInput::new(Key::Char('y'), Mods::CTRL)
+        }
+        _ => key,
+    }
+}
+
 impl Editor {
+    /// Whether `key` is the paste chord (Ctrl+V, or Cmd+V through the alias).
+    /// A host that pastes into the find bar itself asks here, so it keeps no
+    /// chord list of its own.
+    pub fn is_paste_chord(key: KeyInput) -> bool {
+        cmd_as_ctrl(key, false) == KeyInput::new(Key::Char('v'), Mods::CTRL)
+    }
+
     /// An empty editor: the built-in vim emulation when `vim`, direct typing
     /// otherwise.
     pub fn new(vim: bool) -> Self {
@@ -914,7 +946,14 @@ impl Editor {
         };
         // The bar acts at the cursor: a wheel-scrolled view re-attaches to it.
         self.session.display.follow_cursor();
-        let outcome = bar.handle_key(key, &mut self.buf.ta);
+        // Cmd+Z/Y/Shift+Z undo like Ctrl; any other Cmd chord is ignored, not
+        // typed (the field types a char with Super held).
+        let key = cmd_as_ctrl(key, false);
+        let outcome = if key.mods.sup {
+            Default::default()
+        } else {
+            bar.handle_key(key, &mut self.buf.ta)
+        };
         if outcome.close {
             self.close_find();
         }
@@ -1006,24 +1045,7 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
-        // macOS chords: Cmd+A/C/V/X/Z/Y do what the Ctrl chord does, and
-        // Cmd+Shift+Z redoes. The GUI passes Cmd through as `sup` (never as
-        // Ctrl), so without this alias the native key reaches no engine at all.
-        // Cmd+arrows and Cmd+Backspace are not here: they have their own rows.
-        let key = match (key.key, key.mods) {
-            (Key::Char(c @ ('a' | 'c' | 'v' | 'x' | 'z' | 'y')), Mods::SUPER) => {
-                KeyInput::new(Key::Char(c), Mods::CTRL)
-            }
-            (Key::Char('z' | 'Z'), m)
-                if m == (Mods {
-                    shift: true,
-                    ..Mods::SUPER
-                }) =>
-            {
-                KeyInput::new(Key::Char('y'), Mods::CTRL)
-            }
-            _ => key,
-        };
+        let key = cmd_as_ctrl(key, true);
         // Every key acts at the cursor, so a wheel-scrolled view comes back to
         // it — even when the key leaves the cursor where it was (find-next onto
         // the same match, a motion at the buffer edge). Idempotent, so a host
@@ -1987,6 +2009,22 @@ mod tests {
         ed.handle_key(cmd('a'), &tx());
         ed.handle_key(typed('Q'), &tx());
         assert_eq!(ed.get_text(), "Q", "select all replaced by typing");
+    }
+
+    #[test]
+    fn find_bar_takes_cmd_undo_but_not_cmd_a() {
+        let mut ed = Editor::new(false);
+        ed.buffer_mut().insert_str("aa");
+        ed.open_find();
+        ed.handle_find_key(typed('a'));
+        ed.handle_find_key(KeyInput::new(Key::Char('a'), Mods::SUPER));
+        ed.handle_find_key(KeyInput::new(Key::Char('q'), Mods::SUPER));
+        assert_eq!(
+            ed.get_text(),
+            "aa",
+            "Cmd+A must not replace-all, Cmd+Q not type"
+        );
+        assert!(ed.handle_find_key(KeyInput::new(Key::Char('z'), Mods::SUPER)));
     }
 
     #[test]

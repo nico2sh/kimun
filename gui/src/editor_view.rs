@@ -619,16 +619,13 @@ impl EditorView {
     ///
     /// Ctrl-V (and the platform's Cmd-V) pastes the clipboard into the
     /// focused field: a terminal pastes through its own channel, a window has
-    /// to ask. Any other Super (Cmd) chord is ignored rather than typed: the
-    /// logic field types a char with Super held, and Cmd-Z must not type `z`.
-    /// The bar's own field keys (Ctrl-Z undo, Ctrl-A replace-all) are the
-    /// logic bar's literal Ctrl chords, not keymap actions, so Cmd-Z/Cmd-A do
-    /// not stand in for them; only the app commands go through the GUI keymap
-    /// (ADR-0050 §6).
+    /// to ask. The logic bar maps Cmd-Z/Y/Shift-Z to its undo/redo and drops
+    /// every other Super (Cmd) chord rather than typing it. Cmd-A is not
+    /// Ctrl-A there: that chord is replace-all. The bar's field keys are the
+    /// logic bar's literal chords, not keymap actions; only the app commands
+    /// go through the GUI keymap (ADR-0050 §6).
     fn find_key(&mut self, key: KeyInput, cx: &mut Context<Self>) {
-        let paste = matches!(key.key, Key::Char('v'))
-            && (key.mods == Mods::CTRL || key.mods == Mods::SUPER);
-        if paste {
+        if Editor::is_paste_chord(key) {
             match cx.read_from_clipboard().and_then(|item| item.text()) {
                 Some(text) if !text.is_empty() => {
                     self.editor.paste_into_find(&text);
@@ -637,8 +634,6 @@ impl EditorView {
                     self.editor.ignore_find_key();
                 }
             }
-        } else if key.mods.sup {
-            self.editor.ignore_find_key();
         } else {
             self.editor.handle_find_key(key);
         }
