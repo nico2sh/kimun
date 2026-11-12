@@ -115,6 +115,30 @@ button.danger:hover{background:oklch(66% .14 30)}
 .live::before{content:"";display:inline-block;width:.45em;height:.45em;border-radius:50%;background:var(--ok);margin-right:.4em;animation:pulse 2s ease-out infinite}
 .hit{margin:var(--sp-lg) 0 0;padding-top:var(--sp-lg);border-top:1px solid var(--line)}
 .hit .score{color:var(--muted);font:400 .75rem var(--mono);margin-left:var(--sp-sm)}
+.tabs{display:none;gap:var(--sp-sm);border-bottom:1px solid var(--line);margin:0 0 var(--sp-xl)}
+.js .tabs{display:flex}
+.tab{margin:0 0 -1px;padding:var(--sp-sm) var(--sp-lg);background:none;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);font:400 .9375rem var(--mono);cursor:pointer}
+.tab:hover{background:none;color:var(--fg)}
+.tab[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+.warn{color:var(--err);font-weight:700}
+.js .tabpanel{display:none}
+.js .tabpanel.on{display:block}
+details.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin:0 0 var(--sp-lg);padding:0 var(--sp-xl)}
+details.card[open]{padding-bottom:var(--sp-lg)}
+details.card>summary{display:flex;align-items:baseline;gap:var(--sp-md);padding:var(--sp-lg) 0;cursor:pointer;list-style:none}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"";flex:none;width:.4em;height:.4em;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:translateY(-.15em) rotate(-45deg)}
+details.card[open]>summary::before{transform:translateY(-.25em) rotate(45deg)}
+details.card>summary h2{margin:0}
+details.card p.muted{font-size:.875rem;margin:var(--sp-sm) 0 0}
+details.card>summary .sum{color:var(--muted);font:400 .8125rem var(--mono);overflow-wrap:anywhere}
+details.card>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.savebar{position:sticky;bottom:0;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-lg);margin-top:var(--sp-xl);padding:var(--sp-md) 0;background:var(--bg);border-top:1px solid var(--line)}
+.savebar button{margin:0}
+.savebar button.danger{background:none;border:1px solid var(--err);color:var(--err)}
+.savebar button.danger:hover{background:oklch(74% .12 30/.12)}
+.savebar .hint{flex:1;min-width:12rem;color:var(--muted);font:400 .8125rem var(--mono)}
+.savebar.dirty .hint{color:var(--accent)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.status.processing::before,.live::before{animation:none}}
 "#))
