@@ -14,7 +14,7 @@ queries. One server can host **many vaults** at once — each vault is a
 
 ```
 Kimün  ──push docs / delete / query──▶  RAG server ──▶  vector DB (SQLite | Qdrant)
-                                                    └──▶  LLM (Claude | OpenAI | Gemini | Mistral)
+                                                    └──▶  LLM (Claude | OpenAI | Gemini | Mistral | OpenRouter)
 ```
 
 ## Install
@@ -129,10 +129,13 @@ See `config.example.toml` for the annotated template. Sections:
   The vector width is detected automatically. **Changing the embedder or model
   invalidates all stored vectors** and forces a re-index — drop the store (the
   SQLite directory or the Qdrant collection), then re-push.
-- **`[llm]`** — `provider` (`claude` | `openai` | `gemini` | `mistral`),
+- **`[llm]`** — `provider` (`claude` | `openai` | `gemini` | `mistral` | `openrouter`),
   `model`, optional `api_key`. The key is server-owned; if omitted it falls back
   to the provider's env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-  `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Kimün never sends a key.
+  `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`). Kimün never sends
+  a key. The `openrouter` provider also takes an optional `reasoning`
+  (`low` | `medium` | `high`), sent as `reasoning.effort`; leave it out and the
+  model keeps its default.
 - **`[reranker]`** — `enabled` (default true), the **context cut** — the one
   sizing rule for query results on both surfaces and both reranker paths:
   `context_cut` picks the strategy, each with its own knobs.
