@@ -10,42 +10,30 @@ use crate::keys::key_combo::{KeyCombo, KeyModifiers};
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::themes::Theme;
 
-/// Which way the control moves the reach of a row.
+/// Which way the control moves the reach of a row (see
+/// [`PreviewPane::reach`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
+pub enum ExpandDir {
     Grow,
     Shrink,
 }
 
-impl Reach {
-    /// `collapsed` is the shortest state, `full` the longest; neither is the
-    /// middle (context) state. Both at once cannot happen and gives `None`.
-    /// The caller decides what to show when no row is selected.
-    pub fn for_state(collapsed: bool, full: bool) -> Option<Reach> {
-        match (collapsed, full) {
-            (true, true) => None,
-            (_, true) => Some(Reach::Shrink),
-            _ => Some(Reach::Grow),
-        }
-    }
-}
-
-pub fn glyph(reach: Reach) -> &'static str {
-    match reach {
-        Reach::Grow => "›",
-        Reach::Shrink => "‹",
+pub fn glyph(dir: ExpandDir) -> &'static str {
+    match dir {
+        ExpandDir::Grow => "›",
+        ExpandDir::Shrink => "‹",
     }
 }
 
 /// Draw the glyph in the last column of `row`, register that cell as
 /// clickable and return it. A zero-width row draws nothing.
-pub fn paint(f: &mut Frame, row: Rect, reach: Reach, theme: &Theme) -> Rect {
+pub fn paint(f: &mut Frame, row: Rect, dir: ExpandDir, theme: &Theme) -> Rect {
     if row.width == 0 || row.height == 0 {
         return Rect::new(row.x, row.y, 0, 0);
     }
     let cell = Rect::new(row.right() - 1, row.y, 1, 1);
     f.render_widget(
-        Paragraph::new(Span::styled(glyph(reach), theme.action())),
+        Paragraph::new(Span::styled(glyph(dir), theme.action())),
         cell,
     );
     crate::components::clickable::register(cell);
@@ -53,10 +41,10 @@ pub fn paint(f: &mut Frame, row: Rect, reach: Reach, theme: &Theme) -> Rect {
 }
 
 /// Key and action labels for the hint row.
-pub fn hint(reach: Reach) -> (String, String) {
-    match reach {
-        Reach::Grow => ("Alt+→".to_string(), "Expand".to_string()),
-        Reach::Shrink => ("Alt+←".to_string(), "Shrink".to_string()),
+pub fn hint(dir: ExpandDir) -> (String, String) {
+    match dir {
+        ExpandDir::Grow => ("Alt+→".to_string(), "Expand".to_string()),
+        ExpandDir::Shrink => ("Alt+←".to_string(), "Shrink".to_string()),
     }
 }
 
@@ -115,18 +103,18 @@ impl ExpandControl {
 
     /// Which way an intercepted chord steps the preview, if it is one of
     /// the control's chords.
-    pub fn dir_of(&self, combo: &KeyCombo) -> Option<Reach> {
+    pub fn dir_of(&self, combo: &KeyCombo) -> Option<ExpandDir> {
         if *combo == self.grow {
-            Some(Reach::Grow)
+            Some(ExpandDir::Grow)
         } else if *combo == self.shrink {
-            Some(Reach::Shrink)
+            Some(ExpandDir::Shrink)
         } else {
             None
         }
     }
 
     /// [`Self::dir_of`] for a raw key event.
-    pub fn dir_of_key(&self, key: &KeyEvent) -> Option<Reach> {
+    pub fn dir_of_key(&self, key: &KeyEvent) -> Option<ExpandDir> {
         crate::keys::key_event_to_combo(key).and_then(|c| self.dir_of(&c))
     }
 
@@ -155,20 +143,15 @@ impl ExpandControl {
     /// list is drawn) in the direction `pane`'s state calls for, and record
     /// it. No row, or Full (the list is gone), paints nothing.
     pub fn paint(&mut self, f: &mut Frame, row: Option<Rect>, pane: &PreviewPane, theme: &Theme) {
-        self.chevron = Rect::default();
-        if let Some(row) = row
-            && let Some(reach) = Reach::for_state(pane.is_collapsed(), pane.is_full())
-        {
-            self.chevron = paint(f, row, reach, theme);
-        }
+        self.chevron = match row {
+            Some(row) => paint(f, row, pane.reach(), theme),
+            None => Rect::default(),
+        };
     }
 
     /// The hint-row entry for the chevron's key, while a row is selected.
     pub fn hint(&self, pane: &PreviewPane, selected: bool) -> Option<(String, String)> {
-        if !selected {
-            return None;
-        }
-        Reach::for_state(pane.is_collapsed(), pane.is_full()).map(hint)
+        selected.then(|| hint(pane.reach()))
     }
 
     /// Drop the recorded chevron: the layout changed, so until the next
@@ -185,18 +168,22 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
     #[test]
-    fn for_state_grows_collapsed_and_context_and_shrinks_full() {
-        assert_eq!(Reach::for_state(true, false), Some(Reach::Grow));
-        assert_eq!(Reach::for_state(false, false), Some(Reach::Grow));
-        assert_eq!(Reach::for_state(false, true), Some(Reach::Shrink));
+    fn reach_grows_collapsed_and_context_and_shrinks_full() {
+        let mut pane = PreviewPane::new();
+        let sel = || Some(kimun_core::nfs::VaultPath::new("a.md"));
+        assert_eq!(pane.reach(), ExpandDir::Grow, "Collapsed");
+        pane.toggle(sel());
+        assert_eq!(pane.reach(), ExpandDir::Grow, "Context");
+        pane.toggle(sel());
+        assert_eq!(pane.reach(), ExpandDir::Shrink, "Full");
     }
 
     #[test]
     fn glyphs_and_hints() {
-        assert_eq!(glyph(Reach::Grow), "›");
-        assert_eq!(glyph(Reach::Shrink), "‹");
-        assert_eq!(hint(Reach::Grow), ("Alt+→".into(), "Expand".into()));
-        assert_eq!(hint(Reach::Shrink), ("Alt+←".into(), "Shrink".into()));
+        assert_eq!(glyph(ExpandDir::Grow), "›");
+        assert_eq!(glyph(ExpandDir::Shrink), "‹");
+        assert_eq!(hint(ExpandDir::Grow), ("Alt+→".into(), "Expand".into()));
+        assert_eq!(hint(ExpandDir::Shrink), ("Alt+←".into(), "Shrink".into()));
     }
 
     #[test]
@@ -204,7 +191,7 @@ mod tests {
         let theme = Theme::gruvbox_dark();
         let mut t = Terminal::new(TestBackend::new(10, 3)).unwrap();
         let mut got = Rect::default();
-        t.draw(|f| got = paint(f, Rect::new(2, 1, 6, 1), Reach::Grow, &theme))
+        t.draw(|f| got = paint(f, Rect::new(2, 1, 6, 1), ExpandDir::Grow, &theme))
             .unwrap();
         assert_eq!(got, Rect::new(7, 1, 1, 1));
         let buf = t.backend().buffer();
@@ -227,11 +214,11 @@ mod tests {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
         let c = ExpandControl::new();
         let [grow, shrink] = c.combos();
-        assert_eq!(c.dir_of(&grow), Some(Reach::Grow));
-        assert_eq!(c.dir_of(&shrink), Some(Reach::Shrink));
+        assert_eq!(c.dir_of(&grow), Some(ExpandDir::Grow));
+        assert_eq!(c.dir_of(&shrink), Some(ExpandDir::Shrink));
         let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
-        assert_eq!(c.dir_of_key(&alt(KeyCode::Right)), Some(Reach::Grow));
-        assert_eq!(c.dir_of_key(&alt(KeyCode::Left)), Some(Reach::Shrink));
+        assert_eq!(c.dir_of_key(&alt(KeyCode::Right)), Some(ExpandDir::Grow));
+        assert_eq!(c.dir_of_key(&alt(KeyCode::Left)), Some(ExpandDir::Shrink));
         let plain = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(c.dir_of_key(&plain), None);
     }
@@ -246,7 +233,7 @@ mod tests {
             .unwrap();
         assert!(c.hit_row(&press(5, 1)));
         assert!(!c.hit_row(&press(4, 1)));
-        assert_eq!(c.hint(&pane, true), Some(hint(Reach::Grow)));
+        assert_eq!(c.hint(&pane, true), Some(hint(ExpandDir::Grow)));
         assert_eq!(c.hint(&pane, false), None);
         c.clear();
         assert!(!c.hit_row(&press(5, 1)), "a cleared chevron is not hit");
@@ -258,7 +245,7 @@ mod tests {
         let theme = Theme::gruvbox_dark();
         let mut t = Terminal::new(TestBackend::new(4, 1)).unwrap();
         t.draw(|f| {
-            paint(f, Rect::new(0, 0, 4, 1), Reach::Shrink, &theme);
+            paint(f, Rect::new(0, 0, 4, 1), ExpandDir::Shrink, &theme);
         })
         .unwrap();
         assert_eq!(t.backend().buffer()[(3, 0)].symbol(), "‹");
@@ -269,7 +256,7 @@ mod tests {
         let theme = Theme::gruvbox_dark();
         let mut t = Terminal::new(TestBackend::new(4, 1)).unwrap();
         let mut got = Rect::new(9, 9, 9, 9);
-        t.draw(|f| got = paint(f, Rect::new(2, 0, 0, 1), Reach::Grow, &theme))
+        t.draw(|f| got = paint(f, Rect::new(2, 0, 0, 1), ExpandDir::Grow, &theme))
             .unwrap();
         assert_eq!(got.width, 0);
         let buf = t.backend().buffer();
