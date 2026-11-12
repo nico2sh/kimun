@@ -361,7 +361,9 @@ install_macos_app() {
   rm -rf "$stagedir"
   [ -z "$backup" ] || rm -rf "$backup"
   # Best effort: tell Launch Services about the app so Spotlight and Launchpad find it now.
-  [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$apps/Kimun.app" >/dev/null 2>&1 || true
+  if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f "$apps/Kimun.app" >/dev/null 2>&1 || true
+  fi
   info "Installed Kimun.app to $apps/Kimun.app"
 }
 
