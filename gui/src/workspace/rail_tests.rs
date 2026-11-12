@@ -619,3 +619,19 @@ fn hiding_the_rail_while_zoomed_keeps_the_zoom(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn a_hidden_rail_cannot_be_given_the_keyboard(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout::Panel;
+    let (_dir, _config, shell) = open_rail_with(cx, RailPosition::Left, true, files_alone());
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        // A modal that closes gives the keyboard back to its opener, which
+        // may be the rail it was opened from.
+        shell
+            .workspace
+            .update(cx, |w, _| w.set_focus_panel(Panel::Rail));
+        assert_ne!(focus(&shell, cx), Focus::Rail);
+    })
+    .unwrap();
+}

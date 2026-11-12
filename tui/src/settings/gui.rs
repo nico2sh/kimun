@@ -180,18 +180,16 @@ impl GuiSettings {
         let Some(value) = self.table.get(RAIL) else {
             return RailPosition::default();
         };
-        let found = value.as_str().map(str::trim).and_then(|name| {
-            RailPosition::ALL
-                .into_iter()
-                .find(|rail| name.eq_ignore_ascii_case(rail.name()))
-        });
-        found.unwrap_or_else(|| {
-            tracing::warn!(
-                "[gui] rail: expected \"left\", \"right\", \"top\" or \"bottom\", got {value}; \
+        value
+            .as_str()
+            .and_then(RailPosition::parse)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "[gui] rail: expected \"left\", \"right\", \"top\" or \"bottom\", got {value}; \
                  using \"left\""
-            );
-            RailPosition::default()
-        })
+                );
+                RailPosition::default()
+            })
     }
 
     /// Records `rail`; the default position removes the key.

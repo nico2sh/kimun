@@ -1048,25 +1048,25 @@ fn focus_dir_among_skips_leaves_that_are_not_visible() {
     let not_right = move |l: Leaf| l != Leaf::Slot(right);
     // The hidden right slot is no target: Right from the editor is the edge.
     assert_eq!(
-        t.focus_dir_among(Dir::Right, &not_right),
+        t.focus_dir_in(Dir::Right, &not_right, Some(RailPosition::Left)),
         TreeFocusMove::AtEdge
     );
     assert_eq!(t.focused(), Focus::Leaf(g));
     // Every leaf visible: the plain rule reaches it.
     assert_eq!(
-        t.focus_dir_among(Dir::Right, &|_| true),
+        t.focus_dir_in(Dir::Right, &|_| true, Some(RailPosition::Left)),
         TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(right)))
     );
     // A hidden left slot: Left from the editor reaches the rail.
     t.focus(Focus::Leaf(g));
     let not_left = move |l: Leaf| l != Leaf::Slot(left);
     assert_eq!(
-        t.focus_dir_among(Dir::Left, &not_left),
+        t.focus_dir_in(Dir::Left, &not_left, Some(RailPosition::Left)),
         TreeFocusMove::Moved(Focus::Rail)
     );
     // And Right from the rail skips it too.
     assert_eq!(
-        t.focus_dir_among(Dir::Right, &not_left),
+        t.focus_dir_in(Dir::Right, &not_left, Some(RailPosition::Left)),
         TreeFocusMove::Moved(Focus::Leaf(g))
     );
 }
@@ -1240,7 +1240,7 @@ fn focus_dir_among_measures_the_layout_as_drawn() {
     assert!(t.focus(leaf(Leaf::Slot(x))));
     let visible = move |l: Leaf| l != Leaf::Slot(y);
     assert_eq!(
-        t.focus_dir_among(Dir::Right, &visible),
+        t.focus_dir_in(Dir::Right, &visible, Some(RailPosition::Left)),
         TreeFocusMove::Moved(leaf(Leaf::Slot(q)))
     );
 }

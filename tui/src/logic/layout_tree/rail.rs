@@ -64,6 +64,25 @@ impl RailPosition {
         }
     }
 
+    /// The position `word` names (trimmed, any case), as `[gui] rail` and a
+    /// preset's `rail` write it. `None` for anything else.
+    pub fn parse(word: &str) -> Option<RailPosition> {
+        let word = word.trim();
+        Self::ALL
+            .into_iter()
+            .find(|rail| word.eq_ignore_ascii_case(rail.name()))
+    }
+
+    /// [`Self::name`] with a capital, for a row or a control.
+    pub fn label(self) -> &'static str {
+        match self {
+            RailPosition::Left => "Left",
+            RailPosition::Right => "Right",
+            RailPosition::Top => "Top",
+            RailPosition::Bottom => "Bottom",
+        }
+    }
+
     /// The word the commands and the settings use.
     pub fn name(self) -> &'static str {
         match self {
