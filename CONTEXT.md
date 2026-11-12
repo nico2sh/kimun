@@ -507,7 +507,7 @@ _Avoid_: snapshot, version (those imply the TUI's own history, which is separate
 ### Updates
 
 **Install channel**:
-How a running kimün binary got onto the machine, which decides whether it may self-update. Four channels: **brew** (Homebrew tap), **cargo** (`cargo install`, built from source), **script** (the official `install.sh`), and **direct** (a manually downloaded release archive). brew and cargo are package-manager-owned — kimün never replaces those binaries, only notifies. script and direct are self-update eligible. The channel is read from an **install marker** when present, otherwise inferred from the canonicalised executable path.
+How a running kimün binary got onto the machine, which decides whether it may self-update. Five channels: **brew** (Homebrew tap), **cargo** (`cargo install`, built from source), **script** (the official `install.sh`), **direct** (a manually downloaded release archive), and **bundle** (the desktop app's signed `Kimun.app` on macOS, whatever put it there). brew and cargo are package-manager-owned — kimün never replaces those binaries, only notifies. script and direct are self-update eligible. bundle is eligible for the desktop app only, and only when the folder holding the app is writable; it replaces the whole app after checking that the new one is validly signed by the same developer team as the running one (see ADR-0056). The channel is read from an **install marker** when present, otherwise inferred from the canonicalised executable path.
 _Avoid_: install method (interchangeable, but pick one — the glossary term is _channel_), distribution
 
 **Install marker**:

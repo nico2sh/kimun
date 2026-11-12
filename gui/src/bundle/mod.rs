@@ -2,14 +2,14 @@
 //!
 //! Frontend-specific host work that does not touch vault content, so it lives
 //! here and not in core. The modules compile under `cfg(test)` on every
-//! platform: they hold logic over a [`signature::CommandRunner`] seam, and the
+//! platform: they hold logic over a `signature::CommandRunner` seam, and the
 //! tests run that logic against canned tool output.
 //!
-//! - [`signature`]: whether a staged app may replace the running one
+//! - `signature`: whether a staged app may replace the running one
 //!   (valid Developer ID signature, same Team ID).
-//! - [`swap`]: mount the release image, stage and check the new app, swap it
+//! - `swap`: mount the release image, stage and check the new app, swap it
 //!   in, and undo on failure.
-//! - [`system`]: the real installer over those two, for the running app.
+//! - `system`: the real installer over those two, for the running app.
 //! - [`backend`]: the desktop app's update backend with the bundle's install
 //!   added to the shared one.
 
