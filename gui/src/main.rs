@@ -22,6 +22,7 @@ mod assets;
 mod autocomplete;
 #[cfg(test)]
 mod autocomplete_tests;
+mod bundle;
 mod dock;
 mod editor_element;
 mod editor_view;
