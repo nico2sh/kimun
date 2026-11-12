@@ -140,6 +140,12 @@ pub fn is_left_press(m: &MouseEvent) -> bool {
     matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
 }
 
+/// Whether `m` happened inside `rect` (any kind; pair it with
+/// [`is_left_press`] for a click). An empty rect is never hit.
+pub fn rect_hit(rect: Rect, m: &MouseEvent) -> bool {
+    rect.contains(Position::new(m.column, m.row))
+}
+
 /// The key of the `(rect, key)` target under a left press — for click
 /// targets that are not chips (menu actions, launcher rows).
 pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
