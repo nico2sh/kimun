@@ -11,6 +11,9 @@
 //! A running app with no Team ID (a development or ad-hoc build) never
 //! updates itself. Notarization is not checked, as in `install.sh`.
 
+// Nothing calls this yet: the bundle swap (next slice) is its caller.
+#![allow(dead_code)]
+
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::Path;
@@ -102,20 +105,75 @@ impl<R: CommandRunner> BundleSignature<R> {
     /// Team ID. The running app is read first: a build that cannot vouch for
     /// the new one fails before anything else runs.
     pub(crate) fn trusts(&self, staged: &Path, running: &Path) -> Result<(), SignatureError> {
-        let _ = (staged, running);
-        Err(SignatureError::Tool("not implemented".into()))
+        let running_team = self
+            .team_id(running)?
+            .ok_or(SignatureError::RunningUnsigned)?;
+        self.verify(staged)?;
+        let staged_team = self
+            .team_id(staged)?
+            .ok_or(SignatureError::StagedUnsigned)?;
+        if staged_team == running_team {
+            Ok(())
+        } else {
+            Err(SignatureError::OtherTeam {
+                staged: staged_team,
+                running: running_team,
+            })
+        }
     }
 
     /// The Developer ID signature of `app` is valid.
     pub(crate) fn verify(&self, app: &Path) -> Result<(), SignatureError> {
-        let _ = app;
-        Err(SignatureError::Tool("not implemented".into()))
+        let output = self
+            .runner
+            .run(
+                "codesign",
+                &[
+                    OsStr::new("--verify"),
+                    OsStr::new("--deep"),
+                    OsStr::new("--strict"),
+                    OsStr::new("-R"),
+                    OsStr::new(DEVELOPER_ID_REQUIREMENT),
+                    app.as_os_str(),
+                ],
+            )
+            .map_err(SignatureError::Tool)?;
+        if output.success {
+            Ok(())
+        } else {
+            let why = output
+                .stderr
+                .lines()
+                .next()
+                .unwrap_or("codesign refused it");
+            Err(SignatureError::Invalid(why.trim().to_string()))
+        }
     }
 
-    /// The Team ID `app` is signed with.
+    /// The Team ID `app` is signed with: `None` for an app with no signature
+    /// or no team (ad-hoc, development).
     pub(crate) fn team_id(&self, app: &Path) -> Result<Option<String>, SignatureError> {
-        let _ = app;
-        Err(SignatureError::Tool("not implemented".into()))
+        let output = self
+            .runner
+            .run(
+                "codesign",
+                &[
+                    OsStr::new("-dv"),
+                    OsStr::new("--verbose=2"),
+                    app.as_os_str(),
+                ],
+            )
+            .map_err(SignatureError::Tool)?;
+        if !output.success {
+            return Ok(None);
+        }
+        Ok(output
+            .stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("TeamIdentifier="))
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && *id != "not set")
+            .map(str::to_string))
     }
 }
 
@@ -202,21 +260,21 @@ mod tests {
 
     #[test]
     fn a_valid_app_from_the_same_team_is_trusted() {
-        let (result, _) = check(
-            Fake::default()
-                .app(STAGED, true, Some("ABCDE12345"))
-                .app(RUNNING, true, Some("ABCDE12345")),
-        );
+        let (result, _) = check(Fake::default().app(STAGED, true, Some("ABCDE12345")).app(
+            RUNNING,
+            true,
+            Some("ABCDE12345"),
+        ));
         assert_eq!(result, Ok(()));
     }
 
     #[test]
     fn verification_asks_for_the_developer_id_requirement() {
-        let (_, calls) = check(
-            Fake::default()
-                .app(STAGED, true, Some("ABCDE12345"))
-                .app(RUNNING, true, Some("ABCDE12345")),
-        );
+        let (_, calls) = check(Fake::default().app(STAGED, true, Some("ABCDE12345")).app(
+            RUNNING,
+            true,
+            Some("ABCDE12345"),
+        ));
         let verify = calls
             .iter()
             .find(|c| c.iter().any(|a| a == "--verify"))
@@ -230,11 +288,11 @@ mod tests {
 
     #[test]
     fn an_invalid_signature_is_refused() {
-        let (result, _) = check(
-            Fake::default()
-                .app(STAGED, false, Some("ABCDE12345"))
-                .app(RUNNING, true, Some("ABCDE12345")),
-        );
+        let (result, _) = check(Fake::default().app(STAGED, false, Some("ABCDE12345")).app(
+            RUNNING,
+            true,
+            Some("ABCDE12345"),
+        ));
         match result {
             Err(SignatureError::Invalid(why)) => assert!(why.contains("sealed resource")),
             other => panic!("{other:?}"),
@@ -243,11 +301,11 @@ mod tests {
 
     #[test]
     fn another_team_is_refused() {
-        let (result, _) = check(
-            Fake::default()
-                .app(STAGED, true, Some("ZZZZZ99999"))
-                .app(RUNNING, true, Some("ABCDE12345")),
-        );
+        let (result, _) = check(Fake::default().app(STAGED, true, Some("ZZZZZ99999")).app(
+            RUNNING,
+            true,
+            Some("ABCDE12345"),
+        ));
         assert_eq!(
             result,
             Err(SignatureError::OtherTeam {
@@ -266,18 +324,20 @@ mod tests {
         );
         assert_eq!(result, Err(SignatureError::RunningUnsigned));
         assert!(
-            calls.iter().all(|c| c.last().map(String::as_str) == Some(RUNNING)),
+            calls
+                .iter()
+                .all(|c| c.last().map(String::as_str) == Some(RUNNING)),
             "the staged app is never looked at: {calls:?}"
         );
     }
 
     #[test]
     fn a_staged_app_without_a_team_is_refused() {
-        let (result, _) = check(
-            Fake::default()
-                .app(STAGED, true, None)
-                .app(RUNNING, true, Some("ABCDE12345")),
-        );
+        let (result, _) = check(Fake::default().app(STAGED, true, None).app(
+            RUNNING,
+            true,
+            Some("ABCDE12345"),
+        ));
         assert_eq!(result, Err(SignatureError::StagedUnsigned));
     }
 
