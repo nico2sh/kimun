@@ -474,7 +474,8 @@ impl QueryPanel {
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
-        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use crate::components::clickable;
+        use ratatui::crossterm::event::MouseEventKind;
         self.ensure_redraw_tx(tx);
         // The autocomplete popup draws over the query box's border, so a
         // press on it belongs to the popup, never to a chip under it.
@@ -510,9 +511,9 @@ impl QueryPanel {
                 // on the query input or its autocomplete popup (drawn in
                 // every expand state).
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.list.input_contains(mouse.column, mouse.row)
-                        || self.list.popup_contains(mouse.column, mouse.row) => {}
+                _ if clickable::is_left_press(mouse)
+                    && (self.list.input_contains(mouse.column, mouse.row)
+                        || self.list.popup_contains(mouse.column, mouse.row)) => {}
                 // The header's chevron steps back one state, never opens; a
                 // click on the title collapses the view, mirroring Enter.
                 // (A sync collapse above already cleared the header rects,
