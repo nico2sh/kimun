@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.12](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.11...kimun-notes-v0.24.12) - 2026-11-12
+
+### Added
+
+- swapper binary
+- restart helper
+- rail can be configured position
+- *(prefs)* editor font draft fields
+- *(gui)* [gui] editor_font_family and editor_font_size keys
+
+### Fixed
+
+- clippy
+- clippy
+- clippy
+- tweaks on the labels in preferences
+- conflicts
+- *(gui)* editor font review fixes, second wave
+- focus when the rail is hidden bug
+
+### Other
+
+- Merge origin/main into worktree-autoupdater
+- chore docs
+
 ## [0.24.11](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.10...kimun-notes-v0.24.11) - 2026-11-12
 
 ### Added
