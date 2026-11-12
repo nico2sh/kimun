@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.11](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.10...kimun-notes-v0.24.11) - 2026-11-12
+
+### Added
+
+- *(tui)* SEM preview on the matched section
+- *(tui)* SEM rows keep the matched chunk and show the score
+- *(tui)* Sources chevron and Right/Left preview keys
+- *(tui)* FIND chevron and Alt+Arrow preview keys
+- *(tui)* shared expand chevron
+- *(tui)* SEM hits keep the matched chunk
+
+### Fixed
+
+- *(tui)* one note reader for SEM and Sources
+- *(tui)* one expand control for FIND, SEM and Sources
+- *(tui)* one grow rule for the preview, Alt keys in Sources, docs for the chevron
+- *(tui)* SEM preview never paints another note's text
+- *(gui)* SEM title without journal date, single header step, rows clear of the chevron zone
+- *(sem)* blank chunk title shows the filename; light TUI path
+
+### Other
+
+- Merge pull request #233 from nico2sh/worktree-list-presentation
+- *(tui)* clickable::rect_hit for the list hosts' clicks
+- *(tui)* ExpandDir and PreviewPane::reach
+- TUI expand chevron
+- *(sem)* chunks_to_hits doc names no private item
+
 ## [0.24.10](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.9...kimun-notes-v0.24.10) - 2026-11-12
 
 ### Added

@@ -24,6 +24,11 @@ trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 ok() { echo "ok: $*"; }
 
+# The tests use fake, unsigned releases, so they run an unpinned copy of the installer. The
+# signature tests (12) write their own key into a copy of it.
+bare="$work/install.sh"
+sed 's/^SIGNING_PUBKEY=".*"$/SIGNING_PUBKEY=""/' install.sh >"$bare"
+
 # A release: both apps' archives for every platform the script can pick, and the
 # checksums file (so the Rosetta test finds the arm64 one).
 make_release() { # DIR [--no-share] [--no-gui]
@@ -50,7 +55,7 @@ make_release() { # DIR [--no-share] [--no-gui]
 install_in() { # HOME RELEASE_DIR [args...]  (extra env from the caller)
   local home="$1" rel="$2"; shift 2
   HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" \
-    sh install.sh "$@"
+    sh "$bare" "$@"
 }
 
 rel="$work/rel"; make_release "$rel"
@@ -131,7 +136,7 @@ echo "$out" | grep -q "no desktop app build for $platform" || fail "unfriendly e
 out="$(install_in "$h" "$ng" --tui 2>&1)" || fail "the terminal app should still install from that release"
 ok "a release without a desktop build: a plain message, the terminal app unaffected"
 h="$work/h7b"; mkdir -p "$h"
-if out="$(HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$work/nowhere" sh install.sh 2>&1)"; then fail "a missing release installed"; fi
+if out="$(HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$work/nowhere" sh "$bare" 2>&1)"; then fail "a missing release installed"; fi
 echo "$out" | grep -q "failed to download" || fail "missing release error: $out"
 ok "a missing release: a failed-download message"
 
@@ -147,7 +152,7 @@ fakebin() { # DIR OS ARCH ARM64 TRANSLATED
 detected() { # DIR -> the platform install.sh picked
   local h; h="$(mktemp -d -p "$work")"
   PATH="$1:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" \
-    sh install.sh --tui 2>&1 | sed -n 's/^Detected platform: //p'
+    sh "$bare" --tui 2>&1 | sed -n 's/^Detected platform: //p'
 }
 fakebin "$work/f1" Darwin x86_64 1 0; [ "$(detected "$work/f1")" = macos-arm64 ] || fail "Rosetta (arm64 capable) did not pick arm64"
 fakebin "$work/f2" Darwin x86_64 0 1; [ "$(detected "$work/f2")" = macos-arm64 ] || fail "a translated process did not pick arm64"
@@ -155,7 +160,7 @@ fakebin "$work/f3" Darwin x86_64 0 0; [ "$(detected "$work/f3")" = macos-x64 ] |
 fakebin "$work/f4" Darwin arm64 1 0;  [ "$(detected "$work/f4")" = macos-arm64 ] || fail "Apple Silicon did not pick arm64"
 ok "macOS: Rosetta and translated shells take the native arm64 build; Intel stays x64"
 fakebin "$work/f5" MINGW64_NT-10.0 x86_64 0 0
-out="$(PATH="$work/f5:$PATH" HOME="$work/h" sh install.sh 2>&1)" && fail "Windows shell installed"
+out="$(PATH="$work/f5:$PATH" HOME="$work/h" sh "$bare" 2>&1)" && fail "Windows shell installed"
 echo "$out" | grep -q "windows-x64.zip" || fail "Windows hint missing the zip: $out"
 ok "a Windows shell is pointed at the zip"
 
@@ -190,7 +195,7 @@ tar -cf "$macrel/kimun-gui-$v-macos-arm64.dmg" -C "$stage" .; rm -rf "$stage"
 mac_install() { # HOME [args]
   local h="$1"; shift
   PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" \
-    HDIUTIL_LOG="$h/hdiutil.log" sh install.sh --gui "$@"
+    HDIUTIL_LOG="$h/hdiutil.log" sh "$bare" --gui "$@"
 }
 h="$work/m1"; mkdir -p "$h"
 mac_install "$h" >"$work/m1.out" 2>&1 || fail "macOS app install failed: $(cat "$work/m1.out")"
@@ -232,7 +237,7 @@ ok "macOS --gui: the terminal app and its marker are kept"
 # A corrupted .dmg: checksum mismatch, nothing installed.
 cp -R "$macrel" "$work/macbad"; echo x >>"$work/macbad/kimun-gui-$v-macos-arm64.dmg"
 h="$work/m4"; mkdir -p "$h"
-if PATH="$macbin:$PATH" HOME="$h" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$work/macbad" sh install.sh --gui >/dev/null 2>&1; then fail "a corrupt .dmg installed"; fi
+if PATH="$macbin:$PATH" HOME="$h" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$work/macbad" sh "$bare" --gui >/dev/null 2>&1; then fail "a corrupt .dmg installed"; fi
 [ ! -e "$h/Applications/Kimun.app" ] || fail "a corrupt .dmg still installed"
 ok "macOS --gui: a corrupt .dmg fails the checksum"
 # A release with no .dmg: the raw binary, with a note.
@@ -245,14 +250,14 @@ ok "macOS --gui: a release with no .dmg falls back to the raw binary"
 # macOS default run: the app and the terminal app; with no .dmg, no raw binary, a warning.
 h="$work/m7"; mkdir -p "$h"
 PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" \
-  HDIUTIL_LOG="$h/hdiutil.log" sh install.sh >"$work/m7.out" 2>&1 || fail "macOS: a default install failed with no .dmg: $(cat "$work/m7.out")"
+  HDIUTIL_LOG="$h/hdiutil.log" sh "$bare" >"$work/m7.out" 2>&1 || fail "macOS: a default install failed with no .dmg: $(cat "$work/m7.out")"
 [ -x "$h/bin/kimun" ] || fail "macOS default, no .dmg: the terminal app is missing"
 [ ! -e "$h/bin/kimun-gui" ] || fail "macOS default, no .dmg: a raw binary was installed"
 grep -q "^warning: the desktop app was not installed" "$work/m7.out" || fail "macOS default, no .dmg: no warning: $(cat "$work/m7.out")"
 ok "macOS default with no .dmg: terminal app, a warning, no raw binary"
 # The terminal app on a Mac is not affected.
 h="$work/m6"; mkdir -p "$h"
-PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" sh install.sh --tui >/dev/null 2>&1 || fail "terminal install on a Mac failed"
+PATH="$macbin:$PATH" HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$macrel" sh "$bare" --tui >/dev/null 2>&1 || fail "terminal install on a Mac failed"
 [ -x "$h/bin/kimun" ] && [ ! -e "$h/Applications" ] || fail "terminal install on a Mac changed"
 ok "macOS: the terminal app install is unchanged"
 
@@ -260,7 +265,7 @@ ok "macOS: the terminal app install is unchanged"
 # while the other app is there. It finds the install dir from the marker, with no KIMUN_INSTALL_DIR.
 uninstall_in() { # HOME [args...]
   local h="$1"; shift
-  HOME="$h" sh install.sh --uninstall "$@"
+  HOME="$h" sh "$bare" --uninstall "$@"
 }
 h="$work/u1"; mkdir -p "$h"
 install_in "$h" "$rel" >/dev/null
@@ -284,7 +289,7 @@ echo "$out" | grep -q "Nothing to remove" || fail "a second uninstall said: $out
 ok "--uninstall with nothing installed: a plain message, exit 0"
 # Other launcher icons and entries are left alone; a custom dir is found from the marker.
 h="$work/u2"; mkdir -p "$h/.local/share/applications"; echo x >"$h/.local/share/applications/other.desktop"
-HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh --tui >/dev/null
+HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh "$bare" --tui >/dev/null
 [ -x "$h/custom/kimun" ] || fail "custom-dir install failed"
 uninstall_in "$h" >/dev/null || fail "uninstall from a marker's dir failed"
 [ ! -e "$h/custom/kimun" ] || fail "uninstall did not find the dir in the marker"
@@ -292,39 +297,39 @@ uninstall_in "$h" >/dev/null || fail "uninstall from a marker's dir failed"
 ok "--uninstall: finds a custom install dir from the marker and leaves other files alone"
 # macOS: the app is removed from ~/Applications; no network needed.
 h="$work/u3"; mkdir -p "$h/Applications/Kimun.app"
-out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall failed: $out"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh "$bare" --uninstall --gui 2>&1)" || fail "macOS uninstall failed: $out"
 [ ! -e "$h/Applications/Kimun.app" ] || fail "macOS uninstall left Kimun.app"
 ok "macOS --uninstall --gui: removes Kimun.app"
 # Nothing in the default dir: the message points at KIMUN_APP_DIR (no marker remembers it).
 h="$work/u3a"; mkdir -p "$h"
-out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall with no app failed: $out"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh "$bare" --uninstall --gui 2>&1)" || fail "macOS uninstall with no app failed: $out"
 case "$out" in *"Nothing to remove"*"KIMUN_APP_DIR"*) ;; *) fail "the macOS hint about KIMUN_APP_DIR is missing: $out" ;; esac
 ok "macOS --uninstall --gui: with no app found, the message names KIMUN_APP_DIR"
 # What an interrupted upgrade leaves (the backup and the staging folder) goes too, even with no app.
 h="$work/u3b"; mkdir -p "$h/Applications/.Kimun.app.old" "$h/Applications/.Kimun.new/Kimun.app"
-out="$(PATH="$macbin:$PATH" HOME="$h" sh install.sh --uninstall --gui 2>&1)" || fail "macOS uninstall of leftovers failed: $out"
+out="$(PATH="$macbin:$PATH" HOME="$h" sh "$bare" --uninstall --gui 2>&1)" || fail "macOS uninstall of leftovers failed: $out"
 [ ! -e "$h/Applications/.Kimun.app.old" ] && [ ! -e "$h/Applications/.Kimun.new" ] || fail "uninstall left the upgrade leftovers"
 ok "macOS --uninstall --gui: also removes the leftovers of an interrupted upgrade"
 # Launch Services is told to forget the app (best effort), before it is removed.
 h="$work/u3c"; mkdir -p "$h/Applications/Kimun.app" "$work/fakels"
 printf '#!/bin/sh\necho "$*" >"%s/ls.log"\n' "$work/fakels" >"$work/fakels/lsregister"; chmod +x "$work/fakels/lsregister"
-sed "s|^LSREGISTER=.*|LSREGISTER=$work/fakels/lsregister|" install.sh >"$work/install-ls.sh"
+sed "s|^LSREGISTER=.*|LSREGISTER=$work/fakels/lsregister|" "$bare" >"$work/install-ls.sh"
 PATH="$macbin:$PATH" HOME="$h" sh "$work/install-ls.sh" --uninstall --gui >/dev/null 2>&1 || fail "uninstall with lsregister failed"
 grep -q -- "-u $h/Applications/Kimun.app" "$work/fakels/ls.log" || fail "lsregister -u was not called: $(cat "$work/fakels/ls.log" 2>&1)"
 ok "macOS --uninstall --gui: unregisters the app from Launch Services"
 # The marker belongs to the install it names: uninstalling another dir must not remove it.
 h="$work/u5"; mkdir -p "$h"
 install_in "$h" "$rel" >/dev/null
-HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh --gui >/dev/null
+HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh "$bare" --gui >/dev/null
 grep -q "install_dir = \"$h/custom\"" "$h/.config/kimun/install.toml" || fail "setup: the marker does not name the custom dir"
-HOME="$h" KIMUN_INSTALL_DIR="$h/bin" sh install.sh --uninstall >/dev/null 2>&1 || fail "uninstall of the other dir failed"
+HOME="$h" KIMUN_INSTALL_DIR="$h/bin" sh "$bare" --uninstall >/dev/null 2>&1 || fail "uninstall of the other dir failed"
 [ ! -e "$h/bin/kimun" ] || fail "uninstall left the terminal binary"
 [ -f "$h/.config/kimun/install.toml" ] || fail "uninstalling another dir removed the marker of the desktop app"
 [ -x "$h/custom/kimun-gui" ] || fail "uninstalling another dir touched the desktop app"
 ok "--uninstall: the marker of an install in another dir stays"
 # A marker that cannot be read: said aloud, the default dir is used.
 h="$work/u6"; mkdir -p "$h/.config/kimun"; printf "install_dir = 'x'\n" >"$h/.config/kimun/install.toml"
-out="$(HOME="$h" sh install.sh --uninstall 2>&1)" || fail "uninstall with an unreadable marker failed: $out"
+out="$(HOME="$h" sh "$bare" --uninstall 2>&1)" || fail "uninstall with an unreadable marker failed: $out"
 echo "$out" | grep -q "could not read install_dir" || fail "an unreadable marker was not reported: $out"
 ok "--uninstall: an unreadable marker is reported"
 # The icon cache is refreshed after the icons go, when one exists (Linux).
@@ -333,7 +338,7 @@ if [ "$(uname -s)" = Linux ]; then
   install_in "$h" "$rel" --gui >/dev/null
   echo cache >"$h/.local/share/icons/hicolor/icon-theme.cache"
   printf '#!/bin/sh\necho "$*" >"%s/gtk.log"\n' "$work/gtkbin" >"$work/gtkbin/gtk-update-icon-cache"; chmod +x "$work/gtkbin/gtk-update-icon-cache"
-  PATH="$work/gtkbin:$PATH" HOME="$h" sh install.sh --uninstall --gui >/dev/null 2>&1 || fail "uninstall with an icon cache failed"
+  PATH="$work/gtkbin:$PATH" HOME="$h" sh "$bare" --uninstall --gui >/dev/null 2>&1 || fail "uninstall with an icon cache failed"
   [ -s "$work/gtkbin/gtk.log" ] || fail "the icon cache was not refreshed after the icons were removed"
   ok "--uninstall --gui: refreshes an existing icon cache"
 fi
@@ -341,7 +346,7 @@ fi
 nt2="$work/nocurl"; mkdir -p "$nt2"
 for tool in sh uname rm sed head dirname; do ln -sf "$(command -v $tool)" "$nt2/$tool"; done
 h="$work/u4"; mkdir -p "$h"
-PATH="$nt2" HOME="$h" sh install.sh --uninstall >/dev/null 2>&1 || fail "uninstall needed a tool the install needs"
+PATH="$nt2" HOME="$h" sh "$bare" --uninstall >/dev/null 2>&1 || fail "uninstall needed a tool the install needs"
 ok "--uninstall needs no downloader"
 
 # 8d. The default run installs both apps; the desktop app is best effort, and --tui / --gui select.
@@ -353,7 +358,7 @@ ok "default: both apps installed, one marker, launcher entry"
 h="$work/d2"; mkdir -p "$h"
 headless_in() { # HOME RELEASE_DIR [args...]: install on a machine with no display
   local home="$1" relv="$2"; shift 2
-  env -u DISPLAY -u WAYLAND_DISPLAY HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$relv" sh install.sh "$@"
+  env -u DISPLAY -u WAYLAND_DISPLAY HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$relv" sh "$bare" "$@"
 }
 out="$(headless_in "$h" "$rel" 2>&1)" \
   || fail "a headless default install failed: $out"
@@ -401,9 +406,9 @@ out="$(uninstall_in "$h" 2>&1)" || fail "a bare uninstall failed: $out"
 ok "--uninstall with no option removes both apps"
 # A bare --uninstall of an install in a custom dir, found from the marker: both apps go.
 h="$work/d8b"; mkdir -p "$h"
-HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh >/dev/null
+HOME="$h" KIMUN_INSTALL_DIR="$h/custom" KIMUN_VERSION="$v" KIMUN_DOWNLOAD_BASE="file://$rel" sh "$bare" >/dev/null
 [ -x "$h/custom/kimun" ] && [ -x "$h/custom/kimun-gui" ] || fail "custom dir: both apps should be installed"
-out="$(HOME="$h" sh install.sh --uninstall 2>&1)" || fail "a bare uninstall from the marker failed: $out"
+out="$(HOME="$h" sh "$bare" --uninstall 2>&1)" || fail "a bare uninstall from the marker failed: $out"
 [ ! -e "$h/custom/kimun" ] && [ ! -e "$h/custom/kimun-gui" ] || fail "a bare uninstall left an app in the custom dir"
 ok "--uninstall with no option: both apps go from the dir the marker names"
 # A default run updates only the app that is installed: the update command adds nothing new.
@@ -428,16 +433,16 @@ ok "default: a desktop app failure shows its error, a warning and a final note"
 
 # 9. Missing tools are named up front.
 nt="$work/notar"; mkdir -p "$nt"; for tool in sh uname; do ln -s "$(command -v $tool)" "$nt/$tool"; done
-out="$(PATH="$nt" HOME="$work/h" sh install.sh 2>&1)" && fail "ran without curl, wget or tar"
+out="$(PATH="$nt" HOME="$work/h" sh "$bare" 2>&1)" && fail "ran without curl, wget or tar"
 echo "$out" | grep -q "needs curl or wget" || fail "missing downloader not named: $out"
 for tool in curl cat mktemp rm awk sed grep; do ln -sf "$(command -v $tool)" "$nt/$tool"; done
-out="$(PATH="$nt" HOME="$work/h" sh install.sh 2>&1)" && fail "ran without tar"
+out="$(PATH="$nt" HOME="$work/h" sh "$bare" 2>&1)" && fail "ran without tar"
 echo "$out" | grep -q "needs tar" || fail "missing tar not named: $out"
 ok "missing tools are named before anything is downloaded"
 
 # 10. Options.
-if sh install.sh --nope >/dev/null 2>&1; then fail "unknown option accepted"; fi
-sh install.sh --help | grep -q -- "--gui" || fail "--help does not mention --gui"
+if sh "$bare" --nope >/dev/null 2>&1; then fail "unknown option accepted"; fi
+sh "$bare" --help | grep -q -- "--gui" || fail "--help does not mention --gui"
 # shellcheck disable=SC2002  # the pipe is the point: this is the `curl | sh` form
 cat install.sh | sh -s -- --help | grep -qi "gui" || fail "--help when piped"
 ok "options"
@@ -459,7 +464,7 @@ PY
   install_unpinned() { # HOME MANIFEST_URL [args...]  (extra env from the caller)
     local home="$1" manifest="$2"; shift 2
     HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_MANIFEST_URL="$manifest" \
-      KIMUN_RELEASES_API="file://$work/no-such-api.json" sh install.sh --tui "$@"
+      KIMUN_RELEASES_API="file://$work/no-such-api.json" sh "$bare" --tui "$@"
   }
 
   h="$work/m1"; mkdir -p "$h"
@@ -484,7 +489,7 @@ PY
   fallback() { # NAME MANIFEST_URL WHY-PATTERN
     h="$work/fb-$1"; mkdir -p "$h"
     out="$(HOME="$h" KIMUN_INSTALL_DIR="$h/bin" KIMUN_MANIFEST_URL="$2" KIMUN_RELEASES_API="file://$work/api.json" \
-      KIMUN_DOWNLOAD_BASE="file://$rel" sh install.sh 2>&1)" || fail "fallback ($1) failed: $out"
+      KIMUN_DOWNLOAD_BASE="file://$rel" sh "$bare" 2>&1)" || fail "fallback ($1) failed: $out"
     echo "$out" | grep -q "warning: .*$3.*using the GitHub API" || fail "fallback ($1) did not say why: $out"
     [ -x "$h/bin/kimun" ] || fail "fallback ($1): no binary"
     grep -q "version = \"$v\"" "$h/.config/kimun/install.toml" || fail "fallback ($1): marker version"
@@ -515,7 +520,7 @@ else
     minisign -S -s "$work/s.key" -m "$1/checksums-sha256.txt" -x "$1/checksums-sha256.txt.minisig" >/dev/null
   }
   patched() { # NAME: a copy of the script that trusts the throwaway key
-    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" install.sh >"$work/$1.sh"
+    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" "$bare" >"$work/$1.sh"
   }
   run_signed() { # NAME REL HOME [PATH]: install into a fresh home; prints the output
     mkdir -p "$3"
@@ -555,7 +560,7 @@ else
   ok "the latest release without a signature is refused"
 
   # d2. No key pinned (signing not live): nothing is checked, nothing said.
-  cp install.sh "$work/sig-off.sh"
+  cp "$bare" "$work/sig-off.sh"
   out="$(run_signed sig-off "$rel" "$work/sg-d2")" || fail "signing off: an unsigned release was refused: $out"
   echo "$out" | grep -qi "warning" && fail "signing off: an unsigned release warned: $out"
   ok "with no key pinned, nothing is checked"

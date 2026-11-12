@@ -59,7 +59,7 @@ function Fail($why) { throw "kimun: $why" }
 # latest release (what the unsigned manifest names) and a warning for a version pinned with
 # KIMUN_VERSION, which may predate signing. Without minisign the install goes on on the sha256
 # alone, and says so.
-$signingPubKey = ""
+$signingPubKey = "RWS64g2Q9vGQfwr3tC6fK3UgWdkKkLfz5KLmcTZhewdMmCHHkkfIgNf8"
 
 $repo = "nico2sh/kimun"
 $tagPrefix = "kimun-notes-v"
