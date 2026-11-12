@@ -114,6 +114,7 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
         "+window · move view up (new slot if none)",
         "+window · move view down (new slot if none)",
         "+window · toggle zoom",
+        "+window · toggle rail",
     ] {
         assert_eq!(
             rows.iter().filter(|r| *r == row).count(),

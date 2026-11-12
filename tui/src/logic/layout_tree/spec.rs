@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{Axis, GroupId, LayoutTree, Leaf, Node, SlotId};
+use super::{Axis, GroupId, LayoutTree, Leaf, Node, RailPosition, SlotId};
 use crate::logic::nav::DrawerView;
 use crate::logic::rag_caps::Caps;
 use crate::logic::view_registry;
@@ -100,11 +100,16 @@ pub struct ChildSpec {
     pub node: NodeSpec,
 }
 
-/// A presets file: `[preset.<name>]` tables, each a root [`ChildSpec`].
+/// A presets file: `[preset.<name>]` tables, each a root [`ChildSpec`],
+/// and optionally a `rail` key on the root table (ADR-0055 §2) that is not
+/// part of the tree: [`parse_presets`] lifts it into [`PresetFile::rails`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PresetFile {
     #[serde(default)]
     pub preset: BTreeMap<String, ChildSpec>,
+    /// The `rail` of each preset that sets one, by preset name.
+    #[serde(skip)]
+    pub rails: BTreeMap<String, RailPosition>,
 }
 
 /// Why a spec does not build. Every variant but [`SpecError::NoEditorGroup`]
@@ -215,18 +220,53 @@ impl std::error::Error for SpecError {}
 /// misspelt key, a leaf that is two kinds at once, a value of the wrong
 /// type) names each problem with its preset and node path instead of
 /// serde's "did not match any variant".
-pub fn parse_presets(toml: &str) -> Result<PresetFile, String> {
-    toml::from_str(toml).map_err(|e: toml::de::Error| {
-        let Ok(value) = toml::from_str::<toml::Table>(toml) else {
-            return e.to_string();
+pub fn parse_presets(text: &str) -> Result<PresetFile, String> {
+    let mut table: toml::Table =
+        toml::from_str(text).map_err(|e: toml::de::Error| e.to_string())?;
+    // The `rail` key belongs to the preset, not to its tree: lift it out
+    // before the tree is read (a node rejects keys it does not know).
+    let rails = take_rails(&mut table)?;
+    let mut file: PresetFile =
+        toml::Value::Table(table.clone())
+            .try_into()
+            .map_err(|e: toml::de::Error| {
+                let problems = shape_problems(&table);
+                if problems.is_empty() {
+                    e.to_string()
+                } else {
+                    format!("{} {NODE_HELP}", list_problems(&problems, MAX_LISTED))
+                }
+            })?;
+    file.rails = rails;
+    Ok(file)
+}
+
+/// Remove the `rail` key from every preset's root table and read it.
+fn take_rails(file: &mut toml::Table) -> Result<BTreeMap<String, RailPosition>, String> {
+    let mut rails = BTreeMap::new();
+    let Some(toml::Value::Table(presets)) = file.get_mut("preset") else {
+        return Ok(rails);
+    };
+    for (name, node) in presets.iter_mut() {
+        let toml::Value::Table(root) = node else {
+            continue;
         };
-        let problems = shape_problems(&value);
-        if problems.is_empty() {
-            e.to_string()
-        } else {
-            format!("{} {NODE_HELP}", list_problems(&problems, MAX_LISTED))
+        let Some(value) = root.remove("rail") else {
+            continue;
+        };
+        match value.as_str().and_then(RailPosition::parse) {
+            Some(rail) => {
+                rails.insert(name.clone(), rail);
+            }
+            None => {
+                return Err(format!(
+                    "The `rail` of preset \"{name}\" must be \"left\", \"right\", \
+                     \"top\" or \"bottom\", got {value}."
+                ));
+            }
         }
-    })
+    }
+    Ok(rails)
 }
 
 /// How many problems a message lists before it counts the rest.
