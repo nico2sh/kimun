@@ -11,7 +11,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, TestAppContext};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::layout_tree::spec::{self, ChildSpec};
-use kimun_notes::logic::layout_tree::{LayoutTree, Leaf};
+use kimun_notes::logic::layout_tree::{LayoutTree, Leaf, RailPosition};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::settings::gui::GuiSettings;
@@ -637,4 +637,93 @@ fn a_reload_of_a_broken_file_keeps_the_presets_loaded_before(cx: &mut TestAppCon
     run(&shell, cx, PresetCommand::Reload);
     assert_eq!(listed(cx), 1, "the last good presets stay");
     assert!(flashes(&shell, cx).iter().any(|(_, error)| *error));
+}
+
+/// "bottom" presets a rail position; "plain" (the `two_presets` shape) does not.
+fn rail_presets() -> String {
+    lines(&[
+        "[preset.low]",
+        "rail = \"bottom\"",
+        "split = \"horizontal\"",
+        "children = [",
+        "    { views = [\"files\"], shown = \"files\" },",
+        "    { editor = true },",
+        "]",
+        "",
+        "[preset.plain]",
+        "split = \"horizontal\"",
+        "children = [",
+        "    { views = [\"tags\"], shown = \"tags\" },",
+        "    { editor = true },",
+        "]",
+    ])
+}
+
+/// A shell whose config already holds the rail at the top, hidden.
+fn open_with_top_hidden_rail(cx: &mut TestAppContext, config: &Path) -> Shell {
+    std::fs::write(config, "[gui]\nrail = \"top\"\nrail_hidden = true\n").unwrap();
+    open_with(cx, config, Some(&rail_presets()))
+}
+
+fn live_rail(shell: &Shell, cx: &mut TestAppContext) -> (RailPosition, bool) {
+    cx.read(|cx| {
+        let w = shell.workspace.read(cx);
+        (w.rail, w.rail_hidden)
+    })
+}
+
+#[gpui_kit::test]
+fn a_window_reads_the_saved_rail_when_it_opens(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with_top_hidden_rail(cx, &config);
+    assert_eq!(live_rail(&shell, cx), (RailPosition::Top, true));
+}
+
+#[gpui_kit::test]
+fn applying_a_preset_with_rail_records_it_and_leaves_rail_hidden(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with_top_hidden_rail(cx, &config);
+    apply(&shell, cx, "low");
+    assert_eq!(live_rail(&shell, cx), (RailPosition::Bottom, true));
+    let gui = saved(&config);
+    assert_eq!(gui.rail(), RailPosition::Bottom);
+    assert!(gui.rail_hidden());
+    assert_eq!(gui.layout_preset().as_deref(), Some("low"));
+}
+
+#[gpui_kit::test]
+fn applying_a_preset_without_rail_keeps_the_position(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with_top_hidden_rail(cx, &config);
+    apply(&shell, cx, "plain");
+    assert_eq!(live_rail(&shell, cx), (RailPosition::Top, true));
+    let gui = saved(&config);
+    assert_eq!(gui.rail(), RailPosition::Top);
+    assert!(gui.rail_hidden());
+}
+
+#[gpui_kit::test]
+fn reset_to_default_puts_the_rail_at_left_and_keeps_rail_hidden(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with_top_hidden_rail(cx, &config);
+    run(&shell, cx, PresetCommand::ResetDefault);
+    assert_eq!(live_rail(&shell, cx), (RailPosition::Left, true));
+    let gui = saved(&config);
+    assert_eq!(gui.rail(), RailPosition::Left);
+    assert!(gui.rail_hidden());
+}
+
+#[gpui_kit::test]
+fn reset_to_preset_applies_the_rail_of_that_preset(cx: &mut TestAppContext) {
+    let (_dir, config) = temp_config();
+    let shell = open_with_top_hidden_rail(cx, &config);
+    apply(&shell, cx, "low");
+    cx.update_window(shell.handle, |_, _, cx| {
+        shell
+            .workspace
+            .update(cx, |w, _| w.rail = RailPosition::Right);
+    })
+    .unwrap();
+    run(&shell, cx, PresetCommand::Reset);
+    assert_eq!(live_rail(&shell, cx), (RailPosition::Bottom, true));
 }

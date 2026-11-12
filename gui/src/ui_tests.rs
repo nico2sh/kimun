@@ -1828,3 +1828,99 @@ fn app_chords_pass_the_editor_by(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// The configured editor font (`[gui] editor_font_*`, the
+// `EditorFontSetting` global).
+
+use crate::editor_element::LINE_HEIGHT;
+use crate::editor_font::EditorFontSetting;
+
+fn set_font(cx: &mut gpui_kit::App, family: Option<&str>, size: Option<f32>) {
+    cx.set_global(EditorFontSetting {
+        family: family.map(|f| gpui_kit::SharedString::from(f.to_string())),
+        size: size.map(px),
+    });
+}
+
+#[gpui_kit::test]
+fn the_edit_surface_uses_the_configured_size(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "some text\nmore text");
+    cx.update_window(handle, |_, window, cx| {
+        set_font(cx, None, Some(20.));
+        window.refresh();
+        window.render_frame(cx);
+        assert_eq!(
+            painted(&view, cx).cells.height(),
+            (20. * LINE_HEIGHT).round()
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn changing_the_size_repaints_rows_at_the_new_width(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "one\ntwo\nthree");
+    cx.update_window(handle, |_, window, cx| {
+        set_font(cx, None, Some(13.));
+        window.refresh();
+        window.render_frame(cx);
+        let small = painted(&view, cx).cells.width();
+        let built = view.read(cx).row_cache.built();
+        // An unchanged frame reuses every row.
+        window.refresh();
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).row_cache.built(), built);
+
+        set_font(cx, None, Some(20.));
+        window.refresh();
+        window.render_frame(cx);
+        let wide = painted(&view, cx).cells.width();
+        assert!(wide > small, "{wide} > {small}");
+        // Every painted row was shaped again: none kept the old width.
+        let rebuilt = view.read(cx).row_cache.built() - built;
+        assert!(rebuilt >= 3, "{rebuilt} rows rebuilt after the size change");
+    })
+    .unwrap();
+}
+
+/// Degraded: the headless text system lists no font at all, and adding the
+/// embedded Inter faces does not change that (`ui_font::register` reports
+/// `Missing`). So no second family can be painted here, and this test does
+/// not show a preferred family being painted. It pins what can be seen: the
+/// preferred family is handed to the face choice
+/// (`editor_font::face_inputs`), and one that is not installed falls back to
+/// the theme's face. That an installed preferred family wins is pinned by
+/// `fonts::tests::a_preferred_family_*` on the pure choice rule.
+#[gpui_kit::test]
+fn a_preferred_family_that_is_not_installed_paints_the_theme_face(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "text");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.text_system().all_font_names().is_empty());
+        window.render_frame(cx);
+        let before = painted(&view, cx).fonts;
+        set_font(cx, Some("Not Installed Mono"), None);
+        let preferred = crate::editor_font::face_inputs(cx).preferred;
+        assert_eq!(preferred.as_deref(), Some("Not Installed Mono"));
+        window.refresh();
+        window.render_frame(cx);
+        assert_eq!(painted(&view, cx).fonts, before);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_unset_global_changes_nothing(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, "text");
+    cx.update_window(handle, |_, window, cx| {
+        set_font(cx, None, None);
+        window.refresh();
+        window.render_frame(cx);
+        let p = painted(&view, cx);
+        let t = gpui_kit::component::ActiveTheme::theme(cx);
+        let size = t.mono_font_size;
+        let family = t.mono_font_family.clone();
+        assert_eq!(p.cells.height(), (f32::from(size) * LINE_HEIGHT).round());
+        assert_eq!(p.fonts.family, family);
+    })
+    .unwrap();
+}

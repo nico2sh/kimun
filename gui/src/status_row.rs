@@ -40,6 +40,7 @@ use gpui_kit::{
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::find_bar::MatchPosition;
+use kimun_notes::logic::layout_tree::RailPosition;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::util::git_status::GitSummary;
 
@@ -60,6 +61,8 @@ pub(crate) const PROPERTIES_ID: &str = "status-properties";
 pub(crate) const RAG_ID: &str = "status-rag";
 pub(crate) const ZOOM_ID: &str = "status-zoom";
 pub(crate) const ZOOM_RESTORE_ID: &str = "status-zoom-restore";
+/// The button that hides and shows the rail (ADR-0055 §8).
+pub(crate) const RAIL_TOGGLE_ID: &str = "status-rail-toggle";
 
 /// How much faster than the other shrinking segments the server's state
 /// gives up its room in a narrow window: by far the most, so it goes first.
@@ -150,18 +153,48 @@ pub(crate) struct ZoomSegment<F> {
 /// The restore button's label.
 pub(crate) const RESTORE: &str = "Restore";
 
+/// The footer's button for the rail (ADR-0055 §8): it leads the row, so it
+/// is on screen whenever an editor group or a zoomed slot is, which is
+/// always. Its icon shows the rail's edge and is lit while the rail is
+/// shown.
+pub(crate) struct RailSegment<F> {
+    pub(crate) position: RailPosition,
+    pub(crate) hidden: bool,
+    /// What the button says and its tooltip: `Hide rail (Ctrl+Shift+A)`.
+    pub(crate) label: SharedString,
+    pub(crate) on_toggle: F,
+}
+
+/// What leads the footer's row, in order: the rail's button and the
+/// workspace chip (both only when the title bar is not there to carry
+/// them), then the zoom hint and its restore button.
+pub(crate) struct Leading<Z, R> {
+    /// `None` while the title bar carries the button.
+    pub(crate) rail: Option<RailSegment<R>>,
+    pub(crate) workspace: Option<AnyElement>,
+    pub(crate) zoom: Option<ZoomSegment<Z>>,
+}
+
 /// The footer for `status` and `facts`; a click on the backlink count runs
 /// `on_backlinks`, one on the property count `on_properties`. With `zoom`,
-/// the zoom hint and its restore button lead the row.
+/// the zoom hint and its restore button lead the row, after the rail's
+/// button (`rail`).
 pub(crate) fn render(
     status: &Status,
     facts: &DocFacts,
     theme: &Theme,
     on_backlinks: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_properties: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    zoom: Option<ZoomSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
-    workspace: Option<AnyElement>,
+    leading: Leading<
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    >,
 ) -> impl IntoElement {
+    let Leading {
+        rail,
+        workspace,
+        zoom,
+    } = leading;
     // Tabular figures: the caret's line and column, the match index and the
     // counts change in place, and should not jitter as their digits do.
     let label = |id: &'static str, text: SharedString, spoken: SharedString| {
@@ -189,6 +222,7 @@ pub(crate) fn render(
     // The path shrinks (cut short with an ellipsis) rather than pushing the
     // pinned labels out.
     let bar = StatusBar::new()
+        .when_some(rail, |bar, rail| bar.child(rail_toggle(rail, theme)))
         // The workspace chip leads the row when the title bar is not there to
         // carry it.
         .when_some(workspace, |bar, chip| bar.child(chip))
@@ -264,6 +298,57 @@ pub(crate) fn render(
         .flex_none()
         .w_full()
         .child(bar)
+}
+
+/// The rail's button: its edge's panel icon, lit while the rail is shown,
+/// and a tooltip that names the chord.
+pub(crate) fn rail_toggle(
+    rail: RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    theme: &Theme,
+) -> impl IntoElement {
+    // Hover is the cell's own surface, as the rail's side toggles have it:
+    // the icon sets its own colour, so a hover colour on the wrapper would
+    // never show.
+    let hover = theme::hover_background(theme);
+    let glyph = if rail.hidden {
+        theme::muted(theme)
+    } else {
+        theme::accent(theme)
+    };
+    // No top-panel icon in the kit: the bottom one, turned over.
+    let (icon, turned) = match rail.position {
+        RailPosition::Left => (IconName::PanelLeft, false),
+        RailPosition::Right => (IconName::PanelRight, false),
+        RailPosition::Top => (IconName::PanelBottom, true),
+        RailPosition::Bottom => (IconName::PanelBottom, false),
+    };
+    let tip = rail.label.clone();
+    div()
+        .id(RAIL_TOGGLE_ID)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(rail.label)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        // A 20px target around the 16px icon, as high as the workspace chip:
+        // it fits the footer (29px) and the title bar (34px) without growing
+        // either (24px makes the footer 33px).
+        .size_5()
+        .rounded_md()
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(rail.on_toggle)
+        .child(
+            Icon::new(icon)
+                .size_4()
+                .text_color(glyph)
+                .when(turned, |icon| {
+                    icon.rotate(gpui_kit::radians(std::f32::consts::PI))
+                }),
+        )
 }
 
 /// The zoom hint, in the foreground colour so it reads as the window's
