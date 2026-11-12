@@ -26,7 +26,11 @@
 //! until another backend is chosen). Nerd Fonts and mouse capture are
 //! terminal-only and not shown; the draft carries them unchanged. Display's
 //! `Reduce motion` is the desktop app's own (`[gui] reduce_motion`, which the
-//! TUI never shows): applied as soon as it is saved, no restart.
+//! TUI never shows): applied as soon as it is saved, no restart. So is
+//! Display's editor font (`[gui] editor_font_family`,
+//! `editor_font_size`): the family dropdown lists the installed monospace
+//! families ([`mono_families`], read in the background
+//! when Display first shows) and keeps a saved family that is not installed.
 //!
 //! **Save** is disabled while the draft is clean or invalid (a server
 //! address that is not `http://` / `https://`). It writes the settings with
@@ -50,6 +54,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{ActiveTheme as _, IndexPath};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -64,10 +70,16 @@ use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
     LEADER_DELAY_MIN_MS, PreferencesModel, SortSlot, backend_label, configured_server_url,
+    same_font_family,
 };
+use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PX, EDITOR_FONT_MIN_PX, clamp_editor_font_size};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::mono_families::{self, MonoFamilies};
 
 use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
@@ -91,29 +103,55 @@ pub(crate) const MESSAGE_ID: &str = "preferences-message";
 pub(crate) const SECTIONS_ID: &str = "preferences-sections";
 /// The controls.
 pub(crate) const THEMES_ID: &str = "preferences-themes";
-pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
-/// Display's `Check now`: a manual update check.
-pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
-/// The update check's help text, and its element.
-pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
-pub(crate) const UPDATE_CHECK_HELP: &str =
-    "Checks GitHub for a newer release on startup. Check now looks right away.";
-/// Display's `Reduce motion` (`[gui] reduce_motion`), its help text and the
-/// help's element. GPUI reads no system hint, hence the second sentence.
+
+// Display. One convention: every control has an `*_ID`, every help line an
+// `*_HELP_ID` and its text in `*_HELP`. A stepper's buttons take their ids
+// from the stepper's ([`stepper_down_id`], [`stepper_up_id`]).
+
+/// Display's group headings ([`DISPLAY_GROUPS`]).
+pub(crate) const DISPLAY_FONT_GROUP_ID: &str = "preferences-display-editor-font";
+pub(crate) const DISPLAY_MOTION_GROUP_ID: &str = "preferences-display-window-motion";
+pub(crate) const DISPLAY_BEHAVIOR_GROUP_ID: &str = "preferences-display-behavior";
+/// Display's editor font (`[gui] editor_font_family`, `editor_font_size`):
+/// the family dropdown, its first entry (`None`: the theme's font), the size
+/// stepper, the help, and the line shown while the installed families are
+/// still being read.
+pub(crate) const FONT_FAMILY_ID: &str = "preferences-editor-font-family";
+pub(crate) const FONT_DEFAULT_LABEL: &str = "Default (theme)";
+pub(crate) const FONT_SIZE_ID: &str = "preferences-editor-font-size";
+pub(crate) const FONT_HELP_ID: &str = "preferences-editor-font-help";
+pub(crate) const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
+pub(crate) const FONT_LOADING_HELP_ID: &str = "preferences-editor-font-loading";
+pub(crate) const FONT_LOADING_HELP: &str = "Loading installed fonts...";
+/// Display's `Reduce motion` (`[gui] reduce_motion`). GPUI reads no system
+/// hint, hence the help's second sentence.
 pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
+/// The checkbox's visible label, which is also its accessible name.
+pub(crate) const REDUCE_MOTION_LABEL: &str = "Reduce motion";
 pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
 pub(crate) const REDUCE_MOTION_HELP: &str =
     "Stops the bouncing logo and loading spinners. Not read from your system settings.";
-/// Display's `Rail position` (`[gui] rail`, ADR-0055) and its help text.
+/// Display's `Rail position` (`[gui] rail`, ADR-0055).
+pub(crate) const RAIL_ID: &str = "preferences-rail";
 pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
 pub(crate) const RAIL_HELP: &str =
     "Where the activity rail sits. Hide or show it with the button in the title bar.";
+/// Display's `Which-key delay` (`leader_timeout_ms`).
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
-pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
-pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
+pub(crate) const DELAY_HELP_ID: &str = "preferences-leader-delay-help";
+pub(crate) const DELAY_HELP: &str = "How long the leader waits before it lists the keys that \
+     can follow. Takes effect when you save.";
+/// Display's update check (`update_check`), and `Check now`: a manual
+/// update check.
+pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
+/// The checkbox's visible label, which is also its accessible name.
+pub(crate) const UPDATE_CHECK_LABEL: &str = "Check for updates on startup";
+pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
+pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
+pub(crate) const UPDATE_CHECK_HELP: &str =
+    "Checks GitHub for a newer release on startup. Check now looks right away.";
+
 pub(crate) const AUTOSAVE_ID: &str = "preferences-autosave";
-pub(crate) const AUTOSAVE_DOWN_ID: &str = "preferences-autosave-down";
-pub(crate) const AUTOSAVE_UP_ID: &str = "preferences-autosave-up";
 pub(crate) const BACKENDS_ID: &str = "preferences-backends";
 /// The note that a configured nvim is kept.
 pub(crate) const BACKEND_KEPT_ID: &str = "preferences-backend-kept";
@@ -243,6 +281,82 @@ pub(crate) struct Discard {
     pub(crate) close_window: bool,
 }
 
+/// One entry of Display's font family dropdown: what it reads as, and the
+/// family it stands for (`None`: the theme's font).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FontChoice {
+    label: SharedString,
+    family: Option<String>,
+}
+
+impl SelectItem for FontChoice {
+    type Value = Option<String>;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.family
+    }
+}
+
+type FontSelect = SelectState<SearchableVec<FontChoice>>;
+
+/// The dropdown's entries: "Default (theme)" first. With the installed
+/// monospace families (`ready`): each family in `keep` (the saved and the
+/// draft family) the list lacks, as `"<name> (not installed)"`, then the list.
+/// Without it (still being read): the `keep` families alone, so a chosen
+/// family is never shown blank. A family matches a listed one whatever its
+/// capital letters ([`same_font_family`]).
+fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoice> {
+    let mut choices = vec![FontChoice {
+        label: FONT_DEFAULT_LABEL.into(),
+        family: None,
+    }];
+    for name in keep.iter().flatten() {
+        if choices
+            .iter()
+            .any(|c| same_font_family(c.family.as_deref(), Some(name)))
+        {
+            continue;
+        }
+        let label = match ready {
+            Some(list) if list.iter().any(|f| same_font_family(Some(f), Some(name))) => continue,
+            Some(_) => format!("{name} (not installed)"),
+            None => name.to_string(),
+        };
+        choices.push(FontChoice {
+            label: label.into(),
+            family: Some(name.to_string()),
+        });
+    }
+    for name in ready.unwrap_or_default() {
+        choices.push(FontChoice {
+            label: name.clone().into(),
+            family: Some(name.clone()),
+        });
+    }
+    choices
+}
+
+/// The entry of `items` that stands for `family`: the default for `None`,
+/// else the entry whose family matches it ([`same_font_family`]).
+fn font_choice_for<'a>(items: &'a [FontChoice], family: Option<&str>) -> Option<&'a FontChoice> {
+    items
+        .iter()
+        .find(|c| same_font_family(c.family.as_deref(), family))
+}
+
+/// What the dropdown's entries were built from: rebuilt when either
+/// changes. The draft family is not part of it: a draft that already has an
+/// entry only moves the selection ([`PreferencesView::sync_font_choices`]).
+#[derive(Clone, PartialEq)]
+struct FontInputs {
+    ready: Option<Arc<[String]>>,
+    saved: Option<String>,
+}
+
 /// The Preferences view. See the module docs.
 pub(crate) struct PreferencesView {
     settings: SharedSettings,
@@ -268,6 +382,22 @@ pub(crate) struct PreferencesView {
     themes_focus: FocusHandle,
     delay_focus: FocusHandle,
     autosave_focus: FocusHandle,
+    /// Display's font size stepper.
+    font_size_focus: FocusHandle,
+    /// Display's font family dropdown, and what its entries were built from
+    /// ([`Self::sync_font_choices`]).
+    font_family: Entity<FontSelect>,
+    /// The saved `[gui] editor_font_family`, read when the view loads and
+    /// again when a save lands, never per frame: the dropdown is synced
+    /// every frame, and the getter warns on a wrong-typed value each time it
+    /// is asked.
+    saved_font_family: Option<String>,
+    font_inputs: Option<FontInputs>,
+    /// The draft family the dropdown's selection was last synced to.
+    font_draft: Option<Option<String>>,
+    /// The entries the dropdown was last given. A new `Rc` each time they
+    /// are rebuilt, so a test can tell a rebuild from a selection move.
+    font_items: Rc<Vec<FontChoice>>,
     server_input: Entity<InputState>,
     server_error: Option<SharedString>,
     /// The inline problem line.
@@ -316,12 +446,34 @@ impl PreferencesView {
     ) -> Self {
         let server_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(DEFAULT_SERVER_URL_HINT));
+        let font_items = Rc::new(font_choices(None, &[]));
+        let font_family = cx.new(|cx| {
+            FontSelect::new(
+                SearchableVec::new(font_items.to_vec()),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         let subscriptions = vec![
             cx.subscribe(&server_input, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.server_changed(cx);
                 }
             }),
+            cx.subscribe(
+                &font_family,
+                |this, _, event: &SelectEvent<SearchableVec<FontChoice>>, cx| {
+                    let SelectEvent::Confirm(Some(family)) = event else {
+                        return;
+                    };
+                    this.set_editor_font_family(family.clone(), cx);
+                },
+            ),
+            // The family list arrives in the background: the next frame
+            // gives it to the dropdown (`render` syncs it).
+            cx.observe_global_in::<MonoFamilies>(window, |_, _, cx| cx.notify()),
         ];
         let read = settings.clone();
         let load = cx.spawn_in(window, async move |this, cx| {
@@ -347,6 +499,12 @@ impl PreferencesView {
             themes_focus: cx.focus_handle().tab_stop(true),
             delay_focus: cx.focus_handle().tab_stop(true),
             autosave_focus: cx.focus_handle().tab_stop(true),
+            font_size_focus: cx.focus_handle().tab_stop(true),
+            font_family,
+            saved_font_family: None,
+            font_inputs: None,
+            font_draft: None,
+            font_items,
             server_input,
             server_error: None,
             message: None,
@@ -373,13 +531,16 @@ impl PreferencesView {
                 self.theme_scroll
                     .scroll_to_item(model.theme_idx, ScrollStrategy::Nearest);
                 self.model = Some(model);
-                self.opened = Some(self.initial());
+                let opened = self.initial();
+                self.saved_font_family = opened.gui.editor_font_family();
+                self.opened = Some(opened);
                 self.ws.selected =
                     kimun_notes::logic::workspaces::initial_selection(&self.ws_rows()).unwrap_or(0);
                 self.dirty.set(None);
                 self.server_input
                     .update(cx, |input, cx| input.set_value(url, window, cx));
                 self.server_error = None;
+                self.sync_font_choices(window, cx);
             }
             Err(e) => self.message = Some(format!("Couldn't read the preferences: {e}").into()),
         }
@@ -430,17 +591,57 @@ impl PreferencesView {
         self.saving.is_some()
     }
 
-    /// The handles of the section list, the theme list, the two steppers
-    /// and the workspace list, in that order.
+    /// The handles of the section list, the theme list, the which-key
+    /// delay and autosave steppers, the workspace list and the font size
+    /// stepper, in that order.
     #[cfg(test)]
-    pub(crate) fn handles(&self) -> [FocusHandle; 5] {
+    pub(crate) fn handles(&self) -> [FocusHandle; 6] {
         [
             self.sections_focus.clone(),
             self.themes_focus.clone(),
             self.delay_focus.clone(),
             self.autosave_focus.clone(),
             self.ws.focus.clone(),
+            self.font_size_focus.clone(),
         ]
+    }
+
+    /// Display's font family dropdown.
+    #[cfg(test)]
+    pub(crate) fn font_select(&self) -> &Entity<FontSelect> {
+        &self.font_family
+    }
+
+    /// The family dropdown's entry labels, and the selected entry's label.
+    #[cfg(test)]
+    pub(crate) fn font_choices(&self, cx: &gpui_kit::App) -> (Vec<String>, Option<String>) {
+        // The kit does not hand its entries back: these are the ones it was
+        // last given; the selection is the kit's own.
+        let labels = &*self.font_items;
+        let selected = self
+            .font_family
+            .read(cx)
+            .selected_value()
+            .and_then(|value| labels.iter().find(|c| &c.family == value))
+            .map(|c| c.label.to_string());
+        (
+            labels.iter().map(|c| c.label.to_string()).collect(),
+            selected,
+        )
+    }
+
+    /// The entries the family dropdown was last given: the same `Rc` until
+    /// they are rebuilt.
+    #[cfg(test)]
+    pub(crate) fn font_items(&self) -> Rc<Vec<FontChoice>> {
+        self.font_items.clone()
+    }
+
+    /// The settings as the view opened, for a test to change behind its
+    /// back (the saved font family is read from them once, at load).
+    #[cfg(test)]
+    pub(crate) fn opened_mut(&mut self) -> Option<&mut AppSettings> {
+        self.opened.as_mut()
     }
 
     /// The root's handle (the questions and the progress panel hold it).
@@ -505,6 +706,10 @@ impl PreferencesView {
     ) {
         self.section = section;
         window.focus(&self.sections_focus, cx);
+        if section == Section::Display {
+            // The family dropdown's list: read once, in the background.
+            mono_families::ensure_loaded(cx);
+        }
         if section == Section::Appearance
             && let Some(model) = self.model.as_ref()
         {
@@ -565,12 +770,79 @@ impl PreferencesView {
         cx.notify();
     }
 
+    /// Display's font family: `None` is the theme's font.
+    pub(crate) fn set_editor_font_family(
+        &mut self,
+        family: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(model) = self.model_mut() {
+            model.editor_font_family = family;
+        }
+        // The dropdown follows on the next frame (`sync_font_choices`).
+        cx.notify();
+    }
+
+    /// One step of Display's font size, from the theme's size while unset.
+    pub(crate) fn step_editor_font_size(&mut self, up: bool, cx: &mut Context<Self>) {
+        let theme_default = theme_font_size(cx);
+        if let Some(model) = self.model_mut() {
+            model.step_editor_font_size(up, theme_default);
+        }
+        cx.notify();
+    }
+
     /// Display's `Rail position`.
     pub(crate) fn set_rail_position(&mut self, rail: RailPosition, cx: &mut Context<Self>) {
         if let Some(model) = self.model_mut() {
             model.rail = rail;
         }
         cx.notify();
+    }
+
+    /// Give the family dropdown the entries the saved family and the
+    /// installed list call for, and select the draft's. The entries are
+    /// rebuilt only when the list or the saved family changed, or when the
+    /// draft has no entry yet (a family that is not installed); otherwise
+    /// only the selection moves. Nothing at all when nothing changed since
+    /// the last time.
+    fn sync_font_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let inputs = FontInputs {
+            ready: match mono_families::state(cx) {
+                MonoFamilies::Ready(list) => Some(list),
+                MonoFamilies::Idle | MonoFamilies::Loading => None,
+            },
+            saved: self.saved_font_family.clone(),
+        };
+        let draft = model.editor_font_family.clone();
+        let same_inputs = self.font_inputs.as_ref() == Some(&inputs);
+        if same_inputs && self.font_draft.as_ref() == Some(&draft) {
+            return;
+        }
+        let rebuild = !same_inputs || font_choice_for(&self.font_items, draft.as_deref()).is_none();
+        if rebuild {
+            self.font_items = Rc::new(font_choices(
+                inputs.ready.as_deref(),
+                &[inputs.saved.as_deref(), draft.as_deref()],
+            ));
+            self.font_inputs = Some(inputs);
+        }
+        // The entry's own spelling: a draft "fira code" selects "Fira Code".
+        let selected =
+            font_choice_for(&self.font_items, draft.as_deref()).and_then(|c| c.family.clone());
+        self.font_draft = Some(draft);
+        let items = rebuild.then(|| self.font_items.to_vec());
+        self.font_family.update(cx, |state, cx| {
+            if let Some(items) = items {
+                state.set_items(SearchableVec::new(items), window, cx);
+            }
+            if state.selected_value() != Some(&selected) {
+                state.set_selected_value(&selected, window, cx);
+            }
+        });
     }
 
     /// One step of the which-key delay.
@@ -769,6 +1041,10 @@ impl PreferencesView {
             // The shared settings took the draft in the write.
             (Ok(()), Some(_)) => {
                 self.dirty.set(None);
+                // The saved family is the one just written: read once per
+                // save, so an old "(not installed)" entry goes.
+                self.saved_font_family = self.initial().gui.editor_font_family();
+                self.sync_font_choices(window, cx);
                 cx.emit(PreferencesEvent::Saved { theme, reopen });
             }
             (Ok(()), None) => {}
@@ -913,7 +1189,7 @@ impl PreferencesView {
                 Key::Down => self.move_theme(true, cx),
                 _ => return false,
             }
-        } else if on(&self.delay_focus) || on(&self.autosave_focus) {
+        } else if on(&self.delay_focus) || on(&self.autosave_focus) || on(&self.font_size_focus) {
             let up = match key.key {
                 Key::Right | Key::Up => true,
                 Key::Left | Key::Down => false,
@@ -921,6 +1197,8 @@ impl PreferencesView {
             };
             if on(&self.delay_focus) {
                 self.step_delay(up, cx);
+            } else if on(&self.font_size_focus) {
+                self.step_editor_font_size(up, cx);
             } else {
                 self.step_autosave(up, cx);
             }
@@ -941,6 +1219,12 @@ fn para(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
         .child(text.into())
 }
 
+/// The theme's monospace size in whole pixels, within the setting's range:
+/// where the font size stepper starts while the setting is unset.
+fn theme_font_size(cx: &gpui_kit::App) -> u8 {
+    clamp_editor_font_size(f32::from(cx.theme().mono_font_size).round() as i64)
+}
+
 /// A quieter note under a control.
 fn note(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
     div()
@@ -958,11 +1242,24 @@ fn label(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
         .child(text.into())
 }
 
-/// One labelled control with its notes: label, control, notes, tight.
+/// A help line under a control: a quieter note with its own element `id`,
+/// read as a label by assistive tech and found by the tests.
+fn help(id: &'static str, text: &'static str, t: &Theme) -> impl IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Label)
+        .aria_label(text)
+        .child(note(text, t))
+}
+
+/// One setting: its heading ([`label`]), its control, then its help lines,
+/// tight. Every Display setting is drawn through here or, when the control
+/// names itself (a checkbox), through [`unheaded_field`].
 fn field(
     title: &'static str,
     control: impl IntoElement,
-    notes: Vec<SharedString>,
+    helps: impl IntoIterator<Item = impl IntoElement>,
     t: &Theme,
 ) -> impl IntoElement {
     div()
@@ -971,14 +1268,104 @@ fn field(
         .gap_1()
         .child(label(title, t))
         .child(control)
-        .children(notes.into_iter().map(|n| note(n, t)))
+        .children(helps)
 }
 
-/// What a stepper shows and how it reads.
+/// A [`field`] without the heading: its control names the setting, as a
+/// checkbox's label does, so a heading would only repeat those words.
+fn unheaded_field(
+    control: impl IntoElement,
+    helps: impl IntoIterator<Item = impl IntoElement>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(control)
+        .children(helps)
+}
+
+/// A group of settings: a small heading over them. Read as a heading.
+fn group(
+    id: &'static str,
+    title: &'static str,
+    settings: Vec<AnyElement>,
+    t: &Theme,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::Heading)
+                .aria_label(title)
+                .pb_1()
+                .border_b_1()
+                .border_color(theme::divider(t))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::muted(t))
+                .child(title),
+        )
+        .children(settings)
+}
+
+/// One setting of the Display section, in [`DISPLAY_GROUPS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplaySetting {
+    FontFamily,
+    FontSize,
+    ReduceMotion,
+    RailPosition,
+    WhichKeyDelay,
+    UpdateCheck,
+}
+
+/// A group of the Display section: its heading's id and title, and its
+/// settings in the order they show.
+pub(crate) struct DisplayGroup {
+    id: &'static str,
+    title: &'static str,
+    pub(crate) settings: &'static [DisplaySetting],
+}
+
+/// The Display section, top to bottom. The order on screen, and the Tab
+/// order with it, is this list's: to move a setting, move its entry.
+pub(crate) const DISPLAY_GROUPS: [DisplayGroup; 3] = [
+    DisplayGroup {
+        id: DISPLAY_FONT_GROUP_ID,
+        title: "Editor font",
+        settings: &[DisplaySetting::FontFamily, DisplaySetting::FontSize],
+    },
+    DisplayGroup {
+        id: DISPLAY_MOTION_GROUP_ID,
+        title: "Window and motion",
+        settings: &[DisplaySetting::ReduceMotion, DisplaySetting::RailPosition],
+    },
+    DisplayGroup {
+        id: DISPLAY_BEHAVIOR_GROUP_ID,
+        title: "Behavior",
+        settings: &[DisplaySetting::WhichKeyDelay, DisplaySetting::UpdateCheck],
+    },
+];
+
+/// The element id of the stepper `id`'s decrease button.
+pub(crate) fn stepper_down_id(id: &str) -> SharedString {
+    format!("{id}-down").into()
+}
+
+/// The element id of the stepper `id`'s increase button.
+pub(crate) fn stepper_up_id(id: &str) -> SharedString {
+    format!("{id}-up").into()
+}
+
+/// What a stepper shows and how it reads. Its buttons' ids come from `id`
+/// ([`stepper_down_id`], [`stepper_up_id`]).
 struct StepperSpec {
     id: &'static str,
-    down_id: &'static str,
-    up_id: &'static str,
     name: &'static str,
     value: u64,
     min: u64,
@@ -1093,7 +1480,7 @@ impl PreferencesView {
         h_row()
             .gap_2()
             .child(
-                Button::new(spec.down_id)
+                Button::new(stepper_down_id(spec.id))
                     .icon(IconName::Minus)
                     .small()
                     .tab_stop(false)
@@ -1135,7 +1522,7 @@ impl PreferencesView {
                     .child(text),
             )
             .child(
-                Button::new(spec.up_id)
+                Button::new(stepper_up_id(spec.id))
                     .icon(IconName::Plus)
                     .small()
                     .tab_stop(false)
@@ -1233,6 +1620,7 @@ impl PreferencesView {
             .into_any_element()
     }
 
+    /// The Display section: [`DISPLAY_GROUPS`], in order.
     fn render_display(
         &self,
         model: &PreferencesModel,
@@ -1241,11 +1629,145 @@ impl PreferencesView {
     ) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let delay = self.render_stepper(
+        let mut groups = Vec::with_capacity(DISPLAY_GROUPS.len());
+        for g in &DISPLAY_GROUPS {
+            let mut settings = Vec::with_capacity(g.settings.len());
+            for setting in g.settings {
+                settings.push(self.render_display_setting(*setting, model, window, cx));
+            }
+            groups.push(group(g.id, g.title, settings, t));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .children(groups)
+            .into_any_element()
+    }
+
+    fn render_display_setting(
+        &self,
+        setting: DisplaySetting,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match setting {
+            DisplaySetting::FontFamily => self.render_font_family(cx),
+            DisplaySetting::FontSize => self.render_font_size(model, window, cx),
+            DisplaySetting::ReduceMotion => self.render_reduce_motion(model, cx),
+            DisplaySetting::RailPosition => self.render_rail_position(model, cx),
+            DisplaySetting::WhichKeyDelay => self.render_which_key_delay(model, window, cx),
+            DisplaySetting::UpdateCheck => self.render_update_check(model, cx),
+        }
+    }
+
+    /// The editor font's family dropdown. While the installed families are
+    /// being read (`Loading`, not `Idle`), a line under it says so.
+    fn render_font_family(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let loading = matches!(mono_families::state(cx), MonoFamilies::Loading);
+        let select = div().w(rems(18.)).child(
+            Select::new(&self.font_family)
+                .id(FONT_FAMILY_ID)
+                .accessibility_label("Editor font family")
+                .search_placeholder("Search fonts")
+                .disabled(self.saving.is_some()),
+        );
+        let loading_help = loading.then(|| help(FONT_LOADING_HELP_ID, FONT_LOADING_HELP, t));
+        field("Family", select, loading_help, t).into_any_element()
+    }
+
+    /// The editor font's size stepper, from the theme's size while unset.
+    /// The font help under it is the whole group's: family and size.
+    fn render_font_size(
+        &self,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let theme_size = theme_font_size(cx);
+        let stepper = self.render_stepper(
+            StepperSpec {
+                id: FONT_SIZE_ID,
+                name: "Editor font size",
+                value: u64::from(model.editor_font_size.unwrap_or(theme_size)),
+                min: u64::from(EDITOR_FONT_MIN_PX),
+                max: u64::from(EDITOR_FONT_MAX_PX),
+                unit: "px",
+            },
+            &self.font_size_focus,
+            Self::step_editor_font_size,
+            window,
+            cx,
+        );
+        field("Size", stepper, [help(FONT_HELP_ID, FONT_HELP, t)], t).into_any_element()
+    }
+
+    /// `Reduce motion`. The checkbox's own label names the setting, so it
+    /// has no heading above it.
+    fn render_reduce_motion(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let checkbox = Checkbox::new(REDUCE_MOTION_ID)
+            .label(REDUCE_MOTION_LABEL)
+            .checked(model.reduce_motion)
+            .disabled(self.saving.is_some())
+            .on_click(
+                cx.listener(|this, checked: &bool, _, cx| this.set_reduce_motion(*checked, cx)),
+            );
+        unheaded_field(
+            checkbox,
+            [help(REDUCE_MOTION_HELP_ID, REDUCE_MOTION_HELP, t)],
+        )
+        .into_any_element()
+    }
+
+    /// `Rail position`: one radio per position.
+    fn render_rail_position(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let radios = RadioGroup::horizontal(RAIL_ID)
+            .selected_index(
+                RailPosition::ALL
+                    .iter()
+                    .position(|rail| *rail == model.rail),
+            )
+            .disabled(self.saving.is_some())
+            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                if let Some(rail) = RailPosition::ALL.get(*ix) {
+                    this.set_rail_position(*rail, cx)
+                }
+            }))
+            .children(
+                RailPosition::ALL
+                    .into_iter()
+                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
+            );
+        field(
+            "Rail position",
+            radios,
+            [help(RAIL_HELP_ID, RAIL_HELP, t)],
+            t,
+        )
+        .into_any_element()
+    }
+
+    /// `Which-key delay`.
+    fn render_which_key_delay(
+        &self,
+        model: &PreferencesModel,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let stepper = self.render_stepper(
             StepperSpec {
                 id: DELAY_ID,
-                down_id: DELAY_DOWN_ID,
-                up_id: DELAY_UP_ID,
                 name: "Which-key delay",
                 value: model.leader_timeout_ms,
                 min: LEADER_DELAY_MIN_MS,
@@ -1257,118 +1779,43 @@ impl PreferencesView {
             window,
             cx,
         );
-        div()
-            .flex()
-            .flex_col()
-            .gap_6()
+        field(
+            "Which-key delay",
+            stepper,
+            [help(DELAY_HELP_ID, DELAY_HELP, t)],
+            t,
+        )
+        .into_any_element()
+    }
+
+    /// The update check on startup, and `Check now`. The checkbox's own
+    /// label names the setting, so it has no heading above it.
+    fn render_update_check(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let controls = h_row()
+            .flex_wrap()
+            .gap_3()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Checkbox::new(UPDATE_CHECK_ID)
-                                    .label("Check for updates on startup")
-                                    .checked(model.update_check)
-                                    .disabled(self.saving.is_some())
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.set_update_check(*checked, cx)
-                                    })),
-                            )
-                            .child(
-                                // Acts now, saved or not: it is not a setting.
-                                Button::new(CHECK_UPDATES_ID)
-                                    .small()
-                                    .outline()
-                                    .label("Check now")
-                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                        cx.emit(PreferencesEvent::CheckForUpdates)
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(UPDATE_CHECK_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(UPDATE_CHECK_HELP)
-                            .child(note(UPDATE_CHECK_HELP, t)),
-                    ),
+                Checkbox::new(UPDATE_CHECK_ID)
+                    .label(UPDATE_CHECK_LABEL)
+                    .checked(model.update_check)
+                    .disabled(self.saving.is_some())
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.set_update_check(*checked, cx)
+                    })),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        Checkbox::new(REDUCE_MOTION_ID)
-                            .label("Reduce motion")
-                            .checked(model.reduce_motion)
-                            .disabled(self.saving.is_some())
-                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                this.set_reduce_motion(*checked, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(REDUCE_MOTION_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(REDUCE_MOTION_HELP)
-                            .child(note(REDUCE_MOTION_HELP, t)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(note("Rail position", t))
-                    .child(
-                        RadioGroup::horizontal("preferences-rail")
-                            .selected_index(
-                                RailPosition::ALL
-                                    .iter()
-                                    .position(|rail| *rail == model.rail),
-                            )
-                            .disabled(self.saving.is_some())
-                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                                if let Some(rail) = RailPosition::ALL.get(*ix) {
-                                    this.set_rail_position(*rail, cx)
-                                }
-                            }))
-                            .children(
-                                RailPosition::ALL
-                                    .into_iter()
-                                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(RAIL_HELP_ID)
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(RAIL_HELP)
-                            .child(note(RAIL_HELP, t)),
-                    ),
-            )
-            .child(field(
-                "Which-key delay",
-                delay,
-                vec![
-                    "How long the leader waits before it lists the keys that can follow. \
-                     Takes effect when you save."
-                        .into(),
-                ],
-                t,
-            ))
+                // Acts now, saved or not: it is not a setting.
+                Button::new(CHECK_UPDATES_ID)
+                    .small()
+                    .outline()
+                    .label("Check now")
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(PreferencesEvent::CheckForUpdates)
+                    })),
+            );
+        unheaded_field(controls, [help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t)])
             .into_any_element()
     }
 
@@ -1484,8 +1931,6 @@ impl PreferencesView {
         let autosave = self.render_stepper(
             StepperSpec {
                 id: AUTOSAVE_ID,
-                down_id: AUTOSAVE_DOWN_ID,
-                up_id: AUTOSAVE_UP_ID,
                 name: "Autosave interval",
                 value: model.autosave_interval_secs,
                 min: AUTOSAVE_MIN_SECS,
@@ -1531,21 +1976,21 @@ impl PreferencesView {
             .child(field(
                 "Autosave interval",
                 autosave,
-                vec![
+                [note(
                     "How often the open note is written while it has unsaved changes. Takes \
-                     effect when you save."
-                        .into(),
-                ],
+                     effect when you save.",
+                    t,
+                )],
                 t,
             ))
             .child(field(
                 "Editor backend",
                 backend,
-                vec![
+                [note(
                     "Changing it reopens the workspace when you save; the open note is saved \
-                     first."
-                        .into(),
-                ],
+                     first.",
+                    t,
+                )],
                 t,
             ))
             .into_any_element()
@@ -1770,6 +2215,10 @@ fn h_row() -> gpui_kit::Div {
 
 impl Render for PreferencesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.section == Section::Display {
+            // A draft family set outside the dropdown gets its entry.
+            self.sync_font_choices(window, cx);
+        }
         let t = theme::current(cx);
         let narrow = window.viewport_size().width < window.rem_size() * NARROW_REMS;
         let sections = self.render_sections(narrow, window, cx);
@@ -1985,6 +2434,8 @@ impl Workspace {
     /// - reduce motion: GPUI's switch is set at once
     ///   ([`crate::apply_reduce_motion`]), every animation honours it on the
     ///   next frame;
+    /// - editor font: the global is set at once ([`crate::editor_font::apply`]),
+    ///   the Edit surface paints in it on the next frame;
     /// - server address, editor engine: `reopen` ([`needs_reopen`]) sends
     ///   `PreferencesSaved`, so the vault is entered again (M8b). Nothing else
     ///   reopens.
@@ -1995,6 +2446,7 @@ impl Workspace {
         let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.leader.set_tree(snapshot.leader_tree());
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
+        crate::editor_font::apply(&snapshot.gui, cx);
         // The saved position moves the rail in this window now; the next
         // layout save writes the same value.
         self.rail = snapshot.gui.rail();
