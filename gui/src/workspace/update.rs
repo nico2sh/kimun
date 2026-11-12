@@ -173,9 +173,24 @@ pub(crate) fn default_backend() -> Option<Arc<dyn UpdateBackend>> {
     }
     #[cfg(not(test))]
     {
-        Some(Arc::new(rules::SystemUpdates::new(
-            rules::Frontend::Desktop,
+        Some(Arc::new(crate::bundle::backend::DesktopUpdates::new(
+            Arc::new(rules::SystemUpdates::new(rules::Frontend::Desktop)),
+            bundle_installer(),
         )))
+    }
+}
+
+/// How the macOS app bundle replaces itself, when it can (see
+/// [`crate::bundle`]); no other platform has one.
+#[cfg(not(test))]
+fn bundle_installer() -> Option<Arc<dyn crate::bundle::backend::BundleInstaller>> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::bundle::system::detect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

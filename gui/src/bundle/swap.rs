@@ -11,8 +11,8 @@
 //! Every program call goes through a [`CommandRunner`], so the tests drive the
 //! whole sequence on any platform against fake apps in a temp folder.
 
-// Nothing calls this yet: the update backend (next slice) is its caller.
-#![allow(dead_code)]
+// Only the macOS installer calls this; the unit tests build it without the app.
+#![cfg_attr(test, allow(dead_code))]
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -25,16 +25,6 @@ use super::signature::{BundleSignature, CommandRunner, SignatureError};
 const STAGING_DIR: &str = ".Kimun.new";
 /// Where the old app waits while the new one moves in.
 const BACKUP_DIR: &str = ".Kimun.app.old";
-
-/// The app bundle the running executable lives in: the first ancestor ending in
-/// `.app` when the path goes through `Contents/MacOS`. `None` for anything else
-/// (a raw binary).
-pub(crate) fn installed_bundle(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors()
-        .find(|dir| dir.extension() == Some(OsStr::new("app")))
-        .filter(|app| exe.starts_with(app.join("Contents").join("MacOS")))
-        .map(Path::to_path_buf)
-}
 
 /// Why the app was not replaced. In every case the installed app is as it was.
 #[derive(Debug)]
@@ -557,24 +547,5 @@ mod tests {
             .unwrap();
         assert_eq!(version(&s.installed), "new");
         assert_clean(&s);
-    }
-
-    #[test]
-    fn the_bundle_is_found_from_the_executable_path() {
-        assert_eq!(
-            installed_bundle(Path::new(
-                "/Users/me/Applications/Kimun.app/Contents/MacOS/kimun-gui"
-            )),
-            Some(PathBuf::from("/Users/me/Applications/Kimun.app"))
-        );
-        assert_eq!(
-            installed_bundle(Path::new("/Users/me/.local/bin/kimun-gui")),
-            None
-        );
-        // `.app` in a parent folder name is not the bundle for a raw binary.
-        assert_eq!(
-            installed_bundle(Path::new("/Users/me/x.app/bin/kimun-gui")),
-            None
-        );
     }
 }
