@@ -49,7 +49,7 @@
 //!   macOS app bundle, the whole `Kimun.app` ([`crate::bundle`], ADR-0056).
 //!   Success: "Updated to `<v>`. Restarting Kimün…", and the window quits
 //!   through the normal close and starts the app again as it ends
-//!   ([`crate::relaunch`]): the TUI only asks for a restart, the desktop app
+//!   ([`crate::bundle::relaunch`]): the TUI only asks for a restart, the desktop app
 //!   restarts itself. Failure: the error inline and `Retry`.
 
 use std::ffi::OsStr;
@@ -75,7 +75,7 @@ use tokio::task::JoinError;
 use super::modal::{self, ModalKind, Slot};
 use super::note::Closing;
 use super::{ToastAction, Workspace};
-use crate::relaunch::Relauncher;
+use crate::bundle::relaunch::Relauncher;
 use crate::tasks::blocking;
 use crate::theme;
 
@@ -159,11 +159,11 @@ impl UpdateHost {
 fn default_relauncher() -> Arc<dyn Relauncher> {
     #[cfg(test)]
     {
-        Arc::new(crate::relaunch::RecordingRelauncher::default())
+        Arc::new(crate::bundle::relaunch::RecordingRelauncher::default())
     }
     #[cfg(not(test))]
     {
-        Arc::new(crate::relaunch::SystemRelauncher::new())
+        Arc::new(crate::bundle::relaunch::SystemRelauncher::new())
     }
 }
 

@@ -35,7 +35,6 @@ mod grid;
 mod identity_tests;
 mod input;
 mod keymap;
-mod relaunch;
 mod row_cache;
 mod row_paint;
 mod shell_layout;

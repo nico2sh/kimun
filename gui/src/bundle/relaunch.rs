@@ -60,7 +60,7 @@ impl Relauncher for SystemRelauncher {
 /// `open`, like a double click, so the system activates it properly; running the
 /// inner executable directly would not. Anything else runs as it started.
 fn launch_target(exe: &Path, args: &[OsString]) -> (PathBuf, Vec<OsString>) {
-    match crate::bundle::installed_bundle(exe) {
+    match super::installed_bundle(exe) {
         Some(bundle) => {
             let mut open_args = vec![bundle.into_os_string()];
             if !args.is_empty() {
