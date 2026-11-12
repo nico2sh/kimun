@@ -6,6 +6,8 @@
 # For each of the five platforms and each app (the terminal app `kimun`, the desktop
 # app `kimun-gui`): the raw binary and the archive exist and are not empty, both
 # have a line in checksums-sha256.txt, and the archive holds the binary at its root.
+# Each archive (and each .dmg) also has a stable download, a copy with no version in its
+# name and with the same checksum (ADR-0057).
 # The desktop app's Linux archives also carry the launcher entry and the icons
 # (a `share/` tree that mirrors an install prefix). The desktop app's signed macOS
 # `kimun-gui-<v>-macos-<arch>.dmg` files are checked too: required when EXPECT_DMG=1
@@ -30,6 +32,9 @@ listing() {
   esac | sed 's|^\./||'
 }
 
+# The digest listed for a file name, empty when there is none.
+sum_of() { awk -v f="$1" '$2 == f || $2 == "*" f {print $1}' checksums-sha256.txt; }
+
 [ -s checksums-sha256.txt ] || { err "checksums-sha256.txt is missing or empty"; exit 1; }
 
 expected=0
@@ -46,6 +51,17 @@ for p in $platforms; do
     done
     if [ -s "$base.$arc" ]; then
       listing "$base.$arc" | grep -qx "$app$ext" || err "$base.$arc does not hold $app$ext at its root"
+    fi
+    # The stable download (ADR-0057): the archive again with no version in its name.
+    # Its checksum equals the versioned archive's, and the recompute at the end ties
+    # each checksum to its file, so equal checksums mean equal bytes.
+    stable="$app-$p.$arc"
+    expected=$((expected + 1))
+    if [ -s "$stable" ]; then
+      [ -n "$(sum_of "$stable")" ] && [ "$(sum_of "$stable")" = "$(sum_of "$base.$arc")" ] \
+        || err "$stable is not the same file as $base.$arc (its checksum differs or is missing)"
+    else
+      err "missing or empty stable download: $stable"
     fi
   done
   case "$p" in
@@ -66,6 +82,15 @@ for p in macos-x64 macos-arm64; do
   if [ -e "$f" ]; then
     [ -s "$f" ] || err "empty asset: $f"
     grep -qE "^[0-9a-f]{64}  $f\$" checksums-sha256.txt || err "no checksum line for $f"
+    stable="kimun-gui-$p.dmg"
+    if [ -s "$stable" ]; then
+      [ -n "$(sum_of "$stable")" ] && [ "$(sum_of "$stable")" = "$(sum_of "$f")" ] \
+        || err "$stable is not the same file as $f (its checksum differs or is missing)"
+    else
+      err "missing or empty stable download: $stable"
+    fi
+  elif [ -e "kimun-gui-$p.dmg" ]; then
+    err "kimun-gui-$p.dmg has no versioned $f to be a copy of"
   elif [ "${EXPECT_DMG:-0}" = 1 ]; then
     err "missing asset: $f (the Apple signing secrets are set, so the signed app is expected)"
   fi
