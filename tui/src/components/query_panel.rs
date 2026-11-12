@@ -420,7 +420,7 @@ impl QueryPanel {
         let prev_query = self.list.query().to_string();
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if c == self.grow_combo => {
-                self.toggle_expand();
+                self.grow_expand();
                 self.sync_expand_anchor();
                 EventState::Consumed
             }
@@ -572,7 +572,7 @@ impl QueryPanel {
             })
         {
             self.list.close_autocomplete();
-            self.toggle_expand();
+            self.grow_expand();
             return EventState::Consumed;
         }
         let prev_query = self.list.query().to_string();
@@ -657,6 +657,16 @@ impl QueryPanel {
         self.preview.toggle(sel);
         self.list.set_content_rect(Rect::default());
         self.chevron = Rect::default();
+    }
+
+    /// Grow one step (Collapsed -> Context -> Full); Full stays Full. The
+    /// Alt+Right key and the row chevron use this; Enter and `l` cycle.
+    fn grow_expand(&mut self) {
+        let sel = self.list.selected_row().map(|e| e.path.clone());
+        if self.preview.grow_step(sel) {
+            self.list.set_content_rect(Rect::default());
+            self.chevron = Rect::default();
+        }
     }
 
     /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
@@ -1174,6 +1184,9 @@ mod tests {
         );
         panel.handle_key(&alt(KeyCode::Right), &tx);
         assert!(panel.preview.is_full(), "Alt+Right: Context -> Full");
+
+        panel.handle_key(&alt(KeyCode::Right), &tx);
+        assert!(panel.preview.is_full(), "Alt+Right in Full stays Full");
 
         panel.handle_key(&alt(KeyCode::Left), &tx);
         assert!(panel.preview.is_context(), "Alt+Left: Full -> Context");

@@ -13,7 +13,7 @@ Kimün works fully without the server. When you configure a server and Kimün ca
 
 ## What you get
 
-- Semantic search: a `SEM` view in the drawer (the activity rail) finds notes by meaning. A search for "how do I deploy" also finds the note that says "release procedure".
+- Semantic search: a `SEM` view in the drawer (the activity rail) finds notes by meaning. A search for "how do I deploy" also finds the note that says "release procedure". The list has a preview. It opens at the matched section, highlighted. Press Alt+Right to open it and Alt+Left to close it. Enter still opens the note.
 - Ask: a conversation with your notes. Switch to the ASK entry in the activity rail (or press `F6`) and type a question. The server retrieves the most relevant note chunks. Its configured LLM answers from them and cites the source notes inline as `[1]`, `[2]`, and so on. You can ask follow-up questions in the same conversation. Kimün keeps the history and sends it with each question. Ask needs an LLM that you configured on the server. Without an LLM, the server only does semantic search, and the ASK entry is not in the rail.
 - Automatic sync: the TUI pushes note content to the server in the background every few seconds. This keeps the server in step with the vault. The footer shows the connection state: `rag: online`, `rag: syncing`, `rag: offline`, or `rag: not configured`.
 - Multi-vault: one server hosts many vaults at once. Each vault has its own isolated collection.
@@ -33,8 +33,8 @@ The server never reads your notes from disk. Kimün pushes note content to it. T
 ### Sources and the reader
 
 - The Sources panel of the drawer lists the notes behind the selected answer. It ranks them by relevance.
-- To open the reader, press `Enter` or `l` on a source. The reader shows the text of the note with the retrieved section highlighted.
-- In the reader, `j` and `k` scroll. `h` or `Esc` goes back to the source list. `o` opens the note in the editor, and this also works from the list.
+- To open the reader, press `Enter`, `l` or `Right` on a source. The reader shows the text of the note with the retrieved section highlighted.
+- In the reader, `j` and `k` scroll. `h`, `Left` or `Esc` goes back to the source list. Alt+Right and Alt+Left also grow and shrink the preview, in the filter box too. `o` opens the note in the editor, and this also works from the list.
 - When you click a `[n]` citation in the answer, Kimün selects that source in the Sources panel.
 
 ### Acting on an answer
