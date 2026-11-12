@@ -10,23 +10,22 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Position, Rect};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::ask::locate;
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
-use crate::components::expand_chevron::{self, Reach};
+use crate::components::expand_chevron::ExpandControl;
 use crate::components::file_list::FileListEntry;
 use crate::components::panel::panel_block;
-use crate::components::preview_pane::{Highlight, PreviewPane};
+use crate::components::preview_pane::{Highlight, PreviewPane, Step};
 use crate::components::query_list_panel::{HostEvent, ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::SearchRow;
-use crate::keys::key_combo::{KeyCombo, KeyModifiers};
-use crate::keys::key_strike::KeyStrike;
+use crate::keys::key_combo::KeyCombo;
 use crate::logic::message::{AppMessage, AppTx, FileOp};
 #[cfg(test)]
 use crate::logic::views::chunks_to_entries;
@@ -136,13 +135,9 @@ pub struct SemanticPanel {
     /// The app channel, kept from the last input so a load that a render
     /// starts can still wake the render loop when it lands.
     tx: Option<AppTx>,
-    /// Alt+Right / Alt+Left: step the preview one state out / in. The
-    /// engine intercepts them, so they work while typing.
-    grow_combo: KeyCombo,
-    shrink_combo: KeyCombo,
-    /// The expand chevron on the selected row from the last render; empty
-    /// when no row shows it. A left press on it grows the preview.
-    chevron: Rect,
+    /// The row chevron and its Alt+Right / Alt+Left chords. The engine
+    /// intercepts the chords, so they work while typing.
+    expand: ExpandControl,
 }
 
 /// Where the preview's note text stands.
@@ -188,11 +183,9 @@ impl SemanticPanel {
         icons: Icons,
         yank_combos: Vec<KeyCombo>,
     ) -> Self {
-        let alt_arrow = |key| KeyCombo::new(KeyModifiers::new().and_alt(), key);
-        let grow_combo = alt_arrow(KeyStrike::ArrowRight);
-        let shrink_combo = alt_arrow(KeyStrike::ArrowLeft);
+        let expand = ExpandControl::new();
         let mut body = QueryListPanel::new(icons, yank_combos);
-        body.set_intercept(vec![grow_combo, shrink_combo]);
+        body.set_intercept(expand.combos().to_vec());
         Self {
             vault,
             settings,
@@ -202,9 +195,7 @@ impl SemanticPanel {
             loaded: None,
             inbox: Arc::new(Mutex::new(Vec::new())),
             tx: None,
-            grow_combo,
-            shrink_combo,
-            chevron: Rect::default(),
+            expand,
         }
     }
 
@@ -222,12 +213,10 @@ impl SemanticPanel {
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
         let mut hints = self.body.hint_shortcuts();
-        if self.body.selected_row().is_some()
-            && let Some(reach) =
-                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
-        {
-            hints.push(expand_chevron::hint(reach));
-        }
+        hints.extend(
+            self.expand
+                .hint(&self.preview, self.body.selected_row().is_some()),
+        );
         hints
     }
 
@@ -262,12 +251,8 @@ impl SemanticPanel {
         }
         let state = self.body.handle_input(event, tx);
         match self.body.take_host_event() {
-            Some(HostEvent::Intercepted(c)) if c == self.grow_combo => {
-                self.grow_preview();
-                EventState::Consumed
-            }
-            Some(HostEvent::Intercepted(c)) if c == self.shrink_combo => {
-                self.shrink_preview();
+            Some(HostEvent::Intercepted(c)) if let Some(dir) = self.expand.dir_of(&c) => {
+                self.step(dir.into());
                 EventState::Consumed
             }
             _ => state,
@@ -278,25 +263,14 @@ impl SemanticPanel {
     /// click on the header title collapses it (as FIND). The wheel over the
     /// preview scrolls its content; everything else is the list's.
     fn handle_mouse(&mut self, event: &InputEvent, mouse: &MouseEvent, tx: &AppTx) -> EventState {
-        let at = Position {
-            x: mouse.column,
-            y: mouse.row,
-        };
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if self.preview.is_full() {
-                if self.preview.full_chevron_rect().contains(at) {
-                    self.shrink_preview();
-                    return EventState::Consumed;
-                }
-                if self.preview.full_header_rect().contains(at) {
-                    self.preview.toggle(self.selected_path());
-                    self.after_step();
-                    return EventState::Consumed;
-                }
-            } else if self.chevron.contains(at) {
-                self.grow_preview();
+        if self.preview.is_full() {
+            if let Some(hit) = self.expand.hit_header(&self.preview, mouse) {
+                self.step(hit.step());
                 return EventState::Consumed;
             }
+        } else if self.expand.hit_row(mouse) {
+            self.step(Step::Grow);
+            return EventState::Consumed;
         }
         let state = self.body.handle_input(event, tx);
         match self.body.take_host_event() {
@@ -307,23 +281,17 @@ impl SemanticPanel {
         state
     }
 
-    /// Step the preview outward (Collapsed -> Context -> Full); stays at Full.
-    fn grow_preview(&mut self) {
-        if self.preview.grow_step(self.selected_path()) {
+    /// The one path every expand step takes (keys, clicks).
+    fn step(&mut self, step: Step) {
+        if self.preview.step(step, self.selected_path()) {
             self.after_step();
         }
-    }
-
-    /// Step the preview back (Full -> Context -> Collapsed).
-    fn shrink_preview(&mut self) {
-        self.preview.collapse_step(self.selected_path());
-        self.after_step();
     }
 
     /// Drop the last frame's regions: the layout changes with the state, so
     /// until the next render no click or wheel may land on them.
     fn after_step(&mut self) {
-        self.chevron = Rect::default();
+        self.expand.clear();
         self.body.set_list_rect(Rect::default());
         self.body.set_content_rect(Rect::default());
     }
@@ -415,7 +383,7 @@ impl SemanticPanel {
         // Each frame records the regions it draws anew.
         self.body.set_content_rect(Rect::default());
         self.preview.clear_header();
-        self.chevron = Rect::default();
+        self.expand.clear();
 
         let block = panel_block(SemanticSpec::TITLE, theme, focused);
         let inner = block.inner(rect);
@@ -472,12 +440,8 @@ impl SemanticPanel {
 
     /// The expand chevron ends the selected row, where the list is drawn.
     fn paint_chevron(&mut self, f: &mut Frame, theme: &Theme) {
-        if let Some(row) = self.body.selected_row_rect()
-            && let Some(reach) =
-                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
-        {
-            self.chevron = expand_chevron::paint(f, row, reach, theme);
-        }
+        let row = self.body.selected_row_rect();
+        self.expand.paint(f, row, &self.preview, theme);
     }
 
     /// Feed the loaded note into the preview (Context or Full), or show the

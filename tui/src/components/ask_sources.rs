@@ -33,16 +33,16 @@ use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
-use crate::components::expand_chevron::{self, Reach};
+use crate::components::expand_chevron::{ExpandControl, Reach};
 use crate::components::panel::panel_block;
-use crate::components::preview_pane::{Highlight, PreviewPane};
+use crate::components::preview_pane::{Highlight, PreviewPane, Step};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Filter, Focus, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
@@ -162,9 +162,9 @@ pub struct SourcesPanel {
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
-    /// The expand chevron on the selected row from the last render; empty when
-    /// no row shows it. A left press on it grows the preview.
-    chevron: Rect,
+    /// The row chevron and the Alt+Right / Alt+Left chords that step the
+    /// preview from either focus.
+    expand: ExpandControl,
 }
 
 impl SourcesPanel {
@@ -201,7 +201,7 @@ impl SourcesPanel {
             intercept,
             yank_combos,
             preview_page: 0,
-            chevron: Rect::default(),
+            expand: ExpandControl::new(),
         }
     }
 
@@ -434,18 +434,21 @@ impl SourcesPanel {
         // Alt+Right / Alt+Left do the same from either focus, so one key set
         // works in FIND, semantic search and here.
         let plain_list = self.list.focus() == Focus::List && key.modifiers.is_empty();
-        if plain_list || key.modifiers == ratatui::crossterm::event::KeyModifiers::ALT {
-            match key.code {
-                KeyCode::Right if self.has_sources() => {
-                    self.grow_preview(tx);
-                    return EventState::Consumed;
-                }
-                KeyCode::Left if !self.preview.is_collapsed() => {
-                    self.shrink_preview();
-                    return EventState::Consumed;
-                }
-                _ => {}
+        let dir = match key.code {
+            KeyCode::Right if plain_list => Some(Reach::Grow),
+            KeyCode::Left if plain_list => Some(Reach::Shrink),
+            _ => self.expand.dir_of_key(key),
+        };
+        match dir {
+            Some(Reach::Grow) if self.has_sources() => {
+                self.step(Step::Grow, tx);
+                return EventState::Consumed;
             }
+            Some(Reach::Shrink) if !self.preview.is_collapsed() => {
+                self.step(Step::Shrink, tx);
+                return EventState::Consumed;
+            }
+            _ => {}
         }
 
         // Esc ladder: in list focus with the preview revealed, Esc steps the
@@ -457,7 +460,7 @@ impl SourcesPanel {
             && self.list.focus() == Focus::List
             && !self.preview.is_collapsed()
         {
-            self.preview.collapse_step(self.selected_path());
+            self.step(Step::Shrink, tx);
             return EventState::Consumed;
         }
 
@@ -472,19 +475,15 @@ impl SourcesPanel {
             // Enter (with no autocomplete open) cycles the reveal, like `l`. Right and Left step it too (above).
             KeyReaction::Submit => {
                 if self.has_sources() {
-                    self.preview.toggle(self.selected_path());
-                    self.ensure_loaded(tx);
+                    self.step(Step::Toggle, tx);
                 }
                 EventState::Consumed
             }
             // List-focus verbs: `l`/`h` cycle the reveal, `o` opens, `y` yanks.
             KeyReaction::ListVerb(c) => {
                 match c {
-                    'l' if self.has_sources() => {
-                        self.preview.toggle(self.selected_path());
-                        self.ensure_loaded(tx);
-                    }
-                    'h' => self.preview.collapse_step(self.selected_path()),
+                    'l' if self.has_sources() => self.step(Step::Toggle, tx),
+                    'h' => self.step(Step::Shrink, tx),
                     'o' => self.open_selected(tx),
                     'y' => self.yank_selected_path(tx),
                     _ => {}
@@ -530,22 +529,8 @@ impl SourcesPanel {
                         || self.list.popup_contains(mouse.column, mouse.row) => {}
                 // The header's chevron steps back one state, never collapses
                 // straight away like the title does.
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.preview.full_chevron_rect().contains(Position {
-                        x: mouse.column,
-                        y: mouse.row,
-                    }) =>
-                {
-                    self.shrink_preview();
-                    return EventState::Consumed;
-                }
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.preview.full_header_rect().contains(Position {
-                        x: mouse.column,
-                        y: mouse.row,
-                    }) =>
-                {
-                    self.preview.toggle(self.selected_path());
+                _ if let Some(hit) = self.expand.hit_header(&self.preview, mouse) => {
+                    self.step(hit.step(), tx);
                     return EventState::Consumed;
                 }
                 _ => return EventState::Consumed,
@@ -554,13 +539,8 @@ impl SourcesPanel {
         // The row chevron grows the preview. It sits on the selected row, so
         // there is no selection to change; it never opens the note and is
         // checked before the engine turns the press into a row activation.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && self.chevron.contains(Position {
-                x: mouse.column,
-                y: mouse.row,
-            })
-        {
-            self.grow_preview(tx);
+        if self.expand.hit_row(mouse) {
+            self.step(Step::Grow, tx);
             return EventState::Consumed;
         }
         match self.list.handle_mouse(mouse) {
@@ -579,8 +559,7 @@ impl SourcesPanel {
                 EventState::Consumed
             }
             SearchMouse::Activated(_) => {
-                self.preview.toggle(self.selected_path());
-                self.ensure_loaded(tx);
+                self.step(Step::Toggle, tx);
                 EventState::Consumed
             }
             // A clicked suggestion edits the filter exactly like a Tab-accept,
@@ -602,18 +581,17 @@ impl SourcesPanel {
         }
     }
 
-    /// Step the reveal outward (Collapsed -> Context -> Full); stays at Full.
-    fn grow_preview(&mut self, tx: &AppTx) {
-        if self.preview.grow_step(self.selected_path()) {
-            self.chevron = Rect::default();
+    /// The one path every reveal step takes (keys, verbs, Esc, clicks):
+    /// step the selected source's preview, drop every region the last frame
+    /// recorded — the list rows, the content view, the chevron — since the
+    /// layout changed, and back an open preview with its note.
+    fn step(&mut self, step: Step, tx: &AppTx) {
+        if self.preview.step(step, self.selected_path()) {
+            self.list.set_list_rect(Rect::default());
+            self.list.set_content_rect(Rect::default());
+            self.expand.clear();
             self.ensure_loaded(tx);
         }
-    }
-
-    /// Step the reveal back (Full -> Context -> Collapsed).
-    fn shrink_preview(&mut self) {
-        self.preview.collapse_step(self.selected_path());
-        self.chevron = Rect::default();
     }
 
     /// Scroll the Full preview by a page (last render's content viewport, less
@@ -740,7 +718,7 @@ impl SourcesPanel {
         self.list.set_panel_rect(rect);
         self.list.set_content_rect(Rect::default());
         self.preview.clear_header();
-        self.chevron = Rect::default();
+        self.expand.clear();
 
         let block = panel_block("Sources", theme, focused);
         let inner = block.inner(rect);
@@ -839,12 +817,8 @@ impl SourcesPanel {
 
     /// The expand chevron ends the selected row, where the list is drawn.
     fn paint_chevron(&mut self, f: &mut Frame, theme: &Theme) {
-        if let Some(row) = self.list.selected_row_rect()
-            && let Some(reach) =
-                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
-        {
-            self.chevron = expand_chevron::paint(f, row, reach, theme);
-        }
+        let row = self.list.selected_row_rect();
+        self.expand.paint(f, row, &self.preview, theme);
     }
 
     /// Feed the anchored source's loaded note into the preview surface (Context
@@ -2190,6 +2164,28 @@ mod tests {
         p.handle_input(&crate::test_support::mouse_down_at(x, y + 2), &tx);
         assert!(p.preview.is_collapsed(), "no step on an unselected row");
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
+        assert!(!opened_any(&mut rx));
+    }
+
+    /// Esc steps the preview back and changes the layout: until the next
+    /// render a click on the old chevron cell must not grow it again.
+    #[tokio::test]
+    async fn esc_collapse_drops_the_stale_chevron() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&InputEvent::Key(key(KeyCode::Right)), &tx);
+        assert!(p.preview.is_context());
+        let buf = draw_panel(&mut p, 40, 20);
+        let (x, y) = glyph_cells(&buf, "\u{203A}")[0];
+        p.handle_input(&InputEvent::Key(key(KeyCode::Esc)), &tx);
+        assert!(p.preview.is_collapsed());
+        // No render: the chevron's old cell.
+        p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(
+            p.preview.is_collapsed(),
+            "the stale chevron grew the preview"
+        );
         assert!(!opened_any(&mut rx));
     }
 

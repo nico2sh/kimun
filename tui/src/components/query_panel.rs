@@ -11,8 +11,8 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::expand_chevron::{self, Reach};
-use crate::components::preview_pane::{Highlight, PreviewPane};
+use crate::components::expand_chevron::ExpandControl;
+use crate::components::preview_pane::{Highlight, PreviewPane, Step};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
@@ -98,13 +98,9 @@ pub struct QueryPanel {
     redraw_tx: Arc<Mutex<Option<AppTx>>>,
     /// Combos that the engine intercepts: follow-link.
     follow_link_combos: Vec<KeyCombo>,
-    /// Alt+Right / Alt+Left: step the preview one state out / in. Intercepted
+    /// The row chevron and its Alt+Right / Alt+Left chords, intercepted
     /// before the query box sees them, so they work while typing.
-    grow_combo: KeyCombo,
-    shrink_combo: KeyCombo,
-    /// The expand chevron on the selected row from the last render; empty when
-    /// no row shows it. A left press on it steps the preview.
-    chevron: Rect,
+    expand: ExpandControl,
     /// Memoised sort field/order parsed from the query's order directive, plus
     /// the query string it was parsed from. `render` reparses only when the
     /// query changes, so the per-frame title indicator avoids a full query
@@ -161,12 +157,8 @@ impl QueryPanel {
 
         let mut intercept = Vec::new();
         intercept.extend(follow_link_combos.iter().cloned());
-        let alt_arrow =
-            |key| KeyCombo::new(crate::keys::key_combo::KeyModifiers::new().and_alt(), key);
-        let grow_combo = alt_arrow(crate::keys::key_strike::KeyStrike::ArrowRight);
-        let shrink_combo = alt_arrow(crate::keys::key_strike::KeyStrike::ArrowLeft);
-        intercept.push(grow_combo);
-        intercept.push(shrink_combo);
+        let expand = ExpandControl::new();
+        intercept.extend(expand.combos());
 
         let list = SearchList::builder(source, redraw)
             .highlight_query()
@@ -198,9 +190,7 @@ impl QueryPanel {
             key_bindings,
             redraw_tx,
             follow_link_combos,
-            grow_combo,
-            shrink_combo,
-            chevron: Rect::default(),
+            expand,
             // An empty query carries no order directive → (Name, Ascending).
             order_cache: (SortField::Name, SortOrder::Ascending),
             order_cache_query: String::new(),
@@ -330,7 +320,7 @@ impl QueryPanel {
 
     fn reset_expand(&mut self) {
         self.preview.reset();
-        self.chevron = Rect::default();
+        self.expand.clear();
         self.list.set_content_rect(Rect::default());
     }
 
@@ -341,7 +331,7 @@ impl QueryPanel {
         let sel = self.list.selected_row().map(|e| e.path.clone());
         if self.preview.sync(sel) {
             self.list.set_content_rect(Rect::default());
-            self.chevron = Rect::default();
+            self.expand.clear();
         }
     }
 
@@ -419,13 +409,8 @@ impl QueryPanel {
         // expand below.
         let prev_query = self.list.query().to_string();
         match self.list.handle_key(key) {
-            KeyReaction::Intercepted(c) if c == self.grow_combo => {
-                self.grow_expand();
-                self.sync_expand_anchor();
-                EventState::Consumed
-            }
-            KeyReaction::Intercepted(c) if c == self.shrink_combo => {
-                self.collapse_expand();
+            KeyReaction::Intercepted(c) if let Some(dir) = self.expand.dir_of(&c) => {
+                self.step(dir.into());
                 self.sync_expand_anchor();
                 EventState::Consumed
             }
@@ -446,7 +431,7 @@ impl QueryPanel {
             KeyReaction::Submit => {
                 // Enter with the autocomplete popup closed: the panel's policy
                 // is to cycle the expand state of the selected row.
-                self.toggle_expand();
+                self.step(Step::Toggle);
                 EventState::Consumed
             }
             // List-focus verbs (fired only once the user Esc-es into the list):
@@ -455,8 +440,8 @@ impl QueryPanel {
             // query box), `o` opens, `y` yanks.
             KeyReaction::ListVerb(c) => {
                 match c {
-                    'l' => self.toggle_expand(),
-                    'h' => self.collapse_expand(),
+                    'l' => self.step(Step::Toggle),
+                    'h' => self.step(Step::Shrink),
                     'o' => self.open_selected(tx),
                     'y' => self.yank_selected_row(tx),
                     _ => {}
@@ -490,7 +475,6 @@ impl QueryPanel {
         tx: &AppTx,
     ) -> EventState {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
-        use ratatui::layout::Position;
         self.ensure_redraw_tx(tx);
         // The autocomplete popup draws over the query box's border, so a
         // press on it belongs to the popup, never to a chip under it.
@@ -529,28 +513,13 @@ impl QueryPanel {
                 MouseEventKind::Down(MouseButton::Left)
                     if self.list.input_contains(mouse.column, mouse.row)
                         || self.list.popup_contains(mouse.column, mouse.row) => {}
-                // The header's chevron steps back one state, never opens.
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.preview.full_chevron_rect().contains(Position {
-                        x: mouse.column,
-                        y: mouse.row,
-                    }) =>
-                {
+                // The header's chevron steps back one state, never opens; a
+                // click on the title collapses the view, mirroring Enter.
+                // (A sync collapse above already cleared the header rects,
+                // so this cannot step a no-longer-full view.)
+                _ if let Some(hit) = self.expand.hit_header(&self.preview, mouse) => {
                     self.list.close_autocomplete();
-                    self.collapse_expand();
-                    return EventState::Consumed;
-                }
-                // A click on the header collapses the view, mirroring Enter.
-                // (A sync collapse above already cleared the header rect, so
-                // this cannot toggle a no-longer-full view.)
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.preview.full_header_rect().contains(Position {
-                        x: mouse.column,
-                        y: mouse.row,
-                    }) =>
-                {
-                    self.list.close_autocomplete();
-                    self.toggle_expand();
+                    self.step(hit.step());
                     return EventState::Consumed;
                 }
                 // A press elsewhere dismisses the popup; motion leaves it.
@@ -564,15 +533,9 @@ impl QueryPanel {
         // The row chevron grows the preview. It sits on the selected row, so
         // there is no selection to change; it never opens the note and is
         // checked before the engine turns the press into a row activation.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && !on_popup
-            && self.chevron.contains(Position {
-                x: mouse.column,
-                y: mouse.row,
-            })
-        {
+        if !on_popup && self.expand.hit_row(mouse) {
             self.list.close_autocomplete();
-            self.grow_expand();
+            self.step(Step::Grow);
             return EventState::Consumed;
         }
         let prev_query = self.list.query().to_string();
@@ -593,7 +556,7 @@ impl QueryPanel {
             // A slow click-click steps the preview; a fast double-click
             // opens the note, like double-clicking in the sidebar.
             SearchMouse::Activated(_) => {
-                self.toggle_expand();
+                self.step(Step::Toggle);
                 EventState::Consumed
             }
             SearchMouse::DoubleClicked { .. } => {
@@ -649,36 +612,18 @@ impl QueryPanel {
         }
     }
 
-    fn toggle_expand(&mut self) {
+    /// The one path every expand step takes (keys, verbs, clicks): step
+    /// the selected row's preview, then drop every region the last frame
+    /// recorded — the list rows, the content view, the chevron — since the
+    /// layout changed and no click or wheel may land on them until the
+    /// next render.
+    fn step(&mut self, step: Step) {
         let sel = self.list.selected_row().map(|e| e.path.clone());
-        if sel.is_none() {
-            return;
-        }
-        self.preview.toggle(sel);
-        self.list.set_content_rect(Rect::default());
-        self.chevron = Rect::default();
-    }
-
-    /// Grow one step (Collapsed -> Context -> Full); Full stays Full. The
-    /// Alt+Right key and the row chevron use this; Enter and `l` cycle.
-    fn grow_expand(&mut self) {
-        let sel = self.list.selected_row().map(|e| e.path.clone());
-        if self.preview.grow_step(sel) {
+        if self.preview.step(step, sel) {
+            self.list.set_list_rect(Rect::default());
             self.list.set_content_rect(Rect::default());
-            self.chevron = Rect::default();
+            self.expand.clear();
         }
-    }
-
-    /// Step the preview reveal backward (Full → Context → Collapsed): the `h`
-    /// list-focus verb, mirroring `l`'s forward cycle via [`Self::toggle_expand`].
-    fn collapse_expand(&mut self) {
-        let sel = self.list.selected_row().map(|e| e.path.clone());
-        if sel.is_none() {
-            return;
-        }
-        self.preview.collapse_step(sel);
-        self.list.set_content_rect(Rect::default());
-        self.chevron = Rect::default();
     }
 
     /// Open the selected result (the `o` list-focus verb), carrying the same
@@ -717,12 +662,10 @@ impl QueryPanel {
             ],
         );
         // The preview key for the selected row: Alt+Right grows, Alt+Left in Full.
-        if self.list.selected_row().is_some()
-            && let Some(reach) =
-                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
-        {
-            hints.push(expand_chevron::hint(reach));
-        }
+        hints.extend(
+            self.expand
+                .hint(&self.preview, self.list.selected_row().is_some()),
+        );
         hints
     }
 
@@ -740,7 +683,7 @@ impl QueryPanel {
         // content view was drawn. Same life cycle for the full-expand header.
         self.list.set_content_rect(Rect::default());
         self.preview.clear_header();
-        self.chevron = Rect::default();
+        self.expand.clear();
 
         let border_style = theme.border_style(focused);
         let gray = theme.gray.to_ratatui();
@@ -938,12 +881,9 @@ impl QueryPanel {
         self.list.set_list_rect(list_area);
         // The expand chevron ends the selected row. It only exists where the
         // list is drawn, so the empty-query primer gets none.
-        if !self.list.query().trim().is_empty()
-            && let Some(row) = self.list.selected_row_rect()
-            && let Some(reach) =
-                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
-        {
-            self.chevron = expand_chevron::paint(f, row, reach, theme);
+        if !self.list.query().trim().is_empty() {
+            let row = self.list.selected_row_rect();
+            self.expand.paint(f, row, &self.preview, theme);
         }
 
         // Divider between list and content.
@@ -1248,7 +1188,7 @@ mod tests {
         );
         assert!(cells(&buf, "\u{2039}").is_empty());
 
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         let buf = draw(&mut panel, 40, 30);
         assert_eq!(cells(&buf, "\u{203A}").len(), 1, "Context still grows");
     }
@@ -1257,8 +1197,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn full_preview_header_shows_the_shrink_chevron() {
         let mut panel = panel_with_notes("qp-chev-full", &["/a.md", "/b.md"]).await;
-        panel.toggle_expand();
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
+        panel.step(Step::Toggle);
         let buf = draw(&mut panel, 40, 30);
         let found = cells(&buf, "\u{2039}");
         assert_eq!(found.len(), 1, "one shrink chevron: {found:?}");
@@ -1345,14 +1285,36 @@ mod tests {
         assert!(!opened(&mut rx));
     }
 
+    /// A step changes the layout: until the next render a click on where
+    /// the list rows were must hit nothing, not select an old row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_click_right_after_a_step_misses_the_old_rows() {
+        let mut panel = panel_with_notes("qp-stale-rows", &["/a.md", "/b.md"]).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let first = panel.selected_path().cloned();
+        let buf = draw(&mut panel, 40, 30);
+        let (x, y) = cells(&buf, "\u{203A}")[0];
+        panel.handle_key(&alt(KeyCode::Right), &tx);
+        assert!(panel.preview.is_context());
+        // No render: the second row's old cell.
+        panel.handle_mouse(&click(x, y + 1), &tx);
+        assert_eq!(
+            panel.selected_path().cloned(),
+            first,
+            "the stale list rect selected an old row"
+        );
+        assert!(panel.preview.is_context());
+        assert!(!opened(&mut rx));
+    }
+
     /// The hint row advertises the chevron's key for the current state.
     #[tokio::test(flavor = "multi_thread")]
     async fn hints_advertise_the_chevron_key() {
         let mut panel = panel_with_notes("qp-chev-hint", &["/a.md"]).await;
         let has = |p: &QueryPanel, k: &str| p.hint_shortcuts().iter().any(|(key, _)| key == k);
         assert!(has(&panel, "Alt+\u{2192}"));
-        panel.toggle_expand();
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
+        panel.step(Step::Toggle);
         assert!(has(&panel, "Alt+\u{2190}"));
         assert!(!has(&panel, "Alt+\u{2192}"));
     }
@@ -1686,7 +1648,7 @@ mod tests {
 
         // Open the half-height Context preview and render once to record the
         // list/preview rects.
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         assert!(panel.preview.is_context());
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
@@ -1767,7 +1729,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_active_query("#todo".to_string());
         settle(&mut panel).await;
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
         terminal
@@ -1810,7 +1772,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_active_query("#todo".to_string());
         settle(&mut panel).await;
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         // Simulate a user-owned scroll.
         panel.preview.force_user_scrolled();
 
@@ -1847,7 +1809,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_active_query("#todo".to_string());
         settle(&mut panel).await;
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
         terminal
@@ -1940,8 +1902,8 @@ mod tests {
         panel.set_active_query("#todo".to_string());
         settle(&mut panel).await;
         // Collapsed -> Context -> Full.
-        panel.toggle_expand();
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
+        panel.step(Step::Toggle);
         assert!(panel.is_full_expanded());
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
@@ -2001,8 +1963,8 @@ mod tests {
         assert!(panel.list.selected_row().is_some());
 
         // Collapsed -> Context -> Full.
-        panel.toggle_expand();
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
+        panel.step(Step::Toggle);
         assert!(panel.is_full_expanded());
 
         let theme = crate::settings::themes::Theme::default();
@@ -2040,8 +2002,8 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
 
         // Render in Full so both regions are recorded.
-        panel.toggle_expand();
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
+        panel.step(Step::Toggle);
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
@@ -2050,7 +2012,7 @@ mod tests {
 
         // Toggle (Full -> Collapsed) WITHOUT a render in between — as when
         // Enter and a mouse event are drained in the same batch.
-        panel.toggle_expand();
+        panel.step(Step::Toggle);
         assert!(
             panel.list.content_rect().is_empty(),
             "stale content rect must not survive a state change"
