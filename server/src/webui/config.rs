@@ -99,22 +99,84 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
             ("qdrant", String::new(), url.clone(), collection.clone())
         }
     };
+    // One-line "what is set now" per card, shown in the card header so a
+    // collapsed card still answers "what is this configured to?".
+    let embedder_sum = match &c.embedder {
+        None => "not configured".to_string(),
+        Some(_) if current_embedder == "fastembed" => format!("fastembed · {current_fastembed}"),
+        Some(_) => format!("{current_embedder} · {current_model}"),
+    };
+    let vector_db_sum = current_vector_db;
+    let reranker_sum = if c.reranker.enabled { "on" } else { "off" };
+    let cut_sum = match c.reranker.context_cut {
+        crate::config::ContextCut::Fixed => "fixed",
+        crate::config::ContextCut::ScoreRange => "score-range",
+        crate::config::ContextCut::LargestDrop => "largest-drop",
+    };
+    let llm_sum = match &c.llm {
+        None => "none (semantic-only)".to_string(),
+        Some(l) => format!("{} · {}", l.provider(), l.model()),
+    };
+    let auth_sum = if c.auth.token.is_some() {
+        "token required"
+    } else {
+        "open"
+    };
+    let server_sum = format!("{}:{}", c.server.host, c.server.port);
+    // A tab carries a marker when something on it needs attention.
+    let search_needs_attention = c.embedder.is_none();
+    let tabs = [
+        ("general", "General", false),
+        ("search", "Search", search_needs_attention),
+        ("ask", "Ask", false),
+    ];
     let body = html! {
         h1 { "Configuration" }
         @if let Some(f) = flash { (f) }
         @if !can_save {
             p .flash.err { "No writable config path — edits cannot be saved." }
         }
-        form method="post" action="/config" {
-            section .group {
-                h2 { "Server" }
+        // Marks the page as scripted before the panels render, so the tab
+        // layout applies without a flash. Without JavaScript every panel
+        // stays visible and the tab bar stays hidden.
+        script { (maud::PreEscaped("document.documentElement.classList.add('js');")) }
+        div .tabs role="tablist" {
+            @for (id, label, warn) in tabs {
+                button .tab type="button" role="tab" data-tab=(id) {
+                    (label)
+                    @if warn { " " span .warn title="Needs attention" { "!" } }
+                }
+            }
+        }
+        form #config-form method="post" action="/config" {
+          div .tabpanel data-panel="general" {
+            details .card open {
+                summary { h2 { "Server" } span .sum { (server_sum) } }
                 div .row {
                     div { label { "Host" } input type="text" name="host" value=(c.server.host); }
                     div { label { "Port" } input type="number" name="port" value=(c.server.port); }
                 }
             }
-            section .group {
-                h2 { "Embedder" }
+            details .card open {
+                summary { h2 { "Auth" } span .sum { (auth_sum) } }
+                label { "Bearer token" }
+                input type="password" name="auth_token" placeholder=(if c.auth.token.is_some() { "unchanged (a token is set)" } else { "open — no token set" });
+                p .muted { "Leave blank to keep the current token. Clearing it (going open) must be done in the config file." }
+            }
+            details .card open {
+                summary { h2 { "Apply changes" } }
+                p .muted { "Saved changes take effect the next time the server starts, or when you restart it here." }
+                p .muted {
+                    "Restart drains in-flight requests, reloads the config file, and rebinds, so every "
+                    "setting applies, including the bind address. It uses whatever is in the config file "
+                    "right now (web-saved or hand-edited), so it works even when this page cannot save. "
+                    "The server is briefly unavailable; connected Kimün clients reconnect on their own."
+                }
+            }
+          }
+          div .tabpanel data-panel="search" {
+            details .card open {
+                summary { h2 { "Embedder" } span .sum { (embedder_sum) } }
                 @if c.embedder.is_none() {
                     p .flash.err { "No embedder configured — the server is unconfigured: indexing and search are disabled until one is set." }
                 }
@@ -160,8 +222,8 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     input type="password" name="embedder_api_key" placeholder=(if embedder_key_set { "unchanged (a key is set)" } else { "from environment if blank" });
                 }
             }
-            section .group {
-                h2 { "Vector DB" }
+            details .card open {
+                summary { h2 { "Vector DB" } span .sum { (vector_db_sum) } }
                 label { "Backend" }
                 select name="vector_db" {
                     option value="sqlite" data-groups="sqlite" selected[current_vector_db == "sqlite"] { "SQLite (embedded, local)" }
@@ -179,54 +241,13 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     div { label { "Qdrant collection prefix" } input type="text" name="qdrant_collection" value=(qdrant_collection) placeholder="kimun_embeddings"; }
                 }
             }
-            section .group {
-                h2 { "LLM" }
-                label { "Provider" }
-                select name="provider" {
-                    @for (p, groups) in providers {
-                        option value=(p) data-groups=(groups) selected[p == current] {
-                            @match p {
-                                "none" => { "— none (semantic-only) —" }
-                                "openai-local" => { "openai-compatible (local: Ollama, llama.cpp, …)" }
-                                _ => { (p) }
-                            }
-                        }
-                    }
-                }
-                p .muted { "Select — none — for a search-only server (no question-answering)." }
-                noscript {
-                    p .muted { "(Without JavaScript all fields are shown: URL applies to the local OpenAI-compatible provider only.)" }
-                }
-                div data-llm="llm-url" {
-                    label { "URL" }
-                    input type="text" name="llm_url" value=(current_llm_url) placeholder="http://localhost:11434/v1";
-                    p .muted { "The endpoint's OpenAI-compatible base URL. Keyless local servers work — leave the API key blank." }
-                }
-                div data-llm="llm-reasoning" {
-                    label { "Reasoning effort" }
-                    select name="llm_reasoning" {
-                        option value="" selected[current_reasoning.is_none()] { "model default (not sent)" }
-                        @for e in crate::config::ReasoningEffort::ALL {
-                            option value=(e.as_str()) selected[Some(e) == current_reasoning] { (e.as_str()) }
-                        }
-                    }
-                    p .muted { "OpenRouter only. Sent as reasoning.effort; models without reasoning ignore it." }
-                }
-                div data-llm="llm" {
-                    label { "Model" }
-                    input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
-                    label { "API key" }
-                    input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
-                    p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
-                }
-            }
-            section .group {
-                h2 { "Reranker" }
+            details .card {
+                summary { h2 { "Reranker" } span .sum { (reranker_sum) } }
                 div .check { input type="checkbox" name="reranker_enabled" checked[c.reranker.enabled]; label style="margin:0" { "Enabled" } }
                 p .muted { "The reranker backend (local model or HTTP endpoint) is a file-only setting; a save here keeps it." }
             }
-            section .group {
-                h2 { "Context cut" }
+            details .card {
+                summary { h2 { "Context cut" } span .sum { (cut_sum) } }
                 label { "Strategy" }
                 select name="context_cut" {
                     option value="fixed" data-groups="fixed" selected[c.reranker.context_cut == crate::config::ContextCut::Fixed] {
@@ -266,28 +287,61 @@ fn config_markup(state: &AppState, c: &RagConfig, flash: Option<Markup>) -> Mark
                     }
                 }
             }
-            section .group {
-                h2 { "Auth" }
-                label { "Bearer token" }
-                input type="password" name="auth_token" placeholder=(if c.auth.token.is_some() { "unchanged (a token is set)" } else { "open — no token set" });
-                p .muted { "Leave blank to keep the current token. Clearing it (going open) must be done in the config file." }
+          }
+          div .tabpanel data-panel="ask" {
+            details .card open {
+                summary { h2 { "LLM" } span .sum { (llm_sum) } }
+                label { "Provider" }
+                select name="provider" {
+                    @for (p, groups) in providers {
+                        option value=(p) data-groups=(groups) selected[p == current] {
+                            @match p {
+                                "none" => { "— none (semantic-only) —" }
+                                "openai-local" => { "openai-compatible (local: Ollama, llama.cpp, …)" }
+                                _ => { (p) }
+                            }
+                        }
+                    }
+                }
+                p .muted { "Select — none — for a search-only server (no question-answering)." }
+                noscript {
+                    p .muted { "(Without JavaScript all fields are shown: URL applies to the local OpenAI-compatible provider only.)" }
+                }
+                div data-llm="llm-url" {
+                    label { "URL" }
+                    input type="text" name="llm_url" value=(current_llm_url) placeholder="http://localhost:11434/v1";
+                    p .muted { "The endpoint's OpenAI-compatible base URL. Keyless local servers work — leave the API key blank." }
+                }
+                div data-llm="llm-reasoning" {
+                    label { "Reasoning effort" }
+                    select name="llm_reasoning" {
+                        option value="" selected[current_reasoning.is_none()] { "model default (not sent)" }
+                        @for e in crate::config::ReasoningEffort::ALL {
+                            option value=(e.as_str()) selected[Some(e) == current_reasoning] { (e.as_str()) }
+                        }
+                    }
+                    p .muted { "OpenRouter only. Sent as reasoning.effort; models without reasoning ignore it." }
+                }
+                div data-llm="llm" {
+                    label { "Model" }
+                    input type="text" name="model" value=(c.llm.as_ref().map(|l| l.model()).unwrap_or(""));
+                    label { "API key" }
+                    input type="password" name="api_key" placeholder=(if c.llm.as_ref().and_then(|l| l.api_key()).is_some() { "unchanged (a key is set)" } else { "from environment if blank" });
+                    p .muted { "Leave blank to keep the current key (or fall back to the provider env var)." }
+                }
             }
+          }
+          div .savebar {
             @if can_save {
                 button type="submit" { "Save to config file" }
-                p .muted { "Saved changes take effect the next time the server starts — or use Restart below." }
             }
+            button .danger #restart-btn type="submit" form="restart-form" { "Restart server now" }
+            span .hint #dirty-hint { "No unsaved changes." }
+          }
         }
-        // Separate form: restart is not a save. Applies whatever is in the
-        // config file right now (web-saved or hand-edited), so it is useful
-        // even when the path is not writable from here.
-        form method="post" action="/restart" {
-            button .danger type="submit" { "Restart server now" }
-            p .muted {
-                "Drains in-flight requests, reloads the config file, and rebinds — every "
-                "setting applies, including the bind address. The server is briefly "
-                "unavailable; connected Kimün clients reconnect on their own."
-            }
-        }
+        // Separate form: restart is not a save. The button lives in the save
+        // bar and points here through its `form` attribute.
+        form #restart-form method="post" action="/restart" {}
         script {
             (maud::PreEscaped(r#"
 const bindVisibility = (selectName, attr) => {
@@ -319,6 +373,54 @@ const bindDesc = (selectName, targetId) => {
   apply();
 };
 bindDesc('fastembed_model', 'fastembed-desc');
+
+// Tabs: the hash picks the tab (so a tab is linkable); sessionStorage keeps it
+// across the POST that a save does, which lands on /config without a hash.
+const tabs = [...document.querySelectorAll('.tab')];
+const panels = [...document.querySelectorAll('.tabpanel')];
+const showTab = (id) => {
+  if (!tabs.some(t => t.dataset.tab === id)) id = tabs[0].dataset.tab;
+  tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === id)));
+  panels.forEach(p => p.classList.toggle('on', p.dataset.panel === id));
+  try { sessionStorage.setItem('config-tab', id); } catch (e) {}
+};
+tabs.forEach(t => t.addEventListener('click', () => {
+  showTab(t.dataset.tab);
+  history.replaceState(null, '', '#' + t.dataset.tab);
+}));
+let saved = null;
+try { saved = sessionStorage.getItem('config-tab'); } catch (e) {}
+showTab(location.hash.slice(1) || saved);
+
+// Unsaved-changes guard: the save bar says so, leaving the page asks first,
+// and Restart warns that it will not include the pending edits.
+const form = document.getElementById('config-form');
+const hint = document.getElementById('dirty-hint');
+const bar = hint.parentElement;
+let dirty = false, submitting = false;
+const markDirty = () => {
+  dirty = true;
+  bar.classList.add('dirty');
+  hint.textContent = 'Unsaved changes. Save, then restart to apply them.';
+};
+// 'change' as well as 'input': not every browser fires 'input' on a select.
+form.addEventListener('input', markDirty);
+form.addEventListener('change', markDirty);
+form.addEventListener('submit', () => { submitting = true; });
+window.addEventListener('beforeunload', (e) => {
+  if (dirty && !submitting) { e.preventDefault(); e.returnValue = ''; }
+});
+// A clean form needs no flag: the guard only warns when the form is dirty. The
+// flag is set only once the user has accepted losing pending edits, so a failed
+// or cancelled restart never leaves the guard off for later edits.
+document.getElementById('restart-btn').addEventListener('click', (e) => {
+  if (!dirty) return;
+  if (confirm('You have unsaved changes that a restart will not include. Restart anyway?')) {
+    submitting = true;
+  } else {
+    e.preventDefault();
+  }
+});
 "#))
         }
     };
