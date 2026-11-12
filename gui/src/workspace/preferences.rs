@@ -29,7 +29,7 @@
 //! TUI never shows): applied as soon as it is saved, no restart. So is
 //! Display's Edit surface font (`[gui] editor_font_family`,
 //! `editor_font_size`): the family dropdown lists the installed monospace
-//! families ([`mono_families`](crate::mono_families), read in the background
+//! families ([`mono_families`], read in the background
 //! when Display first shows) and keeps a saved family that is not installed.
 //!
 //! **Save** is disabled while the draft is clean or invalid (a server
@@ -280,7 +280,7 @@ type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
 /// The dropdown's entries: "Default (theme)" first. With the installed
 /// monospace families (`ready`): each family in `keep` (the saved and the
-/// draft family) the list lacks, as "<name> (not installed)", then the list.
+/// draft family) the list lacks, as `"<name> (not installed)"`, then the list.
 /// Without it (still being read): the `keep` families alone, so a chosen
 /// family is never shown blank.
 fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoice> {
@@ -349,6 +349,10 @@ pub(crate) struct PreferencesView {
     /// Display's font family dropdown, and what its entries were built from
     /// ([`Self::sync_font_choices`]).
     font_family: Entity<FontSelect>,
+    /// The saved `[gui] editor_font_family`, read once when the view loads:
+    /// the dropdown is synced every frame, and the getter warns on a
+    /// wrong-typed value each time it is asked.
+    saved_font_family: Option<String>,
     font_inputs: Option<FontInputs>,
     /// The entries the dropdown was last given.
     font_items: Vec<FontChoice>,
@@ -457,6 +461,7 @@ impl PreferencesView {
             autosave_focus: cx.focus_handle().tab_stop(true),
             font_size_focus: cx.focus_handle().tab_stop(true),
             font_family,
+            saved_font_family: None,
             font_inputs: None,
             font_items,
             server_input,
@@ -485,7 +490,9 @@ impl PreferencesView {
                 self.theme_scroll
                     .scroll_to_item(model.theme_idx, ScrollStrategy::Nearest);
                 self.model = Some(model);
-                self.opened = Some(self.initial());
+                let opened = self.initial();
+                self.saved_font_family = opened.gui.editor_font_family();
+                self.opened = Some(opened);
                 self.ws.selected =
                     kimun_notes::logic::workspaces::initial_selection(&self.ws_rows()).unwrap_or(0);
                 self.dirty.set(None);
@@ -578,6 +585,13 @@ impl PreferencesView {
             labels.iter().map(|c| c.label.to_string()).collect(),
             selected,
         )
+    }
+
+    /// The settings as the view opened, for a test to change behind its
+    /// back (the saved font family is read from them once, at load).
+    #[cfg(test)]
+    pub(crate) fn opened_mut(&mut self) -> Option<&mut AppSettings> {
+        self.opened.as_mut()
     }
 
     /// The root's handle (the questions and the progress panel hold it).
@@ -740,10 +754,7 @@ impl PreferencesView {
                 MonoFamilies::Ready(list) => Some(list),
                 MonoFamilies::Idle | MonoFamilies::Loading => None,
             },
-            saved: self
-                .opened
-                .as_ref()
-                .and_then(|s| s.gui.editor_font_family()),
+            saved: self.saved_font_family.clone(),
             draft: model.editor_font_family.clone(),
         };
         if self.font_inputs.as_ref() == Some(&inputs) {

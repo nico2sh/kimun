@@ -1121,6 +1121,31 @@ fn the_family_list_fills_in_when_it_is_ready(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
+/// The saved family is read from the settings once, when the view loads,
+/// not on every frame (a wrong-typed value would log a warning per frame):
+/// the settings changed behind the view's back leave the dropdown as it was.
+#[gpui_kit::test]
+fn the_saved_family_is_read_once_not_per_frame(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    saved_family(&v, "Gone");
+    families_ready(cx, &["Alpha Mono"]);
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    let before = s.pf_font_choices(cx);
+    assert!(before.0.contains(&"Gone (not installed)".to_string()));
+    s.pf_with_view(cx, |v, _, cx| {
+        if let Some(opened) = v.opened_mut() {
+            opened.gui.set_editor_font_family(Some("Elsewhere"));
+        }
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert_eq!(s.pf_font_choices(cx), before);
+    settle(&rt, cx);
+}
+
 /// Opening Display starts the family probe.
 #[gpui_kit::test]
 fn opening_display_loads_the_family_list(cx: &mut TestAppContext) {
