@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, OPENROUTER_URL, ReasoningEffort};
 use crate::document::FlattenedChunk;
 
 #[allow(clippy::double_must_use)]
@@ -36,8 +36,10 @@ const GEMINI_URL: &str = "https://generativelanguage.googleapis.com";
 /// The provider's wire shape — the only thing that differs between providers.
 enum Wire {
     /// OpenAI chat-completions dialect: `{base}/chat/completions`, bearer auth.
-    /// Speaks for OpenAI, Mistral, and any OpenAI-compatible endpoint.
-    OpenAiCompat,
+    /// Speaks for OpenAI, Mistral, OpenRouter, and any OpenAI-compatible
+    /// endpoint. `reasoning` is OpenRouter's `reasoning.effort` extension;
+    /// `None` sends no `reasoning` object, so the model keeps its default.
+    OpenAiCompat { reasoning: Option<ReasoningEffort> },
     /// Anthropic messages API: `{base}/v1/messages`, `x-api-key` header.
     Anthropic,
     /// Gemini generateContent: model and key live in the URL itself.
@@ -62,12 +64,21 @@ impl ChatClient {
     pub fn from_config(config: &LlmConfig, api_key: String) -> Self {
         let (wire, base_url) = match config {
             LlmConfig::OpenAI { url, .. } => (
-                Wire::OpenAiCompat,
+                Wire::OpenAiCompat { reasoning: None },
                 url.clone().unwrap_or_else(|| OPENAI_URL.to_string()),
             ),
-            LlmConfig::Mistral { .. } => (Wire::OpenAiCompat, MISTRAL_URL.to_string()),
+            LlmConfig::Mistral { .. } => (
+                Wire::OpenAiCompat { reasoning: None },
+                MISTRAL_URL.to_string(),
+            ),
             LlmConfig::Claude { .. } => (Wire::Anthropic, ANTHROPIC_URL.to_string()),
             LlmConfig::Gemini { .. } => (Wire::Gemini, GEMINI_URL.to_string()),
+            LlmConfig::OpenRouter { reasoning, .. } => (
+                Wire::OpenAiCompat {
+                    reasoning: *reasoning,
+                },
+                OPENROUTER_URL.to_string(),
+            ),
         };
         Self {
             http: reqwest::Client::new(),
@@ -91,7 +102,7 @@ impl LLMClient for ChatClient {
         let messages = chat_messages(history, build_prompt(question, history, context));
 
         let request = match &self.wire {
-            Wire::OpenAiCompat => self
+            Wire::OpenAiCompat { reasoning } => self
                 .http
                 .post(format!("{}/chat/completions", self.base_url))
                 .header("Authorization", format!("Bearer {}", self.api_key))
@@ -99,6 +110,7 @@ impl LLMClient for ChatClient {
                     model: self.model.clone(),
                     max_tokens: None,
                     messages,
+                    reasoning: reasoning.map(|effort| ReasoningRequest { effort }),
                 }),
             Wire::Anthropic => self
                 .http
@@ -109,6 +121,7 @@ impl LLMClient for ChatClient {
                     model: self.model.clone(),
                     max_tokens: Some(4096),
                     messages,
+                    reasoning: None,
                 }),
             Wire::Gemini => {
                 let contents = gemini_contents(messages);
@@ -130,7 +143,7 @@ impl LLMClient for ChatClient {
         }
 
         let answer = match &self.wire {
-            Wire::OpenAiCompat => {
+            Wire::OpenAiCompat { .. } => {
                 let parsed: ChatResponse = response.json().await?;
                 if let Some(usage) = &parsed.usage {
                     debug!(
@@ -138,12 +151,7 @@ impl LLMClient for ChatClient {
                         self.provider, usage.prompt_tokens, usage.completion_tokens
                     );
                 }
-                parsed
-                    .choices
-                    .into_iter()
-                    .map(|c| c.message.content)
-                    .collect::<Vec<String>>()
-                    .join("\n")
+                answer_text(parsed, self.provider)?
             }
             Wire::Anthropic => {
                 let parsed: AnthropicResponse = response.json().await?;
@@ -181,6 +189,29 @@ impl LLMClient for ChatClient {
 
         Ok(answer)
     }
+}
+
+/// The answer text of an OpenAI-style response: every choice's content,
+/// joined. Null, absent and blank content all count as "no text": a reasoning
+/// model that spends its whole budget thinking returns one of them, and an
+/// empty answer would show in Ask as a blank reply with no explanation.
+fn answer_text(response: ChatResponse, provider: &str) -> anyhow::Result<String> {
+    let parts: Vec<String> = response
+        .choices
+        .into_iter()
+        .filter_map(|c| c.message.content)
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    if parts.is_empty() {
+        // Only OpenRouter has a reasoning setting to point the user at.
+        let hint = if provider == "openrouter" {
+            " A reasoning model can use its whole token budget thinking: set a lower `reasoning` effort or pick another model."
+        } else {
+            ""
+        };
+        bail!("{provider} returned no answer text (empty content).{hint}");
+    }
+    Ok(parts.join("\n"))
 }
 
 /// History pairs + the final RAG prompt as one chat transcript. Shared by the
@@ -346,14 +377,24 @@ Context:
 // Minimal and tolerant: only the fields the server reads, usage optional, so a
 // provider adding response fields never breaks parsing.
 
-/// Request body for both the OpenAI-compat and Anthropic wires (Anthropic
-/// additionally requires `max_tokens`; omitted for OpenAI-compat).
+/// Request body for the OpenAI-compat, OpenRouter and Anthropic wires
+/// (Anthropic additionally requires `max_tokens`; omitted for OpenAI-compat).
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     messages: Vec<ChatMessage>,
+    /// OpenRouter only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningRequest>,
+}
+
+/// OpenRouter's unified `reasoning` request object. The answer text comes back
+/// in `message.content`; any reasoning trace in `message.reasoning` is ignored.
+#[derive(Serialize)]
+struct ReasoningRequest {
+    effort: ReasoningEffort,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -371,7 +412,16 @@ struct ChatResponse {
 
 #[derive(Deserialize)]
 struct ChatChoice {
-    message: ChatMessage,
+    message: ChatResponseMessage,
+}
+
+/// A response message. `content` is `null` or absent when a reasoning model
+/// spends its whole budget thinking (OpenRouter surfaces this), so it is
+/// optional here, unlike the request-side [`ChatMessage`].
+#[derive(Deserialize)]
+struct ChatResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -716,7 +766,7 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::OpenAiCompat, base)
+        let answer = client(Wire::OpenAiCompat { reasoning: None }, base)
             .ask("q?", &[], &numbered(vec![chunk("/a.md", "A", "body")]))
             .await
             .unwrap();
@@ -736,6 +786,108 @@ mod tests {
             body.get("max_tokens").is_none(),
             "OpenAI-compat omits max_tokens"
         );
+    }
+
+    #[tokio::test]
+    async fn openrouter_wire_sends_reasoning_effort_and_ignores_reasoning_trace() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_provider(
+            "/chat/completions",
+            serde_json::json!({
+                "choices": [{"message": {
+                    "role": "assistant",
+                    "content": "the answer",
+                    "reasoning": "thinking out loud"
+                }}]
+            }),
+            captured.clone(),
+        )
+        .await;
+
+        let answer = client(
+            Wire::OpenAiCompat {
+                reasoning: Some(ReasoningEffort::High),
+            },
+            base,
+        )
+        .ask("q?", &[], &[])
+        .await
+        .unwrap();
+        assert_eq!(answer, "the answer");
+
+        let (headers, body) = captured.lock().unwrap().take().unwrap();
+        assert_eq!(headers["authorization"], "Bearer sk-test");
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "high"}));
+    }
+
+    #[tokio::test]
+    async fn null_or_missing_content_is_a_clear_error() {
+        for message in [
+            serde_json::json!({"role": "assistant", "content": null, "reasoning": "hmm"}),
+            serde_json::json!({"role": "assistant"}),
+            serde_json::json!({"role": "assistant", "content": "  \n"}),
+        ] {
+            let captured: Captured = Arc::new(Mutex::new(None));
+            let base = mock_provider(
+                "/chat/completions",
+                serde_json::json!({"choices": [{"message": message}]}),
+                captured,
+            )
+            .await;
+            let err = client(Wire::OpenAiCompat { reasoning: None }, base)
+                .ask("q?", &[], &[])
+                .await
+                .expect_err("no content must not be an empty answer");
+            assert!(err.to_string().contains("no answer text"), "{err}");
+        }
+    }
+
+    #[test]
+    fn empty_answer_hint_names_reasoning_only_for_openrouter() {
+        let empty = || ChatResponse {
+            choices: vec![],
+            usage: None,
+        };
+        let or = answer_text(empty(), "openrouter").unwrap_err().to_string();
+        assert!(or.contains("`reasoning`"), "{or}");
+        let oa = answer_text(empty(), "openai").unwrap_err().to_string();
+        assert!(!oa.contains("reasoning"), "{oa}");
+    }
+
+    #[tokio::test]
+    async fn null_content_in_one_choice_keeps_the_others() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_provider(
+            "/chat/completions",
+            serde_json::json!({"choices": [
+                {"message": {"role": "assistant", "content": null}},
+                {"message": {"role": "assistant", "content": "kept"}}
+            ]}),
+            captured,
+        )
+        .await;
+        let answer = client(Wire::OpenAiCompat { reasoning: None }, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(answer, "kept");
+    }
+
+    #[tokio::test]
+    async fn openrouter_wire_without_effort_omits_reasoning() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_provider(
+            "/chat/completions",
+            serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+            captured.clone(),
+        )
+        .await;
+        client(Wire::OpenAiCompat { reasoning: None }, base)
+            .ask("q?", &[], &[])
+            .await
+            .unwrap();
+        let (_, body) = captured.lock().unwrap().take().unwrap();
+        assert!(body.get("reasoning").is_none());
     }
 
     #[tokio::test]
@@ -818,10 +970,13 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let err = client(Wire::OpenAiCompat, format!("http://{addr}"))
-            .ask("q?", &[], &[])
-            .await
-            .expect_err("401 must surface as an error");
+        let err = client(
+            Wire::OpenAiCompat { reasoning: None },
+            format!("http://{addr}"),
+        )
+        .ask("q?", &[], &[])
+        .await
+        .expect_err("401 must surface as an error");
         let msg = err.to_string();
         assert!(msg.contains("401"), "missing status in: {msg}");
         assert!(msg.contains("bad key"), "missing body in: {msg}");
@@ -866,6 +1021,14 @@ mod tests {
                     api_key: None,
                 },
                 GEMINI_URL,
+            ),
+            (
+                LlmConfig::OpenRouter {
+                    model: "m".into(),
+                    api_key: None,
+                    reasoning: None,
+                },
+                OPENROUTER_URL,
             ),
         ];
         for (cfg, expected_base) in cases {

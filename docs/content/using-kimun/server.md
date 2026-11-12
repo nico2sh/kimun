@@ -146,7 +146,7 @@ The first run downloads the embedding model (a few hundred MB). When the server 
 
 The configuration file is `~/.config/kimun/server.toml`. If the file does not exist, `--default-config` creates it. To choose the items below, edit the file, or use the Config page of the web UI:
 
-- Embedder: local [fastembed](https://github.com/Anush008/fastembed-rs) models (no network), or an external Ollama or OpenAI-compatible embeddings endpoint. The OpenAI-compatible option also covers cloud providers. Examples are [Mistral](https://docs.mistral.ai/api/endpoint/embeddings), whose native API is OpenAI-compatible, and [Google Gemini](https://ai.google.dev/gemini-api/docs/embeddings), through its OpenAI-compatibility endpoint:
+- Embedder: local [fastembed](https://github.com/Anush008/fastembed-rs) models (no network), an external Ollama or OpenAI-compatible embeddings endpoint, or OpenRouter. The OpenAI-compatible option also covers cloud providers. Examples are [Mistral](https://docs.mistral.ai/api/endpoint/embeddings), whose native API is OpenAI-compatible, and [Google Gemini](https://ai.google.dev/gemini-api/docs/embeddings), through its OpenAI-compatibility endpoint:
 
   ```toml
   # Mistral
@@ -167,7 +167,7 @@ The configuration file is `~/.config/kimun/server.toml`. If the file does not ex
   ```
 - Vector store: embedded SQLite (no setup, the default) or a standalone [Qdrant](https://qdrant.tech) server.
 - Reranker: it improves the order of the results, and it is on by default. It can be a local cross-encoder model or an external rerank API. The server downloads a local model on first start, and the embedder choice does not affect it. The external options are [Cohere](https://docs.cohere.com/reference/rerank), [Jina AI](https://jina.ai/reranker/), [Voyage AI](https://docs.voyageai.com/reference/reranker-api), or a self-hosted vLLM or Infinity server. OpenAI, Mistral, Gemini, and Anthropic offer no rerank API. If the reranker fails to start, for example because a proxy blocks the model download, the server keeps running without it.
-- LLM for Ask: Claude, OpenAI, Gemini, Mistral, or any local OpenAI-compatible endpoint (Ollama, llama.cpp, …). Leave it unset for a server that does only semantic search.
+- LLM for Ask: Claude, OpenAI, Gemini, Mistral, OpenRouter, or any local OpenAI-compatible endpoint (Ollama, llama.cpp, …). Leave it unset for a server that does only semantic search.
 - Auth: an optional bearer token. Set a token whenever the server binds beyond `127.0.0.1`.
 
 The web UI writes configuration edits to the file, and the server applies them on the next restart. The Restart server button on the Config page restarts the server in place. It finishes the current requests, reloads the file, and starts again. Connected Kimün clients reconnect on their own. For the full configuration and API reference, see the [server README](https://github.com/nico2sh/kimun/tree/main/server).

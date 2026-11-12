@@ -14,7 +14,7 @@ use axum::{
 };
 
 use crate::KimunRag;
-use crate::config::{EmbedderConfig, LlmConfig, RagConfig, VectorDbConfig};
+use crate::config::{EmbedderConfig, LlmConfig, OPENROUTER_URL, RagConfig, VectorDbConfig};
 use crate::dbembeddings::VectorStore;
 use crate::dbembeddings::embedder::{Embedder, fastembedder::FastEmbedder, http::HttpEmbedder};
 use crate::dbembeddings::vecqdrant::VecQdrant;
@@ -158,6 +158,31 @@ async fn build_embedder(cfg: &EmbedderConfig) -> anyhow::Result<Arc<dyn Embedder
                     url.clone(),
                     model.clone(),
                     api_key.clone(),
+                    doc_prefix.clone(),
+                    query_prefix.clone(),
+                )
+                .await?,
+            )
+        }
+        EmbedderConfig::OpenRouter {
+            model,
+            api_key,
+            doc_prefix,
+            query_prefix,
+        } => {
+            tracing::info!("Using OpenRouter embedder {}", model);
+            // Blank counts as unset on both sides, so `api_key = ""` still
+            // falls back to the environment.
+            let api_key = api_key
+                .clone()
+                .filter(|k| !k.is_empty())
+                .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
+                .filter(|k| !k.is_empty());
+            Arc::new(
+                HttpEmbedder::openai(
+                    OPENROUTER_URL.to_string(),
+                    model.clone(),
+                    api_key,
                     doc_prefix.clone(),
                     query_prefix.clone(),
                 )
