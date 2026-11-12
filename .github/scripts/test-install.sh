@@ -5,6 +5,7 @@
 # launcher files, the options. The macOS desktop app is covered with stubbed hdiutil, ditto and codesign,
 # so the real tools are not exercised here (see rehearse-release.sh for that).
 # Run: bash .github/scripts/test-install.sh
+# shellcheck disable=SC2015  # `[ A ] && [ B ] || fail ...` is intended here: fail when either test is false
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 if [ "$(uname -s)" != "Linux" ]; then echo "skipped: not Linux"; exit 0; fi
@@ -437,6 +438,7 @@ ok "missing tools are named before anything is downloaded"
 # 10. Options.
 if sh install.sh --nope >/dev/null 2>&1; then fail "unknown option accepted"; fi
 sh install.sh --help | grep -q -- "--gui" || fail "--help does not mention --gui"
+# shellcheck disable=SC2002  # the pipe is the point: this is the `curl | sh` form
 cat install.sh | sh -s -- --help | grep -qi "gui" || fail "--help when piped"
 ok "options"
 

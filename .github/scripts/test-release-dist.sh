@@ -2,6 +2,7 @@
 # Tests for release-dist.sh: five platforms assembled the way the build job does it,
 # packaged the way the release job does it, then checked by the verifier.
 # Run: bash .github/scripts/test-release-dist.sh
+# shellcheck disable=SC2015  # `[ A ] && [ B ] || fail ...` is intended here: fail when either test is false
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 v=9.9.9

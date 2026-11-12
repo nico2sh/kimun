@@ -13,6 +13,7 @@
 #
 # Nothing leaves the machine, and your real config and notes are not touched. What it cannot
 # show: the other platforms, GitHub's runners, the release page, Apple's signing.
+# shellcheck disable=SC2015  # `[ A ] && [ B ] || fail ...` is intended here: fail when either test is false
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
