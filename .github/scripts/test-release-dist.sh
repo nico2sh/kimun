@@ -62,6 +62,15 @@ done
 [ "$(grep -c '  kimun-gui-linux-x64.tar.gz$' "$art/checksums-sha256.txt")" = 1 ] || fail "a stable download is checksummed more than once"
 ok "stable downloads: same bytes and checksum as the versioned archives, none for raw binaries"
 
+# The Homebrew job (build.yml, publish-homebrew) picks the terminal app's checksum by
+# pattern. The stable downloads share the platform suffix, so each platform must still
+# match exactly one line. Keep this pattern the same as the workflow's.
+for p in macos-arm64 macos-x64 linux-x64 linux-arm64; do
+  n="$(grep -cE "  kimun-[0-9][^ ]*-$p\.tar\.gz\$" "$art/checksums-sha256.txt")"
+  [ "$n" = 1 ] || fail "the Homebrew pattern matches $n lines for $p, not 1"
+done
+ok "the Homebrew checksum pattern still finds one line per platform"
+
 # Without signed macOS apps there is no .dmg stable download.
 nodmg="$work/nodmg"; mkdir -p "$nodmg"
 for d in "$art"/dist-* "$art"/distgui-*; do cp -r "$d" "$nodmg/"; done
