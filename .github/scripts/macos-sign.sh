@@ -2,6 +2,11 @@
 # Sign, notarize and package the desktop app's macOS bundle.
 #
 #   macos-sign.sh APP_DIR OUT_DMG
+#   macos-sign.sh --check
+#
+# --check does only the first part: it proves the secrets are all there, the certificate
+# imports, and Apple accepts the API key. The release workflow runs it before the
+# build, so a wrong secret fails in a minute and not after the Rust build.
 #
 # What it does, in order: import the Developer ID certificate into a throw-away
 # keychain; sign the app with the hardened runtime; notarize the app and staple the
@@ -13,7 +18,9 @@
 # in the environment (GitHub secrets in CI; see assets/packaging/macos/SIGNING.md):
 #   APPLE_CERT_P12           the Developer ID Application certificate and key, .p12, base64
 #   APPLE_CERT_PASSWORD      its password
-#   APPLE_SIGNING_IDENTITY   e.g. "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_SIGNING_IDENTITY   optional. Pins the identity, e.g. "Developer ID Application:
+#                            Your Name (TEAMID)". Without it the first Developer ID
+#                            Application identity in the .p12 is used.
 #   APPLE_NOTARY_KEY         an App Store Connect API key, the .p8 file, base64
 #   APPLE_NOTARY_KEY_ID      its key id
 #   APPLE_NOTARY_ISSUER_ID   the issuer id
@@ -27,14 +34,19 @@
 # the sequence is tested that way on any machine.
 set -euo pipefail
 
-app="${1:?usage: macos-sign.sh APP_DIR OUT_DMG}"
-out="${2:?usage: macos-sign.sh APP_DIR OUT_DMG}"
+check=0
+if [ "${1:-}" = "--check" ]; then
+  check=1
+else
+  app="${1:?usage: macos-sign.sh APP_DIR OUT_DMG | --check}"
+  out="${2:?usage: macos-sign.sh APP_DIR OUT_DMG | --check}"
+fi
 dry="${SIGN_DRY_RUN:-0}"
 
-for var in APPLE_CERT_P12 APPLE_CERT_PASSWORD APPLE_SIGNING_IDENTITY APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+for var in APPLE_CERT_P12 APPLE_CERT_PASSWORD APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
   [ -n "${!var:-}" ] || { echo "::error::$var is not set" >&2; exit 1; }
 done
-[ -d "$app" ] || { echo "::error::no app bundle at $app" >&2; exit 1; }
+[ "$check" = 1 ] || [ -d "$app" ] || { echo "::error::no app bundle at $app" >&2; exit 1; }
 
 work="$(mktemp -d)"
 keychain="$work/signing.keychain-db"
@@ -105,6 +117,31 @@ else
   security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
 fi
 
+# The identity to sign with: the pinned one, or the first Developer ID Application
+# identity that the .p12 brought into the keychain.
+identity="${APPLE_SIGNING_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  if [ "$dry" = 1 ]; then
+    identity="<the Developer ID Application identity in the keychain>"
+  else
+    identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2; exit}')"
+    [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the certificate" >&2; exit 1; }
+  fi
+fi
+
+if [ "$check" = 1 ]; then
+  say "asking Apple if the API key works"
+  if [ "$dry" = 1 ]; then
+    echo "+ xcrun notarytool history --key <key> --key-id $APPLE_NOTARY_KEY_ID --issuer $APPLE_NOTARY_ISSUER_ID"
+  else
+    with_timeout 120 xcrun notarytool history --key "$work/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
+      --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json >/dev/null \
+      || { echo "::error::Apple did not accept the notarization API key (check APPLE_NOTARY_KEY, _KEY_ID and _ISSUER_ID)" >&2; exit 1; }
+  fi
+  say "the Apple secrets work"
+  exit 0
+fi
+
 # Submit FILE to Apple and wait; anything but "Accepted" prints the log and fails.
 # Upload, then poll, so the submission id is in the log as soon as the upload ends: if
 # Apple is slow, ask Apple about that id from any Mac (`xcrun notarytool info ID ...`).
@@ -150,7 +187,7 @@ notarize() {
 
 # --- the app --------------------------------------------------------------------
 say "signing the app"
-run with_timeout 300 codesign --force --options runtime --timestamp --verbose --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$app"
+run with_timeout 300 codesign --force --options runtime --timestamp --verbose --keychain "$keychain" --sign "$identity" "$app"
 say "checking the app's signature"
 run codesign --verify --strict --verbose=2 "$app"
 say "zipping the app"
@@ -169,7 +206,7 @@ mkdir -p "$(dirname "$out")"
 say "building the .dmg"
 run hdiutil create -volname "Kimün" -srcfolder "$stage" -ov -format UDZO "$out"
 say "signing the .dmg"
-run with_timeout 300 codesign --force --timestamp --verbose --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" "$out"
+run with_timeout 300 codesign --force --timestamp --verbose --keychain "$keychain" --sign "$identity" "$out"
 notarize "$out"
 say "stapling the .dmg"
 run xcrun stapler staple "$out"
