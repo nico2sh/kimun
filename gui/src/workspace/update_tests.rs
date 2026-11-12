@@ -28,7 +28,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::update::InstallChannel;
 use tokio::runtime::Runtime;
 
-use crate::relaunch::RecordingRelauncher;
+use crate::bundle::relaunch::RecordingRelauncher;
 
 use super::modal::ModalKind;
 use super::note::Closing;

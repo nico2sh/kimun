@@ -12,6 +12,8 @@
 //! - `system`: the real installer over those two, for the running app.
 //! - [`backend`]: the desktop app's update backend with the bundle's install
 //!   added to the shared one.
+//! - [`relaunch`]: starting the app again once an update replaced it (a bundle
+//!   through `open`, a plain binary as it started).
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,7 @@ pub(crate) mod signature;
 pub(crate) mod swap;
 
 pub(crate) mod backend;
+pub(crate) mod relaunch;
 
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod system;
