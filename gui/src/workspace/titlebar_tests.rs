@@ -623,3 +623,34 @@ fn fullscreen_puts_the_rail_button_back_in_the_footer(cx: &mut TestAppContext) {
     fake.fullscreen.set(true);
     assert_eq!(started.tb_rail_button(cx), Some((false, true)));
 }
+
+/// The button is a 20px square target, and it fits its host
+/// without growing it: the footer stays 29px high, the bar 34px.
+#[gpui_kit::test]
+fn the_rail_button_is_a_20px_target_that_does_not_grow_its_host(cx: &mut TestAppContext) {
+    let started = bare(cx);
+    let (row, button) = started.tb_on_window(cx, |w| {
+        (
+            w.find(ROW_ID).bounds(),
+            w.find(crate::status_row::RAIL_TOGGLE_ID).bounds(),
+        )
+    });
+    assert!(close_px(button.size.width, 20.) && close_px(button.size.height, 20.));
+    assert!(close_px(row.size.height, 29.), "footer {:?}", row.size);
+    assert!(row.top() <= button.top() && button.bottom() <= row.bottom());
+
+    started.tb_client(cx);
+    let (bar, button) = started.tb_on_window(cx, |w| {
+        (
+            w.find(TITLE_BAR_ID).bounds(),
+            w.find(crate::status_row::RAIL_TOGGLE_ID).bounds(),
+        )
+    });
+    assert!(close_px(button.size.width, 20.) && close_px(button.size.height, 20.));
+    assert!(close_px(bar.size.height, 34.), "bar {:?}", bar.size);
+    assert!(bar.top() <= button.top() && button.bottom() <= bar.bottom());
+}
+
+fn close_px(a: gpui_kit::Pixels, b: f32) -> bool {
+    (f32::from(a) - b).abs() < 0.6
+}
