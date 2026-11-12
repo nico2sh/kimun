@@ -433,13 +433,19 @@ fn the_footer_button_toggles_and_names_the_chord(cx: &mut TestAppContext) {
     let (_dir, _config, shell) = open_rail(cx, RailPosition::Left, false);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
+        // The chord is written the platform's way (`Ctrl+Shift+A`, `⌃⇧A`).
+        let chord = crate::keymap::chord_label(
+            cx,
+            &kimun_notes::logic::actions::ActionShortcuts::ToggleRail,
+        )
+        .expect("ToggleRail is bound");
         let label = window.find(TOGGLE_ID).label().map(str::to_string);
-        assert_eq!(label.as_deref(), Some("Hide rail (Ctrl+Shift+A)"));
+        assert_eq!(label, Some(format!("Hide rail ({chord})")));
         window.click(TOGGLE_ID, cx);
         window.render_frame(cx);
         assert!(hidden(&shell, cx));
         let label = window.find(TOGGLE_ID).label().map(str::to_string);
-        assert_eq!(label.as_deref(), Some("Show rail (Ctrl+Shift+A)"));
+        assert_eq!(label, Some(format!("Show rail ({chord})")));
         window.click(TOGGLE_ID, cx);
         window.render_frame(cx);
         assert!(!hidden(&shell, cx));
