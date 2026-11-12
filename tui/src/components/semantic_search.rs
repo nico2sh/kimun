@@ -4,7 +4,7 @@
 //! reachable. This file keeps the panel (render + keys).
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -20,13 +20,14 @@ use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::expand_chevron::ExpandControl;
 use crate::components::file_list::FileListEntry;
+use crate::components::note_reader::{NoteAnchor, NoteReader};
 use crate::components::panel::panel_block;
-use crate::components::preview_pane::{Highlight, PreviewPane, Step};
+use crate::components::preview_pane::Step;
 use crate::components::query_list_panel::{HostEvent, ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::SearchRow;
 use crate::keys::key_combo::KeyCombo;
-use crate::logic::message::{AppMessage, AppTx, FileOp};
+use crate::logic::message::{AppMessage, AppTx, FileOp, SemanticData};
 #[cfg(test)]
 use crate::logic::views::chunks_to_entries;
 pub use crate::logic::views::{SemanticHit, SemanticSource};
@@ -120,60 +121,34 @@ impl ListPanelSpec for SemanticSpec {
 /// most similar. Only meaningful when a server is configured + reachable.
 /// Alt+Right / Alt+Left step a preview of the selected note, scrolled to the
 /// matched section with that section highlighted (the Sources reader's
-/// preview, over the same [`PreviewPane`]).
+/// preview, over the same [`NoteReader`]).
 pub struct SemanticPanel {
     vault: Arc<NoteVault>,
     settings: SharedSettings,
     body: QueryListPanel<SemanticSpec>,
-    source_installed: bool,
-    preview: PreviewPane,
-    /// The note the preview shows. `None` until a preview first opens.
-    loaded: Option<LoadedNote>,
-    /// Where spawned note loads leave their text (stale ones are dropped on
-    /// read: their path is no longer the loaded one).
-    inbox: Inbox,
-    /// The app channel, kept from the last input so a load that a render
-    /// starts can still wake the render loop when it lands.
-    tx: Option<AppTx>,
+    /// The app channel, bound once when the rows' source is installed (the
+    /// panel is built before the channel exists). Note loads started from
+    /// a render, where no `tx` is threaded, send their text back on it.
+    source_tx: Option<AppTx>,
+    /// The preview and the note load behind it.
+    reader: NoteReader,
     /// The row chevron and its Alt+Right / Alt+Left chords. The engine
     /// intercepts the chords, so they work while typing.
     expand: ExpandControl,
 }
 
-/// Where the preview's note text stands.
-enum PreviewText {
-    /// The note load is in flight.
-    Loading,
-    /// The note text, and its matched section's byte range, if found.
-    Loaded {
-        text: String,
-        highlight: Option<Range<usize>>,
-    },
-    /// The note load failed.
-    Failed,
-}
-
-/// The note behind the preview: the hit it was read for (its path and the
-/// matched section that locates the highlight) and its text.
-struct LoadedNote {
-    path: VaultPath,
-    ordinal: usize,
-    heading: String,
-    chunk: String,
-    text: PreviewText,
-}
-
-/// Note loads that have landed, `(path, text)`, until the panel reads them.
-type Inbox = Arc<Mutex<Vec<(VaultPath, Option<String>)>>>;
-
 /// The matched section of a hit in its note's `text`, as the Sources reader
 /// locates it. A hit without an ordinal or a heading has no section: the
 /// preview opens the note from the top.
-fn section_of(text: &str, heading: &str, chunk: &str, ordinal: usize) -> Option<Range<usize>> {
-    if ordinal == 0 || heading.trim().is_empty() {
+fn section_of(text: &str, anchor: &NoteAnchor) -> Option<Range<usize>> {
+    if anchor.ordinal == 0 || anchor.heading.trim().is_empty() {
         return None;
     }
-    locate::section_range(text, heading, chunk)
+    locate::section_range(text, &anchor.heading, &anchor.chunk)
+}
+
+fn preview_note(path: VaultPath, text: Option<String>) -> AppMessage {
+    AppMessage::Semantic(SemanticData::PreviewNote { path, text })
 }
 
 impl SemanticPanel {
@@ -187,42 +162,42 @@ impl SemanticPanel {
         let mut body = QueryListPanel::new(icons, yank_combos);
         body.set_intercept(expand.combos().to_vec());
         Self {
+            reader: NoteReader::new(vault.clone(), section_of, preview_note),
             vault,
             settings,
             body,
-            source_installed: false,
-            preview: PreviewPane::new(),
-            loaded: None,
-            inbox: Arc::new(Mutex::new(Vec::new())),
-            tx: None,
+            source_tx: None,
             expand,
         }
     }
 
     /// Installs the server-backed source the first time the view is opened.
     pub fn ensure_source(&mut self, tx: &AppTx) {
-        self.tx = Some(tx.clone());
-        if !self.source_installed {
+        if self.source_tx.is_none() {
             self.body.set_source(
                 SemanticSource::new(self.vault.clone(), self.settings.clone()),
                 tx,
             );
-            self.source_installed = true;
+            self.source_tx = Some(tx.clone());
         }
+    }
+
+    /// A landed note load for the preview (stale ones are dropped).
+    pub fn handle_data(&mut self, data: SemanticData) {
+        let SemanticData::PreviewNote { path, text } = data;
+        self.reader.deliver(path, text);
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
         let mut hints = self.body.hint_shortcuts();
         hints.extend(
             self.expand
-                .hint(&self.preview, self.body.selected_row().is_some()),
+                .hint(&self.reader.preview, self.body.selected_row().is_some()),
         );
         hints
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        self.tx = Some(tx.clone());
-        self.poll_load();
         self.sync_preview();
         let state = match event {
             InputEvent::Key(key) => self.handle_key(event, key, tx),
@@ -236,14 +211,14 @@ impl SemanticPanel {
 
     fn handle_key(&mut self, event: &InputEvent, key: &KeyEvent, tx: &AppTx) -> EventState {
         // Full hides the list: Up/Down scroll the preview instead (as FIND).
-        if self.preview.is_full() && key.modifiers.is_empty() {
+        if self.reader.preview.is_full() && key.modifiers.is_empty() {
             match key.code {
                 KeyCode::Up => {
-                    self.preview.scroll_up();
+                    self.reader.preview.scroll_up();
                     return EventState::Consumed;
                 }
                 KeyCode::Down => {
-                    self.preview.scroll_down();
+                    self.reader.preview.scroll_down();
                     return EventState::Consumed;
                 }
                 _ => {}
@@ -263,8 +238,8 @@ impl SemanticPanel {
     /// click on the header title collapses it (as FIND). The wheel over the
     /// preview scrolls its content; everything else is the list's.
     fn handle_mouse(&mut self, event: &InputEvent, mouse: &MouseEvent, tx: &AppTx) -> EventState {
-        if self.preview.is_full() {
-            if let Some(hit) = self.expand.hit_header(&self.preview, mouse) {
+        if self.reader.preview.is_full() {
+            if let Some(hit) = self.expand.hit_header(&self.reader.preview, mouse) {
                 self.step(hit.step());
                 return EventState::Consumed;
             }
@@ -274,8 +249,8 @@ impl SemanticPanel {
         }
         let state = self.body.handle_input(event, tx);
         match self.body.take_host_event() {
-            Some(HostEvent::ContentScrollUp) => self.preview.scroll_up(),
-            Some(HostEvent::ContentScrollDown) => self.preview.scroll_down(),
+            Some(HostEvent::ContentScrollUp) => self.reader.preview.scroll_up(),
+            Some(HostEvent::ContentScrollDown) => self.reader.preview.scroll_down(),
             _ => {}
         }
         state
@@ -283,7 +258,7 @@ impl SemanticPanel {
 
     /// The one path every expand step takes (keys, clicks).
     fn step(&mut self, step: Step) {
-        if self.preview.step(step, self.selected_path()) {
+        if self.reader.preview.step(step, self.selected_path()) {
             self.after_step();
         }
     }
@@ -301,95 +276,50 @@ impl SemanticPanel {
     }
 
     /// Keep the preview on the selected row (Context stays open across
-    /// moves, Full collapses: see [`PreviewPane::sync`]).
+    /// moves, Full collapses: see
+    /// [`PreviewPane::sync`](crate::components::preview_pane::PreviewPane::sync)).
     fn sync_preview(&mut self) {
-        if self.preview.sync(self.selected_path()) {
+        if self.reader.preview.sync(self.selected_path()) {
             self.after_step();
         }
     }
 
-    /// Back an open preview with the selected hit's note: the same section
-    /// does nothing, another section of the loaded note moves the highlight,
-    /// another note starts a load.
+    /// Back an open preview with the selected hit's note (see
+    /// [`NoteReader::ensure`]); a collapsed one drops the text so a reopen
+    /// after an edit loads fresh.
     fn ensure_loaded(&mut self) {
-        if self.preview.is_collapsed() {
-            // Drop the text so a reopen after an edit loads fresh.
-            self.loaded = None;
+        if self.reader.preview.is_collapsed() {
+            self.reader.drop_text();
             return;
         }
-        let Some(hit) = self.body.selected_row() else {
+        let (Some(hit), Some(tx)) = (self.body.selected_row(), &self.source_tx) else {
             return;
         };
-        let path = hit.entry.path().clone();
-        let (ordinal, heading, chunk) = (hit.ordinal, hit.heading.clone(), hit.chunk.clone());
-        if let Some(l) = &mut self.loaded
-            && l.path == path
-        {
-            if l.ordinal != ordinal || l.heading != heading || l.chunk != chunk {
-                if let PreviewText::Loaded { text, highlight } = &mut l.text {
-                    *highlight = section_of(text, &heading, &chunk, ordinal);
-                }
-                (l.ordinal, l.heading, l.chunk) = (ordinal, heading, chunk);
-                self.preview.re_anchor();
-            }
-            return;
-        }
-        self.loaded = Some(LoadedNote {
-            path: path.clone(),
-            ordinal,
-            heading,
-            chunk,
-            text: PreviewText::Loading,
-        });
-        let vault = self.vault.clone();
-        let inbox = self.inbox.clone();
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let text = vault.get_note_text(&path).await.ok();
-            inbox.lock().unwrap().push((path, text));
-            if let Some(tx) = tx {
-                tx.send(AppMessage::Redraw).ok();
-            }
-        });
-    }
-
-    /// Take the landed note loads; only the loaded path's is kept.
-    fn poll_load(&mut self) {
-        let landed = std::mem::take(&mut *self.inbox.lock().unwrap());
-        for (path, text) in landed {
-            let Some(l) = &mut self.loaded else {
-                continue;
-            };
-            if l.path != path {
-                continue;
-            }
-            l.text = match text {
-                Some(text) => {
-                    let highlight = section_of(&text, &l.heading, &l.chunk, l.ordinal);
-                    PreviewText::Loaded { text, highlight }
-                }
-                None => PreviewText::Failed,
-            };
-        }
+        let anchor = NoteAnchor {
+            path: hit.entry.path().clone(),
+            ordinal: hit.ordinal,
+            heading: hit.heading.clone(),
+            chunk: hit.chunk.clone(),
+        };
+        self.reader.ensure(anchor, tx);
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         // New rows can move the selection: apply them before the preview
         // follows the selection, so this frame's rows and preview agree.
         self.body.poll();
-        self.poll_load();
         self.sync_preview();
         self.ensure_loaded();
         // Each frame records the regions it draws anew.
         self.body.set_content_rect(Rect::default());
-        self.preview.clear_header();
+        self.reader.preview.clear_header();
         self.expand.clear();
 
         let block = panel_block(SemanticSpec::TITLE, theme, focused);
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        if self.preview.is_collapsed() || self.body.selected_row().is_none() {
+        if self.reader.preview.is_collapsed() || self.body.selected_row().is_none() {
             self.body.render_in(f, inner, rect, theme, focused);
             self.paint_chevron(f, theme);
             return;
@@ -397,9 +327,10 @@ impl SemanticPanel {
 
         // The search box stays on top; the list and the preview share the
         // rest. Full gives the preview all of it.
+        let full = self.reader.preview.is_full();
         let input = inner.height.min(3);
         let results = inner.height - input;
-        let list = if self.preview.is_full() {
+        let list = if full {
             0
         } else {
             (results / 2).max(1).min(results)
@@ -414,7 +345,7 @@ impl SemanticPanel {
             height: inner.height - top.height,
             ..inner
         };
-        if self.preview.is_full() {
+        if full {
             // The wheel scrolls the content from anywhere in the panel.
             self.body.set_content_rect(rect);
             self.render_preview(f, below, true, theme);
@@ -441,11 +372,11 @@ impl SemanticPanel {
     /// The expand chevron ends the selected row, where the list is drawn.
     fn paint_chevron(&mut self, f: &mut Frame, theme: &Theme) {
         let row = self.body.selected_row_rect();
-        self.expand.paint(f, row, &self.preview, theme);
+        self.expand.paint(f, row, &self.reader.preview, theme);
     }
 
-    /// Feed the loaded note into the preview (Context or Full), or show the
-    /// load's placeholder.
+    /// Feed the selected hit's note into the preview (Context or Full), or
+    /// show the load's placeholder.
     fn render_preview(&mut self, f: &mut Frame, area: Rect, full: bool, theme: &Theme) {
         let (title, filename) = match self.body.selected_row() {
             Some(SemanticHit {
@@ -456,49 +387,27 @@ impl SemanticPanel {
             _ => (String::new(), String::new()),
         };
         let selected = self.selected_path();
-        let Self {
-            loaded, preview, ..
-        } = self;
-        // Only the selected note's text is painted; another note's shows as
-        // still loading.
-        let text = loaded
-            .as_ref()
-            .filter(|l| selected.as_ref() == Some(&l.path))
-            .map(|l| &l.text);
-        match text {
-            Some(PreviewText::Loaded { text, highlight }) => {
-                let highlight = Highlight::Range(highlight.as_ref());
-                if full {
-                    preview.render_full(f, area, &title, &filename, text, highlight, theme);
-                } else {
-                    preview.render_context(f, area, text, highlight, theme);
-                }
-            }
-            Some(PreviewText::Failed) => {
-                let red = Style::default().fg(theme.red.to_ratatui());
-                f.render_widget(Paragraph::new("failed to load note").style(red), area);
-            }
-            None | Some(PreviewText::Loading) => {
-                let dim = Style::default().fg(theme.gray.to_ratatui());
-                f.render_widget(Paragraph::new("loading\u{2026}").style(dim), area);
-            }
-        }
+        self.reader
+            .render(f, area, full, selected.as_ref(), &title, &filename, theme);
     }
 
+    /// Rows already in hand, applied at once; binds `tx` like
+    /// [`Self::ensure_source`].
     #[cfg(test)]
-    fn loaded_text(&self) -> Option<&str> {
-        match self.loaded.as_ref().map(|l| &l.text) {
-            Some(PreviewText::Loaded { text, .. }) => Some(text),
-            _ => None,
-        }
+    fn set_rows(&mut self, rows: Vec<SemanticHit>, tx: &AppTx) {
+        self.body.set_rows(rows, tx);
+        self.source_tx = Some(tx.clone());
     }
 
+    /// A test source; binds `tx` like [`Self::ensure_source`].
     #[cfg(test)]
-    fn loaded_highlight(&self) -> Option<Range<usize>> {
-        match self.loaded.as_ref().map(|l| &l.text) {
-            Some(PreviewText::Loaded { highlight, .. }) => highlight.clone(),
-            _ => None,
-        }
+    fn set_source(
+        &mut self,
+        source: impl crate::components::search_list::RowSource<SemanticHit> + 'static,
+        tx: &AppTx,
+    ) {
+        self.body.set_source(source, tx);
+        self.source_tx = Some(tx.clone());
     }
 }
 
@@ -712,7 +621,7 @@ mod tests {
             settings.yank_combos(),
         );
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        panel.body.set_rows(hits, &tx);
+        panel.set_rows(hits, &tx);
         (panel, tx, rx)
     }
 
@@ -761,16 +670,23 @@ mod tests {
             .any(|m| matches!(m, AppMessage::OpenPath { .. }))
     }
 
-    /// Wait until the selected hit's note text has landed.
-    async fn settle_load(panel: &mut SemanticPanel) {
-        for _ in 0..200 {
-            panel.poll_load();
-            if panel.loaded_text().is_some() {
-                return;
+    /// Hand the panel the note loads that land on the app channel, as the
+    /// editor does, until the selected hit's note text is in.
+    /// Returns the other messages it passed over.
+    async fn settle_load(
+        panel: &mut SemanticPanel,
+        rx: &mut UnboundedReceiver<AppMessage>,
+    ) -> Vec<AppMessage> {
+        let deadline = std::time::Duration::from_secs(2);
+        let mut other = Vec::new();
+        while panel.reader.text().is_none() {
+            match tokio::time::timeout(deadline, rx.recv()).await {
+                Ok(Some(AppMessage::Semantic(data))) => panel.handle_data(data),
+                Ok(Some(m)) => other.push(m),
+                _ => panic!("the note text never loaded"),
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        panic!("the note text never loaded");
+        other
     }
 
     /// The byte range of the `Details` section's chunk in [`note_text`].
@@ -785,22 +701,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn alt_arrows_step_the_preview() {
         let (mut panel, tx, _rx) = panel_with("sem-alt", vec![note_hit("a", "Details", 1)]).await;
-        assert!(panel.preview.is_collapsed());
+        assert!(panel.reader.preview.is_collapsed());
         assert_eq!(
             panel.handle_input(&alt(KeyCode::Right), &tx),
             EventState::Consumed
         );
-        assert!(panel.preview.is_context(), "Collapsed -> Context");
+        assert!(panel.reader.preview.is_context(), "Collapsed -> Context");
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        assert!(panel.preview.is_full(), "Context -> Full");
+        assert!(panel.reader.preview.is_full(), "Context -> Full");
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        assert!(panel.preview.is_full(), "Full stays Full, no wrap");
+        assert!(panel.reader.preview.is_full(), "Full stays Full, no wrap");
         panel.handle_input(&alt(KeyCode::Left), &tx);
-        assert!(panel.preview.is_context(), "Full -> Context");
+        assert!(panel.reader.preview.is_context(), "Full -> Context");
         panel.handle_input(&alt(KeyCode::Left), &tx);
-        assert!(panel.preview.is_collapsed(), "Context -> Collapsed");
+        assert!(panel.reader.preview.is_collapsed(), "Context -> Collapsed");
         panel.handle_input(&alt(KeyCode::Left), &tx);
-        assert!(panel.preview.is_collapsed(), "stops at Collapsed");
+        assert!(panel.reader.preview.is_collapsed(), "stops at Collapsed");
         assert_eq!(panel.body.list().unwrap().query(), "");
     }
 
@@ -808,32 +724,34 @@ mod tests {
     /// note again.
     #[tokio::test(flavor = "multi_thread")]
     async fn collapsing_drops_the_loaded_text() {
-        let (mut panel, tx, _rx) = panel_with("sem-drop", vec![note_hit("a", "Details", 1)]).await;
+        let (mut panel, tx, mut rx) =
+            panel_with("sem-drop", vec![note_hit("a", "Details", 1)]).await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
-        assert!(panel.loaded_text().is_some());
+        settle_load(&mut panel, &mut rx).await;
+        assert!(panel.reader.text().is_some());
         panel.handle_input(&alt(KeyCode::Left), &tx);
         draw(&mut panel, 40, 30);
-        assert_eq!(panel.loaded_text(), None, "text dropped on collapse");
-        assert!(panel.loaded.is_none());
+        assert_eq!(panel.reader.text(), None, "text dropped on collapse");
+        assert!(!panel.reader.has_note());
     }
 
     /// The Context preview opens on the hit's note with its matched section
     /// as the highlight, and scrolls to it.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_preview_opens_on_the_matched_section() {
-        let (mut panel, tx, _rx) = panel_with("sem-range", vec![note_hit("a", "Details", 1)]).await;
+        let (mut panel, tx, mut rx) =
+            panel_with("sem-range", vec![note_hit("a", "Details", 1)]).await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
-        assert_eq!(panel.loaded_text(), Some(note_text().as_str()));
-        assert_eq!(panel.loaded_highlight(), Some(details_range()));
+        settle_load(&mut panel, &mut rx).await;
+        assert_eq!(panel.reader.text(), Some(note_text().as_str()));
+        assert_eq!(panel.reader.highlight(), Some(details_range()));
         assert_eq!(
-            panel.loaded_highlight(),
+            panel.reader.highlight(),
             crate::ask::locate::section_range(&note_text(), "Details", "the matched chunk body")
         );
         let buf = draw(&mut panel, 40, 30);
         assert!(
-            panel.preview.scroll_offset() > 0,
+            panel.reader.preview.scroll_offset() > 0,
             "the Context preview scrolls to the section"
         );
         let shown = (0..buf.area.height)
@@ -850,36 +768,38 @@ mod tests {
     /// A hit with no ordinal opens the note from the top, unhighlighted.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_hit_without_an_ordinal_opens_the_note_from_the_top() {
-        let (mut panel, tx, _rx) = panel_with("sem-ord0", vec![note_hit("a", "Details", 0)]).await;
+        let (mut panel, tx, mut rx) =
+            panel_with("sem-ord0", vec![note_hit("a", "Details", 0)]).await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
-        assert_eq!(panel.loaded_highlight(), None);
+        settle_load(&mut panel, &mut rx).await;
+        assert_eq!(panel.reader.highlight(), None);
         draw(&mut panel, 40, 30);
-        assert_eq!(panel.preview.scroll_offset(), 0);
+        assert_eq!(panel.reader.preview.scroll_offset(), 0);
     }
 
     /// A hit with a blank heading opens the note from the top, unhighlighted.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_hit_with_a_blank_heading_opens_the_note_from_the_top() {
-        let (mut panel, tx, _rx) = panel_with("sem-blank", vec![note_hit("a", " ", 1)]).await;
+        let (mut panel, tx, mut rx) = panel_with("sem-blank", vec![note_hit("a", " ", 1)]).await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
-        assert_eq!(panel.loaded_highlight(), None);
+        settle_load(&mut panel, &mut rx).await;
+        assert_eq!(panel.reader.highlight(), None);
         draw(&mut panel, 40, 30);
-        assert_eq!(panel.preview.scroll_offset(), 0);
+        assert_eq!(panel.reader.preview.scroll_offset(), 0);
     }
 
     /// The Full preview renders the note with the same range highlight.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_full_preview_shows_the_note_and_the_shrink_chevron() {
-        let (mut panel, tx, _rx) = panel_with("sem-full", vec![note_hit("a", "Details", 1)]).await;
+        let (mut panel, tx, mut rx) =
+            panel_with("sem-full", vec![note_hit("a", "Details", 1)]).await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
+        settle_load(&mut panel, &mut rx).await;
         let buf = draw(&mut panel, 40, 30);
         let found = cells(&buf, "\u{2039}");
         assert_eq!(found.len(), 1, "{found:?}");
-        let header = panel.preview.full_header_rect();
+        let header = panel.reader.preview.full_header_rect();
         assert_eq!(found[0], (header.right() - 1, header.y));
         assert!(cells(&buf, "\u{203A}").is_empty());
     }
@@ -905,7 +825,7 @@ mod tests {
             panel.handle_input(&key(KeyCode::Char(ch)), &tx);
         }
         assert_eq!(panel.body.list().unwrap().query(), "lhoy");
-        assert!(panel.preview.is_collapsed());
+        assert!(panel.reader.preview.is_collapsed());
     }
 
     /// Only the selected row ends in the grow chevron; a click on it steps
@@ -929,18 +849,25 @@ mod tests {
         assert_eq!(found[0], (rect.right() - 1, rect.y));
 
         panel.handle_input(&click(found[0].0, found[0].1), &tx);
-        assert!(panel.preview.is_context(), "click grows the preview");
+        assert!(panel.reader.preview.is_context(), "click grows the preview");
         let buf = draw(&mut panel, 40, 30);
         let (x, y) = cells(&buf, "\u{203A}")[0];
         panel.handle_input(&click(x, y), &tx);
-        assert!(panel.preview.is_full(), "second click grows to Full");
+        assert!(panel.reader.preview.is_full(), "second click grows to Full");
+        let passed = settle_load(&mut panel, &mut rx).await;
+        assert!(
+            !passed
+                .iter()
+                .any(|m| matches!(m, AppMessage::OpenPath { .. })),
+            "the chevron never opens the note"
+        );
         assert!(!opened(&mut rx), "the chevron never opens the note");
 
         let buf = draw(&mut panel, 40, 30);
         let (x, y) = cells(&buf, "\u{2039}")[0];
         panel.handle_input(&click(x, y), &tx);
         assert!(
-            panel.preview.is_context(),
+            panel.reader.preview.is_context(),
             "header chevron: Full -> Context"
         );
         assert!(!opened(&mut rx));
@@ -950,26 +877,29 @@ mod tests {
     /// the list where it is.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_wheel_scrolls_the_preview_not_the_list() {
-        let (mut panel, tx, _rx) = panel_with(
+        let (mut panel, tx, mut rx) = panel_with(
             "sem-wheel",
             vec![note_hit("a", "Details", 0), note_hit("b", "Details", 0)],
         )
         .await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
+        settle_load(&mut panel, &mut rx).await;
         draw(&mut panel, 40, 30);
         let before = panel.body.selected_row().map(|h| h.entry.path().clone());
-        assert_eq!(panel.preview.scroll_offset(), 0);
+        assert_eq!(panel.reader.preview.scroll_offset(), 0);
         // The bottom inner row is the preview's.
         panel.handle_input(&mouse(MouseEventKind::ScrollDown, 10, 28), &tx);
         draw(&mut panel, 40, 30);
-        assert!(panel.preview.scroll_offset() > 0, "the preview scrolled");
+        assert!(
+            panel.reader.preview.scroll_offset() > 0,
+            "the preview scrolled"
+        );
         assert_eq!(
             panel.body.selected_row().map(|h| h.entry.path().clone()),
             before,
             "the list selection did not move"
         );
-        assert!(panel.preview.is_context());
+        assert!(panel.reader.preview.is_context());
     }
 
     /// The server's answer per query: `a` for a blank query, `b` otherwise.
@@ -998,7 +928,7 @@ mod tests {
     /// note's text, and the new note's text shows once it loads.
     #[tokio::test(flavor = "multi_thread")]
     async fn new_results_never_paint_the_old_notes_text() {
-        let (mut panel, tx, _rx) = panel_with("sem-swap", Vec::new()).await;
+        let (mut panel, tx, mut rx) = panel_with("sem-swap", Vec::new()).await;
         for (name, body) in [("a", "alpha body text"), ("b", "bravo body text")] {
             panel
                 .vault
@@ -1006,10 +936,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        panel.body.set_source(SwapSource, &tx);
+        panel.set_source(SwapSource, &tx);
         panel.body.list_mut().unwrap().poll_until_idle().await;
         panel.handle_input(&alt(KeyCode::Right), &tx);
-        settle_load(&mut panel).await;
+        settle_load(&mut panel, &mut rx).await;
         let shown = screen(&draw(&mut panel, 40, 30));
         assert!(shown.contains("alpha body text"), "{shown}");
 
@@ -1024,11 +954,26 @@ mod tests {
         );
         assert!(!shown.contains("alpha body text"), "A under B:\n{shown}");
 
-        settle_load(&mut panel).await;
-        assert_eq!(panel.loaded_text(), Some("bravo body text"));
+        settle_load(&mut panel, &mut rx).await;
+        assert_eq!(panel.reader.text(), Some("bravo body text"));
         let shown = screen(&draw(&mut panel, 40, 30));
         assert!(shown.contains("bravo body text"), "{shown}");
         assert!(!shown.contains("alpha body text"), "{shown}");
+    }
+
+    /// A load that a render starts, with no input before it, still reaches
+    /// the panel through the app channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_load_started_from_render_reaches_the_panel() {
+        let (mut panel, _tx, mut rx) =
+            panel_with("sem-render-load", vec![note_hit("a", "Details", 1)]).await;
+        panel.reader.preview.toggle(panel.selected_path());
+        draw(&mut panel, 40, 30);
+        assert!(panel.reader.text().is_none(), "the load is in flight");
+        settle_load(&mut panel, &mut rx).await;
+        assert_eq!(panel.reader.text(), Some(note_text().as_str()));
+        let shown = screen(&draw(&mut panel, 40, 30));
+        assert!(shown.contains("the matched chunk body"), "{shown}");
     }
 
     /// With no rows the preview keys and the list keys do nothing, and no
@@ -1043,7 +988,7 @@ mod tests {
         for code in [KeyCode::Up, KeyCode::Down] {
             panel.handle_input(&key(code), &tx);
         }
-        assert!(panel.preview.is_collapsed());
+        assert!(panel.reader.preview.is_collapsed());
         let after = draw(&mut panel, 40, 30);
         for b in [&buf, &after] {
             assert!(cells(b, "\u{203A}").is_empty());

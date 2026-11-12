@@ -191,6 +191,8 @@ pub enum AppMessage {
     /// workspace). Its own family — Ask is a panel, not an overlay, so it is
     /// never routed through `OverlayData`.
     Ask(AskData),
+    /// An async result addressed to the SEM (semantic search) drawer view.
+    Semantic(SemanticData),
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
     /// Carries a formatted, human-readable error message.
@@ -232,6 +234,17 @@ pub enum AskData {
     },
     /// The note text the source reader asked for. `None` = load failed.
     ReaderNote {
+        path: VaultPath,
+        text: Option<String>,
+    },
+}
+
+/// Async data addressed to the SEM (semantic search) drawer view.
+#[derive(Debug)]
+pub enum SemanticData {
+    /// The note text the preview asked for. `None` = load failed. A path
+    /// the preview no longer shows is stale and dropped.
+    PreviewNote {
         path: VaultPath,
         text: Option<String>,
     },
