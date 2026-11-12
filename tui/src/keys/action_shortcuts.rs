@@ -16,7 +16,7 @@ use crate::logic::text_action::TextAction;
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 19] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 20] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -38,6 +38,7 @@ pub const TUI_UNBOUND: [ActionShortcuts; 19] = [
     ActionShortcuts::MoveViewToNeighbour(Dir::Down),
     ActionShortcuts::ToggleZoom,
     ActionShortcuts::OpenQueryInSidebar,
+    ActionShortcuts::ToggleRail,
 ];
 
 /// The TUI help modal's heading for an [`ActionShortcuts`] variant. The
@@ -141,6 +142,7 @@ impl ActionShortcuts {
             ActionShortcuts::MoveViewToNeighbour(Dir::Up) => "Move view up".into(),
             ActionShortcuts::MoveViewToNeighbour(Dir::Down) => "Move view down".into(),
             ActionShortcuts::ToggleZoom => "Toggle zoom".into(),
+            ActionShortcuts::ToggleRail => "Toggle rail".into(),
             ActionShortcuts::OpenQueryInSidebar => "Open query in sidebar".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
@@ -293,6 +295,7 @@ mod tests {
             (ActionShortcuts::SplitSlotDown, Nav),
             (ActionShortcuts::CloseSlot, Nav),
             (ActionShortcuts::ToggleZoom, Nav),
+            (ActionShortcuts::ToggleRail, Nav),
             (ActionShortcuts::MoveViewToNeighbour(Dir::Left), Nav),
             (ActionShortcuts::ToggleRightDrawer, Nav),
             (ActionShortcuts::SaveNote, Notes),
