@@ -13,6 +13,7 @@ pub mod drawer;
 pub mod drawer_views;
 pub mod event_state;
 pub mod events;
+pub mod expand_chevron;
 pub mod file_list;
 pub mod footer_bar;
 pub mod hint_row;
