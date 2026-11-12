@@ -67,6 +67,15 @@ pub trait ListPanelSpec {
     fn hints() -> Vec<(String, String)>;
 }
 
+/// What the list engine handed back that only the host can act on: an
+/// intercepted chord, or the wheel over the content region the host set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostEvent {
+    Intercepted(crate::keys::key_combo::KeyCombo),
+    ContentScrollUp,
+    ContentScrollDown,
+}
+
 /// The shared panel body. Hosts that need extra chrome (LINKS' tab bar) draw
 /// it themselves and hand the remaining body rect to [`Self::render_in`].
 pub struct QueryListPanel<S: ListPanelSpec> {
@@ -75,6 +84,10 @@ pub struct QueryListPanel<S: ListPanelSpec> {
     /// chord like the other list surfaces.
     yank_combos: Vec<crate::keys::key_combo::KeyCombo>,
     list: Option<SearchList<S::Row>>,
+    /// Chords the engine hands back to the host (see [`Self::set_intercept`]).
+    intercept: Vec<crate::keys::key_combo::KeyCombo>,
+    /// The last [`HostEvent`] of `handle_input`, until the host takes it.
+    host_event: Option<HostEvent>,
 }
 
 impl<S: ListPanelSpec> QueryListPanel<S> {
@@ -83,7 +96,21 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
             icons,
             yank_combos,
             list: None,
+            intercept: Vec::new(),
+            host_event: None,
         }
+    }
+
+    /// Chords the engine reports instead of acting on, in either focus, for
+    /// every list built from now on. `handle_input` leaves them unconsumed
+    /// and [`Self::take_host_event`] names the one pressed.
+    pub fn set_intercept(&mut self, combos: Vec<crate::keys::key_combo::KeyCombo>) {
+        self.intercept = combos;
+    }
+
+    /// The intercepted chord or content wheel of the last `handle_input`.
+    pub fn take_host_event(&mut self) -> Option<HostEvent> {
+        self.host_event.take()
     }
 
     /// (Re)build the list over a fresh source — the engine-per-context
@@ -115,6 +142,7 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
             });
         }
         builder
+            .intercept(self.intercept.clone())
             .yank_combos(self.yank_combos.clone())
             .icons(self.icons.clone())
     }
@@ -125,6 +153,37 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
 
     pub fn selected_row(&self) -> Option<&S::Row> {
         self.list.as_ref().and_then(|l| l.selected_row())
+    }
+
+    /// Apply any rows a load has delivered (render does this too). A host
+    /// that reads the selection before rendering polls first, so it sees
+    /// the rows this frame will draw.
+    pub fn poll(&mut self) {
+        if let Some(list) = &mut self.list {
+            list.poll();
+        }
+    }
+
+    /// Where the selected row sits on screen (see
+    /// [`SearchList::selected_row_rect`]), for a host's row controls.
+    pub(crate) fn selected_row_rect(&self) -> Option<Rect> {
+        self.list.as_ref().and_then(|l| l.selected_row_rect())
+    }
+
+    /// See [`SearchList::set_list_rect`]: a host clears it when the list
+    /// stops showing, so a click on its old rows hits nothing.
+    pub fn set_list_rect(&mut self, rect: Rect) {
+        if let Some(list) = &mut self.list {
+            list.set_list_rect(rect);
+        }
+    }
+
+    /// See [`SearchList::set_content_rect`]: the wheel inside it comes back
+    /// as [`HostEvent::ContentScrollUp`] / [`HostEvent::ContentScrollDown`].
+    pub fn set_content_rect(&mut self, rect: Rect) {
+        if let Some(list) = &mut self.list {
+            list.set_content_rect(rect);
+        }
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -138,6 +197,7 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.host_event = None;
         match event {
             InputEvent::Key(key) => {
                 let Some(list) = &mut self.list else {
@@ -154,9 +214,13 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                             crate::components::yank_row(target, tx);
                             EventState::Consumed
                         }
-                        KeyReaction::Intercepted(_)
-                        | KeyReaction::ListVerb(_)
-                        | KeyReaction::Unhandled => EventState::NotConsumed,
+                        KeyReaction::Intercepted(combo) => {
+                            self.host_event = Some(HostEvent::Intercepted(combo));
+                            EventState::NotConsumed
+                        }
+                        KeyReaction::ListVerb(_) | KeyReaction::Unhandled => {
+                            EventState::NotConsumed
+                        }
                     }
                 } else {
                     // No filter input: only navigation keys reach the list,
@@ -199,6 +263,12 @@ impl<S: ListPanelSpec> QueryListPanel<S> {
                         if let Some(event) = list.selected_row().and_then(S::context_event) {
                             tx.send(event).ok();
                         }
+                    }
+                    SearchMouse::ContentScrollUp => {
+                        self.host_event = Some(HostEvent::ContentScrollUp)
+                    }
+                    SearchMouse::ContentScrollDown => {
+                        self.host_event = Some(HostEvent::ContentScrollDown)
                     }
                     _ => {}
                 }

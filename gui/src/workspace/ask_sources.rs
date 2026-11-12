@@ -7,21 +7,21 @@
 //!
 //! **Rows** are the turn's sources, built here and now (no load): the rank
 //! in the lane, the heading (a journal source's date beside it, a bare
-//! date when it has no heading), the score, the path under it. The filter
-//! above the list narrows them by heading and path (the TUI's fuzzy filter).
-//! No sources: the TUI's prompt alone.
+//! date when it has no heading) and the score just after it, the path under
+//! it. The filter above the list narrows them by heading and path (the
+//! TUI's fuzzy filter). No sources: the TUI's prompt alone.
 //!
 //! **The reader** is FIND's preview ([`SearchPreview`]) marking a section
 //! instead of needles, driven by the same `PreviewModel`: Collapsed (the
 //! list only) → Context (under the list) → Full (the whole part, at its
 //! fixed open height under the turn; the list keeps the keyboard out of
-//! sight). While Collapsed each row shows `Expand →` at its
-//! right end under the pointer (the list's row action): a click selects
-//! that row and grows the reader to Context, as Right does, and the list
-//! has the keyboard after. Open, a one-line **header** sits on top of the
-//! reader: the source's title (its heading, else its path), cut short with
-//! an ellipsis, and the size action, `Expand →` in Context and `Collapse ←`
-//! in Full; a click on it does what Right / Left do, and the list keeps (or
+//! sight). The selected row and the hovered row show the **Expand
+//! chevron** ([`super::chevron`]) at their right end, `›` (`‹` in Full): a
+//! click selects that row and steps the reader as Right does (Left in
+//! Full), and the list has the keyboard after. Open, a one-line **header**
+//! ([`step_header`]) sits on top of the reader: the source's title (its
+//! heading, else its path), cut short with an ellipsis, and the same
+//! chevron; a click on it does what Right / Left do, and the list keeps (or
 //! gets) the keyboard. The note is read on tokio, keyed by path and the
 //! source's ordinal: a newer pick replaces a read under way and its result
 //! never shows; another section of the note on screen is laid out again
@@ -47,13 +47,11 @@ use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    Role, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Subscription, Window, div,
+    App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    Stateful, StyleRefinement, Styled as _, Subscription, Window, div,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -65,11 +63,11 @@ use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::drawer_list::{
-    DrawerList, DrawerListEvent, DrawerRow, MenuItem, OPEN_NOTE, RowAction, VerbId,
-};
+use super::chevron::{PreviewSteps, clear_of_zone_while_shown, step_header, sync_chevron};
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND, MenuItem, OPEN_NOTE};
 use super::files::{ClickPolicy, NOTE_ROW_REMS, ellipsis, lane_row};
 use super::query_field::{self, query_field};
+use super::result_row::{filename_id, first_line_id, score_beside_title, score_id, title_id};
 use super::search::{Mark, SearchPreview, SectionMark};
 use crate::input;
 use crate::theme;
@@ -81,18 +79,6 @@ pub(crate) const SOURCES_LIST_ID: &str = "ask-sources-list";
 pub(crate) const READER_ID: &str = "ask-reader";
 pub(crate) const READER_ROW_ID: &str = "ask-reader-row";
 pub(crate) const READER_HEADER_ID: &str = "ask-reader-header";
-pub(crate) const READER_ACTION_ID: &str = "ask-reader-action";
-
-/// The reader's size action (a row's while Collapsed, the header's open):
-/// its label and key hint growing, then shrinking from Full.
-pub(crate) const EXPAND: &str = "Expand";
-pub(crate) const COLLAPSE: &str = "Collapse";
-/// The verb of the row action `Expand →`.
-const EXPAND_VERB: VerbId = "expand";
-const EXPAND_KEY: &str = "→";
-const COLLAPSE_KEY: &str = "←";
-const EXPAND_TIP: &str = "Expand the reader";
-const COLLAPSE_TIP: &str = "Collapse the reader";
 
 /// What the view says with no source to list, and with none left by the
 /// filter (the TUI's words).
@@ -107,16 +93,26 @@ pub(crate) fn source_row_id(rank: usize) -> SharedString {
     format!("ask-source:{rank}").into()
 }
 
-/// The element id of the Expand action on the row of the source ranked
-/// `rank` (shown while the reader is Collapsed).
-pub(crate) fn source_row_expand_id(rank: usize) -> SharedString {
-    format!("ask-source-expand:{rank}").into()
+/// The element id of the journal date on the row `row_id` (tests).
+pub(crate) fn date_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:date").into()
 }
+
+/// How readily a row's journal date gives way, next to its title's 1: a
+/// tenth, so the title takes nearly all of the cut and the date gives way
+/// only once the title is all but gone. (A much smaller factor leaves the
+/// layout a few pixels over the line's end.)
+const DATE_SHRINK: f32 = 0.1;
 
 /// The similarity as a whole percentage (the TUI's: the server's
 /// `0.0..=1.0` score, clamped).
 fn score_percent(score: f64) -> u32 {
     (score.clamp(0.0, 1.0) * 100.0).round() as u32
+}
+
+/// The similarity as a row shows it: `87%` (the Sources view's and SEM's).
+pub(super) fn score_label(score: f64) -> String {
+    format!("{}%", score_percent(score))
 }
 
 /// One row: a turn's source and its 1-based rank in the turn's ranked list
@@ -130,7 +126,7 @@ pub(crate) struct SourceRow {
 }
 
 impl SourceRow {
-    fn new(rank: usize, source: AskSource) -> Self {
+    pub(crate) fn new(rank: usize, source: AskSource) -> Self {
         let filter_text = format!("{} {}", source.heading, source.path);
         Self {
             rank,
@@ -159,19 +155,6 @@ impl DrawerRow for SourceRow {
         vec![MenuItem::open_note()]
     }
 
-    /// `Expand →`, which the view shows only while its reader is Collapsed.
-    fn hover_action(&self) -> Option<RowAction> {
-        Some(
-            RowAction::new(
-                EXPAND_VERB,
-                source_row_expand_id(self.rank),
-                EXPAND,
-                EXPAND_TIP,
-            )
-            .with_key_hint(EXPAND_KEY),
-        )
-    }
-
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
         let source = &self.source;
         let label = SharedString::from(format!("{} {}", self.rank, source.display_heading()));
@@ -185,47 +168,54 @@ impl DrawerRow for SourceRow {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(theme::accent(t))
             .child(self.rank.to_string());
-        let heading = div()
-            .flex()
-            .gap_1()
-            .min_w_0()
-            .child(
-                ellipsis(title)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(title_color),
-            )
-            .when_some(date, |line, date| {
-                line.child(
-                    div()
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .text_xs()
-                        .text_color(theme::journal_date(t))
-                        .child(date),
-                )
-            });
+        let id = self.element_id();
+        // The title gives way (an ellipsis) first, then the date; the score
+        // never does. The line stops short of the chevron's zone and clips
+        // there, however narrow the drawer.
+        let heading = clear_of_zone_while_shown(
+            div()
+                .id(first_line_id(&id))
+                .test_support()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .overflow_hidden(),
+            selected,
+        )
+        .child(
+            ellipsis(title)
+                .id(title_id(&id))
+                .test_support()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(title_color),
+        )
+        .when_some(date, |line, date| {
+            let mut date = ellipsis(date).text_xs().text_color(theme::journal_date(t));
+            date.style().flex_shrink = Some(DATE_SHRINK);
+            line.child(date.id(date_id(&id)).test_support())
+        })
+        .child(score_beside_title(
+            score_id(&id),
+            score_label(source.score).into(),
+            t,
+        ));
+        let path_line = clear_of_zone_while_shown(
+            ellipsis(source.path.to_string())
+                .id(filename_id(&id))
+                .test_support()
+                .text_xs()
+                .text_color(theme::secondary(t)),
+            selected,
+        );
         lane_row(
-            self.element_id(),
+            id,
             label,
             selected,
             NOTE_ROW_REMS,
             Some(rank.into_any_element()),
-            [
-                heading.into_any_element(),
-                ellipsis(source.path.to_string())
-                    .text_xs()
-                    .text_color(theme::secondary(t))
-                    .into_any_element(),
-            ],
+            [heading.into_any_element(), path_line.into_any_element()],
             t,
-        )
-        .child(
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .text_xs()
-                .text_color(theme::muted(t))
-                .child(format!("{}%", score_percent(source.score))),
         )
     }
 }
@@ -312,7 +302,7 @@ impl SourcesView {
             _subscriptions: subscriptions,
         };
         view.rebuild(Vec::new(), cx);
-        view.sync_row_actions(cx);
+        sync_chevron(&view.list, &view.model, cx);
         view
     }
 
@@ -499,111 +489,32 @@ impl SourcesView {
             self.reader
                 .update(cx, |reader, cx| reader.show_marked(path, mark, cx));
         }
-        self.sync_row_actions(cx);
+        // The rows' chevron follows the reader: every model change comes
+        // through here; the list redraws only when the answer flips.
+        sync_chevron(&self.list, &self.model, cx);
         if changed {
             cx.notify();
         }
     }
 
-    /// The rows' Expand action shows exactly while the reader is Collapsed
-    /// (open, the header carries the size action). Every model change goes
-    /// through [`Self::sync_preview`], which calls this; the list redraws
-    /// only when the answer flips.
-    fn sync_row_actions(&mut self, cx: &mut Context<Self>) {
-        let collapsed = self.model.is_collapsed();
-        self.list
-            .update(cx, |list, cx| list.set_row_actions_enabled(collapsed, cx));
-    }
-
-    /// A click on a row's Expand action (the list selected the row): the
-    /// reader grows to Context as Right does, and the list has the
-    /// keyboard.
-    pub(crate) fn expand_from_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.grow(cx);
-        self.focus_list(window, cx);
-    }
-
-    /// Right: Collapsed → Context → Full (Full stays).
-    fn grow(&mut self, cx: &mut Context<Self>) {
-        if !self.model.is_full() {
-            self.model.toggle(self.selected_path(cx));
-        }
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Left (and Escape): Full → Context → Collapsed.
-    fn shrink(&mut self, cx: &mut Context<Self>) {
-        self.model.collapse_step(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
     /// Enter, Space: Collapsed → Context → Full → Collapsed
-    /// (the TUI's Enter).
+    /// (the TUI's Enter); Left and Escape shrink it, Right grows it
+    /// ([`PreviewSteps`]).
     pub(crate) fn cycle(&mut self, cx: &mut Context<Self>) {
-        self.model.toggle(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// A click on the reader header's action: Context grows to Full as
-    /// Right does, Full shrinks to Context as Left does; the list has the
-    /// keyboard after, so the arrows the hint names keep working.
-    fn header_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_full() {
-            self.shrink(cx);
-        } else {
-            self.grow(cx);
-        }
-        self.focus_list(window, cx);
+        PreviewSteps::cycle(self, cx);
     }
 
     /// The open reader's one-line header: the selected source's title and
-    /// the size action. `None` with no source selected.
+    /// the chevron. `None` with no source selected.
     fn reader_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let title = reader_title(&self.list.read(cx).selected_row()?.source);
-        let (label, key, tip) = if self.model.is_full() {
-            (COLLAPSE, COLLAPSE_KEY, COLLAPSE_TIP)
-        } else {
-            (EXPAND, EXPAND_KEY, EXPAND_TIP)
-        };
-        let hover = theme::foreground(t);
-        let action = div()
-            .id(READER_ACTION_ID)
-            .test_support()
-            .role(Role::Button)
-            .aria_label(label)
-            .flex()
-            .flex_none()
-            .gap_1()
-            .whitespace_nowrap()
-            .cursor_pointer()
-            .text_color(theme::secondary(t))
-            .hover(move |style| style.text_color(hover))
-            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                if event.standard_click() {
-                    this.header_action(window, cx);
-                }
-            }))
-            .child(label)
-            .child(div().text_color(theme::muted(t)).child(key));
-        Some(
-            div()
-                .id(READER_HEADER_ID)
-                .test_support()
-                .aria_label(SharedString::from(title.clone()))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_0p5()
-                .text_xs()
-                .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
-                .child(action),
-        )
+        Some(step_header(
+            READER_HEADER_ID,
+            title.into(),
+            &self.model,
+            t,
+            cx,
+        ))
     }
 
     fn focus_list(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -615,8 +526,9 @@ impl SourcesView {
     }
 
     /// Keys the list must not see first: in Full, Up/Down scroll the
-    /// reader; Up from the first row goes to the filter; Escape with the
-    /// reader open steps it back (the TUI's ladder).
+    /// reader and Page Up/Page Down do nothing (the list is hidden); Up
+    /// from the first row goes to the filter; Escape with the reader open
+    /// steps it back (the TUI's ladder).
     fn capture_key(
         &mut self,
         event: &KeyDownEvent,
@@ -639,6 +551,8 @@ impl SourcesView {
                     .update(cx, |reader, cx| reader.scroll_rows(rows, cx));
                 true
             }
+            // The list is hidden: the page keys must not move it.
+            Key::PageUp | Key::PageDown if self.model.is_full() => true,
             // The filter is drawn only while there are sources (the same
             // test as the render's); a filter that matches none still gets
             // the key.
@@ -683,6 +597,24 @@ impl SourcesView {
     }
 }
 
+impl PreviewSteps for SourcesView {
+    fn steps_model(&mut self) -> &mut PreviewModel {
+        &mut self.model
+    }
+
+    fn steps_path(&self, cx: &App) -> Option<VaultPath> {
+        self.selected_path(cx)
+    }
+
+    fn steps_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_list(window, cx);
+    }
+}
+
 impl Focusable for SourcesView {
     /// The list (the TUI's Sources view opens on it).
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -708,8 +640,7 @@ impl Render for SourcesView {
                 }
             })
             .child(self.list.clone());
-        // Collapsed: the list alone (its rows carry Expand); open, the
-        // header tops the reader.
+        // Collapsed: the list alone; open, the header tops the reader.
         let pane = (!self.model.is_collapsed()).then(|| {
             div()
                 .flex()
@@ -820,9 +751,9 @@ impl Workspace {
             DrawerListEvent::Verb(row, OPEN_NOTE) => {
                 self.open_source_note(row.source.path.clone(), window, cx)
             }
-            DrawerListEvent::Verb(_, EXPAND_VERB) => {
+            DrawerListEvent::Verb(_, EXPAND) => {
                 if let Some(view) = self.ask_sources.clone() {
-                    view.update(cx, |view, cx| view.expand_from_row(window, cx));
+                    view.update(cx, |view, cx| view.chevron_step(window, cx));
                 }
             }
             DrawerListEvent::Verb(..) => {}

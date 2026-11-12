@@ -71,6 +71,7 @@ FIND is a live [query search](@/using-kimun/search.md) over the vault. It opens 
 - Type: the results update live. `#` autocompletes tags. `?` as the first character autocompletes [saved searches](#saved-searches).
 - Up and Down: move through the results.
 - Enter: expand the selected note to show the context of the match. Press Enter again for more context, and a third time to collapse.
+- Alt+Right and Alt+Left: grow or shrink the preview one step, without leaving the query box. Some terminals (macOS Terminal by default) do not send Alt+arrow keys. Use Enter there.
 - Ctrl+Enter or Ctrl+N: open the selected note in the editor. The matched text is highlighted there.
 - Ctrl+R: open the sort dialog. The dialog writes the sort into the query as an `or:` directive.
 - Ctrl+D: save the query under a name.
@@ -212,6 +213,7 @@ Every mouse gesture has a keyboard equivalent. Buttons, dialog `[key]` hints, st
 | ------- | ------ |
 | Click | focus the panel / select the row |
 | Click the selected row again | open it (in FIND and Ask Sources: step the preview) |
+| Click the arrow at the end of the selected row, or in the full preview header | grow or shrink the preview (FIND, semantic search, Ask Sources). It never opens the note |
 | Double-click a row | open it (also in FIND and Ask Sources) |
 | Click a search / filter box | type into it (leaves list focus) |
 | Click a suggestion in an autocomplete popup | insert it (same as `Tab`). Scroll over it to move the highlight |

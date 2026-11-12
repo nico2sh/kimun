@@ -15,10 +15,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{
-    AppContext as _, Entity, Focusable as _, InputEvent as _, SharedString, TestAppContext, point,
-    px,
-};
+use gpui_kit::{AppContext as _, Entity, Focusable as _, SharedString, TestAppContext, point, px};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::ask::{AskSource, locate};
 use kimun_notes::keys::leader::LeaderAction;
@@ -38,9 +35,9 @@ use super::ask::{
     turn_element_id,
 };
 use super::ask_sources::{
-    COLLAPSE, EXPAND, NO_RESULTS, NO_SOURCES, READER_ACTION_ID, READER_HEADER_ID,
-    SOURCES_FILTER_ID, SourcesView, source_row_expand_id, source_row_id,
+    NO_RESULTS, NO_SOURCES, READER_HEADER_ID, SOURCES_FILTER_ID, SourcesView, source_row_id,
 };
+use super::drawer_list::chevron_id;
 use super::files::row_id;
 use super::search::{PREVIEW_DEBOUNCE, READER_FAILED};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
@@ -874,21 +871,40 @@ fn the_reader_grows_and_reuses_a_read_note(cx: &mut TestAppContext) {
     assert_eq!(reader_state(&started, cx), (false, false, true));
     press(&started, "down", cx);
     assert_eq!(selected_row(&started, cx), Some(1), "Down scrolls in Full");
+    press(&started, "pageup", cx);
+    assert_eq!(
+        selected_row(&started, cx),
+        Some(1),
+        "Page Up leaves the hidden list alone in Full"
+    );
     assert!(focused(&started, LIST_ROWS_ID, cx));
     press(&started, "left", cx);
     press(&started, "left", cx);
     assert_eq!(reader_state(&started, cx), (true, false, false));
 }
 
-/// The reader's header: absent while the reader is collapsed (the rows'
-/// Expand is there, see the next test); in Context it
-/// names the source (its heading, else its path) and offers `Expand`; a
-/// click on that grows the reader to Full as Right does, the label flips to
-/// `Collapse`, and a second click shrinks it back to Context. A click moves
-/// no selection and leaves the list the keyboard (even from the filter), so
-/// the arrows the hint names work after it; a right click does nothing.
+/// The chevron of the row of the source ranked `rank`.
+fn row_chevron(rank: usize) -> SharedString {
+    chevron_id(&source_row_id(rank))
+}
+
+/// The chevron on the reader's header.
+fn header_chevron() -> SharedString {
+    chevron_id(&SharedString::from(READER_HEADER_ID))
+}
+
+const GROW: &str = "Expand the preview (→)";
+const SHRINK: &str = "Collapse the preview (←)";
+
+/// The reader's header: absent while the reader is collapsed; open, it
+/// names the source (its heading, else its path) and carries the chevron,
+/// `›` in Context and `‹` in Full. A click on it grows the reader to Full as
+/// Right does, the chevron flips to Collapse, and a second click shrinks it
+/// back to Context. A click moves no selection and leaves the list the
+/// keyboard (even from the filter), so the arrows work after it; a right
+/// click does nothing.
 #[gpui_kit::test]
-fn the_reader_header_action_grows_and_shrinks(cx: &mut TestAppContext) {
+fn sources_header_shows_collapse_chevron_in_full(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let stub = Stub::with(vec![(
@@ -903,9 +919,9 @@ fn the_reader_header_action_grows_and_shrinks(cx: &mut TestAppContext) {
     ask(&started, &rt, "why?", cx);
     click(&started, source_row_id(2), cx);
     assert_eq!(reader_state(&started, cx), (true, false, false));
-    // Collapsed: the list alone (the rows carry Expand), no header.
+    // Collapsed: the list alone, no header.
     assert!(!drawn(&started, READER_HEADER_ID, cx));
-    assert!(!drawn(&started, READER_ACTION_ID, cx));
+    assert!(!drawn(&started, header_chevron(), cx));
     press(&started, "enter", cx);
     assert_eq!(reader_state(&started, cx), (false, true, false));
     assert_eq!(selected_row(&started, cx), Some(1));
@@ -915,16 +931,21 @@ fn the_reader_header_action_grows_and_shrinks(cx: &mut TestAppContext) {
         Some("Beta")
     );
     assert_eq!(
-        label_of(&started, READER_ACTION_ID, cx).as_deref(),
-        Some(EXPAND)
+        label_of_id(&started, header_chevron(), cx).as_deref(),
+        Some(GROW)
+    );
+    super::chevron_tests::assert_zone_flush_right_in(
+        started.handle,
+        SharedString::from(READER_HEADER_ID),
+        cx,
     );
 
-    // Expand: Full, the label flips, the selection and the keyboard stay.
-    click(&started, READER_ACTION_ID, cx);
+    // Grow: Full, the chevron flips, the selection and the keyboard stay.
+    click(&started, header_chevron(), cx);
     assert_eq!(reader_state(&started, cx), (false, false, true));
     assert_eq!(
-        label_of(&started, READER_ACTION_ID, cx).as_deref(),
-        Some(COLLAPSE)
+        label_of_id(&started, header_chevron(), cx).as_deref(),
+        Some(SHRINK)
     );
     assert_eq!(selected_row(&started, cx), Some(1));
     assert!(focused(&started, LIST_ROWS_ID, cx));
@@ -932,27 +953,27 @@ fn the_reader_header_action_grows_and_shrinks(cx: &mut TestAppContext) {
     // A right click on it does nothing.
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.right_click(READER_ACTION_ID, cx)
+        window.right_click(header_chevron(), cx)
     })
     .unwrap();
     cx.run_until_parked();
     assert_eq!(reader_state(&started, cx), (false, false, true));
 
-    // Collapse: back to Context.
-    click(&started, READER_ACTION_ID, cx);
+    // Shrink: back to Context.
+    click(&started, header_chevron(), cx);
     assert_eq!(reader_state(&started, cx), (false, true, false));
     assert_eq!(
-        label_of(&started, READER_ACTION_ID, cx).as_deref(),
-        Some(EXPAND)
+        label_of_id(&started, header_chevron(), cx).as_deref(),
+        Some(GROW)
     );
     assert_eq!(selected_row(&started, cx), Some(1));
     assert!(focused(&started, LIST_ROWS_ID, cx));
 
     // From the filter: the click gives the list the keyboard back, and the
-    // arrows the hint names work.
+    // arrows work.
     click(&started, SOURCES_FILTER_ID, cx);
     assert!(!focused(&started, LIST_ROWS_ID, cx));
-    click(&started, READER_ACTION_ID, cx);
+    click(&started, header_chevron(), cx);
     assert_eq!(reader_state(&started, cx), (false, false, true));
     assert!(focused(&started, LIST_ROWS_ID, cx));
     press(&started, "left", cx);
@@ -971,16 +992,15 @@ fn the_reader_header_action_grows_and_shrinks(cx: &mut TestAppContext) {
     );
 }
 
-/// While the reader is Collapsed each row carries an Expand action, drawn
-/// only under the pointer (its width always taken, so nothing moves). A click on a row
-/// that is not selected selects THAT row and opens the reader to Context
-/// on it, with the list keyboard and the header now on top; the row's own
-/// click does not run as well (nothing opens, the reader is not cycled
-/// further), even when the click was the first half of a double-click.
-/// Open, no row has the action; back to Collapsed (Left, Escape), it
-/// returns. A right click on it does not expand.
+/// The rows' chevron: at rest only the selected row shows it, the hovered
+/// row too. A click on a row that is not selected selects THAT row and
+/// grows the reader to Context on it, with the list keyboard and the header
+/// on top; the row's own click does not run as well (nothing opens, the
+/// reader is not cycled further), nor does a double-click on it. In Context
+/// the row's chevron grows the reader to Full. A right click on it does not
+/// expand.
 #[gpui_kit::test]
-fn a_rows_expand_action_opens_the_reader_on_that_row(cx: &mut TestAppContext) {
+fn sources_row_chevron_grows_reader(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let stub = Stub::with(vec![(
@@ -994,37 +1014,33 @@ fn a_rows_expand_action_opens_the_reader_on_that_row(cx: &mut TestAppContext) {
     let (_v, started) = ready(cx, &rt, stub);
     ask(&started, &rt, "why?", cx);
     let before = open_note(&started, cx);
-    let actions_on = |cx: &TestAppContext| {
-        let view = sources(&started, cx);
-        cx.read(|cx| view.read(cx).list.read(cx).row_actions_enabled())
-    };
     click(&started, source_row_id(1), cx);
     assert_eq!(selected_row(&started, cx), Some(0));
     assert_eq!(reader_state(&started, cx), (true, false, false));
-    assert!(actions_on(cx));
-    // Each row's Expand is laid out (its width taken) and drawn only under
-    // the pointer: not on the selected row the pointer left, not moving
-    // anything when it shows.
-    let at_rest = bounds_of(&started, source_row_expand_id(2), cx);
+
+    // Under the pointer: that row and the selected one; nothing moves.
+    let at_rest = bounds_of(&started, row_chevron(2), cx);
     for rank in 1..=3 {
         hover(&started, source_row_id(rank), cx);
         for other in 1..=3 {
             assert_eq!(
-                label_of_id(&started, source_row_expand_id(other), cx).as_deref(),
-                (other == rank).then_some(EXPAND),
+                label_of_id(&started, row_chevron(other), cx).as_deref(),
+                (other == rank || other == 1).then_some(GROW),
                 "pointer on row {rank}: row {other}"
             );
         }
     }
     hover(&started, source_row_id(2), cx);
-    assert_eq!(bounds_of(&started, source_row_expand_id(2), cx), at_rest);
+    assert_eq!(bounds_of(&started, row_chevron(2), cx), at_rest);
+    for rank in [1, 2] {
+        super::chevron_tests::assert_zone_flush_right_in(started.handle, source_row_id(rank), cx);
+    }
     assert!(!drawn(&started, READER_HEADER_ID, cx));
 
     // A right click on it: no expand.
-    hover(&started, source_row_id(2), cx);
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.right_click(source_row_expand_id(2), cx)
+        window.right_click(row_chevron(2), cx)
     })
     .unwrap();
     cx.run_until_parked();
@@ -1033,10 +1049,10 @@ fn a_rows_expand_action_opens_the_reader_on_that_row(cx: &mut TestAppContext) {
     click(&started, source_row_id(1), cx);
     assert_eq!(reader_state(&started, cx), (true, false, false));
 
-    // A click on the second row's Expand: that row, Context, the list
+    // A click on the second row's chevron: that row, Context, the list
     // keyboard, the header on top; nothing opened.
     hover(&started, source_row_id(2), cx);
-    click(&started, source_row_expand_id(2), cx);
+    click(&started, row_chevron(2), cx);
     assert_eq!(selected_row(&started, cx), Some(1));
     assert_eq!(reader_state(&started, cx), (false, true, false));
     assert!(focused(&started, LIST_ROWS_ID, cx));
@@ -1044,89 +1060,33 @@ fn a_rows_expand_action_opens_the_reader_on_that_row(cx: &mut TestAppContext) {
         label_of(&started, READER_HEADER_ID, cx).as_deref(),
         Some("Beta")
     );
-    assert_eq!(
-        label_of(&started, READER_ACTION_ID, cx).as_deref(),
-        Some(EXPAND)
-    );
     settle(&rt, cx, |cx| {
         reader_note(&started, cx) == Some(path("b.md"))
     });
     assert_eq!(open_note(&started, cx), before);
     assert!(thread_shown(&started, cx));
 
-    // Open: no row carries it.
-    assert!(!actions_on(cx));
-    for rank in 1..=3 {
-        assert!(!drawn(&started, source_row_expand_id(rank), cx));
-    }
-    press(&started, "right", cx);
+    // In Context the selected row keeps `›`: a click grows to Full.
+    assert_eq!(
+        label_of_id(&started, row_chevron(2), cx).as_deref(),
+        Some(GROW)
+    );
+    click(&started, row_chevron(2), cx);
     assert_eq!(reader_state(&started, cx), (false, false, true));
-    assert!(!actions_on(cx));
-    assert!(!drawn(&started, source_row_expand_id(2), cx));
-
-    // Back to Collapsed (Left, Left): it returns.
+    assert_eq!(selected_row(&started, cx), Some(1));
     press(&started, "left", cx);
     press(&started, "left", cx);
     assert_eq!(reader_state(&started, cx), (true, false, false));
-    assert!(actions_on(cx));
-    hover(&started, source_row_id(1), cx);
-    assert!(drawn(&started, source_row_expand_id(1), cx));
-    assert!(!drawn(&started, READER_HEADER_ID, cx));
 
-    // Escape from Context collapses too, and brings it back.
-    hover(&started, source_row_id(3), cx);
-    click(&started, source_row_expand_id(3), cx);
-    assert_eq!(selected_row(&started, cx), Some(2));
-    assert_eq!(reader_state(&started, cx), (false, true, false));
-    press(&started, "escape", cx);
-    assert_eq!(reader_state(&started, cx), (true, false, false));
-    hover(&started, source_row_id(3), cx);
-    assert!(drawn(&started, source_row_expand_id(3), cx));
-
-    // A double-click on Expand: the first press expands, the second does
-    // nothing more (here both land on Expand: the test's presses share one
-    // update, so the first's redraw comes after both).
+    // A double-click on a chevron: one step, nothing opened.
     hover(&started, source_row_id(1), cx);
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.double_click(source_row_expand_id(1), cx)
+        window.double_click(row_chevron(1), cx)
     })
     .unwrap();
     cx.run_until_parked();
     assert_eq!(selected_row(&started, cx), Some(0));
-    assert_eq!(reader_state(&started, cx), (false, true, false));
-    press(&started, "escape", cx);
-    assert_eq!(reader_state(&started, cx), (true, false, false));
-
-    // In a real window the second press lands on the row (Expand is gone
-    // after the first one's redraw): it is not the row's double-click, so
-    // nothing opens.
-    hover(&started, source_row_id(2), cx);
-    let at = bounds_of(&started, source_row_expand_id(2), cx).center();
-    click(&started, source_row_expand_id(2), cx);
-    assert_eq!(reader_state(&started, cx), (false, true, false));
-    assert!(!drawn(&started, source_row_expand_id(2), cx));
-    cx.update_window(started.handle, |_, window, cx| {
-        let modifiers = gpui_kit::Modifiers::default();
-        let down = gpui_kit::MouseDownEvent {
-            button: gpui_kit::MouseButton::Left,
-            position: at,
-            modifiers,
-            click_count: 2,
-            first_mouse: false,
-        };
-        let up = gpui_kit::MouseUpEvent {
-            button: gpui_kit::MouseButton::Left,
-            position: at,
-            modifiers,
-            click_count: 2,
-        };
-        window.dispatch_event(down.to_platform_input(), cx);
-        window.dispatch_event(up.to_platform_input(), cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(selected_row(&started, cx), Some(1));
     assert_eq!(reader_state(&started, cx), (false, true, false));
     drive(&rt, cx, |_| true);
     assert_eq!(open_note(&started, cx), before);
@@ -1148,7 +1108,7 @@ fn the_reader_header_needs_a_source(cx: &mut TestAppContext) {
     type_in(&started, "zzz", cx);
     assert!(rows(&started, cx).is_empty());
     assert!(!drawn(&started, READER_HEADER_ID, cx));
-    assert!(!drawn(&started, READER_ACTION_ID, cx));
+    assert!(!drawn(&started, header_chevron(), cx));
 
     click(&started, NEW_ID, cx);
     assert!(rows(&started, cx).is_empty());

@@ -19,7 +19,7 @@ use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::views::{LinkEntry, OutlineEntry};
 use tokio::runtime::Runtime;
 
-use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow as _};
+use super::drawer_list::{DrawerList, DrawerListEvent, chevron_id};
 use super::file_dialogs::FileOpKind;
 use super::file_ops::FileOpRequest;
 use super::links::{LINKS_ID, LinksView, NO_NOTE_TEXT, link_row_id};
@@ -352,33 +352,28 @@ fn a_double_click_opens_a_row_once(cx: &mut TestAppContext) {
     assert_eq!(opened.get(), 1, "one activation");
 }
 
-/// Row actions are the Sources view's alone: LINKS never switches them on
-/// and its rows offer none, so even switched on its rows stay as they are
-/// and a click still opens the row.
+/// The expand chevron is off by default and LINKS never switches it on:
+/// neither the hovered nor the selected row draws one, and a click still
+/// opens the row.
 #[gpui_kit::test]
-fn links_rows_offer_no_row_action(cx: &mut TestAppContext) {
+fn links_rows_draw_no_chevron(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
     leader(&started, "lb", cx);
     link_rows(&started, &rt, cx);
-    let list = links_list(&started, cx);
-    let (enabled, offered) = cx.read(|cx| {
-        let list = list.read(cx);
-        let offered = list
-            .rows()
-            .iter()
-            .filter(|r| r.hover_action().is_some())
-            .count();
-        (list.row_actions_enabled(), offered)
-    });
-    assert!(!enabled, "off by default");
-    assert_eq!(offered, 0);
-    list.update(cx, |list, cx| list.set_row_actions_enabled(true, cx));
     let row = links_row(&started, "epsilon.md", cx);
+    let chevrons = cx
+        .update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(row.clone(), cx);
+            window.render_frame(cx);
+            window.find_all(chevron_id(&row)).len()
+        })
+        .unwrap();
+    assert_eq!(chevrons, 0);
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.hover(row.clone(), cx);
         window.click(row, cx)
     })
     .unwrap();

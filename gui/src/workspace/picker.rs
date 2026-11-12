@@ -199,7 +199,7 @@ impl PickerRow for FileListEntry {
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
-        entry_row(self.element_id(), self, selected, true, t)
+        entry_row(self.element_id(), self, selected, true, None, t)
     }
 
     fn preview_path(&self) -> Option<VaultPath> {

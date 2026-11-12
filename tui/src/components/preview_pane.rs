@@ -18,6 +18,29 @@ use crate::logic::preview::PreviewModel;
 pub use crate::logic::preview::{ExpandState, Highlight};
 use crate::settings::themes::Theme;
 
+/// One expand step of a list host's preview (see [`PreviewPane::step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Collapsed -> Context -> Full; Full stays Full (Alt+Right, the row
+    /// chevron).
+    Grow,
+    /// Full -> Context -> Collapsed; Collapsed stays (Alt+Left, `h`, Esc,
+    /// the header chevron).
+    Shrink,
+    /// Collapsed -> Context -> Full -> Collapsed (Enter, `l`, a click on
+    /// the selected row or the header title).
+    Toggle,
+}
+
+impl From<crate::components::expand_chevron::ExpandDir> for Step {
+    fn from(r: crate::components::expand_chevron::ExpandDir) -> Self {
+        match r {
+            crate::components::expand_chevron::ExpandDir::Grow => Step::Grow,
+            crate::components::expand_chevron::ExpandDir::Shrink => Step::Shrink,
+        }
+    }
+}
+
 /// The note-preview surface beneath/over the Query panel's result list:
 /// a [`PreviewModel`] plus the header region the terminal render records.
 pub struct PreviewPane {
@@ -26,6 +49,10 @@ pub struct PreviewPane {
     /// it collapses the view (mirroring Enter). Empty when full mode is off:
     /// cleared by every state change that re-points or re-expands the preview.
     full_header_rect: Rect,
+    /// The shrink chevron in the full-expand header (its last column), recorded
+    /// each render. A click on it steps the view back one state; empty with
+    /// the header. Any host of a `PreviewPane` reads it the same way.
+    full_chevron_rect: Rect,
 }
 
 impl Default for PreviewPane {
@@ -39,6 +66,7 @@ impl PreviewPane {
         Self {
             model: PreviewModel::new(),
             full_header_rect: Rect::default(),
+            full_chevron_rect: Rect::default(),
         }
     }
 
@@ -54,13 +82,30 @@ impl PreviewPane {
         self.model.is_full()
     }
 
+    /// Which way the expand control moves this preview: it grows until
+    /// Full, and shrinks from there.
+    pub fn reach(&self) -> crate::components::expand_chevron::ExpandDir {
+        use crate::components::expand_chevron::ExpandDir;
+        if self.is_full() {
+            ExpandDir::Shrink
+        } else {
+            ExpandDir::Grow
+        }
+    }
+
     pub fn full_header_rect(&self) -> Rect {
         self.full_header_rect
     }
 
-    /// Drop the recorded full-expand header rect (the previous frame's region).
+    /// The header's shrink chevron cell, or an empty rect outside full mode.
+    pub fn full_chevron_rect(&self) -> Rect {
+        self.full_chevron_rect
+    }
+
+    /// Drop the recorded full-expand header rects (the previous frame's regions).
     pub fn clear_header(&mut self) {
         self.full_header_rect = Rect::default();
+        self.full_chevron_rect = Rect::default();
     }
 
     /// See [`PreviewModel::reset`]; also drops the header region.
@@ -111,6 +156,17 @@ impl PreviewPane {
         self.model.toggle(selected);
     }
 
+    /// Grow one step (Collapsed -> Context -> Full). Full stays Full, unlike
+    /// [`Self::toggle`], which wraps. Returns `false` when nothing changed
+    /// (no selection, or already Full).
+    pub fn grow_step(&mut self, selected: Option<VaultPath>) -> bool {
+        if selected.is_none() || self.is_full() {
+            return false;
+        }
+        self.toggle(selected);
+        true
+    }
+
     /// See [`PreviewModel::collapse_step`]; drops the header region unless it
     /// was a no-op (no selection).
     pub fn collapse_step(&mut self, selected: Option<VaultPath>) {
@@ -118,6 +174,27 @@ impl PreviewPane {
             self.clear_header();
         }
         self.model.collapse_step(selected);
+    }
+
+    /// Apply one expand step to the selected row's preview. Returns `true`
+    /// when the layout may have changed, so the host drops the regions it
+    /// recorded last frame; `false` for a no-op (no selection, or a grow at
+    /// Full).
+    pub fn step(&mut self, step: Step, selected: Option<VaultPath>) -> bool {
+        if selected.is_none() {
+            return false;
+        }
+        match step {
+            Step::Grow => self.grow_step(selected),
+            Step::Shrink => {
+                self.collapse_step(selected);
+                true
+            }
+            Step::Toggle => {
+                self.toggle(selected);
+                true
+            }
+        }
     }
 
     /// Draw the full-expand chrome (fixed title header + divider), record the
@@ -159,6 +236,14 @@ impl PreviewPane {
             ]))
             .style(Style::default().bg(bg)),
             parts[0],
+        );
+        // The shrink chevron closes the header; a click on it steps back one
+        // state instead of collapsing like a click on the title does.
+        self.full_chevron_rect = crate::components::expand_chevron::paint(
+            f,
+            parts[0],
+            crate::components::expand_chevron::ExpandDir::Shrink,
+            theme,
         );
 
         // Fixed divider.
