@@ -165,11 +165,12 @@ pub(crate) struct RailSegment<F> {
     pub(crate) on_toggle: F,
 }
 
-/// What leads the footer's row, in order: the rail's button, the workspace
-/// chip (when the title bar is not there to carry it), then the zoom hint
-/// and its restore button.
+/// What leads the footer's row, in order: the rail's button and the
+/// workspace chip (both only when the title bar is not there to carry
+/// them), then the zoom hint and its restore button.
 pub(crate) struct Leading<Z, R> {
-    pub(crate) rail: RailSegment<R>,
+    /// `None` while the title bar carries the button.
+    pub(crate) rail: Option<RailSegment<R>>,
     pub(crate) workspace: Option<AnyElement>,
     pub(crate) zoom: Option<ZoomSegment<Z>>,
 }
@@ -221,7 +222,7 @@ pub(crate) fn render(
     // The path shrinks (cut short with an ellipsis) rather than pushing the
     // pinned labels out.
     let bar = StatusBar::new()
-        .child(rail_toggle(rail, theme))
+        .when_some(rail, |bar, rail| bar.child(rail_toggle(rail, theme)))
         // The workspace chip leads the row when the title bar is not there to
         // carry it.
         .when_some(workspace, |bar, chip| bar.child(chip))
@@ -301,7 +302,7 @@ pub(crate) fn render(
 
 /// The rail's button: its edge's panel icon, lit while the rail is shown,
 /// and a tooltip that names the chord.
-fn rail_toggle(
+pub(crate) fn rail_toggle(
     rail: RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     theme: &Theme,
 ) -> impl IntoElement {

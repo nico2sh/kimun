@@ -107,7 +107,7 @@ pub(crate) const REDUCE_MOTION_HELP: &str =
 /// Display's `Rail position` (`[gui] rail`, ADR-0055) and its help text.
 pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
 pub(crate) const RAIL_HELP: &str =
-    "Where the activity rail sits. Hide or show it with the button at the start of the footer.";
+    "Where the activity rail sits. Hide or show it with the button in the title bar.";
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";

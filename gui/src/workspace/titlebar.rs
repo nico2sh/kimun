@@ -445,7 +445,22 @@ impl Workspace {
             .min_w_0()
             // Decorative: the title names the window.
             .child(img(assets::logo()).size_4().flex_none())
-            .child(name);
+            .child(name)
+            // The rail's button, after the switcher (ADR-0055 §8). Like the
+            // chip it keeps the bar's drag area from taking its press.
+            .child(
+                div()
+                    .flex_none()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .child(crate::status_row::rail_toggle(
+                        self.rail_segment(cx),
+                        &theme::current(cx),
+                    )),
+            );
         let kit_bar = KitTitleBar::new()
             .bg(colors.surface)
             .on_close_window(close_hook(workspace))
