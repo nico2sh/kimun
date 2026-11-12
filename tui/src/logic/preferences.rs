@@ -348,7 +348,7 @@ pub struct PreferencesModel {
     /// `[gui] editor_font_family`: `None` = the theme's font. Desktop-only,
     /// written only when it differs from the config's value.
     pub editor_font_family: Option<String>,
-    /// `[gui] editor_font_size` in points: `None` = the theme's size.
+    /// `[gui] editor_font_size` in pixels: `None` = the theme's size.
     /// Desktop-only, written only when it differs from the config's value.
     pub editor_font_size: Option<u8>,
     /// Which-key reveal delay, see [`step_leader_delay`].
@@ -439,19 +439,12 @@ impl PreferencesModel {
         self.leader_timeout_ms = step_leader_delay(self.leader_timeout_ms, up);
     }
 
-    /// Step the editor font size by one point from the draft (or from
+    /// Step the editor font size by one pixel from the draft (or from
     /// `theme_default` while unset), clamped to the allowed range.
     pub fn step_editor_font_size(&mut self, up: bool, theme_default: u8) {
-        use crate::settings::gui::{EDITOR_FONT_MAX_PT, EDITOR_FONT_MIN_PT};
-        let current = self.editor_font_size.unwrap_or(theme_default);
-        let next = step_on_grid(
-            current as u64,
-            up,
-            1,
-            EDITOR_FONT_MIN_PT as u64,
-            EDITOR_FONT_MAX_PT as u64,
-        );
-        self.editor_font_size = Some(next as u8);
+        let current = i64::from(self.editor_font_size.unwrap_or(theme_default));
+        let next = if up { current + 1 } else { current - 1 };
+        self.editor_font_size = Some(crate::settings::gui::clamp_editor_font_size(next));
     }
 
     /// Cycle one sort setting to its next value.

@@ -70,10 +70,11 @@ use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
     LEADER_DELAY_MIN_MS, PreferencesModel, SortSlot, backend_label, configured_server_url,
 };
-use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PT, EDITOR_FONT_MIN_PT};
+use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PX, EDITOR_FONT_MIN_PX, clamp_editor_font_size};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::mono_families::{self, MonoFamilies};
@@ -278,22 +279,32 @@ impl SelectItem for FontChoice {
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
 
+/// Whether `family` names `installed`: family names match whatever their
+/// capital letters, as [`crate::fonts::choose`] matches them.
+fn same_family(installed: &str, family: &str) -> bool {
+    installed.eq_ignore_ascii_case(family)
+}
+
 /// The dropdown's entries: "Default (theme)" first. With the installed
 /// monospace families (`ready`): each family in `keep` (the saved and the
 /// draft family) the list lacks, as `"<name> (not installed)"`, then the list.
 /// Without it (still being read): the `keep` families alone, so a chosen
-/// family is never shown blank.
+/// family is never shown blank. A family matches a listed one whatever its
+/// capital letters ([`same_family`]).
 fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoice> {
     let mut choices = vec![FontChoice {
         label: FONT_DEFAULT_LABEL.into(),
         family: None,
     }];
     for name in keep.iter().flatten() {
-        if choices.iter().any(|c| c.family.as_deref() == Some(*name)) {
+        if choices
+            .iter()
+            .any(|c| c.family.as_deref().is_some_and(|f| same_family(f, name)))
+        {
             continue;
         }
         let label = match ready {
-            Some(list) if list.iter().any(|f| f == name) => continue,
+            Some(list) if list.iter().any(|f| same_family(f, name)) => continue,
             Some(_) => format!("{name} (not installed)"),
             None => name.to_string(),
         };
@@ -311,12 +322,23 @@ fn font_choices(ready: Option<&[String]>, keep: &[Option<&str>]) -> Vec<FontChoi
     choices
 }
 
-/// What the dropdown's entries were built from: rebuilt when any changes.
+/// The entry of `items` that stands for `family`: the default for `None`,
+/// else the entry whose family matches it ([`same_family`]).
+fn font_choice_for<'a>(items: &'a [FontChoice], family: Option<&str>) -> Option<&'a FontChoice> {
+    items.iter().find(|c| match (c.family.as_deref(), family) {
+        (None, None) => true,
+        (Some(f), Some(d)) => same_family(f, d),
+        _ => false,
+    })
+}
+
+/// What the dropdown's entries were built from: rebuilt when either
+/// changes. The draft family is not part of it: a draft that already has an
+/// entry only moves the selection ([`PreferencesView::sync_font_choices`]).
 #[derive(Clone, PartialEq)]
 struct FontInputs {
     ready: Option<Arc<[String]>>,
     saved: Option<String>,
-    draft: Option<String>,
 }
 
 /// The Preferences view. See the module docs.
@@ -349,13 +371,17 @@ pub(crate) struct PreferencesView {
     /// Display's font family dropdown, and what its entries were built from
     /// ([`Self::sync_font_choices`]).
     font_family: Entity<FontSelect>,
-    /// The saved `[gui] editor_font_family`, read once when the view loads:
-    /// the dropdown is synced every frame, and the getter warns on a
-    /// wrong-typed value each time it is asked.
+    /// The saved `[gui] editor_font_family`, read when the view loads and
+    /// again when a save lands, never per frame: the dropdown is synced
+    /// every frame, and the getter warns on a wrong-typed value each time it
+    /// is asked.
     saved_font_family: Option<String>,
     font_inputs: Option<FontInputs>,
-    /// The entries the dropdown was last given.
-    font_items: Vec<FontChoice>,
+    /// The draft family the dropdown's selection was last synced to.
+    font_draft: Option<Option<String>>,
+    /// The entries the dropdown was last given. A new `Rc` each time they
+    /// are rebuilt, so a test can tell a rebuild from a selection move.
+    font_items: Rc<Vec<FontChoice>>,
     server_input: Entity<InputState>,
     server_error: Option<SharedString>,
     /// The inline problem line.
@@ -404,10 +430,10 @@ impl PreferencesView {
     ) -> Self {
         let server_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(DEFAULT_SERVER_URL_HINT));
-        let font_items = font_choices(None, &[]);
+        let font_items = Rc::new(font_choices(None, &[]));
         let font_family = cx.new(|cx| {
             FontSelect::new(
-                SearchableVec::new(font_items.clone()),
+                SearchableVec::new(font_items.to_vec()),
                 Some(IndexPath::new(0)),
                 window,
                 cx,
@@ -429,11 +455,9 @@ impl PreferencesView {
                     this.set_editor_font_family(family.clone(), cx);
                 },
             ),
-            // The family list arrives in the background: the dropdown takes it.
-            cx.observe_global_in::<MonoFamilies>(window, |this, window, cx| {
-                this.sync_font_choices(window, cx);
-                cx.notify();
-            }),
+            // The family list arrives in the background: the next frame
+            // gives it to the dropdown (`render` syncs it).
+            cx.observe_global_in::<MonoFamilies>(window, |_, _, cx| cx.notify()),
         ];
         let read = settings.clone();
         let load = cx.spawn_in(window, async move |this, cx| {
@@ -463,6 +487,7 @@ impl PreferencesView {
             font_family,
             saved_font_family: None,
             font_inputs: None,
+            font_draft: None,
             font_items,
             server_input,
             server_error: None,
@@ -574,7 +599,7 @@ impl PreferencesView {
     pub(crate) fn font_choices(&self, cx: &gpui_kit::App) -> (Vec<String>, Option<String>) {
         // The kit does not hand its entries back: these are the ones it was
         // last given; the selection is the kit's own.
-        let labels = &self.font_items;
+        let labels = &*self.font_items;
         let selected = self
             .font_family
             .read(cx)
@@ -585,6 +610,13 @@ impl PreferencesView {
             labels.iter().map(|c| c.label.to_string()).collect(),
             selected,
         )
+    }
+
+    /// The entries the family dropdown was last given: the same `Rc` until
+    /// they are rebuilt.
+    #[cfg(test)]
+    pub(crate) fn font_items(&self) -> Rc<Vec<FontChoice>> {
+        self.font_items.clone()
     }
 
     /// The settings as the view opened, for a test to change behind its
@@ -742,9 +774,12 @@ impl PreferencesView {
         cx.notify();
     }
 
-    /// Give the family dropdown the entries the draft, the saved family and
-    /// the installed list call for, and select the draft's; nothing when
-    /// none of them changed since the last time.
+    /// Give the family dropdown the entries the saved family and the
+    /// installed list call for, and select the draft's. The entries are
+    /// rebuilt only when the list or the saved family changed, or when the
+    /// draft has no entry yet (a family that is not installed); otherwise
+    /// only the selection moves. Nothing at all when nothing changed since
+    /// the last time.
     fn sync_font_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(model) = self.model.as_ref() else {
             return;
@@ -755,22 +790,31 @@ impl PreferencesView {
                 MonoFamilies::Idle | MonoFamilies::Loading => None,
             },
             saved: self.saved_font_family.clone(),
-            draft: model.editor_font_family.clone(),
         };
-        if self.font_inputs.as_ref() == Some(&inputs) {
+        let draft = model.editor_font_family.clone();
+        let same_inputs = self.font_inputs.as_ref() == Some(&inputs);
+        if same_inputs && self.font_draft.as_ref() == Some(&draft) {
             return;
         }
-        let items = font_choices(
-            inputs.ready.as_deref(),
-            &[inputs.saved.as_deref(), inputs.draft.as_deref()],
-        );
-        let draft = inputs.draft.clone();
-        self.font_inputs = Some(inputs);
-        self.font_items = items.clone();
+        let rebuild = !same_inputs || font_choice_for(&self.font_items, draft.as_deref()).is_none();
+        if rebuild {
+            self.font_items = Rc::new(font_choices(
+                inputs.ready.as_deref(),
+                &[inputs.saved.as_deref(), draft.as_deref()],
+            ));
+            self.font_inputs = Some(inputs);
+        }
+        // The entry's own spelling: a draft "fira code" selects "Fira Code".
+        let selected =
+            font_choice_for(&self.font_items, draft.as_deref()).and_then(|c| c.family.clone());
+        self.font_draft = Some(draft);
+        let items = rebuild.then(|| self.font_items.to_vec());
         self.font_family.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(items), window, cx);
-            if state.selected_value() != Some(&draft) {
-                state.set_selected_value(&draft, window, cx);
+            if let Some(items) = items {
+                state.set_items(SearchableVec::new(items), window, cx);
+            }
+            if state.selected_value() != Some(&selected) {
+                state.set_selected_value(&selected, window, cx);
             }
         });
     }
@@ -971,6 +1015,10 @@ impl PreferencesView {
             // The shared settings took the draft in the write.
             (Ok(()), Some(_)) => {
                 self.dirty.set(None);
+                // The saved family is the one just written: read once per
+                // save, so an old "(not installed)" entry goes.
+                self.saved_font_family = self.initial().gui.editor_font_family();
+                self.sync_font_choices(window, cx);
                 cx.emit(PreferencesEvent::Saved { theme, reopen });
             }
             (Ok(()), None) => {}
@@ -1145,11 +1193,10 @@ fn para(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
         .child(text.into())
 }
 
-/// The theme's monospace size in whole points, within the setting's range:
+/// The theme's monospace size in whole pixels, within the setting's range:
 /// where the font size stepper starts while the setting is unset.
 fn theme_font_size(cx: &gpui_kit::App) -> u8 {
-    let size = f32::from(cx.theme().mono_font_size).round();
-    size.clamp(f32::from(EDITOR_FONT_MIN_PT), f32::from(EDITOR_FONT_MAX_PT)) as u8
+    clamp_editor_font_size(f32::from(cx.theme().mono_font_size).round() as i64)
 }
 
 /// A quieter note under a control.
@@ -1476,9 +1523,9 @@ impl PreferencesView {
                 up_id: FONT_SIZE_UP_ID,
                 name: "Edit surface font size",
                 value: u64::from(model.editor_font_size.unwrap_or(theme_size)),
-                min: u64::from(EDITOR_FONT_MIN_PT),
-                max: u64::from(EDITOR_FONT_MAX_PT),
-                unit: "pt",
+                min: u64::from(EDITOR_FONT_MIN_PX),
+                max: u64::from(EDITOR_FONT_MAX_PX),
+                unit: "px",
             },
             &self.font_size_focus,
             Self::step_editor_font_size,
@@ -1503,7 +1550,7 @@ impl PreferencesView {
             .flex()
             .flex_col()
             .gap_6()
-            .child(field("Font", font, vec![FONT_HELP.into()], t))
+            .child(field("Editor Font", font, vec![FONT_HELP.into()], t))
             .child(
                 div()
                     .flex()
