@@ -366,12 +366,16 @@ fn dirty_tracks_each_field() {
     let s = with_workspaces(&["main"], "main");
     let base = PreferencesModel::new(&s);
     assert!(!base.dirty(&s));
-    let edits: [Edit; 13] = [
+    let edits: [Edit; 15] = [
         ("theme", |m| m.theme_name = "Gruvbox Light".to_string()),
         ("nerd fonts", |m| m.use_nerd_fonts = !m.use_nerd_fonts),
         ("update check", |m| m.update_check = !m.update_check),
         ("mouse", |m| m.mouse = !m.mouse),
         ("reduce motion", |m| m.reduce_motion = !m.reduce_motion),
+        ("editor font family", |m| {
+            m.editor_font_family = Some("X".into())
+        }),
+        ("editor font size", |m| m.editor_font_size = Some(20)),
         ("leader delay", |m| m.step_leader_delay(true)),
         ("default field", |m| m.cycle_sort(SortSlot::DefaultField)),
         ("default order", |m| m.cycle_sort(SortSlot::DefaultOrder)),
@@ -1018,4 +1022,59 @@ fn reduce_motion_is_written_only_when_changed() {
         crate::settings::gui::WindowDecorations::System,
         "the rest of [gui] is kept"
     );
+}
+
+#[test]
+fn editor_font_size_steps_from_the_theme_default_and_clamps() {
+    let s = with_workspaces(&["main"], "main");
+    let mut m = PreferencesModel::new(&s);
+    m.editor_font_size = None;
+    m.step_editor_font_size(true, 13);
+    assert_eq!(m.editor_font_size, Some(14));
+    m.editor_font_size = Some(8);
+    m.step_editor_font_size(false, 13);
+    assert_eq!(m.editor_font_size, Some(8));
+    m.editor_font_size = Some(32);
+    m.step_editor_font_size(true, 13);
+    assert_eq!(m.editor_font_size, Some(32));
+    m.editor_font_size = None;
+    m.step_editor_font_size(true, 5);
+    assert_eq!(m.editor_font_size, Some(8));
+}
+
+#[test]
+fn editor_font_is_read_into_the_draft_and_written_only_when_changed() {
+    let mut s = with_workspaces(&["main"], "main");
+    s.gui.set_editor_font_family(Some("Fira Code"));
+    s.gui.set_editor_font_size(Some(15));
+    let m = PreferencesModel::new(&s);
+    assert_eq!(m.editor_font_family.as_deref(), Some("Fira Code"));
+    assert_eq!(m.editor_font_size, Some(15));
+
+    let s = with_workspaces(&["main"], "main");
+    let m = PreferencesModel::new(&s);
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert!(out.gui.is_empty(), "an untouched draft adds no [gui] key");
+
+    let mut m = PreferencesModel::new(&s);
+    m.editor_font_family = Some("Fira Code".into());
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(out.gui.editor_font_family().as_deref(), Some("Fira Code"));
+    assert_eq!(out.gui.editor_font_size(), None);
+}
+
+#[test]
+fn choosing_default_removes_the_keys() {
+    let mut s = with_workspaces(&["main"], "main");
+    s.gui.set_editor_font_family(Some("Fira Code"));
+    s.gui.set_editor_font_size(Some(15));
+    let mut m = PreferencesModel::new(&s);
+    m.editor_font_family = None;
+    m.editor_font_size = None;
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(out.gui.editor_font_family(), None);
+    assert_eq!(out.gui.editor_font_size(), None);
 }

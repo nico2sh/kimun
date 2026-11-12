@@ -345,6 +345,12 @@ pub struct PreferencesModel {
     /// unchanged; it is written only when it differs from the config's
     /// value, so a save that did not touch it never adds the key.
     pub reduce_motion: bool,
+    /// `[gui] editor_font_family`: `None` = the theme's font. Desktop-only,
+    /// written only when it differs from the config's value.
+    pub editor_font_family: Option<String>,
+    /// `[gui] editor_font_size` in points: `None` = the theme's size.
+    /// Desktop-only, written only when it differs from the config's value.
+    pub editor_font_size: Option<u8>,
     /// Which-key reveal delay, see [`step_leader_delay`].
     pub leader_timeout_ms: u64,
     pub default_sort_field: SortFieldSetting,
@@ -373,6 +379,8 @@ impl PreferencesModel {
             update_check: s.update_check(),
             mouse: s.mouse(),
             reduce_motion: s.gui.reduce_motion(),
+            editor_font_family: s.gui.editor_font_family(),
+            editor_font_size: s.gui.editor_font_size(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -429,6 +437,21 @@ impl PreferencesModel {
     /// Step the which-key delay, see [`step_leader_delay`].
     pub fn step_leader_delay(&mut self, up: bool) {
         self.leader_timeout_ms = step_leader_delay(self.leader_timeout_ms, up);
+    }
+
+    /// Step the editor font size by one point from the draft (or from
+    /// `theme_default` while unset), clamped to the allowed range.
+    pub fn step_editor_font_size(&mut self, up: bool, theme_default: u8) {
+        use crate::settings::gui::{EDITOR_FONT_MAX_PT, EDITOR_FONT_MIN_PT};
+        let current = self.editor_font_size.unwrap_or(theme_default);
+        let next = step_on_grid(
+            current as u64,
+            up,
+            1,
+            EDITOR_FONT_MIN_PT as u64,
+            EDITOR_FONT_MAX_PT as u64,
+        );
+        self.editor_font_size = Some(next as u8);
     }
 
     /// Cycle one sort setting to its next value.
@@ -566,6 +589,8 @@ impl PreferencesModel {
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
             || self.reduce_motion != initial.gui.reduce_motion()
+            || self.editor_font_family != initial.gui.editor_font_family()
+            || self.editor_font_size != initial.gui.editor_font_size()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -608,6 +633,13 @@ impl PreferencesModel {
         s.use_nerd_fonts = self.use_nerd_fonts;
         if s.gui.reduce_motion() != self.reduce_motion {
             s.gui.set_reduce_motion(self.reduce_motion);
+        }
+        if s.gui.editor_font_family() != self.editor_font_family {
+            s.gui
+                .set_editor_font_family(self.editor_font_family.as_deref());
+        }
+        if s.gui.editor_font_size() != self.editor_font_size {
+            s.gui.set_editor_font_size(self.editor_font_size);
         }
         let global = &mut s
             .workspace_config
