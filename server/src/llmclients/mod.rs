@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, ReasoningEffort};
 use crate::document::FlattenedChunk;
 
 #[allow(clippy::double_must_use)]
@@ -37,16 +37,14 @@ const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 /// The provider's wire shape — the only thing that differs between providers.
 enum Wire {
     /// OpenAI chat-completions dialect: `{base}/chat/completions`, bearer auth.
-    /// Speaks for OpenAI, Mistral, and any OpenAI-compatible endpoint.
-    OpenAiCompat,
+    /// Speaks for OpenAI, Mistral, OpenRouter, and any OpenAI-compatible
+    /// endpoint. `reasoning` is OpenRouter's `reasoning.effort` extension;
+    /// `None` sends no `reasoning` object, so the model keeps its default.
+    OpenAiCompat { reasoning: Option<ReasoningEffort> },
     /// Anthropic messages API: `{base}/v1/messages`, `x-api-key` header.
     Anthropic,
     /// Gemini generateContent: model and key live in the URL itself.
     Gemini,
-    /// OpenRouter: the OpenAI chat-completions dialect plus its own request
-    /// extensions. `reasoning` is the effort sent as `reasoning.effort`;
-    /// `None` sends no `reasoning` object, so the model keeps its default.
-    OpenRouter { reasoning: Option<String> },
 }
 
 pub struct ChatClient {
@@ -67,15 +65,18 @@ impl ChatClient {
     pub fn from_config(config: &LlmConfig, api_key: String) -> Self {
         let (wire, base_url) = match config {
             LlmConfig::OpenAI { url, .. } => (
-                Wire::OpenAiCompat,
+                Wire::OpenAiCompat { reasoning: None },
                 url.clone().unwrap_or_else(|| OPENAI_URL.to_string()),
             ),
-            LlmConfig::Mistral { .. } => (Wire::OpenAiCompat, MISTRAL_URL.to_string()),
+            LlmConfig::Mistral { .. } => (
+                Wire::OpenAiCompat { reasoning: None },
+                MISTRAL_URL.to_string(),
+            ),
             LlmConfig::Claude { .. } => (Wire::Anthropic, ANTHROPIC_URL.to_string()),
             LlmConfig::Gemini { .. } => (Wire::Gemini, GEMINI_URL.to_string()),
             LlmConfig::OpenRouter { reasoning, .. } => (
-                Wire::OpenRouter {
-                    reasoning: reasoning.clone(),
+                Wire::OpenAiCompat {
+                    reasoning: *reasoning,
                 },
                 OPENROUTER_URL.to_string(),
             ),
@@ -102,7 +103,7 @@ impl LLMClient for ChatClient {
         let messages = chat_messages(history, build_prompt(question, history, context));
 
         let request = match &self.wire {
-            Wire::OpenAiCompat => self
+            Wire::OpenAiCompat { reasoning } => self
                 .http
                 .post(format!("{}/chat/completions", self.base_url))
                 .header("Authorization", format!("Bearer {}", self.api_key))
@@ -110,19 +111,7 @@ impl LLMClient for ChatClient {
                     model: self.model.clone(),
                     max_tokens: None,
                     messages,
-                    reasoning: None,
-                }),
-            Wire::OpenRouter { reasoning } => self
-                .http
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&ChatRequest {
-                    model: self.model.clone(),
-                    max_tokens: None,
-                    messages,
-                    reasoning: reasoning.as_ref().map(|effort| ReasoningRequest {
-                        effort: effort.clone(),
-                    }),
+                    reasoning: reasoning.map(|effort| ReasoningRequest { effort }),
                 }),
             Wire::Anthropic => self
                 .http
@@ -155,7 +144,7 @@ impl LLMClient for ChatClient {
         }
 
         let answer = match &self.wire {
-            Wire::OpenAiCompat | Wire::OpenRouter { .. } => {
+            Wire::OpenAiCompat { .. } => {
                 let parsed: ChatResponse = response.json().await?;
                 if let Some(usage) = &parsed.usage {
                     debug!(
@@ -163,18 +152,7 @@ impl LLMClient for ChatClient {
                         self.provider, usage.prompt_tokens, usage.completion_tokens
                     );
                 }
-                let parts: Vec<String> = parsed
-                    .choices
-                    .into_iter()
-                    .filter_map(|c| c.message.content)
-                    .collect();
-                if parts.is_empty() {
-                    bail!(
-                        "{} returned no answer text (null content). A reasoning model can use its whole token budget thinking; try a lower reasoning effort or another model.",
-                        self.provider
-                    );
-                }
-                parts.join("\n")
+                answer_text(parsed, self.provider)?
             }
             Wire::Anthropic => {
                 let parsed: AnthropicResponse = response.json().await?;
@@ -212,6 +190,29 @@ impl LLMClient for ChatClient {
 
         Ok(answer)
     }
+}
+
+/// The answer text of an OpenAI-style response: every choice's content,
+/// joined. Null, absent and blank content all count as "no text": a reasoning
+/// model that spends its whole budget thinking returns one of them, and an
+/// empty answer would show in Ask as a blank reply with no explanation.
+fn answer_text(response: ChatResponse, provider: &str) -> anyhow::Result<String> {
+    let parts: Vec<String> = response
+        .choices
+        .into_iter()
+        .filter_map(|c| c.message.content)
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    if parts.is_empty() {
+        // Only OpenRouter has a reasoning setting to point the user at.
+        let hint = if provider == "openrouter" {
+            " A reasoning model can use its whole token budget thinking: set a lower `reasoning` effort or pick another model."
+        } else {
+            ""
+        };
+        bail!("{provider} returned no answer text (empty content).{hint}");
+    }
+    Ok(parts.join("\n"))
 }
 
 /// History pairs + the final RAG prompt as one chat transcript. Shared by the
@@ -394,7 +395,7 @@ struct ChatRequest {
 /// in `message.content`; any reasoning trace in `message.reasoning` is ignored.
 #[derive(Serialize)]
 struct ReasoningRequest {
-    effort: String,
+    effort: ReasoningEffort,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -766,7 +767,7 @@ mod tests {
         )
         .await;
 
-        let answer = client(Wire::OpenAiCompat, base)
+        let answer = client(Wire::OpenAiCompat { reasoning: None }, base)
             .ask("q?", &[], &numbered(vec![chunk("/a.md", "A", "body")]))
             .await
             .unwrap();
@@ -805,8 +806,8 @@ mod tests {
         .await;
 
         let answer = client(
-            Wire::OpenRouter {
-                reasoning: Some("high".into()),
+            Wire::OpenAiCompat {
+                reasoning: Some(ReasoningEffort::High),
             },
             base,
         )
@@ -825,6 +826,7 @@ mod tests {
         for message in [
             serde_json::json!({"role": "assistant", "content": null, "reasoning": "hmm"}),
             serde_json::json!({"role": "assistant"}),
+            serde_json::json!({"role": "assistant", "content": "  \n"}),
         ] {
             let captured: Captured = Arc::new(Mutex::new(None));
             let base = mock_provider(
@@ -833,12 +835,24 @@ mod tests {
                 captured,
             )
             .await;
-            let err = client(Wire::OpenRouter { reasoning: None }, base)
+            let err = client(Wire::OpenAiCompat { reasoning: None }, base)
                 .ask("q?", &[], &[])
                 .await
                 .expect_err("no content must not be an empty answer");
             assert!(err.to_string().contains("no answer text"), "{err}");
         }
+    }
+
+    #[test]
+    fn empty_answer_hint_names_reasoning_only_for_openrouter() {
+        let empty = || ChatResponse {
+            choices: vec![],
+            usage: None,
+        };
+        let or = answer_text(empty(), "openrouter").unwrap_err().to_string();
+        assert!(or.contains("`reasoning`"), "{or}");
+        let oa = answer_text(empty(), "openai").unwrap_err().to_string();
+        assert!(!oa.contains("reasoning"), "{oa}");
     }
 
     #[tokio::test]
@@ -853,7 +867,7 @@ mod tests {
             captured,
         )
         .await;
-        let answer = client(Wire::OpenAiCompat, base)
+        let answer = client(Wire::OpenAiCompat { reasoning: None }, base)
             .ask("q?", &[], &[])
             .await
             .unwrap();
@@ -869,7 +883,7 @@ mod tests {
             captured.clone(),
         )
         .await;
-        client(Wire::OpenRouter { reasoning: None }, base)
+        client(Wire::OpenAiCompat { reasoning: None }, base)
             .ask("q?", &[], &[])
             .await
             .unwrap();
@@ -957,10 +971,13 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let err = client(Wire::OpenAiCompat, format!("http://{addr}"))
-            .ask("q?", &[], &[])
-            .await
-            .expect_err("401 must surface as an error");
+        let err = client(
+            Wire::OpenAiCompat { reasoning: None },
+            format!("http://{addr}"),
+        )
+        .ask("q?", &[], &[])
+        .await
+        .expect_err("401 must surface as an error");
         let msg = err.to_string();
         assert!(msg.contains("401"), "missing status in: {msg}");
         assert!(msg.contains("bad key"), "missing body in: {msg}");
