@@ -86,16 +86,6 @@ const MOVE_VIEW_TO: &str = "+window · move view to…";
 /// Why the row for the rail's current position does nothing.
 const RAIL_ALREADY_HERE: &str = "The rail is already there";
 
-/// The palette row that puts the rail at `rail`.
-fn rail_row_label(rail: RailPosition) -> &'static str {
-    match rail {
-        RailPosition::Left => "Rail position: Left",
-        RailPosition::Right => "Rail position: Right",
-        RailPosition::Top => "Rail position: Top",
-        RailPosition::Bottom => "Rail position: Bottom",
-    }
-}
-
 /// One row of the palette.
 #[derive(Debug, Clone)]
 pub(crate) struct PaletteEntry {
@@ -454,7 +444,7 @@ impl Workspace {
                 run: PaletteRun::Preset(command),
             });
         let rail_rows = RailPosition::ALL.into_iter().map(|rail| PaletteEntry {
-            label: rail_row_label(rail).into(),
+            label: format!("Rail position: {}", rail.label()).into(),
             hint: None,
             sequence: None,
             blocked: (self.rail == rail).then_some(RAIL_ALREADY_HERE),

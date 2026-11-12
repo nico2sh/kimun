@@ -299,8 +299,8 @@ pub(crate) fn render(
         .child(bar)
 }
 
-/// The zoom hint, in the foreground colour so it reads as the window's
-/// state, then the restore button (the pointer's way out; Esc never is).
+/// The rail's button: its edge's panel icon, lit while the rail is shown,
+/// and a tooltip that names the chord.
 fn rail_toggle(
     rail: RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     theme: &Theme,
@@ -341,6 +341,8 @@ fn rail_toggle(
         )
 }
 
+/// The zoom hint, in the foreground colour so it reads as the window's
+/// state, then the restore button (the pointer's way out; Esc never is).
 fn zoom_segment(
     zoom: ZoomSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     theme: &Theme,

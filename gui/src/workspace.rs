@@ -1587,8 +1587,10 @@ impl Workspace {
     /// drawn slot of that side (nothing changes when it has none).
     fn set_focus_panel(&mut self, panel: Panel) {
         let focus = match panel {
-            Panel::Rail => Focus::Rail,
-            Panel::Editor => Focus::Leaf(Leaf::Group(self.layout.active_group())),
+            // A hidden rail takes no keyboard focus (ADR-0055 §9): a modal
+            // that closes gives it back to the rail it was opened from.
+            Panel::Rail if !self.rail_hidden => Focus::Rail,
+            Panel::Rail | Panel::Editor => Focus::Leaf(Leaf::Group(self.layout.active_group())),
             Panel::Drawer(side) => match self
                 .side_slots(side)
                 .into_iter()
@@ -1874,8 +1876,8 @@ impl Workspace {
         }
     }
 
-    /// The first slot right of the rail (leftmost, then topmost): where a
-    /// move from the rail lands.
+    /// The slot that touches the rail's edge, drawn or not
+    /// ([`LayoutTree::slot_beside_rail`]): where a move from the rail lands.
     fn slot_beside_rail(&self) -> Option<SlotId> {
         self.layout.slot_beside_rail(self.rail)
     }
@@ -2086,8 +2088,8 @@ impl Workspace {
     /// way: it goes to a new slot on that side when its slot holds other
     /// views ([`Self::spawn_beside`]); otherwise handled when slots are
     /// stacked there, else not handled, so the key passes on. From the rail
-    /// see [`Self::move_view`] and [`Self::place_from_rail`]. A slot the move empties closes
-    /// ([`Self::close_if_vacated`]). Persisted.
+    /// see [`Self::move_view`] and [`Self::place_from_rail`]. A slot the move
+    /// empties closes ([`Self::close_if_vacated`]). Persisted.
     fn move_view_vertically(
         &mut self,
         up: bool,
@@ -2274,7 +2276,8 @@ impl Workspace {
     }
 
     /// `FocusRegion(dir)`: move focus geometrically over the visible
-    /// leaves (drawn, not collapsed: [`LayoutTree::focus_dir_among`]).
+    /// leaves (drawn, not collapsed) and the rail while it is shown
+    /// ([`LayoutTree::focus_dir_in`]).
     fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
         let drawn: HashSet<Leaf> = self
             .layout
@@ -2288,8 +2291,8 @@ impl Workspace {
             .focus_dir_in(dir, &|leaf| drawn.contains(&leaf), rail)
     }
 
-    /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail and
-    /// the visible leaves in reading order, wrapping.
+    /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail (unless
+    /// it is hidden) and the visible leaves in reading order, wrapping.
     fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
         // A hidden rail takes no keyboard focus (ADR-0055 §9).
         let mut order = if self.rail_hidden {
@@ -2605,16 +2608,15 @@ impl Workspace {
         }
         // The cursor moves along the rail's axis: Up and Down on a column,
         // Left and Right on a row (ADR-0055 §6).
-        let horizontal = self.rail.horizontal();
+        let (prev, next) = if self.rail.horizontal() {
+            (Key::Left, Key::Right)
+        } else {
+            (Key::Up, Key::Down)
+        };
+        let last = self.rail_views().len() - 1;
         match key.key {
-            Key::Up if !horizontal => self.rail_cursor = self.rail_cursor.saturating_sub(1),
-            Key::Left if horizontal => self.rail_cursor = self.rail_cursor.saturating_sub(1),
-            Key::Down if !horizontal => {
-                self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1)
-            }
-            Key::Right if horizontal => {
-                self.rail_cursor = (self.rail_cursor + 1).min(self.rail_views().len() - 1)
-            }
+            k if k == prev => self.rail_cursor = self.rail_cursor.saturating_sub(1),
+            k if k == next => self.rail_cursor = (self.rail_cursor + 1).min(last),
             Key::Enter | Key::Char(' ') => {
                 if let Some(view) = self.rail_cursor_view() {
                     self.activate_rail_view(view, window, cx);

@@ -108,14 +108,6 @@ pub(crate) const REDUCE_MOTION_HELP: &str =
 pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
 pub(crate) const RAIL_HELP: &str =
     "Where the activity rail sits. Hide or show it with the button at the start of the footer.";
-fn rail_position_label(rail: RailPosition) -> &'static str {
-    match rail {
-        RailPosition::Left => "Left",
-        RailPosition::Right => "Right",
-        RailPosition::Top => "Top",
-        RailPosition::Bottom => "Bottom",
-    }
-}
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -1352,10 +1344,11 @@ impl PreferencesView {
                                     this.set_rail_position(*rail, cx)
                                 }
                             }))
-                            .children(RailPosition::ALL.into_iter().map(|rail| {
-                                Radio::new(rail_position_label(rail))
-                                    .label(rail_position_label(rail))
-                            })),
+                            .children(
+                                RailPosition::ALL
+                                    .into_iter()
+                                    .map(|rail| Radio::new(rail.label()).label(rail.label())),
+                            ),
                     )
                     .child(
                         div()

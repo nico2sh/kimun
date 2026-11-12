@@ -254,12 +254,7 @@ fn take_rails(file: &mut toml::Table) -> Result<BTreeMap<String, RailPosition>, 
         let Some(value) = root.remove("rail") else {
             continue;
         };
-        let rail = value.as_str().map(str::trim).and_then(|word| {
-            RailPosition::ALL
-                .into_iter()
-                .find(|rail| word.eq_ignore_ascii_case(rail.name()))
-        });
-        match rail {
+        match value.as_str().and_then(RailPosition::parse) {
             Some(rail) => {
                 rails.insert(name.clone(), rail);
             }

@@ -399,13 +399,14 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// `Self::nearest`). No wrap: with no candidate, Left/Right report
     /// [`TreeFocusMove::AtEdge`], and so do Up/Down when something is
     /// stacked in the same column — otherwise [`TreeFocusMove::NotHandled`].
-    /// The rail sits at the far left: Left from a leaf with nothing to its
+    /// The rail sits at the far left here (the GUI uses [`Self::focus_dir_in`]
+    /// for the other edges): Left from a leaf with nothing to its
     /// left reaches [`Focus::Rail`], and Right from the rail reaches the
     /// first leaf (leftmost, then topmost); Up/Down from the rail are not
     /// handled. While a leaf is zoomed, only it and the rail are visible:
     /// the zoomed leaf covers the unit square and is the only candidate.
     pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
-        self.focus_dir_among(dir, &|_| true)
+        self.focus_dir_in(dir, &|_| true, Some(RailPosition::Left))
     }
 
     /// The leaves `visible` accepts with the rectangles they are drawn at:
@@ -429,12 +430,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// frontend that leaves some leaves undrawn, such as a slot with no
     /// shown view): the others are neither targets nor obstacles, and keep
     /// no place in the geometry: the rest is laid out as drawn. The zoomed
-    /// leaf ignores `visible`.
-    pub fn focus_dir_among(&mut self, dir: Dir, visible: &dyn Fn(Leaf) -> bool) -> TreeFocusMove {
-        self.focus_dir_in(dir, visible, Some(RailPosition::Left))
-    }
-
-    /// [`Self::focus_dir_among`] with the rail at `rail` (ADR-0055), or
+    /// leaf ignores `visible`. The rail is at `rail` (ADR-0055), or
     /// `None` while it is hidden. From the rail, the direction into the
     /// layout focuses the leaf that touches the rail's edge, the direction
     /// away from it is the edge, and the two across are not the rail's. From
