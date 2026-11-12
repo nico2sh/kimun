@@ -40,7 +40,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
-use crate::components::expand_chevron::{ExpandControl, Reach};
+use crate::components::expand_chevron::{ExpandControl, ExpandDir};
 use crate::components::note_reader::{NoteAnchor, NoteReader};
 use crate::components::panel::panel_block;
 use crate::components::preview_pane::Step;
@@ -376,16 +376,16 @@ impl SourcesPanel {
         // works in FIND, semantic search and here.
         let plain_list = self.list.focus() == Focus::List && key.modifiers.is_empty();
         let dir = match key.code {
-            KeyCode::Right if plain_list => Some(Reach::Grow),
-            KeyCode::Left if plain_list => Some(Reach::Shrink),
+            KeyCode::Right if plain_list => Some(ExpandDir::Grow),
+            KeyCode::Left if plain_list => Some(ExpandDir::Shrink),
             _ => self.expand.dir_of_key(key),
         };
         match dir {
-            Some(Reach::Grow) if self.has_sources() => {
+            Some(ExpandDir::Grow) if self.has_sources() => {
                 self.step(Step::Grow, tx);
                 return EventState::Consumed;
             }
-            Some(Reach::Shrink) if !self.reader.preview.is_collapsed() => {
+            Some(ExpandDir::Shrink) if !self.reader.preview.is_collapsed() => {
                 self.step(Step::Shrink, tx);
                 return EventState::Consumed;
             }

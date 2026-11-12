@@ -32,11 +32,11 @@ pub enum Step {
     Toggle,
 }
 
-impl From<crate::components::expand_chevron::Reach> for Step {
-    fn from(r: crate::components::expand_chevron::Reach) -> Self {
+impl From<crate::components::expand_chevron::ExpandDir> for Step {
+    fn from(r: crate::components::expand_chevron::ExpandDir) -> Self {
         match r {
-            crate::components::expand_chevron::Reach::Grow => Step::Grow,
-            crate::components::expand_chevron::Reach::Shrink => Step::Shrink,
+            crate::components::expand_chevron::ExpandDir::Grow => Step::Grow,
+            crate::components::expand_chevron::ExpandDir::Shrink => Step::Shrink,
         }
     }
 }
@@ -80,6 +80,17 @@ impl PreviewPane {
 
     pub fn is_full(&self) -> bool {
         self.model.is_full()
+    }
+
+    /// Which way the expand control moves this preview: it grows until
+    /// Full, and shrinks from there.
+    pub fn reach(&self) -> crate::components::expand_chevron::ExpandDir {
+        use crate::components::expand_chevron::ExpandDir;
+        if self.is_full() {
+            ExpandDir::Shrink
+        } else {
+            ExpandDir::Grow
+        }
     }
 
     pub fn full_header_rect(&self) -> Rect {
@@ -231,7 +242,7 @@ impl PreviewPane {
         self.full_chevron_rect = crate::components::expand_chevron::paint(
             f,
             parts[0],
-            crate::components::expand_chevron::Reach::Shrink,
+            crate::components::expand_chevron::ExpandDir::Shrink,
             theme,
         );
 
