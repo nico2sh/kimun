@@ -68,6 +68,11 @@ type = "fastembed"
 # model = "text-embedding-3-small"
 # api_key = "..."                    # sent as a bearer token; no env-var fallback
 
+# OpenRouter (fixed URL; the key falls back to OPENROUTER_API_KEY when omitted):
+# type = "openrouter"
+# model = "openai/text-embedding-3-small"
+# api_key = "..."
+
 # Mistral (native API is OpenAI-compatible), via the same "openai" type:
 # type = "openai"
 # url = "https://api.mistral.ai/v1"
@@ -88,7 +93,7 @@ type = "fastembed"
 # api_key = "..."                    # Voyage API key
 
 [llm]
-# LLM provider: "gemini", "claude", "openai", or "mistral"
+# LLM provider: "gemini", "claude", "openai", "mistral", or "openrouter"
 provider = "gemini"
 
 # Model name (provider-specific)
@@ -96,12 +101,17 @@ provider = "gemini"
 # Claude: "claude-3-5-sonnet-20241022" (default, best for text)
 # OpenAI: "gpt-4o-mini" (default, most cost-effective)
 # Mistral: "mistral-large-latest" (default)
+# OpenRouter: "openrouter/auto" (default), or any model id such as "anthropic/claude-sonnet-4.5"
 model = "gemini-2.5-flash-preview-04-17"
 
 # API key. Prefer setting it here (server-owned, and editable in the web UI) so
 # Kimün never handles it. If omitted, the server falls back to the provider's
-# env var (GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY).
+# env var (GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / MISTRAL_API_KEY / OPENROUTER_API_KEY).
 # api_key = "..."
+
+# OpenRouter only: reasoning effort, sent as reasoning.effort ("low", "medium",
+# or "high"). Leave it out to keep the model's default.
+# reasoning = "medium"
 
 # Example configurations for each provider:
 
@@ -114,7 +124,7 @@ model = "gemini-2.5-flash-preview-04-17"
 # model = "gpt-4o-mini"
 
 # The openai provider can also point at any OpenAI-compatible chat endpoint
-# (Ollama, llama.cpp, OpenRouter, LM Studio) via an optional url:
+# (Ollama, llama.cpp, LM Studio) via an optional url:
 # provider = "openai"
 # url = "http://localhost:11434/v1"
 # model = "llama3"
@@ -122,6 +132,12 @@ model = "gemini-2.5-flash-preview-04-17"
 # For Mistral:
 # provider = "mistral"
 # model = "mistral-large-latest"
+
+# For OpenRouter (its own provider, so OpenRouter-specific request fields such
+# as reasoning are sent):
+# provider = "openrouter"
+# model = "anthropic/claude-sonnet-4.5"
+# reasoning = "medium"
 
 [reranker]
 # Enable reranking for better result ordering (default: true). Reranker

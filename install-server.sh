@@ -454,8 +454,12 @@ main() {
   if [ "$SETUP_SERVICE" -eq 1 ]; then
     info "Done. The server is running — open http://127.0.0.1:7573/ for the web UI."
   else
-    info "Done. Start the server with '$BIN --default-config' (working local"
-    info "defaults), or re-run this script with --service to run it on login."
+    info "Done. The server is installed but NOT set up to start automatically:"
+    info "it will not run after a restart or login."
+    info ""
+    info "To start it once, run '$BIN --default-config' (working local defaults)."
+    info "To start it on every login, re-run the installer with --service:"
+    info "  curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service"
   fi
   info "First run downloads the embedding model (a few hundred MB)."
 }
