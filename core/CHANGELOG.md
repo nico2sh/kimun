@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.7.0...kimun_core-v0.7.1) - 2026-11-12
+
+### Added
+
+- *(core)* count notes per child directory
+
+### Other
+
+- *(core)* make the LIKE wildcard test discriminating
+
 ## [0.7.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.6.0...kimun_core-v0.7.0) - 2026-11-09
 
 ### Added
