@@ -24,7 +24,7 @@
 //! setting is not read (GPUI offers no query for it). The user docs describe
 //! the key on the desktop-app page (`docs/content/using-kimun/desktop-app.md`).
 //!
-//! `editor_font_family` (a font name) and `editor_font_size` (whole points,
+//! `editor_font_family` (a font name) and `editor_font_size` (whole pixels,
 //! clamped to 8..=32) set the font of the desktop app's Edit surface. Missing,
 //! blank or wrong-typed values read as unset, so the app's own default applies.
 
@@ -41,10 +41,16 @@ const REDUCE_MOTION: &str = "reduce_motion";
 const EDITOR_FONT_FAMILY: &str = "editor_font_family";
 const EDITOR_FONT_SIZE: &str = "editor_font_size";
 
-/// Smallest `editor_font_size`, in points; smaller values are raised to it.
-pub const EDITOR_FONT_MIN_PT: u8 = 8;
-/// Largest `editor_font_size`, in points; larger values are lowered to it.
-pub const EDITOR_FONT_MAX_PT: u8 = 32;
+/// Smallest `editor_font_size`, in pixels; smaller values are raised to it.
+pub const EDITOR_FONT_MIN_PX: u8 = 8;
+/// Largest `editor_font_size`, in pixels; larger values are lowered to it.
+pub const EDITOR_FONT_MAX_PX: u8 = 32;
+
+/// `size` within [`EDITOR_FONT_MIN_PX`]..=[`EDITOR_FONT_MAX_PX`]: the one
+/// clamp every reader and writer of `editor_font_size` goes through.
+pub fn clamp_editor_font_size(size: i64) -> u8 {
+    size.clamp(i64::from(EDITOR_FONT_MIN_PX), i64::from(EDITOR_FONT_MAX_PX)) as u8
+}
 
 /// `window_decorations`: who draws the GUI window's title bar and frame.
 /// Read once, when the window opens (changing it needs a restart). macOS
@@ -207,15 +213,13 @@ impl GuiSettings {
         }
     }
 
-    /// `editor_font_size`: the Edit surface's font size in points, clamped to
-    /// [`EDITOR_FONT_MIN_PT`]..=[`EDITOR_FONT_MAX_PT`]. `None` when missing or
+    /// `editor_font_size`: the Edit surface's font size in pixels, clamped to
+    /// [`EDITOR_FONT_MIN_PX`]..=[`EDITOR_FONT_MAX_PX`]. `None` when missing or
     /// not an integer (a wrong type is logged).
     pub fn editor_font_size(&self) -> Option<u8> {
         match self.table.get(EDITOR_FONT_SIZE) {
             None => None,
-            Some(Value::Integer(size)) => {
-                Some((*size).clamp(EDITOR_FONT_MIN_PT as i64, EDITOR_FONT_MAX_PT as i64) as u8)
-            }
+            Some(Value::Integer(size)) => Some(clamp_editor_font_size(*size)),
             Some(other) => {
                 tracing::warn!(
                     "[gui] editor_font_size: expected a whole number, got {other}; using the default"
@@ -230,7 +234,7 @@ impl GuiSettings {
     pub fn set_editor_font_size(&mut self, size: Option<u8>) {
         match size {
             Some(size) => {
-                let size = size.clamp(EDITOR_FONT_MIN_PT, EDITOR_FONT_MAX_PT);
+                let size = clamp_editor_font_size(size.into());
                 self.table
                     .insert(EDITOR_FONT_SIZE.into(), Value::Integer(size.into()));
             }
@@ -365,7 +369,7 @@ mod tests {
         assert_eq!(g.editor_font_family().as_deref(), Some("Fira Code"));
         assert_eq!(g.editor_font_size(), Some(14));
         g.set_editor_font_size(Some(250));
-        assert_eq!(g.editor_font_size(), Some(EDITOR_FONT_MAX_PT));
+        assert_eq!(g.editor_font_size(), Some(EDITOR_FONT_MAX_PX));
         g.set_editor_font_family(Some("  "));
         assert_eq!(g.editor_font_family(), None);
         g.set_editor_font_family(None);

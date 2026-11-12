@@ -1,7 +1,8 @@
 //! The user's Edit surface font (`[gui] editor_font_family`,
 //! `editor_font_size`), held as a GPUI global. Installed at startup and
 //! re-applied when Preferences are saved; the Edit surface reads it through
-//! [`face_inputs`] on every frame, so a change takes effect on the next paint.
+//! [`face_inputs`] and [`font_size`] on every frame, so a change takes effect
+//! on the next paint.
 //!
 //! Unset values fall back to the kit theme's monospace family and size: an
 //! empty setting paints exactly as before the setting existed.
@@ -24,7 +25,7 @@ impl EditorFontSetting {
     pub fn from_settings(gui: &GuiSettings) -> Self {
         Self {
             family: gui.editor_font_family().map(SharedString::from),
-            size: gui.editor_font_size().map(|pt| px(f32::from(pt))),
+            size: gui.editor_font_size().map(|size| px(f32::from(size))),
         }
     }
 }
@@ -38,16 +39,32 @@ pub fn apply(gui: &GuiSettings, cx: &mut App) {
     }
 }
 
-/// What the Edit surface paints with: the theme's monospace family (the
-/// starting point of the face choice, [`crate::fonts::EditorFonts`]), the
-/// user's preferred family, and the size (the user's, else the theme's).
-/// The only reader of the theme's monospace values for the Edit surface.
-pub fn face_inputs(cx: &App) -> (SharedString, Option<SharedString>, Pixels) {
-    let t = cx.theme();
-    let setting = cx.try_global::<EditorFontSetting>();
-    let family = setting.and_then(|s| s.family.clone());
-    let size = setting.and_then(|s| s.size).unwrap_or(t.mono_font_size);
-    (t.mono_font_family.clone(), family, size)
+/// What the Edit surface's face is chosen from: the theme's monospace
+/// family (the starting point of the face choice,
+/// [`crate::fonts::EditorFonts`]) and the user's preferred family. Also the
+/// key of the view's face cache: the face is chosen again when it changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaceInputs {
+    pub kit_family: SharedString,
+    pub preferred: Option<SharedString>,
+}
+
+/// The Edit surface's [`FaceInputs`]. With [`font_size`], the only reader of
+/// the theme's monospace values for the Edit surface.
+pub fn face_inputs(cx: &App) -> FaceInputs {
+    FaceInputs {
+        kit_family: cx.theme().mono_font_family.clone(),
+        preferred: cx
+            .try_global::<EditorFontSetting>()
+            .and_then(|s| s.family.clone()),
+    }
+}
+
+/// The size the Edit surface paints at: the user's, else the theme's.
+pub fn font_size(cx: &App) -> Pixels {
+    cx.try_global::<EditorFontSetting>()
+        .and_then(|s| s.size)
+        .unwrap_or(cx.theme().mono_font_size)
 }
 
 #[cfg(test)]
@@ -67,8 +84,13 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             let t = cx.theme();
-            let expected = (t.mono_font_family.clone(), None, t.mono_font_size);
+            let expected = FaceInputs {
+                kit_family: t.mono_font_family.clone(),
+                preferred: None,
+            };
+            let size = t.mono_font_size;
             assert_eq!(face_inputs(cx), expected);
+            assert_eq!(font_size(cx), size);
         });
     }
 
@@ -80,10 +102,10 @@ mod tests {
                 &gui("editor_font_family = \"Fira Code\"\neditor_font_size = 18\n"),
                 cx,
             );
-            let (kit, family, size) = face_inputs(cx);
-            assert_eq!(kit, cx.theme().mono_font_family);
-            assert_eq!(family, Some(SharedString::from("Fira Code")));
-            assert_eq!(size, px(18.));
+            let inputs = face_inputs(cx);
+            assert_eq!(inputs.kit_family, cx.theme().mono_font_family);
+            assert_eq!(inputs.preferred, Some(SharedString::from("Fira Code")));
+            assert_eq!(font_size(cx), px(18.));
         });
     }
 
@@ -97,8 +119,13 @@ mod tests {
                 &EditorFontSetting::default()
             );
             let t = cx.theme();
-            let expected = (t.mono_font_family.clone(), None, t.mono_font_size);
+            let expected = FaceInputs {
+                kit_family: t.mono_font_family.clone(),
+                preferred: None,
+            };
+            let size = t.mono_font_size;
             assert_eq!(face_inputs(cx), expected);
+            assert_eq!(font_size(cx), size);
         });
     }
 

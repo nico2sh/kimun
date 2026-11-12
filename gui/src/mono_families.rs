@@ -9,11 +9,12 @@
 //!
 //! The probe runs once per session, started by [`ensure_loaded`] (never at
 //! startup, never on the render path). The task is detached and owned by
-//! nobody, so closing Preferences neither cancels nor repeats it.
+//! nobody, so closing Preferences neither cancels nor repeats it. A probe
+//! that panics leaves the state `Idle` again, so the next open retries.
 
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext as _, Global, TextSystem, font, px};
+use gpui_kit::{App, AppContext as _, Global, SharedString, TextSystem, font, px};
 
 /// The glyphs whose advances must match for a family to count as monospace.
 pub const PROBE_GLYPHS: [char; 5] = ['i', 'm', 'W', '.', '0'];
@@ -33,19 +34,37 @@ pub fn is_monospace(advance: impl Fn(char) -> Option<f32>) -> bool {
         .all(|&c| advance(c).is_some_and(|a| a > 0.0 && (a - first).abs() <= first * 0.01))
 }
 
+/// Whether `name` loaded as a face of its own, not as the text system's
+/// fallback face standing in for it.
+///
+/// `is_fallback_face`: the name resolved to the same face as a name no
+/// family has. That alone cannot tell a missing family from the fallback
+/// family itself, which resolves to that face too. So a collision asks
+/// `loaded_family`: the family the text system loaded that face for
+/// directly (`TextSystem::get_font_for_id`). The text system never records
+/// a substituted name as a direct load, so only the fallback family itself
+/// matches.
+pub fn loaded_as_itself(
+    name: &str,
+    is_fallback_face: bool,
+    loaded_family: impl FnOnce() -> Option<SharedString>,
+) -> bool {
+    !is_fallback_face || loaded_family().is_some_and(|family| family.as_ref() == name)
+}
+
 /// The installed families that are monospace, sorted case-insensitively.
 ///
 /// Names starting with `.` are the platform's hidden faces and are skipped.
 /// The advances come from the same call as
 /// [`CellMetrics::from_text_system`](crate::grid::CellMetrics::from_text_system),
 /// at one fixed size. A family the text system cannot load resolves to its
-/// fallback face; it is skipped rather than judged by that face.
+/// fallback face; it is skipped rather than judged by that face
+/// ([`loaded_as_itself`]).
 pub fn list(text_system: &TextSystem) -> Vec<String> {
     let size = px(PROBE_SIZE);
     // No family has this name, so it forces the text system's fallback
-    // font: a listed family that resolves to the same face cannot be loaded
-    // and is skipped. Resolving it logs one "failed to load font" warning;
-    // the text system caches the result, so that is about once per session.
+    // font. Resolving it logs one "failed to load font" warning; the text
+    // system caches the result, so that is about once per session.
     // `resolve_font` panics only if none of the system's fallbacks resolve,
     // and the app's own font resolution takes that same path.
     let fallback = text_system.resolve_font(&font("\u{1}kimun-no-such-family"));
@@ -55,13 +74,15 @@ pub fn list(text_system: &TextSystem) -> Vec<String> {
         .filter(|name| !name.starts_with('.'))
         .filter(|name| {
             let id = text_system.resolve_font(&font(name.clone()));
-            id != fallback
-                && is_monospace(|c| {
-                    text_system
-                        .advance(id, size, c)
-                        .ok()
-                        .map(|s| f32::from(s.width))
-                })
+            // Asked only on a collision: the lookup walks the font cache.
+            loaded_as_itself(name, id == fallback, || {
+                text_system.get_font_for_id(id).map(|f| f.family)
+            }) && is_monospace(|c| {
+                text_system
+                    .advance(id, size, c)
+                    .ok()
+                    .map(|s| f32::from(s.width))
+            })
         })
         .collect();
     names.sort_by_cached_key(|name| name.to_lowercase());
@@ -96,12 +117,27 @@ where
     }
     cx.set_global(MonoFamilies::Loading);
     let text_system = cx.text_system().clone();
-    let probe = cx.background_spawn(async move { list(&text_system) });
+    // A panic in the probe must not leave the state `Loading` for good.
+    let probe = cx.background_spawn(async move {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| list(&text_system))).ok()
+    });
     cx.spawn(async move |cx| {
         let families = probe.await;
-        cx.update(|cx| cx.set_global(MonoFamilies::Ready(families.into())));
+        cx.update(|cx| cx.set_global(after_probe(families)));
     })
     .detach();
+}
+
+/// The state a finished probe leaves: `Ready` with its list, or `Idle`
+/// when it panicked (`None`), so the next [`ensure_loaded`] tries again.
+fn after_probe(families: Option<Vec<String>>) -> MonoFamilies {
+    match families {
+        Some(families) => MonoFamilies::Ready(families.into()),
+        None => {
+            tracing::warn!("listing the monospace font families failed; trying again later");
+            MonoFamilies::Idle
+        }
+    }
 }
 
 /// The current load state; `Idle` before [`ensure_loaded`] is first called.
@@ -155,6 +191,37 @@ mod tests {
         for (name, table, expected) in cases {
             assert_eq!(is_monospace(advances(table)), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn a_family_is_loaded_unless_the_fallback_face_stands_in_for_it() {
+        let never = || -> Option<SharedString> { panic!("asked only on a collision") };
+        assert!(loaded_as_itself("Fira Code", false, never), "its own face");
+        // The fallback family itself: the text system loaded the face for it.
+        let fallback_family = || Some(SharedString::from("DejaVu Sans Mono"));
+        assert!(loaded_as_itself("DejaVu Sans Mono", true, fallback_family));
+        // A missing family: the face was loaded for another family.
+        assert!(!loaded_as_itself("Gone", true, fallback_family));
+        assert!(!loaded_as_itself("Gone", true, || None), "no direct load");
+    }
+
+    #[test]
+    fn a_finished_probe_is_ready_and_a_panicked_one_is_idle_again() {
+        assert!(matches!(
+            after_probe(Some(vec!["A".into()])),
+            MonoFamilies::Ready(list) if *list == ["A".to_string()]
+        ));
+        assert!(matches!(after_probe(None), MonoFamilies::Idle));
+    }
+
+    #[gpui_kit::test]
+    fn a_panicking_probe_leaves_the_state_idle_and_a_later_open_retries(cx: &mut TestAppContext) {
+        cx.update(|cx| ensure_loaded_with(cx, |_| panic!("probe failed")));
+        cx.run_until_parked();
+        assert!(matches!(cx.read(state), MonoFamilies::Idle));
+        cx.update(|cx| ensure_loaded_with(cx, |_| vec!["Fira Code".to_string()]));
+        cx.run_until_parked();
+        assert!(matches!(cx.read(state), MonoFamilies::Ready(_)));
     }
 
     #[test]

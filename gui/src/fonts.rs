@@ -6,8 +6,9 @@
 //! kit's Linux fallback) has a single face, so its bold and italic resolve to
 //! the regular face and paint upright and regular. The rule:
 //!
-//! 0. the user's preferred family, when it is installed: kept whatever its
-//!    faces, with synthetic bold when it has no real bold face;
+//! 0. the user's preferred family, when it is installed (the name matches
+//!    whatever its capital letters): kept whatever its faces, with
+//!    synthetic bold when it has no real bold face;
 //! 1. the kit theme's monospace family, when it has a real bold face;
 //! 2. else the first installed well-known monospace family with real bold
 //!    and italic faces, then one with a real bold face;
@@ -107,12 +108,14 @@ pub fn choose(
     installed: &[String],
     probe: impl Fn(&str) -> FaceSupport,
 ) -> EditorFonts {
+    // Family names match whatever their capital letters; the installed
+    // spelling is the one painted with.
     if let Some(p) = preferred
-        && installed.iter().any(|n| n == p)
+        && let Some(name) = installed.iter().find(|n| n.eq_ignore_ascii_case(p))
     {
         return EditorFonts {
-            family: SharedString::from(p.to_string()),
-            faux_bold: !probe(p).bold,
+            family: SharedString::from(name.clone()),
+            faux_bold: !probe(name).bold,
         };
     }
     let kit = probe(kit_family);
@@ -241,6 +244,25 @@ mod tests {
         );
         assert_eq!(f.family.as_ref(), "A");
         assert!(f.faux_bold);
+    }
+
+    #[test]
+    fn a_preferred_family_matches_ignoring_case_and_takes_the_installed_spelling() {
+        let probe = |family: &str| {
+            assert_eq!(family, "Fira Code", "probed by the installed spelling");
+            FaceSupport {
+                bold: true,
+                italic: false,
+            }
+        };
+        let f = choose(
+            &"X".into(),
+            Some("fira CODE"),
+            &installed(&["Fira Code", "Liberation Mono"]),
+            probe,
+        );
+        assert_eq!(f.family.as_ref(), "Fira Code");
+        assert!(!f.faux_bold);
     }
 
     #[test]

@@ -1899,7 +1899,7 @@ fn a_preferred_family_that_is_not_installed_paints_the_theme_face(cx: &mut TestA
         window.render_frame(cx);
         let before = painted(&view, cx).fonts;
         set_font(cx, Some("Not Installed Mono"), None);
-        let (_, preferred, _) = crate::editor_font::face_inputs(cx);
+        let preferred = crate::editor_font::face_inputs(cx).preferred;
         assert_eq!(preferred.as_deref(), Some("Not Installed Mono"));
         window.refresh();
         window.render_frame(cx);
