@@ -383,7 +383,11 @@ impl SourcesPanel {
         } else {
             vec![
                 ("j/k".into(), "Select".into()),
-                ("Enter/l".into(), "Expand".into()),
+                if self.preview.is_full() {
+                    ("Enter/l".into(), "Collapse".into())
+                } else {
+                    ("Enter/l/\u{2192}".into(), "Full".into())
+                },
                 ("h/\u{2190}/Esc".into(), "Back".into()),
                 ("o/^N".into(), "Open".into()),
             ]
@@ -427,7 +431,10 @@ impl SourcesPanel {
         // Right grows and Left shrinks the reveal, from the list (in the filter
         // box they move the cursor). Right stops at Full rather than wrapping;
         // Left at Collapsed is left to the engine so the host still gets it.
-        if self.list.focus() == Focus::List && key.modifiers.is_empty() {
+        // Alt+Right / Alt+Left do the same from either focus, so one key set
+        // works in FIND, semantic search and here.
+        let plain_list = self.list.focus() == Focus::List && key.modifiers.is_empty();
+        if plain_list || key.modifiers == ratatui::crossterm::event::KeyModifiers::ALT {
             match key.code {
                 KeyCode::Right if self.has_sources() => {
                     self.grow_preview(tx);
@@ -597,12 +604,10 @@ impl SourcesPanel {
 
     /// Step the reveal outward (Collapsed -> Context -> Full); stays at Full.
     fn grow_preview(&mut self, tx: &AppTx) {
-        if self.preview.is_full() {
-            return;
+        if self.preview.grow_step(self.selected_path()) {
+            self.chevron = Rect::default();
+            self.ensure_loaded(tx);
         }
-        self.preview.toggle(self.selected_path());
-        self.chevron = Rect::default();
-        self.ensure_loaded(tx);
     }
 
     /// Step the reveal back (Full -> Context -> Collapsed).
@@ -2186,6 +2191,77 @@ mod tests {
         assert!(p.preview.is_collapsed(), "no step on an unselected row");
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
         assert!(!opened_any(&mut rx));
+    }
+
+    fn alt_key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent::new(code, KeyModifiers::ALT))
+    }
+
+    /// Alt+Right and Alt+Left step the preview from list focus, like the
+    /// plain arrows, and Right stops at Full.
+    #[tokio::test]
+    async fn alt_arrows_step_the_preview_from_the_list() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(p.list.focus(), Focus::List);
+        assert_eq!(
+            p.handle_input(&alt_key(KeyCode::Right), &tx),
+            EventState::Consumed
+        );
+        assert!(p.preview.is_context());
+        p.handle_input(&alt_key(KeyCode::Right), &tx);
+        assert!(p.preview.is_full());
+        p.handle_input(&alt_key(KeyCode::Right), &tx);
+        assert!(p.preview.is_full(), "Alt+Right in Full stays Full");
+        p.handle_input(&alt_key(KeyCode::Left), &tx);
+        assert!(p.preview.is_context());
+        p.handle_input(&alt_key(KeyCode::Left), &tx);
+        assert!(p.preview.is_collapsed());
+    }
+
+    /// In the filter box Alt+Right and Alt+Left step the preview, the text
+    /// is untouched, and the plain arrows still only move the cursor.
+    #[tokio::test]
+    async fn alt_arrows_step_the_preview_from_the_filter_box() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&InputEvent::Key(key(KeyCode::Char('i'))), &tx);
+        assert_eq!(p.list.focus(), Focus::Input);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Right)), &tx);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Left)), &tx);
+        assert!(
+            p.preview.is_collapsed(),
+            "plain arrows only move the cursor"
+        );
+        p.handle_input(&alt_key(KeyCode::Right), &tx);
+        assert!(p.preview.is_context(), "Alt+Right grows");
+        p.handle_input(&alt_key(KeyCode::Right), &tx);
+        assert!(p.preview.is_full());
+        p.handle_input(&alt_key(KeyCode::Left), &tx);
+        assert!(p.preview.is_context(), "Alt+Left shrinks");
+        assert_eq!(p.list.focus(), Focus::Input, "focus stays in the box");
+        assert_eq!(p.list.query(), "", "the filter text is untouched");
+    }
+
+    #[tokio::test]
+    async fn hints_are_true_for_each_state() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let hint = |p: &SourcesPanel, k: &str| {
+            p.hint_shortcuts()
+                .into_iter()
+                .find(|(key, _)| key.contains(k))
+                .map(|(_, v)| v)
+        };
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        assert!(p.preview.is_context());
+        assert_eq!(hint(&p, "Enter").as_deref(), Some("Full"));
+        assert!(hint(&p, "\u{2192}").is_some(), "Right is named in Context");
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        assert!(p.preview.is_full());
+        assert_eq!(hint(&p, "Enter").as_deref(), Some("Collapse"));
     }
 
     #[tokio::test]

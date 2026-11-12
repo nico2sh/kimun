@@ -309,12 +309,9 @@ impl SemanticPanel {
 
     /// Step the preview outward (Collapsed -> Context -> Full); stays at Full.
     fn grow_preview(&mut self) {
-        let sel = self.selected_path();
-        if sel.is_none() || self.preview.is_full() {
-            return;
+        if self.preview.grow_step(self.selected_path()) {
+            self.after_step();
         }
-        self.preview.toggle(sel);
-        self.after_step();
     }
 
     /// Step the preview back (Full -> Context -> Collapsed).
@@ -348,6 +345,8 @@ impl SemanticPanel {
     /// another note starts a load.
     fn ensure_loaded(&mut self) {
         if self.preview.is_collapsed() {
+            // Drop the text so a reopen after an edit loads fresh.
+            self.loaded = None;
             return;
         }
         let Some(hit) = self.body.selected_row() else {
@@ -839,6 +838,20 @@ mod tests {
         panel.handle_input(&alt(KeyCode::Left), &tx);
         assert!(panel.preview.is_collapsed(), "stops at Collapsed");
         assert_eq!(panel.body.list().unwrap().query(), "");
+    }
+
+    /// Collapsing drops the loaded text, so a reopen after an edit reads the
+    /// note again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn collapsing_drops_the_loaded_text() {
+        let (mut panel, tx, _rx) = panel_with("sem-drop", vec![note_hit("a", "Details", 1)]).await;
+        panel.handle_input(&alt(KeyCode::Right), &tx);
+        settle_load(&mut panel).await;
+        assert!(panel.loaded_text().is_some());
+        panel.handle_input(&alt(KeyCode::Left), &tx);
+        draw(&mut panel, 40, 30);
+        assert_eq!(panel.loaded_text(), None, "text dropped on collapse");
+        assert!(panel.loaded.is_none());
     }
 
     /// The Context preview opens on the hit's note with its matched section

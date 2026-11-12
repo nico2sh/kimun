@@ -122,6 +122,17 @@ impl PreviewPane {
         self.model.toggle(selected);
     }
 
+    /// Grow one step (Collapsed -> Context -> Full). Full stays Full, unlike
+    /// [`Self::toggle`], which wraps. Returns `false` when nothing changed
+    /// (no selection, or already Full).
+    pub fn grow_step(&mut self, selected: Option<VaultPath>) -> bool {
+        if selected.is_none() || self.is_full() {
+            return false;
+        }
+        self.toggle(selected);
+        true
+    }
+
     /// See [`PreviewModel::collapse_step`]; drops the header region unless it
     /// was a no-op (no selection).
     pub fn collapse_step(&mut self, selected: Option<VaultPath>) {
