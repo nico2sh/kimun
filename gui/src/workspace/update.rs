@@ -42,12 +42,15 @@
 //!   still work, and `Later` on a failed install cleans the failure up.
 //! - **Install.** The open note is flushed first, as before any operation
 //!   that lets it go ([`super::note_flush`]); a flush that cannot run or
-//!   fails refuses the install inline. Then the backend installs off the UI
-//!   thread while the dialog shows its progress with every button waiting,
-//!   and the window's close is refused. Success: "Updated to `<v>`. Restart
-//!   Kimün to use it." with `Close` (the TUI only asks for a restart too,
-//!   and there is no safe relaunch of a replaced binary). Failure: the error
-//!   inline and `Retry`.
+//!   fails refuses the install inline (or, when the toast started it, in an
+//!   error toast with `Retry`). Then the backend installs off the UI thread
+//!   while the dialog shows its progress with every button waiting, and the
+//!   window's close is refused. The backend swaps a raw binary, or, for the
+//!   macOS app bundle, the whole `Kimun.app` ([`crate::bundle`], ADR-0056).
+//!   Success: "Updated to `<v>`. Restarting Kimün…", and the window quits
+//!   through the normal close and starts the app again as it ends
+//!   ([`crate::relaunch`]): the TUI only asks for a restart, the desktop app
+//!   restarts itself. Failure: the error inline and `Retry`.
 
 use std::ffi::OsStr;
 use std::rc::Rc;
