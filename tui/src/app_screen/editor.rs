@@ -1347,6 +1347,7 @@ impl EditorScreen {
             }
             AppMessage::ServerUpdate(latest) => self.server_update = latest,
             AppMessage::Ask(data) => self.ask.handle_data(&mut self.panels, data, tx),
+            AppMessage::Semantic(data) => self.panels.semantic_mut().handle_data(data),
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
             AppMessage::FlashMessage(msg) => {

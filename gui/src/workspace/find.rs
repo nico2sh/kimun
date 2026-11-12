@@ -29,8 +29,9 @@
 //! Desktop keys only, as LINKS and OUTLINE (decision 13).
 //!
 //! **Pointer.** A click opens a row, as Enter does (the pointing hand over
-//! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the preview button
-//! cycles the preview; `Save…` saves the query (as the `SaveCurrentQuery`
+//! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the chevron on
+//! the selected or hovered row, and the one on the preview's header, step
+//! the preview; `Save…` saves the query (as the `SaveCurrentQuery`
 //! chord does here); the `Syntax` button shows the query syntax; the sort
 //! chip opens the sort dialog, which rewrites the query's order directive
 //! (M7b G7, [`super::sort`]).
@@ -46,12 +47,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
-use gpui_kit::component::{Disableable as _, Icon};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
@@ -77,11 +77,13 @@ use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
-use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow};
-use super::files::{display_title, ellipsis, lane_row};
+use super::chevron::{PreviewSteps, Reach, step_header, sync_chevron};
+use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
+use super::files::{display_title, ellipsis, note_count_text};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
+use super::result_row::result_row;
 use super::search::SearchPreview;
 use super::search::label_query;
 use super::sort::{chip_label, sort_chip};
@@ -103,12 +105,12 @@ pub(crate) const FIND_INPUT_ID: &str = "find-query";
 pub(crate) const FIND_LIST_ID: &str = "find-list";
 pub(crate) const FIND_TITLE_ID: &str = "find-title";
 pub(crate) const FIND_SORT_ID: &str = "find-sort";
-pub(crate) const FIND_EXPAND_ID: &str = "find-expand";
 pub(crate) const FIND_HELP_ID: &str = "find-help";
 pub(crate) const FIND_SAVE_ID: &str = "find-save";
 pub(crate) const FIND_ERROR_ID: &str = "find-query-error";
 pub(crate) const FIND_MORE_ID: &str = "find-more";
 pub(crate) const FIND_PREVIEW_ID: &str = "find-preview";
+pub(crate) const FIND_PREVIEW_HEADER_ID: &str = "find-preview-header";
 pub(crate) const FIND_PREVIEW_ROW_ID: &str = "find-preview-row";
 
 /// How long typing must pause before the query runs.
@@ -117,8 +119,6 @@ pub(crate) const FIND_DEBOUNCE: Duration = Duration::from_millis(150);
 pub(crate) const ROW_CAP: usize = 500;
 /// The longest context paragraph a row keeps, in characters.
 pub(crate) const CONTEXT_CHARS: usize = 300;
-/// A row's height, in rems: title, filename and one line of context.
-const ROW_REMS: f32 = 3.75;
 
 /// What the list says for a blank query, and for a query without results.
 pub(crate) const BLANK_TEXT: &str = "Type a query to search the workspace (F1: syntax)";
@@ -135,37 +135,19 @@ impl DrawerRow for QueryHit {
     }
 
     fn render_row(&self, selected: bool, t: &Theme) -> Stateful<Div> {
+        self.render_marked_row(selected, t, &[])
+    }
+
+    fn render_marked_row(&self, selected: bool, t: &Theme, marks: &[String]) -> Stateful<Div> {
         let entry = &self.entry;
-        let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
-        // One line of context: the paragraph's lines run together.
-        let context: SharedString = entry
-            .context
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .into();
-        let icon = Icon::new(IconName::FileText)
-            .size_4()
-            .text_color(theme::foreground(t));
-        lane_row(
+        result_row(
             self.element_id(),
-            title.clone(),
             selected,
-            ROW_REMS,
-            Some(icon.into_any_element()),
-            [
-                ellipsis(title)
-                    .text_color(theme::foreground(t))
-                    .into_any_element(),
-                ellipsis(entry.filename.clone())
-                    .text_xs()
-                    .text_color(theme::secondary(t))
-                    .into_any_element(),
-                ellipsis(context)
-                    .text_xs()
-                    .text_color(theme::muted(t))
-                    .into_any_element(),
-            ],
+            display_title(&entry.title, &entry.filename),
+            &entry.filename,
+            &entry.context,
+            None,
+            marks,
             t,
         )
     }
@@ -261,6 +243,7 @@ impl FindView {
                 cx.notify();
             }),
         ];
+        list.update(cx, |list, cx| list.set_chevron(Some(Reach::Grow), cx));
         Self {
             list,
             preview,
@@ -560,40 +543,36 @@ impl FindView {
             selected
         };
         let needles = self.needles(cx);
+        self.list
+            .update(cx, |list, cx| list.set_marks(needles.clone(), cx));
         self.preview
             .update(cx, |preview, cx| preview.show(wanted, needles, cx));
+        sync_chevron(&self.list, &self.model, cx);
         if changed {
             cx.notify();
         }
     }
 
-    /// Right: Collapsed → Context → Full (Full stays).
-    fn grow(&mut self, cx: &mut Context<Self>) {
-        if !self.model.is_full() {
-            self.model.toggle(self.selected_path(cx));
-        }
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Left: Full → Context → Collapsed.
-    fn shrink(&mut self, cx: &mut Context<Self>) {
-        self.model.collapse_step(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
-    }
-
-    /// Space and the preview button: Collapsed → Context → Full → Collapsed.
-    fn cycle(&mut self, cx: &mut Context<Self>) {
-        self.model.toggle(self.selected_path(cx));
-        self.sync_preview(cx);
-        cx.notify();
+    /// The preview's one-line header: the selected note's title and the
+    /// chevron. `None` with no row selected.
+    fn preview_header(&self, t: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let list = self.list.read(cx);
+        let entry = &list.selected_row()?.entry;
+        let title = SharedString::from(display_title(&entry.title, &entry.filename).to_string());
+        Some(step_header(
+            FIND_PREVIEW_HEADER_ID,
+            title,
+            &self.model,
+            t,
+            cx,
+        ))
     }
 
     // ---- Keys ------------------------------------------------------------------
 
     /// Keys the results must see before the list does: in Full, Up/Down
-    /// scroll the preview; Up from the first row returns to the field.
+    /// scroll the preview and Page Up/Page Down do nothing (the list is
+    /// hidden); Up from the first row returns to the field.
     fn capture_key(
         &mut self,
         event: &KeyDownEvent,
@@ -616,6 +595,8 @@ impl FindView {
                     .update(cx, |preview, cx| preview.scroll_rows(rows, cx));
                 true
             }
+            // The list is hidden: the page keys must not move it.
+            Key::PageUp | Key::PageDown if self.model.is_full() => true,
             Key::Up if query_field::at_top(&self.list, cx) => {
                 query_field::focus_input(&self.input, window, cx);
                 true
@@ -671,13 +652,8 @@ impl FindView {
         let theme = theme::current(cx);
         let t = &*theme;
         let list = self.list.read(cx);
-        let count = (self.started && !list.is_loading()).then(|| {
-            let total = list.first_row().map_or(0, |r| r.total);
-            match total {
-                1 => "1 note".to_string(),
-                n => format!("{n} notes"),
-            }
-        });
+        let count = (self.started && !list.is_loading())
+            .then(|| note_count_text(list.first_row().map_or(0, |r| r.total)));
         let title = self.title(query);
         let querying = !query.trim().is_empty();
         let chip = querying.then(|| {
@@ -686,25 +662,6 @@ impl FindView {
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Sort)))
                 .test_support()
         });
-        let (icon, tip) = if self.model.is_full() {
-            (IconName::Minimize, "Back to the results (Space)")
-        } else if self.model.is_context() {
-            (IconName::Maximize, "Fill the view with the preview (Right)")
-        } else {
-            (
-                IconName::PanelBottomOpen,
-                "Preview the selected note (Right)",
-            )
-        };
-        let expand = Button::new(FIND_EXPAND_ID)
-            .ghost()
-            .xsmall()
-            .icon(icon)
-            .tooltip(tip)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.cycle(cx);
-                this.focus_list(window, cx);
-            }));
         let save = Button::new(FIND_SAVE_ID)
             .ghost()
             .xsmall()
@@ -745,7 +702,6 @@ impl FindView {
                 )
             })
             .children(chip)
-            .child(expand)
             .child(save)
             .child(help)
     }
@@ -762,6 +718,24 @@ impl QueryFieldOwner for FindView {
 
     fn accepted(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         self.typed(name, cx);
+    }
+}
+
+impl PreviewSteps for FindView {
+    fn steps_model(&mut self) -> &mut PreviewModel {
+        &mut self.model
+    }
+
+    fn steps_path(&self, cx: &App) -> Option<VaultPath> {
+        self.selected_path(cx)
+    }
+
+    fn steps_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
+    fn steps_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_list(window, cx);
     }
 }
 
@@ -799,6 +773,7 @@ impl Render for FindView {
                 }
             })
             .child(self.list.clone());
+        let header = self.preview_header(&t, cx);
         let pane = (!self.model.is_collapsed()).then(|| {
             div()
                 .flex()
@@ -808,6 +783,7 @@ impl Render for FindView {
                 .when(!full, |pane| {
                     pane.border_t_1().border_color(theme::divider(&t))
                 })
+                .children(header)
                 .child(
                     self.preview
                         .clone()
@@ -926,6 +902,11 @@ impl Workspace {
             }
             DrawerListEvent::FileOp(kind, path) => {
                 self.open_file_dialog(*kind, path.clone(), window, cx)
+            }
+            DrawerListEvent::Verb(_, EXPAND) => {
+                if let Some(view) = self.find.clone() {
+                    view.update(cx, |view, cx| view.chevron_step(window, cx));
+                }
             }
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),

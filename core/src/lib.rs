@@ -609,6 +609,30 @@ impl NoteVault {
         Ok(notes)
     }
 
+    /// Counts the notes under each immediate child directory of `parent`,
+    /// at any depth. Keys are canonical child directory paths; a child with
+    /// no notes is absent, and notes directly in `parent` are not counted.
+    pub async fn child_note_counts(
+        &self,
+        parent: &VaultPath,
+    ) -> Result<HashMap<VaultPath, usize>, VaultError> {
+        let depth = parent.canonical().get_slices().len();
+        let mut counts: HashMap<VaultPath, usize> = HashMap::new();
+        for (base, n) in self.index.note_counts_by_base(parent).await? {
+            let mut child = VaultPath::new(base).canonical();
+            let mut len = child.get_slices().len();
+            if len <= depth {
+                continue; // a note directly in `parent`
+            }
+            while len > depth + 1 {
+                child = child.get_parent_path().0;
+                len -= 1;
+            }
+            *counts.entry(child).or_insert(0) += n as usize;
+        }
+        Ok(counts)
+    }
+
     /// Returns every note in the vault with its entry and content data.
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let a = self.index.get_all_notes().await?;
@@ -3659,6 +3683,89 @@ mod tests {
             vault.list_pinned_notes().await.unwrap(),
             vec![VaultPath::new("/keep.md")]
         );
+    }
+
+    // ---- child_note_counts ----
+
+    async fn note(vault: &NoteVault, path: &str) {
+        vault
+            .create_note(&VaultPath::new(path), "# t")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn child_note_counts_sums_nested_notes() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        for p in ["a/x.md", "a/b/y.md", "a/b/c/z.md", "d/w.md", "r.md"] {
+            note(&vault, p).await;
+        }
+
+        let counts = vault.child_note_counts(&VaultPath::root()).await.unwrap();
+        assert_eq!(counts.get(&VaultPath::new("/a")), Some(&3));
+        assert_eq!(counts.get(&VaultPath::new("/d")), Some(&1));
+        assert_eq!(counts.len(), 2);
+
+        let counts = vault
+            .child_note_counts(&VaultPath::new("/a"))
+            .await
+            .unwrap();
+        assert_eq!(counts.get(&VaultPath::new("/a/b")), Some(&2));
+        assert_eq!(counts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn child_note_counts_ignores_attachments_and_empty_dirs() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault
+            .save_attachment(&VaultPath::new("pics/a.png"), &[1, 2, 3])
+            .await
+            .unwrap();
+        vault
+            .create_directory(&VaultPath::new("empty"))
+            .await
+            .unwrap();
+        note(&vault, "full/n.md").await;
+
+        let counts = vault.child_note_counts(&VaultPath::root()).await.unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get(&VaultPath::new("/full")), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn child_note_counts_does_not_mix_like_wildcards() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        note(&vault, "100%_done/sub/a.md").await;
+        // Match only if `%` / `_` in the parent act as LIKE wildcards.
+        note(&vault, "100xydone/sub/n.md").await;
+        note(&vault, "1000_done/sub/n.md").await;
+
+        let counts = vault
+            .child_note_counts(&VaultPath::new("/100%_done"))
+            .await
+            .unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get(&VaultPath::new("/100%_done/sub")), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn child_note_counts_is_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        note(&vault, "Work/n.md").await;
+        note(&vault, "Work/Sub/n.md").await;
+
+        let counts = vault.child_note_counts(&VaultPath::root()).await.unwrap();
+        assert_eq!(counts.get(&VaultPath::new("/work")), Some(&2));
+        let counts = vault
+            .child_note_counts(&VaultPath::new("/Work"))
+            .await
+            .unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get(&VaultPath::new("/work/sub")), Some(&1));
     }
 }
 

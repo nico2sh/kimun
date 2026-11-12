@@ -140,6 +140,12 @@ pub fn is_left_press(m: &MouseEvent) -> bool {
     matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
 }
 
+/// Whether `m` happened inside `rect` (any kind; pair it with
+/// [`is_left_press`] for a click). An empty rect is never hit.
+pub fn rect_hit(rect: Rect, m: &MouseEvent) -> bool {
+    rect.contains(Position::new(m.column, m.row))
+}
+
 /// The key of the `(rect, key)` target under a left press — for click
 /// targets that are not chips (menu actions, launcher rows).
 pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
@@ -153,7 +159,7 @@ pub fn key_at(targets: &[(Rect, KeyCode)], m: &MouseEvent) -> Option<KeyEvent> {
 /// the rows are drawn (inside any border), `offset` the list state's first
 /// visible index, `len` the item count.
 pub fn list_index_at(m: &MouseEvent, rect: Rect, offset: usize, len: usize) -> Option<usize> {
-    if !is_left_press(m) || !rect.contains(Position::new(m.column, m.row)) {
+    if !is_left_press(m) || !rect_hit(rect, m) {
         return None;
     }
     let idx = offset + (m.row - rect.y) as usize;
@@ -164,9 +170,7 @@ pub fn list_index_at(m: &MouseEvent, rect: Rect, offset: usize, len: usize) -> O
 /// An empty `rect` (not rendered yet) is never "outside".
 pub fn is_press_outside(m: &MouseEvent, rect: Rect) -> bool {
     use ratatui::crossterm::event::MouseEventKind;
-    matches!(m.kind, MouseEventKind::Down(_))
-        && !rect.is_empty()
-        && !rect.contains(Position::new(m.column, m.row))
+    matches!(m.kind, MouseEventKind::Down(_)) && !rect.is_empty() && !rect_hit(rect, m)
 }
 
 /// Which border a [`BorderChip`] sits on.
@@ -227,10 +231,7 @@ impl BorderChip {
 
     /// A left press on the chip as last drawn.
     pub fn hit(&self, m: &MouseEvent) -> bool {
-        is_left_press(m)
-            && self
-                .rect
-                .is_some_and(|r| r.contains(Position::new(m.column, m.row)))
+        is_left_press(m) && self.rect.is_some_and(|r| rect_hit(r, m))
     }
 
     #[cfg(test)]
@@ -242,6 +243,23 @@ impl BorderChip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rect_hit_is_inside_only_and_never_on_an_empty_rect() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEventKind};
+        let at = |column, row| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let r = Rect::new(2, 1, 3, 1);
+        assert!(rect_hit(r, &at(2, 1)));
+        assert!(rect_hit(r, &at(4, 1)));
+        assert!(!rect_hit(r, &at(5, 1)));
+        assert!(!rect_hit(r, &at(2, 2)));
+        assert!(!rect_hit(Rect::default(), &at(0, 0)));
+    }
 
     #[test]
     fn a_border_chip_sits_rightmost_on_its_edge() {

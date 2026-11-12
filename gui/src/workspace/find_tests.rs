@@ -18,10 +18,10 @@ use kimun_notes::logic::query::QueryHit;
 use kimun_notes::logic::views::TagEntry;
 use tokio::runtime::Runtime;
 
-use super::drawer_list::DrawerList;
+use super::drawer_list::{DrawerList, chevron_id};
 use super::find::{
-    BLANK_TEXT, FIND_DEBOUNCE, FIND_ERROR_ID, FIND_EXPAND_ID, FIND_HELP_ID, FIND_ID, FIND_INPUT_ID,
-    FIND_MORE_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
+    BLANK_TEXT, FIND_DEBOUNCE, FIND_ERROR_ID, FIND_HELP_ID, FIND_ID, FIND_INPUT_ID, FIND_MORE_ID,
+    FIND_PREVIEW_HEADER_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
 };
 use super::modal::ModalKind;
 use super::picker::TO_FIND_BUTTON_ID;
@@ -394,12 +394,149 @@ fn the_preview_cycles_and_scrolls(cx: &mut TestAppContext) {
     assert_eq!(expand(&started, cx), (false, false, true));
     press(&started, "space", cx);
     assert_eq!(expand(&started, cx), (true, false, false));
-    click(&started, FIND_EXPAND_ID, cx);
+    let list = find_list(&started, cx);
+    let sel = cx.read(|cx| list.read(cx).selected_row().unwrap().entry.path.clone());
+    click(&started, chevron_id(&find_row_id(&sel)), cx);
     assert_eq!(
         expand(&started, cx),
         (false, true, false),
-        "the button cycles"
+        "the row's chevron grows it"
     );
+}
+
+/// In Full the list is hidden: Page Up and Page Down do nothing (the
+/// hidden selection stays, the preview does not move, the list keeps the
+/// keyboard). Out of Full they page the list.
+#[gpui_kit::test]
+fn page_keys_are_ignored_in_full_preview(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let long: String = (0..200).map(|i| format!("line {i} #rust\n")).collect();
+    let mut notes = NOTES.to_vec();
+    notes.push(("long.md", long.as_str()));
+    let (_v, started) = started_on(cx, &rt, &notes, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    press(&started, "down", cx);
+    assert!(find_list_focused(&started, cx));
+    let list = find_list(&started, cx);
+    let selected = |cx: &TestAppContext| cx.read(|cx| list.read(cx).selected());
+    let last = cx.read(|cx| list.read(cx).len()) - 1;
+    assert!(last > 0, "several hits");
+
+    press(&started, "right", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    settle_preview(&started, &rt, cx);
+    let preview = find_preview(&started, cx);
+    let top = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.read(|cx| preview.read(cx).top_row())
+    };
+    let (row, first) = (selected(cx), top(cx));
+    press(&started, "pagedown", cx);
+    press(&started, "pageup", cx);
+    press(&started, "pagedown", cx);
+    assert_eq!(selected(cx), row, "the hidden selection stays");
+    assert_eq!(top(cx), first, "the preview does not move");
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(find_list_focused(&started, cx));
+
+    press(&started, "left", cx);
+    press(&started, "home", cx);
+    press(&started, "pagedown", cx);
+    assert!(selected(cx).is_some_and(|pos| pos > 0), "Context: it pages");
+}
+
+fn drawn_find(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some_and(|e| e.visible())
+    })
+    .unwrap()
+}
+
+/// The toolbar has no expand button: the chevron replaced it.
+#[gpui_kit::test]
+fn find_has_no_toolbar_expand_button(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    assert!(!drawn_find(&started, "find-expand", cx));
+    assert!(drawn_find(&started, super::find::FIND_SAVE_ID, cx));
+    assert!(drawn_find(&started, FIND_HELP_ID, cx));
+}
+
+/// The selected row shows the chevron, the others do not (at rest).
+#[gpui_kit::test]
+fn find_selected_row_shows_chevron(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    let list = find_list(&started, cx);
+    let (sel, other) = cx.read(|cx| {
+        let l = list.read(cx);
+        let sel = l.selected_row().unwrap().entry.path.clone();
+        let other = l
+            .rows()
+            .into_iter()
+            .map(|r| r.entry.path.clone())
+            .find(|p| *p != sel)
+            .unwrap();
+        (sel, other)
+    });
+    assert!(drawn_find(&started, chevron_id(&find_row_id(&sel)), cx));
+    assert!(!drawn_find(&started, chevron_id(&find_row_id(&other)), cx));
+    // Where it lies in the real view: at the row's right end.
+    super::chevron_tests::assert_zone_flush_right_in(started.handle, find_row_id(&sel), cx);
+}
+
+/// A chevron click selects its row and grows the preview to Context; it
+/// does not open the note, and the list has the keyboard.
+#[gpui_kit::test]
+fn find_chevron_click_opens_context_preview(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#rust", cx);
+    let list = find_list(&started, cx);
+    let sel = cx.read(|cx| list.read(cx).selected_row().unwrap().entry.path.clone());
+    assert_eq!(expand(&started, cx), (true, false, false));
+    click(&started, chevron_id(&find_row_id(&sel)), cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(find_list_focused(&started, cx));
+    assert!(on(&started, "alpha.md", cx), "the note was not opened");
+}
+
+/// In Context and Full the header names the note and its chevron steps
+/// Context -> Full -> Context; Full keeps it visible and clickable.
+#[gpui_kit::test]
+fn find_header_chevron_steps_context_to_full_then_back(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    search(&started, &rt, "#go", cx);
+    assert!(!drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    press(&started, "down", cx);
+    press(&started, "right", cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    let header_chevron = chevron_id(&SharedString::from(FIND_PREVIEW_HEADER_ID));
+    click(&started, header_chevron.clone(), cx);
+    assert_eq!(expand(&started, cx), (false, false, true));
+    assert!(drawn_find(&started, FIND_PREVIEW_HEADER_ID, cx));
+    assert!(find_list_focused(&started, cx));
+    click(&started, header_chevron, cx);
+    assert_eq!(expand(&started, cx), (false, true, false));
+    assert!(find_list_focused(&started, cx));
 }
 
 /// Enter in the results opens the note with the query's matches
@@ -1170,4 +1307,86 @@ fn replacing_the_query_from_outside_closes_the_suggestions(cx: &mut TestAppConte
     );
     // Enter commits the query; it does not accept a stale suggestion.
     assert_eq!(query(&started, cx), "#rust #be");
+}
+
+// ── FIND row highlights ──────────────────────────────────────────────────
+
+fn marks(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| w.to_string()).collect()
+}
+
+/// The matched words of the context line are the ranges drawn in the accent
+/// colour, found in the joined one-line text, and the list holds the needles
+/// of the query that produced its rows.
+#[gpui_kit::test]
+fn find_row_context_highlights_matched_words(cx: &mut TestAppContext) {
+    use super::result_row::{context_highlights, context_id, one_line};
+    let line = one_line("back to [[alpha]]\n   here  #rust");
+    assert_eq!(line, "back to [[alpha]] here #rust");
+    let ranges = context_highlights(&line, &marks(&["alpha", "rust"]));
+    let words: Vec<&str> = ranges.iter().map(|r| &line[r.clone()]).collect();
+    assert_eq!(words, ["alpha", "rust"]);
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    click(&started, rail_cell_id(DrawerView::Find), cx);
+    search(&started, &rt, "rust", cx);
+    let list = find_list(&started, cx);
+    assert!(
+        !cx.read(|cx| list.read(cx).marks().is_empty()),
+        "the list carries the needles of the query that ran"
+    );
+    let id = find_row_id(&path("/beta.md"));
+    let text = cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(context_id(&id)).label().map(str::to_string)
+    });
+    assert_eq!(
+        text.unwrap().as_deref(),
+        Some("back to [[alpha]] here #rust"),
+        "the aria label stays the plain text"
+    );
+}
+
+/// The whitespace runs together before the cut: long runs of line breaks
+/// and indentation still leave the full cut length of visible text, cut
+/// on a character boundary (characters counted, not bytes).
+#[test]
+fn one_line_collapses_whitespace_before_the_cut() {
+    use super::find::CONTEXT_CHARS;
+    use super::result_row::one_line;
+    let word = "ab";
+    let spaced: String = (0..CONTEXT_CHARS)
+        .map(|_| format!("{word}\n\n        "))
+        .collect();
+    let line = one_line(&spaced);
+    assert_eq!(line.chars().count(), CONTEXT_CHARS);
+    assert!(line.starts_with("ab ab ab"));
+
+    let multibyte = "é".repeat(CONTEXT_CHARS + 50);
+    let line = one_line(&multibyte);
+    assert_eq!(line.chars().count(), CONTEXT_CHARS);
+    assert!(line.chars().all(|c| c == 'é'));
+}
+
+#[gpui_kit::test]
+fn find_row_without_needles_has_no_highlight(_cx: &mut TestAppContext) {
+    use super::result_row::context_highlights;
+    assert!(context_highlights("back to alpha", &[]).is_empty());
+    assert!(context_highlights("back to alpha", &marks(&["zzz"])).is_empty());
+}
+
+#[gpui_kit::test]
+fn find_row_highlight_handles_multibyte_context(_cx: &mut TestAppContext) {
+    use super::result_row::{context_highlights, one_line};
+    let line = one_line("café ☕ 🦀 naïve rust and Rust");
+    let ranges = context_highlights(&line, &marks(&["rust", "naïve"]));
+    assert!(!ranges.is_empty());
+    for r in &ranges {
+        assert!(line.is_char_boundary(r.start) && line.is_char_boundary(r.end));
+    }
+    let words: Vec<&str> = ranges.iter().map(|r| &line[r.clone()]).collect();
+    assert!(words.iter().any(|w| w.eq_ignore_ascii_case("rust")));
+    assert!(words.contains(&"naïve"));
 }

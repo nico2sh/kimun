@@ -221,6 +221,54 @@ fn an_empty_history_lists_the_root(cx: &mut TestAppContext) {
 
 // ── keys ─────────────────────────────────────────────────────────────────
 
+/// Page Down and Page Up move the selection one page (the rows the list
+/// shows) while the filter has the keyboard, clamped at either end; with a
+/// modifier they do nothing to the list.
+#[gpui_kit::test]
+fn page_keys_move_the_files_selection_one_page(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let names: Vec<(String, String)> = (0..60)
+        .map(|i| (format!("n{i:02}.md"), format!("Note {i}")))
+        .collect();
+    let notes: Vec<(&str, &str)> = names
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    let v = rt.block_on(test_vault(&notes, &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("n00.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Note 0" && started.listed(cx)
+    });
+    focus_files(&started, cx);
+    cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let pos = |cx: &TestAppContext| started.files(cx, |pane| pane.model().core()?.selected());
+    let page = started.files(cx, |pane| pane.page());
+    assert!(page > 1, "the list shows several rows ({page})");
+    let from = pos(cx).unwrap();
+    let last = started.rows(cx).len() - 1;
+    started.press_key("pagedown", cx);
+    assert_eq!(pos(cx), Some(from + page));
+    started.press_key("shift-pagedown", cx);
+    assert_eq!(pos(cx), Some(from + page), "a modifier: nothing");
+    for _ in 0..10 {
+        started.press_key("pagedown", cx);
+    }
+    assert_eq!(pos(cx), Some(last), "stops on the last row");
+    started.press_key("pageup", cx);
+    assert_eq!(pos(cx), Some(last - page));
+    for _ in 0..10 {
+        started.press_key("pageup", cx);
+    }
+    assert_eq!(pos(cx), Some(0), "stops on the first row");
+    assert_eq!(started.focused(cx), Panel::Drawer(Side::Left));
+}
+
 /// Up/Down move the selection; Enter on a note opens it, gives the editor
 /// the keyboard, and the marker follows the open note.
 #[gpui_kit::test]
@@ -758,4 +806,306 @@ fn the_swap_chords_work_from_the_files_filter_and_a_placeholder(cx: &mut TestApp
         "moved from the filter in the right slot"
     );
     assert!(started.filter_focused(cx));
+}
+
+// ── the second line of a directory row ───────────────────────────────────
+
+impl Started {
+    /// The text on the second line of the row `name` (see [`short`]) as the
+    /// last frame drew it: `None` when the row has no second line at all.
+    fn second_line(&self, name: &str, cx: &mut TestAppContext) -> Option<String> {
+        let id = format!("{}-detail", self.row(name, cx));
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id)
+                .map(|line| line.label().unwrap_or("").to_string())
+        })
+        .unwrap()
+    }
+
+    /// Forget the counts, as before they land.
+    fn forget_counts(&self, cx: &mut TestAppContext) {
+        let files = cx.read(|cx| self.workspace.read(cx).files.clone().unwrap());
+        files.update(cx, |pane, _| pane.forget_counts());
+    }
+
+    /// Hand FILES counts that were loaded for `dir`.
+    fn deliver_counts(&self, dir: VaultPath, counts: &[(&str, usize)], cx: &mut TestAppContext) {
+        let files = cx.read(|cx| self.workspace.read(cx).files.clone().unwrap());
+        let counts = counts.iter().map(|(p, n)| (path(p), *n)).collect();
+        files.update(cx, |pane, cx| pane.accept_counts(dir, counts, cx));
+    }
+}
+
+/// FILES' directory rows say how many notes they hold, once the count has
+/// been read off the UI thread.
+#[gpui_kit::test]
+fn directory_row_shows_note_count_on_second_line(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("sub/", cx).as_deref() == Some("3 notes")
+    });
+}
+
+/// Until the counts land, a directory row has its second line, blank: the
+/// row does not change height when the count arrives.
+#[gpui_kit::test]
+fn directory_row_without_count_keeps_the_second_line_blank(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "top.md");
+    started.forget_counts(cx);
+    let line = started.second_line("sub/", cx);
+    assert_eq!(line.as_deref(), Some(""), "a blank line, not a missing one");
+    assert!(!line.unwrap().contains("notes"));
+}
+
+/// Counts that were loaded for a folder the user has left are dropped.
+#[gpui_kit::test]
+fn late_counts_for_a_left_folder_are_dropped(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    started.forget_counts(cx);
+    // The root was shown when this load began; FILES shows `sub` now.
+    started.deliver_counts(VaultPath::root(), &[("/sub/deeper", 9)], cx);
+    assert_eq!(started.second_line("deeper/", cx).as_deref(), Some(""));
+    // The folder shown takes its own.
+    started.deliver_counts(path("sub"), &[("/sub/deeper", 1)], cx);
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("1 note")
+    );
+}
+
+struct OneRow(FileListEntry);
+
+impl gpui_kit::Render for OneRow {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::base::TestSupportExt as _;
+        super::files::entry_row(
+            "row".into(),
+            &self.0,
+            false,
+            true,
+            None,
+            &kimun_notes::settings::themes::Theme::default(),
+        )
+        .test_support()
+    }
+}
+
+/// The second line the row of the folder `dir` (named `name`) gets in a list
+/// that mixes folders with notes.
+fn mixed_line(dir: VaultPath, name: &str, cx: &mut TestAppContext) -> String {
+    cx.update(gpui_kit::init);
+    let row = FileListEntry::Directory {
+        path: dir,
+        name: name.into(),
+    };
+    let handle = cx
+        .update(|cx| {
+            cx.open_window(gpui_kit::WindowOptions::default(), |_, cx| {
+                cx.new(|_| OneRow(row))
+            })
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.find("row-detail").label().unwrap_or("").to_string()
+    })
+    .unwrap()
+}
+
+/// A list that mixes folders with notes shows where a folder is: its
+/// parent's path, as note rows show theirs (real entries are absolute).
+#[gpui_kit::test]
+fn mixed_list_directory_row_shows_parent_path(cx: &mut TestAppContext) {
+    assert_eq!(mixed_line(path("/projects/2026"), "2026", cx), "/projects");
+}
+
+#[test]
+fn note_count_text_is_singular_for_one() {
+    assert_eq!(super::files::note_count_text(0), "0 notes");
+    assert_eq!(super::files::note_count_text(1), "1 note");
+    assert_eq!(super::files::note_count_text(12), "12 notes");
+}
+
+// ── counts stay current ──────────────────────────────────────────────────
+
+/// A note made in a child folder of the folder shown changes that folder
+/// row's count (the parent of the note is not the folder on screen).
+#[gpui_kit::test]
+fn counts_reload_when_a_note_is_created_in_a_child_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.create_note(&path("sub/deeper/d.md"), "Delta"))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Created(path("sub/deeper/d.md"))),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// A move from one child folder to another updates both counts.
+#[gpui_kit::test]
+fn counts_reload_when_a_note_moves_between_child_folders(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[
+            ("top.md", "Top"),
+            ("one/a.md", "A"),
+            ("one/b.md", "B"),
+            ("two/c.md", "C"),
+        ],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("top.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Top" && started.listed(cx)
+    });
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("2 notes")
+            && started.second_line("two/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.rename_note(&path("one/a.md"), &path("two/a.md")))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Moved {
+            from: path("one/a.md"),
+            to: path("two/a.md"),
+        }),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("1 note")
+            && started.second_line("two/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// One file operation starts one count load, even a move between two child
+/// folders of the folder shown (both ends are under it); both counts still
+/// update.
+#[gpui_kit::test]
+fn a_move_between_child_folders_starts_one_count_load(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[
+            ("top.md", "Top"),
+            ("one/a.md", "A"),
+            ("one/b.md", "B"),
+            ("two/c.md", "C"),
+        ],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("top.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Top" && started.listed(cx)
+    });
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("2 notes")
+            && started.second_line("two/", cx).as_deref() == Some("1 note")
+    });
+    rt.block_on(v.vault.rename_note(&path("one/a.md"), &path("two/a.md")))
+        .unwrap();
+    let files = cx.read(|cx| started.workspace.read(cx).files.clone().unwrap());
+    let before = files.read_with(cx, |pane, _| pane.counts_generation());
+    send(
+        &started,
+        AppMessage::FileOp(FileOp::Moved {
+            from: path("one/a.md"),
+            to: path("two/a.md"),
+        }),
+        cx,
+    );
+    let after = files.read_with(cx, |pane, _| pane.counts_generation());
+    assert_eq!(after - before, 1, "one load for the whole move");
+    drive(&rt, cx, |cx| {
+        started.second_line("one/", cx).as_deref() == Some("1 note")
+            && started.second_line("two/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// A workspace can open while its index is still building: the counts read
+/// then are read again when indexing finishes.
+#[gpui_kit::test]
+fn counts_reload_when_indexing_finishes(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, "sub/a.md");
+    drive(&rt, cx, |cx| {
+        !started.indexing(cx) && started.second_line("deeper/", cx).as_deref() == Some("1 note")
+    });
+    // The index changes behind FILES' back (no file operation reaches it).
+    rt.block_on(v.vault.create_note(&path("sub/deeper/d.md"), "Delta"))
+        .unwrap();
+    send(
+        &started,
+        AppMessage::IndexingDone(Ok(Default::default())),
+        cx,
+    );
+    drive(&rt, cx, |cx| {
+        started.second_line("deeper/", cx).as_deref() == Some("2 notes")
+    });
+}
+
+/// Loads of one folder can end out of order: an older one never replaces
+/// the result of a newer one.
+#[gpui_kit::test]
+fn an_older_count_load_for_the_same_folder_cannot_overwrite_a_newer_one(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, "sub/a.md");
+    let files = cx.read(|cx| started.workspace.read(cx).files.clone().unwrap());
+    let latest = files.read_with(cx, |pane, _| pane.counts_generation());
+    let map = |n: usize| [(path("/sub/deeper"), n)].into_iter().collect();
+    files.update(cx, |pane, cx| {
+        pane.accept_load(path("sub"), latest, map(5), cx)
+    });
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("5 notes")
+    );
+    files.update(cx, |pane, cx| {
+        pane.accept_load(path("sub"), latest - 1, map(1), cx)
+    });
+    assert_eq!(
+        started.second_line("deeper/", cx).as_deref(),
+        Some("5 notes")
+    );
+}
+
+/// A top-level folder's parent is the vault root, drawn as the separator.
+#[gpui_kit::test]
+fn mixed_list_top_level_directory_row_shows_the_root(cx: &mut TestAppContext) {
+    assert_eq!(mixed_line(path("/projects"), "projects", cx), "/");
 }

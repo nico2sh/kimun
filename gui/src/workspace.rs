@@ -1026,10 +1026,12 @@ impl Workspace {
                 self.status.indexing = false;
                 match result {
                     // A note opened while the index caught up counted its
-                    // backlinks against the old one; so did LINKS.
+                    // backlinks against the old one; so did LINKS, and
+                    // FILES its folders' note counts.
                     Ok(_) => {
                         self.refresh_note_counts();
                         self.invalidate_views(cx);
+                        self.files_reload_counts(cx);
                     }
                     Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
                 }
@@ -3168,6 +3170,7 @@ fn conflict_flash(details: &str) -> String {
 mod ask;
 mod ask_sources;
 mod attachment;
+mod chevron;
 mod config;
 mod create;
 mod drawer_list;
@@ -3198,6 +3201,7 @@ mod presets;
 mod properties;
 mod query_field;
 mod reopen;
+mod result_row;
 mod route;
 mod saved_searches;
 mod search;
@@ -3223,6 +3227,8 @@ mod attachment_tests;
 #[cfg(test)]
 mod cfg_tests;
 #[cfg(test)]
+mod chevron_tests;
+#[cfg(test)]
 mod drop_tests;
 #[cfg(test)]
 mod file_ops_tests;
@@ -3242,6 +3248,8 @@ mod leader_tests;
 mod note_tests;
 #[cfg(test)]
 mod onboarding_tests;
+#[cfg(test)]
+mod paging_tests;
 #[cfg(test)]
 mod palette_tests;
 #[cfg(test)]

@@ -15,7 +15,8 @@
 //! visible rows are built (`uniform_list`).
 //!
 //! **Keys** (while the list has the keyboard; it has no text field): Up and
-//! Down move the selection, Home and End jump to the ends, Enter activates
+//! Down move the selection, Page Up and Page Down move it a page (the rows
+//! the list shows, [`page_rows`]), Home and End jump to the ends, Enter activates
 //! the selected row, Escape gives the keyboard back to the editor. Every
 //! other key bubbles on to the view around the list.
 //!
@@ -27,30 +28,30 @@
 //! right click never activates: a row that stands for a vault entry has
 //! the FILES entry menu there.
 //!
-//! **Row actions.** A row may offer one small labelled action
-//! ([`DrawerRow::hover_action`]) that its owner switches on for the whole
-//! list ([`DrawerList::set_row_actions_enabled`], off by default; only the
-//! Sources view does, while its reader is Collapsed). Switched on, the
-//! action overlays the row's right end on the row's hovered background,
-//! taking no width from the row, drawn only while the pointer is over the
-//! row (GPUI group hover). A click on
-//! it selects the row and emits [`DrawerListEvent::Verb`] with the action's
-//! verb, and never
-//! reaches the row's own click: no second select, and the press after it
-//! is not taken for a double-click on the row. It is a pointer shortcut
-//! only; the command it names keeps its key.
+//! **The expand chevron** ([`super::chevron`]). A list whose rows have a
+//! preview shows the chevron ([`DrawerList::set_chevron`], off by default)
+//! at the right end of the selected row and of the hovered row (GPUI group
+//! hover). It is a zone laid over the row's right end, flush with it and
+//! as tall as the row, set off by a thin divider: no row gives up width for
+//! it, and nothing moves when it appears. It covers the right end of every
+//! line, so a row keeps nothing there that only it shows (SEM's and the
+//! Sources view's score sit beside the title instead).
+//! A click on it selects the row and emits [`DrawerListEvent::Verb`] with
+//! [`EXPAND`], and never reaches the row's own click: no activation, no
+//! second select, and a press on the row right after it is not taken for a
+//! double-click on the row. It is a pointer shortcut only; the preview
+//! keeps its keys.
 
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, uniform_list,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels,
+    Render, Role, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::input::{Key, Mods};
@@ -58,6 +59,7 @@ use kimun_notes::logic::list::{ListCore, ListRow, ListSetup, RowSource, StaticRo
 use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
+use super::chevron::{Reach, ZoneOn, chevron};
 use super::file_dialogs::FileOpKind;
 use super::files::{ClickPolicy, ClickRows, RowClick, with_click_cursor, with_file_menu};
 use crate::input;
@@ -73,6 +75,13 @@ pub(crate) trait DrawerRow: ListRow {
     /// pointer handling, the context menu and `test_support`.
     fn render_row(&self, selected: bool, theme: &Theme) -> Stateful<Div>;
 
+    /// [`render_row`](Self::render_row) with the words the list marks (FIND's
+    /// needles); a row with nothing to mark ignores them.
+    fn render_marked_row(&self, selected: bool, theme: &Theme, marks: &[String]) -> Stateful<Div> {
+        let _ = marks;
+        self.render_row(selected, theme)
+    }
+
     /// The vault entry the row stands for, when it has the FILES entry
     /// menu (Rename…, Move…, Delete…).
     fn menu_target(&self) -> Option<VaultPath> {
@@ -85,20 +94,13 @@ pub(crate) trait DrawerRow: ListRow {
     fn menu_items(&self) -> Vec<MenuItem> {
         Vec::new()
     }
-
-    /// The action the row shows under the pointer while its list has row
-    /// actions on ([`DrawerList::set_row_actions_enabled`]). None by
-    /// default.
-    fn hover_action(&self) -> Option<RowAction> {
-        None
-    }
 }
 
-/// The group name a row with an action carries, for the action's hover.
-const ROW_GROUP: &str = "drawer-row";
+/// The group name a row with the chevron carries, for the chevron's hover.
+pub(crate) const ROW_GROUP: &str = "drawer-row";
 
 /// A row-level command the owner answers to: the one name a context-menu
-/// item, a hover action or a double-click carries in
+/// item, the expand chevron or a double-click carries in
 /// [`DrawerListEvent::Verb`]. A new row command is a new verb, not a new
 /// event variant.
 pub(crate) type VerbId = &'static str;
@@ -106,6 +108,17 @@ pub(crate) type VerbId = &'static str;
 /// Open the row's note in the editor: the menu's `Open note`, and what a
 /// double-click does under [`ClickPolicy::Select`].
 pub(crate) const OPEN_NOTE: VerbId = "open-note";
+
+/// Step the row's preview: a click on the row's expand chevron. The owner
+/// steps the preview, then moves the keyboard focus to the list (as the
+/// Sources view's `chevron_step` does), or the arrows stay in its query
+/// field.
+pub(crate) const EXPAND: VerbId = "expand";
+
+/// The element id of the expand chevron on the row (or header) `row_id`.
+pub(crate) fn chevron_id(row_id: &SharedString) -> SharedString {
+    format!("{row_id}:chevron").into()
+}
 
 /// An extra item of a row's context menu ([`DrawerRow::menu_items`]).
 #[derive(Debug, Clone, Copy)]
@@ -125,41 +138,6 @@ impl MenuItem {
     }
 }
 
-/// A row's hover action ([`DrawerRow::hover_action`]): the verb it sends,
-/// its element id (from the row's domain key), its label, an optional key
-/// hint and its tooltip.
-#[derive(Debug, Clone)]
-pub(crate) struct RowAction {
-    verb: VerbId,
-    id: SharedString,
-    label: SharedString,
-    key_hint: Option<SharedString>,
-    tooltip: SharedString,
-}
-
-impl RowAction {
-    pub(crate) fn new(
-        verb: VerbId,
-        id: impl Into<SharedString>,
-        label: impl Into<SharedString>,
-        tooltip: impl Into<SharedString>,
-    ) -> Self {
-        Self {
-            verb,
-            id: id.into(),
-            label: label.into(),
-            key_hint: None,
-            tooltip: tooltip.into(),
-        }
-    }
-
-    /// Show `key` beside the label, in the muted colour.
-    pub(crate) fn with_key_hint(mut self, key: impl Into<SharedString>) -> Self {
-        self.key_hint = Some(key.into());
-        self
-    }
-}
-
 /// What a drawer list asks of its owner.
 #[derive(Debug, Clone)]
 pub(crate) enum DrawerListEvent<R> {
@@ -169,12 +147,70 @@ pub(crate) enum DrawerListEvent<R> {
     /// A row's context menu asked to rename, move or delete its entry.
     FileOp(FileOpKind, VaultPath),
     /// A row command: a context-menu item ([`DrawerRow::menu_items`]), a
-    /// click on the row's hover action ([`DrawerRow::hover_action`]; the row
-    /// is selected already) or a double-click under [`ClickPolicy::Select`]
+    /// click on the row's expand chevron ([`EXPAND`]; the row is selected
+    /// already) or a double-click under [`ClickPolicy::Select`]
     /// ([`OPEN_NOTE`]).
     Verb(R, VerbId),
     /// Escape: back to the editor.
     Dismiss,
+}
+
+/// The rows a page holds: as many whole rows of height `row` as the
+/// `viewport` shows, at least one (rows not measured yet, or a viewport
+/// smaller than a row).
+pub(super) fn page_rows(viewport: Pixels, row: Pixels) -> usize {
+    let (viewport, row) = (f32::from(viewport), f32::from(row));
+    if row <= 0.0 || viewport.is_nan() {
+        return 1;
+    }
+    ((viewport / row).floor() as usize).max(1)
+}
+
+/// The page of the `uniform_list` of `len` rows behind `scroll`, as last
+/// laid out: the list's viewport over its (uniform) row height. The handle
+/// keeps the viewport (`item`) and the whole content's size (`contents`,
+/// all `len` rows), so a row is the content's height over `len`. One row
+/// before the first layout.
+pub(super) fn page_of(scroll: &UniformListScrollHandle, len: usize) -> usize {
+    let state = scroll.0.borrow();
+    match state.last_item_size {
+        Some(size) if len > 0 => page_rows(size.item.height, size.contents.height / len as f32),
+        _ => 1,
+    }
+}
+
+/// Where a Page Down (`down`) or Page Up of `page` rows puts the selection
+/// `selected` in a list of `len` rows: clamped to the ends; with nothing
+/// selected, the first row (as the arrows do). `None` for no rows.
+pub(super) fn page_target(
+    selected: Option<usize>,
+    len: usize,
+    page: usize,
+    down: bool,
+) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match (selected, down) {
+        (None, _) => 0,
+        (Some(pos), true) => pos.saturating_add(page).min(last),
+        (Some(pos), false) => pos.saturating_sub(page).min(last),
+    })
+}
+
+/// Page Down (`down`) or Page Up on `core`, the rows of the `uniform_list`
+/// behind `scroll`: the selection moves a page ([`page_of`],
+/// [`page_target`]) and the list scrolls to keep it in view. FILES and
+/// every drawer list page with it.
+pub(super) fn page_move<R: ListRow>(
+    core: &mut ListCore<R>,
+    scroll: &UniformListScrollHandle,
+    down: bool,
+) {
+    let len = core.visible_len();
+    let to = page_target(core.selected(), len, page_of(scroll, len), down);
+    core.move_selection(to);
+    if let Some(pos) = core.selected() {
+        scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
+    }
 }
 
 /// One drawer list. See the module docs.
@@ -194,11 +230,13 @@ pub(crate) struct DrawerList<R: DrawerRow> {
     loading: SharedString,
     /// What a click on a row does.
     click: ClickPolicy,
-    /// Whether rows show their hover action.
-    row_actions: bool,
-    /// A row action was the last press: the next row click is not the
-    /// second half of a double-click.
-    after_action: bool,
+    /// The expand chevron the rows show, `None` for none.
+    chevron: Option<Reach>,
+    /// A chevron was the last press: the next row click is not the second
+    /// half of a double-click.
+    after_chevron: bool,
+    /// The words the rows mark (see [`DrawerRow::render_marked_row`]).
+    marks: Arc<[String]>,
 }
 
 impl<R: DrawerRow> EventEmitter<DrawerListEvent<R>> for DrawerList<R> {}
@@ -222,8 +260,9 @@ impl<R: DrawerRow> DrawerList<R> {
             empty: SharedString::default(),
             loading: "Loading…".into(),
             click: ClickPolicy::Open,
-            row_actions: false,
-            after_action: false,
+            chevron: None,
+            after_chevron: false,
+            marks: Arc::from(Vec::new()),
         }
     }
 
@@ -249,18 +288,28 @@ impl<R: DrawerRow> DrawerList<R> {
         cx.new(|cx| configure(Self::new(id, label, redraw_callback(tx), cx)))
     }
 
-    /// Show (`true`) or hide every row's hover action from now on.
-    pub(crate) fn set_row_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.row_actions != enabled {
-            self.row_actions = enabled;
+    /// Show the expand chevron stepping `reach` on the selected and the
+    /// hovered row from now on, or (`None`) none. A click on it reaches
+    /// the owner as `Verb(row, EXPAND)`; the owner then gives the list the
+    /// keyboard ([`EXPAND`]).
+    pub(crate) fn set_chevron(&mut self, reach: Option<Reach>, cx: &mut Context<Self>) {
+        if self.chevron != reach {
+            self.chevron = reach;
             cx.notify();
         }
     }
 
-    /// Whether rows show their hover action.
+    /// The words the rows mark, for the rows that mark any.
+    pub(crate) fn set_marks(&mut self, marks: Arc<[String]>, cx: &mut Context<Self>) {
+        if self.marks != marks {
+            self.marks = marks;
+            cx.notify();
+        }
+    }
+
     #[cfg(test)]
-    pub(crate) fn row_actions_enabled(&self) -> bool {
-        self.row_actions
+    pub(crate) fn marks(&self) -> &[String] {
+        &self.marks
     }
 
     /// Take clicks under `policy` instead of [`ClickPolicy::Open`].
@@ -459,6 +508,15 @@ impl<R: DrawerRow> DrawerList<R> {
         }
     }
 
+    /// Move the selection one page down (`down`) or up: the rows the list
+    /// shows ([`page_of`]), clamped to the ends.
+    fn page(&mut self, down: bool, cx: &mut Context<Self>) {
+        if let Some(core) = self.core.as_mut() {
+            page_move(core, &self.scroll, down);
+            cx.notify();
+        }
+    }
+
     fn select(&mut self, pick: impl FnOnce(&mut ListCore<R>), cx: &mut Context<Self>) {
         let Some(core) = self.core.as_mut() else {
             return;
@@ -486,85 +544,57 @@ impl<R: DrawerRow> DrawerList<R> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let after_action = std::mem::take(&mut self.after_action);
+        let after_chevron = std::mem::take(&mut self.after_chevron);
         let mut click = self.click.click(event);
-        // The press before was the row action's (it went away under the
+        // The press before was the chevron's (it went away under the
         // pointer): this one is a click of its own, not a double-click.
-        if click != RowClick::Ignore && after_action && event.click_count() > 1 {
+        if click != RowClick::Ignore && after_chevron && event.click_count() > 1 {
             click = RowClick::Select;
         }
         click.run(self, pos, window, cx);
     }
 
-    /// A click on the hover action of the row at visible position `pos`:
-    /// select it, then hand it to the owner.
-    fn click_action(&mut self, pos: usize, verb: VerbId, cx: &mut Context<Self>) {
-        self.after_action = true;
+    /// A click on the chevron of the row at visible position `pos`: select
+    /// it, then hand it to the owner.
+    fn click_chevron(&mut self, pos: usize, cx: &mut Context<Self>) {
+        self.after_chevron = true;
         self.select(|core| core.select(pos), cx);
         if let Some(row) = self.selected_row().cloned() {
-            cx.emit(DrawerListEvent::Verb(row, verb));
+            cx.emit(DrawerListEvent::Verb(row, EXPAND));
         }
     }
 
-    /// The hover action `action` of the row at `pos`: quiet text at rest,
-    /// shown only while the pointer is over its row ([`ROW_GROUP`]).
-    fn render_action(
+    /// The chevron's zone stepping `reach` over the right end of the row
+    /// `row_id` at `pos`: drawn on the selected row, and on any other only
+    /// while the pointer is over it ([`ROW_GROUP`]).
+    fn render_chevron(
         &self,
         pos: usize,
+        row_id: &SharedString,
         selected: bool,
-        action: RowAction,
+        reach: Reach,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let hover = theme::foreground(t);
-        let tooltip = action.tooltip;
-        let verb = action.verb;
-        // It sits over the row's right end, on the row's own hovered
-        // background, so it covers what is there rather than narrowing the
-        // row for everyone; it is drawn only while the pointer is over the row.
-        let cover = if selected {
-            theme::selected_background(t)
-        } else {
-            theme::hover_background(t)
-        };
-        div()
-            .id(action.id)
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_0()
-            .items_center()
-            .pl_2()
-            .pr_2()
-            .rounded_md()
-            .bg(cover)
-            .test_support()
-            .role(Role::Button)
-            .aria_label(action.label.clone())
-            .flex()
-            .flex_none()
-            .gap_1()
-            .whitespace_nowrap()
-            .text_xs()
-            .cursor_pointer()
-            .text_color(theme::secondary(t))
-            .hover(move |style| style.text_color(hover))
-            .opacity(0.)
-            .group_hover(ROW_GROUP, |style| style.opacity(1.))
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        // Out of the row's flow (it takes no width from the content): the
+        // zone lies over the row's right end, flush with it, full height,
+        // opaque in the row's fill so the text beneath does not show.
+        chevron(chevron_id(row_id), reach, ZoneOn::row(selected), t)
+            .when(!selected, |chevron| {
+                chevron
+                    .opacity(0.)
+                    .group_hover(ROW_GROUP, |style| style.opacity(1.))
+            })
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 // Never the row's click as well; a press that ends a
                 // double-click on it acted already with its first.
                 cx.stop_propagation();
                 if event.standard_click() && event.click_count() == 1 {
-                    this.click_action(pos, verb, cx);
+                    this.click_chevron(pos, cx);
                 }
             }))
-            .child(action.label)
-            .when_some(action.key_hint, |button, key| {
-                button.child(div().text_color(theme::muted(t)).child(key))
-            })
+            .test_support()
             .into_any_element()
     }
 
@@ -579,6 +609,8 @@ impl<R: DrawerRow> DrawerList<R> {
         match key.key {
             Key::Up => self.select(ListCore::select_prev, cx),
             Key::Down => self.select(ListCore::select_next, cx),
+            Key::PageUp => self.page(false, cx),
+            Key::PageDown => self.page(true, cx),
             Key::Home => self.select(|core| core.select(0), cx),
             Key::End => self.select(
                 |core| {
@@ -601,11 +633,10 @@ impl<R: DrawerRow> DrawerList<R> {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let action = self.row_actions.then(|| row.hover_action()).flatten();
-        let mut element = row.render_row(selected, &theme::current(cx));
-        if let Some(action) = action {
-            let action = self.render_action(pos, selected, action, cx);
-            element = element.group(ROW_GROUP).relative().child(action);
+        let mut element = row.render_marked_row(selected, &theme::current(cx), &self.marks);
+        if let Some(reach) = self.chevron {
+            let chevron = self.render_chevron(pos, &row.element_id(), selected, reach, cx);
+            element = element.group(ROW_GROUP).relative().child(chevron);
         }
         let element = with_click_cursor(element, self.click, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {

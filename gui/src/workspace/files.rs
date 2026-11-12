@@ -9,7 +9,8 @@
 //! [`InputState`] and is handed to the model on every change.
 //!
 //! **Keys.** The filter has the keyboard while FILES has it, so typing
-//! filters. Up/Down move the selection and Enter activates it; Left goes up a folder while the filter is empty (it moves the caret otherwise);
+//! filters. Up/Down move the selection, Page Up/Page Down move it a page
+//! (the rows the list shows) and Enter activates it; Left goes up a folder while the filter is empty (it moves the caret otherwise);
 //! Escape clears the filter, then gives the keyboard back to the editor.
 //! These are the filter's own actions, caught on their way to it.
 //!
@@ -26,14 +27,16 @@
 //! window's app channel: the listing's redraws, file operations, and the
 //! note the editor opens and saves.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::input::{
-    Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MoveUp,
+    Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MovePageDown,
+    MovePageUp, MoveUp,
 };
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -48,7 +51,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::SortTarget;
-use kimun_notes::logic::message::{AppTx, FileOp};
+use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::Saved;
 use kimun_notes::logic::sort::{SortField, SortOrder, SortState};
@@ -56,6 +59,9 @@ use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
+use super::drawer_list::page_move;
+#[cfg(test)]
+use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
 use super::query_field::query_field;
 use super::sort::{chip_label, sort_chip};
@@ -136,6 +142,9 @@ pub(crate) enum FilesEvent {
     Sort,
 }
 
+/// Notes under each child folder of a folder, by the folder's path.
+type NoteCounts = HashMap<VaultPath, usize>;
+
 /// The FILES view. See the module docs.
 pub(crate) struct FilesPane {
     model: FilesModel,
@@ -144,6 +153,16 @@ pub(crate) struct FilesPane {
     tx: AppTx,
     /// The workspace's name: the breadcrumb's root.
     root_name: SharedString,
+    /// The folder the counts belong to and the notes under each of its
+    /// child folders (a folder with none is absent).
+    note_counts: (VaultPath, NoteCounts),
+    /// The counts are read: until then a folder's second line is blank.
+    counts_loaded: bool,
+    /// The newest count load started: older ones are dropped.
+    counts_gen: u64,
+    /// Counts a load finished with, taken up by [`Self::poll`] on the UI
+    /// thread, each with the folder and the generation it was loaded for.
+    counts_inbox: Arc<Mutex<Vec<(VaultPath, u64, NoteCounts)>>>,
     _filter_events: Subscription,
 }
 
@@ -200,6 +219,10 @@ impl FilesPane {
             scroll: UniformListScrollHandle::new(),
             tx,
             root_name,
+            note_counts: (VaultPath::root(), HashMap::new()),
+            counts_loaded: false,
+            counts_gen: 0,
+            counts_inbox: Arc::default(),
             _filter_events: filter_events,
         }
     }
@@ -242,6 +265,7 @@ impl FilesPane {
     /// ask for here: the first note opened, a folder opened elsewhere).
     pub(crate) fn navigate(&mut self, dir: VaultPath, cx: &mut Context<Self>) {
         self.model.navigate(dir, &self.tx);
+        self.load_counts();
         self.after_rebuild(cx);
     }
 
@@ -258,9 +282,37 @@ impl FilesPane {
 
     /// Something changed in `dir`: list it again if it is the one shown.
     pub(crate) fn refresh_if_showing(&mut self, dir: &VaultPath, cx: &mut Context<Self>) {
-        if dir.is_like(self.model.current_dir()) {
+        self.changed_in(&[dir], false, cx);
+    }
+
+    /// Something changed in each of `dirs` (one file operation): the shown
+    /// folder is listed again if it is one of them, and its counts are read
+    /// again, once, if one of them is the shown folder or (`below`) a folder
+    /// under it, whose notes count in a folder row of this listing.
+    fn changed_in(&mut self, dirs: &[&VaultPath], below: bool, cx: &mut Context<Self>) {
+        let shown = self.model.current_dir().clone();
+        let showing = dirs.iter().find(|dir| dir.is_like(&shown));
+        let under =
+            below && !self.model.is_empty() && dirs.iter().any(|dir| shown.is_ancestor_of(dir));
+        if let Some(dir) = showing {
             self.model.refresh_if_showing(dir, &self.tx);
+        }
+        if showing.is_some() || under {
+            self.load_counts();
+        }
+        if showing.is_some() {
             self.after_rebuild(cx);
+        } else if under {
+            cx.notify();
+        }
+    }
+
+    /// The index changed under the listing (indexing finished): read the
+    /// shown folder's counts again. Nothing before the first listing.
+    pub(crate) fn reload_counts(&mut self, cx: &mut Context<Self>) {
+        if !self.model.is_empty() {
+            self.load_counts();
+            cx.notify();
         }
     }
 
@@ -275,8 +327,93 @@ impl FilesPane {
         cx.notify();
     }
 
+    /// Read the note counts under the folders of the folder shown, off the
+    /// UI thread. Another folder's counts go at once (they would be wrong
+    /// on these rows); the same folder's stay until the new ones land.
+    fn load_counts(&mut self) {
+        let dir = self.model.current_dir().clone();
+        if !dir.is_like(&self.note_counts.0) {
+            self.forget_counts();
+            self.note_counts.0 = dir.clone();
+        }
+        self.counts_gen += 1;
+        let generation = self.counts_gen;
+        let vault = self.model.vault().clone();
+        let inbox = self.counts_inbox.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            match vault.child_note_counts(&dir).await {
+                Ok(counts) => {
+                    if let Ok(mut inbox) = inbox.lock() {
+                        inbox.push((dir, generation, counts));
+                    }
+                    let _ = tx.send(AppMessage::Redraw);
+                }
+                Err(e) => tracing::warn!("note counts failed for {dir}: {e}"),
+            }
+        });
+    }
+
+    /// The generation of the newest count load (tests).
+    #[cfg(test)]
+    pub(crate) fn counts_generation(&self) -> u64 {
+        self.counts_gen
+    }
+
+    /// Show the counts of load `generation` for `dir`, unless a newer load
+    /// has started since (a slower, older one must not overwrite it).
+    pub(crate) fn accept_load(
+        &mut self,
+        dir: VaultPath,
+        generation: u64,
+        counts: NoteCounts,
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.counts_gen {
+            self.accept_counts(dir, counts, cx);
+        }
+    }
+
+    /// Show `counts`, loaded for `dir`, unless FILES has left `dir`.
+    pub(crate) fn accept_counts(
+        &mut self,
+        dir: VaultPath,
+        counts: NoteCounts,
+        cx: &mut Context<Self>,
+    ) {
+        if !dir.is_like(self.model.current_dir()) {
+            return;
+        }
+        self.note_counts = (dir, counts);
+        self.counts_loaded = true;
+        cx.notify();
+    }
+
+    /// The counts are not known (as before they land).
+    pub(crate) fn forget_counts(&mut self) {
+        self.note_counts.1.clear();
+        self.counts_loaded = false;
+    }
+
+    /// What the second line of the folder row `path` says: its note count,
+    /// blank until the counts land.
+    fn count_line(&self, path: &VaultPath) -> SharedString {
+        if !self.counts_loaded || !path.get_parent_path().0.is_like(&self.note_counts.0) {
+            return SharedString::default();
+        }
+        note_count_text(self.note_counts.1.get(path).copied().unwrap_or(0))
+    }
+
     /// Apply what the load delivered (on the redraw it sends).
     pub(crate) fn poll(&mut self, cx: &mut Context<Self>) {
+        let landed = self
+            .counts_inbox
+            .lock()
+            .map(|mut inbox| std::mem::take(&mut *inbox))
+            .unwrap_or_default();
+        for (dir, generation, counts) in landed {
+            self.accept_load(dir, generation, counts, cx);
+        }
         let polled = self.model.poll();
         if polled.changed {
             if polled.restarted {
@@ -343,12 +480,13 @@ impl FilesPane {
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {
-                self.refresh_if_showing(&path.get_parent_path().0, cx);
+                self.changed_in(&[&path.get_parent_path().0], true, cx);
             }
-            // Gone from one folder, arrived in another: either may be shown.
+            // Gone from one folder, arrived in another: either may be shown,
+            // or under the one shown.
             FileOp::Moved { from, to } => {
-                self.refresh_if_showing(&from.get_parent_path().0, cx);
-                self.refresh_if_showing(&to.get_parent_path().0, cx);
+                let (from, to) = (from.get_parent_path().0, to.get_parent_path().0);
+                self.changed_in(&[&from, &to], true, cx);
             }
             FileOp::Renamed { from, to } if from.is_note() => {
                 self.model.rename_note_row(from, to);
@@ -377,6 +515,22 @@ impl FilesPane {
         }
         self.reveal_selection();
         cx.notify();
+    }
+
+    /// Move the selection one page down (`down`) or up: the rows the list
+    /// shows, clamped to the ends.
+    fn select_page(&mut self, down: bool, cx: &mut Context<Self>) {
+        if let Some(core) = self.model.core_mut() {
+            page_move(core, &self.scroll, down);
+        }
+        cx.notify();
+    }
+
+    /// The rows a page holds, as last laid out (tests).
+    #[cfg(test)]
+    pub(super) fn page(&self) -> usize {
+        let len = self.model.core().map_or(0, |core| core.visible_len());
+        page_of(&self.scroll, len)
     }
 
     fn reveal_selection(&self) {
@@ -510,7 +664,18 @@ impl FilesPane {
             | FileListEntry::Attachment { .. } => Some(row.path().clone()),
             FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
         };
-        let row = entry_row(row_id(row), row, selected, false, &theme::current(cx));
+        let dir_line = match row {
+            FileListEntry::Directory { path, .. } => Some(self.count_line(path)),
+            _ => None,
+        };
+        let row = entry_row(
+            row_id(row),
+            row,
+            selected,
+            false,
+            dir_line,
+            &theme::current(cx),
+        );
         let row = with_click_cursor(row, ClickPolicy::Open, true)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 ClickPolicy::Open.apply(event, this, pos, window, cx)
@@ -538,23 +703,37 @@ impl FilesPane {
 /// icon lane, the title (a note's filename and journal date under it), and
 /// the open-note lane. `with_path` puts the note's full vault path under the
 /// title instead of its filename: FILES lists one folder, so the filename
-/// says where it is, but a result list (finder, links, SEM) mixes folders. Every row has the same height ([`NOTE_ROW_REMS`]): the
-/// lists over these rows are uniform. The caller adds the pointer handling
-/// and `test_support`.
+/// says where it is, but a result list (the pickers) mixes folders.
+///
+/// A folder row has a second line too, so a list's rows keep one height.
+/// `dir_line` is that line when the caller has one (FILES: the note count,
+/// blank until it is known); without one, the line is the folder's parent
+/// path. It is ignored for the other kinds of row. Every row has the same
+/// height ([`NOTE_ROW_REMS`]): the lists over these rows are uniform. The
+/// caller adds the pointer handling and `test_support`.
 pub(super) fn entry_row(
     id: SharedString,
     row: &FileListEntry,
     selected: bool,
     with_path: bool,
+    dir_line: Option<SharedString>,
     t: &Theme,
 ) -> Stateful<Div> {
     let fg = theme::foreground(t);
     let muted = theme::muted(t);
     let (primary, secondary, glyph, text): (SharedString, Option<AnyElement>, _, _) = match row {
         FileListEntry::Up { .. } => ("..".into(), None, muted, muted),
-        FileListEntry::Directory { name, .. } => {
+        FileListEntry::Directory { name, path } => {
             let c = theme::directory(t);
-            (name.clone().into(), None, c, c)
+            let text = dir_line.unwrap_or_else(|| path.get_parent_path().0.to_string().into());
+            let line = ellipsis(text.clone())
+                .id(SharedString::from(format!("{id}-detail")))
+                .aria_label(text)
+                .test_support()
+                .text_xs()
+                .text_color(theme::secondary(t))
+                .into_any_element();
+            (name.clone().into(), Some(line), c, c)
         }
         FileListEntry::Note {
             path,
@@ -636,6 +815,16 @@ pub(super) fn entry_row(
                 )
             }),
     )
+}
+
+/// `1 note`, `3 notes`: what a folder row says under its name in FILES,
+/// and the result count FIND and SEM show over their lists.
+pub(super) fn note_count_text(n: usize) -> SharedString {
+    if n == 1 {
+        "1 note".into()
+    } else {
+        format!("{n} notes").into()
+    }
 }
 
 /// How a list's rows take a left click — one policy for every list (C1).
@@ -857,12 +1046,17 @@ where
 
 /// One line of text that ends in an ellipsis when it does not fit.
 pub(super) fn ellipsis(text: impl Into<SharedString>) -> Div {
+    ellipsis_box().child(text.into())
+}
+
+/// The box [`ellipsis`] puts its text in, for a child that is not plain
+/// text (a highlighted `StyledText` still ends in `…`).
+pub(super) fn ellipsis_box() -> Div {
     div()
         .min_w_0()
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
-        .child(text.into())
 }
 
 impl ClickRows for FilesPane {
@@ -932,6 +1126,14 @@ impl Render for FilesPane {
             }))
             .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
                 this.select_next(cx);
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageUp, _, cx| {
+                this.select_page(false, cx);
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(|this, _: &MovePageDown, _, cx| {
+                this.select_page(true, cx);
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(|this, _: &Enter, window, cx| {
@@ -1016,6 +1218,13 @@ impl Workspace {
     pub(super) fn poll_files(&mut self, cx: &mut Context<Self>) {
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, cx| pane.poll(cx));
+        }
+    }
+
+    /// Indexing finished: FILES' counts, read while it ran, are read again.
+    pub(super) fn files_reload_counts(&mut self, cx: &mut Context<Self>) {
+        if let Some(files) = self.files.as_ref() {
+            files.update(cx, |pane, cx| pane.reload_counts(cx));
         }
     }
 
