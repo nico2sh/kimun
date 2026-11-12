@@ -11,6 +11,8 @@
 #   --service           also set up a user service (systemd on Linux, launchd
 #                       on macOS) so the server starts on login and restarts
 #                       on failure
+#   --uninstall         stop and remove the user service, then remove the server
+#                       binary. Your configuration and data are not touched
 #
 # Env overrides:
 #   KIMUN_SERVER_INSTALL_DIR   install location (default: $HOME/.local/bin)
@@ -49,10 +51,12 @@ info() { printf '%s\n' "$1"; }
 warn() { printf 'warning: %s\n' "$1" >&2; }
 
 SETUP_SERVICE=0
+UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --service) SETUP_SERVICE=1 ;;
-    *) err "unknown option: $arg (supported: --service)" ;;
+    --uninstall) UNINSTALL=1 ;;
+    *) err "unknown option: $arg (supported: --service, --uninstall)" ;;
   esac
 done
 
@@ -241,6 +245,58 @@ restart_service_if_present() {
   esac
 }
 
+# --- uninstall ----------------------------------------------------------------
+# Stop and remove the user service if there is one, then the binary. The configuration
+# (server.toml) and the data (the vector store and the downloaded embedding model under
+# $STATE_DIR) stay: they are the user's, and the model is a few hundred MB to fetch again.
+uninstall() {
+  removed=0
+  remove() { # remove PATH: a file this script created
+    if [ -e "$1" ] || [ -L "$1" ]; then
+      rm -f "$1" || err "could not remove $1"
+      info "Removed $1"
+      removed=1
+    fi
+  }
+  # A failed stop is said aloud: the binary goes next, and a server that keeps running from
+  # a deleted binary cannot be managed by the service any more.
+  case "$(uname -s)" in
+    Linux)
+      if have systemctl; then
+        # Also stop a unit that is running but whose file is gone (or lives elsewhere).
+        if [ -f "$SYSTEMD_UNIT" ] || systemctl --user is-active --quiet kimun-server.service >/dev/null 2>&1; then
+          systemctl --user stop kimun-server.service >/dev/null 2>&1 \
+            || warn "could not stop kimun-server.service (no user session?). If the server is still running, stop it yourself: systemctl --user stop kimun-server.service"
+        fi
+        if [ -f "$SYSTEMD_UNIT" ]; then
+          systemctl --user disable kimun-server.service >/dev/null 2>&1 \
+            || warn "could not disable kimun-server.service: run systemctl --user disable kimun-server.service"
+        fi
+      elif [ -f "$SYSTEMD_UNIT" ]; then
+        warn "systemctl not found: the service was not stopped. If the server is still running, end the $BIN process yourself"
+      fi
+      if [ -f "$SYSTEMD_UNIT" ]; then
+        remove "$SYSTEMD_UNIT"
+        if have systemctl; then systemctl --user daemon-reload >/dev/null 2>&1 || true; fi
+      fi
+      ;;
+    Darwin)
+      if [ -f "$LAUNCHD_PLIST" ]; then
+        # launchctl also fails when the job is simply not loaded, so this is a warning.
+        launchctl unload "$LAUNCHD_PLIST" >/dev/null 2>&1 \
+          || warn "launchctl could not unload $LAUNCHD_PLIST (it may not be loaded). If the server is still running, end the $BIN process yourself"
+        remove "$LAUNCHD_PLIST"
+      fi
+      ;;
+  esac
+  remove "$INSTALL_DIR/$BIN"
+  if [ "$removed" = 0 ]; then
+    info "Nothing to remove: no $BIN found in $INSTALL_DIR."
+  else
+    info "Done. Your configuration ($CONFIG_FILE) and data ($STATE_DIR) were not touched."
+  fi
+}
+
 # --- the release manifest ---------------------------------------------------
 # https://kimun.2co.dev/latest.json names the newest stable release of each series and
 # each of its files with a url and sha256 (see .github/scripts/release_manifest.py). It
@@ -272,6 +328,11 @@ resolve_from_manifest() {
 }
 
 main() {
+  if [ "$UNINSTALL" -eq 1 ]; then
+    [ "$SETUP_SERVICE" -eq 0 ] || err "--uninstall cannot be combined with --service"
+    uninstall
+    exit 0
+  fi
   PLATFORM="$(detect_platform)"
   info "Detected platform: $PLATFORM"
 

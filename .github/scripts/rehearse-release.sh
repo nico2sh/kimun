@@ -13,6 +13,7 @@
 #
 # Nothing leaves the machine, and your real config and notes are not touched. What it cannot
 # show: the other platforms, GitHub's runners, the release page, Apple's signing.
+# shellcheck disable=SC2015  # `[ A ] && [ B ] || fail ...` is intended here: fail when either test is false
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -42,17 +43,18 @@ bash .github/scripts/release-dist.sh assemble "$platform" "$bin_dir" "$work/out"
 mv "$work/out/dist" "$art/dist-$platform"
 mv "$work/out/dist-gui" "$art/distgui-$platform"
 bash .github/scripts/release-dist.sh package "$art" "$version" >/dev/null
+# shellcheck disable=SC2012  # only reads our own release file names
 (cd "$art" && ls -lh kimun-* | awk '{print "   " $5 "  " $9}')
 PLATFORMS="$platform" EXPECT_DMG=0 bash .github/scripts/verify-release-assets.sh "$art" "$version"
 
 echo "== installing from the archives (scratch home)"
 home="$work/home"
 mkdir -p "$home"
-install_app() { # [--gui]
+install_app() { # --tui | --gui: one app, so a headless runner cannot skip the desktop app
   HOME="$home" KIMUN_INSTALL_DIR="$home/bin" KIMUN_VERSION="$version" KIMUN_DOWNLOAD_BASE="file://$art" \
     sh install.sh "$@" >"$work/install.log" 2>&1 || { cat "$work/install.log"; echo "install failed" >&2; exit 1; }
 }
-install_app
+install_app --tui
 install_app --gui
 [ -x "$home/bin/kimun" ] && [ -x "$home/bin/kimun-gui" ] || { echo "the installed binaries are missing" >&2; exit 1; }
 cmp -s "$home/bin/kimun" "$bin_dir/kimun" || { echo "the installed terminal app differs from the build" >&2; exit 1; }

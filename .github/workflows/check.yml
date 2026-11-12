@@ -107,6 +107,15 @@ jobs:
         if: matrix.lint
         run: bash .github/scripts/check-logic-layer.sh
 
+      # The installers run on users' machines through `curl | sh`: they are linted as
+      # POSIX sh, so a bashism fails here and not on a user's dash. The scripts under
+      # .github/scripts are bash. shellcheck is on the ubuntu runner image.
+      - name: Shell scripts pass shellcheck
+        if: matrix.lint
+        run: |
+          shellcheck -s sh install.sh install-server.sh
+          shellcheck -s bash release.sh .github/scripts/*.sh
+
       # The desktop app's launcher entry (assets/packaging). Nothing installs it
       # yet, so nothing else would notice a malformed one.
       - name: Desktop entry is valid

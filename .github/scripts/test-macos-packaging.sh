@@ -74,7 +74,9 @@ ok "a bad version or a missing binary is refused"
 
 # --- the signing sequence (dry run) -----------------------------------------------
 export SIGN_DRY_RUN=1
-export APPLE_CERT_P12="$(printf 'cert' | base64)" APPLE_NOTARY_KEY="$(printf 'key' | base64)"
+APPLE_CERT_P12="$(printf 'cert' | base64)"
+APPLE_NOTARY_KEY="$(printf 'key' | base64)"
+export APPLE_CERT_P12 APPLE_NOTARY_KEY
 export APPLE_CERT_PASSWORD="s3cret-pass" APPLE_SIGNING_IDENTITY="Developer ID Application: Test (ABCDE12345)"
 export APPLE_NOTARY_KEY_ID="KEYID123" APPLE_NOTARY_ISSUER_ID="issuer-uuid"
 log="$(bash .github/scripts/macos-sign.sh "$app" "$work/dmg/out.dmg")" || fail "the dry run failed: $log"
@@ -102,11 +104,25 @@ echo "$log" | grep -q "s3cret-pass" && fail "the certificate password was printe
 echo "$log" | grep -q "\*\*\*" || fail "nothing was masked where the password goes"
 ok "secrets are masked in the log"
 
-for var in APPLE_CERT_P12 APPLE_CERT_PASSWORD APPLE_SIGNING_IDENTITY APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+for var in APPLE_CERT_P12 APPLE_CERT_PASSWORD APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
   out="$(env -u "$var" bash .github/scripts/macos-sign.sh "$app" "$work/dmg/x.dmg" 2>&1)" && fail "ran without $var"
   echo "$out" | grep -q "$var is not set" || fail "$var not named: $out"
 done
 ok "each missing secret is named and stops the run"
+
+# The identity is optional: without the secret, the .p12's own identity signs.
+log2="$(env -u APPLE_SIGNING_IDENTITY bash .github/scripts/macos-sign.sh "$app" "$work/dmg/z.dmg")" || fail "the dry run needs the identity secret: $log2"
+echo "$log2" | grep -q -- "--sign <the Developer ID Application identity in the keychain>" || fail "no identity taken from the keychain"
+ok "the signing identity secret is optional"
+
+# --check: the early step of the workflow. Secrets, certificate, Apple's API key; no app.
+chk="$(bash .github/scripts/macos-sign.sh --check)" || fail "--check failed in the dry run: $chk"
+echo "$chk" | grep -q "security import" || fail "--check did not import the certificate"
+echo "$chk" | grep -q "notarytool history" || fail "--check did not ask Apple about the key"
+echo "$chk" | grep -qE "codesign --|notarytool submit|hdiutil" && fail "--check went on to sign or notarize"
+out="$(env -u APPLE_NOTARY_KEY_ID bash .github/scripts/macos-sign.sh --check 2>&1)" && fail "--check ran without a secret"
+echo "$out" | grep -q "APPLE_NOTARY_KEY_ID is not set" || fail "--check did not name the missing secret: $out"
+ok "--check: secrets, certificate and API key only"
 if bash .github/scripts/macos-sign.sh "$work/nope.app" "$work/dmg/y.dmg" >/dev/null 2>&1; then fail "signed a missing bundle"; fi
 ok "a missing bundle is refused"
 

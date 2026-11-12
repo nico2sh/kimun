@@ -23,6 +23,10 @@ name: release
 jobs:
   build:
     strategy:
+      # Every platform finishes. One flaky runner (an apt mirror outage on Linux)
+      # must not cancel the others, least of all the slow macOS signing jobs.
+      # create-release still needs all of them to pass.
+      fail-fast: false
       matrix:
         include:
           # `platform` is the release asset platform string; it flows through
@@ -56,6 +60,26 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Before the build, which takes ~15 minutes on a mac: a missing or wrong Apple
+      # secret fails here in a minute. Same rule as the signing step: signing is on
+      # when APPLE_CERT_P12 is set (the secrets context is not allowed in `if`).
+      - name: Check the Apple secrets
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        timeout-minutes: 10
+        run: |
+          if [ -n "$APPLE_CERT_P12" ]; then
+            bash .github/scripts/macos-sign.sh --check
+          else
+            echo "no Apple signing secrets: skipping the check"
+          fi
 
       # The desktop app (GPUI) links these on Linux.
       - name: Install GPUI system libraries
@@ -129,8 +153,12 @@ jobs:
             echo "::notice::no Apple signing secrets: no macOS .dmg is built; the raw macOS binary ships unsigned"
           fi
 
+      # Bounded: two Apple submissions, each waits up to 40 minutes at most
+      # (macos-sign.sh). A stuck call fails the step and does not hold the runner for the
+      # 6-hour default.
       - name: Sign, notarize and package the macOS app
         if: steps.apple.outputs.ready == 'true'
+        timeout-minutes: 120
         env:
           VERSION: ${{ steps.appver.outputs.version }}
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}

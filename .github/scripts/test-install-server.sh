@@ -32,6 +32,7 @@ ok "install.sh and install-server.sh read latest.json with the same code"
 # The key the installers pin: empty while signing is not live, else the committed one. All
 # three scripts must agree (all empty, or all the key in release-signing.pub).
 pinned() { # FILE -> the pinned key, or nothing
+  # shellcheck disable=SC2016  # the single quotes are on purpose: the text is a sed program
   sed -n -e 's/^SIGNING_PUBKEY="\(.*\)"$/\1/p' -e 's/^\$signingPubKey = "\(.*\)"\r\{0,1\}$/\1/p' "$1"
 }
 pins="$(for f in install.sh install-server.sh install.ps1; do printf '[%s]\n' "$(pinned "$f")"; done | sort -u)"
@@ -164,8 +165,62 @@ else
     command -v "$tool" >/dev/null && ln -sf "$(command -v "$tool")" "$nm/$tool"
   done
   out="$(run_signed sig-ok "$work/srel" "$work/sg-e" "$nm")" || fail "no minisign: install failed: $out"
+  # shellcheck disable=SC2015  # the first test is a plain grep: the failure message only runs when a check fails
   echo "$out" | grep -q "minisign is not installed" && echo "$out" | grep -q "not checked" || fail "no minisign: no warning: $out"
   ok "without minisign: installs on the sha256 alone, with a warning"
 fi
+
+# 13. --uninstall: stops and removes the user service, removes the binary, keeps the configuration
+# and the data. systemctl is a stub that logs its calls.
+sb="$work/sysbin"; mkdir -p "$sb"
+# shellcheck disable=SC2016  # the single quotes are on purpose: this is the text of a stub script
+# is-active answers from SYSTEMCTL_ACTIVE (set = running) and is not logged; SYSTEMCTL_FAIL makes the rest fail.
+cat >"$sb/systemctl" <<'STUB'
+#!/bin/sh
+case "$*" in *is-active*) [ -n "${SYSTEMCTL_ACTIVE:-}" ]; exit ;; esac
+echo "systemctl $*" >>"$SYSTEMCTL_LOG"
+[ -z "${SYSTEMCTL_FAIL:-}" ]
+STUB
+chmod +x "$sb/systemctl"
+uninstall_server() { # HOME [extra env ...]
+  local h="$1"; shift
+  env PATH="$sb:$PATH" HOME="$h" SYSTEMCTL_LOG="$h/systemctl.log" "$@" sh install-server.sh --uninstall
+}
+if [ "$(uname -s)" = Linux ]; then
+  h="$work/u1"; mkdir -p "$h/bin" "$h/.config/systemd/user" "$h/.config/kimun" "$h/.local/share/kimun/rag_sqlite"
+  echo x >"$h/bin/kimun-server"; echo unit >"$h/.config/systemd/user/kimun-server.service"
+  echo 'keep = "me"' >"$h/.config/kimun/server.toml"; echo db >"$h/.local/share/kimun/rag_sqlite/data"
+  out="$(uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" 2>&1)" || fail "server uninstall failed: $out"
+  [ ! -e "$h/bin/kimun-server" ] || fail "uninstall left the binary"
+  [ ! -e "$h/.config/systemd/user/kimun-server.service" ] || fail "uninstall left the unit"
+  grep -q "stop kimun-server.service" "$h/systemctl.log" || fail "the service was not stopped"
+  grep -q "disable kimun-server.service" "$h/systemctl.log" || fail "the service was not disabled"
+  grep -q 'keep = "me"' "$h/.config/kimun/server.toml" || fail "uninstall touched server.toml"
+  [ -f "$h/.local/share/kimun/rag_sqlite/data" ] || fail "uninstall touched the data"
+  ok "server --uninstall: service stopped and removed, binary removed, config and data kept"
+  out="$(uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" 2>&1)" || fail "a second server uninstall failed: $out"
+  echo "$out" | grep -q "Nothing to remove" || fail "a second uninstall said: $out"
+  ok "server --uninstall with nothing installed: a plain message, exit 0"
+  # Without --service ever used: only the binary goes, and systemctl is not called.
+  h="$work/u2"; mkdir -p "$h/bin"; echo x >"$h/bin/kimun-server"
+  uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" >/dev/null 2>&1 || fail "uninstall without a service failed"
+  [ ! -e "$h/bin/kimun-server" ] || fail "uninstall without a service left the binary"
+  [ ! -e "$h/systemctl.log" ] || fail "systemctl was called although no service was set up"
+  ok "server --uninstall without a service: only the binary, no systemctl"
+  # A running unit whose file is gone is still stopped.
+  h="$work/u3"; mkdir -p "$h/bin"; echo x >"$h/bin/kimun-server"
+  out="$(uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" SYSTEMCTL_ACTIVE=1 2>&1)" || fail "uninstall with a running unit failed: $out"
+  grep -q "stop kimun-server.service" "$h/systemctl.log" || fail "a running unit without a file was not stopped"
+  [ ! -e "$h/bin/kimun-server" ] || fail "uninstall left the binary"
+  ok "server --uninstall: a running unit with no unit file is still stopped"
+  # A failed stop is a warning, and the uninstall still finishes.
+  h="$work/u4"; mkdir -p "$h/bin" "$h/.config/systemd/user"; echo x >"$h/bin/kimun-server"; echo unit >"$h/.config/systemd/user/kimun-server.service"
+  out="$(uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" SYSTEMCTL_FAIL=1 2>&1)" || fail "uninstall failed when systemctl failed: $out"
+  echo "$out" | grep -q "could not stop kimun-server.service" || fail "a failed stop was not reported: $out"
+  [ ! -e "$h/bin/kimun-server" ] || fail "uninstall left the binary after a failed stop"
+  ok "server --uninstall: a failed service stop is reported, the rest still goes"
+fi
+if sh install-server.sh --uninstall --service >/dev/null 2>&1; then fail "--uninstall --service was accepted"; fi
+ok "server --uninstall cannot be combined with --service"
 
 echo "install-server.sh behaves"
