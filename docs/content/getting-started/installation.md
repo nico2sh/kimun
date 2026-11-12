@@ -104,7 +104,7 @@ If you installed with the install script, Kimün can update itself in place. The
 curl -fsSL https://kimun.2co.dev/install.sh | sh
 ```
 
-The command updates the apps that are installed. If only one app is installed, the command does not add the other one. To add it, use `--gui` or `--tui`. If the install script installed the desktop app, it also updates itself the same way.
+The command updates the apps that are installed. **If only one app is installed, the command does not add the other one.** For example, if you installed the terminal app before the desktop app existed, this command updates only the terminal app. To add the desktop app, run the script with `--gui`. To add the terminal app, use `--tui`. The script prints this reminder before and after it runs. If the install script installed the desktop app, it also updates itself the same way.
 
 If you installed with Homebrew or Cargo, use the same tool to update:
 

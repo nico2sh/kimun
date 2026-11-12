@@ -551,11 +551,17 @@ main() {
     if [ -e "$INSTALL_DIR/kimun-gui" ] || [ -d "${KIMUN_APP_DIR:-$HOME/Applications}/Kimun.app" ]; then have_gui=1; fi
     if [ "$have_tui" = 1 ] && [ "$have_gui" = 0 ]; then
       WANT_TUI=1
-      info "Updating the terminal app. To add the desktop app: $GUI_RETRY"
+      info "Updating the terminal app only: the desktop app is not installed."
+      ADD_HINT="==> The desktop app (kimun-gui) is NOT installed. To add it, run:
+    $GUI_RETRY"
+      info "$ADD_HINT"
     elif [ "$have_gui" = 1 ] && [ "$have_tui" = 0 ]; then
       WANT_GUI=1
       GUI_NAMED=1
-      info "Updating the desktop app. To add the terminal app: ${GUI_RETRY%--gui}--tui"
+      info "Updating the desktop app only: the terminal app is not installed."
+      ADD_HINT="==> The terminal app (kimun) is NOT installed. To add it, run:
+    ${GUI_RETRY%--gui}--tui"
+      info "$ADD_HINT"
     fi
   fi
   if [ "$WANT_TUI" = 0 ] && [ "$WANT_GUI" = 0 ]; then
@@ -674,6 +680,12 @@ main() {
         info "  export PATH=\"$INSTALL_DIR:\$PATH\""
         ;;
     esac
+  fi
+
+  # Said again at the end, where the eye lands, so a re-run that added nothing is not missed.
+  if [ -n "${ADD_HINT:-}" ]; then
+    info ""
+    info "$ADD_HINT"
   fi
 
   info ""
