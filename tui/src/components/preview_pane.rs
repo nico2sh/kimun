@@ -26,6 +26,10 @@ pub struct PreviewPane {
     /// it collapses the view (mirroring Enter). Empty when full mode is off:
     /// cleared by every state change that re-points or re-expands the preview.
     full_header_rect: Rect,
+    /// The shrink chevron in the full-expand header (its last column), recorded
+    /// each render. A click on it steps the view back one state; empty with
+    /// the header. Any host of a `PreviewPane` reads it the same way.
+    full_chevron_rect: Rect,
 }
 
 impl Default for PreviewPane {
@@ -39,6 +43,7 @@ impl PreviewPane {
         Self {
             model: PreviewModel::new(),
             full_header_rect: Rect::default(),
+            full_chevron_rect: Rect::default(),
         }
     }
 
@@ -58,9 +63,15 @@ impl PreviewPane {
         self.full_header_rect
     }
 
-    /// Drop the recorded full-expand header rect (the previous frame's region).
+    /// The header's shrink chevron cell, or an empty rect outside full mode.
+    pub fn full_chevron_rect(&self) -> Rect {
+        self.full_chevron_rect
+    }
+
+    /// Drop the recorded full-expand header rects (the previous frame's regions).
     pub fn clear_header(&mut self) {
         self.full_header_rect = Rect::default();
+        self.full_chevron_rect = Rect::default();
     }
 
     /// See [`PreviewModel::reset`]; also drops the header region.
@@ -159,6 +170,14 @@ impl PreviewPane {
             ]))
             .style(Style::default().bg(bg)),
             parts[0],
+        );
+        // The shrink chevron closes the header; a click on it steps back one
+        // state instead of collapsing like a click on the title does.
+        self.full_chevron_rect = crate::components::expand_chevron::paint(
+            f,
+            parts[0],
+            crate::components::expand_chevron::Reach::Shrink,
+            theme,
         );
 
         // Fixed divider.
