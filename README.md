@@ -97,6 +97,18 @@ To read the script before you run it, use these commands:
 curl -fsSLO https://kimun.2co.dev/install.sh && less install.sh && sh install.sh
 ```
 
+### Direct download
+
+These links always give the newest stable release. The file names have no version, so the links never change. See the [Downloads page](https://kimun.2co.dev/releases/) for all files, including the terminal app, and for how to check a download.
+
+| Desktop app | File |
+| --- | --- |
+| macOS, Apple silicon | [kimun-gui-macos-arm64.dmg](https://github.com/nico2sh/kimun/releases/latest/download/kimun-gui-macos-arm64.dmg) |
+| macOS, Intel | [kimun-gui-macos-x64.dmg](https://github.com/nico2sh/kimun/releases/latest/download/kimun-gui-macos-x64.dmg) |
+| Windows, x64 | [kimun-gui-windows-x64.zip](https://github.com/nico2sh/kimun/releases/latest/download/kimun-gui-windows-x64.zip) |
+| Linux, x64 | [kimun-gui-linux-x64.tar.gz](https://github.com/nico2sh/kimun/releases/latest/download/kimun-gui-linux-x64.tar.gz) |
+| Linux, arm64 | [kimun-gui-linux-arm64.tar.gz](https://github.com/nico2sh/kimun/releases/latest/download/kimun-gui-linux-arm64.tar.gz) |
+
 ### Homebrew (macOS and Linux)
 ```bash
 brew tap nico2sh/kimun
