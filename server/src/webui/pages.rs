@@ -38,6 +38,9 @@ pub(super) async fn dashboard(State(state): State<Arc<AppState>>) -> Markup {
         Some(crate::config::EmbedderConfig::OpenAI { url, model, .. }) => {
             format!("openai-compatible {model} @ {url}")
         }
+        Some(crate::config::EmbedderConfig::OpenRouter { model, .. }) => {
+            format!("openrouter {model}")
+        }
     };
     // Glance line: live counts so "is my server fine?" is answered before the
     // config echo. Skipped when the store can't be reached (the pages below

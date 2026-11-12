@@ -86,16 +86,29 @@ pub enum EmbedderConfig {
         #[serde(default)]
         query_prefix: String,
     },
+    /// OpenRouter's `/embeddings` endpoint (OpenAI wire, fixed URL). The key
+    /// falls back to `OPENROUTER_API_KEY` when absent.
+    #[serde(rename = "openrouter")]
+    OpenRouter {
+        model: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default)]
+        doc_prefix: String,
+        #[serde(default)]
+        query_prefix: String,
+    },
 }
 
 impl EmbedderConfig {
-    /// Short provider id (`fastembed` | `ollama` | `openai`) — used by the web
+    /// Short provider id (`fastembed` | `ollama` | `openai` | `openrouter`) — used by the web
     /// UI form and the `/health` capability probe.
     pub fn provider(&self) -> &'static str {
         match self {
             EmbedderConfig::FastEmbed { .. } => "fastembed",
             EmbedderConfig::Ollama { .. } => "ollama",
             EmbedderConfig::OpenAI { .. } => "openai",
+            EmbedderConfig::OpenRouter { .. } => "openrouter",
         }
     }
 
@@ -109,9 +122,9 @@ impl EmbedderConfig {
             EmbedderConfig::FastEmbed { model } => {
                 model.as_deref().unwrap_or("default").to_lowercase()
             }
-            EmbedderConfig::Ollama { model, .. } | EmbedderConfig::OpenAI { model, .. } => {
-                model.to_lowercase()
-            }
+            EmbedderConfig::Ollama { model, .. }
+            | EmbedderConfig::OpenAI { model, .. }
+            | EmbedderConfig::OpenRouter { model, .. } => model.to_lowercase(),
         };
         format!("{}:{}:{}", self.provider(), model, dimension)
     }
@@ -196,6 +209,9 @@ pub enum LlmConfig {
         reasoning: Option<ReasoningEffort>,
     },
 }
+
+/// OpenRouter's API base, shared by its chat and embeddings clients.
+pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1";
 
 /// The reasoning efforts OpenRouter accepts in `reasoning.effort`. A bad value
 /// in the TOML file fails when the config loads, like any other bad enum.
@@ -814,6 +830,34 @@ impl RagConfig {
                 };
                 Some(EmbedderConfig::OpenAI {
                     url: url.to_string(),
+                    model: model.to_string(),
+                    api_key,
+                    doc_prefix,
+                    query_prefix,
+                })
+            }
+            "openrouter" => {
+                let model = f.embedder_model.trim();
+                if model.is_empty() {
+                    anyhow::bail!("The OpenRouter embedder needs a model.");
+                }
+                // Same carry rule as openai: key and prefixes survive a save
+                // only while the type is unchanged.
+                let (current_key, doc_prefix, query_prefix) = match &self.embedder {
+                    Some(EmbedderConfig::OpenRouter {
+                        api_key,
+                        doc_prefix,
+                        query_prefix,
+                        ..
+                    }) => (api_key.clone(), doc_prefix.clone(), query_prefix.clone()),
+                    _ => (None, String::new(), String::new()),
+                };
+                let api_key = if f.embedder_api_key.is_empty() {
+                    current_key
+                } else {
+                    Some(f.embedder_api_key.clone())
+                };
+                Some(EmbedderConfig::OpenRouter {
                     model: model.to_string(),
                     api_key,
                     doc_prefix,
@@ -1591,6 +1635,46 @@ path = "/data/old_lance"
             other => panic!("expected openai, got {other:?}"),
         }
         // Switched type → key must not leak into the new embedder.
+        let mut f = form("none", "");
+        f.embedder_provider = "ollama".into();
+        f.embedder_url = "http://x:11434".into();
+        f.embedder_model = "m".into();
+        let out = cfg.apply_form(f).unwrap();
+        assert!(matches!(out.embedder, Some(EmbedderConfig::Ollama { .. })));
+    }
+
+    #[test]
+    fn openrouter_embedder_toml_form_and_key_carry() {
+        let cfg: RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[embedder]\ntype = \"openrouter\"\nmodel = \"openai/text-embedding-3-small\"\napi_key = \"or-key\"\n[reranker]\n",
+        )
+        .unwrap();
+        let emb = cfg.embedder.as_ref().unwrap();
+        assert_eq!(emb.provider(), "openrouter");
+        assert_eq!(
+            emb.fingerprint(1536),
+            "openrouter:openai/text-embedding-3-small:1536"
+        );
+
+        // Same type, blank key and blank (ignored) URL → key carried.
+        let mut f = form("none", "");
+        f.embedder_provider = "openrouter".into();
+        f.embedder_model = "openai/text-embedding-3-small".into();
+        let out = cfg.apply_form(f).unwrap();
+        match &out.embedder {
+            Some(EmbedderConfig::OpenRouter { api_key, model, .. }) => {
+                assert_eq!(api_key.as_deref(), Some("or-key"));
+                assert_eq!(model, "openai/text-embedding-3-small");
+            }
+            other => panic!("expected openrouter, got {other:?}"),
+        }
+
+        // A model is required: no hidden default for an embedder.
+        let mut f = form("none", "");
+        f.embedder_provider = "openrouter".into();
+        assert!(cfg.apply_form(f).is_err());
+
+        // Switched type → the key must not leak into the new embedder.
         let mut f = form("none", "");
         f.embedder_provider = "ollama".into();
         f.embedder_url = "http://x:11434".into();

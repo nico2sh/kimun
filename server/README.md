@@ -125,6 +125,10 @@ See `config.example.toml` for the annotated template. Sections:
     Google Gemini via its OpenAI-compatibility layer
     (`url = "https://generativelanguage.googleapis.com/v1beta/openai"`,
     `model = "gemini-embedding-001"`). See `config.example.toml`.
+  - `type = "openrouter"` — OpenRouter's `/embeddings` endpoint, with a fixed
+    URL: `model` (required, for example `openai/text-embedding-3-small`),
+    optional `api_key` (falls back to `OPENROUTER_API_KEY`),
+    `doc_prefix`/`query_prefix`.
 
   The vector width is detected automatically. **Changing the embedder or model
   invalidates all stored vectors** and forces a re-index — drop the store (the
