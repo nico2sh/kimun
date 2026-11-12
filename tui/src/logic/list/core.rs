@@ -511,8 +511,8 @@ impl<R: ListRow> ListCore<R> {
         };
         // Filter-exempt rows (match_text() == None: Up / Create / virtual pinned)
         // are always present; prepend any that the filter dropped.
-        for i in 0..self.rows.len() {
-            if self.rows[i].match_text().is_none() && !idx.contains(&i) {
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.match_text().is_none() && !idx.contains(&i) {
                 idx.insert(0, i);
             }
         }
