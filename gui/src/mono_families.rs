@@ -42,7 +42,12 @@ pub fn is_monospace(advance: impl Fn(char) -> Option<f32>) -> bool {
 /// fallback face; it is skipped rather than judged by that face.
 pub fn list(text_system: &TextSystem) -> Vec<String> {
     let size = px(PROBE_SIZE);
-    // No family has this name: it resolves to the fallback face.
+    // No family has this name, so it forces the text system's fallback
+    // font: a listed family that resolves to the same face cannot be loaded
+    // and is skipped. Resolving it logs one "failed to load font" warning;
+    // the text system caches the result, so that is about once per session.
+    // `resolve_font` panics only if none of the system's fallbacks resolve,
+    // and the app's own font resolution takes that same path.
     let fallback = text_system.resolve_font(&font("\u{1}kimun-no-such-family"));
     let mut names: Vec<String> = text_system
         .all_font_names()

@@ -109,8 +109,8 @@ All keys are under `[gui]`. Preferences writes them for you.
 | `window_decorations` | `"client"` (default), `"system"` | Sets which program draws the title bar. `"client"` is the title bar of Kimün, in the colors of the theme. `"system"` is the title bar of the operating system. If the custom bar fails on your desktop, use this value. The app reads this key at start, so restart the app to change it. macOS always keeps its native window buttons. |
 | `reduce_motion` | `true`, `false` (default) | Stops decorative motion, such as the bouncing dots of the welcome screen and the spinners. The app does not read the setting of the operating system. |
 | `layout_preset` | the name of a preset | The preset that the saved layout started from. |
-| `editor_font_family` | the name of an installed font family | Sets the font of the editor. If you omit the key, the editor uses the monospace font of your theme. An empty value counts as missing. If the family is not installed, the editor uses the theme font, and the file keeps your value. |
-| `editor_font_size` | a number from `8` to `32` | Sets the size of the editor text in points. If you omit the key, the editor uses the size of your theme. A number outside the range becomes the nearest limit. A value of the wrong type counts as missing. |
+| `editor_font_family` | the name of an installed font family | Sets the font of the editor. A font family is the name of a typeface, like Menlo. The name must match the installed name exactly, including capital letters. If you omit the key, the editor uses the monospace font of your theme. In a monospace font, all characters have the same width. An empty value counts as missing. If the family is not installed, the editor uses the theme font, and the file keeps your value. |
+| `editor_font_size` | a whole number from `8` to `32` | Sets the size of the editor text in points. If you omit the key, the editor uses the size of your theme. A number outside the range becomes the nearest limit. A value of the wrong type counts as missing. |
 
 `[gui.layout]` is the saved layout. Leave it to the app.
 
@@ -120,7 +120,7 @@ The interface uses [Inter](https://rsms.me/inter/). The app embeds the font, and
 
 To choose the editor font, open Preferences > Display and use the Font row. The dropdown lists only the monospace families that the app finds on your machine. You can type to search it. Use the size stepper to set a size from 8 to 32 points. The font applies to the editor only. It takes effect when you save in Preferences.
 
-If the family has no bold face, the editor keeps your family and draws the bold text synthetically. If the family is not installed, the editor uses the theme font. The dropdown then shows the name with "(not installed)".
+If the family has no bold style, the editor keeps your family. It then draws each bold character twice, with a small offset. If the family is not installed, the editor uses the theme font. The dropdown then shows the name with "(not installed)".
 
 ## Updates
 

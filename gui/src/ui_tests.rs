@@ -1885,13 +1885,14 @@ fn changing_the_size_repaints_rows_at_the_new_width(cx: &mut TestAppContext) {
 
 /// Degraded: the headless text system lists no font at all, and adding the
 /// embedded Inter faces does not change that (`ui_font::register` reports
-/// `Missing`). So no second family can be painted here. This pins what can
-/// be seen: the preferred family is handed to the face choice
+/// `Missing`). So no second family can be painted here, and this test does
+/// not show a preferred family being painted. It pins what can be seen: the
+/// preferred family is handed to the face choice
 /// (`editor_font::face_inputs`), and one that is not installed falls back to
 /// the theme's face. That an installed preferred family wins is pinned by
-/// `fonts::tests::a_preferred_family_*` (Task 3) on the pure choice rule.
+/// `fonts::tests::a_preferred_family_*` on the pure choice rule.
 #[gpui_kit::test]
-fn a_preferred_family_reaches_the_painted_face(cx: &mut TestAppContext) {
+fn a_preferred_family_that_is_not_installed_paints_the_theme_face(cx: &mut TestAppContext) {
     let (handle, view) = open(cx, "text");
     cx.update_window(handle, |_, window, cx| {
         assert!(window.text_system().all_font_names().is_empty());

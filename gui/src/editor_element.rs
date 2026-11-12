@@ -190,6 +190,20 @@ fn snap(b: Bounds<Pixels>, scale: f32) -> Bounds<Pixels> {
     Bounds::new(point(x0, y0), size(x1 - x0, (y1 - y0).max(px(1.0 / scale))))
 }
 
+/// The family the autocomplete popup's text paints in: the editor's
+/// resolved family when the user prefers one (its cells are measured in that
+/// face), else the kit's monospace family, exactly as before.
+fn popup_family(
+    kit_family: SharedString,
+    preferred: Option<&SharedString>,
+    fonts: &EditorFonts,
+) -> SharedString {
+    match preferred {
+        Some(_) => fonts.family.clone(),
+        None => kit_family,
+    }
+}
+
 /// Paints one [`EditorView`]. Built fresh each frame by the view's `render`.
 pub struct EditorElement {
     view: Entity<EditorView>,
@@ -209,19 +223,20 @@ impl EditorElement {
         let (kit_family, preferred, font_size) = editor_font::face_inputs(cx);
         let line_height = px((f32::from(font_size) * LINE_HEIGHT).round());
         let text_system = window.text_system().clone();
-        let cells = self.view.update(cx, |view, _| {
+        let (cells, font_family) = self.view.update(cx, |view, _| {
             let fonts = view.editor_fonts(&kit_family, preferred.as_ref(), &text_system);
-            CellMetrics::from_text_system(
+            let cells = CellMetrics::from_text_system(
                 &text_system,
                 &fonts.face(false, false),
                 font_size,
                 line_height,
-            )
+            );
+            (cells, popup_family(kit_family, preferred.as_ref(), &fonts))
         });
         let theme = theme::current(cx);
         let style = PopupStyle {
             cells: &cells,
-            font_family: kit_family,
+            font_family,
             font_size,
             theme: &theme,
         };
@@ -821,6 +836,29 @@ impl Element for EditorElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pure, because it cannot be seen headlessly: the GPUI test text system
+    /// has no fonts, so a preferred family never resolves and `fonts.family`
+    /// is always the kit's there.
+    #[test]
+    fn the_popup_paints_in_the_resolved_family_only_when_one_is_preferred() {
+        let kit = SharedString::from("Kit Mono");
+        let resolved = EditorFonts {
+            family: SharedString::from("Alpha Mono"),
+            faux_bold: false,
+        };
+        let preferred = SharedString::from("Alpha Mono");
+        assert_eq!(
+            popup_family(kit.clone(), Some(&preferred), &resolved),
+            "Alpha Mono"
+        );
+        // Unset: the kit's family, as before, whatever the face rule chose.
+        let substitute = EditorFonts {
+            family: SharedString::from("Fallback Mono"),
+            faux_bold: false,
+        };
+        assert_eq!(popup_family(kit.clone(), None, &substitute), kit);
+    }
 
     #[test]
     fn mode_line_puts_the_hint_on_the_trailing_edge_while_it_fits() {

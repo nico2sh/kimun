@@ -1299,6 +1299,30 @@ mod tests {
         assert!(!run.completes_double(1, 1, at(100)));
     }
 
+    /// Degraded: the headless GPUI text system has no fonts, so every
+    /// family resolves to the same fallback and the chosen family cannot
+    /// tell the calls apart. What is pinned is the cache key: a new
+    /// `preferred` with the same kit family must miss the cache and be
+    /// stored, so a key on `kit_family` alone fails here.
+    #[gpui_kit::test]
+    fn a_new_preferred_family_is_a_new_face_cache_key(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        let text_system = cx.text_system().clone();
+        let view = cx.new(|cx| EditorView::new(None, false, cx));
+        let kit = SharedString::from("Kit Mono");
+        let alpha = SharedString::from("Alpha Mono");
+        let beta = SharedString::from("Beta Mono");
+        let key = |view: &EditorView| view.fonts.as_ref().map(|(k, p, _)| (k.clone(), p.clone()));
+        view.update(cx, |view, _| {
+            view.editor_fonts(&kit, Some(&alpha), &text_system);
+            assert_eq!(key(view), Some((kit.clone(), Some(alpha.clone()))));
+            view.editor_fonts(&kit, Some(&beta), &text_system);
+            assert_eq!(key(view), Some((kit.clone(), Some(beta.clone()))));
+            view.editor_fonts(&kit, None, &text_system);
+            assert_eq!(key(view), Some((kit.clone(), None)));
+        });
+    }
+
     #[test]
     fn utf16_offsets_round_trip_through_chars() {
         // 'a' (1 unit), 'é' (1), '😀' (2), 'b' (1).
