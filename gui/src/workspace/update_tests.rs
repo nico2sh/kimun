@@ -28,6 +28,8 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::update::InstallChannel;
 use tokio::runtime::Runtime;
 
+use crate::bundle::relaunch::RecordingRelauncher;
+
 use super::modal::ModalKind;
 use super::note::Closing;
 use super::preferences::{CHECK_UPDATES_ID, Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID};
@@ -35,7 +37,8 @@ use super::start_tests::{Started, drive, runtime, vault_start};
 use super::update::{
     ACTION_TOAST_LIFETIME, INSTALL_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED, UPDATE_CLOSE_ID,
     UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID, UPDATE_LATER_ID,
-    UPDATE_NOTES_ID, UPDATE_SKIP_ID, UPDATE_TEXT_ID, UPDATE_VERSIONS_ID, UpdateDialog,
+    UPDATE_NOTES_ID, UPDATE_NOW_LABEL, UPDATE_SKIP_ID, UPDATE_TEXT_ID, UPDATE_VERSIONS_ID,
+    UPDATING_TEXT, UpdateDialog, VIEW_LABEL,
 };
 use super::{FLASH_MESSAGE_ID, LayoutStore, TOAST_ACTION_ID, ToastAction, Workspace};
 use crate::editor_view::{self, EditorView};
@@ -244,10 +247,23 @@ impl Started {
         self.age_toasts(Duration::from_millis(500), cx);
     }
 
-    /// The toast's `View`: the dialog.
+    /// The dialog, as the toast's `View` and the palette row open it.
     fn up_view(&self, cx: &mut TestAppContext) {
-        self.up_click(TOAST_ACTION_ID, cx);
+        self.up_on_window(cx, |w, window, cx| w.open_update_dialog(window, cx));
+        cx.run_until_parked();
         assert_eq!(self.shown_modal(cx), Some(ModalKind::Update));
+    }
+
+    /// The label of the toast action button that is up, if one is.
+    fn up_action_label(&self, cx: &mut TestAppContext) -> Option<String> {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find_all(TOAST_ACTION_ID)
+                .into_iter()
+                .find_map(|e| e.label().map(str::to_string))
+        })
+        .unwrap()
     }
 }
 
@@ -291,9 +307,9 @@ fn an_offline_startup_check_is_silent(cx: &mut TestAppContext) {
 }
 
 /// A newer version: exactly one toast, "Kimün <v> is available", with
-/// `View`; never repeated in the session.
+/// `Update now` (the install is possible); never repeated in the session.
 #[gpui_kit::test]
-fn a_found_version_is_announced_once_with_view(cx: &mut TestAppContext) {
+fn a_found_version_is_announced_once_with_update_now(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let v = vault(&rt);
@@ -302,13 +318,14 @@ fn a_found_version_is_announced_once_with_view(cx: &mut TestAppContext) {
     s.age_toasts(Duration::from_millis(500), cx);
     let text = rules::available_text(NEW);
     assert_eq!(s.up_toasts(cx), std::slice::from_ref(&text));
-    assert_eq!(s.up_actions(cx), 1, "with View");
+    assert_eq!(s.up_actions(cx), 1, "with one button");
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(UPDATE_NOW_LABEL));
     assert_eq!(s.up_flashes(cx), [(text, false)]);
     // Re-entering the vault (a reopen) neither checks nor announces again.
     s.up_on_window(cx, |w, _, cx| w.check_updates_on_start(cx));
     assert_eq!(fake.checks().len(), 1);
     assert_eq!(s.up_flashes(cx).len(), 1);
-    // Its View opens the dialog.
+    // The dialog (the palette row) shows the versions.
     s.up_view(cx);
     assert_eq!(
         s.up_label(UPDATE_VERSIONS_ID, cx),
@@ -422,19 +439,20 @@ fn the_palette_row_checks_and_reports_up_to_date(cx: &mut TestAppContext) {
     );
 }
 
-/// Available: the toast with View opens the dialog; the palette row then
-/// opens the dialog without checking again.
+/// Available where no install is possible: the toast with View opens the
+/// dialog; the palette row then opens the dialog without checking again.
 #[gpui_kit::test]
 fn a_manual_check_that_finds_one_offers_view(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let v = vault(&rt);
     set_update_check(&v, false);
-    let fake = Arc::new(ScriptedUpdates::with_release(NEW));
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW).channel(InstallChannel::Brew));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
     s.up_found(&rt, cx);
     assert!(s.up_toasts(cx).contains(&rules::available_text(NEW)));
-    s.up_view(cx);
+    s.up_click(TOAST_ACTION_ID, cx);
+    assert_eq!(s.shown_modal(cx), Some(ModalKind::Update));
     s.age_toasts(Duration::from_millis(500), cx);
     assert!(
         !s.up_toasts(cx).contains(&rules::available_text(NEW)),
@@ -598,12 +616,17 @@ fn later_on_a_failure_during_a_check_cleans_it_up(cx: &mut TestAppContext) {
     set_update_check(&v, false);
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     s.up_found(&rt, cx);
     s.up_view(cx);
     s.up_click(UPDATE_INSTALL_ID, cx);
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
     });
+    cx.run_until_parked();
+    assert_eq!(relauncher.calls(), 0, "a failed install does not restart");
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
     fake.hold();
     fake.go_offline("network unreachable");
     s.up_on_window(cx, |w, _, cx| w.check_updates_now(cx));
@@ -810,12 +833,15 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     let fake =
         Arc::new(ScriptedUpdates::with_release(NEW).install_delay(Duration::from_millis(400)));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     cx.update_window(s.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
     cx.run_until_parked();
     assert!(cx.read(|cx| s.workspace.read(cx).editor_dirty(cx)));
     s.up_found(&rt, cx);
     s.up_view(cx);
+    assert_eq!(relauncher.calls(), 0, "nothing restarts before the install");
     // Enter: the primary button, Install.
     s.up_press("enter", cx);
     drive(&rt, cx, |cx| {
@@ -849,8 +875,11 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     assert_eq!(fake.installs(), 1);
     assert_eq!(
         s.up_label(UPDATE_TEXT_ID, cx),
-        Some(rules::installed_text(NEW))
+        Some(rules::installed_restarting_text(NEW))
     );
+    // The install ended the app, and asked for it to start again.
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(relauncher.calls(), 1, "the app restarts once");
     let dialog = s.up_dialog(cx).unwrap();
     let title = cx.read(|cx| dialog.read(cx).title());
     assert_eq!(title, TITLE_INSTALLED);
@@ -904,12 +933,17 @@ fn a_failed_install_offers_retry(cx: &mut TestAppContext) {
     set_update_check(&v, false);
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
     s.up_found(&rt, cx);
     s.up_view(cx);
     s.up_click(UPDATE_INSTALL_ID, cx);
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
     });
+    cx.run_until_parked();
+    assert_eq!(relauncher.calls(), 0, "a failed install does not restart");
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
     assert_eq!(
         s.up_label(UPDATE_ERROR_ID, cx),
         Some(rules::install_failed_text("checksum mismatch"))
@@ -927,6 +961,144 @@ fn a_failed_install_offers_retry(cx: &mut TestAppContext) {
     assert!(!s.shows(UPDATE_ERROR_ID, cx));
 }
 
+/// The toast's `Update now` runs the whole install without the dialog: the
+/// note is saved, the update installs, and the app restarts.
+#[gpui_kit::test]
+fn the_toast_updates_in_one_click(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
+    cx.update_window(s.handle, |_, window, cx| window.input("X", cx))
+        .unwrap();
+    cx.run_until_parked();
+    s.up_found(&rt, cx);
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(UPDATE_NOW_LABEL));
+    s.up_click(TOAST_ACTION_ID, cx);
+    assert_eq!(s.shown_modal(cx), None, "no dialog opens");
+    assert!(
+        s.up_flashes(cx)
+            .contains(&(UPDATING_TEXT.to_string(), false)),
+        "the toast says it is updating"
+    );
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(fake.installs(), 1);
+    assert_eq!(relauncher.calls(), 1);
+    let on_disk = rt
+        .block_on(v.vault.get_note_text(&VaultPath::new("a.md")))
+        .unwrap();
+    assert_eq!(on_disk, "Xalpha", "the note was written before the install");
+}
+
+/// A failed install from the toast: an error toast with `Retry`, which
+/// installs again.
+#[gpui_kit::test]
+fn a_failed_toast_install_offers_retry(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW).install_fails("checksum mismatch"));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
+    s.up_found(&rt, cx);
+    s.up_click(TOAST_ACTION_ID, cx);
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Failed { .. })
+    });
+    s.age_toasts(Duration::from_millis(500), cx);
+    let error = rules::install_failed_text("checksum mismatch");
+    assert!(s.up_flashes(cx).contains(&(error.clone(), true)));
+    assert!(s.up_toasts(cx).contains(&error));
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(RETRY_LABEL));
+    assert_eq!(s.shown_modal(cx), None, "still no dialog");
+    assert_eq!(relauncher.calls(), 0);
+    fake.set_install(Ok(()));
+    s.up_click(TOAST_ACTION_ID, cx);
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(fake.installs(), 2);
+    assert_eq!(relauncher.calls(), 1);
+}
+
+/// A note that cannot be let go refuses the toast's install too, as an
+/// error toast with `Retry`; nothing is installed.
+#[gpui_kit::test]
+fn a_failed_flush_refuses_the_toast_install(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake = Arc::new(ScriptedUpdates::with_release(NEW));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    s.up_found(&rt, cx);
+    s.up_on_window(cx, |w, _, _| {
+        w.properties_opening = Some(gpui_kit::Task::ready(()));
+    });
+    s.up_click(TOAST_ACTION_ID, cx);
+    s.age_toasts(Duration::from_millis(500), cx);
+    let flashes = s.up_flashes(cx);
+    assert!(
+        flashes.iter().any(|(text, error)| *error
+            && text
+                .starts_with("Couldn't install the update: the open note couldn't be saved first")),
+        "{flashes:?}"
+    );
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(RETRY_LABEL));
+    assert_eq!(fake.installs(), 0);
+    s.up_on_window(cx, |w, _, _| w.properties_opening = None);
+}
+
+/// A quit the install asked for that the window refuses leaves no restart
+/// armed: the user is told to restart by hand, and a later deliberate quit
+/// ends the app without starting it again.
+#[gpui_kit::test]
+fn a_refused_quit_after_the_install_does_not_restart_later(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake =
+        Arc::new(ScriptedUpdates::with_release(NEW).install_delay(Duration::from_millis(400)));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
+    s.up_found(&rt, cx);
+    s.up_view(cx);
+    s.up_press("enter", cx);
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| s.workspace.read(cx).updates.machine.is_installing())
+    });
+    // Something holds the window open when the install lands.
+    s.up_on_window(cx, |w, _, _| {
+        w.updates.flushing = Some(gpui_kit::Task::ready(()));
+    });
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).quits),
+        0,
+        "the quit was refused"
+    );
+    assert_eq!(relauncher.calls(), 0);
+    assert!(
+        s.up_flashes(cx)
+            .contains(&(rules::installed_text(NEW), false)),
+        "the user is told to restart by hand"
+    );
+    // Later, a deliberate quit: no restart.
+    s.up_on_window(cx, |w, _, _| w.updates.flushing = None);
+    s.up_on_window(cx, |w, window, cx| w.request_quit(window, cx));
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(relauncher.calls(), 0, "a plain quit does not restart");
+}
+
 /// A package-managed install: the package manager's words and command,
 /// Release notes as the primary, no Install.
 #[gpui_kit::test]
@@ -938,7 +1110,9 @@ fn a_managed_install_has_no_install_button(cx: &mut TestAppContext) {
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).channel(InstallChannel::Brew));
     let s = on_vault(cx, &rt, &v, Some(fake.clone()));
     s.up_found(&rt, cx);
-    s.up_view(cx);
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(VIEW_LABEL));
+    s.up_click(TOAST_ACTION_ID, cx);
+    assert_eq!(s.shown_modal(cx), Some(ModalKind::Update));
     assert_eq!(
         s.up_label(UPDATE_TEXT_ID, cx).as_deref(),
         Some(rules::PACKAGE_MANAGER_TEXT)
@@ -967,6 +1141,7 @@ fn a_managed_install_has_no_install_button(cx: &mut TestAppContext) {
     let fake = Arc::new(ScriptedUpdates::with_release(NEW).published(false));
     let s = on_vault(cx, &rt, &v, Some(fake));
     s.up_found(&rt, cx);
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(VIEW_LABEL));
     s.up_view(cx);
     assert_eq!(
         s.up_label(UPDATE_TEXT_ID, cx).as_deref(),

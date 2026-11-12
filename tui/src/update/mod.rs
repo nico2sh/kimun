@@ -20,7 +20,7 @@ mod provider;
 mod state;
 
 pub use channel::InstallChannel;
-pub use platform::Product;
+pub use platform::{Product, bundle_asset_name};
 pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
 
@@ -156,6 +156,13 @@ pub fn fetch_latest() -> Result<LatestRelease, UpdateError> {
 /// The caller must gate on [`InstallChannel::self_update_eligible`] first.
 pub fn apply(latest: &LatestRelease, product: Product) -> Result<(), UpdateError> {
     apply::self_update(latest, product)
+}
+
+/// Download the release asset `asset_name` of `latest`, verified against its
+/// published digest. Blocking. For installers that handle their own file (the
+/// desktop app's macOS bundle); the raw binary goes through [`apply()`].
+pub fn download_asset(latest: &LatestRelease, asset_name: &str) -> Result<Vec<u8>, UpdateError> {
+    apply::download_verified(latest, asset_name)
 }
 
 /// Run a blocking update operation on the blocking pool, flattening the

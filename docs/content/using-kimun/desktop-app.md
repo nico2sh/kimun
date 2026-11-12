@@ -129,7 +129,17 @@ If the family has no bold style, the editor keeps your family. It then draws eac
 
 When the desktop app starts, it looks for a new Kimün release and tells you in a toast. To turn this off, use `update_check` in `config.toml`. To look for a release at any time, use Preferences > Display > Check now, or leader `v u`.
 
-The `Install update` button of the update dialog downloads the release binary of the desktop app (`kimun-gui-<version>-<platform>`). It makes sure that the checksum is correct, and then it replaces the running binary. Restart the app to use the new version. The dialog offers this only for a copy that the install script installed or that you placed yourself. In these cases, the dialog shows you the correct way to update instead: Homebrew, `cargo install`, a system package, and the macOS `.app` from the `.dmg`. If a release has no desktop build for your system, the dialog says so.
+When Kimün can update itself, the toast has an `Update now` button. One click saves your open note, downloads the new version, makes sure that the checksum is correct, and replaces the running app. Then the app restarts by itself. The update dialog has the same action as `Install update`. Open the dialog from the palette to read the release notes or to skip a version. If an update fails, an error appears with a `Retry` button.
+
+Kimün updates itself in these cases:
+
+- You installed it with the install script.
+- You placed the binary yourself.
+- You use the macOS `Kimun.app`, and the folder that holds it is one that you can write to. The default folder of the install script, `~/Applications`, is such a folder.
+
+For the macOS app, Kimün replaces the whole `Kimun.app`. Before it does, it makes sure that the new app has a valid Developer ID signature and that the same developer team signed it as the app that runs now. If one of these checks fails, Kimün keeps the app that you have. A development build has no developer team and never updates itself.
+
+In all other cases, the toast has a `View` button, and the dialog shows you the correct way to update: Homebrew, `cargo install`, a system package, or the releases page. If a release has no desktop build for your system, the update fails and the message tells you to use the releases page.
 
 If a [Kimün server](@/using-kimun/server.md) reports a newer release of itself, you get a toast. Update the server the same way that you installed it.
 

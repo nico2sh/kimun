@@ -69,9 +69,8 @@ On Windows, the PowerShell installer also installs both apps. It takes `-Tui` an
 
 Or use a one-line form: `$env:KIMUN_GUI = 1; irm https://kimun.2co.dev/install.ps1 | iex`. For the terminal app only, use `-Tui` or `KIMUN_TUI = 1`.
 The installer adds a Start-menu shortcut for the desktop app. Both apps share one folder and one marker. The overrides of the installer (`KIMUN_INSTALL_DIR`, `KIMUN_VERSION`) work as in `install.sh`.
-You can also download `kimun-gui-<version>-windows-x64.zip` from the
-[GitHub releases page](https://github.com/nico2sh/kimun/releases) and run
-`kimun-gui.exe`.
+You can also download `kimun-gui-windows-x64.zip` from the
+[Downloads page](@/releases/_index.md) and run `kimun-gui.exe`.
 
 ## Uninstalling
 

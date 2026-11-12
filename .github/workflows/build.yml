@@ -301,6 +301,9 @@ jobs:
           # Prereleases can't be latest, so mirror the `prerelease` condition.
           make_latest: ${{ !contains(steps.extract_version.outputs.version, '-') }}
           append_body: false
+          # The archive and .dmg globs also match the stable downloads (the same files
+          # with no version in the name, ADR-0057), so they are uploaded with the rest.
+          # The verify step above already required every one of them.
           files: |
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz

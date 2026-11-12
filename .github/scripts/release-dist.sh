@@ -14,6 +14,8 @@
 #       every release asset (a raw binary and an archive per app and platform, the
 #       signed macOS .dmg files when there are any) and checksums-sha256.txt.
 #       Names: kimun[-gui]-<version>-<platform>[.exe|.tar.gz|.zip|.dmg].
+#       Every archive and .dmg also gets a stable download, a copy with no version in
+#       its name (kimun[-gui]-<platform>.tar.gz|.zip|.dmg), checksummed like the rest.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -68,6 +70,16 @@ package() {
   # The signed macOS app, when there is one (artifacts dmg-<platform>).
   for f in dmg-*/*.dmg; do
     cp "$f" .
+  done
+
+  # A stable download per archive and .dmg: the same file with no version in its name
+  # (kimun-gui-macos-arm64.dmg), so `releases/latest/download/<name>` never changes
+  # (ADR-0057). Raw binaries get none: updaters find those by their versioned names.
+  # The glob runs before any alias exists, and an alias has no `-<version>-` in it.
+  local versioned
+  for versioned in kimun-*-"${version}"-*.zip kimun-*-"${version}"-*.tar.gz \
+    kimun-*-"${version}"-*.dmg kimun-"${version}"-*.zip kimun-"${version}"-*.tar.gz; do
+    cp "$versioned" "${versioned/-${version}-/-}"
   done
 
   # Archives, raw binaries and .dmg files (nullglob drops any absent). `kimun-*`
