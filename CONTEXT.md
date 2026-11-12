@@ -382,7 +382,8 @@ _Avoid_: text box, text area, TextEdit.
 
 **Edit surface font**:
 The monospace family and absolute size in pixels (8 to 32) the **Edit surface** paints in, chosen in **GUI** Preferences and applied when the user saves. It never changes the rest of the **GUI**'s text. A family without a real bold face keeps the user's choice and draws bold synthetically. Unset means the theme's default.
-_Avoid_: editor font (the TUI has no font of its own), UI font (that is the interface's Inter face).
+The Preferences row that sets it is titled "Editor Font", a label for users; in code and this glossary the term is **Edit surface font**.
+_Avoid_: UI font (that is the interface's Inter face).
 
 **Key input**:
 What the user typed, terminal-neutrally: a character (`$`, `é`) or a named key (Enter, Esc, arrows, F-keys) plus modifiers — the unit the editing engines consume. Distinct from a **key combo**, which names a physical key for the shortcut table.
