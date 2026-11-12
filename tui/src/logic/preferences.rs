@@ -20,6 +20,7 @@ use kimun_core::system::SystemPath;
 use kimun_core::{IndexFile, NoteVault, NotesValidation, VaultConfig};
 
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::layout_tree::RailPosition;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::history::HistoryFile;
 use crate::settings::themes::Theme;
@@ -351,6 +352,10 @@ pub struct PreferencesModel {
     /// `[gui] editor_font_size` in pixels: `None` = the theme's size.
     /// Desktop-only, written only when it differs from the config's value.
     pub editor_font_size: Option<u8>,
+    /// `[gui] rail`: the window edge the desktop app's Activity rail sits
+    /// on (ADR-0055). Desktop-only, carried and written like
+    /// `reduce_motion`.
+    pub rail: RailPosition,
     /// Which-key reveal delay, see [`step_leader_delay`].
     pub leader_timeout_ms: u64,
     pub default_sort_field: SortFieldSetting,
@@ -381,6 +386,7 @@ impl PreferencesModel {
             reduce_motion: s.gui.reduce_motion(),
             editor_font_family: s.gui.editor_font_family(),
             editor_font_size: s.gui.editor_font_size(),
+            rail: s.gui.rail(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -584,6 +590,7 @@ impl PreferencesModel {
             || self.reduce_motion != initial.gui.reduce_motion()
             || self.editor_font_family != initial.gui.editor_font_family()
             || self.editor_font_size != initial.gui.editor_font_size()
+            || self.rail != initial.gui.rail()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -633,6 +640,9 @@ impl PreferencesModel {
         }
         if s.gui.editor_font_size() != self.editor_font_size {
             s.gui.set_editor_font_size(self.editor_font_size);
+        }
+        if s.gui.rail() != self.rail {
+            s.gui.set_rail(self.rail);
         }
         let global = &mut s
             .workspace_config

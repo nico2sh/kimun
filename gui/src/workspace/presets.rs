@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::{Context, Window};
-use kimun_notes::logic::layout_tree::LayoutTree;
 use kimun_notes::logic::layout_tree::spec::{self, ChildSpec};
+use kimun_notes::logic::layout_tree::{LayoutTree, RailPosition};
 use kimun_notes::logic::nav::DrawerView;
 
 use super::{LayoutStore, Workspace};
@@ -45,6 +45,8 @@ pub(crate) const PRESET_GONE: &str = "Preset no longer in layouts.toml";
 pub(crate) struct PresetLoad {
     /// The presets by name, empty when the file is missing, empty or broken.
     pub(crate) presets: BTreeMap<String, ChildSpec>,
+    /// The `rail` each preset sets (ADR-0055 §2), by preset name.
+    pub(crate) rails: BTreeMap<String, RailPosition>,
     /// Why the file could not be read or parsed; `None` when it was fine
     /// or is missing.
     pub(crate) error: Option<String>,
@@ -59,6 +61,7 @@ pub(crate) fn load(dir: &Path) -> PresetLoad {
         Err(e) => {
             return PresetLoad {
                 presets: BTreeMap::new(),
+                rails: BTreeMap::new(),
                 error: Some(format!("could not be read: {e}")),
             };
         }
@@ -66,10 +69,12 @@ pub(crate) fn load(dir: &Path) -> PresetLoad {
     match spec::parse_presets(&text) {
         Ok(file) => PresetLoad {
             presets: file.preset,
+            rails: file.rails,
             error: None,
         },
         Err(message) => PresetLoad {
             presets: BTreeMap::new(),
+            rails: BTreeMap::new(),
             error: Some(message),
         },
     }
@@ -121,24 +126,27 @@ impl LayoutStore {
         }
     }
 
-    /// The `layout_preset` the store's `[gui]` records, read fresh.
-    fn recorded_preset(&self) -> Option<String> {
+    /// The store's `[gui]` table, read fresh. Empty for a store that
+    /// persists nothing, or whose config does not read.
+    pub(super) fn recorded_gui(&self) -> kimun_notes::settings::gui::GuiSettings {
         match self {
             #[cfg(test)]
-            LayoutStore::Off => None,
+            LayoutStore::Off => Default::default(),
             LayoutStore::UserConfig => kimun_notes::settings::AppSettings::load_read_only()
-                .ok()?
-                .gui
-                .layout_preset(),
+                .map(|settings| settings.gui)
+                .unwrap_or_default(),
             #[cfg(test)]
-            LayoutStore::File(path) => {
-                let text = std::fs::read_to_string(path).ok()?;
-                toml::from_str::<kimun_notes::settings::AppSettings>(&text)
-                    .ok()?
-                    .gui
-                    .layout_preset()
-            }
+            LayoutStore::File(path) => std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| toml::from_str::<kimun_notes::settings::AppSettings>(&text).ok())
+                .map(|settings| settings.gui)
+                .unwrap_or_default(),
         }
+    }
+
+    /// The `layout_preset` the store's `[gui]` records, read fresh.
+    fn recorded_preset(&self) -> Option<String> {
+        self.recorded_gui().layout_preset()
     }
 }
 
@@ -153,11 +161,13 @@ impl Workspace {
         self.layout_preset = self.store.recorded_preset();
         let Some(dir) = self.store.presets_dir() else {
             self.presets.clear();
+            self.preset_rails.clear();
             return;
         };
         let load = load(&dir);
         if load.error.is_none() {
             self.presets = load.presets;
+            self.preset_rails = load.rails;
         }
         if let Some(error) = load.error {
             tracing::warn!("{PRESETS_FILE}: {error}");
@@ -207,6 +217,7 @@ impl Workspace {
             PresetCommand::ResetDefault => self.install_layout(
                 LayoutTree::default_layout(DrawerView::Files),
                 None,
+                Some(RailPosition::default()),
                 window,
                 cx,
             ),
@@ -245,7 +256,8 @@ impl Workspace {
                 return;
             }
         };
-        self.install_layout(tree, Some(name), window, cx);
+        let rail = self.preset_rails.get(name).copied();
+        self.install_layout(tree, Some(name), rail, window, cx);
         if !warnings.is_empty() {
             self.flash(
                 format!(
@@ -267,10 +279,15 @@ impl Workspace {
         &mut self,
         tree: LayoutTree<DrawerView>,
         preset: Option<&str>,
+        rail: Option<RailPosition>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.layout = tree;
+        // A preset that sets no rail leaves the position alone (ADR-0055 §2).
+        if let Some(rail) = rail {
+            self.rail = rail;
+        }
         self.side_memory = Default::default();
         self.collapsed.clear();
         self.resizing = false;

@@ -1315,6 +1315,79 @@ fn an_untouched_save_never_adds_the_keys(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
+/// Display > Rail position: part of the draft like Reduce motion, saved as
+/// `[gui] rail` with the rest of `[gui]` kept, and applied to the open window
+/// at once, without a reopen.
+#[gpui_kit::test]
+fn the_rail_position_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::RailPosition;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let system = kimun_notes::settings::gui::WindowDecorations::System;
+    AppSettings::update_gui_at(config(&v), |gui| gui.set_window_decorations(system)).unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_window_decorations(system);
+    let s = with_prefs(cx, &rt, &v);
+    let files = s.files_id(cx);
+    s.pf_section(cx, Section::Display);
+    assert!(s.pf_disabled(SAVE_ID, cx), "clean: Save is off");
+
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Top, cx));
+    assert_eq!(s.pf_model(cx, |m| m.rail), RailPosition::Top);
+    assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).rail),
+        RailPosition::Left,
+        "not applied before Save"
+    );
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Left, cx));
+    assert!(s.pf_disabled(SAVE_ID, cx), "picked back: clean");
+
+    s.pf_with_view(cx, |v, _, cx| v.set_rail_position(RailPosition::Top, cx));
+    s.pf_save(&rt, cx);
+    for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
+        assert_eq!(settings.gui.rail(), RailPosition::Top);
+        assert_eq!(
+            settings.gui.window_decorations(),
+            system,
+            "the rest of [gui] is kept"
+        );
+    }
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).rail),
+        RailPosition::Top,
+        "applied at once"
+    );
+    assert_eq!(s.files_id(cx), files, "no reopen");
+    settle(&rt, cx);
+}
+
+/// The rail moved from the palette or a preset before Preferences opened:
+/// Preferences start from that position, and saving another setting leaves
+/// the rail where it is (the shared settings follow every rail change).
+#[gpui_kit::test]
+fn a_rail_move_before_preferences_is_not_undone_by_saving_them(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::RailPosition;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = on_vault(cx, &rt, &v);
+    s.pf_on_window(cx, |w, _, cx| w.set_rail(RailPosition::Top, cx));
+    s.pf_route(cx);
+    s.pf_loaded(&rt, cx);
+    assert_eq!(s.pf_model(cx, |m| m.rail), RailPosition::Top);
+    s.pf_section(cx, Section::Display);
+    s.pf_click(REDUCE_MOTION_ID, cx);
+    s.pf_save(&rt, cx);
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).rail), RailPosition::Top);
+    assert_eq!(on_disk(&v).gui.rail(), RailPosition::Top);
+    settle(&rt, cx);
+}
+
 /// A write that fails (the config on disk no longer parses) keeps the view
 /// open with the reason, and the settings as they were.
 #[gpui_kit::test]
