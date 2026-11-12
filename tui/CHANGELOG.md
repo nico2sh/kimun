@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.10](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.9...kimun-notes-v0.24.10) - 2026-11-12
+
+### Added
+
+- one installer for both apps
+
+### Fixed
+
+- better detection on powershell
+- windows theme colors fixed in powershell
+
+### Other
+
+- rewording
+
 ## [0.24.9](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.8...kimun-notes-v0.24.9) - 2026-11-10
 
 ### Added
