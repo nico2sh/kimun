@@ -20,6 +20,7 @@ use kimun_core::system::SystemPath;
 use kimun_core::{IndexFile, NoteVault, NotesValidation, VaultConfig};
 
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::layout_tree::RailPosition;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::history::HistoryFile;
 use crate::settings::themes::Theme;
@@ -345,6 +346,10 @@ pub struct PreferencesModel {
     /// unchanged; it is written only when it differs from the config's
     /// value, so a save that did not touch it never adds the key.
     pub reduce_motion: bool,
+    /// `[gui] rail`: the window edge the desktop app's Activity rail sits
+    /// on (ADR-0055). Desktop-only, carried and written like
+    /// `reduce_motion`.
+    pub rail: RailPosition,
     /// Which-key reveal delay, see [`step_leader_delay`].
     pub leader_timeout_ms: u64,
     pub default_sort_field: SortFieldSetting,
@@ -373,6 +378,7 @@ impl PreferencesModel {
             update_check: s.update_check(),
             mouse: s.mouse(),
             reduce_motion: s.gui.reduce_motion(),
+            rail: s.gui.rail(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -566,6 +572,7 @@ impl PreferencesModel {
             || self.update_check != initial.update_check()
             || self.mouse != initial.mouse()
             || self.reduce_motion != initial.gui.reduce_motion()
+            || self.rail != initial.gui.rail()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -608,6 +615,9 @@ impl PreferencesModel {
         s.use_nerd_fonts = self.use_nerd_fonts;
         if s.gui.reduce_motion() != self.reduce_motion {
             s.gui.set_reduce_motion(self.reduce_motion);
+        }
+        if s.gui.rail() != self.rail {
+            s.gui.set_rail(self.rail);
         }
         let global = &mut s
             .workspace_config

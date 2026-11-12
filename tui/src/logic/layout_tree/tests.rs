@@ -550,6 +550,46 @@ mod spec_tests {
         ask: true,
     };
 
+    const WITH_RAIL: &str = r#"
+[preset.writing]
+rail = "bottom"
+split = "horizontal"
+children = [{ views = ["files"] }, { editor = true }]
+
+[preset.plain]
+split = "horizontal"
+children = [{ views = ["files"] }, { editor = true }]
+"#;
+
+    #[test]
+    fn a_preset_with_rail_parses_and_the_tree_is_unchanged() {
+        let file = parse_presets(WITH_RAIL).unwrap();
+        assert_eq!(file.rails.get("writing"), Some(&RailPosition::Bottom));
+        assert_eq!(file.rails.get("plain"), None);
+        assert_eq!(file.preset["writing"], file.preset["plain"]);
+    }
+
+    #[test]
+    fn a_preset_with_a_bad_rail_names_the_preset() {
+        let text = WITH_RAIL.replace("\"bottom\"", "\"diagonal\"");
+        let message = parse_presets(&text).unwrap_err();
+        assert!(message.contains("preset \"writing\""), "{message}");
+        assert!(message.contains("diagonal"), "{message}");
+        let message = parse_presets(&WITH_RAIL.replace("\"bottom\"", "3")).unwrap_err();
+        assert!(message.contains("preset \"writing\""), "{message}");
+    }
+
+    #[test]
+    fn rail_on_an_inner_node_is_an_error() {
+        let text = r#"
+[preset.x]
+split = "horizontal"
+children = [{ views = ["files"], rail = "left" }, { editor = true }]
+"#;
+        let message = parse_presets(text).unwrap_err();
+        assert!(message.contains("Unknown key \"rail\""), "{message}");
+    }
+
     fn slot(views: &[&str], shown: Option<&str>) -> ChildSpec {
         ChildSpec {
             weight: None,
@@ -624,6 +664,7 @@ mod spec_tests {
         let tree = LayoutTree::default_layout(DrawerView::Files);
         let file = PresetFile {
             preset: [("default".to_string(), to_spec(&tree))].into(),
+            rails: Default::default(),
         };
         let text = toml::to_string(&file).expect("serializes");
         let back = parse_presets(&text).expect("parses");
@@ -1030,6 +1071,82 @@ fn focus_dir_among_skips_leaves_that_are_not_visible() {
     );
 }
 
+#[test]
+fn facing_points_from_the_layout_to_the_rail() {
+    assert_eq!(RailPosition::Left.facing(), Dir::Left);
+    assert_eq!(RailPosition::Right.facing(), Dir::Right);
+    assert_eq!(RailPosition::Top.facing(), Dir::Up);
+    assert_eq!(RailPosition::Bottom.facing(), Dir::Down);
+}
+
+#[test]
+fn focus_from_the_rail_goes_toward_the_layout_for_each_position() {
+    for rail in RailPosition::ALL {
+        let mut t = tree();
+        let (left, right) = sides(&t);
+        let first = if rail == RailPosition::Right {
+            right
+        } else {
+            left
+        };
+        t.focus(Focus::Rail);
+        assert_eq!(
+            t.focus_dir_in(rail.toward(), &|_| true, Some(rail)),
+            TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(first))),
+            "{rail:?}"
+        );
+        // Back on the rail: away from the layout is the edge, and the
+        // cross-axis keys are not the rail's.
+        t.focus(Focus::Rail);
+        assert_eq!(
+            t.focus_dir_in(rail.facing(), &|_| true, Some(rail)),
+            TreeFocusMove::AtEdge,
+            "{rail:?}"
+        );
+        for cross in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+            if cross == rail.toward() || cross == rail.facing() {
+                continue;
+            }
+            assert_eq!(
+                t.focus_dir_in(cross, &|_| true, Some(rail)),
+                TreeFocusMove::NotHandled,
+                "{rail:?} {cross:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn focus_toward_the_rail_from_the_layout_edge_reaches_it() {
+    let g = Leaf::Group(GroupId::new(0));
+    for rail in [RailPosition::Right, RailPosition::Top, RailPosition::Bottom] {
+        let mut t = tree();
+        let (left, right) = sides(&t);
+        // Only the editor is drawn: nothing lies between it and the rail.
+        let only_group = move |l: Leaf| l != Leaf::Slot(left) && l != Leaf::Slot(right);
+        t.focus(Focus::Leaf(g));
+        assert_eq!(
+            t.focus_dir_in(rail.facing(), &only_group, Some(rail)),
+            TreeFocusMove::Moved(Focus::Rail),
+            "{rail:?}"
+        );
+    }
+}
+
+#[test]
+fn focus_toward_a_hidden_rail_stops_at_the_edge() {
+    let g = Leaf::Group(GroupId::new(0));
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let only_group = move |l: Leaf| l != Leaf::Slot(left) && l != Leaf::Slot(right);
+    t.focus(Focus::Leaf(g));
+    assert_eq!(
+        t.focus_dir_in(Dir::Left, &only_group, None),
+        TreeFocusMove::AtEdge
+    );
+    assert_eq!(t.focused(), Focus::Leaf(g));
+}
+
 // ── Fit ───────────────────────────────────────────────────────────────
 
 /// The default layout at 35 units wide with every leaf 10 wide and the
@@ -1074,7 +1191,7 @@ fn side_queries_follow_the_active_group() {
     assert_eq!(t.side_slots(Side::Right), vec![right]);
     assert_eq!(t.slot_side(left), Side::Left);
     assert_eq!(t.slot_side(right), Side::Right);
-    assert_eq!(t.slot_beside_rail(), Some(left));
+    assert_eq!(t.slot_beside_rail(RailPosition::Left), Some(left));
     assert!(!t.slot_stacked(left, &|_| true));
 }
 
@@ -1085,7 +1202,7 @@ fn slot_stacked_sees_a_slot_in_the_same_column_that_is_drawn() {
     let below = t.split_slot(left, Axis::Vertical).unwrap();
     assert!(t.slot_stacked(left, &|_| true));
     assert!(!t.slot_stacked(left, &|s| s != below));
-    assert_eq!(t.slot_beside_rail(), Some(left));
+    assert_eq!(t.slot_beside_rail(RailPosition::Left), Some(left));
 }
 
 #[test]
@@ -1501,4 +1618,62 @@ fn edge_slots_exclude_slots_between_groups_and_ignore_the_active_group() {
     assert!(t.side_slots(Side::Left).contains(&mid));
     t.focus(Focus::Leaf(Leaf::Group(a)));
     assert_eq!(t.edge_slots(Side::Left), left);
+}
+
+#[test]
+fn rail_position_reads_and_writes_lowercase() {
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+    struct Holder {
+        rail: RailPosition,
+    }
+    for (text, want) in [
+        ("left", RailPosition::Left),
+        ("right", RailPosition::Right),
+        ("top", RailPosition::Top),
+        ("bottom", RailPosition::Bottom),
+    ] {
+        let parsed: Holder = toml::from_str(&format!("rail = \"{text}\"")).unwrap();
+        assert_eq!(parsed.rail, want);
+        assert_eq!(
+            toml::to_string(&parsed).unwrap().trim(),
+            format!("rail = \"{text}\"")
+        );
+    }
+    assert!(toml::from_str::<Holder>("rail = \"diagonal\"").is_err());
+    assert_eq!(RailPosition::default(), RailPosition::Left);
+}
+
+#[test]
+fn toward_points_into_the_layout() {
+    assert_eq!(RailPosition::Left.toward(), Dir::Right);
+    assert_eq!(RailPosition::Right.toward(), Dir::Left);
+    assert_eq!(RailPosition::Top.toward(), Dir::Down);
+    assert_eq!(RailPosition::Bottom.toward(), Dir::Up);
+}
+
+#[test]
+fn place_dir_is_the_axis_pair() {
+    for rail in [RailPosition::Left, RailPosition::Right] {
+        assert!(!rail.horizontal());
+        assert!(rail.place_dir(Dir::Up) && rail.place_dir(Dir::Down));
+        assert!(!rail.place_dir(Dir::Left) && !rail.place_dir(Dir::Right));
+    }
+    for rail in [RailPosition::Top, RailPosition::Bottom] {
+        assert!(rail.horizontal());
+        assert!(rail.place_dir(Dir::Left) && rail.place_dir(Dir::Right));
+        assert!(!rail.place_dir(Dir::Up) && !rail.place_dir(Dir::Down));
+    }
+}
+
+#[test]
+fn slot_beside_rail_follows_the_edge() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let left_below = t.split_slot(left, Axis::Vertical).unwrap();
+    let right_below = t.split_slot(right, Axis::Vertical).unwrap();
+    assert_eq!(t.slot_beside_rail(RailPosition::Left), Some(left));
+    assert_eq!(t.slot_beside_rail(RailPosition::Right), Some(right));
+    assert_eq!(t.slot_beside_rail(RailPosition::Top), Some(left));
+    assert_eq!(t.slot_beside_rail(RailPosition::Bottom), Some(left_below));
+    let _ = right_below;
 }

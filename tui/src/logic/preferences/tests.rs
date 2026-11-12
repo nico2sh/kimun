@@ -366,12 +366,15 @@ fn dirty_tracks_each_field() {
     let s = with_workspaces(&["main"], "main");
     let base = PreferencesModel::new(&s);
     assert!(!base.dirty(&s));
-    let edits: [Edit; 13] = [
+    let edits: [Edit; 14] = [
         ("theme", |m| m.theme_name = "Gruvbox Light".to_string()),
         ("nerd fonts", |m| m.use_nerd_fonts = !m.use_nerd_fonts),
         ("update check", |m| m.update_check = !m.update_check),
         ("mouse", |m| m.mouse = !m.mouse),
         ("reduce motion", |m| m.reduce_motion = !m.reduce_motion),
+        ("rail", |m| {
+            m.rail = crate::logic::layout_tree::RailPosition::Top
+        }),
         ("leader delay", |m| m.step_leader_delay(true)),
         ("default field", |m| m.cycle_sort(SortSlot::DefaultField)),
         ("default order", |m| m.cycle_sort(SortSlot::DefaultOrder)),
@@ -407,6 +410,7 @@ fn apply_writes_every_section() {
     m.update_check = false;
     m.mouse = false;
     m.reduce_motion = true;
+    m.rail = crate::logic::layout_tree::RailPosition::Bottom;
     m.leader_timeout_ms = 100;
     m.default_sort_field = SortFieldSetting::Title;
     m.default_sort_order = SortOrderSetting::Descending;
@@ -423,6 +427,10 @@ fn apply_writes_every_section() {
     assert!(!out.update_check());
     assert!(!out.mouse());
     assert!(out.gui.reduce_motion());
+    assert_eq!(
+        out.gui.rail(),
+        crate::logic::layout_tree::RailPosition::Bottom
+    );
     assert_eq!(out.leader_timeout_ms, 100);
     assert_eq!(out.default_sort_field, SortFieldSetting::Title);
     assert_eq!(out.default_sort_order, SortOrderSetting::Descending);
@@ -1018,4 +1026,29 @@ fn reduce_motion_is_written_only_when_changed() {
         crate::settings::gui::WindowDecorations::System,
         "the rest of [gui] is kept"
     );
+}
+
+/// `[gui] rail` is desktop-only like `reduce_motion`: read into the draft,
+/// written only when it changed, the rest of `[gui]` kept, and the default
+/// position removes the key.
+#[test]
+fn rail_is_written_only_when_changed() {
+    use crate::logic::layout_tree::RailPosition;
+    let s = with_workspaces(&["main"], "main");
+    let m = PreferencesModel::new(&s);
+    assert_eq!(m.rail, RailPosition::Left);
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(out.gui, s.gui, "an untouched draft adds no [gui] key");
+
+    let mut s = s;
+    s.gui.set_rail(RailPosition::Right);
+    s.gui.set_rail_hidden(true);
+    let mut m = PreferencesModel::new(&s);
+    assert_eq!(m.rail, RailPosition::Right, "read from the config");
+    m.rail = RailPosition::Left;
+    let mut out = s.clone();
+    m.apply(&mut out);
+    assert_eq!(out.gui.rail(), RailPosition::Left);
+    assert!(out.gui.rail_hidden(), "the rest of [gui] is kept");
 }

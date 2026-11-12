@@ -227,6 +227,11 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // too: Ctrl+Shift+letter is no vim chord (no twin needed) and
         // Cmd+Shift+M is no macOS default.
         A::ToggleZoom => &["primary+shift+m"],
+        // Hide or show the rail (ADR-0055): A for the Activity rail.
+        // Everywhere, so the editor can hide it too; Ctrl+Shift+letter is no
+        // vim chord (no twin needed). Not R: Ctrl+Shift+R is the sort
+        // dialog's vim twin.
+        A::ToggleRail => &["primary+shift+a"],
         // The command palette (M6): VS Code's chord. Primary+P stays free for
         // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
         A::OpenCommandPalette => &["primary+shift+p"],

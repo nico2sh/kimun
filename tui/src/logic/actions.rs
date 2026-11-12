@@ -103,6 +103,9 @@ pub enum ActionShortcuts {
     /// The desktop app's search browser: close it and show its query in the
     /// FIND view (ADR-0054). The TUI binds no chord to it.
     OpenQueryInSidebar,
+    /// Hide or show the desktop app's Activity rail (ADR-0055). The TUI's
+    /// rail is fixed and binds no chord to it.
+    ToggleRail,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -165,7 +168,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 53] = [
+    pub const ALL: [ActionShortcuts; 54] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -219,6 +222,7 @@ impl ActionShortcuts {
         ActionShortcuts::MoveViewToNeighbour(Dir::Down),
         ActionShortcuts::ToggleZoom,
         ActionShortcuts::OpenQueryInSidebar,
+        ActionShortcuts::ToggleRail,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -237,6 +241,7 @@ impl ActionShortcuts {
             | A::SplitSlotRight
             | A::SplitSlotDown
             | A::CloseSlot
+            | A::ToggleRail
             | A::ToggleZoom => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
@@ -321,6 +326,7 @@ impl Display for ActionShortcuts {
                 "MoveViewToNeighbourDown".to_string()
             }
             ActionShortcuts::ToggleZoom => "ToggleZoom".to_string(),
+            ActionShortcuts::ToggleRail => "ToggleRail".to_string(),
             ActionShortcuts::OpenQueryInSidebar => "OpenQueryInSidebar".to_string(),
         };
         write!(f, "{}", action)
@@ -379,6 +385,7 @@ impl TryFrom<String> for ActionShortcuts {
             "MoveViewToNeighbourUp" => ActionShortcuts::MoveViewToNeighbour(Dir::Up),
             "MoveViewToNeighbourDown" => ActionShortcuts::MoveViewToNeighbour(Dir::Down),
             "ToggleZoom" => ActionShortcuts::ToggleZoom,
+            "ToggleRail" => ActionShortcuts::ToggleRail,
             "OpenQueryInSidebar" => ActionShortcuts::OpenQueryInSidebar,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
@@ -445,9 +452,10 @@ mod tests {
             ActionShortcuts::MoveViewToNeighbour(_) => 32,
             ActionShortcuts::ToggleZoom => 33,
             ActionShortcuts::OpenQueryInSidebar => 34,
+            ActionShortcuts::ToggleRail => 35,
         }
     }
-    const VARIANTS: usize = 35;
+    const VARIANTS: usize = 36;
 
     #[test]
     fn all_lists_every_variant() {
@@ -494,6 +502,7 @@ mod tests {
             ActionShortcuts::MoveViewToNeighbour(Dir::Down),
             ActionShortcuts::ToggleZoom,
             ActionShortcuts::OpenQueryInSidebar,
+            ActionShortcuts::ToggleRail,
         ]
         .iter()
         .map(ToString::to_string)
@@ -515,6 +524,7 @@ mod tests {
                 "MoveViewToNeighbourDown",
                 "ToggleZoom",
                 "OpenQueryInSidebar",
+                "ToggleRail",
             ]
         );
     }
@@ -576,6 +586,7 @@ mod tests {
                 ActionShortcuts::MoveViewToNeighbour(Dir::Down),
                 ActionShortcuts::ToggleZoom,
                 ActionShortcuts::OpenQueryInSidebar,
+                ActionShortcuts::ToggleRail,
             ]
         );
         assert_eq!(

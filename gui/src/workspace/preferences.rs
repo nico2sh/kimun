@@ -59,6 +59,7 @@ use gpui_kit::{
     UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
+use kimun_notes::logic::layout_tree::RailPosition;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::preferences::{
     AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, DEFAULT_SERVER_URL_HINT, LEADER_DELAY_MAX_MS,
@@ -103,6 +104,18 @@ pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
 pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
 pub(crate) const REDUCE_MOTION_HELP: &str =
     "Stops the bouncing logo and loading spinners. Not read from your system settings.";
+/// Display's `Rail position` (`[gui] rail`, ADR-0055) and its help text.
+pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
+pub(crate) const RAIL_HELP: &str =
+    "Where the activity rail sits. Hide or show it with the button at the start of the footer.";
+fn rail_position_label(rail: RailPosition) -> &'static str {
+    match rail {
+        RailPosition::Left => "Left",
+        RailPosition::Right => "Right",
+        RailPosition::Top => "Top",
+        RailPosition::Bottom => "Bottom",
+    }
+}
 pub(crate) const DELAY_ID: &str = "preferences-leader-delay";
 pub(crate) const DELAY_DOWN_ID: &str = "preferences-leader-delay-down";
 pub(crate) const DELAY_UP_ID: &str = "preferences-leader-delay-up";
@@ -556,6 +569,14 @@ impl PreferencesView {
     pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(model) = self.model_mut() {
             model.reduce_motion = on;
+        }
+        cx.notify();
+    }
+
+    /// Display's `Rail position`.
+    pub(crate) fn set_rail_position(&mut self, rail: RailPosition, cx: &mut Context<Self>) {
+        if let Some(model) = self.model_mut() {
+            model.rail = rail;
         }
         cx.notify();
     }
@@ -1312,6 +1333,39 @@ impl PreferencesView {
                             .child(note(REDUCE_MOTION_HELP, t)),
                     ),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(note("Rail position", t))
+                    .child(
+                        RadioGroup::horizontal("preferences-rail")
+                            .selected_index(
+                                RailPosition::ALL
+                                    .iter()
+                                    .position(|rail| *rail == model.rail),
+                            )
+                            .disabled(self.saving.is_some())
+                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                if let Some(rail) = RailPosition::ALL.get(*ix) {
+                                    this.set_rail_position(*rail, cx)
+                                }
+                            }))
+                            .children(RailPosition::ALL.into_iter().map(|rail| {
+                                Radio::new(rail_position_label(rail))
+                                    .label(rail_position_label(rail))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(RAIL_HELP_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(RAIL_HELP)
+                            .child(note(RAIL_HELP, t)),
+                    ),
+            )
             .child(field(
                 "Which-key delay",
                 delay,
@@ -1948,6 +2002,9 @@ impl Workspace {
         let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.leader.set_tree(snapshot.leader_tree());
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
+        // The saved position moves the rail in this window now; the next
+        // layout save writes the same value.
+        self.rail = snapshot.gui.rail();
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }

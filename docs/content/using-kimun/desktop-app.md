@@ -49,10 +49,10 @@ To open a note, give its path on the command line (`kimun-gui path/to/note.md`).
 
 ## The window
 
-- Rail: The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE. When a [Kimün server](@/using-kimun/server.md) is connected, it also lists SEM and ASK. Click a view to show it.
+- Rail: The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE. When a [Kimün server](@/using-kimun/server.md) is connected, it also lists SEM and ASK. Click a view to show it. The rail starts at the left. To move it to the right, top, or bottom edge, choose `Rail position` in Preferences, or one of the `Rail position` rows of the command palette. To hide or show the rail, press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS), or click the small panel button at the start of the footer. Kimün keeps the position and the hidden state for the next start.
 - Slots: Views live in slots on either side of the editor. To move a view, drag it by its slot header to another slot. To give it a new slot, drag it onto an edge of the window. The places where it can land light up while you drag. Drag the dividers to resize the slots.
 - Zoom: `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window. The same chord restores it.
-- Presets: When you leave Kimün, it saves the layout. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`).
+- Presets: When you leave Kimün, it saves the layout. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`). A preset can also set the rail position. Add `rail = "right"` (or `"left"`, `"top"`, `"bottom"`) next to the `split` of the preset. A preset without a `rail` key leaves the rail where it is.
 - Closing (macOS): The red button closes the window, and Kimün keeps running in the Dock. To open a window again, click the Dock icon, or choose File > New Window. These actions end the app: `Cmd+Q`, Kimün > Quit, `Quit` in the command palette, and the quit command of the leader. On Linux and Windows, closing the window ends the app.
 - Footer: The footer shows the path of the note, the caret position, the backlink count, the property count, and the saved or unsaved state. When the workspace is a git repository, it also shows a git summary. The summary reads `git ✓` for a clean repository and `git ●3` for three changed paths. Leader `g s` (see [Keyboard](#keyboard)) shows the full summary.
 
@@ -88,6 +88,7 @@ Press `F1` for the keyboard reference. It lists every command with its current c
 | `Ctrl+S` | save |
 | `F5` | switch workspace |
 | `F4` | Preferences |
+| `Ctrl+Shift+A` | hide or show the rail |
 
 To override a chord, use the `[gui.keys]` table of `config.toml`. The key is the name of the action. The value is one chord or a list of chords. An empty list removes the binding. A chord joins the modifiers and one key with `+`. `primary` is `Ctrl` (`Cmd` on macOS). The other modifiers are `cmd`, `ctrl`, `alt`, and `shift`.
 
@@ -109,6 +110,8 @@ All keys are under `[gui]`. Preferences writes them for you.
 | `window_decorations` | `"client"` (default), `"system"` | Sets which program draws the title bar. `"client"` is the title bar of Kimün, in the colors of the theme. `"system"` is the title bar of the operating system. If the custom bar fails on your desktop, use this value. The app reads this key at start, so restart the app to change it. macOS always keeps its native window buttons. |
 | `reduce_motion` | `true`, `false` (default) | Stops decorative motion, such as the bouncing dots of the welcome screen and the spinners. The app does not read the setting of the operating system. |
 | `layout_preset` | the name of a preset | The preset that the saved layout started from. |
+| `rail` | `"left"` (default), `"right"`, `"top"`, `"bottom"` | The window edge where the rail sits. |
+| `rail_hidden` | `true`, `false` (default) | Hides the rail. The footer button and `Ctrl+Shift+A` show it again. |
 
 `[gui.layout]` is the saved layout. Leave it to the app.
 
