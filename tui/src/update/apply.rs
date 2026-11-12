@@ -25,19 +25,7 @@ const CHECKSUMS_ASSET: &str = "checksums-sha256.txt";
 pub fn self_update(latest: &LatestRelease, product: Product) -> Result<(), UpdateError> {
     let asset_name = platform::binary_asset_name(product, &latest.version)
         .ok_or(UpdateError::UnsupportedPlatform)?;
-
-    let binary_asset = latest
-        .asset(&asset_name)
-        .ok_or_else(|| UpdateError::MissingAsset(asset_name.clone()))?;
-
-    // Resolve the expected digest before downloading the (larger) binary.
-    let expected = expected_digest(latest, binary_asset, download_bytes)?;
-
-    let bytes = download_bytes(&binary_asset.url)?;
-    let actual = hex_sha256(&bytes);
-    if !actual.eq_ignore_ascii_case(&expected) {
-        return Err(UpdateError::ChecksumMismatch { expected, actual });
-    }
+    let bytes = download_verified(latest, &asset_name)?;
 
     // Stage the verified binary next to the target so the swap is same-volume,
     // then let self-replace perform the cross-platform live-exe replacement.
@@ -53,6 +41,25 @@ pub fn self_update(latest: &LatestRelease, product: Product) -> Result<(), Updat
     // Clean up the staging file regardless of outcome.
     let _ = kimun_core::system::remove_file(&staged);
     result
+}
+
+/// Download the asset `asset_name` of `latest` and check it against its
+/// digest (the manifest's, else `checksums-sha256.txt`). The bytes are only
+/// returned when they match: nothing unverified leaves this function.
+pub fn download_verified(latest: &LatestRelease, asset_name: &str) -> Result<Vec<u8>, UpdateError> {
+    let asset = latest
+        .asset(asset_name)
+        .ok_or_else(|| UpdateError::MissingAsset(asset_name.to_string()))?;
+
+    // Resolve the expected digest before downloading the (larger) file.
+    let expected = expected_digest(latest, asset, download_bytes)?;
+
+    let bytes = download_bytes(&asset.url)?;
+    let actual = hex_sha256(&bytes);
+    if !actual.eq_ignore_ascii_case(&expected) {
+        return Err(UpdateError::ChecksumMismatch { expected, actual });
+    }
+    Ok(bytes)
 }
 
 /// The digest `binary_asset` must have: the one the provider already knows (the release
