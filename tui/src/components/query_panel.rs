@@ -181,7 +181,7 @@ impl QueryPanel {
             .intercept(intercept)
             // List-focus verbs (fire once the user Esc-es into the list): the
             // same set the Sources drawer uses — `l`/`h` cycle the preview
-            // forward/back, `o` opens, `y` yanks the selected note's path.
+            // forward/back (Alt+Right / Alt+Left step it from the query box), `o` opens, `y` yanks the selected note's path.
             .list_verb('l')
             .list_verb('h')
             .list_verb('o')
@@ -451,7 +451,8 @@ impl QueryPanel {
             }
             // List-focus verbs (fired only once the user Esc-es into the list):
             // the engine reports which char fired; the panel maps it to an
-            // action. `l`/`h` cycle the preview, `o` opens, `y` yanks.
+            // action. `l`/`h` cycle the preview (Alt+Right / Alt+Left step it from the
+            // query box), `o` opens, `y` yanks.
             KeyReaction::ListVerb(c) => {
                 match c {
                     'l' => self.toggle_expand(),

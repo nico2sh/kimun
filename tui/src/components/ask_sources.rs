@@ -7,7 +7,7 @@
 //! drawer (`query_panel.rs`) does — the panel no longer hand-rolls
 //! `List`/`ListState`, a cursor, selection styling, plain-letter matching, or a
 //! chord pre-intercept. The engine owns navigation, the (new) filter input,
-//! selection, list scroll, the list-focus verbs (`l`/`h`/`o`/`y`), the
+//! selection, list scroll, the list-focus verbs (`l`/`h`/`o`/`y`), the Right/Left preview keys, the
 //! FollowLink / `Ctrl+Y` intercepts, and mouse hit-testing; on top of it the
 //! panel composes the shared [`PreviewPane`] reveal (the **Source reader**) and
 //! the per-turn note-load lifecycle.
@@ -462,7 +462,7 @@ impl SourcesPanel {
                 self.open_selected(tx);
                 EventState::Consumed
             }
-            // Enter (with no autocomplete open) cycles the reveal, like `l`.
+            // Enter (with no autocomplete open) cycles the reveal, like `l`. Right and Left step it too (above).
             KeyReaction::Submit => {
                 if self.has_sources() {
                     self.preview.toggle(self.selected_path());
