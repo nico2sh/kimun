@@ -35,6 +35,21 @@ listing() {
 # The digest listed for a file name, empty when there is none.
 sum_of() { awk -v f="$1" '$2 == f || $2 == "*" f {print $1}' checksums-sha256.txt; }
 
+# check_stable STABLE VERSIONED: the stable download exists and lists the same digest as
+# the versioned file.
+check_stable() {
+  local stable="$1" versioned="$2" want got
+  if [ ! -s "$stable" ]; then
+    err "missing or empty stable download: $stable"
+    return
+  fi
+  want="$(sum_of "$versioned")"
+  got="$(sum_of "$stable")"
+  if [ -z "$got" ] || [ "$got" != "$want" ]; then
+    err "$stable is not the same file as $versioned (its checksum differs or is missing)"
+  fi
+}
+
 [ -s checksums-sha256.txt ] || { err "checksums-sha256.txt is missing or empty"; exit 1; }
 
 expected=0
@@ -57,12 +72,7 @@ for p in $platforms; do
     # each checksum to its file, so equal checksums mean equal bytes.
     stable="$app-$p.$arc"
     expected=$((expected + 1))
-    if [ -s "$stable" ]; then
-      [ -n "$(sum_of "$stable")" ] && [ "$(sum_of "$stable")" = "$(sum_of "$base.$arc")" ] \
-        || err "$stable is not the same file as $base.$arc (its checksum differs or is missing)"
-    else
-      err "missing or empty stable download: $stable"
-    fi
+    check_stable "$stable" "$base.$arc"
   done
   case "$p" in
     linux-*)
@@ -83,12 +93,7 @@ for p in macos-x64 macos-arm64; do
     [ -s "$f" ] || err "empty asset: $f"
     grep -qE "^[0-9a-f]{64}  $f\$" checksums-sha256.txt || err "no checksum line for $f"
     stable="kimun-gui-$p.dmg"
-    if [ -s "$stable" ]; then
-      [ -n "$(sum_of "$stable")" ] && [ "$(sum_of "$stable")" = "$(sum_of "$f")" ] \
-        || err "$stable is not the same file as $f (its checksum differs or is missing)"
-    else
-      err "missing or empty stable download: $stable"
-    fi
+    check_stable "$stable" "$f"
   elif [ -e "kimun-gui-$p.dmg" ]; then
     err "kimun-gui-$p.dmg has no versioned $f to be a copy of"
   elif [ "${EXPECT_DMG:-0}" = 1 ]; then
