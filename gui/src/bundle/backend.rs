@@ -17,9 +17,10 @@ use kimun_notes::update::{InstallChannel, UpdateStatus};
 
 /// Replaces the installed `Kimun.app` with the newest release's.
 pub(crate) trait BundleInstaller: Send + Sync {
-    /// Download, check and swap in the newest release's app: the version
-    /// installed.
-    fn install(&self) -> Result<String, String>;
+    /// Download, check and swap in the app of release `version` (the one the
+    /// user confirmed): the version installed. Refuses when the newest release
+    /// is no longer that one.
+    fn install(&self, version: &str) -> Result<String, String>;
 }
 
 /// `inner`'s backend, with the bundle's install added when `bundle` is there
@@ -52,7 +53,7 @@ impl UpdateBackend for DesktopUpdates {
 
     fn install(&self, status: &UpdateStatus) -> Result<String, String> {
         match self.bundle_for(status) {
-            Some(bundle) => bundle.install(),
+            Some(bundle) => bundle.install(&status.latest),
             None => self.inner.install(status),
         }
     }
@@ -91,11 +92,13 @@ mod tests {
     struct FakeBundle {
         installs: AtomicUsize,
         fails: bool,
+        asked_for: std::sync::Mutex<Vec<String>>,
     }
 
     impl BundleInstaller for FakeBundle {
-        fn install(&self) -> Result<String, String> {
+        fn install(&self, version: &str) -> Result<String, String> {
             self.installs.fetch_add(1, Ordering::SeqCst);
+            self.asked_for.lock().unwrap().push(version.to_string());
             if self.fails {
                 Err("signature refused".into())
             } else {
@@ -151,6 +154,15 @@ mod tests {
         assert_eq!(desktop.install(&s), Ok(NEW.to_string()));
         assert_eq!(bundle.installs.load(Ordering::SeqCst), 1);
         assert_eq!(inner.installs(), 0, "the binary swap never ran");
+    }
+
+    #[test]
+    fn a_bundle_install_is_for_the_version_the_user_confirmed() {
+        let bundle = Arc::<FakeBundle>::default();
+        let (desktop, _) = backend(InstallChannel::Bundle, Some(bundle.clone()));
+        let s = status(&desktop);
+        desktop.install(&s).unwrap();
+        assert_eq!(*bundle.asked_for.lock().unwrap(), [s.latest]);
     }
 
     #[test]

@@ -870,22 +870,36 @@ impl Workspace {
                 Err(e) => self.update_failed(rules::install_failed_text(e), cx),
             }
         }
-        let installed = result.is_ok();
+        let installed = result.as_ref().ok().cloned();
         self.updates.machine.install_landed(result);
         self.refresh_update_dialog(cx);
-        if installed {
-            self.restart_into_update(cx);
+        if let Some(version) = installed {
+            self.restart_into_update(version, cx);
         }
     }
 
     /// The new version is in place: quit through the normal close (the
     /// note was saved before the install, edits typed since are saved or
     /// asked about first), and start the app again as it ends.
-    fn restart_into_update(&mut self, cx: &mut Context<Self>) {
+    fn restart_into_update(&mut self, version: String, cx: &mut Context<Self>) {
         self.updates.restart_pending = true;
-        self.with_window(cx, |workspace, window, cx| {
-            workspace.request_quit(window, cx)
+        self.with_window(cx, move |workspace, window, cx| {
+            workspace.request_quit(window, cx);
+            workspace.restart_unless_underway(&version, cx);
         });
+    }
+
+    /// The quit [`Self::restart_into_update`] asked for did not start (a close
+    /// the window refuses: unsaved Preferences, a note that cannot be saved):
+    /// no restart stays armed for some later quit, and the user is told to
+    /// restart by hand. A quit that waits on a save is under way and keeps it;
+    /// one that already ended the app took the flag ([`Workspace::end_app`]).
+    fn restart_unless_underway(&mut self, version: &str, cx: &mut Context<Self>) {
+        let underway = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        if self.updates.restart_pending && !underway {
+            self.updates.restart_pending = false;
+            self.flash(rules::installed_text(version), cx);
+        }
     }
 
     /// Whether the update dialog is open.

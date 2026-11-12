@@ -75,7 +75,7 @@ fn launch_target(exe: &Path, args: &[OsString]) -> (PathBuf, Vec<OsString>) {
 
 /// The helper: wait for `pid` to end, then start `exe` with `args`.
 #[cfg(unix)]
-fn helper_command(pid: u32, exe: &std::path::Path, args: &[OsString]) -> Command {
+fn helper_command(pid: u32, exe: &Path, args: &[OsString]) -> Command {
     let mut command = Command::new("/bin/sh");
     command
         .arg("-c")
@@ -89,18 +89,37 @@ fn helper_command(pid: u32, exe: &std::path::Path, args: &[OsString]) -> Command
 
 /// The helper: wait for `pid` to end, then start `exe` with `args`.
 #[cfg(windows)]
-fn helper_command(pid: u32, exe: &std::path::Path, args: &[OsString]) -> Command {
+fn helper_command(pid: u32, exe: &Path, args: &[OsString]) -> Command {
+    windows_helper(pid, exe, args)
+}
+
+/// The Windows helper's script. `powershell -Command` does not bind trailing
+/// arguments to a `param()` block, so the values come from the environment
+/// (set by [`windows_helper`]) and no path is ever quoted into the script.
+/// `Start-Process -ArgumentList` rejects an empty list, hence the `if`.
+#[cfg(any(windows, test))]
+const WINDOWS_SCRIPT: &str = "Wait-Process -Id ([int]$env:KIMUN_RELAUNCH_PID) -ErrorAction SilentlyContinue; \
+$a = @($env:KIMUN_RELAUNCH_ARGS -split \"`n\" | Where-Object { $_ }); \
+if ($a.Count -gt 0) { Start-Process -FilePath $env:KIMUN_RELAUNCH_EXE -ArgumentList $a } \
+else { Start-Process -FilePath $env:KIMUN_RELAUNCH_EXE }";
+
+/// The Windows helper, built on every platform under test.
+#[cfg(any(windows, test))]
+fn windows_helper(pid: u32, exe: &Path, args: &[OsString]) -> Command {
+    let joined = args
+        .iter()
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut command = Command::new("powershell");
     command
         .arg("-NoProfile")
+        .arg("-NonInteractive")
         .arg("-Command")
-        .arg(
-            "param($p, $exe) Wait-Process -Id $p -ErrorAction SilentlyContinue; \
-             Start-Process -FilePath $exe -ArgumentList $args",
-        )
-        .arg(pid.to_string())
-        .arg(exe)
-        .args(args);
+        .arg(WINDOWS_SCRIPT)
+        .env("KIMUN_RELAUNCH_PID", pid.to_string())
+        .env("KIMUN_RELAUNCH_EXE", exe)
+        .env("KIMUN_RELAUNCH_ARGS", joined);
     command
 }
 
@@ -223,5 +242,76 @@ mod tests {
         waited.wait().unwrap();
         helper.wait().unwrap();
         assert!(marker.exists(), "the program started after it ended");
+    }
+}
+
+/// The Windows helper is built on every platform under test, so its command is
+/// checked here even though only Windows runs it.
+#[cfg(test)]
+mod windows_tests {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use super::*;
+
+    fn envs(command: &Command) -> HashMap<String, String> {
+        command
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    /// `powershell -Command` does not bind trailing arguments to a `param()`
+    /// block: they would be glued onto the script text. The values travel in
+    /// the environment instead, so no quoting of paths can go wrong.
+    #[test]
+    fn the_values_travel_in_the_environment_not_as_trailing_arguments() {
+        let command = windows_helper(
+            4242,
+            Path::new(r"C:\Program Files\Kimun\kimun-gui.exe"),
+            &[OsString::from("--flag"), OsString::from("two words")],
+        );
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(command.get_program(), "powershell");
+        assert_eq!(
+            args.len(),
+            4,
+            "only the fixed switches and the script: {args:?}"
+        );
+        assert_eq!(&args[..3], ["-NoProfile", "-NonInteractive", "-Command"]);
+        assert!(!args[3].contains("param("), "no param() block");
+        assert!(args[3].contains("Wait-Process -Id ([int]$env:KIMUN_RELAUNCH_PID)"));
+        assert!(args[3].contains("Start-Process -FilePath $env:KIMUN_RELAUNCH_EXE"));
+        let envs = envs(&command);
+        assert_eq!(envs["KIMUN_RELAUNCH_PID"], "4242");
+        assert_eq!(
+            envs["KIMUN_RELAUNCH_EXE"],
+            r"C:\Program Files\Kimun\kimun-gui.exe"
+        );
+        assert_eq!(envs["KIMUN_RELAUNCH_ARGS"], "--flag\ntwo words");
+    }
+
+    /// `Start-Process -ArgumentList @()` is an error in PowerShell: no
+    /// arguments means the switch is left out.
+    #[test]
+    fn no_arguments_leave_the_argument_list_out() {
+        let command = windows_helper(1, Path::new(r"C:\k.exe"), &[]);
+        let script = command
+            .get_args()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(script.contains("if ($a.Count -gt 0)"));
+        assert_eq!(envs(&command)["KIMUN_RELAUNCH_ARGS"], "");
     }
 }

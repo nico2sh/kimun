@@ -14,6 +14,7 @@
 // Only the macOS installer calls this; the unit tests build it without the app.
 #![cfg_attr(test, allow(dead_code))]
 
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
@@ -56,6 +57,9 @@ pub(crate) struct BundleSwap<'a, R> {
     runner: &'a R,
     installed: PathBuf,
     rename: RenameFn,
+    /// An image could not be unmounted: nothing under the scratch folder may be
+    /// deleted, or the delete would reach into the live volume.
+    mount_left: Cell<bool>,
 }
 
 impl<'a, R: CommandRunner> BundleSwap<'a, R> {
@@ -64,6 +68,7 @@ impl<'a, R: CommandRunner> BundleSwap<'a, R> {
             runner,
             installed,
             rename: Box::new(|from, to| std::fs::rename(from, to)),
+            mount_left: Cell::new(false),
         }
     }
 
@@ -83,7 +88,14 @@ impl<'a, R: CommandRunner> BundleSwap<'a, R> {
         let result = std::fs::write(&dmg, image)
             .map_err(io_error("could not save the downloaded update"))
             .and_then(|()| self.install_dmg(&dmg, &work));
-        let _ = std::fs::remove_dir_all(&work);
+        if self.mount_left.get() {
+            tracing::warn!(
+                "the update image is still mounted under {}; leaving the folder alone",
+                work.display()
+            );
+        } else {
+            let _ = std::fs::remove_dir_all(&work);
+        }
         result
     }
 
@@ -170,27 +182,43 @@ impl<'a, R: CommandRunner> BundleSwap<'a, R> {
         }
     }
 
-    /// Unmount, forcing it when the plain unmount is refused. A failure only
-    /// leaves a mounted image behind: it never decides the update.
+    /// Unmount, forcing it when the plain unmount is refused. A failure never
+    /// decides the update, but it is remembered ([`Self::mount_left`]).
     fn detach(&self, mount: &Path) {
+        let worked =
+            |out: &Result<super::signature::Output, String>| matches!(out, Ok(o) if o.success);
         let plain = self
             .runner
             .run("hdiutil", &[OsStr::new("detach"), mount.as_os_str()]);
-        if !matches!(plain, Ok(ref o) if o.success) {
-            let _ = self.runner.run(
-                "hdiutil",
-                &[
-                    OsStr::new("detach"),
-                    OsStr::new("-force"),
-                    mount.as_os_str(),
-                ],
-            );
+        if worked(&plain) {
+            return;
+        }
+        let forced = self.runner.run(
+            "hdiutil",
+            &[
+                OsStr::new("detach"),
+                OsStr::new("-force"),
+                mount.as_os_str(),
+            ],
+        );
+        if !worked(&forced) {
+            self.mount_left.set(true);
         }
     }
 
     /// Old app aside, new app in; the old app back if the second move fails.
     fn swap_in(&self, staged: &Path, parent: &Path) -> Result<(), SwapError> {
         let backup = parent.join(BACKUP_DIR);
+        // The running app is at `installed` (the signature check read it), so a
+        // backup here is a leftover of an earlier update whose cleanup failed:
+        // the app it replaced is not the one needed for recovery. Say so in the
+        // log instead of deleting it silently.
+        if backup.exists() {
+            tracing::warn!(
+                "removing the old app left by an earlier update at {}",
+                backup.display()
+            );
+        }
         let _ = std::fs::remove_dir_all(&backup);
         (self.rename)(&self.installed, &backup).map_err(io_error(
             "could not move the old app aside (is its folder writable?)",
@@ -267,6 +295,8 @@ mod tests {
         /// What mounting the image puts at `<mountpoint>/Kimun.app`.
         image: Option<(String, Option<String>, bool)>,
         attach_fails: bool,
+        /// Both the plain and the forced `hdiutil detach` fail.
+        detach_fails: bool,
         log: RefCell<Vec<String>>,
     }
 
@@ -275,6 +305,7 @@ mod tests {
             Self {
                 image: Some((version.into(), team.map(Into::into), invalid)),
                 attach_fails: false,
+                detach_fails: false,
                 log: RefCell::new(Vec::new()),
             }
         }
@@ -319,6 +350,10 @@ mod tests {
                     }
                     ok("")
                 }
+                ("hdiutil", Some("detach")) if self.detach_fails => Ok(Output {
+                    success: false,
+                    stderr: "hdiutil: couldn't unmount: resource busy".into(),
+                }),
                 ("hdiutil", Some("detach")) => ok(""),
                 ("ditto", _) => {
                     copy_dir(Path::new(&args[0]), Path::new(&args[1]));
@@ -518,6 +553,27 @@ mod tests {
             0,
             "scratch is gone"
         );
+    }
+
+    #[test]
+    fn a_mount_that_will_not_unmount_is_never_deleted() {
+        let s = setup();
+        let scratch = s.work.join("scratch-root");
+        fs::create_dir_all(&scratch).unwrap();
+        let mut host = Host::new("new", Some(TEAM), false);
+        host.detach_fails = true;
+        // The update itself still lands: the copy was made before the unmount.
+        BundleSwap::new(&host, s.installed.clone())
+            .install_image(b"dmg bytes", &scratch)
+            .unwrap();
+        assert_eq!(version(&s.installed), "new");
+        assert_eq!(host.calls("hdiutil detach"), 2, "plain, then forced");
+        // Deleting a folder with a live volume under it would delete the
+        // volume's files: it stays, mount point and all.
+        let left: Vec<_> = fs::read_dir(&scratch).unwrap().collect();
+        assert_eq!(left.len(), 1, "the scratch folder is kept");
+        let work = left[0].as_ref().unwrap().path();
+        assert!(work.join("mnt").join("Kimun.app").is_dir());
     }
 
     #[test]
