@@ -61,6 +61,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Before the build, which takes ~15 minutes on a mac: a missing or wrong Apple
+      # secret fails here in a minute. Same rule as the signing step: signing is on
+      # when APPLE_CERT_P12 is set (the secrets context is not allowed in `if`).
+      - name: Check the Apple secrets
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        timeout-minutes: 10
+        run: |
+          if [ -n "$APPLE_CERT_P12" ]; then
+            bash .github/scripts/macos-sign.sh --check
+          else
+            echo "no Apple signing secrets: skipping the check"
+          fi
+
       # The desktop app (GPUI) links these on Linux.
       - name: Install GPUI system libraries
         if: runner.os == 'Linux'

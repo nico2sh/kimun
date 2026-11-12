@@ -1,6 +1,6 @@
 # Signing the macOS desktop app
 
-The release workflow builds `Kimun.app` for each macOS target on every release. With the six secrets below it also signs it,
+The release workflow builds `Kimun.app` for each macOS target on every release. With the five required secrets below it also signs it,
 notarizes it with Apple, staples the ticket, and publishes `kimun-gui-<version>-macos-<arch>.dmg` beside the other assets. Without them
 it builds the bundle, prints a notice, and ships the raw binary unsigned as before: nothing breaks, there is just no `.dmg`.
 
@@ -16,8 +16,9 @@ The first run with real secrets is the real test. Do it through the manual dry r
    disk and upload it. Download the `.cer`, then double-click it to install it in your login keychain.
 3. **Export it as a `.p12`:** Keychain Access → My Certificates → right-click the "Developer ID Application: …" entry (it must show
    its private key under it) → Export → `.p12`, with a password you choose. Then `base64 -i certificate.p12 | pbcopy`.
-4. **The signing identity string:** `security find-identity -v -p codesigning` prints it. For example:
-   `Developer ID Application: Your Name (ABCDE12345)`.
+4. **The signing identity string (optional):** `security find-identity -v -p codesigning` prints it. For example:
+   `Developer ID Application: Your Name (ABCDE12345)`. If you do not set the secret, the script signs with the first Developer ID Application
+   identity in the `.p12`. Set it to pin one identity when the `.p12` holds more than one.
 5. **A notarization API key.** App Store Connect → Users and Access → Integrations → Team Keys → generate a key (Developer access is
    enough). Download the `.p8` (Apple lets you do it once), note the **Key ID** and the **Issuer ID** shown on that page. Then
    `base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy`.
@@ -27,13 +28,17 @@ The first run with real secrets is the real test. Do it through the manual dry r
 |---|---|
 | `APPLE_CERT_P12` | the `.p12`, base64 |
 | `APPLE_CERT_PASSWORD` | its password |
-| `APPLE_SIGNING_IDENTITY` | the identity string from step 4 |
+| `APPLE_SIGNING_IDENTITY` | optional: the identity string from step 4 |
 | `APPLE_NOTARY_KEY` | the `.p8`, base64 |
 | `APPLE_NOTARY_KEY_ID` | the key id |
 | `APPLE_NOTARY_ISSUER_ID` | the issuer id |
 
-If `APPLE_CERT_P12` is set, signing turns on. The workflow tests that one. You must then set the other secrets too. The script
+If `APPLE_CERT_P12` is set, signing turns on. The workflow tests that one. You must then set the other four required secrets too. The script
 names any secret that is missing.
+
+The macOS jobs check the secrets first, before the build (the step "Check the Apple secrets", `macos-sign.sh --check`). The step makes sure that
+every required secret is set, that the certificate imports, and that Apple accepts the API key. A wrong secret then fails in about a minute,
+and not after the 15-minute build.
 
 ## Trying it without a release
 
