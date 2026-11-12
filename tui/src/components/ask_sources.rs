@@ -32,7 +32,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
@@ -465,9 +465,9 @@ impl SourcesPanel {
                 // autocomplete popup (drawn in every reveal state), go on to
                 // the engine.
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.list.input_contains(mouse.column, mouse.row)
-                        || self.list.popup_contains(mouse.column, mouse.row) => {}
+                _ if crate::components::clickable::is_left_press(mouse)
+                    && (self.list.input_contains(mouse.column, mouse.row)
+                        || self.list.popup_contains(mouse.column, mouse.row)) => {}
                 // The header's chevron steps back one state, never collapses
                 // straight away like the title does.
                 _ if let Some(hit) = self.expand.hit_header(&self.reader.preview, mouse) => {
