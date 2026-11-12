@@ -11,8 +11,8 @@
 //! A running app with no Team ID (a development or ad-hoc build) never
 //! updates itself. Notarization is not checked, as in `install.sh`.
 
-// Nothing calls this yet: the bundle swap (next slice) is its caller.
-#![allow(dead_code)]
+// Only the macOS installer calls this; the unit tests build it without the app.
+#![cfg_attr(test, allow(dead_code))]
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -43,10 +43,10 @@ impl<T: CommandRunner + ?Sized> CommandRunner for &T {
 }
 
 /// The real runner.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) struct SystemRunner;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 impl CommandRunner for SystemRunner {
     fn run(&self, program: &str, args: &[&OsStr]) -> Result<Output, String> {
         let output = std::process::Command::new(program)

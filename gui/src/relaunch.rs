@@ -6,7 +6,7 @@
 //! moment it quits, never before ([`Relauncher::relaunch_after_exit`]).
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Starts the app again once this process has ended.
@@ -42,7 +42,8 @@ impl Relauncher for SystemRelauncher {
             .exe
             .as_deref()
             .ok_or("the running program's path is unknown")?;
-        let mut command = helper_command(std::process::id(), exe, &self.args);
+        let (program, args) = launch_target(exe, &self.args);
+        let mut command = helper_command(std::process::id(), &program, &args);
         command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -52,6 +53,23 @@ impl Relauncher for SystemRelauncher {
             .spawn()
             .map(drop)
             .map_err(|e| format!("could not start the relaunch helper: {e}"))
+    }
+}
+
+/// What the helper starts. An app inside a macOS bundle is opened through
+/// `open`, like a double click, so the system activates it properly; running the
+/// inner executable directly would not. Anything else runs as it started.
+fn launch_target(exe: &Path, args: &[OsString]) -> (PathBuf, Vec<OsString>) {
+    match crate::bundle::installed_bundle(exe) {
+        Some(bundle) => {
+            let mut open_args = vec![bundle.into_os_string()];
+            if !args.is_empty() {
+                open_args.push("--args".into());
+                open_args.extend(args.iter().cloned());
+            }
+            (PathBuf::from("/usr/bin/open"), open_args)
+        }
+        None => (exe.to_path_buf(), args.to_vec()),
     }
 }
 
@@ -157,6 +175,33 @@ mod tests {
         assert_eq!(
             &args[2..],
             ["kimun-relaunch", "4242", "/opt/kimun/kimun-gui", "--flag"]
+        );
+    }
+
+    /// A bundled app is opened through `open`, with its arguments after
+    /// `--args`; a plain binary runs as it started.
+    #[test]
+    fn a_bundled_app_is_opened_and_a_plain_binary_is_run() {
+        let exe = Path::new("/Users/me/Applications/Kimun.app/Contents/MacOS/kimun-gui");
+        assert_eq!(
+            launch_target(exe, &[]),
+            (
+                PathBuf::from("/usr/bin/open"),
+                vec![OsString::from("/Users/me/Applications/Kimun.app")]
+            )
+        );
+        assert_eq!(
+            launch_target(exe, &[OsString::from("--flag")]).1,
+            [
+                OsString::from("/Users/me/Applications/Kimun.app"),
+                OsString::from("--args"),
+                OsString::from("--flag")
+            ]
+        );
+        let plain = Path::new("/home/me/.local/bin/kimun-gui");
+        assert_eq!(
+            launch_target(plain, &[OsString::from("--flag")]),
+            (plain.to_path_buf(), vec![OsString::from("--flag")])
         );
     }
 
