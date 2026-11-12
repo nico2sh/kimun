@@ -8,7 +8,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use kimun_notes::update;
 
@@ -19,12 +19,20 @@ use super::swap::BundleSwap;
 
 /// The bundle the running executable lives in, when the app can replace it:
 /// there is one, and the folder holding it can be written to (the swap moves
-/// the app aside and a new one in). Asked once, at startup: the answer is used
-/// on every redraw of the update dialog.
+/// the app aside and a new one in). Worked out once per process, on the first
+/// window: the probe writes a file, and every window asks.
 pub(crate) fn detect() -> Option<Arc<dyn BundleInstaller>> {
-    let exe = std::env::current_exe().ok()?;
-    let bundle = replaceable_bundle(&exe)?;
+    static REPLACEABLE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let bundle = once(&REPLACEABLE, || {
+        let exe = std::env::current_exe().ok()?;
+        replaceable_bundle(&exe)
+    })?;
     Some(Arc::new(SystemBundleInstaller { bundle }))
+}
+
+/// `cell`'s value, computed by `make` the first time only.
+fn once<T: Clone>(cell: &OnceLock<T>, make: impl FnOnce() -> T) -> T {
+    cell.get_or_init(make).clone()
 }
 
 /// The bundle for `exe` when its folder is writable.
@@ -42,13 +50,27 @@ fn folder_writable(dir: &Path) -> bool {
     created
 }
 
+/// The release to install is the one the user confirmed. A newer one may have
+/// come out since the check: installing it unasked would also leave the
+/// offered, skipped and dismissed records pointing at another version.
+fn confirm_version(confirmed: &str, newest: &str) -> Result<(), String> {
+    if confirmed == newest {
+        Ok(())
+    } else {
+        Err(format!(
+            "version {confirmed} was announced, but {newest} is the newest now; check for updates again"
+        ))
+    }
+}
+
 struct SystemBundleInstaller {
     bundle: PathBuf,
 }
 
 impl BundleInstaller for SystemBundleInstaller {
-    fn install(&self) -> Result<String, String> {
+    fn install(&self, version: &str) -> Result<String, String> {
         let latest = update::fetch_latest().map_err(|e| e.to_string())?;
+        confirm_version(version, &latest.version)?;
         let name = update::bundle_asset_name(&latest.version)
             .ok_or("this system has no desktop app to update to")?;
         // A release cut without Apple signing has no `.dmg`: say what to do
@@ -71,6 +93,27 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn only_the_confirmed_version_is_installed() {
+        assert_eq!(confirm_version("1.2.0", "1.2.0"), Ok(()));
+        let err = confirm_version("1.2.0", "1.3.0").unwrap_err();
+        assert!(err.contains("1.2.0") && err.contains("1.3.0"), "{err}");
+        assert!(err.contains("check for updates"), "{err}");
+    }
+
+    #[test]
+    fn the_answer_is_worked_out_once_however_often_it_is_asked() {
+        let cell = OnceLock::new();
+        let asked = std::cell::Cell::new(0);
+        let probe = || {
+            asked.set(asked.get() + 1);
+            Some(PathBuf::from("/apps/Kimun.app"))
+        };
+        assert_eq!(once(&cell, probe), Some(PathBuf::from("/apps/Kimun.app")));
+        assert_eq!(once(&cell, probe), Some(PathBuf::from("/apps/Kimun.app")));
+        assert_eq!(asked.get(), 1);
+    }
 
     #[test]
     fn a_writable_folder_is_writable_and_the_probe_is_removed() {

@@ -1053,6 +1053,52 @@ fn a_failed_flush_refuses_the_toast_install(cx: &mut TestAppContext) {
     s.up_on_window(cx, |w, _, _| w.properties_opening = None);
 }
 
+/// A quit the install asked for that the window refuses leaves no restart
+/// armed: the user is told to restart by hand, and a later deliberate quit
+/// ends the app without starting it again.
+#[gpui_kit::test]
+fn a_refused_quit_after_the_install_does_not_restart_later(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let fake =
+        Arc::new(ScriptedUpdates::with_release(NEW).install_delay(Duration::from_millis(400)));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
+    s.up_found(&rt, cx);
+    s.up_view(cx);
+    s.up_press("enter", cx);
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| s.workspace.read(cx).updates.machine.is_installing())
+    });
+    // Something holds the window open when the install lands.
+    s.up_on_window(cx, |w, _, _| {
+        w.updates.flushing = Some(gpui_kit::Task::ready(()));
+    });
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| s.workspace.read(cx).quits),
+        0,
+        "the quit was refused"
+    );
+    assert_eq!(relauncher.calls(), 0);
+    assert!(
+        s.up_flashes(cx)
+            .contains(&(rules::installed_text(NEW), false)),
+        "the user is told to restart by hand"
+    );
+    // Later, a deliberate quit: no restart.
+    s.up_on_window(cx, |w, _, _| w.updates.flushing = None);
+    s.up_on_window(cx, |w, window, cx| w.request_quit(window, cx));
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(relauncher.calls(), 0, "a plain quit does not restart");
+}
+
 /// A package-managed install: the package manager's words and command,
 /// Release notes as the primary, no Install.
 #[gpui_kit::test]
