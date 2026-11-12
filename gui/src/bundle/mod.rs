@@ -7,6 +7,11 @@
 //!
 //! - [`signature`]: whether a staged app may replace the running one
 //!   (valid Developer ID signature, same Team ID).
+//! - [`swap`]: mount the release image, stage and check the new app, swap it
+//!   in, and undo on failure.
 
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod signature;
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod swap;

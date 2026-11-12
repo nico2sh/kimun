@@ -36,6 +36,12 @@ pub(crate) trait CommandRunner {
     fn run(&self, program: &str, args: &[&OsStr]) -> Result<Output, String>;
 }
 
+impl<T: CommandRunner + ?Sized> CommandRunner for &T {
+    fn run(&self, program: &str, args: &[&OsStr]) -> Result<Output, String> {
+        (**self).run(program, args)
+    }
+}
+
 /// The real runner.
 #[cfg(target_os = "macos")]
 pub(crate) struct SystemRunner;
