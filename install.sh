@@ -86,7 +86,7 @@ usage() {
 # error for the latest release (what the unsigned manifest names) and a warning for a version
 # pinned with KIMUN_VERSION, which may predate signing. Without minisign the install goes on
 # on the sha256 alone, and says so. install-server.sh carries the same block: keep them identical.
-SIGNING_PUBKEY=""
+SIGNING_PUBKEY="RWS64g2Q9vGQfwr3tC6fK3UgWdkKkLfz5KLmcTZhewdMmCHHkkfIgNf8"
 # verify_signature BASE_URL TMP PINNED: sets SIGNED_LIST to the verified checksums file, or
 # "" when nothing was verified. PINNED=1 when the user chose the version.
 verify_signature() {

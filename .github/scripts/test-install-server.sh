@@ -46,6 +46,11 @@ else
   ok "the installers pin the key in release-signing.pub"
 fi
 
+# The tests below use fake, unsigned releases, so they run an unpinned copy of the installer. The
+# signature tests (12) write their own key into a copy of it.
+bare="$work/install-server.sh"
+sed 's/^SIGNING_PUBKEY=".*"$/SIGNING_PUBKEY=""/' install-server.sh >"$bare"
+
 # A release: the server's archive for every platform the script can pick, and checksums.
 rel="$work/rel"; mkdir -p "$rel"
 for p in linux-x64 linux-arm64 macos-arm64; do
@@ -69,7 +74,7 @@ python3 -I .github/scripts/release_manifest.py "$work/releases.json" "$work/late
 run() { # HOME MANIFEST_URL [extra env VAR=value ...]
   local home="$1" manifest="$2"; shift 2
   env HOME="$home" KIMUN_SERVER_INSTALL_DIR="$home/bin" KIMUN_MANIFEST_URL="$manifest" \
-    KIMUN_RELEASES_API="file://$work/no-such-api.json" "$@" sh install-server.sh
+    KIMUN_RELEASES_API="file://$work/no-such-api.json" "$@" sh "$bare"
 }
 
 # 1. From the manifest alone: no API (it points at nothing), no download base.
@@ -93,7 +98,7 @@ printf '[{"tag_name":"kimun-notes-v9.0.0"},{"tag_name":"kimun_server-v9.9.9-beta
 fallback() { # NAME MANIFEST_URL WHY-PATTERN
   h="$work/fb-$1"; mkdir -p "$h"
   out="$(env HOME="$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" KIMUN_MANIFEST_URL="$2" \
-    KIMUN_RELEASES_API="file://$work/api.json" KIMUN_DOWNLOAD_BASE="file://$rel" sh install-server.sh 2>&1)" \
+    KIMUN_RELEASES_API="file://$work/api.json" KIMUN_DOWNLOAD_BASE="file://$rel" sh "$bare" 2>&1)" \
     || fail "fallback ($1) failed: $out"
   echo "$out" | grep -q "warning: .*$3.*using the GitHub API" || fail "fallback ($1) did not say why: $out"
   [ -x "$h/bin/kimun-server" ] || fail "fallback ($1): no binary"
@@ -122,7 +127,7 @@ else
     minisign -S -s "$work/s.key" -m "$1/checksums-sha256.txt" -x "$1/checksums-sha256.txt.minisig" >/dev/null
   }
   patched() { # NAME: a copy of the script that trusts the throwaway key
-    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" install-server.sh >"$work/$1.sh"
+    sed -e "s|^SIGNING_PUBKEY=.*|SIGNING_PUBKEY=\"$pub\"|" "$bare" >"$work/$1.sh"
   }
   run_signed() { # NAME REL HOME [PATH]: install into a fresh home; prints the output
     mkdir -p "$3"
@@ -154,7 +159,7 @@ else
   ok "with a key pinned, a release without a signature is refused"
 
   # d. No key pinned (signing not live): an unsigned release installs, quietly.
-  cp install-server.sh "$work/sig-off.sh"
+  cp "$bare" "$work/sig-off.sh"
   out="$(run_signed sig-off "$rel" "$work/sg-d")" || fail "signing off: an unsigned release was refused: $out"
   echo "$out" | grep -qi "warning" && fail "signing off: an unsigned release warned: $out"
   ok "with no key pinned, nothing is checked"
@@ -184,7 +189,7 @@ STUB
 chmod +x "$sb/systemctl"
 uninstall_server() { # HOME [extra env ...]
   local h="$1"; shift
-  env PATH="$sb:$PATH" HOME="$h" SYSTEMCTL_LOG="$h/systemctl.log" "$@" sh install-server.sh --uninstall
+  env PATH="$sb:$PATH" HOME="$h" SYSTEMCTL_LOG="$h/systemctl.log" "$@" sh "$bare" --uninstall
 }
 if [ "$(uname -s)" = Linux ]; then
   h="$work/u1"; mkdir -p "$h/bin" "$h/.config/systemd/user" "$h/.config/kimun" "$h/.local/share/kimun/rag_sqlite"
@@ -220,7 +225,7 @@ if [ "$(uname -s)" = Linux ]; then
   [ ! -e "$h/bin/kimun-server" ] || fail "uninstall left the binary after a failed stop"
   ok "server --uninstall: a failed service stop is reported, the rest still goes"
 fi
-if sh install-server.sh --uninstall --service >/dev/null 2>&1; then fail "--uninstall --service was accepted"; fi
+if sh "$bare" --uninstall --service >/dev/null 2>&1; then fail "--uninstall --service was accepted"; fi
 ok "server --uninstall cannot be combined with --service"
 
 echo "install-server.sh behaves"
