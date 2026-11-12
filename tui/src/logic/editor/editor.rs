@@ -53,11 +53,19 @@ pub struct Editor {
 /// alias the native key reaches no engine at all. Cmd+arrows and Cmd+Backspace
 /// are not here: they have their own rows.
 ///
-/// `select_all` is `false` for the find bar, where Ctrl+A means replace-all:
-/// Cmd+A must not trigger that.
-pub(crate) fn cmd_as_ctrl(key: KeyInput, select_all: bool) -> KeyInput {
+/// The find bar is the one place the chords differ: there Ctrl+A means
+/// replace-all, so Cmd+A is left alone rather than mapped to it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CmdTarget {
+    /// The text buffer: Cmd+A selects all.
+    Editor,
+    /// The find bar: Cmd+A is not mapped.
+    FindBar,
+}
+
+pub(crate) fn cmd_as_ctrl(key: KeyInput, target: CmdTarget) -> KeyInput {
     match (key.key, key.mods) {
-        (Key::Char('a'), Mods::SUPER) if !select_all => key,
+        (Key::Char('a'), Mods::SUPER) if target == CmdTarget::FindBar => key,
         (Key::Char(c @ ('a' | 'c' | 'v' | 'x' | 'z' | 'y')), Mods::SUPER) => {
             KeyInput::new(Key::Char(c), Mods::CTRL)
         }
@@ -78,7 +86,7 @@ impl Editor {
     /// A host that pastes into the find bar itself asks here, so it keeps no
     /// chord list of its own.
     pub fn is_paste_chord(key: KeyInput) -> bool {
-        cmd_as_ctrl(key, false) == KeyInput::new(Key::Char('v'), Mods::CTRL)
+        cmd_as_ctrl(key, CmdTarget::FindBar) == KeyInput::new(Key::Char('v'), Mods::CTRL)
     }
 
     /// An empty editor: the built-in vim emulation when `vim`, direct typing
@@ -948,7 +956,7 @@ impl Editor {
         self.session.display.follow_cursor();
         // Cmd+Z/Y/Shift+Z undo like Ctrl; any other Cmd chord is ignored, not
         // typed (the field types a char with Super held).
-        let key = cmd_as_ctrl(key, false);
+        let key = cmd_as_ctrl(key, CmdTarget::FindBar);
         let outcome = if key.mods.sup {
             Default::default()
         } else {
@@ -1045,7 +1053,7 @@ impl Editor {
     /// [`EditorRequest`]s the host drains with [`Self::take_host_requests`]
     /// before the input call returns.
     pub fn handle_key(&mut self, key: KeyInput, tx: &AppTx) -> (Handled, KeyPath) {
-        let key = cmd_as_ctrl(key, true);
+        let key = cmd_as_ctrl(key, CmdTarget::Editor);
         // Every key acts at the cursor, so a wheel-scrolled view comes back to
         // it — even when the key leaves the cursor where it was (find-next onto
         // the same match, a motion at the buffer edge). Idempotent, so a host
