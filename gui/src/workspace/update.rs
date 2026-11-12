@@ -13,15 +13,18 @@
 //!   offline or up to date; never delays the window. Under `cfg(test)` the
 //!   window has no backend unless a test gives it a fake, so no test checks.
 //! - **The toast.** A newer version that was not skipped: one toast
-//!   "Kimün `<version>` is available" with a `View` action (the dialog) and
-//!   the kit's close button. It stays until dismissed or for
+//!   "Kimün `<version>` is available" with one action and the kit's close
+//!   button. Where the install is possible the action is `Update now`: the
+//!   whole install without the dialog (the toast then says "Updating
+//!   Kimün…", and a failure is an error toast with `Retry`). Elsewhere it is
+//!   `View` (the dialog). It stays until dismissed or for
 //!   [`ACTION_TOAST_LIFETIME`] (ten seconds), and a startup check does not
 //!   announce the same version twice in a session. No Footer item: a missed
 //!   toast leaves the palette's `+vault · check for updates` and Preferences >
 //!   Display's `Check now`.
 //! - **Manual check** (the palette row, leader `v u`, Preferences' `Check
 //!   now`): bypasses the throttle and always reports, as a toast: up to
-//!   date, available (with `View`), or the error. The palette row shows the
+//!   date, available (with `Update now` or `View`), or the error. The palette row shows the
 //!   dialog instead when a version is already known. A check asked for
 //!   while one runs joins it (and makes it report); while that one is the
 //!   throttled startup check, a forced check follows it and is the report.
@@ -96,6 +99,10 @@ pub(crate) const INSTALL_LABEL: &str = "Install update";
 pub(crate) const RETRY_LABEL: &str = "Retry";
 /// The toast's action.
 pub(crate) const VIEW_LABEL: &str = "View";
+/// The toast's button when the install is possible: the whole update in one click.
+pub(crate) const UPDATE_NOW_LABEL: &str = "Update now";
+/// What the toast says once `Update now` started.
+pub(crate) const UPDATING_TEXT: &str = "Updating Kimün…";
 /// What the dialog says while the open note is written before the install.
 pub(crate) const SAVING_NOTE_TEXT: &str = "Saving the open note…";
 
@@ -539,9 +546,17 @@ impl Workspace {
         }
         match self.updates.machine.check_landed(result) {
             CheckReport::Available(status) => {
-                let view =
-                    ToastAction::new(VIEW_LABEL, |w, window, cx| w.open_update_dialog(window, cx));
-                self.flash_with_action(rules::available_text(&status.latest), view, cx);
+                let installable = self
+                    .updates
+                    .backend
+                    .as_ref()
+                    .is_some_and(|b| b.offer(&status) == UpdateOffer::Install);
+                let action = if installable {
+                    ToastAction::new(UPDATE_NOW_LABEL, |w, window, cx| w.update_now(window, cx))
+                } else {
+                    ToastAction::new(VIEW_LABEL, |w, window, cx| w.open_update_dialog(window, cx))
+                };
+                self.flash_with_action(rules::available_text(&status.latest), action, cx);
             }
             CheckReport::UpToDate(text) => self.flash(text, cx),
             CheckReport::Failed(text) => self.flash_error(text, cx),
@@ -718,6 +733,23 @@ impl Workspace {
         }
     }
 
+    /// The toast's `Update now` / `Retry`: the install without the dialog.
+    /// The toast says it started; where it cannot start, or fails, an error
+    /// toast with `Retry` says so (see [`Self::update_failed`]).
+    pub(crate) fn update_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.install_update(window, cx);
+        if self.update_busy() {
+            self.flash(UPDATING_TEXT, cx);
+        }
+    }
+
+    /// An install did not run or failed with `text` and no dialog shows it:
+    /// an error toast whose `Retry` installs again.
+    fn update_failed(&mut self, text: String, cx: &mut Context<Self>) {
+        let retry = ToastAction::new(RETRY_LABEL, |w, window, cx| w.update_now(window, cx));
+        self.flash_error_with_action(text, retry, cx);
+    }
+
     /// `Install update` / `Retry`: flush the open note, then install (see
     /// the module docs). Only where the offer is an install.
     pub(crate) fn install_update(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -778,9 +810,12 @@ impl Workspace {
 
     /// The install cannot start: the open note could not be saved first.
     fn refuse_install(&mut self, reason: &str, cx: &mut Context<Self>) {
-        self.updates
-            .machine
-            .install_refused(format!("the open note couldn't be saved first ({reason})"));
+        let error = format!("the open note couldn't be saved first ({reason})");
+        // No dialog to show it (the toast started the install): a toast says it.
+        if !self.update_dialog_shown() {
+            self.update_failed(rules::install_failed_text(&error), cx);
+        }
+        self.updates.machine.install_refused(error);
         self.refresh_update_dialog(cx);
     }
 
@@ -809,16 +844,12 @@ impl Workspace {
         if let Err(e) = &result {
             tracing::warn!("update install failed: {e}");
         }
-        let shown = self
-            .updates
-            .dialog
-            .as_ref()
-            .is_some_and(|d| d.upgrade().is_some());
-        // The dialog went meanwhile (a modal reset): the toast says it.
-        if !shown {
+        // No dialog (the toast started it, or the dialog went meanwhile):
+        // a toast says it.
+        if !self.update_dialog_shown() {
             match &result {
                 Ok(version) => self.flash(rules::installed_restarting_text(version), cx),
-                Err(e) => self.flash_error(rules::install_failed_text(e), cx),
+                Err(e) => self.update_failed(rules::install_failed_text(e), cx),
             }
         }
         let installed = result.is_ok();
@@ -837,6 +868,14 @@ impl Workspace {
         self.with_window(cx, |workspace, window, cx| {
             workspace.request_quit(window, cx)
         });
+    }
+
+    /// Whether the update dialog is open.
+    fn update_dialog_shown(&self) -> bool {
+        self.updates
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.upgrade().is_some())
     }
 
     /// The dialog's handle goes with the modal ([`Self::reset_modal_state`]);
