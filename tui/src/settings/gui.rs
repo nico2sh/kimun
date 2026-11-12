@@ -23,6 +23,10 @@
 //! TUI never shows it. Missing means `false`: the system's own reduced-motion
 //! setting is not read (GPUI offers no query for it). The user docs describe
 //! the key on the desktop-app page (`docs/content/using-kimun/desktop-app.md`).
+//!
+//! `editor_font_family` (a font name) and `editor_font_size` (whole points,
+//! clamped to 8..=32) set the font of the desktop app's Edit surface. Missing,
+//! blank or wrong-typed values read as unset, so the app's own default applies.
 
 use std::collections::BTreeMap;
 
@@ -34,6 +38,13 @@ const LAYOUT: &str = "layout";
 const LAYOUT_PRESET: &str = "layout_preset";
 const WINDOW_DECORATIONS: &str = "window_decorations";
 const REDUCE_MOTION: &str = "reduce_motion";
+const EDITOR_FONT_FAMILY: &str = "editor_font_family";
+const EDITOR_FONT_SIZE: &str = "editor_font_size";
+
+/// Smallest `editor_font_size`, in points; smaller values are raised to it.
+pub const EDITOR_FONT_MIN_PT: u8 = 8;
+/// Largest `editor_font_size`, in points; larger values are lowered to it.
+pub const EDITOR_FONT_MAX_PT: u8 = 32;
 
 /// `window_decorations`: who draws the GUI window's title bar and frame.
 /// Read once, when the window opens (changing it needs a restart). macOS
@@ -164,6 +175,71 @@ impl GuiSettings {
             .insert(REDUCE_MOTION.into(), Value::Boolean(reduce));
     }
 
+    /// `editor_font_family`: the Edit surface's font name, trimmed. `None`
+    /// when missing, blank or not a string (a wrong type is logged).
+    pub fn editor_font_family(&self) -> Option<String> {
+        match self.table.get(EDITOR_FONT_FAMILY) {
+            None => None,
+            Some(Value::String(name)) => {
+                let name = name.trim();
+                (!name.is_empty()).then(|| name.to_string())
+            }
+            Some(other) => {
+                tracing::warn!(
+                    "[gui] editor_font_family: expected a string, got {other}; using the default"
+                );
+                None
+            }
+        }
+    }
+
+    /// Records `editor_font_family`; `None`, an empty or a whitespace-only
+    /// name removes the key.
+    pub fn set_editor_font_family(&mut self, family: Option<&str>) {
+        match family.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => {
+                self.table
+                    .insert(EDITOR_FONT_FAMILY.into(), Value::String(name.into()));
+            }
+            None => {
+                self.table.remove(EDITOR_FONT_FAMILY);
+            }
+        }
+    }
+
+    /// `editor_font_size`: the Edit surface's font size in points, clamped to
+    /// [`EDITOR_FONT_MIN_PT`]..=[`EDITOR_FONT_MAX_PT`]. `None` when missing or
+    /// not an integer (a wrong type is logged).
+    pub fn editor_font_size(&self) -> Option<u8> {
+        match self.table.get(EDITOR_FONT_SIZE) {
+            None => None,
+            Some(Value::Integer(size)) => {
+                Some((*size).clamp(EDITOR_FONT_MIN_PT as i64, EDITOR_FONT_MAX_PT as i64) as u8)
+            }
+            Some(other) => {
+                tracing::warn!(
+                    "[gui] editor_font_size: expected a whole number, got {other}; using the default"
+                );
+                None
+            }
+        }
+    }
+
+    /// Records `editor_font_size`, clamped to the allowed range; `None`
+    /// removes the key.
+    pub fn set_editor_font_size(&mut self, size: Option<u8>) {
+        match size {
+            Some(size) => {
+                let size = size.clamp(EDITOR_FONT_MIN_PT, EDITOR_FONT_MAX_PT);
+                self.table
+                    .insert(EDITOR_FONT_SIZE.into(), Value::Integer(size.into()));
+            }
+            None => {
+                self.table.remove(EDITOR_FONT_SIZE);
+            }
+        }
+    }
+
     /// Apply to this table the top-level keys `after` changed from `before`
     /// (set where changed or added, removed where removed); every other key
     /// is kept as it is here. For a write that edits a few `[gui]` keys of a
@@ -245,6 +321,70 @@ mod tests {
         toml::from_str::<AppSettings>(toml)
             .unwrap_or_else(|e| panic!("config must parse: {e}\n{toml}"))
             .gui
+    }
+
+    #[test]
+    fn editor_font_size_clamps_and_rejects_bad_types() {
+        let cases: [(&str, Option<u8>); 7] = [
+            ("editor_font_size = 12", Some(12)),
+            ("editor_font_size = 0", Some(8)),
+            ("editor_font_size = 200", Some(32)),
+            ("editor_font_size = -3", Some(8)),
+            ("editor_font_size = 12.5", None),
+            ("editor_font_size = \"big\"", None),
+            ("", None),
+        ];
+        for (body, want) in cases {
+            let g = gui(&format!("[gui]\n{body}\n"));
+            assert_eq!(g.editor_font_size(), want, "{body}");
+        }
+    }
+
+    #[test]
+    fn editor_font_family_empty_or_wrong_type_is_unset() {
+        let cases: [(&str, Option<&str>); 4] = [
+            ("editor_font_family = \"\"", None),
+            ("editor_font_family = \"   \"", None),
+            ("editor_font_family = 5", None),
+            (
+                "editor_font_family = \"JetBrains Mono\"",
+                Some("JetBrains Mono"),
+            ),
+        ];
+        for (body, want) in cases {
+            let g = gui(&format!("[gui]\n{body}\n"));
+            assert_eq!(g.editor_font_family().as_deref(), want, "{body}");
+        }
+    }
+
+    #[test]
+    fn setters_round_trip_and_none_removes_the_key() {
+        let mut g = GuiSettings::default();
+        g.set_editor_font_family(Some("Fira Code"));
+        g.set_editor_font_size(Some(14));
+        assert_eq!(g.editor_font_family().as_deref(), Some("Fira Code"));
+        assert_eq!(g.editor_font_size(), Some(14));
+        g.set_editor_font_size(Some(250));
+        assert_eq!(g.editor_font_size(), Some(EDITOR_FONT_MAX_PT));
+        g.set_editor_font_family(Some("  "));
+        assert_eq!(g.editor_font_family(), None);
+        g.set_editor_font_family(None);
+        g.set_editor_font_size(None);
+        assert!(g.is_empty());
+    }
+
+    #[test]
+    fn font_keys_survive_apply_changes() {
+        let mut target = GuiSettings::default();
+        target.set_editor_font_family(Some("Fira Code"));
+        target.set_editor_font_size(Some(15));
+        let before = GuiSettings::default();
+        let mut after = GuiSettings::default();
+        after.set_reduce_motion(true);
+        target.apply_changes(&before, &after);
+        assert!(target.reduce_motion());
+        assert_eq!(target.editor_font_family().as_deref(), Some("Fira Code"));
+        assert_eq!(target.editor_font_size(), Some(15));
     }
 
     #[test]
