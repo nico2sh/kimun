@@ -40,6 +40,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
+use crate::components::expand_chevron::{self, Reach};
 use crate::components::panel::panel_block;
 use crate::components::preview_pane::{Highlight, PreviewPane};
 use crate::components::rich_row::RichRow;
@@ -161,6 +162,9 @@ pub struct SourcesPanel {
     /// The preview content viewport height from the last render — the page size
     /// for PageUp/PageDown content scrolling in the Full preview.
     preview_page: u16,
+    /// The expand chevron on the selected row from the last render; empty when
+    /// no row shows it. A left press on it grows the preview.
+    chevron: Rect,
 }
 
 impl SourcesPanel {
@@ -197,6 +201,7 @@ impl SourcesPanel {
             intercept,
             yank_combos,
             preview_page: 0,
+            chevron: Rect::default(),
         }
     }
 
@@ -370,7 +375,7 @@ impl SourcesPanel {
         if self.preview.is_collapsed() {
             vec![
                 ("j/k".into(), "Select".into()),
-                ("Enter/l".into(), "Preview".into()),
+                ("Enter/l/\u{2192}".into(), "Preview".into()),
                 ("o/^N".into(), "Open".into()),
                 ("y".into(), "Yank".into()),
                 ("i".into(), "Filter".into()),
@@ -379,7 +384,7 @@ impl SourcesPanel {
             vec![
                 ("j/k".into(), "Select".into()),
                 ("Enter/l".into(), "Expand".into()),
-                ("h/Esc".into(), "Back".into()),
+                ("h/\u{2190}/Esc".into(), "Back".into()),
                 ("o/^N".into(), "Open".into()),
             ]
         }
@@ -413,6 +418,23 @@ impl SourcesPanel {
                 }
                 KeyCode::PageDown => {
                     self.scroll_preview_page(false);
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        // Right grows and Left shrinks the reveal, from the list (in the filter
+        // box they move the cursor). Right stops at Full rather than wrapping;
+        // Left at Collapsed is left to the engine so the host still gets it.
+        if self.list.focus() == Focus::List && key.modifiers.is_empty() {
+            match key.code {
+                KeyCode::Right if self.has_sources() => {
+                    self.grow_preview(tx);
+                    return EventState::Consumed;
+                }
+                KeyCode::Left if !self.preview.is_collapsed() => {
+                    self.shrink_preview();
                     return EventState::Consumed;
                 }
                 _ => {}
@@ -499,6 +521,17 @@ impl SourcesPanel {
                 MouseEventKind::Down(MouseButton::Left)
                     if self.list.input_contains(mouse.column, mouse.row)
                         || self.list.popup_contains(mouse.column, mouse.row) => {}
+                // The header's chevron steps back one state, never collapses
+                // straight away like the title does.
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.preview.full_chevron_rect().contains(Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    }) =>
+                {
+                    self.shrink_preview();
+                    return EventState::Consumed;
+                }
                 MouseEventKind::Down(MouseButton::Left)
                     if self.preview.full_header_rect().contains(Position {
                         x: mouse.column,
@@ -510,6 +543,18 @@ impl SourcesPanel {
                 }
                 _ => return EventState::Consumed,
             }
+        }
+        // The row chevron grows the preview. It sits on the selected row, so
+        // there is no selection to change; it never opens the note and is
+        // checked before the engine turns the press into a row activation.
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.chevron.contains(Position {
+                x: mouse.column,
+                y: mouse.row,
+            })
+        {
+            self.grow_preview(tx);
+            return EventState::Consumed;
         }
         match self.list.handle_mouse(mouse) {
             SearchMouse::ContentScrollUp => {
@@ -548,6 +593,22 @@ impl SourcesPanel {
             }
             SearchMouse::None => EventState::NotConsumed,
         }
+    }
+
+    /// Step the reveal outward (Collapsed -> Context -> Full); stays at Full.
+    fn grow_preview(&mut self, tx: &AppTx) {
+        if self.preview.is_full() {
+            return;
+        }
+        self.preview.toggle(self.selected_path());
+        self.chevron = Rect::default();
+        self.ensure_loaded(tx);
+    }
+
+    /// Step the reveal back (Full -> Context -> Collapsed).
+    fn shrink_preview(&mut self) {
+        self.preview.collapse_step(self.selected_path());
+        self.chevron = Rect::default();
     }
 
     /// Scroll the Full preview by a page (last render's content viewport, less
@@ -674,6 +735,7 @@ impl SourcesPanel {
         self.list.set_panel_rect(rect);
         self.list.set_content_rect(Rect::default());
         self.preview.clear_header();
+        self.chevron = Rect::default();
 
         let block = panel_block("Sources", theme, focused);
         let inner = block.inner(rect);
@@ -751,6 +813,7 @@ impl SourcesPanel {
                 .split(body);
             self.list.render(f, areas[0], theme, focused);
             self.list.set_list_rect(areas[0]);
+            self.paint_chevron(f, theme);
             let gray = theme.gray.to_ratatui();
             let bg = theme.bg_panel.to_ratatui();
             f.render_widget(
@@ -766,6 +829,17 @@ impl SourcesPanel {
         // Collapsed: list only.
         self.list.render(f, body, theme, focused);
         self.list.set_list_rect(body);
+        self.paint_chevron(f, theme);
+    }
+
+    /// The expand chevron ends the selected row, where the list is drawn.
+    fn paint_chevron(&mut self, f: &mut Frame, theme: &Theme) {
+        if let Some(row) = self.list.selected_row_rect()
+            && let Some(reach) =
+                Reach::for_state(self.preview.is_collapsed(), self.preview.is_full())
+        {
+            self.chevron = expand_chevron::paint(f, row, reach, theme);
+        }
     }
 
     /// Feed the anchored source's loaded note into the preview surface (Context
@@ -1953,5 +2027,178 @@ mod tests {
             }
             _ => panic!("expected Loaded for source 0"),
         }
+    }
+
+    // ── Expand chevron and Right/Left keys ────────────────────────────────
+
+    fn draw_panel(p: &mut SourcesPanel, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let theme = crate::settings::themes::Theme::default();
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| p.render(f, f.area(), &theme, true)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    fn glyph_cells(buf: &ratatui::buffer::Buffer, glyph: &str) -> Vec<(u16, u16)> {
+        let a = buf.area;
+        (a.y..a.bottom())
+            .flat_map(|y| (a.x..a.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol() == glyph)
+            .collect()
+    }
+
+    fn opened_any(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>) -> bool {
+        crate::test_support::drain(rx)
+            .iter()
+            .any(|m| matches!(m, AppMessage::OpenPath { .. }))
+    }
+
+    /// A panel whose two sources exist as notes, so the preview can load them.
+    async fn panel_with_notes() -> SourcesPanel {
+        let (dir, vault) = test_vault().await;
+        std::mem::forget(dir);
+        for n in ["a.md", "b.md"] {
+            vault
+                .create_note(&VaultPath::new(n), "# h\nbody text\n")
+                .await
+                .unwrap();
+        }
+        let mut p = SourcesPanel::new(Arc::new(vault), &key_bindings());
+        two_source_panel(&mut p).await;
+        p
+    }
+
+    /// Deliver the spawned note load to the panel so the preview draws its
+    /// chrome (the Full header and its chevron only exist for a loaded note).
+    async fn deliver_load(
+        p: &mut SourcesPanel,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppMessage>,
+    ) -> Vec<AppMessage> {
+        let mut other = Vec::new();
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            if let AppMessage::Ask(data) = ev {
+                p.handle_data(data);
+                break;
+            }
+            other.push(ev);
+        }
+        other
+    }
+
+    #[tokio::test]
+    async fn right_grows_and_left_shrinks_the_preview() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let right = InputEvent::Key(key(KeyCode::Right));
+        let left = InputEvent::Key(key(KeyCode::Left));
+        assert_eq!(p.handle_input(&right, &tx), EventState::Consumed);
+        assert!(p.preview.is_context(), "Right: Collapsed -> Context");
+        p.handle_input(&right, &tx);
+        assert!(p.preview.is_full(), "Right: Context -> Full");
+        p.handle_input(&right, &tx);
+        assert!(p.preview.is_full(), "Right in Full does not wrap");
+        p.handle_input(&left, &tx);
+        assert!(p.preview.is_context(), "Left: Full -> Context");
+        p.handle_input(&left, &tx);
+        assert!(p.preview.is_collapsed(), "Left: Context -> Collapsed");
+    }
+
+    #[tokio::test]
+    async fn right_and_left_do_nothing_without_sources() {
+        let mut p = test_panel().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&InputEvent::Key(key(KeyCode::Right)), &tx);
+        assert!(p.preview.is_collapsed());
+    }
+
+    #[tokio::test]
+    async fn only_the_selected_row_shows_the_grow_chevron() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let buf = draw_panel(&mut p, 40, 20);
+        let found = glyph_cells(&buf, "\u{203A}");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let rect = p.list.selected_row_rect().expect("selected row placed");
+        assert_eq!(found[0], (rect.right() - 1, rect.y));
+        assert!(glyph_cells(&buf, "\u{2039}").is_empty());
+
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        let buf = draw_panel(&mut p, 40, 20);
+        assert_eq!(
+            glyph_cells(&buf, "\u{203A}").len(),
+            1,
+            "Context still grows"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_shows_only_the_header_shrink_chevron() {
+        let mut p = panel_with_notes().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        p.handle_input(&InputEvent::Key(key(KeyCode::Right)), &tx);
+        p.handle_input(&InputEvent::Key(key(KeyCode::Right)), &tx);
+        assert!(p.preview.is_full());
+        let _ = deliver_load(&mut p, &mut rx).await;
+        let buf = draw_panel(&mut p, 40, 20);
+        let found = glyph_cells(&buf, "\u{2039}");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let header = p.preview.full_header_rect();
+        assert_eq!(found[0], (header.right() - 1, header.y));
+        assert!(glyph_cells(&buf, "\u{203A}").is_empty());
+    }
+
+    #[tokio::test]
+    async fn clicking_the_chevron_steps_the_preview_without_opening() {
+        let mut p = panel_with_notes().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let buf = draw_panel(&mut p, 40, 20);
+        let (x, y) = glyph_cells(&buf, "\u{203A}")[0];
+        p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(p.preview.is_context(), "click grows to Context");
+        let buf = draw_panel(&mut p, 40, 20);
+        let (x, y) = glyph_cells(&buf, "\u{203A}")[0];
+        p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(p.preview.is_full(), "second click grows to Full");
+        let skipped = deliver_load(&mut p, &mut rx).await;
+        let buf = draw_panel(&mut p, 40, 20);
+        let (x, y) = glyph_cells(&buf, "\u{2039}")[0];
+        p.handle_input(&crate::test_support::mouse_down_at(x, y), &tx);
+        assert!(p.preview.is_context(), "header chevron: Full -> Context");
+        assert!(!opened_any(&mut rx), "the chevron never opens the note");
+        assert!(
+            !skipped
+                .iter()
+                .any(|m| matches!(m, AppMessage::OpenPath { .. })),
+            "nor while the load was delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn clicking_an_unselected_rows_last_column_only_selects() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let buf = draw_panel(&mut p, 40, 20);
+        let (x, y) = glyph_cells(&buf, "\u{203A}")[0];
+        p.handle_input(&crate::test_support::mouse_down_at(x, y + 2), &tx);
+        assert!(p.preview.is_collapsed(), "no step on an unselected row");
+        assert_eq!(selected_heading(&p).as_deref(), Some("B"));
+        assert!(!opened_any(&mut rx));
+    }
+
+    #[tokio::test]
+    async fn hints_name_right_and_left() {
+        let mut p = test_panel().await;
+        two_source_panel(&mut p).await;
+        let has =
+            |p: &SourcesPanel, k: &str| p.hint_shortcuts().iter().any(|(key, _)| key.contains(k));
+        assert!(has(&p, "\u{2192}"));
+        assert!(!has(&p, "Alt"));
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        p.preview.toggle(Some(VaultPath::new("a.md")));
+        assert!(has(&p, "\u{2190}"));
+        assert!(!has(&p, "Alt"));
     }
 }
