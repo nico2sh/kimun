@@ -532,9 +532,12 @@ pub(crate) struct Workspace {
     /// The view being dragged onto a drop zone, while one is
     /// ([`Self::dragged_view`]).
     view_drag: Option<LiveViewDrag>,
-    /// What a drop on each zone would do, worked out each frame while a
-    /// view is dragged ([`Self::refresh_drop_outcomes`]); empty otherwise.
+    /// What a drop on each zone would do, worked out while a
+    /// view is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
+    /// empty otherwise.
     drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
+    /// The drag [`Self::drop_outcomes`] were worked out for.
+    drop_outcomes_for: Option<ViewDrag>,
     /// The zone the drag is over, for its label ([`Self::zone_tag`]).
     hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
@@ -810,6 +813,7 @@ impl Workspace {
             _shell_keys: shell_keys,
             view_drag: None,
             drop_outcomes: HashMap::new(),
+            drop_outcomes_for: None,
             hovered_zone: None,
             modal: None,
             palette: None,
