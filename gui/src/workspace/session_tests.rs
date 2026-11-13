@@ -864,6 +864,37 @@ fn structural_commands_wait_for_a_pending_restore(cx: &mut TestAppContext) {
     assert_eq!(shown, first, "the step ran last");
 }
 
+/// A group close asked for during the restore, with no held new tab or
+/// split before it, names the group the record replaced: it is dropped, so
+/// the restored active group stays and nothing flashes.
+#[gpui_kit::test]
+fn a_lone_held_group_close_is_dropped(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    assert!(cx.read(|cx| win.workspace.read(cx).session_restoring()));
+    win.with(cx, |w, cx| {
+        let active = w.layout.active_group();
+        w.close_editor_group(active, cx);
+    });
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx)
+            && !cx.read(|cx| win.workspace.read(cx).session_restoring())
+            && win.all_idle(cx)
+    });
+    win.assert_states_in_step(cx);
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("c.md".to_string()), None],
+        ],
+        "the restored record is whole"
+    );
+    assert_eq!(win.flash(cx), None, "no flash");
+}
+
 /// A restore that cannot be applied (a close was running) leaves the stored
 /// record as it is: what the window holds instead is no change.
 #[gpui_kit::test]
@@ -932,6 +963,83 @@ fn a_stored_file_that_does_not_load_is_kept_until_a_real_change(cx: &mut TestApp
         win.after_debounce(cx);
         assert_eq!(session_of(&v).load(), Some(win.record(cx)), "{first:?}");
     }
+}
+
+/// A hand-edited record the loader must refuse before it can reach
+/// `Node::split`'s assert (a split with no child) or lay out nonsense (NaN,
+/// zero, negative or infinite weights; JSON has no NaN, so that spelling is
+/// unreadable text): each is kept byte for byte, the start shows the
+/// default arrangement, and nothing panics.
+#[gpui_kit::test]
+fn a_hand_edited_record_that_cannot_be_laid_out_is_kept_and_not_restored(cx: &mut TestAppContext) {
+    fn record(tree: &str) -> Vec<u8> {
+        format!(r#"{{"version":1,"tabs":[{{"tree":{tree},"active":0}}],"shown":0}}"#).into_bytes()
+    }
+    let rt = runtime();
+    let _guard = rt.enter();
+    let leaf = r#"{"Leaf":{"note":"b.md"}}"#;
+    let bad = [
+        record(r#"{"Split":{"axis":"Horizontal","weights":[],"children":[]}}"#),
+        record(&format!(
+            r#"{{"Split":{{"axis":"Horizontal","weights":[-1.0,2.0],"children":[{leaf},{leaf}]}}}}"#
+        )),
+        record(&format!(
+            r#"{{"Split":{{"axis":"Horizontal","weights":[0.0,1.0],"children":[{leaf},{leaf}]}}}}"#
+        )),
+        record(&format!(
+            r#"{{"Split":{{"axis":"Horizontal","weights":[1e999,1.0],"children":[{leaf},{leaf}]}}}}"#
+        )),
+        record(&format!(
+            r#"{{"Split":{{"axis":"Horizontal","weights":[NaN,1.0],"children":[{leaf},{leaf}]}}}}"#
+        )),
+    ];
+    for stored in bad {
+        let v = rt.block_on(test_vault(NOTES, &["d.md"]));
+        std::fs::write(session_of(&v).path().as_path(), &stored).unwrap();
+        assert_eq!(session_of(&v).load(), None, "the loader refuses it");
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, FirstNote::Restore),
+            v.settings.clone(),
+        ));
+        drive(&rt, cx, |cx| {
+            !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "delta"
+        });
+        assert_eq!(win.notes_by_tab(cx), vec![vec![Some("d.md".to_string())]]);
+        win.after_debounce(cx);
+        win.quit(cx);
+        cx.run_until_parked();
+        assert_eq!(
+            bytes(&v),
+            stored,
+            "kept: {}",
+            String::from_utf8_lossy(&stored)
+        );
+    }
+}
+
+/// A split of one child is a legal record: it restores as that child alone.
+#[gpui_kit::test]
+fn a_split_of_one_child_restores_as_the_child(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = SessionRecord::new(
+        vec![TabRecord {
+            tree: GroupTreeRecord::Split {
+                axis: AxisRecord::Horizontal,
+                weights: vec![1.0],
+                children: vec![leaf(Some("b.md"))],
+            },
+            active: 0,
+        }],
+        0,
+    );
+    let (v, win) = started(cx, &rt, &["d.md"], Some(&record), FirstNote::Restore);
+    assert_eq!(session_of(&v).load(), Some(record), "the loader takes it");
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "beta"
+    });
+    assert_eq!(win.notes_by_tab(cx), vec![vec![Some("b.md".to_string())]]);
 }
 
 // ── A command-line launch keeps the arrangement ──────────────────────────

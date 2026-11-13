@@ -52,6 +52,8 @@ pub(crate) const NOTE_MENU_ID: &str = "note-menu";
 pub(crate) const NOTE_MENU_LAYER_ID: &str = "note-menu-layer";
 
 /// The menu's width, in rems.
+/// Why a pick did nothing: its group shows another note by now.
+pub(crate) const MENU_NOTE_CHANGED: &str = "The note changed. Open the menu again.";
 const MENU_REMS: f32 = 18.;
 
 /// How far the menu keeps from the window's edges, in px.
@@ -570,7 +572,8 @@ impl Workspace {
     /// the keyboard, then the item does what its chord does. Nothing when
     /// the group is gone, or now shows another note than `target`, the one
     /// the menu named (the pick runs a moment after the click): the item
-    /// would act on a note the user did not pick it for.
+    /// would act on a note the user did not pick it for, so a flash says
+    /// so ([`MENU_NOTE_CHANGED`]).
     pub(super) fn run_note_menu_pick(
         &mut self,
         group: GroupId,
@@ -585,6 +588,7 @@ impl Workspace {
         let now = state.notes.as_ref().and_then(|h| h.note.as_ref());
         if now != target.as_ref() {
             self.close_note_menu(window, cx);
+            self.flash(MENU_NOTE_CHANGED, cx);
             return;
         }
         self.focus_group(group, cx);
