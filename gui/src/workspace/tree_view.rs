@@ -189,6 +189,17 @@ fn distribute(len: f64, cells: &[(f64, f64)]) -> (Vec<f64>, bool) {
     }
 }
 
+/// A split of the layout tree or of the shown tab's groups, as
+/// [`Workspace::render_split`] lays it out: its `axis`, the px it has, its
+/// children as (weight, minimum px along `axis`, child) in order, and the
+/// colour of the gap between drawn neighbours (`None`: window background).
+struct Split<'a, C> {
+    axis: Axis,
+    size: (f64, f64),
+    children: Vec<(f64, f64, &'a C)>,
+    line: Option<Rgba>,
+}
+
 /// The two cells a divider sits between, as last drawn.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DividerCell {
@@ -659,107 +670,135 @@ impl Workspace {
                 if visible.is_empty() {
                     return None;
                 }
-                let (length, cross) = match axis {
-                    Axis::Horizontal => size,
-                    Axis::Vertical => (size.1, size.0),
-                };
-                let mins: Vec<f64> = visible
+                let children = visible
                     .iter()
-                    .map(|(_, _, child)| {
+                    .map(|(_, weight, child)| {
                         let (w, h) = self.min_px(child, rem);
-                        if axis == Axis::Horizontal { w } else { h }
+                        let min = if axis == Axis::Horizontal { w } else { h };
+                        (*weight, min, *child)
                     })
                     .collect();
-                let gaps = (visible.len() - 1) as f64 * GAP;
-                let cells: Vec<(f64, f64)> = visible
-                    .iter()
-                    .zip(&mins)
-                    .map(|((_, weight, _), min)| (*weight, *min))
-                    .collect();
-                let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
                 let across = match axis {
                     Axis::Horizontal => (true, across.1),
                     Axis::Vertical => (across.0, true),
                 };
-                let drawn: Vec<(usize, f64, Option<f64>, Leaf, AnyElement)> = visible
-                    .iter()
-                    .zip(sizes.iter().zip(&mins))
-                    .filter_map(|((index, weight, child), (along, min))| {
-                        let size = match axis {
-                            Axis::Horizontal => (*along, cross),
-                            Axis::Vertical => (cross, *along),
-                        };
-                        let element = self.render_node(child, size, across, rem, window, cx)?;
-                        // Minimums are set only where they all fit.
-                        let min = held.then_some(*min);
-                        Some((*index, *weight, min, last_leaf(child), element))
-                    })
-                    .collect();
-                // The visible children share the split by their weights:
-                // flex grow factors summing below one would leave space
-                // unused.
-                let total: f64 = drawn.iter().map(|(_, weight, ..)| weight).sum();
-                let cell = |weight: f64, min: Option<f64>| {
-                    div()
-                        .flex()
-                        .flex_basis(rems(0.))
-                        .flex_grow((weight / total) as f32)
-                        .min_w_0()
-                        .min_h_0()
-                        .when_some(min, |cell, min| match axis {
-                            Axis::Horizontal => cell.min_w(px(min as f32)),
-                            Axis::Vertical => cell.min_h(px(min as f32)),
-                        })
-                };
-                let mut elements: Vec<AnyElement> = Vec::new();
-                // The same cells and gaps, empty, over the split: the
-                // handles live in its gaps, so they paint (and take the
-                // pointer) above both neighbours, their whole band grabbable.
-                let mut handles: Vec<AnyElement> = Vec::new();
-                // (element before, element after, divider leaf, minimums)
-                // per divider.
-                let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
                 // Consecutive drawn children are neighbours on screen, and
                 // the tree resizes between them across hidden siblings
-                // (`resize_after_visible`), so every seam is a divider.
-                let mut previous: Option<(usize, Leaf, f64)> = None;
-                let mut any_divider = false;
-                for (_, weight, min, last, element) in drawn {
-                    if let Some((prev_element, prev_last, prev_min)) = previous {
-                        elements.push(self.render_gap(axis, None, None, cx));
-                        handles.push(self.render_gap(
-                            axis,
-                            Some(DividerAt::Leaf(prev_last)),
-                            None,
-                            cx,
-                        ));
-                        any_divider = true;
-                        pairs.push((
-                            prev_element,
-                            elements.len(),
-                            DividerAt::Leaf(prev_last),
-                            prev_min,
-                            min.unwrap_or(0.0) / rem,
-                        ));
-                    }
-                    previous = Some((elements.len(), last, min.unwrap_or(0.0) / rem));
-                    elements.push(cell(weight, min).child(element).into_any_element());
-                    handles.push(cell(weight, min).into_any_element());
-                }
-                let direction = |row: gpui_kit::Div| match axis {
-                    Axis::Horizontal => row.flex_row(),
-                    Axis::Vertical => row.flex_col(),
+                // (`resize_after_visible`), so every seam is a divider. The
+                // seam is the window background between the leaves.
+                let split = Split {
+                    axis,
+                    size,
+                    children,
+                    line: None,
                 };
-                if any_divider {
-                    elements.push(
-                        direction(div().absolute().top_0().left_0().size_full().flex())
-                            .children(handles)
-                            .into_any_element(),
-                    );
-                }
-                Some(self.split_frame(axis, pairs, elements))
+                Some(self.render_split(
+                    split,
+                    rem,
+                    cx,
+                    |child| DividerAt::Leaf(last_leaf(child)),
+                    |child, size, cx| self.render_node(child, size, across, rem, window, cx),
+                ))
             }
         }
+    }
+
+    /// `split` laid out in its `size` px (ADR-0052 §6): its children
+    /// share the length less a [`GAP`] between neighbours by weight, each
+    /// held at its minimum where they all fit ([`distribute`]); each child
+    /// is drawn by `render` in its cell's px, and one `render` leaves out
+    /// takes no cell and no gap. Each gap between two drawn neighbours is
+    /// a divider sitting where `divider` says for the child before it; its
+    /// handle lives in an empty copy of the cells and gaps over the split,
+    /// so it paints (and takes the pointer) above both neighbours, its
+    /// whole band grabbable.
+    fn render_split<'a, C>(
+        &self,
+        split: Split<'a, C>,
+        rem: f64,
+        cx: &mut Context<Self>,
+        divider: impl Fn(&'a C) -> DividerAt,
+        mut render: impl FnMut(&'a C, (f64, f64), &mut Context<Self>) -> Option<AnyElement>,
+    ) -> AnyElement {
+        let Split {
+            axis,
+            size,
+            children,
+            line,
+        } = split;
+        let (length, cross) = match axis {
+            Axis::Horizontal => size,
+            Axis::Vertical => (size.1, size.0),
+        };
+        let gaps = children.len().saturating_sub(1) as f64 * GAP;
+        let cells: Vec<(f64, f64)> = children
+            .iter()
+            .map(|(weight, min, _)| (*weight, *min))
+            .collect();
+        let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
+        let drawn: Vec<(f64, Option<f64>, DividerAt, AnyElement)> = children
+            .iter()
+            .zip(&sizes)
+            .filter_map(|((weight, min, child), along)| {
+                let size = match axis {
+                    Axis::Horizontal => (*along, cross),
+                    Axis::Vertical => (cross, *along),
+                };
+                let element = render(child, size, cx)?;
+                // Minimums are set only where they all fit.
+                let min = held.then_some(*min);
+                Some((*weight, min, divider(child), element))
+            })
+            .collect();
+        // The drawn children share the split by their weights: flex grow
+        // factors summing below one would leave space unused.
+        let total: f64 = drawn.iter().map(|(weight, ..)| weight).sum();
+        let cell = |weight: f64, min: Option<f64>| {
+            div()
+                .flex()
+                .flex_basis(rems(0.))
+                .flex_grow((weight / total) as f32)
+                .min_w_0()
+                .min_h_0()
+                .when_some(min, |cell, min| match axis {
+                    Axis::Horizontal => cell.min_w(px(min as f32)),
+                    Axis::Vertical => cell.min_h(px(min as f32)),
+                })
+        };
+        let mut elements: Vec<AnyElement> = Vec::new();
+        let mut handles: Vec<AnyElement> = Vec::new();
+        // (element before, element after, divider, minimums in rems) per
+        // divider.
+        let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
+        let mut previous: Option<(usize, DividerAt, f64)> = None;
+        for (weight, min, at, element) in drawn {
+            let min_rems = min.unwrap_or(0.0) / rem;
+            if let Some((prev_element, prev_at, prev_min)) = previous {
+                elements.push(self.render_gap(axis, None, line, cx));
+                handles.push(self.render_gap(axis, Some(prev_at), None, cx));
+                pairs.push((prev_element, elements.len(), prev_at, prev_min, min_rems));
+            }
+            previous = Some((elements.len(), at, min_rems));
+            elements.push(cell(weight, min).child(element).into_any_element());
+            handles.push(cell(weight, min).into_any_element());
+        }
+        if !pairs.is_empty() {
+            elements.push(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .map(|row| match axis {
+                        Axis::Horizontal => row.flex_row(),
+                        Axis::Vertical => row.flex_col(),
+                    })
+                    .children(handles)
+                    .into_any_element(),
+            );
+        }
+        self.split_frame(axis, pairs, elements)
     }
 
     /// The row (`axis` horizontal) or column of a split's `elements`,
@@ -843,79 +882,31 @@ impl Workspace {
             }
             GroupShape::Split { axis, children } => (*axis, children),
         };
-        let (length, cross) = match axis {
-            Axis::Horizontal => size,
-            Axis::Vertical => (size.1, size.0),
-        };
         let per_group = f64::from(EDITOR_MIN_REMS) * rem;
-        let mins: Vec<f64> = children
+        let children = children
             .iter()
-            .map(|(_, child)| match axis {
-                Axis::Horizontal => child.widest_row() as f64 * per_group,
-                Axis::Vertical => 0.0,
+            .map(|(weight, child)| {
+                let min = match axis {
+                    Axis::Horizontal => child.widest_row() as f64 * per_group,
+                    Axis::Vertical => 0.0,
+                };
+                (*weight, min, child)
             })
             .collect();
-        let gaps = children.len().saturating_sub(1) as f64 * GAP;
-        let cells: Vec<(f64, f64)> = children
-            .iter()
-            .zip(&mins)
-            .map(|((weight, _), min)| (*weight, *min))
-            .collect();
-        let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
-        let line = theme::divider(&theme::current(cx));
-        // The weights are normalized: they are the grow factors.
-        let cell = |weight: f64, min: Option<f64>| {
-            div()
-                .flex()
-                .flex_basis(rems(0.))
-                .flex_grow(weight as f32)
-                .min_w_0()
-                .min_h_0()
-                .when_some(min, |cell, min| match axis {
-                    Axis::Horizontal => cell.min_w(px(min as f32)),
-                    Axis::Vertical => cell.min_h(px(min as f32)),
-                })
+        // Inside the editor Panel the seam is a hairline, not background.
+        let split = Split {
+            axis,
+            size,
+            children,
+            line: Some(theme::divider(&theme::current(cx))),
         };
-        let mut elements: Vec<AnyElement> = Vec::new();
-        let mut handles: Vec<AnyElement> = Vec::new();
-        let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
-        let mut previous: Option<(usize, GroupId, f64)> = None;
-        for (((weight, child), along), min) in children.iter().zip(&sizes).zip(&mins) {
-            let child_size = match axis {
-                Axis::Horizontal => (*along, cross),
-                Axis::Vertical => (cross, *along),
-            };
-            let element = self.render_group_node(child, child_size, order, rem, cx);
-            // Minimums are set only where they all fit.
-            let min = held.then_some(*min);
-            let min_rems = min.unwrap_or(0.0) / rem;
-            if let Some((prev_element, prev_last, prev_min)) = previous {
-                let divider = DividerAt::Group(prev_last);
-                elements.push(self.render_gap(axis, None, Some(line), cx));
-                handles.push(self.render_gap(axis, Some(divider), None, cx));
-                pairs.push((prev_element, elements.len(), divider, prev_min, min_rems));
-            }
-            previous = Some((elements.len(), child.last_group(), min_rems));
-            elements.push(cell(*weight, min).child(element).into_any_element());
-            handles.push(cell(*weight, min).into_any_element());
-        }
-        // The handles over the groups, in an empty copy of the cells and
-        // gaps, as the tree's are.
-        elements.push(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .flex()
-                .map(|row| match axis {
-                    Axis::Horizontal => row.flex_row(),
-                    Axis::Vertical => row.flex_col(),
-                })
-                .children(handles)
-                .into_any_element(),
-        );
-        self.split_frame(axis, pairs, elements)
+        self.render_split(
+            split,
+            rem,
+            cx,
+            |child| DividerAt::Group(child.last_group()),
+            |child, size, cx| Some(self.render_group_node(child, size, order, rem, cx)),
+        )
     }
 
     /// The group `group`, at `at` in the shown tab: its header over what it
