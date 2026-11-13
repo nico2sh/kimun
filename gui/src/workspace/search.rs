@@ -1150,7 +1150,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.search_flush = None;
-        let outcome = self.apply_flush(flushed, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
         self.restart_tick_unless_read_only();
         self.block_input(false, cx);
         let picker = self.picker.as_ref().and_then(|p| p.upgrade());

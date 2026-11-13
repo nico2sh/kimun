@@ -1276,7 +1276,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.properties_opening = None;
-        let outcome = self.apply_flush(flushed, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
         let problem = self.flush_failure(&outcome, cx);
         self.restart_tick_unless_read_only();
         self.block_input(false, cx);

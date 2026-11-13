@@ -50,6 +50,7 @@ use kimun_notes::logic::attachment::{format_mtime, human_size, type_label};
 use kimun_notes::logic::file_ops::relocated;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::FileOp;
 
 use super::Workspace;
@@ -520,9 +521,11 @@ impl Workspace {
             tokio::spawn(async move { load(&vault, &path).await })
         };
         let path = path.clone();
+        // The read lands in the group that asked for it.
+        let group = self.layout.active_group();
         // Leaving the note for it needs the window (a flush runs in it).
         let window = self.window;
-        self.active_state_mut().attachment_loading = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let loaded = tasks::joined(read).await;
             let Some(window) = window else {
                 return;
@@ -530,17 +533,22 @@ impl Workspace {
             window
                 .update(cx, |_, window, cx| {
                     this.update(cx, |workspace, cx| {
-                        workspace.attachment_loaded(path, loaded, window, cx)
+                        workspace.attachment_loaded(group, path, loaded, window, cx)
                     })
                 })
                 .ok();
-        }));
+        });
+        if let Some(state) = self.state_mut(group) {
+            state.attachment_loading = Some(task);
+        }
     }
 
     /// A note was asked for: an attachment still being read gives way.
-    pub(super) fn forget_attachment_request(&mut self) {
-        self.active_state_mut().attachment_loading = None;
-        self.active_state_mut().attachment_wanted = None;
+    pub(super) fn forget_attachment_request(&mut self, group: GroupId) {
+        if let Some(state) = self.state_mut(group) {
+            state.attachment_loading = None;
+            state.attachment_wanted = None;
+        }
     }
 
     /// The attachment was read: show it, leaving the open note for it
@@ -548,12 +556,15 @@ impl Workspace {
     /// stays); or say why not.
     fn attachment_loaded(
         &mut self,
+        group: GroupId,
         path: VaultPath,
         loaded: Result<Loaded, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_state_mut().attachment_loading = None;
+        if let Some(state) = self.state_mut(group) {
+            state.attachment_loading = None;
+        }
         let loaded = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {

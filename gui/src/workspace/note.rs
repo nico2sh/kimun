@@ -37,6 +37,7 @@ use std::time::Duration;
 use gpui_kit::{App, AppContext, Context, SharedString, Task, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::doc_meta::DocMeta;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::session::{
     FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
@@ -167,16 +168,26 @@ impl Workspace {
     /// Whether the open note may be written now: a note is open and the
     /// vault is not read-only.
     pub(crate) fn can_save(&self) -> bool {
+        self.can_save_in(self.layout.active_group())
+    }
+
+    /// [`Self::can_save`] for the note `group` holds.
+    fn can_save_in(&self, group: GroupId) -> bool {
         !self.status.read_only
             && self
-                .active_state()
-                .notes
-                .as_ref()
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
                 .is_some_and(|h| h.note.is_some())
     }
 
     pub(super) fn editor_dirty(&self, cx: &App) -> bool {
         self.active_state().editor.read(cx).editor.is_dirty()
+    }
+
+    /// [`Self::editor_dirty`] for the editor of `group`.
+    fn editor_dirty_in(&self, group: GroupId, cx: &App) -> bool {
+        self.state(group)
+            .is_some_and(|s| s.editor.read(cx).editor.is_dirty())
     }
 
     fn editor_revision(&self, cx: &App) -> NonZeroU64 {
@@ -210,9 +221,16 @@ impl Workspace {
     /// Keep the editor from taking input while an open is pending: the keys
     /// would be lost when the new note loads, so they are not taken at all.
     pub(super) fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
-        self.active_state()
-            .editor
-            .update(cx, |view, _| view.input_blocked = blocked);
+        self.block_input_in(self.layout.active_group(), blocked, cx);
+    }
+
+    /// [`Self::block_input`] for the editor of `group`.
+    fn block_input_in(&self, group: GroupId, blocked: bool, cx: &mut Context<Self>) {
+        if let Some(state) = self.state(group) {
+            state
+                .editor
+                .update(cx, |view, _| view.input_blocked = blocked);
+        }
     }
 
     /// Why the edits in the editor cannot be written, for a flash.
@@ -241,6 +259,15 @@ impl Workspace {
         self.open_note_with(path, None, cx);
     }
 
+    /// [`Self::open_note`] in the editor of `group`, active or not.
+    #[allow(
+        dead_code,
+        reason = "called by the group tasks that follow; tests use it now"
+    )]
+    pub(crate) fn open_note_in(&mut self, group: GroupId, path: VaultPath, cx: &mut Context<Self>) {
+        self.open_note_in_with(group, path, None, cx);
+    }
+
     /// [`Self::open_note`], the note's text then emphasising `emphasis` (the
     /// search needles of the query it was found by) until the first edit.
     pub(crate) fn open_note_with(
@@ -249,12 +276,23 @@ impl Workspace {
         emphasis: Option<Vec<String>>,
         cx: &mut Context<Self>,
     ) {
+        let group = self.layout.active_group();
+        self.open_note_in_with(group, path, emphasis, cx);
+    }
+
+    fn open_note_in_with(
+        &mut self,
+        group: GroupId,
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+        cx: &mut Context<Self>,
+    ) {
         if !path.is_note() || matches!(self.closing, Closing::Requested | Closing::Flushing) {
             return;
         }
         // The newest request wins: an attachment still being read is dropped.
-        self.forget_attachment_request();
-        let Some(host) = self.active_state_mut().notes.as_mut() else {
+        self.forget_attachment_request(group);
+        let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
             return;
         };
         host.wanted = Some(path);
@@ -263,19 +301,21 @@ impl Workspace {
         // its tick stopped): the open waits for it to end
         // ([`Self::file_op_ended`]).
         let held = self.note_held();
-        let Some(host) = self.active_state_mut().notes.as_mut() else {
+        let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
             return;
         };
         if !host.is_switching() && !held {
-            self.switch(cx);
+            self.switch(group, cx);
         }
     }
 
     /// Start the switch to the wanted note: flush the open one first.
-    pub(super) fn switch(&mut self, cx: &mut Context<Self>) {
-        let can_save = self.can_save();
-        let dirty = self.editor_dirty(cx);
-        let state = active_mut!(self);
+    pub(super) fn switch(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        let can_save = self.can_save_in(group);
+        let dirty = self.editor_dirty_in(group, cx);
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
         let Some(host) = state.notes.as_mut() else {
             return;
         };
@@ -302,8 +342,10 @@ impl Workspace {
                 Some(flush) => Some(tokio::spawn(flush.run()).await),
                 None => None,
             };
-            this.update(cx, |workspace, cx| workspace.switch_flushed(flushed, cx))
-                .ok();
+            this.update(cx, |workspace, cx| {
+                workspace.switch_flushed(group, flushed, cx)
+            })
+            .ok();
         }));
         if !can_save && dirty {
             let text = format!("{} They were not kept.", self.unsaveable());
@@ -314,10 +356,13 @@ impl Workspace {
     /// Apply a finished flush to the session and the buffer.
     pub(super) fn apply_flush(
         &mut self,
+        group: GroupId,
         result: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) -> SaveOutcome {
-        let state = active_mut!(self);
+        let Some(state) = self.groups.get_mut(&group) else {
+            return SaveOutcome::Clean;
+        };
         let Some(host) = state.notes.as_mut() else {
             return SaveOutcome::Clean;
         };
@@ -335,9 +380,8 @@ impl Workspace {
         if let SaveOutcome::Saved(saved) = &outcome {
             self.files_note_saved(saved, cx);
             if self
-                .active_state()
-                .notes
-                .as_ref()
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
                 .and_then(|h| h.note.as_ref())
                 == Some(&saved.path)
             {
@@ -351,13 +395,14 @@ impl Workspace {
     /// failed (stay, edits kept) or the window is closing.
     fn switch_flushed(
         &mut self,
+        group: GroupId,
         flushed: Option<Result<FlushResult, JoinError>>,
         cx: &mut Context<Self>,
     ) {
-        let outcome = flushed.map(|result| self.apply_flush(result, cx));
-        let dirty = self.editor_dirty(cx);
-        let can_save = self.can_save();
-        let Some(host) = active_mut!(self).notes.as_mut() else {
+        let outcome = flushed.map(|result| self.apply_flush(group, result, cx));
+        let dirty = self.editor_dirty_in(group, cx);
+        let can_save = self.can_save_in(group);
+        let Some(host) = self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()) else {
             return;
         };
         host.switching = None;
@@ -382,7 +427,7 @@ impl Workspace {
         // when that flush could capture the buffer: never on a pending open
         // (it captures nothing, and the loop would never end).
         if can_save && dirty && rewritable(outcome.as_ref()) && !host.session.is_open_pending() {
-            self.switch(cx);
+            self.switch(group, cx);
             return;
         }
         let Some(path) = host.wanted.take() else {
@@ -392,16 +437,17 @@ impl Workspace {
         let read = host.session.begin_open(path);
         host.switching = Some(cx.spawn(async move |this, cx| {
             let read = tokio::spawn(read.run()).await;
-            this.update(cx, |workspace, cx| workspace.switch_read(read, cx))
+            this.update(cx, |workspace, cx| workspace.switch_read(group, read, cx))
                 .ok();
         }));
-        self.block_input(true, cx);
+        self.block_input_in(group, true, cx);
     }
 
     /// The wanted note was read: load it (history, autosave tick), or stay
     /// on the open note and say why not.
     pub(crate) fn switch_read(
         &mut self,
+        group: GroupId,
         read: Result<NoteRead, JoinError>,
         cx: &mut Context<Self>,
     ) {
@@ -409,7 +455,9 @@ impl Workspace {
             return;
         };
         let read_only = self.status.read_only;
-        let state = active_mut!(self);
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
         let Some(host) = state.notes.as_mut() else {
             return;
         };
@@ -422,14 +470,16 @@ impl Workspace {
                 // note the buffer holds saves again.
                 tracing::error!("note read failed to finish: {e}");
                 host.session.cancel_open();
-                self.block_input(false, cx);
+                self.block_input_in(group, false, cx);
                 self.flash_error(format!("Couldn't open the note: {e}"), cx);
-                self.after_switch(cx);
+                self.after_switch(group, cx);
                 return;
             }
         };
-        self.block_input(false, cx);
-        let state = active_mut!(self);
+        self.block_input_in(group, false, cx);
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
         let Some(host) = state.notes.as_mut() else {
             return;
         };
@@ -475,20 +525,19 @@ impl Workspace {
             }
             OpenOutcome::Superseded => {}
         }
-        self.after_switch(cx);
+        self.after_switch(group, cx);
     }
 
     /// A switch ended: hand over to a waiting close, or to the next open.
-    fn after_switch(&mut self, cx: &mut Context<Self>) {
+    fn after_switch(&mut self, group: GroupId, cx: &mut Context<Self>) {
         if self.closing == Closing::Requested {
             self.close_flush(cx);
         } else if self
-            .active_state()
-            .notes
-            .as_ref()
+            .state(group)
+            .and_then(|s| s.notes.as_ref())
             .is_some_and(|h| h.wanted.is_some())
         {
-            self.switch(cx);
+            self.switch(group, cx);
         }
         // The first open settled (or failed): FILES may pick its folder;
         // LINKS and OUTLINE follow the note while shown.
@@ -561,7 +610,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         *self.leaving_slot(panel) = None;
-        let outcome = self.apply_flush(flushed, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
         let problem = self.flush_failure(&outcome, cx);
         self.block_input(false, cx);
         let note_wanted = self
@@ -1076,7 +1125,7 @@ impl Workspace {
         result: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outcome = self.apply_flush(result, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), result, cx);
         if let Some(problem) = flush_problem(&outcome) {
             let note = self
                 .active_state()

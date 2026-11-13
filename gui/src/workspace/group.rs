@@ -57,8 +57,16 @@ impl GroupState {
 }
 
 impl Workspace {
+    // Invariant: `groups` has a state for every group of `layout`, the active
+    // one included. Code that replaces `layout` (a preset, an undo) must
+    // keep them in step; the accessors below assert it in debug builds.
+
     /// The state of the active group.
     pub(crate) fn active_state(&self) -> &GroupState {
+        debug_assert!(
+            self.groups.contains_key(&self.layout.active_group()),
+            "groups out of step with the layout"
+        );
         self.groups
             .get(&self.layout.active_group())
             .expect("the active group has a state")
@@ -66,14 +74,44 @@ impl Workspace {
 
     /// The state of the active group, mutable.
     pub(crate) fn active_state_mut(&mut self) -> &mut GroupState {
+        debug_assert!(
+            self.groups.contains_key(&self.layout.active_group()),
+            "groups out of step with the layout"
+        );
         self.groups
             .get_mut(&self.layout.active_group())
             .expect("the active group has a state")
     }
 
     /// The state of `group`, if it has one.
-    #[allow(dead_code, reason = "read by the per-group tasks that follow")]
     pub(crate) fn state(&self, group: GroupId) -> Option<&GroupState> {
         self.groups.get(&group)
+    }
+
+    /// The state of `group`, mutable, if it has one. A background job finds
+    /// its own group here, whichever one is active when it ends.
+    pub(crate) fn state_mut(&mut self, group: GroupId) -> Option<&mut GroupState> {
+        self.groups.get_mut(&group)
+    }
+
+    /// Give `group` (already in the layout) an empty editor and, with
+    /// `settings`, a note session over the open vault. Splits are not wired
+    /// in the GUI yet: only the tests have a second group.
+    #[cfg(test)]
+    pub(crate) fn add_group_for_test(
+        &mut self,
+        group: GroupId,
+        settings: Option<kimun_notes::settings::SharedSettings>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        let mut state = GroupState::new(gpui_kit::AppContext::new(cx, |cx| {
+            EditorView::new(None, false, cx)
+        }));
+        if let (Some(settings), Some(vault)) = (settings, self.vault()) {
+            state.notes = Some(NoteHost::new(
+                kimun_notes::logic::session::NoteSession::new(vault, settings, VaultPath::root()),
+            ));
+        }
+        self.groups.insert(group, state);
     }
 }
