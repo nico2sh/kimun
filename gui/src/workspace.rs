@@ -2761,25 +2761,36 @@ impl Workspace {
             ActionShortcuts::FollowLink => {
                 self.follow_at_cursor(cx);
             }
-            ActionShortcuts::FocusRegion(dir) => match self.focus_dir(*dir) {
-                TreeFocusMove::Moved(_) => self.apply_focus(window, cx),
-                TreeFocusMove::AtEdge => {}
-                // Nothing stacked above or below: the chord is the focused
-                // panel's own key, not a focus move (ADR-0050 §4). The
-                // editor already let it pass, so it is handed back; anywhere
-                // else it goes on unswallowed.
-                TreeFocusMove::NotHandled => {
-                    let Some(key) = key else {
-                        return true;
-                    };
-                    if self.focused_panel() != Panel::Editor {
-                        return false;
+            ActionShortcuts::FocusRegion(dir) => {
+                match (self.layout.active_group(), self.focus_dir(*dir)) {
+                    (active_before, TreeFocusMove::Moved(_)) => {
+                        // A move between groups changed the active group: the
+                        // window follows it as on every other route
+                        // ([`Self::focus_group`]).
+                        if self.layout.active_group() != active_before {
+                            self.sync_active_status(cx);
+                            self.refresh_note_counts();
+                        }
+                        self.apply_focus(window, cx)
                     }
-                    self.active_state()
-                        .editor
-                        .update(cx, |editor, cx| editor.editor_key(key, window, cx));
+                    (_, TreeFocusMove::AtEdge) => {}
+                    // Nothing stacked above or below: the chord is the focused
+                    // panel's own key, not a focus move (ADR-0050 §4). The
+                    // editor already let it pass, so it is handed back; anywhere
+                    // else it goes on unswallowed.
+                    (_, TreeFocusMove::NotHandled) => {
+                        let Some(key) = key else {
+                            return true;
+                        };
+                        if self.focused_panel() != Panel::Editor {
+                            return false;
+                        }
+                        self.active_state()
+                            .editor
+                            .update(cx, |editor, cx| editor.editor_key(key, window, cx));
+                    }
                 }
-            },
+            }
             // The tabs (ADR-0058).
             ActionShortcuts::NewTab => self.new_tab(cx),
             ActionShortcuts::CloseTab => self.close_shown_tab(cx),
