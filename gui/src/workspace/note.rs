@@ -1361,8 +1361,16 @@ impl Workspace {
             {
                 Ok(flush) => flushes.push((group, flush)),
                 Err(_) => {
+                    // The flushes prepared before it go unrun; every group
+                    // gets its tick back, and the flash says why the window
+                    // stays.
                     tracing::warn!("close: a flush is still outstanding");
                     self.closing = Closing::Open;
+                    self.restart_ticks();
+                    self.flash_error(
+                        "Another save is still running. The window stays open.".to_string(),
+                        cx,
+                    );
                     return;
                 }
             }
