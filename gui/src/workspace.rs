@@ -2671,6 +2671,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The note menu is not modal: a chord that runs while it is open may
+        // change what it acts on (another note, tab or screen), so it closes
+        // first, the keyboard back where it was. Its own chord toggles it.
+        if *action != ActionShortcuts::FileOperations {
+            self.close_note_menu(window, cx);
+        }
         match action {
             ActionShortcuts::OpenCommandPalette => {
                 self.toggle_modal(ModalKind::Palette, Self::open_palette, window, cx)

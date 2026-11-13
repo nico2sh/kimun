@@ -640,7 +640,7 @@ fn other_entries_leave_the_open_note_alone(cx: &mut TestAppContext) {
 /// Escape closes the note menu and gives the keyboard back to the note. A
 /// dialog opening gives the menu way, and no menu opens over a dialog.
 #[gpui_kit::test]
-fn escape_closes_and_only_one_modal_opens(cx: &mut TestAppContext) {
+fn escape_closes_the_menu_and_a_dialog_gives_it_way(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
