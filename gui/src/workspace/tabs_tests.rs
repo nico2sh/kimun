@@ -661,20 +661,42 @@ fn close_flushes_every_group_before_the_window_closes(cx: &mut TestAppContext) {
 }
 
 /// A vault switch writes every group's text to the old vault, then every
-/// group is on the new one: an empty note session over it, the editor on
-/// the new channel, completing from it, of the engine the settings name.
+/// group is on the new one: a note session over it, the editor on the new
+/// channel, completing from it, of the engine the settings name. The new
+/// workspace's groups are its own (its session record's): the old ones go.
 #[gpui_kit::test]
 fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
     use super::reopen_tests::{BETA, open_on_a, pair, set_current};
     use kimun_notes::settings::EditorBackendSetting;
+    use kimun_notes::settings::session::{AxisRecord, GroupTreeRecord, SessionRecord, TabRecord};
 
     let rt = runtime();
     let _guard = rt.enter();
     let p = rt.block_on(pair());
+    // B left two groups side by side.
+    let leaf = |note: &str| GroupTreeRecord::Leaf {
+        note: Some(path(note)),
+    };
+    let b_record = SessionRecord {
+        tabs: vec![TabRecord {
+            tree: GroupTreeRecord::Split {
+                axis: AxisRecord::Horizontal,
+                weights: vec![0.5, 0.5],
+                children: vec![leaf("bfriend.md"), leaf("beta.md")],
+            },
+            active: 1,
+        }],
+        shown: 0,
+    };
+    p.settings
+        .read()
+        .unwrap()
+        .session_for("b")
+        .save(&b_record)
+        .unwrap();
     let started = Win(open_on_a(cx, &rt, &p, super::LayoutStore::Off));
     let first = started.active(cx);
     started.new_tab("afriend.md", cx);
-    let second = started.active(cx);
     drive(&rt, cx, |cx| started.all_idle(cx));
     started.set_text_in(first, "alpha edited", cx);
     let old_tx = cx.read(|cx| started.workspace.read(cx).tx.clone().unwrap());
@@ -685,6 +707,7 @@ fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         !cx.read(|cx| started.workspace.read(cx).reopen_running())
             && !started.indexing(cx)
+            && started.all_idle(cx)
             && started.text(cx) == BETA
     });
 
@@ -693,17 +716,20 @@ fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
         "alpha edited",
         "the hidden group's text went to the old vault first"
     );
-    assert_eq!(started.active(cx), second);
-    assert_eq!(started.note_in(second, cx), Some(path("beta.md")));
-    assert_eq!(started.note_in(first, cx), None);
-    assert_eq!(started.text_in(first, cx), "");
-    assert!(!started.dirty_in(first, cx));
+    let groups = cx.read(|cx| started.workspace.read(cx).layout.region().all_groups());
+    assert_eq!(groups.len(), 2, "B's own groups");
+    assert_eq!(started.note_in(groups[0], cx), Some(path("bfriend.md")));
+    assert_eq!(started.note_in(groups[1], cx), Some(path("beta.md")));
+    assert!(
+        started.holders(&path("afriend.md"), cx).is_empty(),
+        "nothing of A is held"
+    );
     cx.read(|cx| {
         let w = started.workspace.read(cx);
         let vault = w.vault().unwrap();
         let tx = w.tx.clone().unwrap();
         assert!(!tx.same_channel(&old_tx), "a fresh channel");
-        for group in [first, second] {
+        for group in groups {
             let state = w.state(group).unwrap();
             let host = state.notes.as_ref().expect("a note session");
             assert!(
