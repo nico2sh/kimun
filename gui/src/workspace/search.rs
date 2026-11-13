@@ -62,6 +62,7 @@ use gpui_kit::{
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::ask::locate;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::preview::{split_ranges, wrap_ranges};
 use kimun_notes::logic::query::SYNTAX;
 use kimun_notes::logic::session::FlushResult;
@@ -1123,8 +1124,10 @@ impl Workspace {
             self.open_chosen(path, emphasis, window, cx);
             return false;
         }
-        // No tick from here: the flush is the only write.
-        let Some(flush) = self.begin_note_flush(cx) else {
+        // No tick from here: the flush is the only write. The landing is
+        // the flushed group's, whichever group is active by then.
+        let group = self.layout.active_group();
+        let Some(flush) = self.begin_note_flush_in(group, cx) else {
             self.close_modal(window, cx);
             self.open_chosen(path, emphasis, window, cx);
             return false;
@@ -1132,7 +1135,7 @@ impl Workspace {
         self.search_flush = Some(cx.spawn_in(window, async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
             this.update_in(cx, |workspace, window, cx| {
-                workspace.search_flushed(path, emphasis, flushed, window, cx)
+                workspace.search_flushed(group, path, emphasis, flushed, window, cx)
             })
             .ok();
         }));
@@ -1143,6 +1146,7 @@ impl Workspace {
     /// browser with the reason.
     fn search_flushed(
         &mut self,
+        group: GroupId,
         path: VaultPath,
         emphasis: Option<Vec<String>>,
         flushed: Result<FlushResult, JoinError>,
@@ -1150,16 +1154,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.search_flush = None;
-        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
-        self.restart_tick_unless_read_only();
-        self.block_input(false, cx);
+        let outcome = self.apply_flush(group, flushed, cx);
+        self.restart_tick_unless_read_only_in(group);
+        self.block_input_in(group, false, cx);
         let picker = self.picker.as_ref().and_then(|p| p.upgrade());
         match flush_problem(&outcome) {
             Some(problem) => {
                 let note = self
-                    .active_state()
-                    .notes
-                    .as_ref()
+                    .host_in(group)
                     .and_then(|h| h.note.clone())
                     .unwrap_or_else(VaultPath::root);
                 let reason = format!("Couldn't save {note}: {problem}. Nothing was opened.");

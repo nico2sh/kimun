@@ -66,6 +66,7 @@ use gpui_kit::{
     IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, Task, WeakEntity, Window, div,
 };
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::update::{
     self as rules, CheckReport, CheckStart, UpdateBackend, UpdateMachine, UpdateOffer, UpdatePhase,
@@ -798,13 +799,16 @@ impl Workspace {
             self.refuse_install(block.reason(), cx);
             return;
         }
-        let Some(flush) = self.begin_note_flush(cx) else {
+        // The group flushed: the landing is its, whichever group is
+        // active by then.
+        let group = self.layout.active_group();
+        let Some(flush) = self.begin_note_flush_in(group, cx) else {
             self.refuse_install("another save of the note is still running", cx);
             return;
         };
         self.updates.flushing = Some(cx.spawn(async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
-            this.update(cx, |w, cx| w.update_note_flushed(flushed, cx))
+            this.update(cx, |w, cx| w.update_note_flushed(group, flushed, cx))
                 .ok();
         }));
         self.refresh_update_dialog(cx);
@@ -812,14 +816,15 @@ impl Workspace {
 
     fn update_note_flushed(
         &mut self,
+        group: GroupId,
         flushed: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) {
         self.updates.flushing = None;
-        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
-        let problem = self.flush_failure(&outcome, cx);
-        self.restart_tick_unless_read_only();
-        self.block_input(false, cx);
+        let outcome = self.apply_flush(group, flushed, cx);
+        let problem = self.flush_failure_in(group, &outcome, cx);
+        self.restart_tick_unless_read_only_in(group);
+        self.block_input_in(group, false, cx);
         self.file_op_ended(cx);
         match problem {
             Some(problem) => {

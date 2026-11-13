@@ -4,9 +4,9 @@
 //! its wording and what follows the flush; the shared steps are here:
 //!
 //! 1. [`Workspace::flush_block`]: may the note be let go at all?
-//! 2. [`Workspace::begin_note_flush`]: stop the tick, take the buffer,
+//! 2. [`Workspace::begin_note_flush_in`]: stop the tick, take the buffer,
 //!    block typing.
-//! 3. [`Workspace::flush_failure`]: after the flush landed, is everything
+//! 3. [`Workspace::flush_failure_in`]: after the flush landed, is everything
 //!    written?
 
 use gpui_kit::{App, Context};
@@ -65,17 +65,12 @@ impl Workspace {
         }
     }
 
-    /// Start the one write of the open note before it is let go: no tick
-    /// from here, the buffer taken, typing blocked. `None` when another
-    /// flush still runs (the tick is back, unless the vault is read-only;
-    /// nothing else changed). The
-    /// caller runs the request, applies it ([`Self::apply_flush`]) and
-    /// unblocks typing.
-    pub(super) fn begin_note_flush(&mut self, cx: &mut Context<Self>) -> Option<FlushRequest> {
-        self.begin_note_flush_in(self.layout.active_group(), cx)
-    }
-
-    /// [`Self::begin_note_flush`] for the note `group` holds.
+    /// Start the one write of the note `group` holds before it is let go:
+    /// no tick from here, the buffer taken, typing blocked. `None` when
+    /// another flush still runs (the tick is back, unless the vault is
+    /// read-only; nothing else changed). The caller keeps `group`, runs the
+    /// request, applies it to that group ([`Self::apply_flush`]) and
+    /// unblocks its typing, whichever group is active by then.
     pub(super) fn begin_note_flush_in(
         &mut self,
         group: GroupId,
@@ -100,14 +95,9 @@ impl Workspace {
         }
     }
 
-    /// What is still unwritten after a flush landed: the flush's own
-    /// problem, else text typed since (nothing types while it runs, but a
-    /// buffer still dirty must not be run over).
-    pub(super) fn flush_failure(&self, outcome: &SaveOutcome, cx: &App) -> Option<String> {
-        self.flush_failure_in(self.layout.active_group(), outcome, cx)
-    }
-
-    /// [`Self::flush_failure`] for the editor of `group`.
+    /// What is still unwritten in `group` after its flush landed: the
+    /// flush's own problem, else text typed since (nothing types while it
+    /// runs, but a buffer still dirty must not be run over).
     pub(super) fn flush_failure_in(
         &self,
         group: GroupId,
