@@ -31,7 +31,7 @@ pub(super) struct Shell {
 
 impl Shell {
     pub(super) fn editor(&self, cx: &gpui_kit::App) -> Entity<EditorView> {
-        self.workspace.read(cx).editor.clone()
+        self.workspace.read(cx).active_state().editor.clone()
     }
 
     pub(super) fn text(&self, cx: &gpui_kit::App) -> String {
@@ -230,6 +230,18 @@ fn the_shell_starts_with_the_editor_focused(cx: &mut TestAppContext) {
         assert_eq!(shell.text(cx), "hi");
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn workspace_starts_with_one_group_state_for_the_active_group(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "");
+    cx.read(|cx| {
+        let workspace = shell.workspace.read(cx);
+        let active = workspace.layout.active_group();
+        assert_eq!(workspace.groups.len(), 1);
+        assert!(workspace.groups.contains_key(&active));
+        assert!(workspace.state(active).is_some());
+    });
 }
 
 /// The left side's toggle hides its slot, giving its width to the editor,

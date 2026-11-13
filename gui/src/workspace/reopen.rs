@@ -176,11 +176,11 @@ impl Workspace {
                 }
             }
         } else {
-            if self.notes.is_some() && self.editor_dirty(cx) {
+            if self.active_state().notes.is_some() && self.editor_dirty(cx) {
                 let text = format!("{} They were not kept.", self.unsaveable());
                 self.flash_error(text, cx);
             }
-            if let Some(host) = self.notes.as_mut() {
+            if let Some(host) = self.active_state_mut().notes.as_mut() {
                 host.session.stop_autosave();
             }
             // Nothing typed now could be kept.
@@ -253,6 +253,7 @@ impl Workspace {
         self.block_input(false, cx);
         self.restart_tick_unless_read_only();
         let note = self
+            .active_state()
             .notes
             .as_ref()
             .and_then(|h| h.note.clone())
@@ -284,7 +285,9 @@ impl Workspace {
                     .unwrap_or_else(|e| e.into_inner())
                     .editor_backend,
             );
-            self.editor.update(cx, |view, cx| view.set_vim(vim, cx));
+            self.active_state()
+                .editor
+                .update(cx, |view, cx| view.set_vim(vim, cx));
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.set_channel(tx, rx, cx);
@@ -320,18 +323,18 @@ impl Workspace {
         // The open note (already flushed): no tick, no path, an empty clean
         // buffer, no search emphasis or find bar from the old text.
         self.release_note(cx);
-        self.editor.update(cx, |view, cx| {
+        self.active_state().editor.update(cx, |view, cx| {
             view.editor.close_find();
             view.editor.set_search_needles(Vec::new());
             // The old vault's notes and tags are not the next one's.
             view.set_suggestions(None);
             cx.notify();
         });
-        if let Some(host) = self.notes.as_mut() {
+        if let Some(host) = self.active_state_mut().notes.as_mut() {
             host.session.stop_autosave();
             host.session.abort_autosave();
         }
-        self.notes = None;
+        self.active_state_mut().notes = None;
         // Every task over the old vault: dropped, so none lands here.
         self.reopening = None;
         self.reopen_again = false;
@@ -344,15 +347,15 @@ impl Workspace {
         self.properties_opening = None;
         self.property_write = None;
         self.note_reload = None;
-        self.attachment_loading = None;
-        self.attachment_flushing = None;
-        self.attachment_wanted = None;
+        self.active_state_mut().attachment_loading = None;
+        self.active_state_mut().attachment_flushing = None;
+        self.active_state_mut().attachment_wanted = None;
         self.ask_client_task = None;
         self.ask_saving = None;
         // The attachment view and the views over the vault, with their
         // subscriptions.
-        self.attachment = None;
-        self._attachment_events = None;
+        self.active_state_mut().attachment = None;
+        self.active_state_mut()._attachment_events = None;
         self.files = None;
         self._files_events = None;
         self.links = None;

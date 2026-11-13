@@ -178,8 +178,16 @@ impl Workspace {
     /// The note OUTLINE reads and its buffer revision: the open note in
     /// the editor, or nothing (an empty path, an unknown revision).
     fn outline_note(&self, cx: &gpui_kit::App) -> (VaultPath, Option<NonZeroU64>) {
-        match self.notes.as_ref().and_then(|h| h.note.clone()) {
-            Some(note) => (note, Some(self.editor.read(cx).editor.revision())),
+        match self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        {
+            Some(note) => (
+                note,
+                Some(self.active_state().editor.read(cx).editor.revision()),
+            ),
             None => (VaultPath::empty(), None),
         }
     }
@@ -198,7 +206,7 @@ impl Workspace {
         let text = if note.is_root_or_empty() {
             String::new()
         } else {
-            self.editor.read(cx).editor.get_text()
+            self.active_state().editor.read(cx).editor.get_text()
         };
         outline.update(cx, |view, cx| view.sync(&note, revision, move || text, cx));
     }
@@ -259,7 +267,13 @@ impl Workspace {
         let Some(outline) = self.outline.clone() else {
             return;
         };
-        if self.notes.as_ref().and_then(|h| h.note.as_ref()).is_none() {
+        if self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.as_ref())
+            .is_none()
+        {
             self.flash("No note open", cx);
             return;
         }
@@ -267,7 +281,7 @@ impl Workspace {
         let row = outline.read(cx).resolve(target);
         match row {
             Some(row) => {
-                self.editor.update(cx, |view, cx| {
+                self.active_state().editor.update(cx, |view, cx| {
                     view.editor.jump_to_row(row);
                     cx.notify();
                 });

@@ -198,7 +198,8 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeError, TreeFocusMove,
+    Axis as TreeAxis, Dir, Focus, GroupId, LayoutTree, Leaf, RailPosition, SlotId, TreeError,
+    TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -398,7 +399,8 @@ pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 /// The window's root view. See the module docs.
 pub(crate) struct Workspace {
     pub(crate) layout: LayoutTree<DrawerView>,
-    pub(crate) editor: Entity<EditorView>,
+    /// The state of each editor group (editor, note session, attachment).
+    pub(crate) groups: HashMap<GroupId, group::GroupState>,
     rail_focus: FocusHandle,
     /// Each slot's handle: the slot's scope, and the keyboard target of a
     /// slot whose view has no focusable content of its own (or that shows
@@ -450,9 +452,6 @@ pub(crate) struct Workspace {
     empty: Option<EmptyState>,
     /// What the Footer shows.
     pub(crate) status: Status,
-    /// The note session over the vault, when the window has one (not in the
-    /// empty states, nor in the tests that feed the editor text directly).
-    pub(crate) notes: Option<NoteHost>,
     /// The window's app channel, once [`Self::start`] set it up: the sender
     /// background jobs report on, and the task draining its receiver.
     tx: Option<AppTx>,
@@ -605,17 +604,6 @@ pub(crate) struct Workspace {
     property_write: Option<(VaultPath, Task<()>)>,
     /// The open note being reloaded from disk after a property write.
     note_reload: Option<Task<()>>,
-    /// The attachment the editor Panel shows instead of the editor
-    /// ([`attachment`]), and its events.
-    pub(crate) attachment: Option<Entity<attachment::AttachmentView>>,
-    _attachment_events: Option<Subscription>,
-    /// The read of an attachment asked for (a newer request replaces it).
-    attachment_loading: Option<Task<()>>,
-    /// The flush of the open note before an attachment shows: it holds the
-    /// note like a file operation does.
-    attachment_flushing: Option<Task<()>>,
-    /// An attachment asked for while that flush ran: it opens next.
-    attachment_wanted: Option<VaultPath>,
     /// The view ASK (the Thread), when the window has a vault ([`ask`]),
     /// and its events. It lives as long as the vault session, shown or not.
     pub(crate) ask: Option<Entity<ask::AskView>>,
@@ -735,7 +723,7 @@ impl Workspace {
             this.chord_labels = ChordLabels::new(cx);
             this.config.update(cx, |_, cx| cx.notify());
             let chord = this.chord_labels.follow_link;
-            if let Some(view) = this.attachment.as_ref() {
+            if let Some(view) = this.active_state().attachment.as_ref() {
                 view.update(cx, |view, cx| view.set_open_chord(chord, cx));
             }
             cx.notify();
@@ -743,8 +731,8 @@ impl Workspace {
         let config = cx.new(config::ConfigView::new);
         let config_events = cx.subscribe_in(&config, window, Self::on_config_event);
         let mut this = Self {
+            groups: HashMap::from([(layout.active_group(), group::GroupState::new(editor))]),
             layout,
-            editor,
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
             last_slot: None,
@@ -764,7 +752,6 @@ impl Workspace {
             rail_hidden: recorded_gui.rail_hidden(),
             empty: None,
             status: Status::default(),
-            notes: None,
             tx: None,
             _messages: None,
             action_timers: HashMap::new(),
@@ -834,11 +821,6 @@ impl Workspace {
             properties_opening: None,
             property_write: None,
             note_reload: None,
-            attachment: None,
-            _attachment_events: None,
-            attachment_loading: None,
-            attachment_flushing: None,
-            attachment_wanted: None,
             ask: None,
             _ask_events: None,
             ask_sources: None,
@@ -891,7 +873,12 @@ impl Workspace {
             // Right-click without a selection: the note menu, for the note
             // the editor shows, with its properties first.
             EditorEvent::ContextMenu => {
-                if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
+                if let Some(note) = self
+                    .active_state()
+                    .notes
+                    .as_ref()
+                    .and_then(|h| h.note.clone())
+                {
                     self.open_file_ops_menu(note, true, window, cx);
                 }
             }
@@ -927,7 +914,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.listen(rx, cx);
-        self.editor
+        self.active_state()
+            .editor
             .update(cx, |view, _| view.set_channel(tx.clone()));
         self.tx = Some(tx);
     }
@@ -963,14 +951,14 @@ impl Workspace {
             Start::OpenFailed(_) => {}
         }
         if let Start::Vault(VaultStart { vault, name, first }) = start {
-            self.notes = Some(NoteHost::new(NoteSession::new(
+            self.active_state_mut().notes = Some(NoteHost::new(NoteSession::new(
                 vault.clone(),
                 settings.clone(),
                 VaultPath::root(),
             )));
             self.refresh_git();
             // The editor completes `[[` and `#` from this vault's notes and tags.
-            self.editor.update(cx, |view, _| {
+            self.active_state().editor.update(cx, |view, _| {
                 view.set_suggestions(Some(std::sync::Arc::new(
                     kimun_notes::logic::autocomplete::VaultSuggestions {
                         vault: vault.clone(),
@@ -1036,7 +1024,7 @@ impl Workspace {
             // A background parse/layout job of the editor finished, or
             // FILES' listing has rows to show.
             AppMessage::Redraw => {
-                self.editor.update(cx, |_, cx| cx.notify());
+                self.active_state().editor.update(cx, |_, cx| cx.notify());
                 self.poll_files(cx);
                 self.poll_picker(cx);
                 self.poll_views(cx);
@@ -1062,7 +1050,7 @@ impl Workspace {
                 self.status.indexing = false;
                 self.status.read_only = true;
                 // Nothing is written from here on: no tick to run.
-                if let Some(host) = self.notes.as_mut() {
+                if let Some(host) = self.active_state_mut().notes.as_mut() {
                     host.session.stop_autosave();
                 }
                 self.flash_error(conflict_flash(&details), cx);
@@ -1197,7 +1185,10 @@ impl Workspace {
 
     /// The open workspace's vault; `None` before one opens.
     pub(crate) fn vault(&self) -> Option<Arc<NoteVault>> {
-        self.notes.as_ref().map(|h| h.session.vault().clone())
+        self.active_state()
+            .notes
+            .as_ref()
+            .map(|h| h.session.vault().clone())
     }
 
     /// [`Self::vault`], or, without a workspace, the flash that says so
@@ -1427,6 +1418,7 @@ impl Workspace {
         if let Some(links) = self.links.clone() {
             let shown = self.is_shown(DrawerView::Links);
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())
@@ -1718,9 +1710,9 @@ impl Workspace {
                 None => self.slot_handle(slot),
             },
             // The attachment view while one shows, else the editor.
-            Focus::Leaf(Leaf::Group(_)) => match self.attachment.as_ref() {
+            Focus::Leaf(Leaf::Group(_)) => match self.active_state().attachment.as_ref() {
                 Some(view) => view.read(cx).focus_handle(cx),
-                None => self.editor.read(cx).focus_handle(cx),
+                None => self.active_state().editor.read(cx).focus_handle(cx),
             },
         }
     }
@@ -2345,13 +2337,13 @@ impl Workspace {
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.focused_panel() {
             // The attachment view reads no vim keys.
-            Panel::Editor if self.attachment.is_some() => KeyCtx {
+            Panel::Editor if self.active_state().attachment.is_some() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
                 browser: false,
             },
-            Panel::Editor => self.editor.read(cx).key_ctx(),
+            Panel::Editor => self.active_state().editor.read(cx).key_ctx(),
             panel => KeyCtx {
                 panel,
                 vim: false,
@@ -2584,7 +2576,8 @@ impl Workspace {
                     if self.focused_panel() != Panel::Editor {
                         return false;
                     }
-                    self.editor
+                    self.active_state()
+                        .editor
                         .update(cx, |editor, cx| editor.editor_key(key, window, cx));
                 }
             },
@@ -2907,7 +2900,7 @@ impl Workspace {
     /// open but no note is (yet): typing there could never be saved. `None`
     /// once a note is open, and without a vault (the fixture tests' editor).
     pub(crate) fn note_empty_state(&self) -> Option<EmptyState> {
-        let host = self.notes.as_ref()?;
+        let host = self.active_state().notes.as_ref()?;
         if host.note.is_some() {
             return None;
         }
@@ -2938,7 +2931,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
+        let attachment = self
+            .active_state()
+            .attachment
+            .clone()
+            .filter(|_| self.empty.is_none());
         let empty = match &attachment {
             None => self.empty.clone().or_else(|| self.note_empty_state()),
             Some(_) => None,
@@ -2950,7 +2947,11 @@ impl Workspace {
             // away from a workspace that would not open, the leader, the
             // palette).
             (Some(empty), _) => self
-                .render_empty(empty, &self.editor.read(cx).focus_handle(cx), cx)
+                .render_empty(
+                    empty,
+                    &self.active_state().editor.read(cx).focus_handle(cx),
+                    cx,
+                )
                 .into_any_element(),
             (None, Some(view)) => div()
                 .flex()
@@ -2962,7 +2963,7 @@ impl Workspace {
             (None, None) => div()
                 .flex_1()
                 .min_h_0()
-                .child(self.editor.clone())
+                .child(self.active_state().editor.clone())
                 .into_any_element(),
         };
         // The which-key docks over the bottom of the document, right above
@@ -3045,10 +3046,11 @@ impl Workspace {
     /// its find bar closed; the find bar's matches while it is open; the
     /// note's counts once loaded, while a note is open.
     pub(crate) fn doc_facts(&self, editor_shown: bool, cx: &App) -> DocFacts {
-        let editor = &self.editor.read(cx).editor;
+        let editor = &self.active_state().editor.read(cx).editor;
         let focused = editor_shown && self.focused_panel() == Panel::Editor;
         let find_open = editor.find_open();
         let meta = self
+            .active_state()
             .notes
             .as_ref()
             .filter(|h| h.note.is_some())
@@ -3354,6 +3356,7 @@ mod files;
 mod find;
 mod folder_chooser;
 mod follow;
+mod group;
 mod input_autocomplete;
 mod key_suggestions;
 mod keyboard_help;

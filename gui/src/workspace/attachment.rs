@@ -494,7 +494,8 @@ impl Render for AttachmentView {
 impl Workspace {
     /// The attachment the editor Panel shows, if any.
     pub(crate) fn shown_attachment(&self, cx: &App) -> Option<VaultPath> {
-        self.attachment
+        self.active_state()
+            .attachment
             .as_ref()
             .map(|view| view.read(cx).path().clone())
     }
@@ -510,8 +511,8 @@ impl Workspace {
         let Some(vault) = self.vault() else {
             return;
         };
-        if self.attachment_flushing.is_some() {
-            self.attachment_wanted = Some(path.clone());
+        if self.active_state().attachment_flushing.is_some() {
+            self.active_state_mut().attachment_wanted = Some(path.clone());
             return;
         }
         let read = {
@@ -521,7 +522,7 @@ impl Workspace {
         let path = path.clone();
         // Leaving the note for it needs the window (a flush runs in it).
         let window = self.window;
-        self.attachment_loading = Some(cx.spawn(async move |this, cx| {
+        self.active_state_mut().attachment_loading = Some(cx.spawn(async move |this, cx| {
             let loaded = tasks::joined(read).await;
             let Some(window) = window else {
                 return;
@@ -538,8 +539,8 @@ impl Workspace {
 
     /// A note was asked for: an attachment still being read gives way.
     pub(super) fn forget_attachment_request(&mut self) {
-        self.attachment_loading = None;
-        self.attachment_wanted = None;
+        self.active_state_mut().attachment_loading = None;
+        self.active_state_mut().attachment_wanted = None;
     }
 
     /// The attachment was read: show it, leaving the open note for it
@@ -552,7 +553,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.attachment_loading = None;
+        self.active_state_mut().attachment_loading = None;
         let loaded = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -569,11 +570,11 @@ impl Workspace {
                 NoteLeft::Flushed => {
                     workspace.show_attachment(loaded, cx);
                     // One asked for while the flush ran goes now.
-                    if let Some(next) = workspace.attachment_wanted.take() {
+                    if let Some(next) = workspace.active_state_mut().attachment_wanted.take() {
                         workspace.open_attachment(&next, cx);
                     }
                 }
-                NoteLeft::Stays => workspace.attachment_wanted = None,
+                NoteLeft::Stays => workspace.active_state_mut().attachment_wanted = None,
             },
             window,
             cx,
@@ -589,10 +590,11 @@ impl Workspace {
         self.status.attachment = Some(path.clone());
         let chord = self.chord_labels.follow_link;
         let view = cx.new(|cx| AttachmentView::new(loaded, chord, cx));
-        self._attachment_events = Some(cx.subscribe(&view, |this, _, event, cx| match event {
-            AttachmentEvent::OpenExternally => this.open_attachment_externally(cx),
-        }));
-        self.attachment = Some(view);
+        self.active_state_mut()._attachment_events =
+            Some(cx.subscribe(&view, |this, _, event, cx| match event {
+                AttachmentEvent::OpenExternally => this.open_attachment_externally(cx),
+            }));
+        self.active_state_mut().attachment = Some(view);
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, cx| pane.set_open_note(Some(path), cx));
         }
@@ -617,9 +619,9 @@ impl Workspace {
     /// lifetime belongs here). True when one was shown. The caller
     /// refocuses and redraws.
     pub(super) fn drop_attachment(&mut self) -> bool {
-        self._attachment_events = None;
+        self.active_state_mut()._attachment_events = None;
         self.status.attachment = None;
-        self.attachment.take().is_some()
+        self.active_state_mut().attachment.take().is_some()
     }
 
     /// A note opened: the attachment view goes (the editor is back).
@@ -633,7 +635,10 @@ impl Workspace {
     /// `Open externally` (the button, the `FollowLink` chord): hand the
     /// shown attachment to the system's default program.
     pub(crate) fn open_attachment_externally(&mut self, cx: &mut Context<Self>) {
-        let (Some(view), Some(host)) = (self.attachment.as_ref(), self.notes.as_ref()) else {
+        let (Some(view), Some(host)) = (
+            self.active_state().attachment.as_ref(),
+            self.active_state().notes.as_ref(),
+        ) else {
             return;
         };
         let (path, name) = {

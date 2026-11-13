@@ -1023,7 +1023,11 @@ impl Workspace {
         let Some(vault) = self.vault_or_flash(cx) else {
             return;
         };
-        let open = self.notes.as_ref().and_then(|h| h.note.clone());
+        let open = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone());
         let recents = self
             .settings
             .as_ref()
@@ -1108,6 +1112,7 @@ impl Workspace {
             || self.note_held()
             || self.closing != Closing::Open
             || self
+                .active_state()
                 .notes
                 .as_ref()
                 .is_none_or(|h| h.is_switching() || h.is_open_wanted());
@@ -1152,6 +1157,7 @@ impl Workspace {
         match flush_problem(&outcome) {
             Some(problem) => {
                 let note = self
+                    .active_state()
                     .notes
                     .as_ref()
                     .and_then(|h| h.note.clone())

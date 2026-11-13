@@ -45,6 +45,7 @@ use kimun_notes::util::git_status::GitSummary;
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::group::active_mut;
 
 /// How long the "close again to discard" warning holds: a close within it
 /// (and before any new edit) discards the unsaved edits. Its own clock, not
@@ -166,15 +167,24 @@ impl Workspace {
     /// Whether the open note may be written now: a note is open and the
     /// vault is not read-only.
     pub(crate) fn can_save(&self) -> bool {
-        !self.status.read_only && self.notes.as_ref().is_some_and(|h| h.note.is_some())
+        !self.status.read_only
+            && self
+                .active_state()
+                .notes
+                .as_ref()
+                .is_some_and(|h| h.note.is_some())
     }
 
     pub(super) fn editor_dirty(&self, cx: &App) -> bool {
-        self.editor.read(cx).editor.is_dirty()
+        self.active_state().editor.read(cx).editor.is_dirty()
     }
 
     fn editor_revision(&self, cx: &App) -> NonZeroU64 {
-        self.editor.read(cx).editor.content_revision()
+        self.active_state()
+            .editor
+            .read(cx)
+            .editor
+            .content_revision()
     }
 
     /// The user was just told the edits cannot be saved: the next close
@@ -192,7 +202,7 @@ impl Workspace {
             })
             .ok();
         });
-        if let Some(host) = self.notes.as_mut() {
+        if let Some(host) = self.active_state_mut().notes.as_mut() {
             host.discard_expiry = Some(expiry);
         }
     }
@@ -200,13 +210,19 @@ impl Workspace {
     /// Keep the editor from taking input while an open is pending: the keys
     /// would be lost when the new note loads, so they are not taken at all.
     pub(super) fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
-        self.editor
+        self.active_state()
+            .editor
             .update(cx, |view, _| view.input_blocked = blocked);
     }
 
     /// Why the edits in the editor cannot be written, for a flash.
     pub(super) fn unsaveable(&self) -> String {
-        match self.notes.as_ref().and_then(|h| h.note.as_ref()) {
+        match self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.as_ref())
+        {
             Some(note) if self.status.read_only => {
                 format!("Read-only: your edits to {note} can't be saved.")
             }
@@ -238,7 +254,7 @@ impl Workspace {
         }
         // The newest request wins: an attachment still being read is dropped.
         self.forget_attachment_request();
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.active_state_mut().notes.as_mut() else {
             return;
         };
         host.wanted = Some(path);
@@ -247,7 +263,7 @@ impl Workspace {
         // its tick stopped): the open waits for it to end
         // ([`Self::file_op_ended`]).
         let held = self.note_held();
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.active_state_mut().notes.as_mut() else {
             return;
         };
         if !host.is_switching() && !held {
@@ -259,7 +275,8 @@ impl Workspace {
     pub(super) fn switch(&mut self, cx: &mut Context<Self>) {
         let can_save = self.can_save();
         let dirty = self.editor_dirty(cx);
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         if host.wanted.is_none() {
@@ -268,7 +285,7 @@ impl Workspace {
         let flush = if can_save {
             match host
                 .session
-                .prepare_flush(Some(&self.editor.read(cx).editor))
+                .prepare_flush(Some(&state.editor.read(cx).editor))
             {
                 Ok(flush) => Some(flush),
                 // One switch or close at a time holds the only flush.
@@ -300,11 +317,12 @@ impl Workspace {
         result: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) -> SaveOutcome {
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return SaveOutcome::Clean;
         };
         let outcome = match result {
-            Ok(result) => self.editor.update(cx, |view, cx| {
+            Ok(result) => state.editor.update(cx, |view, cx| {
                 let outcome = host.session.apply_flush(result, Some(&mut view.editor));
                 cx.notify();
                 outcome
@@ -316,7 +334,13 @@ impl Workspace {
         }
         if let SaveOutcome::Saved(saved) = &outcome {
             self.files_note_saved(saved, cx);
-            if self.notes.as_ref().and_then(|h| h.note.as_ref()) == Some(&saved.path) {
+            if self
+                .active_state()
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.as_ref())
+                == Some(&saved.path)
+            {
                 self.refresh_note_properties();
             }
         }
@@ -333,7 +357,7 @@ impl Workspace {
         let outcome = flushed.map(|result| self.apply_flush(result, cx));
         let dirty = self.editor_dirty(cx);
         let can_save = self.can_save();
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = active_mut!(self).notes.as_mut() else {
             return;
         };
         host.switching = None;
@@ -385,7 +409,8 @@ impl Workspace {
             return;
         };
         let read_only = self.status.read_only;
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         host.switching = None;
@@ -404,11 +429,12 @@ impl Workspace {
             }
         };
         self.block_input(false, cx);
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         let previous = host.note.clone();
-        let outcome = self.editor.update(cx, |view, cx| {
+        let outcome = state.editor.update(cx, |view, cx| {
             let outcome = host.session.finish_open(read, Some(&mut view.editor), &tx);
             if matches!(outcome, OpenOutcome::Opened(_)) {
                 // A composition in progress belonged to the old text.
@@ -456,7 +482,12 @@ impl Workspace {
     fn after_switch(&mut self, cx: &mut Context<Self>) {
         if self.closing == Closing::Requested {
             self.close_flush(cx);
-        } else if self.notes.as_ref().is_some_and(|h| h.wanted.is_some()) {
+        } else if self
+            .active_state()
+            .notes
+            .as_ref()
+            .is_some_and(|h| h.wanted.is_some())
+        {
             self.switch(cx);
         }
         // The first open settled (or failed): FILES may pick its folder;
@@ -492,7 +523,7 @@ impl Workspace {
             self.flash_error(format!("Couldn't open {name}: {}.", block.reason()), cx);
             return;
         }
-        if self.notes.as_ref().is_none() {
+        if self.active_state().notes.as_ref().is_none() {
             return;
         }
         if !can_save {
@@ -533,9 +564,14 @@ impl Workspace {
         let outcome = self.apply_flush(flushed, cx);
         let problem = self.flush_failure(&outcome, cx);
         self.block_input(false, cx);
-        let note_wanted = self.notes.as_ref().is_some_and(|h| h.is_open_wanted());
+        let note_wanted = self
+            .active_state()
+            .notes
+            .as_ref()
+            .is_some_and(|h| h.is_open_wanted());
         if let Some(problem) = problem {
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())
@@ -560,7 +596,7 @@ impl Workspace {
     /// The task slot holding the flush of a leave for `panel`.
     fn leaving_slot(&mut self, panel: LeavingFor) -> &mut Option<Task<()>> {
         match panel {
-            LeavingFor::Attachment => &mut self.attachment_flushing,
+            LeavingFor::Attachment => &mut self.active_state_mut().attachment_flushing,
         }
     }
 
@@ -568,13 +604,13 @@ impl Workspace {
     /// empty clean buffer, so nothing can save while another panel shows;
     /// the status line names no note.
     pub(super) fn release_note(&mut self, cx: &mut Context<Self>) {
-        if let Some(host) = self.notes.as_mut() {
+        if let Some(host) = self.active_state_mut().notes.as_mut() {
             host.session.stop_autosave();
             host.session.abort_autosave();
             host.session.set_path(VaultPath::root());
             host.note = None;
         }
-        self.editor.update(cx, |view, cx| {
+        self.active_state().editor.update(cx, |view, cx| {
             view.editor.set_text(String::new());
             view.editor.mark_saved(String::new());
             view.preedit = None;
@@ -599,16 +635,22 @@ impl Workspace {
         let Some(tx) = self.tx.clone() else {
             return;
         };
-        if let Some(host) = self.notes.as_mut() {
+        let state = active_mut!(self);
+        if let Some(host) = state.notes.as_mut() {
             host.session
-                .spawn_autosave(Some(&self.editor.read(cx).editor), &tx);
+                .spawn_autosave(Some(&state.editor.read(cx).editor), &tx);
         }
     }
 
     /// The Save chord: write the open note now (in the background, as the
     /// tick does). Already saved: nothing to do, the Footer says "Saved".
     pub(crate) fn save_note(&mut self, cx: &mut Context<Self>) {
-        let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) else {
+        let Some(note) = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        else {
             return;
         };
         if self.status.read_only {
@@ -624,10 +666,11 @@ impl Workspace {
         let Some(tx) = self.tx.clone() else {
             return;
         };
-        if let Some(host) = self.notes.as_mut()
+        let state = active_mut!(self);
+        if let Some(host) = state.notes.as_mut()
             && !host
                 .session
-                .spawn_autosave(Some(&self.editor.read(cx).editor), &tx)
+                .spawn_autosave(Some(&state.editor.read(cx).editor), &tx)
         {
             // A save is in flight (or a switch's flush, which saves anyway):
             // go again when it reports.
@@ -638,11 +681,12 @@ impl Workspace {
     /// A background save reported: mark the buffer saved (if it still holds
     /// what was written), flash a failure.
     pub(crate) fn autosave_completed(&mut self, done: SaveCompleted, cx: &mut Context<Self>) {
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         let path = done.path.clone();
-        let completion = self.editor.update(cx, |view, cx| {
+        let completion = state.editor.update(cx, |view, cx| {
             let completion = host
                 .session
                 .on_autosave_completed(done, Some(&mut view.editor));
@@ -680,7 +724,7 @@ impl Workspace {
 
     /// Re-read the open note's property count (it was saved).
     pub(super) fn refresh_note_properties(&mut self) {
-        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref())
+        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref())
             && let Some(note) = host.note.clone()
         {
             host.meta.refresh_properties(&note, tx);
@@ -691,7 +735,7 @@ impl Workspace {
     /// the open note may have been rewritten or gone with it. Re-read both
     /// counts, keeping the ones shown until they land.
     pub(crate) fn refresh_note_counts(&mut self) {
-        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref())
+        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref())
             && let Some(note) = host.note.clone()
         {
             host.meta.refresh_backlinks(&note, tx);
@@ -702,7 +746,7 @@ impl Workspace {
     /// Re-read the workspace's git summary (throttled; a no-op with no
     /// repository to look at).
     pub(crate) fn refresh_git(&mut self) {
-        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
+        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref()) {
             host.meta.refresh_git(tx);
         }
     }
@@ -715,7 +759,7 @@ impl Workspace {
         status: Option<GitSummary>,
         cx: &mut Context<Self>,
     ) {
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.active_state_mut().notes.as_mut() else {
             return;
         };
         host.meta.git_loaded(root, status);
@@ -731,7 +775,7 @@ impl Workspace {
     /// paths by kind. Read off the UI thread; the toast arrives on the app
     /// channel.
     pub(crate) fn show_git_status(&mut self, cx: &mut Context<Self>) {
-        let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.clone()) else {
+        let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.clone()) else {
             return;
         };
         // The one `git status` run answers both: the toast and the footer.
@@ -760,7 +804,7 @@ impl Workspace {
 
     /// A count fetched in the background: kept when it is for the open note.
     pub(crate) fn note_count_loaded(&mut self, message: AppMessage) {
-        if let Some(host) = self.notes.as_mut()
+        if let Some(host) = self.active_state_mut().notes.as_mut()
             && let Some(note) = host.note.as_ref()
         {
             // Only the counts are routed here: nothing comes back.
@@ -795,6 +839,7 @@ impl Workspace {
         self._on_quit = Some(cx.on_app_quit(|workspace, cx| {
             if workspace.editor_dirty(cx) {
                 let note = workspace
+                    .active_state()
                     .notes
                     .as_ref()
                     .and_then(|h| h.note.as_ref())
@@ -914,7 +959,7 @@ impl Workspace {
             Closing::Open => {}
         }
         // No vault: the editor is not even shown.
-        if self.notes.is_none() {
+        if self.active_state().notes.is_none() {
             return true;
         }
         let dirty = self.editor_dirty(cx);
@@ -927,7 +972,7 @@ impl Workspace {
             }
             return true;
         }
-        let Some(host) = self.notes.as_mut() else {
+        let Some(host) = self.active_state_mut().notes.as_mut() else {
             return true;
         };
         if host.is_switching() {
@@ -955,7 +1000,7 @@ impl Workspace {
     }
 
     pub(super) fn restart_tick(&mut self) {
-        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
+        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref()) {
             host.session.restart_autosave(tx);
         }
     }
@@ -968,13 +1013,14 @@ impl Workspace {
 
     /// Flush the open note before the window closes; close it once written.
     fn close_flush(&mut self, cx: &mut Context<Self>) {
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         host.session.stop_autosave();
         let flush = match host
             .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
+            .prepare_flush(Some(&state.editor.read(cx).editor))
         {
             Ok(flush) => flush,
             Err(_) => {
@@ -984,7 +1030,12 @@ impl Workspace {
             }
         };
         self.closing = Closing::Flushing;
-        if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
+        if let Some(note) = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        {
             self.flash(format!("Saving {note}…"), cx);
         }
         let window = self.window;
@@ -1028,6 +1079,7 @@ impl Workspace {
         let outcome = self.apply_flush(result, cx);
         if let Some(problem) = flush_problem(&outcome) {
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())
@@ -1046,6 +1098,7 @@ impl Workspace {
             // could capture the buffer (never on a pending open, which would
             // spin): otherwise say so and let the next close discard.
             let pending = self
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.session.is_open_pending());

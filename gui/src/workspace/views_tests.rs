@@ -158,7 +158,15 @@ fn outline_rows(s: &Started, cx: &TestAppContext) -> Vec<String> {
 }
 
 fn open_note(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
 }
 
 fn on(s: &Started, p: &str, cx: &TestAppContext) -> bool {
@@ -195,7 +203,15 @@ fn editor_focused(s: &Started, cx: &mut TestAppContext) -> bool {
 }
 
 fn caret(s: &Started, cx: &TestAppContext) -> (usize, usize) {
-    cx.read(|cx| s.workspace.read(cx).editor.read(cx).editor.cursor())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .cursor()
+    })
 }
 
 /// Run a leader sequence: the gateway, then `keys`.
@@ -559,7 +575,16 @@ fn hidden_views_do_no_work(cx: &mut TestAppContext) {
     type_in(&started, "# New\n", cx);
     press(&started, "ctrl-s", cx);
     drive(&rt, cx, |cx| {
-        !cx.read(|cx| started.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        !cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     });
     send(&started, AppMessage::open(path("beta.md")), cx);
     drive(&rt, cx, |cx| on(&started, "beta.md", cx));

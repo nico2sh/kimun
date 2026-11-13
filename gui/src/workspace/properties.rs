@@ -56,6 +56,7 @@ use tokio::task::JoinError;
 
 use super::Workspace;
 use super::file_dialogs::confirm_delete;
+use super::group::active_mut;
 use super::key_suggestions::KeySuggestions;
 use super::modal::{self, ModalKind, Slot};
 use super::route::{NO_NOTE, NO_WORKSPACE};
@@ -1182,7 +1183,7 @@ impl Workspace {
             || self.property_write.is_some()
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
-            || self.attachment_flushing.is_some()
+            || self.active_state().attachment_flushing.is_some()
             || self.search_flush.is_some()
             || self.updates.flushing.is_some()
             || self.reopen_running()
@@ -1195,7 +1196,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.notes.as_ref().and_then(|h| h.note.clone()) {
+        match self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        {
             Some(note) => self.open_properties(note, window, cx),
             None => self.flash(NO_NOTE, cx),
         }
@@ -1213,7 +1219,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) || self.properties_opening.is_some() {
             return;
         }
-        if self.notes.is_none() {
+        if self.active_state().notes.is_none() {
             self.flash(NO_WORKSPACE, cx);
             return;
         }
@@ -1223,7 +1229,7 @@ impl Workspace {
             "Read-only: this vault has names that differ only by case, so nothing is written."
                 .to_string()
         });
-        let Some(host) = self.notes.as_ref() else {
+        let Some(host) = self.active_state().notes.as_ref() else {
             return;
         };
         let touches = host.note.as_ref().is_some_and(|note| note.is_like(&path));
@@ -1277,7 +1283,12 @@ impl Workspace {
         if let Some(problem) = problem {
             tracing::warn!("properties of {path} not opened: {problem}");
             self.flash_error(REFUSED, cx);
-        } else if self.notes.as_ref().is_some_and(|h| h.is_open_wanted()) {
+        } else if self
+            .active_state()
+            .notes
+            .as_ref()
+            .is_some_and(|h| h.is_open_wanted())
+        {
             // Another note was asked for meanwhile: it opens instead.
         } else if !modal::dialog_open(window, cx) {
             self.show_properties(path, None, window, cx);
@@ -1355,7 +1366,7 @@ impl Workspace {
             return Err("Another change to the note is still being written.".into());
         }
         let dirty = self.editor_dirty(cx);
-        let (Some(host), Some(tx)) = (self.notes.as_ref(), self.tx.clone()) else {
+        let (Some(host), Some(tx)) = (self.active_state().notes.as_ref(), self.tx.clone()) else {
             return Err(NO_WORKSPACE.into());
         };
         if host.note.as_ref().is_some_and(|note| note.is_like(&path)) {
@@ -1403,12 +1414,13 @@ impl Workspace {
     /// writes the old frontmatter back); unsaved typing wins and is kept,
     /// with a flash. Independent of the dialog, which may be gone.
     pub(crate) fn reload_from_disk(&mut self, path: VaultPath, cx: &mut Context<Self>) {
-        let Some(host) = self.notes.as_mut() else {
+        let state = active_mut!(self);
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         match host
             .session
-            .begin_reload(&path, Some(&self.editor.read(cx).editor))
+            .begin_reload(&path, Some(&state.editor.read(cx).editor))
         {
             ReloadStep::NotOpen => {}
             ReloadStep::KeptDirty => {
@@ -1430,8 +1442,9 @@ impl Workspace {
     /// The reload's read landed: load it clean, or say the buffer is stale.
     fn reloaded(&mut self, read: Result<NoteRead, JoinError>, cx: &mut Context<Self>) {
         self.note_reload = None;
-        let outcome = match (read, self.notes.as_mut()) {
-            (Ok(read), Some(host)) => self.editor.update(cx, |view, cx| {
+        let state = active_mut!(self);
+        let outcome = match (read, state.notes.as_mut()) {
+            (Ok(read), Some(host)) => state.editor.update(cx, |view, cx| {
                 let outcome = host.session.finish_reload(read, Some(&mut view.editor));
                 view.preedit = None;
                 cx.notify();

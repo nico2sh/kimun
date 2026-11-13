@@ -305,6 +305,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.session.autosave_interval())
@@ -724,7 +725,7 @@ fn save_persists_and_applies_without_a_reopen(cx: &mut TestAppContext) {
     let v = vault(&rt);
     let s = with_prefs(cx, &rt, &v);
     let files = s.files_id(cx);
-    let editor = cx.read(|cx| s.workspace.read(cx).editor.entity_id());
+    let editor = cx.read(|cx| s.workspace.read(cx).active_state().editor.entity_id());
     let updates = s.pf_model(cx, |m| m.update_check);
     let autosave = s.autosave_interval(cx).expect("the tick runs");
     let next = s.pf_pick_next_theme(cx);
@@ -758,7 +759,7 @@ fn save_persists_and_applies_without_a_reopen(cx: &mut TestAppContext) {
     assert_eq!(s.files_id(cx), files, "FILES was not rebuilt");
     assert!(!cx.read(|cx| s.workspace.read(cx).reopen_running()));
     assert_eq!(
-        cx.read(|cx| s.workspace.read(cx).editor.entity_id()),
+        cx.read(|cx| s.workspace.read(cx).active_state().editor.entity_id()),
         editor
     );
     assert_eq!(s.text(cx), "# A");
@@ -796,7 +797,7 @@ fn an_engine_change_reopens_on_the_new_engine(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| s.text(cx) == "# A");
     assert_ne!(s.files_id(cx), files, "reopened");
     let vim = cx.read(|cx| {
-        let editor = s.workspace.read(cx).editor.clone();
+        let editor = s.workspace.read(cx).active_state().editor.clone();
         editor.read(cx).editor.is_vim()
     });
     assert!(vim);

@@ -433,7 +433,7 @@ impl Workspace {
     /// chords, the configured leader tree, which leaves have no surface yet.
     pub(crate) fn keyboard_help_rows(&self, opener: Panel, cx: &gpui_kit::App) -> Vec<HelpRow> {
         let keymap = keymap::active(cx);
-        let vim = self.editor.read(cx).editor.is_vim();
+        let vim = self.active_state().editor.read(cx).editor.is_vim();
         let mut rows: Vec<HelpRow> = ActionShortcuts::ALL
             .into_iter()
             .filter_map(|action| {
@@ -476,7 +476,7 @@ impl Workspace {
     /// Space in vim Normal mode when the editor runs vim.
     fn keyboard_help_gateway(&self, cx: &gpui_kit::App) -> SharedString {
         let chord = keymap::chord_label(cx, &ActionShortcuts::Leader);
-        let vim = self.editor.read(cx).editor.is_vim();
+        let vim = self.active_state().editor.read(cx).editor.is_vim();
         match (chord, vim) {
             (Some(chord), true) => format!("{chord}, or {SPACE_GATEWAY} in vim Normal mode").into(),
             (Some(chord), false) => chord.into(),

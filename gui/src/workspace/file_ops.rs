@@ -45,6 +45,7 @@ use super::Workspace;
 use super::file_dialogs::{
     DeleteBody, FileOpKind, FileOpsMenu, MoveDialog, OpStatus, RenameDialog, confirm_delete,
 };
+use super::group::active_mut;
 use super::modal::{self, ModalKind, Slot};
 use super::note_flush::FlushBlock;
 use super::route::NO_NOTE;
@@ -111,7 +112,12 @@ impl Workspace {
     /// The `FileOperations` chord: the note menu for the open note, or say
     /// there is none.
     pub(crate) fn file_ops_chord(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.notes.as_ref().and_then(|h| h.note.clone()) {
+        match self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        {
             Some(note) => self.open_file_ops_menu(note, false, window, cx),
             None => self.flash(NO_NOTE, cx),
         }
@@ -127,7 +133,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if modal::dialog_open(window, cx) || self.notes.is_none() {
+        if modal::dialog_open(window, cx) || self.active_state().notes.is_none() {
             return;
         }
         let workspace = cx.entity().downgrade();
@@ -334,7 +340,7 @@ impl Workspace {
             self.set_file_status(false, Some(held), cx);
             return;
         }
-        let Some(host) = self.notes.as_ref() else {
+        let Some(host) = self.active_state().notes.as_ref() else {
             return;
         };
         let vault = host.session.vault().clone();
@@ -418,6 +424,7 @@ impl Workspace {
             return true;
         };
         let note = self
+            .active_state()
             .notes
             .as_ref()
             .and_then(|h| h.note.clone())
@@ -480,7 +487,11 @@ impl Workspace {
         self.file_status = None;
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
-        let open = self.notes.as_ref().and_then(|h| h.note.clone());
+        let open = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone());
         let Some(open) = open.filter(|_| touched) else {
             self.refresh_note_counts();
             self.file_task = None;
@@ -494,7 +505,7 @@ impl Workspace {
             _ => None,
         };
         if let Some(new) = followed
-            && let Some(host) = self.notes.as_mut()
+            && let Some(host) = self.active_state_mut().notes.as_mut()
         {
             let at = host.session.path().clone();
             if let Some(read) = host.session.begin_rename(&at, &new) {
@@ -534,12 +545,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let read_only = self.status.read_only;
-        let (Some(tx), Some(host)) = (self.tx.clone(), self.notes.as_mut()) else {
+        let state = active_mut!(self);
+        let (Some(tx), Some(host)) = (self.tx.clone(), state.notes.as_mut()) else {
             return;
         };
         let old = host.note.clone().unwrap_or_else(VaultPath::root);
         let outcome = match read {
-            Ok(read) => self.editor.update(cx, |view, cx| {
+            Ok(read) => state.editor.update(cx, |view, cx| {
                 let outcome = host
                     .session
                     .finish_rename(read, Some(&mut view.editor), &tx);
@@ -594,13 +606,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(host) = self.notes.as_mut() {
+        if let Some(host) = self.active_state_mut().notes.as_mut() {
             host.session.stop_autosave();
             host.session.abort_autosave();
             host.session.set_path(VaultPath::root());
             host.note = None;
         }
-        self.editor.update(cx, |view, cx| {
+        self.active_state().editor.update(cx, |view, cx| {
             view.editor.set_text(String::new());
             view.editor.mark_saved(String::new());
             view.preedit = None;
@@ -651,7 +663,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if let Some(host) = self.notes.as_ref()
+        if let Some(host) = self.active_state().notes.as_ref()
             && host.is_open_wanted()
             && !host.is_switching()
         {

@@ -30,7 +30,15 @@ fn disk(rt: &Runtime, v: &TestVault, p: &str) -> Option<String> {
 
 impl Started {
     fn dirty(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     }
 
     /// The note the Footer names.
@@ -46,6 +54,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.session.is_open_pending())
@@ -56,6 +65,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .unwrap()
@@ -496,6 +506,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.is_switching())
@@ -676,8 +687,16 @@ fn a_lost_read_lets_saves_and_the_close_resume(cx: &mut TestAppContext) {
         panic!("the aborted read reports a JoinError");
     };
     started.workspace.update(cx, |w, cx| {
-        let _read = w.notes.as_mut().unwrap().session.begin_open(path("b.md"));
-        w.editor.update(cx, |view, _| view.input_blocked = true);
+        let _read = w
+            .active_state_mut()
+            .notes
+            .as_mut()
+            .unwrap()
+            .session
+            .begin_open(path("b.md"));
+        w.active_state_mut()
+            .editor
+            .update(cx, |view, _| view.input_blocked = true);
         w.switch_read(Err(error), cx);
     });
     assert!(!started.open_pending(cx));
@@ -744,6 +763,7 @@ fn the_workspace_editor_completes_wikilinks_from_its_vault(cx: &mut TestAppConte
             started
                 .workspace
                 .read(cx)
+                .active_state()
                 .editor
                 .read(cx)
                 .autocomplete_state()
