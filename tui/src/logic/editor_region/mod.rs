@@ -184,6 +184,11 @@ impl EditorRegion {
         self.shown_tab().active
     }
 
+    /// The active group of `tab`, shown or not; `None` for an unknown tab.
+    pub fn active_group_of(&self, tab: TabId) -> Option<GroupId> {
+        self.tab(tab).map(|t| t.active)
+    }
+
     /// The tab holding `group`.
     pub fn group_tab(&self, group: GroupId) -> Option<TabId> {
         self.tabs

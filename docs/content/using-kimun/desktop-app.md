@@ -51,6 +51,8 @@ To open a note, give its path on the command line (`kimun-gui path/to/note.md`).
 
 - Rail: The strip at the edge lists the views: FILES, FIND, TAGS, LINKS, OUTLINE. When a [Kimün server](@/using-kimun/server.md) is connected, it also lists SEM and ASK. Click a view to show it. The rail starts at the left. To move it to the right, top, or bottom edge, choose `Rail position` in Preferences, or one of the `Rail position` rows of the command palette. To hide or show the rail, press `Ctrl+Shift+A` (`Cmd+Shift+A` on macOS), or click the small panel button in the title bar, after the workspace name. When the window has no Kimün title bar, the button is at the start of the footer. Kimün keeps the position and the hidden state for the next start.
 - Slots: Views live in slots on either side of the editor. To move a view, drag it by its slot header to another slot. To give it a new slot, drag it onto an edge of the window. The places where it can land light up while you drag. Drag the dividers to resize the slots.
+- Side toggles: `Alt+L` shows or hides the left side, and `Alt+R` the right side. The two buttons near the end of the rail do the same. `Alt+E` and `Alt+F` move the keyboard to the next and the previous panel.
+- Tabs: `Ctrl+T` (`Cmd+T` on macOS) opens a new tab with an empty editor. Open a note in it with `Ctrl+O`. With two tabs or more, a tab strip shows above the editor. Each tab shows the name of its note, and a dot when the tab has unsaved text. Click a tab to show it, or press `Ctrl+Tab` and `Ctrl+Shift+Tab` for the next and the previous tab. `Ctrl+W` (`Cmd+W` on macOS), or the small cross on a tab, closes the tab. Kimün saves the text of the tab first. When you close the last tab, the editor stays, with no note open. In vim mode, `Ctrl+W` does not close the tab while a vim command is half typed (for example after `d`). Press `Esc` first.
 - Zoom: `Ctrl+Shift+M` (`Cmd+Shift+M` on macOS) zooms the focused view to the whole window. The same chord restores it.
 - Presets: When you leave Kimün, it saves the layout. To start from a layout that you write yourself, put it in a `layouts.toml` next to `config.toml`. Then apply it from the command palette (`Apply layout preset`). A preset can also set the rail position. Add `rail = "right"` (or `"left"`, `"top"`, `"bottom"`) next to the `split` of the preset. A preset without a `rail` key leaves the rail where it is.
 - Closing (macOS): The red button closes the window, and Kimün keeps running in the Dock. To open a window again, click the Dock icon, or choose File > New Window. These actions end the app: `Cmd+Q`, Kimün > Quit, `Quit` in the command palette, and the quit command of the leader. On Linux and Windows, closing the window ends the app.
@@ -89,6 +91,10 @@ Press `F1` for the keyboard reference. It lists every command with its current c
 | `F5` | switch workspace |
 | `F4` | Preferences |
 | `Ctrl+Shift+A` | hide or show the rail |
+| `Ctrl+T` / `Ctrl+W` | new tab / close tab |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | next tab / previous tab (`Ctrl` on macOS too) |
+| `Alt+L` / `Alt+R` | show or hide the left side / the right side |
+| `Alt+E` / `Alt+F` | next panel / previous panel |
 
 To override a chord, use the `[gui.keys]` table of `config.toml`. The key is the name of the action. The value is one chord or a list of chords. An empty list removes the binding. A chord joins the modifiers and one key with `+`. `primary` is `Ctrl` (`Cmd` on macOS). The other modifiers are `cmd`, `ctrl`, `alt`, and `shift`.
 

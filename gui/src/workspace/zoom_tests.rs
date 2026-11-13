@@ -157,7 +157,7 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
         // TAGS: it overlaps the editor most.
         window.press("alt-left", cx);
         // A side toggled off (its memory).
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         let before = snapshot(window, cx);
         assert_eq!(before.1[1], [DrawerView::Outline]);
         let tags = Leaf::Slot(shell.slot_of(DrawerView::Tags, cx));
@@ -383,7 +383,7 @@ fn hiding_the_zoomed_view_clears_zoom(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("alt-left", cx);
         window.press(ZOOM, cx);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert_eq!(shell.zoomed(cx), None);
         assert!(window.try_find("editor-panel").is_some());
@@ -547,10 +547,10 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
             ("alt-right", editor),
             ("alt-up", editor),
             ("alt-down", editor),
-            ("ctrl-tab", Focus::Rail),
-            ("ctrl-tab", editor),
-            ("ctrl-shift-tab", Focus::Rail),
-            ("ctrl-shift-tab", editor),
+            ("alt-e", Focus::Rail),
+            ("alt-e", editor),
+            ("alt-f", Focus::Rail),
+            ("alt-f", editor),
         ] {
             window.press(key, cx);
             window.render_frame(cx);

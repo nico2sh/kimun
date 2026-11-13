@@ -93,7 +93,7 @@ fn the_caret_shows_only_while_the_editor_has_the_keyboard(cx: &mut TestAppContex
         if started.focused_panel(cx) == Panel::Editor {
             break;
         }
-        started.key("ctrl-tab", cx);
+        started.key("alt-e", cx);
     }
     assert_eq!(started.focused_panel(cx), Panel::Editor);
     assert_eq!(

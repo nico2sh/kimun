@@ -259,7 +259,7 @@ fn the_toggle_gives_the_slot_width_to_the_editor(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(window.try_find(FILES_SLOT).is_none());
         let rail = window.find("rail").bounds();
@@ -271,7 +271,7 @@ fn the_toggle_gives_the_slot_width_to_the_editor(cx: &mut TestAppContext) {
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(shell.text(cx), "abc");
 
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(close(
             window.find(FILES_SLOT).bounds().size.width,
@@ -283,7 +283,7 @@ fn the_toggle_gives_the_slot_width_to_the_editor(cx: &mut TestAppContext) {
         // From the slot the toggle works too (app chords win there), and
         // closing the focused slot gives the keyboard to the editor, not
         // to the rail (the model's and the TUI's fallback).
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         assert!(!shell.left_side_shown(cx));
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(window.find("editor").focused(), Some(true));
@@ -380,8 +380,8 @@ fn keys_go_to_the_focused_panel_only(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-/// Alt+Arrow moves focus between the panels without wrapping; Ctrl+Tab and
-/// Ctrl+Shift+Tab cycle through the visible ones, wrapping.
+/// Alt+Arrow moves focus between the panels without wrapping; Alt+E and
+/// Alt+F cycle through the visible ones, wrapping.
 #[gpui_kit::test]
 fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
     let shell = open_default(cx, "");
@@ -403,18 +403,18 @@ fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
         assert_eq!(shell.focused(cx), Panel::Editor);
 
         // The cycle wraps: editor -> rail, and back.
-        window.press("ctrl-tab", cx);
+        window.press("alt-e", cx);
         assert_eq!(shell.focused(cx), Panel::Rail);
-        window.press("ctrl-shift-tab", cx);
+        window.press("alt-f", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
-        window.press("ctrl-shift-tab", cx);
+        window.press("alt-f", cx);
         assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
         // A hidden slot is skipped (hiding it focused the editor).
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
-        window.press("ctrl-tab", cx);
+        window.press("alt-e", cx);
         assert_eq!(shell.focused(cx), Panel::Rail);
-        window.press("ctrl-tab", cx);
+        window.press("alt-e", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(shell.text(cx), "", "no chord reached the buffer");
     })
@@ -511,7 +511,7 @@ fn the_saved_layout_is_restored(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(rail_cell_id(DrawerView::Outline), cx);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
     })
     .unwrap();
 
@@ -530,7 +530,7 @@ fn the_saved_layout_is_restored(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.try_find("slot-outline").is_none());
         assert!(window.try_find(FILES_SLOT).is_none());
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert_eq!(window.find(FILES_SLOT).label(), Some("Files"));
     })

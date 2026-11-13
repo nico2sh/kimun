@@ -187,8 +187,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, AnyWindowHandle, App, AppContext, ClickEvent, ClipboardItem, Context,
     Entity, FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
-    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Role, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, rems,
+    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div,
+    rems,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -571,6 +572,12 @@ pub(crate) struct Workspace {
     /// The file operation running (its flush, the core call, the reload of
     /// a followed note). One at a time.
     file_task: Option<Task<()>>,
+    /// The close of a tab under way: the flush of its groups, then their
+    /// removal ([`tab_strip`]). One at a time; it holds the notes as a file
+    /// operation does.
+    tab_closing: Option<Task<()>>,
+    /// The tab strip's sideways scroll ([`tab_strip`]).
+    tab_scroll: ScrollHandle,
     /// Why the editor Panel shows no note: the open one was deleted or
     /// moved away. Cleared when a note opens.
     pub(crate) note_gone: Option<EmptyState>,
@@ -811,6 +818,8 @@ impl Workspace {
             file_dialog: None,
             file_status: None,
             file_task: None,
+            tab_closing: None,
+            tab_scroll: ScrollHandle::new(),
             note_gone: None,
             picker: None,
             quick_note: None,
@@ -2419,6 +2428,7 @@ impl Workspace {
                 vim: false,
                 query: false,
                 browser: false,
+                vim_pending: false,
             },
             Panel::Editor => self.active_state().editor.read(cx).key_ctx(),
             panel => KeyCtx {
@@ -2426,6 +2436,7 @@ impl Workspace {
                 vim: false,
                 query: self.find_has_keyboard(),
                 browser: false,
+                vim_pending: false,
             },
         }
     }
@@ -2658,6 +2669,11 @@ impl Workspace {
                         .update(cx, |editor, cx| editor.editor_key(key, window, cx));
                 }
             },
+            // The tabs (ADR-0058).
+            ActionShortcuts::NewTab => self.new_tab(cx),
+            ActionShortcuts::CloseTab => self.close_shown_tab(cx),
+            ActionShortcuts::NextTab => self.step_tab(true, cx),
+            ActionShortcuts::PrevTab => self.step_tab(false, cx),
             ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
                 if let Some(next) = self.cycle_focus(*action == ActionShortcuts::FocusEditor) {
                     self.layout.focus(next);
@@ -3077,6 +3093,8 @@ impl Workspace {
                 .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.focus_panel(Panel::Editor, window, cx)
                 }))
+                // The tab strip over the shown tab, with two tabs or more.
+                .children(self.render_tab_strip(cx))
                 .child(document)
                 .child(self.render_footer(editor_shown, window, cx)),
             )
@@ -3470,6 +3488,7 @@ mod semantic;
 mod server;
 mod sort;
 mod switcher;
+mod tab_strip;
 mod tags;
 mod theme_picker;
 pub(crate) mod titlebar;
@@ -3545,6 +3564,8 @@ mod sort_tests;
 mod start_tests;
 #[cfg(test)]
 mod switcher_tests;
+#[cfg(test)]
+mod tab_strip_tests;
 #[cfg(test)]
 mod tabs_tests;
 #[cfg(test)]

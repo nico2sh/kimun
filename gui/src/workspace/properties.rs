@@ -1186,11 +1186,13 @@ impl Workspace {
 
     /// Whether something holds the open note so nothing else may write it:
     /// a file operation, a property write, the reload after one, or the
-    /// flush before the properties dialog opens, a vault change
+    /// flush before the properties dialog opens or a tab closes, a vault
+    /// change
     /// ([`reopen`](super::reopen)). The tick, the Save chord,
     /// opening another note and file operations wait while it does.
     pub(crate) fn note_held(&self) -> bool {
         self.file_task.is_some()
+            || self.tab_closing.is_some()
             || self.property_write.is_some()
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
