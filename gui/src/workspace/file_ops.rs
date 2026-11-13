@@ -752,8 +752,9 @@ impl Workspace {
     }
 
     /// The active group's note went away under an operation (its group is
-    /// already empty, [`Self::empty_group`]): say so in the editor Panel,
-    /// and give FILES the keyboard on `dir`.
+    /// already empty, [`Self::empty_group`]): say so in that group (only
+    /// there: another empty group says "No note open"), and give FILES the
+    /// keyboard on `dir`.
     fn say_note_gone(
         &mut self,
         title: String,
@@ -762,11 +763,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.note_gone = Some(EmptyState {
-            title,
-            detail,
-            failed: false,
-        });
+        let group = self.layout.active_group();
+        self.note_gone = Some((
+            group,
+            EmptyState {
+                title,
+                detail,
+                failed: false,
+            },
+        ));
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| {
                 pane.set_open_note(None, cx);

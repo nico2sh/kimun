@@ -731,11 +731,14 @@ impl Workspace {
                     return;
                 }
                 let name = shown.get_parent_path().1;
-                self.note_gone = Some(EmptyState {
-                    title: format!("{name} was deleted"),
-                    detail: String::new(),
-                    failed: false,
-                });
+                self.note_gone = Some((
+                    group,
+                    EmptyState {
+                        title: format!("{name} was deleted"),
+                        detail: String::new(),
+                        failed: false,
+                    },
+                ));
                 if let Some(files) = self.files.as_ref() {
                     files.update(cx, |pane, cx| pane.set_open_note(None, cx));
                 }

@@ -314,6 +314,8 @@ impl Workspace {
             return;
         };
         let (_, group) = self.layout.region_mut().new_tab();
+        // Another tab shows: a zoom ends with the one it showed.
+        self.layout.zoom(None);
         self.insert_group(group, state, cx);
         self.focus_group(group, cx);
         self.open_note_in(group, path, cx);
@@ -323,6 +325,7 @@ impl Workspace {
     /// along `axis`, right after it: the group starts empty, becomes the
     /// active group with the keyboard, and the note opens into it. A note
     /// already open somewhere is focused there instead; no group is made.
+    /// Refused with a flash while the shown tab's close writes its notes.
     #[allow(
         dead_code,
         reason = "the tab and split chords (a later task) call it; tests use it now"
@@ -338,6 +341,10 @@ impl Workspace {
             return;
         }
         if !self.may_open(&path) {
+            return;
+        }
+        if self.tab_mid_close(self.layout.region().shown()) {
+            self.flash_error(super::tab_strip::TAB_CLOSING, cx);
             return;
         }
         let Some(state) = self.new_group_state(cx) else {
@@ -608,8 +615,8 @@ impl Workspace {
                 }
                 host.note = Some(path.clone());
                 host.meta.load_note_counts(&path, &tx);
+                self.forget_note_gone(group);
                 if group == self.layout.active_group() {
-                    self.note_gone = None;
                     self.status.note = Some(path.clone());
                     self.files_note_opened(&path, cx);
                     // The note takes the editor Panel back from an attachment.
@@ -766,7 +773,13 @@ impl Workspace {
     /// panel shows; for the active group the status line names no note.
     pub(super) fn release_note_in(&mut self, group: GroupId, cx: &mut Context<Self>) {
         self.empty_group(group, cx);
-        if group == self.layout.active_group() {
+        self.forget_note_gone(group);
+    }
+
+    /// `group` no longer says its note went away (a note opened there, it
+    /// was let go on purpose, or it closed).
+    pub(super) fn forget_note_gone(&mut self, group: GroupId) {
+        if self.note_gone.as_ref().is_some_and(|(g, _)| *g == group) {
             self.note_gone = None;
         }
     }

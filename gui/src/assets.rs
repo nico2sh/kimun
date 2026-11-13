@@ -135,6 +135,18 @@ mod tests {
         }
     }
 
+    /// The group header's close button (ADR-0058), as the tab strip's.
+    #[test]
+    fn every_group_header_icon_is_bundled() {
+        for icon in crate::workspace::GROUP_HEADER_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
     #[test]
     fn every_files_row_icon_is_bundled() {
         for icon in crate::workspace::FILES_ICONS {

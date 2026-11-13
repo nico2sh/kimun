@@ -196,15 +196,18 @@ impl Workspace {
     }
 
     /// Make `group` the active group, show its tab and give its editor the
-    /// keyboard; a zoom on a slot ends, as the group is asked to show. The
-    /// Footer (its counts fetched again), FILES' mark and the views that
-    /// follow the open note follow the group. Nothing happens for an
-    /// unknown group.
+    /// keyboard; a zoom on a slot ends, as the group is asked to show, and
+    /// so does any zoom when another tab shows (a zoom shows one group of
+    /// one tab). The Footer (its counts fetched again), FILES' mark and the
+    /// views that follow the open note follow the group. Nothing happens
+    /// for an unknown group.
     pub(crate) fn focus_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        let region = self.layout.region();
+        let other_tab = region.group_tab(group) != Some(region.shown());
         if !self.groups.contains_key(&group) || !self.layout.region_mut().set_active_group(group) {
             return;
         }
-        if self.layout.zoomed().is_some_and(|z| z != Leaf::Editor) {
+        if other_tab || self.layout.zoomed().is_some_and(|z| z != Leaf::Editor) {
             self.layout.zoom(None);
         }
         self.layout.focus(Focus::Leaf(Leaf::Editor));

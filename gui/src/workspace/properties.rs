@@ -1192,7 +1192,7 @@ impl Workspace {
     /// opening another note and file operations wait while it does.
     pub(crate) fn note_held(&self) -> bool {
         self.file_task.is_some()
-            || self.tab_closing.is_some()
+            || self.groups_closing.is_some()
             || self.property_write.is_some()
             || self.note_reload.is_some()
             || self.properties_opening.is_some()

@@ -12,7 +12,10 @@
 //! close writes the unsaved text of every group of the tab first (all at
 //! once, as the window's close does); when a write fails or cannot start
 //! the tab stays and the flash says why. Closing the last tab leaves one
-//! empty group: the region never has zero tabs or zero groups.
+//! empty group: the region never has zero tabs or zero groups. Closing one
+//! group of a tab ([`Workspace::close_editor_group`]) goes the same way,
+//! for that group alone. While a tab's close writes its notes, no group is
+//! added to it ([`Workspace::tab_mid_close`]): it would go with the tab.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
@@ -46,6 +49,8 @@ pub(crate) const TAB_UNSAVED_ID: &str = "tab-unsaved";
 pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
 /// What a tab whose active group shows nothing is called.
 pub(crate) const EMPTY_LABEL: &str = "Empty";
+/// Why no group is added to a tab whose close is under way.
+pub(crate) const TAB_CLOSING: &str = "This tab is closing. Its notes are being saved.";
 /// A tab's close glyph: the kit's own close icon (its dialogs and toasts
 /// draw it), carried by the default bundle. Lucide's `x` is not bundled.
 const CLOSE_ICON: IconName = IconName::Close;
@@ -58,6 +63,25 @@ pub(crate) const ICONS: [IconName; 2] = [CLOSE_ICON, NEW_ICON];
 /// The widest a label grows before its name is cut with an ellipsis.
 const LABEL_MAX_REMS: f32 = 14.;
 
+/// What a running close takes away once its notes are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseTarget {
+    /// A tab, with every group it holds.
+    Tab(TabId),
+    /// One group of a tab that holds others.
+    Group(GroupId),
+}
+
+impl CloseTarget {
+    /// What a flash calls it.
+    fn noun(self) -> &'static str {
+        match self {
+            CloseTarget::Tab(_) => "tab",
+            CloseTarget::Group(_) => "group",
+        }
+    }
+}
+
 /// The element id of the label at `index` (its position in the strip).
 pub(crate) fn tab_label_id(index: usize) -> ElementId {
     ElementId::NamedInteger("tab-label".into(), index as u64)
@@ -65,7 +89,7 @@ pub(crate) fn tab_label_id(index: usize) -> ElementId {
 
 /// What `group` shows, named as the Footer names it: the attachment in
 /// place of the editor, else the note. `None` for an empty group.
-fn group_name(workspace: &Workspace, group: GroupId, cx: &App) -> Option<String> {
+pub(super) fn group_name(workspace: &Workspace, group: GroupId, cx: &App) -> Option<String> {
     let state = workspace.state(group)?;
     let shown: Option<VaultPath> = match state.attachment.as_ref() {
         Some(view) => Some(view.read(cx).path().clone()),
@@ -107,7 +131,8 @@ impl Workspace {
     // ---- Commands ------------------------------------------------------------
 
     /// `NewTab`: a tab after the last one holding one empty group, shown,
-    /// its editor with the keyboard (the empty group offers the finder).
+    /// its editor with the keyboard (the empty group offers the finder). A
+    /// zoom ends.
     /// Nothing without a vault, or while the window closes.
     pub(crate) fn new_tab(&mut self, cx: &mut Context<Self>) {
         if matches!(self.closing, Closing::Requested | Closing::Flushing) {
@@ -117,6 +142,8 @@ impl Workspace {
             return;
         };
         let (_, group) = self.layout.region_mut().new_tab();
+        // Another tab shows: a zoom ends with the one it showed.
+        self.layout.zoom(None);
         self.insert_group(group, state, cx);
         self.focus_group(group, cx);
         self.scroll_to_shown_tab();
@@ -147,8 +174,10 @@ impl Workspace {
 
     /// The shown tab changed: its active group becomes the window's (the
     /// Footer with fresh counts, FILES' mark, the views) and takes the
-    /// keyboard; the strip scrolls to its label.
+    /// keyboard; the strip scrolls to its label. A zoom ends.
     fn show_active_group(&mut self, cx: &mut Context<Self>) {
+        // Another tab shows: a zoom ends with the one it showed.
+        self.layout.zoom(None);
         let group = self.layout.active_group();
         self.focus_group(group, cx);
         self.scroll_to_shown_tab();
@@ -174,22 +203,68 @@ impl Workspace {
     /// by another operation, edits that cannot be saved); ignored while
     /// another close runs or the window closes.
     pub(crate) fn close_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
-        if self.tab_closing.is_some() || !self.layout.region().tabs().contains(&tab) {
+        if self.groups_closing.is_some() || !self.layout.region().tabs().contains(&tab) {
             return;
         }
         let groups = self.layout.region().groups(tab);
+        self.close_flushing(CloseTarget::Tab(tab), groups, cx);
+    }
+
+    /// Close `group` (the `CloseSlot` chord on the editor, its header's
+    /// close button): write its unsaved text first, then take it away; a
+    /// neighbour takes its space and, when it was active, the group before
+    /// it (or the first) becomes active. The last group of a tab closes the
+    /// tab ([`Self::close_tab`]: the last tab keeps one empty group). The
+    /// same refusals as a tab's close; ignored while another close runs.
+    pub(crate) fn close_editor_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        if self.groups_closing.is_some() {
+            return;
+        }
+        let region = self.layout.region();
+        let Some(tab) = region.group_tab(group) else {
+            return;
+        };
+        if region.groups(tab).len() == 1 {
+            self.close_tab(tab, cx);
+            return;
+        }
+        self.close_flushing(CloseTarget::Group(group), vec![group], cx);
+    }
+
+    /// Whether the close of `tab` is under way: its groups are being
+    /// written before the tab goes. A group added to it now would go with
+    /// it, so nothing is added ([`TAB_CLOSING`]).
+    pub(crate) fn tab_mid_close(&self, tab: TabId) -> bool {
+        matches!(self.groups_closing, Some((CloseTarget::Tab(t), _)) if t == tab)
+    }
+
+    /// Write the unsaved text of `groups` (all at once, as the window's
+    /// close does), then take `target` away. Refused, with a flash, while
+    /// one of their notes cannot be let go.
+    fn close_flushing(
+        &mut self,
+        target: CloseTarget,
+        groups: Vec<GroupId>,
+        cx: &mut Context<Self>,
+    ) {
+        let noun = target.noun();
         let refusal = groups.iter().find_map(|group| {
             self.flush_block_in(*group, cx).map(|block| match block {
                 FlushBlock::Closing => None,
-                FlushBlock::Opening => {
-                    Some("A note in this tab is still opening. Try again in a moment.".to_string())
-                }
-                FlushBlock::Held => Some(
-                    "Another operation on the note is still running. The tab stays open."
-                        .to_string(),
-                ),
+                FlushBlock::Opening => Some(match target {
+                    CloseTarget::Tab(_) => {
+                        "A note in this tab is still opening. Try again in a moment.".to_string()
+                    }
+                    CloseTarget::Group(_) => {
+                        "The note in this group is still opening. Try again in a moment."
+                            .to_string()
+                    }
+                }),
+                FlushBlock::Held => Some(format!(
+                    "Another operation on the note is still running. The {noun} stays open."
+                )),
                 FlushBlock::Unsaveable => Some(format!(
-                    "{} The tab stays open.",
+                    "{} The {noun} stays open.",
                     self.unsaveable_in(*group)
                 )),
             })
@@ -218,33 +293,39 @@ impl Workspace {
                         self.restart_tick_unless_read_only_in(begun);
                         self.block_input_in(begun, false, cx);
                     }
-                    self.flash_error("Another save is still running. The tab stays open.", cx);
+                    self.flash_error(
+                        format!("Another save is still running. The {noun} stays open."),
+                        cx,
+                    );
                     return;
                 }
             }
         }
         if flushes.is_empty() {
-            self.remove_tab(tab, cx);
+            self.remove_closed(target, cx);
             return;
         }
-        self.tab_closing = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let flushed = run_all(flushes).await;
-            this.update(cx, |workspace, cx| workspace.tab_flushed(tab, flushed, cx))
-                .ok();
-        }));
+            this.update(cx, |workspace, cx| {
+                workspace.groups_flushed(target, flushed, cx)
+            })
+            .ok();
+        });
+        self.groups_closing = Some((target, task));
         cx.notify();
     }
 
-    /// The flushes before a tab closes ended: close it when everything is
-    /// written, else keep it (each note keeps its edits, its tick and the
-    /// keyboard) and say why.
-    fn tab_flushed(
+    /// The flushes before a close ended: take `target` away when everything
+    /// is written, else keep it (each note keeps its edits, its tick and
+    /// the keyboard) and say why.
+    fn groups_flushed(
         &mut self,
-        tab: TabId,
+        target: CloseTarget,
         flushed: Vec<(GroupId, Result<FlushResult, JoinError>)>,
         cx: &mut Context<Self>,
     ) {
-        self.tab_closing = None;
+        self.groups_closing = None;
         let touched: Vec<GroupId> = flushed.iter().map(|(group, _)| *group).collect();
         let mut failure = None;
         for (group, result) in flushed {
@@ -268,14 +349,29 @@ impl Workspace {
                 .and_then(|h| h.note.clone())
                 .unwrap_or_else(VaultPath::root);
             self.flash_error(
-                format!("Couldn't save {note}: {problem}. The tab stays open."),
+                format!(
+                    "Couldn't save {note}: {problem}. The {} stays open.",
+                    target.noun()
+                ),
                 cx,
             );
         } else {
-            self.remove_tab(tab, cx);
+            self.remove_closed(target, cx);
         }
         // Opens parked while the notes were held go on.
         self.file_op_ended(cx);
+    }
+
+    /// Take `target` away, its notes written.
+    fn remove_closed(&mut self, target: CloseTarget, cx: &mut Context<Self>) {
+        match target {
+            CloseTarget::Tab(tab) => self.remove_tab(tab, cx),
+            CloseTarget::Group(group) => {
+                let shown = self.layout.region().shown();
+                self.take_group(group, cx);
+                self.groups_removed(shown, cx);
+            }
+        }
     }
 
     /// Take `tab`'s groups away, last first, by the region's rules: the
@@ -283,28 +379,47 @@ impl Workspace {
     /// first group stays as an empty group. Nothing is written here: the
     /// caller flushed them.
     fn remove_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let shown = self.layout.region().shown();
         let mut groups = self.layout.region().groups(tab);
         groups.reverse();
         for group in groups {
-            match self.layout.region_mut().close_group(group) {
-                Some(CloseOutcome::Emptied) => {
-                    self.forget_attachment_request(group);
-                    self.drop_attachment_in(group);
-                    self.release_note_in(group, cx);
-                }
-                Some(CloseOutcome::Group | CloseOutcome::Tab(_)) => {
-                    if let Some(mut state) = self.groups.remove(&group)
-                        && let Some(host) = state.notes.as_mut()
-                    {
-                        host.session.stop_autosave();
-                        host.session.abort_autosave();
-                    }
-                }
-                None => {}
-            }
+            self.take_group(group, cx);
         }
-        // The tab shown now (or the emptied one): the window follows its
-        // active group; the keyboard stays where it was.
+        self.groups_removed(shown, cx);
+    }
+
+    /// Take `group` out of the region ([`EditorRegion::close_group`]): its
+    /// state goes, its autosave stopped; a group the region keeps (the last
+    /// of the last tab) is emptied instead. Already flushed.
+    ///
+    /// [`EditorRegion::close_group`]: kimun_notes::logic::editor_region::EditorRegion::close_group
+    fn take_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        match self.layout.region_mut().close_group(group) {
+            Some(CloseOutcome::Emptied) => {
+                self.forget_attachment_request(group);
+                self.drop_attachment_in(group);
+                self.release_note_in(group, cx);
+            }
+            Some(CloseOutcome::Group | CloseOutcome::Tab(_)) => {
+                if let Some(mut state) = self.groups.remove(&group)
+                    && let Some(host) = state.notes.as_mut()
+                {
+                    host.session.stop_autosave();
+                    host.session.abort_autosave();
+                }
+                self.forget_note_gone(group);
+            }
+            None => {}
+        }
+    }
+
+    /// Groups were taken away; `shown` was the shown tab before. The window
+    /// follows the active group now (a zoom ends when another tab shows);
+    /// the keyboard stays where it was.
+    fn groups_removed(&mut self, shown: TabId, cx: &mut Context<Self>) {
+        if self.layout.region().shown() != shown {
+            self.layout.zoom(None);
+        }
         self.sync_active_status(cx);
         self.refresh_note_counts();
         self.focus_shown_content(cx);

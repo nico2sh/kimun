@@ -37,6 +37,8 @@ pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
 /// The command arranges the view of the focused slot (or the rail's).
 pub(crate) const NEEDS_SLOT_FOCUS: &str = "Needs a slot focused";
+/// The command splits or closes the focused slot or editor group.
+pub(crate) const NEEDS_SLOT_OR_EDITOR_FOCUS: &str = "Needs a slot or the editor focused";
 /// Copying a row needs the list of a slot's view (LINKS, OUTLINE, FIND,
 /// TAGS) to have the keyboard.
 pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a slot list focused";
