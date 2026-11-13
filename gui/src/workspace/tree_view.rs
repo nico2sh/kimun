@@ -1,7 +1,7 @@
 //! Drawing the **layout tree** (ADR-0052): everything right of the rail is
 //! one recursive walk over the tree's [shape]. A split is a flex row
 //! (horizontal) or column (vertical) whose children grow by their weights;
-//! a slot shows its view, an editor group the editor Panel
+//! a slot shows its view, the editor region the editor Panel
 //! ([`Workspace::render_editor`]).
 //!
 //! A slot that is not drawn ([`Workspace::slot_drawn`]: no shown view)
@@ -9,11 +9,11 @@
 //! weight, and a split left with no drawn child is left out too.
 //!
 //! **Minimum sizes** (ADR-0052 §6). A slot's minimum is that of the view it
-//! shows (`view_registry`, 1 unit = 1 rem), an editor group
+//! shows (`view_registry`, 1 unit = 1 rem), the editor region
 //! [`EDITOR_MIN_REMS`] wide;
 //! heights count only in vertical splits. Each frame [`Workspace::fit`]
 //! collapses what does not fit: in the first overflowing split, children
-//! last to first, never a subtree holding an editor group. A collapsed leaf
+//! last to first, never a subtree holding the editor region. A collapsed leaf
 //! is left out like an undrawn slot, takes no focus, and comes back when
 //! the window grows; the tree, its weights and the saved layout never
 //! change. Where the minimums fit, every cell keeps its own; a slot that
@@ -36,7 +36,7 @@
 //! ([`Workspace::step_focused_leaf`]).
 //!
 //! **Zoom** (ADR-0053). While a leaf is zoomed only it is drawn, filling
-//! the whole area with the Footer under it (an editor group's own), and
+//! the whole area with the Footer under it (the editor region's own), and
 //! only it counts as visible: no fit, nothing collapsed, no divider. Zoom
 //! ends when its leaf is no longer drawn or the keyboard goes to another
 //! leaf ([`Workspace::settle_zoom`]); the tree never changes, so leaving
@@ -137,7 +137,7 @@ pub(super) trait SlotAware: Sized {
 /// Share `len` px among cells of (weight, minimum px) the way flex does
 /// with those minimums set: by weight, a cell that would fall under its
 /// minimum held there and the rest shared again. When the minimums alone
-/// exceed `len` (only cells holding an editor group are left then) they
+/// exceed `len` (only cells holding the editor region are left then) they
 /// are not set and the cells go by weight. The sizes, and whether the
 /// minimums hold.
 fn distribute(len: f64, cells: &[(f64, f64)]) -> (Vec<f64>, bool) {
@@ -311,7 +311,7 @@ impl Workspace {
     /// The minimum (width, height) of `leaf`, in rems.
     fn leaf_min(&self, leaf: Leaf) -> (f64, f64) {
         match leaf {
-            Leaf::Group(_) => (f64::from(EDITOR_MIN_REMS), 0.0),
+            Leaf::Editor => (f64::from(EDITOR_MIN_REMS), 0.0),
             Leaf::Slot(slot) => self.slot_min(slot),
         }
     }
@@ -356,7 +356,7 @@ impl Workspace {
 
     /// Which leaves the window has room for (ADR-0052 §6, Ruling 12):
     /// slots that are not drawn are left out, then what overflows
-    /// collapses ([`LayoutTree::fit`], in rems; editor groups never).
+    /// collapses ([`LayoutTree::fit`], in rems; the editor region never).
     /// Each leaf's minimum carries one px for the gap beside it.
     ///
     /// [`LayoutTree::fit`]: kimun_notes::logic::layout_tree::LayoutTree::fit
@@ -517,7 +517,7 @@ impl Workspace {
     /// The layout tree, right of the rail: it takes the width the rail
     /// leaves and the height under the title bar. While zoomed (ADR-0053)
     /// only the zoomed leaf is drawn there, no other slot, group or
-    /// divider; a zoomed slot has the Footer under it (an editor group
+    /// divider; a zoomed slot has the Footer under it (the editor region
     /// carries its own).
     pub(super) fn render_tree(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Measured afresh as this tree is laid out.
@@ -536,13 +536,13 @@ impl Workspace {
                 window,
                 cx,
             )
-            // Every tree holds an editor group, which is always drawn; a
+            // Every tree holds the editor region, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
             .unwrap_or_else(|| self.render_editor(window, cx).into_any_element());
         self.tree_frame().child(tree).into_any_element()
     }
 
-    /// The zoomed `leaf` filling the tree's area: an editor group is the
+    /// The zoomed `leaf` filling the tree's area: the editor region is the
     /// editor Panel, Footer included; a slot is drawn over the Footer. No
     /// minimum applies: the leaf has the whole area.
     fn render_zoomed(
@@ -553,7 +553,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let content = match leaf {
-            Leaf::Group(_) => self.render_editor(window, cx).into_any_element(),
+            Leaf::Editor => self.render_editor(window, cx).into_any_element(),
             Leaf::Slot(_) => {
                 let slot = self
                     .render_node(
@@ -592,7 +592,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         match shape {
-            TreeShape::Leaf(Leaf::Group(_)) => {
+            TreeShape::Leaf(Leaf::Editor) => {
                 Some(self.render_editor(window, cx).into_any_element())
             }
             TreeShape::Leaf(Leaf::Slot(slot)) => {
@@ -781,19 +781,17 @@ impl Workspace {
         .into_any_element()
     }
 
-    /// The element id of the divider after `leaf`: `divider-slot-<n>` or
-    /// `divider-group-<n>`, by the leaf's place among the tree's slots or
-    /// groups in reading order.
+    /// The element id of the divider after `leaf`: `divider-slot-<n>` by
+    /// the slot's place among the tree's slots in reading order, or
+    /// `divider-group-0` for the editor leaf (the id it had as the one
+    /// editor group).
     fn divider_id(&self, leaf: Leaf) -> SharedString {
         match leaf {
             Leaf::Slot(slot) => {
                 let n = self.layout.slots().iter().position(|s| *s == slot);
                 format!("divider-slot-{}", n.unwrap_or_default()).into()
             }
-            Leaf::Group(group) => {
-                let n = self.layout.groups().iter().position(|g| *g == group);
-                format!("divider-group-{}", n.unwrap_or_default()).into()
-            }
+            Leaf::Editor => "divider-group-0".into(),
         }
     }
 
@@ -947,7 +945,7 @@ impl Workspace {
     /// their weights), as the dividers are drawn.
     fn resize_after_visible(&mut self, leaf: Leaf, share: f64) -> bool {
         let leaves = self.layout.slots().into_iter().map(Leaf::Slot);
-        let leaves = leaves.chain(self.layout.groups().into_iter().map(Leaf::Group));
+        let leaves = leaves.chain(std::iter::once(Leaf::Editor));
         let visible: Vec<Leaf> = leaves.filter(|l| self.leaf_visible(*l)).collect();
         self.layout
             .resize_after_visible(leaf, share, &|l| visible.contains(&l))

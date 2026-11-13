@@ -21,7 +21,7 @@ pub(crate) enum Placement {
     /// In a new slot on this side of this slot.
     Beside(SlotId, Dir),
     /// At the window edge on this side: that side's first slot, else a new
-    /// slot at the edge of the outermost editor group.
+    /// slot at that edge of the editor region.
     AtEdge(Side),
 }
 
@@ -45,12 +45,11 @@ impl Workspace {
             }
             Placement::AtEdge(side) => match self.window_edge_slot(side) {
                 Some(slot) => self.move_into(view, slot, window, cx),
-                None => match self.layout.edge_group(side) {
-                    Some(group) => self
-                        .spawn_at(view, Leaf::Group(group), side.dir(), window, cx)
-                        .handled(),
-                    None => false,
-                },
+                // A new slot beside the whole editor region, never between
+                // its groups (ADR-0058).
+                None => self
+                    .spawn_at(view, Leaf::Editor, side.dir(), window, cx)
+                    .handled(),
             },
         }
     }

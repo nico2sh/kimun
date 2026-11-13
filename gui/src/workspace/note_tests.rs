@@ -1006,6 +1006,7 @@ fn a_flush_result_applies_to_the_group_that_started_it(cx: &mut TestAppContext) 
             let first = w.layout.active_group();
             let second = w
                 .layout
+                .region_mut()
                 .split_group(first, Axis::Horizontal)
                 .expect("the first group splits");
             let settings = v.settings.clone();
@@ -1013,7 +1014,8 @@ fn a_flush_result_applies_to_the_group_that_started_it(cx: &mut TestAppContext) 
             // The switch starts in the first group, its flush still running.
             w.open_note_in(first, path("b.md"), cx);
             // Another group becomes the active one before the flush lands.
-            assert!(w.layout.focus(Focus::Leaf(Leaf::Group(second))));
+            assert!(w.layout.region_mut().set_active_group(second));
+            assert!(w.layout.focus(Focus::Leaf(Leaf::Editor)));
             (first, second)
         })
     });

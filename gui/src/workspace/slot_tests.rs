@@ -669,7 +669,7 @@ fn directional_focus_crosses_slots(cx: &mut TestAppContext) {
         let slots = shell.slots(cx);
         let (files_s, find_s, outline_s) = (slots[0], slots[1], slots[2]);
         let editor = shell.focus(cx);
-        assert!(matches!(editor, Focus::Leaf(Leaf::Group(_))));
+        assert!(matches!(editor, Focus::Leaf(Leaf::Editor)));
         let slot = |s| Focus::Leaf(Leaf::Slot(s));
         let files = slot_id(DrawerView::Files);
         let find = slot_id(DrawerView::Find);
@@ -1766,7 +1766,7 @@ fn focus_region_walks_nested_slots_and_reaches_the_rail(cx: &mut TestAppContext)
         let slots = shell.slots(cx);
         let (files_s, find_s, tags_s) = (slots[0], slots[1], slots[2]);
         let editor = shell.focus(cx);
-        assert!(matches!(editor, Focus::Leaf(Leaf::Group(_))));
+        assert!(matches!(editor, Focus::Leaf(Leaf::Editor)));
         let slot = |s| Focus::Leaf(Leaf::Slot(s));
         let files = slot_id(DrawerView::Files);
         let find = slot_id(DrawerView::Find);
@@ -1906,7 +1906,7 @@ fn editor_group_subtree_never_collapses(cx: &mut TestAppContext) {
             assert!(
                 fit.rects
                     .iter()
-                    .any(|(leaf, _)| matches!(leaf, Leaf::Group(_)))
+                    .any(|(leaf, _)| matches!(leaf, Leaf::Editor))
             );
         })
         .unwrap();
@@ -2058,7 +2058,7 @@ fn focus_skips_collapsed_slots(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         let ws = shell.workspace.clone();
-        let group = Focus::Leaf(Leaf::Group(ws.read(cx).layout.active_group()));
+        let group = Focus::Leaf(Leaf::Editor);
         assert_eq!(shell.focus(cx), group, "focus left the collapsed slot");
         let moved = ws.update(cx, |ws, _| ws.focus_dir(Dir::Right));
         assert_eq!(moved, TreeFocusMove::AtEdge);

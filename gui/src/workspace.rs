@@ -1566,10 +1566,10 @@ impl Workspace {
         self.layout.shown(slot).is_some()
     }
 
-    /// Whether `leaf` is drawn: every editor group, and the drawn slots.
+    /// Whether `leaf` is drawn: the editor, and the drawn slots.
     fn leaf_drawn(&self, leaf: Leaf) -> bool {
         match leaf {
-            Leaf::Group(_) => true,
+            Leaf::Editor => true,
             Leaf::Slot(slot) => self.slot_drawn(slot),
         }
     }
@@ -1590,7 +1590,7 @@ impl Workspace {
     pub(crate) fn focused_panel(&self) -> Panel {
         match self.layout.focused() {
             Focus::Rail => Panel::Rail,
-            Focus::Leaf(Leaf::Group(_)) => Panel::Editor,
+            Focus::Leaf(Leaf::Editor) => Panel::Editor,
             Focus::Leaf(Leaf::Slot(slot)) => Panel::Drawer(self.slot_side(slot)),
         }
     }
@@ -1602,7 +1602,7 @@ impl Workspace {
             // A hidden rail takes no keyboard focus (ADR-0055 §9): a modal
             // that closes gives it back to the rail it was opened from.
             Panel::Rail if !self.rail_hidden => Focus::Rail,
-            Panel::Rail | Panel::Editor => Focus::Leaf(Leaf::Group(self.layout.active_group())),
+            Panel::Rail | Panel::Editor => Focus::Leaf(Leaf::Editor),
             Panel::Drawer(side) => match self
                 .side_slots(side)
                 .into_iter()
@@ -1632,9 +1632,7 @@ impl Workspace {
             .find(|s| self.leaf_visible(Leaf::Slot(*s)))
         {
             Some(other) => self.layout.focus(Focus::Leaf(Leaf::Slot(other))),
-            None => self
-                .layout
-                .focus(Focus::Leaf(Leaf::Group(self.layout.active_group()))),
+            None => self.layout.focus(Focus::Leaf(Leaf::Editor)),
         };
     }
 
@@ -1710,7 +1708,7 @@ impl Workspace {
                 None => self.slot_handle(slot),
             },
             // The attachment view while one shows, else the editor.
-            Focus::Leaf(Leaf::Group(_)) => match self.active_state().attachment.as_ref() {
+            Focus::Leaf(Leaf::Editor) => match self.active_state().attachment.as_ref() {
                 Some(view) => view.read(cx).focus_handle(cx),
                 None => self.active_state().editor.read(cx).focus_handle(cx),
             },
@@ -1884,7 +1882,7 @@ impl Workspace {
         match self.layout.focused() {
             Focus::Leaf(Leaf::Slot(slot)) => self.layout.shown(slot),
             Focus::Rail => self.rail_cursor_view(),
-            Focus::Leaf(Leaf::Group(_)) => None,
+            Focus::Leaf(Leaf::Editor) => None,
         }
     }
 
@@ -2004,7 +2002,7 @@ impl Workspace {
     /// Every placement that makes a slot goes through here (ADR-0054 §8):
     /// put `view` in a new slot on the `dir` side of `beside`
     /// ([`LayoutTree::place_beside`], or
-    /// [`LayoutTree::place_beside_group`] for an editor group); the slot
+    /// [`LayoutTree::place_beside_editor`] for the editor region); the slot
     /// the view left closes, or shows its next view
     /// ([`Self::close_if_vacated`]); then the window makes room for the
     /// new slot ([`Self::make_room`]). With no room, the layout is put
@@ -2023,7 +2021,7 @@ impl Workspace {
         let placed = self.try_layout(|ws| {
             let new = match beside {
                 Leaf::Slot(slot) => ws.layout.place_beside(view, slot, dir),
-                Leaf::Group(group) => ws.layout.place_beside_group(view, group, dir),
+                Leaf::Editor => Ok(ws.layout.place_beside_editor(view, dir)),
             }
             .map_err(|_| NoNewSlot::Refused)?;
             if let Some(from) = from {
@@ -2051,9 +2049,28 @@ impl Workspace {
         let undo = self.layout.clone();
         let result = edit(self);
         if result.is_err() {
-            self.layout = undo;
+            self.replace_layout(undo);
         }
         result
+    }
+
+    /// Put `layout` in place of the live one, keeping the live editor
+    /// region: its tabs and groups belong to the window, not to an
+    /// arrangement of slots, so a preset or an undo never touches them
+    /// (ADR-0058). `groups` therefore stays in step with the layout's
+    /// groups, the invariant the `group` accessors rely on.
+    pub(super) fn replace_layout(&mut self, mut layout: LayoutTree<DrawerView>) {
+        *layout.region_mut() = self.layout.region().clone();
+        self.layout = layout;
+        debug_assert!(
+            self.layout
+                .region()
+                .all_groups()
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                == self.groups.keys().copied().collect(),
+            "groups out of step with the layout"
+        );
     }
 
     /// The shared tail of every placement: settle and persist. Focus is
@@ -2127,7 +2144,7 @@ impl Workspace {
             // Only onto a slot that is drawn: one taking no space is not
             // stacked there.
             if !to.is_some_and(|to| undo.shown(to).is_some()) {
-                self.layout = undo;
+                self.replace_layout(undo);
                 return self.place(view, Placement::Beside(from, dir), window, cx)
                     || self.stacked(from);
             }
@@ -2685,7 +2702,7 @@ impl Workspace {
             let leaf = self
                 .last_slot
                 .filter(|slot| self.slot_drawn(*slot))
-                .map_or(Leaf::Group(self.layout.active_group()), Leaf::Slot);
+                .map_or(Leaf::Editor, Leaf::Slot);
             self.layout.focus(Focus::Leaf(leaf));
         }
         self.apply_focus(window, cx);
@@ -2988,7 +3005,7 @@ impl Workspace {
             .child(
                 Self::leaf_surface(
                     theme::background(&theme::current(cx)),
-                    self.leaf_border(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx),
+                    self.leaf_border(Focus::Leaf(Leaf::Editor), cx),
                 )
                 .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.focus_panel(Panel::Editor, window, cx)

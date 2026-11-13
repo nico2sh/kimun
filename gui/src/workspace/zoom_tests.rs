@@ -48,10 +48,6 @@ impl Shell {
             .view_slot(&view)
             .expect("the view is placed")
     }
-
-    fn group(&self, cx: &gpui_kit::App) -> Leaf {
-        Leaf::Group(self.workspace.read(cx).layout.active_group())
-    }
 }
 
 /// Every slot's drawn bounds (by reading order; `None` when not drawn) and
@@ -118,7 +114,7 @@ fn toggle_zoom_covers_everything_right_of_the_rail_and_keeps_footer(cx: &mut Tes
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.press(ZOOM, cx);
         window.render_frame(cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         let editor = window.find("editor-panel").bounds();
         assert!(close(editor.left(), f32::from(rail.right())), "{editor:?}");
         assert!(close(editor.right(), 1000.), "{editor:?}");
@@ -241,7 +237,7 @@ fn escape_does_not_exit_zoom(cx: &mut TestAppContext) {
     let files = slot(DrawerView::Files, cx);
     assert_eq!(state(cx), (None, Focus::Leaf(files)));
     press("escape", cx);
-    assert!(matches!(state(cx).1, Focus::Leaf(Leaf::Group(_))));
+    assert!(matches!(state(cx).1, Focus::Leaf(Leaf::Editor)));
 
     press("ctrl-e", cx);
     press(ZOOM, cx);
@@ -288,7 +284,7 @@ fn escape_in_the_vim_editor_does_not_exit_zoom(cx: &mut TestAppContext) {
         window.press("escape", cx);
         window.press("escape", cx);
         window.render_frame(cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         assert_eq!(shell.focused(cx), Panel::Editor);
     })
     .unwrap();
@@ -310,7 +306,7 @@ fn zoom_works_on_an_editor_group_and_on_a_slot(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(shell.zoomed(cx), None);
         window.press(ZOOM, cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         window.press(ZOOM, cx);
         assert_eq!(shell.zoomed(cx), None);
 
@@ -535,7 +531,7 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        let editor = Focus::Leaf(shell.group(cx));
+        let editor = Focus::Leaf(Leaf::Editor);
         window.press(ZOOM, cx);
         window.render_frame(cx);
         for (key, expected) in [
@@ -552,7 +548,7 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
             window.press(key, cx);
             window.render_frame(cx);
             assert_eq!(shell.tree_focus(cx), expected, "{key}");
-            assert_eq!(shell.zoomed(cx), Some(shell.group(cx)), "{key}");
+            assert_eq!(shell.zoomed(cx), Some(Leaf::Editor), "{key}");
         }
 
         // A zoomed slot at the right edge: Left goes to the rail, not the

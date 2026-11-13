@@ -1179,7 +1179,7 @@ fn assert_all_visible(shell: &Shell, views: &[DrawerView], cx: &gpui_kit::App) {
         let slot = w.layout.view_slot(view).expect("placed");
         assert!(w.leaf_visible(Leaf::Slot(slot)), "{view:?} is visible");
     }
-    assert!(w.leaf_visible(Leaf::Group(w.layout.active_group())));
+    assert!(w.leaf_visible(Leaf::Editor));
 }
 
 /// The user's report: FIND below FILES, then ASK right of FILES. The left
@@ -1307,7 +1307,7 @@ fn making_room_never_shrinks_the_editor_below_its_minimum(cx: &mut TestAppContex
             cx,
         );
         let w = shell.workspace.read(cx);
-        let group = Leaf::Group(w.layout.active_group());
+        let group = Leaf::Editor;
         let fit = w.fit(window);
         let width = fit
             .rects
