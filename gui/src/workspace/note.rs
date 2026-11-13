@@ -250,13 +250,9 @@ impl Workspace {
         }
     }
 
-    /// Keep the editor from taking input while an open is pending: the keys
-    /// would be lost when the new note loads, so they are not taken at all.
-    pub(super) fn block_input(&self, blocked: bool, cx: &mut Context<Self>) {
-        self.block_input_in(self.layout.active_group(), blocked, cx);
-    }
-
-    /// [`Self::block_input`] for the editor of `group`.
+    /// Keep `group`'s editor from taking input while an open (or a flush) is
+    /// pending: the keys would be lost when the new note loads, so they are
+    /// not taken at all.
     pub(super) fn block_input_in(&self, group: GroupId, blocked: bool, cx: &mut Context<Self>) {
         if let Some(state) = self.state(group) {
             state
@@ -1285,7 +1281,7 @@ impl Workspace {
     }
 
     /// The note session of `group`, if it has one.
-    fn host_in(&self, group: GroupId) -> Option<&NoteHost> {
+    pub(super) fn host_in(&self, group: GroupId) -> Option<&NoteHost> {
         self.state(group).and_then(|s| s.notes.as_ref())
     }
 
@@ -1326,11 +1322,8 @@ impl Workspace {
         }
     }
 
-    pub(super) fn restart_tick_unless_read_only(&mut self) {
-        self.restart_tick_unless_read_only_in(self.layout.active_group());
-    }
-
-    /// [`Self::restart_tick_unless_read_only`] for the session of `group`.
+    /// [`Self::restart_tick_in`], unless the vault is read-only (no tick
+    /// runs there).
     pub(super) fn restart_tick_unless_read_only_in(&mut self, group: GroupId) {
         if !self.status.read_only {
             self.restart_tick_in(group);

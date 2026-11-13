@@ -965,3 +965,56 @@ fn directional_focus_between_groups_syncs_the_window(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// Regression lock (final review I5): the search browser's flush lands on
+/// the group it flushed, not on whichever group is active by then. Begun
+/// on group A, with group B made active before it lands: A gets its
+/// keyboard and its autosave tick back and its text is written.
+#[gpui_kit::test]
+fn the_search_open_flush_lands_on_the_group_it_flushed(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+    let a = started.active(cx);
+    started.split_with("b.md", cx);
+    drive(&rt, cx, |cx| {
+        started.note_in(started.active(cx), cx) == Some(path("b.md")) && started.idle(cx)
+    });
+    let b = started.active(cx);
+    started.focus_group(a, cx);
+    started.set_text_in(a, "alpha edited", cx);
+    let blocked = |g: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            let editor = started.workspace.read(cx).state(g).unwrap().editor.clone();
+            editor.read(cx).input_blocked
+        })
+    };
+    let tick_of = |g: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .state(g)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.session.autosave_interval())
+        })
+    };
+    let workspace = started.workspace.clone();
+    let waits = cx
+        .update_window(started.handle, |_, window, cx| {
+            workspace.update(cx, |w, cx| w.search_open(path("c.md"), None, window, cx))
+        })
+        .unwrap();
+    assert!(waits, "the browser waits for the flush of a.md");
+    assert!(blocked(a, cx));
+    // B becomes active before the flush lands.
+    cx.update(|cx| started.workspace.update(cx, |w, cx| w.focus_group(b, cx)));
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).search_flush.is_none()) && started.idle(cx)
+    });
+    assert!(!blocked(a, cx), "A, the flushed group, takes typing again");
+    assert_eq!(tick_of(a, cx), Some(tick), "A's tick is back");
+    assert!(!blocked(b, cx));
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha edited"));
+}

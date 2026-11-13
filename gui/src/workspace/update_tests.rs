@@ -1257,3 +1257,74 @@ fn install_does_not_start_while_the_window_closes(cx: &mut TestAppContext) {
     assert!(matches!(s.up_phase(cx), UpdatePhase::Available(_)));
     assert_eq!(fake.installs(), 0);
 }
+
+/// Regression lock (final review I5): the install's flush lands on the
+/// group it flushed, not on whichever group is active by then. Begun on
+/// group A, with group B made active before it lands: A gets its keyboard
+/// and its autosave tick back and its text is written; B is left alone.
+#[gpui_kit::test]
+fn the_install_flush_lands_on_the_group_it_flushed(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::{Axis, GroupId};
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    set_update_check(&v, false);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+    let fake =
+        Arc::new(ScriptedUpdates::with_release(NEW).install_delay(Duration::from_millis(400)));
+    let s = on_vault(cx, &rt, &v, Some(fake.clone()));
+    let relauncher = Arc::new(RecordingRelauncher::default());
+    s.up_on_window(cx, |w, _, _| w.set_relauncher(relauncher.clone()));
+    let a = s.up_on_window(cx, |w, _, _| w.layout.active_group());
+    s.up_on_window(cx, |w, _, cx| {
+        w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
+    });
+    drive(&rt, cx, |cx| s.text(cx) == "beta");
+    let b = s.up_on_window(cx, |w, _, _| w.layout.active_group());
+    assert_ne!(a, b);
+    s.up_on_window(cx, |w, _, cx| w.focus_group(a, cx));
+    cx.run_until_parked();
+    cx.update_window(s.handle, |_, window, cx| window.input("X", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let blocked = |g: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            let editor = s.workspace.read(cx).state(g).unwrap().editor.clone();
+            editor.read(cx).input_blocked
+        })
+    };
+    let tick_of = |g: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .state(g)
+                .and_then(|st| st.notes.as_ref())
+                .and_then(|h| h.session.autosave_interval())
+        })
+    };
+    s.up_found(&rt, cx);
+    s.up_view(cx);
+    s.up_click(UPDATE_INSTALL_ID, cx);
+    assert!(blocked(a, cx), "the flush of a.md is under way");
+    // B becomes active before the flush lands.
+    s.up_on_window(cx, |w, _, cx| w.focus_group(b, cx));
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| s.workspace.read(cx).updates.machine.is_installing())
+    });
+    assert!(!blocked(a, cx), "A, the flushed group, takes typing again");
+    assert_eq!(tick_of(a, cx), Some(tick), "A's tick is back");
+    assert!(!blocked(b, cx));
+    assert_eq!(
+        rt.block_on(v.vault.get_note_text(&VaultPath::new("a.md")))
+            .unwrap(),
+        "Xalpha"
+    );
+    let b_text = cx.read(|cx| {
+        let editor = s.workspace.read(cx).state(b).unwrap().editor.clone();
+        editor.read(cx).editor.get_text()
+    });
+    assert_eq!(b_text, "beta", "B is left alone");
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
+    });
+}
