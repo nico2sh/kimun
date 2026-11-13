@@ -1022,18 +1022,25 @@ impl Workspace {
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
             self.first_open_pending = matches!(first, FirstNote::Restore | FirstNote::Note(_));
-            // The arrangement is recorded from now on; a restore lands on
-            // the session record when it has a note left to open, else on
-            // the history ([`session`]).
-            self.begin_session(session_file.clone(), restore);
+            // The arrangement is recorded from now on ([`session`]). A
+            // start with no note (or a refused one) lands on the session
+            // record when it has a note left to open, else (no argument
+            // only) on the history. A note on the command line opens alone,
+            // and the record stays as it is until the arrangement changes.
+            let from_record = matches!(first, FirstNote::Restore | FirstNote::Rejected(_));
+            let start = match &first {
+                FirstNote::Note(path) => session::SessionStart::Launch(path.clone()),
+                _ => session::SessionStart::Restore { history: restore },
+            };
+            self.begin_session(session_file.clone(), start);
             let job = tokio::spawn(startup::index_and_restore(
                 vault,
                 settings,
                 restore,
-                restore.then_some(session_file),
+                from_record.then_some(session_file),
                 tx.clone(),
             ));
-            if restore {
+            if from_record {
                 self.await_session_restore(job, cx);
             }
             match first {

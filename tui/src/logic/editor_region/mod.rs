@@ -5,7 +5,9 @@
 //! tab. Closing the last group of a tab closes the tab; closing the last
 //! group of the last tab keeps that group and reports
 //! [`CloseOutcome::Emptied`]. Group ids come from one monotonic counter
-//! shared by all tabs and are never reused.
+//! shared by all tabs and are never reused within one region. A region
+//! built from a record ([`EditorRegion::from_record`]) numbers its tabs and
+//! groups afresh, so an id of one region may name something else in another.
 
 use kimun_core::nfs::VaultPath;
 
@@ -13,7 +15,7 @@ use crate::logic::layout::node::Node;
 use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
 use crate::settings::session::{GroupTreeRecord, SessionRecord, TabRecord};
 
-/// Identifies one tab. Never reused.
+/// Identifies one tab. Never reused within one region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(u32);
 

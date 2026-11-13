@@ -2523,4 +2523,32 @@ mod group_drag {
             assert_eq!(note_in(&s, g, cx), Some(path(note)));
         }
     }
+
+    /// A group drag held while the region is replaced (a restore, a
+    /// workspace switch) ends: its group's id may name another group in
+    /// the new region, so nothing may drop it there.
+    #[gpui_kit::test]
+    fn replacing_the_region_ends_a_group_drag(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        press_and_move(&shell, from, 40., cx);
+        assert!(
+            cx.read(|cx| s.workspace.read(cx).dragged_group(cx))
+                .is_some()
+        );
+        let replaced = region(&s, cx);
+        cx.update(|cx| {
+            s.workspace.update(cx, |w, cx| {
+                assert!(w.replace_region(replaced, cx));
+            })
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.has_active_drag()), "the drag ended");
+        assert_eq!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx)), None);
+        assert_in_step(&s, cx);
+    }
 }

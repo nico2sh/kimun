@@ -360,6 +360,8 @@ impl Workspace {
             window.close_all_dialogs(cx);
         }
         self.reset_modal_state(cx);
+        // A group's drag: its group is about to go.
+        self.end_group_drag(window, cx);
         self.file_status = None;
         // The old workspace's git state is not the next one's.
         self.status.git = None;

@@ -198,25 +198,22 @@ fn a_change_writes_the_record_after_the_debounce(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (v, win) = started_on_a(cx, &rt);
     win.after_debounce(cx);
-    let one_tab = SessionRecord {
-        tabs: vec![TabRecord {
-            tree: leaf(Some("a.md")),
-            active: 0,
-        }],
-        shown: 0,
-    };
-    assert_eq!(session_of(&v).load(), Some(one_tab.clone()));
+    assert_eq!(
+        session_of(&v).load(),
+        None,
+        "the launch's own note is no change"
+    );
 
     win.with(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx));
     drive(&rt, cx, |cx| win.text(cx) == "beta" && win.all_idle(cx));
     assert_eq!(
         session_of(&v).load(),
-        Some(one_tab.clone()),
+        None,
         "nothing is written before the debounce"
     );
     cx.executor().advance_clock(SESSION_DEBOUNCE / 2);
     cx.run_until_parked();
-    assert_eq!(session_of(&v).load(), Some(one_tab));
+    assert_eq!(session_of(&v).load(), None);
     cx.executor().advance_clock(SESSION_DEBOUNCE / 2);
     cx.run_until_parked();
     assert_eq!(
@@ -465,10 +462,25 @@ fn a_quit_before_the_restore_keeps_the_record(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let record = two_tab_record();
     let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    let before = std::fs::read(session_of(&v).path().as_path()).unwrap();
     // Not driven: indexing (and so the restore) has not finished.
     win.quit(cx);
     cx.run_until_parked();
-    assert_eq!(session_of(&v).load(), Some(record));
+    assert_eq!(
+        std::fs::read(session_of(&v).path().as_path()).unwrap(),
+        before
+    );
+    // The restore still lands (the test platform does not end the app);
+    // a second quit with nothing changed writes nothing either.
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.notes_by_tab(cx).len() == 2
+    });
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read(session_of(&v).path().as_path()).unwrap(),
+        before
+    );
 }
 
 /// A switch writes the old workspace's record under the old workspace,
@@ -505,6 +517,13 @@ fn a_switch_saves_the_old_record_and_restores_the_new(cx: &mut TestAppContext) {
         "B starts from its own history, in one group"
     );
     win.assert_states_in_step(cx);
+    // In B: bfriend below beta.
+    win.with(cx, |w, cx| {
+        w.open_note_in_split(path("bfriend.md"), Axis::Vertical, cx)
+    });
+    drive(&rt, cx, |cx| {
+        win.all_idle(cx) && win.notes_by_tab(cx)[0].len() == 2
+    });
 
     set_current(&p.settings, "a");
     win.sw_reopen_to(&rt, None, cx);
@@ -515,8 +534,183 @@ fn a_switch_saves_the_old_record_and_restores_the_new(cx: &mut TestAppContext) {
     assert_eq!(win.record(cx), a_record, "A's arrangement comes back");
     let b_file = p.settings.read().unwrap().session_for("b");
     assert_eq!(
-        b_file.load().map(|r| r.tabs.len()),
-        Some(1),
-        "B's record was written under B"
+        b_file.load(),
+        Some(SessionRecord {
+            tabs: vec![TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Vertical,
+                    weights: vec![0.5, 0.5],
+                    children: vec![leaf(Some("beta.md")), leaf(Some("bfriend.md"))],
+                },
+                active: 1,
+            }],
+            shown: 0,
+        }),
+        "B's record was written under B, every group and weight"
     );
+    assert_eq!(
+        a_file.load(),
+        Some(a_record),
+        "A's restore wrote nothing back"
+    );
+}
+
+// ── Command-line starts ───────────────────────────────────────────────────
+
+/// The file's bytes, to see that nothing touched it.
+fn bytes(v: &TestVault) -> Vec<u8> {
+    std::fs::read(session_of(v).path().as_path()).unwrap()
+}
+
+/// A note named on the command line opens alone, and the stored record
+/// survives the launch: it is replaced only once the arrangement differs
+/// from that one group.
+#[gpui_kit::test]
+fn a_command_line_note_keeps_the_record_until_a_change(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Note(path("d.md")));
+    let before = bytes(&v);
+    drive(&rt, cx, |cx| {
+        win.text(cx) == "delta" && !win.indexing(cx) && win.all_idle(cx)
+    });
+    assert_eq!(win.notes_by_tab(cx), vec![vec![Some("d.md".to_string())]]);
+    win.after_debounce(cx);
+    assert_eq!(bytes(&v), before, "the launch's note is no change");
+
+    win.with(cx, |w, cx| {
+        w.open_note_in_split(path("a.md"), Axis::Horizontal, cx)
+    });
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "alpha");
+    win.after_debounce(cx);
+    assert_eq!(session_of(&v).load(), Some(win.record(cx)), "a real change");
+}
+
+/// A quit right after a command-line launch leaves the record as it was;
+/// so does one whose note will not open (the group stays empty).
+#[gpui_kit::test]
+fn quitting_after_a_command_line_launch_keeps_the_record(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Note(path("a.md")));
+    let before = bytes(&v);
+    drive(&rt, cx, |cx| win.text(cx) == "alpha" && win.all_idle(cx));
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(bytes(&v), before);
+    drive(&rt, cx, |cx| !win.indexing(cx));
+
+    let (v, win) = started(
+        cx,
+        &rt,
+        &[],
+        Some(&record),
+        FirstNote::Note(path("missing.md")),
+    );
+    let before = bytes(&v);
+    drive(&rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+    win.after_debounce(cx);
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(bytes(&v), before, "an empty launch is no change either");
+}
+
+/// A refused argument (nothing to open) restores the record as a plain
+/// start does; its error flash writes nothing.
+#[gpui_kit::test]
+fn a_refused_argument_restores_the_record_and_keeps_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(
+        cx,
+        &rt,
+        &["d.md"],
+        Some(&record),
+        FirstNote::Rejected("bad?name is not a note".into()),
+    );
+    let before = bytes(&v);
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.notes_by_tab(cx).len() == 2
+    });
+    assert_eq!(win.record(cx), record);
+    win.after_debounce(cx);
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(bytes(&v), before);
+}
+
+// ── An open during the restore ────────────────────────────────────────────
+
+/// The user opens a note while the vault still indexes: the restore wins,
+/// and the note opens in its active group afterwards (a plain open, which
+/// replaces that group's note), and that change is written.
+#[gpui_kit::test]
+fn an_open_during_the_restore_lands_in_the_restored_active_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    // Not driven: the restore is on its way. Two opens: the newest wins.
+    win.with(cx, |w, cx| w.open_note(path("b.md"), cx));
+    win.with(cx, |w, cx| w.open_note(path("d.md"), cx));
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "delta"
+    });
+    win.assert_states_in_step(cx);
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("d.md".to_string()), None],
+        ],
+        "the restored arrangement, d.md in place of the active group's c.md"
+    );
+    win.after_debounce(cx);
+    assert_eq!(session_of(&v).load(), Some(win.record(cx)));
+}
+
+/// The note opened meanwhile is one the record restores: its group is
+/// focused (one copy), nothing is opened twice.
+#[gpui_kit::test]
+fn an_open_during_the_restore_of_a_restored_note_focuses_its_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    win.with(cx, |w, cx| w.open_note(path("a.md"), cx));
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.notes_by_tab(cx).len() == 2
+    });
+    win.assert_states_in_step(cx);
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("c.md".to_string()), None],
+        ]
+    );
+    assert_eq!(win.note_in(win.active(cx), cx), Some(path("a.md")));
+    assert_eq!(win.text(cx), "alpha");
+}
+
+/// A restore that fails (its job panicked) lands on the history's newest
+/// note, so the editor does not wait for it for good.
+#[gpui_kit::test]
+fn a_failed_restore_lands_on_the_history(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &["d.md"], Some(&record), FirstNote::Restore);
+    win.with(cx, |w, cx| {
+        let job = tokio::spawn(async { panic!("the restore job fails in this test") });
+        w.await_session_restore(job, cx);
+    });
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "delta"
+    });
+    assert!(!cx.read(|cx| win.workspace.read(cx).restore_pending));
+    assert_eq!(win.notes_by_tab(cx), vec![vec![Some("d.md".to_string())]]);
 }

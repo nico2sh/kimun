@@ -169,7 +169,14 @@ impl Workspace {
         let editor = state.editor.clone();
         self.groups.insert(group, state);
         self.with_window(cx, move |workspace, window, cx| {
-            if !workspace.groups.contains_key(&group) {
+            // The group may have gone, or its id been given to another
+            // group's state (a region replaced meanwhile): wire only this
+            // editor.
+            if workspace
+                .groups
+                .get(&group)
+                .is_none_or(|state| state.editor != editor)
+            {
                 return;
             }
             let events = cx.subscribe_in(&editor, window, Self::on_editor_event);

@@ -755,3 +755,32 @@ fn restore_shows_the_recorded_tab_and_active_group() {
     let (_, fresh) = back.new_tab();
     assert!(!before.contains(&fresh));
 }
+
+#[test]
+fn restore_keeps_a_tab_whose_notes_are_all_missing() {
+    let record = SessionRecord {
+        tabs: vec![
+            TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5, 0.5],
+                    children: vec![leaf_record(Some("gone1.md")), leaf_record(Some("gone2.md"))],
+                },
+                active: 1,
+            },
+            TabRecord {
+                tree: leaf_record(Some("kept.md")),
+                active: 0,
+            },
+        ],
+        shown: 0,
+    };
+    let (back, opened) = EditorRegion::from_record(&record, |p| *p == note("kept.md"));
+    assert_valid(&back);
+    let tabs = back.tabs();
+    assert_eq!(tabs.len(), 2, "the tab of gone notes stays, as a tab");
+    assert_eq!(back.groups(tabs[0]).len(), 2, "both its groups, empty");
+    assert_eq!(back.shown(), tabs[0]);
+    assert_eq!(back.active_group(), back.groups(tabs[0])[1]);
+    assert_eq!(opened, vec![(back.groups(tabs[1])[0], note("kept.md"))]);
+}

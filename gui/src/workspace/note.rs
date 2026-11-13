@@ -413,6 +413,13 @@ impl Workspace {
         if !self.may_open(&path) {
             return;
         }
+        // The session record is still being restored: it wins, and this
+        // open goes into its active group once it landed (the newest
+        // request kept, [`super::session`]).
+        if self.session_restoring() {
+            self.queue_open(path, emphasis);
+            return;
+        }
         // The newest request wins: an attachment still being read is dropped.
         self.forget_attachment_request(group);
         let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {

@@ -23,7 +23,7 @@ use kimun_core::system::SystemPath;
 use kimun_notes::logic::editor_region::EditorRegion;
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
-use kimun_notes::logic::startup::{VaultOpen, restore_target};
+use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
 use kimun_notes::settings::SharedSettings;
 use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord};
 
@@ -193,12 +193,25 @@ pub(crate) struct SessionRestore {
     pub(crate) gone: Vec<VaultPath>,
 }
 
-/// Bring the index in step with the vault, then, when `restore`, land
-/// where the last session left off. Reports on `tx` as the TUI's start
-/// screen does: `IndexingDone` (or `VaultConflict` for names that differ
-/// only by case). Then, when `session`'s record still has a note to open,
-/// that record is the answer ([`SessionRestore`]) and nothing more is sent.
-/// Otherwise the history's newest note: a `FlashMessage` when the last note
+/// Where a start that restores lands, once the vault indexed.
+pub(crate) enum Landing {
+    /// The session record, which still has a note to open.
+    Session(SessionRestore),
+    /// The history's newest note (the vault root when it has none), and
+    /// what to say when the last note is gone: the record had no note left
+    /// to open, or there was none. The window opens it.
+    History(RestoreTarget),
+}
+
+/// Bring the index in step with the vault, then land where the last session
+/// left off. Reports on `tx` as the TUI's start screen does: `IndexingDone`
+/// (or `VaultConflict` for names that differ only by case).
+///
+/// With `session`, the answer is where to land, and nothing more is sent:
+/// the session record when it still has a note to open
+/// ([`Landing::Session`]), else, when `history`, the history's newest note
+/// ([`Landing::History`]), else nothing. Without `session`, when `history`,
+/// the history's newest note is sent: a `FlashMessage` when the last note
 /// is gone, then an `OpenPath` for the note to land on (the vault root when
 /// the history has none). Run it on the tokio runtime.
 ///
@@ -208,10 +221,10 @@ pub(crate) struct SessionRestore {
 pub(crate) async fn index_and_restore(
     vault: Arc<NoteVault>,
     settings: SharedSettings,
-    restore: bool,
+    history: bool,
     session: Option<SessionFile>,
     tx: AppTx,
-) -> Option<SessionRestore> {
+) -> Option<Landing> {
     let indexed = match vault.validate_and_init().await {
         Ok(report) => {
             tx.send(AppMessage::IndexingDone(Ok(report.duration))).ok();
@@ -228,21 +241,34 @@ pub(crate) async fn index_and_restore(
             false
         }
     };
-    if !restore {
+    let Some(file) = session else {
+        if history {
+            let target = restore_target(&settings, Some(&vault), indexed).await;
+            send_history(target, &tx);
+        }
         return None;
-    }
-    if let Some(record) = session.and_then(|file| file.load()) {
+    };
+    if let Some(record) = file.load() {
         let restored = session_restore(&vault, &record, indexed).await;
         if !restored.notes.is_empty() {
-            return Some(restored);
+            return Some(Landing::Session(restored));
         }
     }
-    let target = restore_target(&settings, Some(&vault), indexed).await;
+    if !history {
+        return None;
+    }
+    Some(Landing::History(
+        restore_target(&settings, Some(&vault), indexed).await,
+    ))
+}
+
+/// Land on the history's `target`: say the last note is gone, then open
+/// the target, on `tx`.
+pub(crate) fn send_history(target: RestoreTarget, tx: &AppTx) {
     if let Some(gone) = target.gone {
         tx.send(AppMessage::FlashMessage(gone)).ok();
     }
     tx.send(AppMessage::open(target.path)).ok();
-    None
 }
 
 /// The region `record` restores, its notes checked against the vault when

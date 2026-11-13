@@ -571,6 +571,18 @@ impl Workspace {
         true
     }
 
+    /// End a group's drag, if one is held, with nothing dropped: the
+    /// region is being replaced, and the group's id may name another group
+    /// after it ([`Workspace::replace_region`]). A view's drag goes on.
+    pub(super) fn end_group_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.drag.as_ref().map(|l| l.drag), Some(Dragged::Group(_))) {
+            return;
+        }
+        self.drag = None;
+        cx.stop_active_drag(window);
+        cx.notify();
+    }
+
     /// Esc during a drag ends it, and is spent on that. True when it did.
     pub(super) fn escape_ends_drag(
         &mut self,
