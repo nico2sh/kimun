@@ -46,6 +46,15 @@ pub(crate) const TAB_UNSAVED_ID: &str = "tab-unsaved";
 pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
 /// What a tab whose active group shows nothing is called.
 pub(crate) const EMPTY_LABEL: &str = "Empty";
+/// A tab's close glyph: the kit's own close icon (its dialogs and toasts
+/// draw it), carried by the default bundle. Lucide's `x` is not bundled.
+const CLOSE_ICON: IconName = IconName::Close;
+/// The plus button's glyph.
+const NEW_ICON: IconName = IconName::Plus;
+/// Every glyph the strip draws, for the bundle test: an icon the asset
+/// source does not carry paints nothing.
+#[cfg(test)]
+pub(crate) const ICONS: [IconName; 2] = [CLOSE_ICON, NEW_ICON];
 /// The widest a label grows before its name is cut with an ellipsis.
 const LABEL_MAX_REMS: f32 = 14.;
 
@@ -340,7 +349,7 @@ impl Workspace {
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .child(
-                Icon::new(IconName::Plus)
+                Icon::new(NEW_ICON)
                     .size_4()
                     .text_color(theme::muted(&theme)),
             )
@@ -407,7 +416,7 @@ impl Workspace {
             .rounded_sm()
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
-            .child(Icon::new(IconName::X).size_3())
+            .child(Icon::new(CLOSE_ICON).size_3())
             .tooltip(move |window, cx| Tooltip::new(close_tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();

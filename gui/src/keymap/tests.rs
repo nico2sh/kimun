@@ -211,7 +211,6 @@ fn default_tables() {
             lw("ctrl+shift+enter", A::OpenQueryInSidebar),
             lw("ctrl+shift+a", A::ToggleRail),
             lw("ctrl+t", A::NewTab),
-            lw("ctrl+shift+t", A::NewTab),
             lw("ctrl+w", A::CloseTab),
             lw("ctrl+tab", A::NextTab),
             lw("ctrl+shift+tab", A::PrevTab),
@@ -1151,13 +1150,11 @@ fn linux_windows_resolution_table() {
                 "alt+r",
                 [right_side.clone(), right_side.clone(), right_side],
             ),
-            // The tab chords (ADR-0058). Ctrl+T has its vim twin; Ctrl+W
-            // has none (Ctrl+Shift+W is the quick note's).
-            (
-                "ctrl+t",
-                [new_tab.clone(), new_tab.clone(), new_tab.clone()],
-            ),
-            ("ctrl+shift+t", [new_tab.clone(), new_tab.clone(), new_tab]),
+            // The tab chords (ADR-0058). Neither has a vim twin: Ctrl+T
+            // opts out, Ctrl+Shift+W is the quick note's. Ctrl+Shift+T is
+            // free.
+            ("ctrl+t", [new_tab.clone(), new_tab.clone(), new_tab]),
+            ("ctrl+shift+t", [None, None, None]),
             ("ctrl+w", [close_tab.clone(), close_tab.clone(), close_tab]),
             (
                 "ctrl+shift+w",
@@ -1602,21 +1599,20 @@ fn default_chords_have_no_duplicates() {
 fn tab_chords_match_the_constraints() {
     for p in PLATFORMS {
         let keymap = Keymap::defaults(p);
-        let (new, close, new_twin): (&str, &str, &[&str]) = if p == MacOs {
-            ("cmd+t", "cmd+w", &[])
+        // No vim twin for the new tab (it opts out), none for the close
+        // (the quick note holds Ctrl+Shift+W).
+        let (new, close) = if p == MacOs {
+            ("cmd+t", "cmd+w")
         } else {
-            // Ctrl+T is a bare Ctrl+letter: it gets its vim twin.
-            ("ctrl+t", "ctrl+w", &["ctrl+shift+t"])
+            ("ctrl+t", "ctrl+w")
         };
         let (focus_editor, focus_sidebar, left, right) = if p == MacOs {
             ("cmd+alt+e", "cmd+alt+s", "cmd+alt+l", "cmd+alt+r")
         } else {
             ("alt+e", "alt+f", "alt+l", "alt+r")
         };
-        let mut new_chords = vec![chord(new)];
-        new_chords.extend(new_twin.iter().map(|c| chord(c)));
         let expected: [(ActionShortcuts, Vec<KeyInput>); 8] = [
-            (A::NewTab, new_chords),
+            (A::NewTab, vec![chord(new)]),
             (A::CloseTab, vec![chord(close)]),
             (A::NextTab, vec![chord("ctrl+tab")]),
             (A::PrevTab, vec![chord("ctrl+shift+tab")]),
@@ -1651,9 +1647,16 @@ fn tab_chords_match_the_constraints() {
                 parse_chord("primary+shift+t", p).unwrap(),
                 ctx(Panel::Rail, false)
             ),
-            (p == LinuxWindows).then_some(&A::NewTab),
-            "{p:?}: the right toggle's old chord"
+            None,
+            "{p:?}: the right toggle's old chord is free (no new-tab twin)"
         );
+        for panel in PANELS {
+            assert_eq!(
+                keymap.resolve(parse_chord("primary+shift+t", p).unwrap(), ctx(panel, true)),
+                None,
+                "{p:?} {panel:?}"
+            );
+        }
     }
 }
 

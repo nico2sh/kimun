@@ -234,6 +234,8 @@ pub(crate) use note::Closing;
 use note::NoteHost;
 pub(crate) use palette::Palette;
 #[cfg(test)]
+pub(crate) use tab_strip::ICONS as TAB_STRIP_ICONS;
+#[cfg(test)]
 pub(crate) use titlebar::WINDOW_CONTROL_ICONS;
 
 /// The key context of the workspace root.
