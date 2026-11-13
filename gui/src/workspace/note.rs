@@ -643,6 +643,10 @@ impl Workspace {
                 host.note = Some(path.clone());
                 host.meta.load_note_counts(&path, &tx);
                 self.forget_note_gone(group);
+                // A menu on the group names the note it showed before.
+                if previous.as_ref() != Some(&path) {
+                    self.forget_note_menu_of(group, cx);
+                }
                 if group == self.layout.active_group() {
                     self.status.note = Some(path.clone());
                     self.files_note_opened(&path, cx);
@@ -816,6 +820,8 @@ impl Workspace {
     /// input. Nothing is saved: the caller flushed it, or its note is gone.
     /// The Footer names no note when `group` is the active one.
     pub(super) fn empty_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        // A menu on the group names the note it no longer holds.
+        self.forget_note_menu_of(group, cx);
         let Some(state) = self.state_mut(group) else {
             return;
         };

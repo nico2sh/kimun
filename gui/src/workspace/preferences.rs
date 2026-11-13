@@ -2278,6 +2278,8 @@ impl Workspace {
                 return;
             };
             self.cancel_leader(cx);
+            // Preferences take the window: the note menu goes.
+            self.close_note_menu(window, cx);
             let original = (*theme::current(cx)).clone();
             let store = self.store.clone();
             let view = cx.new(|cx| PreferencesView::new(settings, original, store, window, cx));

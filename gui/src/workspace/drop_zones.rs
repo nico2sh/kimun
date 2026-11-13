@@ -376,8 +376,7 @@ impl Workspace {
         &self,
         title: SharedString,
         cx: &Context<Self>,
-    ) -> impl Fn(&GroupDrag, Point<Pixels>, &mut Window, &mut App) -> Entity<DragChip> + 'static
-    {
+    ) -> impl Fn(&GroupDrag, Point<Pixels>, &mut Window, &mut App) -> Entity<DragChip> + use<> {
         let this = cx.entity().downgrade();
         move |drag, _, _, cx| {
             let chip = cx.new(|_| DragChip::group(title.clone()));

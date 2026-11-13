@@ -304,12 +304,14 @@ fn a_layout_row_shows_its_chord(cx: &mut TestAppContext) {
 mod in_workspace {
     use std::time::Duration;
 
-    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::MouseButton;
+    use gpui_kit::test::{ClickOptions, TestWindowExt as _};
     use gpui_kit::{AppContext as _, Bounds, Focusable as _, Pixels, TestAppContext, point, px};
     use kimun_core::nfs::VaultPath;
     use kimun_notes::logic::layout_tree::{Axis, GroupId};
     use tokio::runtime::Runtime;
 
+    use super::super::drop_zones::GroupDrag;
     use super::super::file_dialogs::FileOpKind;
     use super::super::file_ops::{FileDialogView, FileOpRequest};
     use super::super::group_header::{GROUP_ID, group_element};
@@ -650,6 +652,10 @@ mod in_workspace {
         })
         .unwrap();
         cx.run_until_parked();
+        // Unsaved until the close writes it.
+        assert!(cx.read(|cx| editor.read(cx).editor.is_dirty()));
+        let before = rt.block_on(v.vault.get_note_text(&path("b.md"))).ok();
+        assert_eq!(before.as_deref(), Some("beta"));
         click(&s, menu_item_element_id(MenuItem::CloseGroup), cx);
         drive(&rt, cx, |cx| groups(&s, cx).len() == 1 && idle(&s, cx));
         assert_eq!(groups(&s, cx), vec![left]);
@@ -741,5 +747,134 @@ mod in_workspace {
         assert!(menu.left() >= px(0.) && menu.top() >= px(0.), "{menu:?}");
         assert!(menu.right() <= size.width, "{menu:?} in {size:?}");
         assert!(menu.bottom() <= size.height, "{menu:?} in {size:?}");
+    }
+
+    fn tab_count(s: &Started, cx: &TestAppContext) -> usize {
+        cx.read(|cx| s.workspace.read(cx).layout.region().tabs().len())
+    }
+
+    #[gpui_kit::test]
+    fn the_right_click_menu_opens_at_the_pointer(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        let offset = point(px(40.), px(30.));
+        let pointer = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                let origin = window.find("editor").bounds().origin;
+                window.click_with_options(
+                    "editor",
+                    ClickOptions::new()
+                        .with_offset(offset)
+                        .with_button(MouseButton::Right),
+                    cx,
+                );
+                origin + offset
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let menu = menu_bounds(&s, cx).expect("open");
+        // The menu's frame (its padding and border) holds it in from the
+        // point.
+        let dx = menu.left() - pointer.x;
+        let dy = menu.top() - pointer.y;
+        assert!(dx >= px(0.) && dx < px(8.), "{menu:?} at {pointer:?}");
+        assert!(dy >= px(0.) && dy < px(8.), "{menu:?} at {pointer:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_tab_switch_closes_the_menu(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx))
+        });
+        drive(&rt, cx, |cx| tab_count(&s, cx) == 2 && idle(&s, cx));
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        press(&s, "ctrl-tab", cx);
+        assert!(
+            !menu_open(&s, cx),
+            "the menu does not float over a hidden tab"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_open_into_the_menu_group_closes_the_menu(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        let group = active(&s, cx);
+        // The journal chord opens today's entry in the group.
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        press(&s, "ctrl-j", cx);
+        assert!(!menu_open(&s, cx), "a chord closes the menu");
+        drive(&rt, cx, |cx| {
+            note_in(&s, group, cx).is_some_and(|n| n != path("a.md")) && idle(&s, cx)
+        });
+        // An open that is no chord (FILES, a link) lands in the group.
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note(path("b.md"), cx))
+        });
+        drive(&rt, cx, |cx| {
+            note_in(&s, group, cx) == Some(path("b.md")) && idle(&s, cx)
+        });
+        assert!(!menu_open(&s, cx), "the menu names the note it showed");
+    }
+
+    #[gpui_kit::test]
+    fn preferences_leave_no_menu_behind(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        let group = active(&s, cx);
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        press(&s, "f4", cx);
+        assert!(cx.read(|cx| s.workspace.read(cx).preferences.is_some()));
+        assert!(!menu_open(&s, cx));
+        // Preferences close: the keyboard goes to the note, not to a menu.
+        let workspace = s.workspace.clone();
+        cx.update_window(s.handle, |_, window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.drop_preferences();
+                w.apply_focus(window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!menu_open(&s, cx));
+        assert!(editor_focused(&s, group, cx));
+    }
+
+    #[gpui_kit::test]
+    fn a_drag_starting_closes_the_menu(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s, [_, right]) = two_groups(cx, &rt);
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        // The ghost constructor of a group header's drag: GPUI calls it as
+        // the drag starts.
+        let workspace = s.workspace.clone();
+        cx.update_window(s.handle, |_, window, cx| {
+            let ghost = workspace.update(cx, |w, cx| w.group_drag_ghost("b".into(), cx));
+            let _chip = ghost(
+                &GroupDrag { group: right },
+                point(px(0.), px(0.)),
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!menu_open(&s, cx));
     }
 }
