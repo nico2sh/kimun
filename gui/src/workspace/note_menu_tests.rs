@@ -314,7 +314,9 @@ mod in_workspace {
     use super::super::drop_zones::GroupDrag;
     use super::super::file_dialogs::FileOpKind;
     use super::super::file_ops::{FileDialogView, FileOpRequest};
-    use super::super::group_header::{GROUP_ID, group_element};
+    use super::super::group_header::{
+        CORNER_DIM_OPACITY, CORNER_MENU_ID, GROUP_ID, GROUP_MENU_ID, corner_opacity, group_element,
+    };
     use super::super::modal::ModalKind;
     use super::super::note_menu::{
         MenuItem, NOTE_MENU_ID, NOTE_MENU_LAYER_ID, menu_item_element_id,
@@ -404,7 +406,7 @@ mod in_workspace {
         cx.run_until_parked();
     }
 
-    fn click(s: &Started, id: &'static str, cx: &mut TestAppContext) {
+    fn click(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
         cx.update_window(s.handle, |_, window, cx| {
             window.render_frame(cx);
             window.click(id, cx)
@@ -876,5 +878,79 @@ mod in_workspace {
         .unwrap();
         cx.run_until_parked();
         assert!(!menu_open(&s, cx));
+    }
+
+    fn has(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some_and(|e| e.visible())
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn a_group_header_has_a_menu_button_that_opens_the_menu_for_its_group(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s, [left, right]) = two_groups(cx, &rt);
+        assert!(has(&s, group_element(GROUP_MENU_ID, 0), cx));
+        assert!(has(&s, group_element(GROUP_MENU_ID, 1), cx));
+        // The left group is active; each button acts on its own group.
+        click(&s, group_element(GROUP_MENU_ID, 1), cx);
+        assert!(menu_open(&s, cx));
+        assert_eq!(menu_group(&s, cx), Some(right));
+        press(&s, "escape", cx);
+        click(&s, group_element(GROUP_MENU_ID, 0), cx);
+        assert_eq!(menu_group(&s, cx), Some(left));
+    }
+
+    #[gpui_kit::test]
+    fn a_lone_group_shows_a_corner_button_and_a_header_hides_it(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        assert!(has(&s, CORNER_MENU_ID, cx));
+        assert!(!has(&s, group_element(GROUP_MENU_ID, 0), cx));
+        cx.update(|cx| {
+            s.workspace.update(cx, |w, cx| {
+                w.open_note_in_split(path("b.md"), Axis::Horizontal, cx)
+            })
+        });
+        drive(&rt, cx, |cx| groups(&s, cx).len() == 2 && idle(&s, cx));
+        assert!(!has(&s, CORNER_MENU_ID, cx));
+        assert!(has(&s, group_element(GROUP_MENU_ID, 0), cx));
+        assert!(has(&s, group_element(GROUP_MENU_ID, 1), cx));
+    }
+
+    #[gpui_kit::test]
+    fn the_corner_button_opens_the_menu_for_the_lone_group(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        click(&s, CORNER_MENU_ID, cx);
+        assert!(menu_open(&s, cx));
+        assert_eq!(menu_group(&s, cx), Some(groups(&s, cx)[0]));
+    }
+
+    #[gpui_kit::test]
+    fn the_button_click_does_not_activate_a_drag_or_close(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s, [left, right]) = two_groups(cx, &rt);
+        assert_eq!(active(&s, cx), left);
+        click(&s, group_element(GROUP_MENU_ID, 1), cx);
+        assert!(menu_open(&s, cx));
+        assert_eq!(menu_group(&s, cx), Some(right), "the button's own group");
+        assert_eq!(active(&s, cx), right, "opening made the group active");
+        assert_eq!(groups(&s, cx).len(), 2, "nothing closed");
+        assert!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx).is_none()));
+    }
+
+    #[test]
+    fn the_corner_button_is_dim_until_the_pointer_is_near() {
+        assert!(corner_opacity(false) > 0.0 && corner_opacity(false) < corner_opacity(true));
+        assert_eq!(corner_opacity(true), 1.0);
+        assert_eq!(corner_opacity(false), CORNER_DIM_OPACITY);
     }
 }

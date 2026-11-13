@@ -3255,12 +3255,17 @@ impl Workspace {
         // The which-key docks over the bottom of the document, right above
         // the Footer, so showing it never reflows the note.
         let document = div()
+            .id("editor-document")
+            .group(group_header::LONE_GROUP_HOVER)
             .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .child(document)
+            // A lone group (no header) has its note-menu button floating
+            // at the top-right corner of the document.
+            .children((!several).then(|| self.render_corner_menu_button(active, cx)))
             // A lone group's bounds are the document's; several groups
             // record their own.
             .children((!several).then(|| note_menu::group_bounds_probe(&self.group_bounds, active)))
