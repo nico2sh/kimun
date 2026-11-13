@@ -13,6 +13,7 @@ use kimun_notes::logic::editor_region::{GroupShape, TabId};
 use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::{Axis, Focus, GroupId, Leaf, UnitRect};
+use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::nav::DrawerView;
 use tokio::runtime::Runtime;
 
@@ -22,7 +23,8 @@ use super::group_header::{
     group_title,
 };
 use super::modal::ModalKind;
-use super::start_tests::{Started, drive, open_started, runtime, vault_start};
+use super::note::NoteHost;
+use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::tab_strip::{TAB_CLOSING, TAB_STRIP_ID};
 use super::tree_view::group_divider_id;
 use crate::shell_layout::EDITOR_MIN_REMS;
@@ -1017,4 +1019,155 @@ fn the_search_open_flush_lands_on_the_group_it_flushed(cx: &mut TestAppContext) 
     assert_eq!(tick_of(a, cx), Some(tick), "A's tick is back");
     assert!(!blocked(b, cx));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha edited"));
+}
+
+// ── Autosave across groups ─────────────────────────────────────────────
+
+const SIX: &[(&str, &str)] = &[
+    ("a.md", "alpha"),
+    ("b.md", "beta"),
+    ("c.md", "gamma"),
+    ("d.md", "delta"),
+    ("e.md", "epsilon"),
+    ("f.md", "zeta"),
+];
+
+/// Six groups side by side, each holding one of [`SIX`], all idle.
+fn six_groups(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Win, Vec<GroupId>) {
+    let v = rt.block_on(test_vault(SIX, &[]));
+    let started = Win(open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+    ));
+    drive(rt, cx, |cx| {
+        started.text(cx) == "alpha" && started.files_listed(cx)
+    });
+    for (note, _) in &SIX[1..] {
+        started.split_with(note, cx);
+        drive(rt, cx, |cx| {
+            started.note_in(started.active(cx), cx) == Some(path(note)) && started.idle(cx)
+        });
+    }
+    let groups = started.groups(cx);
+    assert_eq!(groups.len(), SIX.len());
+    (v, started, groups)
+}
+
+impl Win {
+    fn host_count(&self, group: GroupId, cx: &TestAppContext, f: fn(&NoteHost) -> usize) -> usize {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .map_or(0, f)
+        })
+    }
+
+    /// What `group`'s running autosave tick sends when it fires; `None`
+    /// while it runs no tick.
+    fn tick_message(&self, group: GroupId, cx: &TestAppContext) -> Option<AppMessage> {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .filter(|h| h.session.autosave_interval().is_some())
+                .map(|h| AppMessage::AutosaveOf(h.session.autosave_tick()))
+        })
+    }
+
+    /// Fire `group`'s tick, as its timer does.
+    fn fire_tick(&self, group: GroupId, cx: &mut TestAppContext) {
+        let message = self.tick_message(group, cx).expect("the group's tick runs");
+        send(self, message, cx);
+    }
+
+    fn saving(&self, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            let w = self.workspace.read(cx);
+            w.groups.values().any(|s| {
+                s.notes
+                    .as_ref()
+                    .is_some_and(|h| h.session.is_autosave_in_flight())
+            })
+        })
+    }
+}
+
+/// Six groups each holding an unsaved note: one autosave interval (every
+/// group's tick fires once) writes every one of them, each once, and each
+/// tick looks at its own group only (not at all six: no N x N passes).
+#[gpui_kit::test]
+fn one_interval_writes_each_dirty_group_once(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started, groups) = six_groups(cx, &rt);
+    for (group, (_, text)) in groups.iter().zip(SIX) {
+        started.set_text_in(*group, &format!("{text} edited"), cx);
+    }
+    let checks_before: usize = groups
+        .iter()
+        .map(|g| started.host_count(*g, cx, |h| h.tick_checks))
+        .sum();
+    for group in &groups {
+        started.fire_tick(*group, cx);
+    }
+    drive(&rt, cx, |cx| {
+        !started.saving(cx)
+            && groups
+                .iter()
+                .all(|g| !cx.read(|cx| started.workspace.read(cx).editor_dirty_in(*g, cx)))
+    });
+    for (note, text) in SIX {
+        assert_eq!(
+            disk(&rt, &v, note).as_deref(),
+            Some(format!("{text} edited").as_str()),
+            "{note} written within the interval"
+        );
+    }
+    for group in &groups {
+        assert_eq!(
+            started.host_count(*group, cx, |h| h.tick_writes),
+            1,
+            "{group:?}"
+        );
+        assert!(!cx.read(|cx| started.workspace.read(cx).editor_dirty_in(*group, cx)));
+    }
+    let checks: usize = groups
+        .iter()
+        .map(|g| started.host_count(*g, cx, |h| h.tick_checks))
+        .sum::<usize>()
+        - checks_before;
+    assert_eq!(checks, groups.len(), "one look per tick, at its own group");
+}
+
+/// A note typed into all the time is written once per interval, not once
+/// per group's tick: the other five groups' ticks leave it alone.
+#[gpui_kit::test]
+fn a_busy_group_is_written_once_per_interval(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started, groups) = six_groups(cx, &rt);
+    let busy = groups[0];
+    for (i, group) in groups.iter().enumerate() {
+        started.set_text_in(busy, &format!("alpha {i}"), cx);
+        started.fire_tick(*group, cx);
+        drive(&rt, cx, |cx| !started.saving(cx));
+    }
+    assert_eq!(started.host_count(busy, cx, |h| h.tick_writes), 1);
+    // Its own tick (the first) wrote what it held then; the rest waits for
+    // its next tick, within the next interval.
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha 0"));
+    started.fire_tick(busy, cx);
+    drive(&rt, cx, |cx| !started.saving(cx));
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha 5"));
+    for group in &groups[1..] {
+        assert_eq!(
+            started.host_count(*group, cx, |h| h.tick_writes),
+            0,
+            "{group:?}"
+        );
+    }
 }

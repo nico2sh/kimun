@@ -3,6 +3,7 @@
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -13,6 +14,19 @@ use kimun_core::{NoteVault, nfs::VaultPath};
 use crate::logic::nav::{DrawerView, HeadingTarget};
 use crate::logic::properties::PropertyWriteError;
 use crate::logic::sort::SortState;
+
+/// Names the autosave tick of one note session ([`AppMessage::AutosaveOf`]),
+/// unique for the life of the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TickId(u64);
+
+impl TickId {
+    /// An id no other tick has.
+    pub fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        TickId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// Which panel a sort selection applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +66,14 @@ pub enum AppMessage {
     /// date, offline, or check disabled). Shown as a passive hint next to the
     /// RAG status in the editor footer.
     ServerUpdate(Option<crate::server_client::sync::ServerUpdate>),
+    /// Write the open note(s) if dirty: every note the receiver holds.
     Autosave,
+    /// One note session's periodic autosave tick ([`AutosaveTimer`]): the
+    /// receiver writes that session's note only. A receiver with one
+    /// session (the TUI) treats it as [`AppMessage::Autosave`].
+    ///
+    /// [`AutosaveTimer`]: crate::logic::session::AutosaveTimer
+    AutosaveOf(TickId),
     /// A core write (the properties dialog) changed this note on disk: reload
     /// the editor buffer from disk if it is the open note.
     NoteReloadFromDisk(VaultPath),

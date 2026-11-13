@@ -1185,6 +1185,7 @@ impl Workspace {
             message @ (AppMessage::BacklinkCountLoaded { .. }
             | AppMessage::PropertyCountLoaded { .. }) => self.note_count_loaded(message),
             AppMessage::Autosave => self.autosave(cx),
+            AppMessage::AutosaveOf(tick) => self.autosave_tick(tick, cx),
             AppMessage::AutosaveCompleted {
                 path,
                 saved_revision,

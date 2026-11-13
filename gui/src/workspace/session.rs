@@ -3,18 +3,20 @@
 //! and group, recorded as the window changes and restored when the
 //! workspace opens.
 //!
-//! **Saving.** Every change the window is told of (a notify) is checked
-//! against the record the file holds (last written, restored, or a
-//! launch's baseline): a note opened or replaced in a group, a tab made,
-//! closed, switched or reordered, a group split, closed, moved or swapped, a
-//! divider dragged, another active group. A change waits
-//! [`SESSION_DEBOUNCE`] for the next one (a divider drag is many), then the
-//! newest record goes to a background writer that keeps only the newest
-//! ([`SessionWriter`], the layout writer's pattern). A quit or a window close
-//! writes it at once and waits for the write, when it differs from what the
-//! file holds. A group's note is the one it holds or is opening
-//! ([`super::note::NoteHost::target`]); a group showing an attachment holds
-//! none. Without a workspace nothing is written.
+//! **Saving.** Every change the window is told of (a notify) is checked,
+//! without building the record, against what the record was built from at
+//! the last change (the region and each group's note, [`Seen`]): a note
+//! opened or replaced in a group, a tab made, closed, switched or
+//! reordered, a group split, closed, moved or swapped, a divider dragged,
+//! another active group. A hover, a flash or a redraw is none. A change
+//! waits [`SESSION_DEBOUNCE`] for the next one (a divider drag is many),
+//! then the record is built and, when it differs from the one the file
+//! holds (last written, restored, or a launch's baseline), goes to a
+//! background writer that keeps only the newest ([`SessionWriter`]). A
+//! quit or a window close writes it at once and waits for the write, when
+//! it differs from what the file holds. A group's note is the one it holds
+//! or is opening ([`super::note::NoteHost::target`]); a group showing an
+//! attachment holds none. Without a workspace nothing is written.
 //!
 //! **Restoring.** A start with no note on the command line, or with one
 //! that was refused, restores: once the vault indexed, a record that still
@@ -50,63 +52,37 @@
 //! workspace, resets the region to one empty group, and restores the new
 //! one's.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use gpui_kit::{Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor_region::EditorRegion;
-use kimun_notes::logic::layout_tree::Axis;
+use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::startup::RestoreTarget;
 use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
 
 use super::Workspace;
 use super::group::GroupState;
+use super::layout_writer::LatestWriter;
 use super::note::NoteHost;
 use crate::startup::{self, Landing, SessionRestore};
 
 /// How long a change waits for the next before the record is written.
 pub(crate) const SESSION_DEBOUNCE: Duration = Duration::from_millis(500);
 
-#[derive(Default)]
-struct State {
-    /// The newest record not written yet, and the file it goes to.
-    pending: Option<(SessionFile, SessionRecord)>,
-    /// A write thread is running (and will see `pending`).
-    busy: bool,
-}
-
-#[derive(Default)]
-struct Shared {
-    state: Mutex<State>,
-    idle: Condvar,
-}
-
-impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
 /// Writes session records off the UI thread, the newest only: records
 /// that pile up while one is written collapse into one write of the
-/// newest. In tests the write is inline.
+/// newest ([`LatestWriter`], shared with the layout's writes). In tests the
+/// write is inline.
 #[derive(Clone)]
-pub(crate) struct SessionWriter {
-    shared: Arc<Shared>,
-    inline: bool,
-}
-
-/// Tests write inline, so a test reads the file right after the write.
-const WRITE_INLINE: bool = cfg!(test);
+pub(crate) struct SessionWriter(LatestWriter<(SessionFile, SessionRecord)>);
 
 impl Default for SessionWriter {
     fn default() -> Self {
-        Self {
-            shared: Arc::default(),
-            inline: WRITE_INLINE,
-        }
+        Self(LatestWriter::new(
+            |(file, record): (SessionFile, SessionRecord)| write(&file, &record),
+        ))
     }
 }
 
@@ -114,53 +90,17 @@ impl SessionWriter {
     /// A writer that writes in the background even under test.
     #[cfg(test)]
     fn threaded() -> Self {
-        Self {
-            inline: false,
-            ..Self::default()
-        }
+        Self(Self::default().0.threaded())
     }
 
     /// Write `record` to `file`.
     pub(crate) fn submit(&self, file: SessionFile, record: SessionRecord) {
-        if self.inline {
-            write(&file, &record);
-            return;
-        }
-        let mut state = self.shared.lock();
-        state.pending = Some((file, record));
-        if state.busy {
-            return;
-        }
-        state.busy = true;
-        let shared = self.shared.clone();
-        std::thread::spawn(move || {
-            loop {
-                let (file, record) = {
-                    let mut state = shared.lock();
-                    match state.pending.take() {
-                        Some(job) => job,
-                        None => {
-                            state.busy = false;
-                            shared.idle.notify_all();
-                            return;
-                        }
-                    }
-                };
-                write(&file, &record);
-            }
-        });
+        self.0.submit((file, record));
     }
 
     /// Wait until every record submitted so far is written.
     pub(crate) fn flush(&self) {
-        let mut state = self.shared.lock();
-        while state.busy {
-            state = self
-                .shared
-                .idle
-                .wait(state)
-                .unwrap_or_else(|e| e.into_inner());
-        }
+        self.0.flush();
     }
 }
 
@@ -218,6 +158,21 @@ pub(crate) enum Queued {
     CloseGroup,
 }
 
+/// What a record is built from, kept to tell a notify that changed the
+/// record from one that did not without building it: the region (its tabs,
+/// their groups, splits and weights, the shown tab and each tab's active
+/// group) and the note each group is on ([`NoteHost::target`]). The record
+/// is a function of these two, so an equal `Seen` is an equal record.
+struct Seen {
+    region: EditorRegion,
+    targets: HashMap<GroupId, Option<VaultPath>>,
+}
+
+/// The note `state`'s group is on, as the record keeps it.
+fn target_of(state: &GroupState) -> Option<&VaultPath> {
+    state.notes.as_ref().and_then(NoteHost::target_ref)
+}
+
 /// The window's side of the session file.
 #[derive(Default)]
 pub(crate) struct SessionHost {
@@ -235,9 +190,10 @@ pub(crate) struct SessionHost {
     /// A command-line launch: until the first structural change, one tab
     /// of one group is no change, whatever note it holds.
     structure_only: bool,
-    /// The record last seen at a notify: a notify that leaves it as it is
-    /// does not restart the debounce.
-    seen: Option<SessionRecord>,
+    /// What the record was built from at the last notify that changed it
+    /// ([`Seen`]): a notify that leaves it as it is (a hover, a flash, a
+    /// redraw) builds nothing and does not restart the debounce.
+    seen: Option<Seen>,
     /// A restore is on its way: nothing is written, and an open or a
     /// structural command asked for meanwhile waits for it (`queued`).
     restoring: bool,
@@ -252,6 +208,9 @@ pub(crate) struct SessionHost {
     timer: Option<Task<()>>,
     /// The window's notifies, each a possible change.
     _watch: Option<Subscription>,
+    /// Test-only: how many records were built ([`Workspace::session_record`]).
+    #[cfg(test)]
+    pub(super) builds: std::cell::Cell<usize>,
 }
 
 /// Whether `record` is one tab of one group, whatever note it holds: the
@@ -289,6 +248,8 @@ impl Workspace {
 
     /// What the window shows now, as a record.
     pub(crate) fn session_record(&self) -> SessionRecord {
+        #[cfg(test)]
+        self.session.builds.set(self.session.builds.get() + 1);
         self.layout.region().to_record(|group| {
             self.state(group)
                 .and_then(|s| s.notes.as_ref())
@@ -411,6 +372,32 @@ impl Workspace {
         }));
     }
 
+    /// What the record would be built from now.
+    fn seen_now(&self) -> Seen {
+        Seen {
+            region: self.layout.region().clone(),
+            targets: self
+                .groups
+                .iter()
+                .map(|(group, state)| (*group, target_of(state).cloned()))
+                .collect(),
+        }
+    }
+
+    /// Whether what the record is built from is as it was at the last
+    /// notify that changed it: a compare, no record built, nothing cloned.
+    fn seen_unchanged(&self) -> bool {
+        self.session.seen.as_ref().is_some_and(|seen| {
+            seen.region == *self.layout.region()
+                && seen.targets.len() == self.groups.len()
+                && self.groups.iter().all(|(group, state)| {
+                    seen.targets
+                        .get(group)
+                        .is_some_and(|target| target.as_ref() == target_of(state))
+                })
+        })
+    }
+
     /// Whether `record` is what the file holds already.
     fn session_unchanged(&self, record: &SessionRecord) -> bool {
         self.session.last.as_ref() == Some(record)
@@ -418,23 +405,16 @@ impl Workspace {
             || (self.session.structure_only && is_one_group(record))
     }
 
-    /// The window changed (or was only redrawn): when the record differs
-    /// from what the file holds, write it after the debounce.
+    /// The window changed (or was only redrawn): when what the record is
+    /// built from changed ([`Seen`]), (re)start the debounce. The record is
+    /// built once, when it is over ([`Self::write_session`]), and written
+    /// only when it differs from what the file holds: a change undone
+    /// meanwhile writes nothing.
     fn session_changed(&mut self, cx: &mut Context<Self>) {
-        if self.session.file.is_none() || self.session.restoring {
+        if self.session.file.is_none() || self.session.restoring || self.seen_unchanged() {
             return;
         }
-        let record = self.session_record();
-        if self.session.seen.as_ref() == Some(&record) {
-            return;
-        }
-        let unchanged = self.session_unchanged(&record);
-        self.session.seen = Some(record);
-        if unchanged {
-            // Back to what the file holds: nothing to write.
-            self.session.timer = None;
-            return;
-        }
+        self.session.seen = Some(self.seen_now());
         self.session.timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SESSION_DEBOUNCE).await;
             this.update(cx, |workspace, _| workspace.write_session())
@@ -558,9 +538,8 @@ impl Workspace {
             // what the window holds now is no change; only the user's own
             // is (the open asked for meanwhile, for one).
             self.session.restoring = false;
-            let now = self.session_record();
-            self.session.seen = Some(now.clone());
-            self.session.last = Some(now);
+            self.session.seen = Some(self.seen_now());
+            self.session.last = Some(self.session_record());
             self.session.launch = None;
             self.run_queued(cx);
             return;
@@ -585,9 +564,8 @@ impl Workspace {
         // What the restore opened is what the file says: nothing to write
         // until something changes. The open asked for meanwhile is such a
         // change.
-        let restored = self.session_record();
-        self.session.seen = Some(restored.clone());
-        self.session.last = Some(restored);
+        self.session.seen = Some(self.seen_now());
+        self.session.last = Some(self.session_record());
         self.run_queued(cx);
     }
 
