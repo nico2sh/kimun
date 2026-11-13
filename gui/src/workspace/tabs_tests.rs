@@ -1225,3 +1225,42 @@ fn attachment_rename_follows_the_group_that_shows_it(cx: &mut TestAppContext) {
     assert_eq!(started.active(cx), second);
     assert_eq!(started.text(cx), "beta");
 }
+
+/// A folder delete empties every group whose note is at or below it, in
+/// any tab, and leaves alone a group whose note only shares the folder's
+/// name as a prefix; a note delete empties the group holding that note.
+#[gpui_kit::test]
+fn note_deleted_empties_groups_at_or_below_the_deleted_path(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let notes = [
+        ("d/x.md", "ex"),
+        ("d/sub/y.md", "why"),
+        ("dd/k.md", "kay"),
+        ("top.md", "top"),
+    ];
+    let (v, started) = started_with(cx, &rt, &notes, "d/x.md");
+    let x = started.active(cx);
+    started.split("d/sub/y.md", cx);
+    let y = started.active(cx);
+    started.new_tab("dd/k.md", cx);
+    let k = started.active(cx);
+    started.split("top.md", cx);
+    let top = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("d")), cx);
+
+    assert!(!exists(&rt, &v, "d"));
+    assert_eq!(started.note_in(x, cx), None);
+    assert_eq!(started.note_in(y, cx), None);
+    assert_eq!(started.note_in(k, cx), Some(path("dd/k.md")));
+    assert_eq!(started.note_in(top, cx), Some(path("top.md")));
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("top.md")), cx);
+
+    assert!(!exists(&rt, &v, "top.md"));
+    assert_eq!(started.note_in(top, cx), None);
+    assert_eq!(started.note_in(k, cx), Some(path("dd/k.md")));
+    started.assert_states_in_step(cx);
+}

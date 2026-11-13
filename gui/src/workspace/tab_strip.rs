@@ -46,6 +46,7 @@ use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
+use super::session::Queued;
 use crate::{keymap, theme};
 
 /// The strip's element id.
@@ -174,9 +175,14 @@ impl Workspace {
     /// `NewTab`: a tab after the last one holding one empty group, shown,
     /// its editor with the keyboard (the empty group offers the finder). A
     /// zoom ends.
-    /// Nothing without a vault, or while the window closes.
+    /// Nothing without a vault, or while the window closes. While a stored
+    /// record restores, it waits for it ([`super::session`]).
     pub(crate) fn new_tab(&mut self, cx: &mut Context<Self>) {
         if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+            return;
+        }
+        // A stored record still restoring would replace the tab: it waits.
+        if self.hold_while_restoring(Queued::NewTab) {
             return;
         }
         let Some(state) = self.new_group_state(cx) else {
@@ -191,8 +197,13 @@ impl Workspace {
     }
 
     /// `NextTab` / `PrevTab`: show the next (previous) tab, wrapping; its
-    /// active group takes the keyboard. Nothing with one tab.
+    /// active group takes the keyboard. Nothing with one tab. While a
+    /// stored record restores, it waits for it ([`super::session`]).
     pub(crate) fn step_tab(&mut self, forward: bool, cx: &mut Context<Self>) {
+        // Steps among the restored tabs (and those asked for meanwhile).
+        if self.hold_while_restoring(Queued::StepTab { forward }) {
+            return;
+        }
         if self.layout.region().tabs().len() < 2 {
             return;
         }
@@ -257,7 +268,14 @@ impl Workspace {
     /// it (or the first) becomes active. The last group of a tab closes the
     /// tab ([`Self::close_tab`]: the last tab keeps one empty group). The
     /// same refusals as a tab's close; ignored while another close runs.
+    /// While a stored record restores, it waits for it
+    /// ([`super::session`]).
     pub(crate) fn close_editor_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        // While a stored record restores, the one group there is is the
+        // active one: the close waits, and closes the active group of then.
+        if self.hold_while_restoring(Queued::CloseGroup) {
+            return;
+        }
         if self.groups_closing.is_some() {
             return;
         }
@@ -329,8 +347,9 @@ impl Workspace {
                 None => {
                     // Its tick is back already; the groups begun before it
                     // get theirs and their input back, their flushes
-                    // dropped unrun.
-                    for (begun, _) in flushes {
+                    // given back unrun.
+                    for (begun, flush) in flushes {
+                        self.give_back_flush_in(begun, flush);
                         self.restart_tick_unless_read_only_in(begun);
                         self.block_input_in(begun, false, cx);
                     }

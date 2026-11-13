@@ -668,6 +668,18 @@ impl NoteSession {
         })
     }
 
+    /// Let go of a flush that will not run: the background save it took
+    /// over goes back to the slot and finishes as it would have (dropping
+    /// the request would abort it). Background saves and flushes are
+    /// allowed again once it is given back.
+    pub fn give_back_flush(&mut self, flush: FlushRequest) {
+        let FlushRequest { in_flight, .. } = flush;
+        // Nothing else could start a save while the flush was out.
+        if !self.autosave_task.is_in_flight() {
+            self.autosave_task = in_flight;
+        }
+    }
+
     /// Apply a flush: a write of the open note marks the buffer saved
     /// (synchronously: clean iff the text written is still its text).
     pub fn apply_flush<B: NoteBuffer>(

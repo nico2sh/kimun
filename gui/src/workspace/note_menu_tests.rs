@@ -953,4 +953,55 @@ mod in_workspace {
         assert_eq!(corner_opacity(true), 1.0);
         assert_eq!(corner_opacity(false), CORNER_DIM_OPACITY);
     }
+
+    /// The pick runs a moment after the click (deferred, so a dialog it
+    /// opens gets the keyboard back). A note that landed in the group
+    /// meanwhile is not the note the menu named: the pick does nothing,
+    /// so no dialog acts on the note the group no longer shows.
+    #[gpui_kit::test]
+    fn a_menu_pick_refuses_when_the_group_now_shows_another_note(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = start(cx, &rt);
+        let group = active(&s, cx);
+        press(&s, "f2", cx);
+        assert!(menu_open(&s, cx));
+        let target = cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .note_menu
+                .as_ref()
+                .and_then(|m| m.view.read(cx).target().cloned())
+        });
+        assert_eq!(target, Some(path("a.md")));
+        // b.md lands in the group before the pick runs.
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note(path("b.md"), cx))
+        });
+        drive(&rt, cx, |cx| {
+            note_in(&s, group, cx) == Some(path("b.md")) && idle(&s, cx)
+        });
+        let workspace = s.workspace.clone();
+        cx.update_window(s.handle, |_, window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.run_note_menu_pick(
+                    group,
+                    target,
+                    MenuItem::Note(FileOpKind::Delete),
+                    window,
+                    cx,
+                )
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let w = s.workspace.read(cx);
+            assert!(w.file_dialog.is_none(), "no dialog for a.md");
+            assert!(w.modal.is_none(), "no modal");
+        });
+        assert!(!menu_open(&s, cx));
+        assert_eq!(note_in(&s, group, cx), Some(path("b.md")));
+    }
 }

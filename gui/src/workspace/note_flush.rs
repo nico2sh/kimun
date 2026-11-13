@@ -95,6 +95,17 @@ impl Workspace {
         }
     }
 
+    /// Let go of a flush begun in `group` ([`Self::begin_note_flush_in`])
+    /// that will not run (a later group refused its own): the background
+    /// save it took over goes back to the group's session and finishes, as
+    /// dropping the request would abort it. The caller gives the tick and
+    /// the keyboard back.
+    pub(super) fn give_back_flush_in(&mut self, group: GroupId, flush: FlushRequest) {
+        if let Some(host) = self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()) {
+            host.session.give_back_flush(flush);
+        }
+    }
+
     /// What is still unwritten in `group` after its flush landed: the
     /// flush's own problem, else text typed since (nothing types while it
     /// runs, but a buffer still dirty must not be run over).

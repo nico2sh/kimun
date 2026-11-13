@@ -351,7 +351,7 @@ fn closing_with_unsaved_edits_saves_them_first(cx: &mut TestAppContext) {
     assert!(!started.close(cx), "the close waits for the save");
     assert_eq!(started.flash(cx).as_deref(), Some("Saving a.md…"));
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).closing),
+        cx.read(|cx| started.workspace.read(cx).closing.clone()),
         Closing::Flushing
     );
     drive(&rt, cx, |cx| started.is_closed(cx));
@@ -490,7 +490,7 @@ impl Drop for Unwritable {
 
 impl Started {
     fn closing(&self, cx: &TestAppContext) -> Closing {
-        cx.read(|cx| self.workspace.read(cx).closing)
+        cx.read(|cx| self.workspace.read(cx).closing.clone())
     }
 
     fn flash_is_error(&self, cx: &TestAppContext) -> bool {
@@ -1040,4 +1040,89 @@ fn a_flush_result_applies_to_the_group_that_started_it(cx: &mut TestAppContext) 
         let own = w.state(first).expect("the first group has a state");
         assert_eq!(own.editor.read(cx).editor.get_text(), "beta");
     });
+}
+
+/// The "close again discards" guard compares each group's text with the
+/// warning's, not one sum of revisions: a group taken away after the
+/// warning (its tab's close was already writing it) lowers a sum that new
+/// edits elsewhere can raise back to the same number. Those new edits are
+/// not discarded: the close warns again.
+#[gpui_kit::test]
+fn the_discard_guard_is_not_fooled_by_revisions_that_sum_equal(cx: &mut TestAppContext) {
+    use super::file_ops::FileOpRequest;
+    use kimun_notes::logic::layout_tree::GroupId;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    let first = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    // The first group's note is deleted: an empty group, whose text can
+    // never be written.
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.request_file_op(FileOpRequest::Delete(path("a.md")), window, cx)
+        })
+    })
+    .unwrap();
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).file_task.is_none())
+    });
+    // A second tab on b.md, shown.
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx))
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let second = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    let editor_of = |group: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .state(group)
+                .unwrap()
+                .editor
+                .clone()
+        })
+    };
+    let revision = |group: GroupId, cx: &TestAppContext| {
+        let editor = editor_of(group, cx);
+        cx.read(|cx| editor.read(cx).editor.content_revision().get())
+    };
+    let type_in = |group: GroupId, text: &str, cx: &mut TestAppContext| {
+        let editor = editor_of(group, cx);
+        cx.update(|cx| {
+            editor.update(cx, |view, cx| {
+                view.editor.insert_at_cursor(text);
+                cx.notify();
+            })
+        });
+    };
+    type_in(first, "scratch", cx);
+
+    // The second tab's close starts writing it (its flush waits on the
+    // runtime); the window's close then warns about the first group.
+    started.press("ctrl-w", cx);
+    assert!(cx.read(|cx| started.workspace.read(cx).groups_closing.is_some()));
+    assert!(!started.close(cx));
+    assert!(matches!(started.closing(cx), Closing::Discard(_)));
+    let warned = revision(first, cx) + revision(second, cx);
+
+    // The tab goes; new text in the first group brings the sum back.
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).layout.region().tabs().len()) == 1
+    });
+    assert!(matches!(started.closing(cx), Closing::Discard(_)));
+    while revision(first, cx) < warned {
+        type_in(first, "x", cx);
+    }
+    assert_eq!(revision(first, cx), warned, "the sums are equal");
+
+    assert!(
+        !started.close(cx),
+        "new edits since the warning: warn again"
+    );
+    assert!(!started.is_closed(cx));
 }

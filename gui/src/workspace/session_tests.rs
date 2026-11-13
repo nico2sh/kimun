@@ -810,6 +810,51 @@ fn a_new_tab_during_the_restore_waits_for_it(cx: &mut TestAppContext) {
     );
 }
 
+/// A new tab, a split, a group close and a tab step asked for during the
+/// restore wait for it, as an open does, and then run in the order they
+/// were asked for on the restored region: none is thrown away by it.
+#[gpui_kit::test]
+fn structural_commands_wait_for_a_pending_restore(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    assert!(cx.read(|cx| win.workspace.read(cx).session_restoring()));
+    win.with(cx, |w, cx| {
+        w.new_tab(cx);
+        w.split_active_group(Axis::Horizontal, cx);
+        let active = w.layout.active_group();
+        w.close_editor_group(active, cx);
+        w.step_tab(true, cx);
+    });
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![vec![None]],
+        "nothing changed yet"
+    );
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx)
+            && !cx.read(|cx| win.workspace.read(cx).session_restoring())
+            && win.all_idle(cx)
+    });
+    win.assert_states_in_step(cx);
+    // The record, then a new tab (split, its new group closed), then the
+    // step from it wraps to the first tab.
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("c.md".to_string()), None],
+            vec![None],
+        ]
+    );
+    let (shown, first) = cx.read(|cx| {
+        let region = win.workspace.read(cx).layout.region();
+        (region.shown(), region.tabs()[0])
+    });
+    assert_eq!(shown, first, "the step ran last");
+}
+
 /// A restore that cannot be applied (a close was running) leaves the stored
 /// record as it is: what the window holds instead is no change.
 #[gpui_kit::test]

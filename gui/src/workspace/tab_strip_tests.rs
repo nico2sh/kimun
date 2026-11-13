@@ -946,12 +946,111 @@ fn a_close_refused_by_a_later_group_says_so_and_restarts_every_tick(cx: &mut Tes
         Some("Another save is still running. The window stays open.")
     );
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).closing),
+        cx.read(|cx| started.workspace.read(cx).closing.clone()),
         super::note::Closing::Open
     );
     assert_eq!(started.tick_in(a, cx), Some(tick), "a's tick is back");
     assert_eq!(started.tick_in(b, cx), Some(tick), "b's tick is back");
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha"));
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+    drop(outstanding);
+}
+
+impl Win {
+    /// Start `group`'s background save now, as the tick does. It waits on
+    /// the current-thread runtime, so it is still on its way afterwards.
+    fn start_background_save(&self, group: GroupId, cx: &mut TestAppContext) {
+        let started = cx.update(|cx| {
+            self.workspace.update(cx, |w, cx| {
+                let tx = w.tx.clone().unwrap();
+                let state = w.groups.get_mut(&group).unwrap();
+                let host = state.notes.as_mut().unwrap();
+                host.session
+                    .spawn_autosave(Some(&state.editor.read(cx).editor), &tx)
+            })
+        });
+        assert!(started, "a save starts");
+    }
+
+    fn save_in_flight(&self, group: GroupId, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .is_some_and(|h| h.session.is_autosave_in_flight())
+        })
+    }
+}
+
+/// A flush begun in one group and then dropped unrun, because a later
+/// group refused its own (another flush of that note is still out), gives
+/// the background save it took over back to its group: the save still
+/// lands. Before, dropping the request aborted it. Checked for a tab close,
+/// a file operation and the window's close.
+#[gpui_kit::test]
+fn a_dropped_flush_request_does_not_abort_the_groups_autosave(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    started.new_tab_with("b.md", cx);
+    let b = started.active(cx);
+    started.split_with("c.md", cx);
+    let c = started.active(cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    // Another flush of c.md is out: every close or operation that reaches
+    // c after b refuses, with b's flush begun.
+    let outstanding = cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.begin_note_flush_in(c, cx))
+    });
+    assert!(outstanding.is_some());
+
+    // A tab close: b then c.
+    started.set_text_in(b, "beta 1", cx);
+    started.start_background_save(b, cx);
+    started.press("ctrl-w", cx);
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Another save is still running. The tab stays open.")
+    );
+    assert!(
+        started.save_in_flight(b, cx),
+        "b's background save is still on its way"
+    );
+    drive(&rt, cx, |cx| !started.save_in_flight(b, cx));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta 1"));
+
+    // A file operation over every group, b first (the active group):
+    // the root folder holds every note.
+    cx.update(|cx| started.workspace.update(cx, |w, cx| w.focus_group(b, cx)));
+    started.set_text_in(b, "beta 2", cx);
+    started.start_background_save(b, cx);
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.request_file_op(FileOpRequest::Delete(VaultPath::root()), window, cx)
+        })
+    })
+    .unwrap();
+    assert!(
+        started.save_in_flight(b, cx),
+        "b's background save is still on its way"
+    );
+    drive(&rt, cx, |cx| !started.save_in_flight(b, cx));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta 2"));
+
+    // The window's close: every group that saves, the active one first.
+    started.set_text_in(b, "beta 3", cx);
+    started.start_background_save(b, cx);
+    let closed = gpui_kit::VisualTestContext::from_window(started.handle, cx).simulate_close();
+    assert!(!closed, "the window stays");
+    assert!(
+        started.save_in_flight(b, cx),
+        "b's background save is still on its way"
+    );
+    drive(&rt, cx, |cx| !started.save_in_flight(b, cx));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta 3"));
     drop(outstanding);
 }

@@ -764,3 +764,20 @@ fn the_palette_and_the_leader_open_the_same_dialogs(cx: &mut TestAppContext) {
     settle(&started, cx);
     assert!(started.editor_focused(cx));
 }
+
+/// What a rename, move or delete of a path touches: the path itself and
+/// what lies below it, compared by components (case and a leading root do
+/// not matter), never a sibling that only shares its name as a prefix.
+#[test]
+fn path_at_or_below_is_the_path_itself_or_below_it() {
+    use super::file_ops::path_at_or_below;
+    let p = VaultPath::new;
+    assert!(path_at_or_below(&p("d/x.md"), &p("d/x.md")));
+    assert!(path_at_or_below(&p("D/X.md"), &p("/d/x.md")));
+    assert!(path_at_or_below(&p("d/x.md"), &p("d")));
+    assert!(path_at_or_below(&p("d/sub/y.md"), &p("/d")));
+    assert!(path_at_or_below(&p("d/x.md"), &VaultPath::root()));
+    assert!(!path_at_or_below(&p("dd/k.md"), &p("d")));
+    assert!(!path_at_or_below(&p("d"), &p("d/x.md")));
+    assert!(!path_at_or_below(&p("top.md"), &p("d")));
+}

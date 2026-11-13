@@ -30,6 +30,7 @@
 //! (Cmd+Q, the palette, the leader) ends the app, and the close button leaves
 //! it in the dock to open again; elsewhere any close ends it.
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -137,7 +138,7 @@ impl NoteHost {
 }
 
 /// Where closing the window stands.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) enum Closing {
     /// Not closing.
     #[default]
@@ -148,12 +149,19 @@ pub(crate) enum Closing {
     /// The close flush is running; the window closes when it has written.
     Flushing,
     /// The user was told the edits cannot be saved: the next close
-    /// discards them, as long as the buffer is still at this revision and
-    /// the warning's flash is up. A later successful save clears it too.
-    Discard(NonZeroU64),
+    /// discards them, as long as every group is still the one it was, at
+    /// the revision it was at ([`EditorRevisions`]), and the warning's
+    /// flash is up. A later successful save clears it too.
+    Discard(EditorRevisions),
     /// Everything is written: the window may go.
     Closed,
 }
+
+/// Where the text of every group stands: each group with its editor's
+/// content revision. Any edit in any group, and any group added or taken
+/// away, makes it differ; where the groups sit does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditorRevisions(HashMap<GroupId, NonZeroU64>);
 
 /// Why a flush wrote nothing, for a flash; `None` when it did its job.
 pub(super) fn flush_problem(outcome: &SaveOutcome) -> Option<String> {
@@ -216,18 +224,17 @@ impl Workspace {
             .is_some_and(|s| s.editor.read(cx).editor.is_dirty())
     }
 
-    /// Where the text of every group stands, as one number: the sum of
-    /// their editors' content revisions. Each revision only grows, so any
-    /// edit in any group changes it; with one group it is that editor's
-    /// revision.
-    fn editors_revision(&self, cx: &App) -> NonZeroU64 {
-        let sum = self
-            .group_ids()
-            .into_iter()
-            .filter_map(|group| self.state(group))
-            .map(|s| s.editor.read(cx).editor.content_revision().get())
-            .fold(0u64, u64::wrapping_add);
-        NonZeroU64::new(sum).unwrap_or(NonZeroU64::MIN)
+    /// Where the text of every group stands ([`EditorRevisions`]).
+    fn editors_revision(&self, cx: &App) -> EditorRevisions {
+        EditorRevisions(
+            self.group_ids()
+                .into_iter()
+                .filter_map(|group| {
+                    self.state(group)
+                        .map(|s| (group, s.editor.read(cx).editor.content_revision()))
+                })
+                .collect(),
+        )
     }
 
     /// The user was just told the edits cannot be saved: the next close
@@ -235,7 +242,7 @@ impl Workspace {
     /// within [`DISCARD_WINDOW`].
     fn arm_discard(&mut self, cx: &mut Context<Self>) {
         let revision = self.editors_revision(cx);
-        self.closing = Closing::Discard(revision);
+        self.closing = Closing::Discard(revision.clone());
         let expiry = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DISCARD_WINDOW).await;
             this.update(cx, |workspace, _| {
@@ -1231,11 +1238,11 @@ impl Workspace {
         if !self.preferences_allow_close(cx) {
             return false;
         }
-        match self.closing {
+        match &self.closing {
             Closing::Requested | Closing::Flushing => return false,
             Closing::Closed => return true,
             // Warned, and nothing typed since: the edits go.
-            Closing::Discard(revision) if revision == self.editors_revision(cx) => return true,
+            Closing::Discard(revision) if *revision == self.editors_revision(cx) => return true,
             // New edits since the warning: start over.
             Closing::Discard(_) => self.closing = Closing::Open,
             Closing::Open => {}
@@ -1367,10 +1374,14 @@ impl Workspace {
             {
                 Ok(flush) => flushes.push((group, flush)),
                 Err(_) => {
-                    // The flushes prepared before it go unrun; every group
-                    // gets its tick back, and the flash says why the window
+                    // The flushes prepared before it go unrun, given back
+                    // so their background saves finish; every group gets
+                    // its tick back, and the flash says why the window
                     // stays.
                     tracing::warn!("close: a flush is still outstanding");
+                    for (begun, flush) in flushes {
+                        self.give_back_flush_in(begun, flush);
+                    }
                     self.closing = Closing::Open;
                     self.restart_ticks();
                     self.flash_error(
