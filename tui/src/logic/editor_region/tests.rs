@@ -487,3 +487,271 @@ fn move_group_to_new_tab_takes_the_group_alone_into_a_new_last_tab() {
     assert_eq!(lone.move_group_to_new_tab(GroupId::new(99)), None);
     assert_eq!(lone, before);
 }
+
+// ── Record and restore ───────────────────────────────────────────────────
+
+use crate::settings::session::{AxisRecord, GroupTreeRecord, SessionRecord, TabRecord};
+use kimun_core::nfs::VaultPath;
+
+fn note(path: &str) -> VaultPath {
+    VaultPath::new(path)
+}
+
+fn leaf_record(path: Option<&str>) -> GroupTreeRecord {
+    GroupTreeRecord::Leaf {
+        note: path.map(VaultPath::new),
+    }
+}
+
+/// Two tabs: `a.md` alone; then `b.md` beside a column of an empty group
+/// over `c.md`, at 0.25 / 0.75, the shown tab, with `c.md` active.
+fn two_tab_region() -> (EditorRegion, Vec<(GroupId, VaultPath)>) {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let (_, b) = r.new_tab();
+    let empty = r.split_group(b, Axis::Horizontal).unwrap();
+    let c = r.split_group(empty, Axis::Vertical).unwrap();
+    r.resize_after(b, 0.25);
+    r.set_active_group(c);
+    (
+        r,
+        vec![(a, note("a.md")), (b, note("b.md")), (c, note("c.md"))],
+    )
+}
+
+fn note_lookup(notes: &[(GroupId, VaultPath)]) -> impl Fn(GroupId) -> Option<VaultPath> + '_ {
+    move |g| notes.iter().find(|(h, _)| *h == g).map(|(_, p)| p.clone())
+}
+
+/// The shape with every group replaced by the note it holds, so two regions
+/// with different ids compare by arrangement.
+fn shape_with_notes(r: &EditorRegion, tab: TabId, notes: &[(GroupId, VaultPath)]) -> String {
+    let mut shown = r.clone();
+    shown.show(tab);
+    let mut text = format!("{:?}", shown.shape());
+    for g in shown.groups(tab) {
+        let name = notes
+            .iter()
+            .find(|(h, _)| *h == g)
+            .map_or_else(|| "empty".to_string(), |(_, p)| p.to_string());
+        text = text.replace(&format!("Group({g:?})"), &name);
+    }
+    text
+}
+
+#[test]
+fn record_then_restore_gives_the_same_arrangement() {
+    let (r, notes) = two_tab_region();
+    let record = r.to_record(note_lookup(&notes));
+    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    assert_valid(&back);
+    assert_eq!(back.tabs().len(), 2);
+    for (was, now) in r.tabs().into_iter().zip(back.tabs()) {
+        assert_eq!(
+            shape_with_notes(&r, was, &notes),
+            shape_with_notes(&back, now, &opened),
+            "every tab's splits, weights and notes come back"
+        );
+    }
+    assert_eq!(back.to_record(note_lookup(&opened)), record);
+    assert_eq!(opened.len(), 3, "the empty group opens nothing");
+}
+
+#[test]
+fn record_keeps_the_weights_exactly() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    r.resize_after(a, 0.3);
+    let notes = vec![(a, note("a.md")), (b, note("b.md"))];
+    let record = r.to_record(note_lookup(&notes));
+    let GroupTreeRecord::Split { axis, weights, .. } = &record.tabs[0].tree else {
+        panic!("a split is recorded as one: {record:?}");
+    };
+    assert_eq!(*axis, AxisRecord::Horizontal);
+    assert_eq!(weights, &vec![0.3, 0.7]);
+    let (back, _) = EditorRegion::from_record(&record, |_| true);
+    assert_eq!(back.shape(), r.shape(), "the same weights, to the bit");
+}
+
+#[test]
+fn restore_rebuilds_nested_splits() {
+    let record = SessionRecord {
+        tabs: vec![TabRecord {
+            tree: GroupTreeRecord::Split {
+                axis: AxisRecord::Vertical,
+                weights: vec![0.5, 0.5],
+                children: vec![
+                    leaf_record(Some("top.md")),
+                    GroupTreeRecord::Split {
+                        axis: AxisRecord::Horizontal,
+                        weights: vec![0.25, 0.25, 0.5],
+                        children: vec![
+                            leaf_record(Some("l.md")),
+                            leaf_record(None),
+                            leaf_record(Some("r.md")),
+                        ],
+                    },
+                ],
+            },
+            active: 3,
+        }],
+        shown: 0,
+    };
+    let (r, opened) = EditorRegion::from_record(&record, |_| true);
+    assert_valid(&r);
+    let groups = r.groups(r.shown());
+    assert_eq!(groups.len(), 4);
+    assert_eq!(r.active_group(), groups[3]);
+    let GroupShape::Split { axis, children } = r.shape() else {
+        panic!("a split");
+    };
+    assert_eq!(axis, Axis::Vertical);
+    assert_eq!(children[0], (0.5, GroupShape::Group(groups[0])));
+    assert_eq!(
+        children[1],
+        (
+            0.5,
+            GroupShape::Split {
+                axis: Axis::Horizontal,
+                children: vec![
+                    (0.25, GroupShape::Group(groups[1])),
+                    (0.25, GroupShape::Group(groups[2])),
+                    (0.5, GroupShape::Group(groups[3])),
+                ],
+            }
+        )
+    );
+    assert_eq!(
+        opened,
+        vec![
+            (groups[0], note("top.md")),
+            (groups[1], note("l.md")),
+            (groups[3], note("r.md")),
+        ]
+    );
+    assert_eq!(r.to_record(note_lookup(&opened)), record);
+}
+
+#[test]
+fn restore_drops_a_missing_note_and_keeps_the_rest() {
+    let (r, notes) = two_tab_region();
+    let record = r.to_record(note_lookup(&notes));
+    let (back, opened) = EditorRegion::from_record(&record, |p| *p != note("b.md"));
+    assert_valid(&back);
+    assert_eq!(back.tabs().len(), 2, "the tab of the missing note stays");
+    assert_eq!(back.all_groups().len(), 4, "its group stays, empty");
+    let names: Vec<String> = opened.iter().map(|(_, p)| p.to_string()).collect();
+    assert_eq!(
+        names,
+        vec![note("a.md").to_string(), note("c.md").to_string()]
+    );
+    let second = back.tabs()[1];
+    let b_group = back.groups(second)[0];
+    assert!(opened.iter().all(|(g, _)| *g != b_group));
+}
+
+#[test]
+fn restore_with_every_note_missing_gives_one_empty_group() {
+    let (r, notes) = two_tab_region();
+    let record = r.to_record(note_lookup(&notes));
+    let (back, opened) = EditorRegion::from_record(&record, |_| false);
+    assert_valid(&back);
+    assert_eq!(back.tabs().len(), 1);
+    assert_eq!(back.all_groups().len(), 1);
+    assert!(opened.is_empty());
+    // A record of empty groups only is a fresh start too.
+    let (back, opened) = EditorRegion::from_record(&r.to_record(|_| None), |_| true);
+    assert_eq!(back.all_groups().len(), 1);
+    assert!(opened.is_empty());
+}
+
+#[test]
+fn restore_treats_an_empty_note_path_as_missing() {
+    // An empty string loads as `VaultPath::new("")`: no note at all.
+    let record = SessionRecord {
+        tabs: vec![TabRecord {
+            tree: GroupTreeRecord::Split {
+                axis: AxisRecord::Horizontal,
+                weights: vec![0.5, 0.5],
+                children: vec![leaf_record(Some("")), leaf_record(Some("kept.md"))],
+            },
+            active: 0,
+        }],
+        shown: 0,
+    };
+    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    assert_eq!(back.all_groups().len(), 2);
+    assert_eq!(opened, vec![(back.all_groups()[1], note("kept.md"))]);
+}
+
+#[test]
+fn restore_ignores_a_duplicate_note_and_keeps_the_first() {
+    let record = SessionRecord {
+        tabs: vec![
+            TabRecord {
+                tree: leaf_record(Some("same.md")),
+                active: 0,
+            },
+            TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5, 0.5],
+                    // The same note again, spelled with other case.
+                    children: vec![leaf_record(Some("SAME.md")), leaf_record(Some("other.md"))],
+                },
+                active: 0,
+            },
+        ],
+        shown: 1,
+    };
+    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    assert_valid(&back);
+    let first = back.groups(back.tabs()[0])[0];
+    let second_tab = back.groups(back.tabs()[1]);
+    assert_eq!(
+        opened,
+        vec![(first, note("same.md")), (second_tab[1], note("other.md"))],
+        "a note opens in one group only: the first that held it"
+    );
+    assert_eq!(second_tab.len(), 2, "the duplicate's group stays, empty");
+}
+
+#[test]
+fn restore_shows_the_recorded_tab_and_active_group() {
+    let record = SessionRecord {
+        tabs: vec![
+            TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5, 0.5],
+                    children: vec![leaf_record(Some("a.md")), leaf_record(Some("b.md"))],
+                },
+                active: 1,
+            },
+            TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Vertical,
+                    weights: vec![0.5, 0.5],
+                    children: vec![leaf_record(Some("c.md")), leaf_record(Some("d.md"))],
+                },
+                active: 0,
+            },
+        ],
+        shown: 0,
+    };
+    let (back, _) = EditorRegion::from_record(&record, |_| true);
+    let tabs = back.tabs();
+    assert_eq!(back.shown(), tabs[0]);
+    assert_eq!(back.active_group(), back.groups(tabs[0])[1]);
+    assert_eq!(
+        back.active_group_of(tabs[1]),
+        Some(back.groups(tabs[1])[0]),
+        "a hidden tab keeps its own active group"
+    );
+    // New ids never collide with the restored ones.
+    let mut back = back;
+    let before = back.all_groups();
+    let (_, fresh) = back.new_tab();
+    assert!(!before.contains(&fresh));
+}
