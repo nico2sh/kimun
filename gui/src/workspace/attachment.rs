@@ -493,7 +493,8 @@ impl Render for AttachmentView {
 // ---- The workspace's side ----------------------------------------------------
 
 impl Workspace {
-    /// The attachment the editor Panel shows, if any.
+    /// The attachment the editor Panel shows, if any (tests).
+    #[cfg(test)]
     pub(crate) fn shown_attachment(&self, cx: &App) -> Option<VaultPath> {
         self.active_state()
             .attachment
@@ -656,9 +657,20 @@ impl Workspace {
     /// lifetime belongs here). True when one was shown. The caller
     /// refocuses and redraws.
     pub(super) fn drop_attachment(&mut self) -> bool {
-        self.active_state_mut()._attachment_events = None;
-        self.status.attachment = None;
-        self.active_state_mut().attachment.take().is_some()
+        self.drop_attachment_in(self.layout.active_group())
+    }
+
+    /// [`Self::drop_attachment`] for `group`; the status line's name goes
+    /// only with the active group's.
+    fn drop_attachment_in(&mut self, group: GroupId) -> bool {
+        if group == self.layout.active_group() {
+            self.status.attachment = None;
+        }
+        let Some(state) = self.state_mut(group) else {
+            return false;
+        };
+        state._attachment_events = None;
+        state.attachment.take().is_some()
     }
 
     /// A note opened: the attachment view goes (the editor is back).
@@ -689,21 +701,36 @@ impl Workspace {
         }
     }
 
-    /// A file operation landed: the view follows its attachment renamed or
-    /// moved (read again from there), and goes when it was deleted.
+    /// A file operation landed: every group's view follows its attachment
+    /// renamed or moved (read again from there), and goes when it was
+    /// deleted. Only the active group's says so in the editor Panel.
     pub(super) fn attachment_file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
-        let Some(shown) = self.shown_attachment(cx) else {
+        for group in self.group_ids_active_first() {
+            self.attachment_file_op_in(group, op, cx);
+        }
+    }
+
+    /// [`Self::attachment_file_op`] for the view of `group`.
+    fn attachment_file_op_in(&mut self, group: GroupId, op: &FileOp, cx: &mut Context<Self>) {
+        let Some(shown) = self
+            .state(group)
+            .and_then(|s| s.attachment.as_ref())
+            .map(|view| view.read(cx).path().clone())
+        else {
             return;
         };
         match op {
             FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
                 if let Some(new) = relocated(&shown, from, to) {
-                    self.open_attachment(&new, cx);
+                    self.open_attachment_in(group, &new, cx);
                 }
             }
             FileOp::Deleted(gone) if relocated(&shown, gone, gone).is_some() => {
+                self.drop_attachment_in(group);
+                if group != self.layout.active_group() {
+                    return;
+                }
                 let name = shown.get_parent_path().1;
-                self.drop_attachment();
                 self.note_gone = Some(EmptyState {
                     title: format!("{name} was deleted"),
                     detail: String::new(),
