@@ -271,10 +271,11 @@ impl Workspace {
 
     /// Replace the live layout with `tree`, applied from the preset
     /// `preset` (`None`: from no preset, as "Reset layout to default"):
-    /// the session-only state is dropped (the side
-    /// toggles' memory, collapse and zoom, which lives in the old tree),
-    /// the editor gets the keyboard, and the layout is saved with the
-    /// preset's name recorded, or the recorded name cleared.
+    /// the editor region's tabs and groups stay as they are
+    /// ([`Workspace::replace_layout`]), the session-only state is dropped
+    /// (the side toggles' memory, collapse and zoom, which lives in the old
+    /// tree), the editor gets the keyboard, and the layout is saved with
+    /// the preset's name recorded, or the recorded name cleared.
     fn install_layout(
         &mut self,
         tree: LayoutTree<DrawerView>,
@@ -283,7 +284,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.layout = tree;
+        self.replace_layout(tree);
         // A preset that sets no rail leaves the position alone (ADR-0055 §2).
         if let Some(rail) = rail {
             self.rail = rail;

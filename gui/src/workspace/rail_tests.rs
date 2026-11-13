@@ -406,10 +406,9 @@ fn hiding_with_the_rail_focused_and_no_slot_before_moves_focus_to_the_editor(
         window.render_frame(cx);
         window.click("rail", cx);
         window.press(TOGGLE_RAIL, cx);
-        let group = shell.workspace.read(cx).layout.active_group();
         assert_eq!(
             focus(&shell, cx),
-            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Group(group))
+            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Editor)
         );
     })
     .unwrap();
@@ -612,7 +611,7 @@ fn hiding_the_rail_while_zoomed_keeps_the_zoom(cx: &mut TestAppContext) {
         window.click("editor-panel", cx);
         assert!(matches!(
             focus(&shell, cx),
-            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Group(_))
+            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Editor)
         ));
         window.press("ctrl-shift-m", cx);
         let zoomed = shell.workspace.read(cx).layout.zoomed().expect("zoomed");

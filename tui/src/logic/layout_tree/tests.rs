@@ -23,19 +23,16 @@ fn sides(t: &Tree) -> (SlotId, SlotId) {
 fn default_layout_is_left_files_editor_empty_right() {
     let t = tree();
     let (left, right) = sides(&t);
-    let g = GroupId::new(0);
     let leaves: Vec<Leaf> = t.node().leaves().into_iter().copied().collect();
     assert_eq!(
         leaves,
-        vec![Leaf::Slot(left), Leaf::Group(g), Leaf::Slot(right)]
+        vec![Leaf::Slot(left), Leaf::Editor, Leaf::Slot(right)]
     );
     assert_eq!(t.slot_views(left), vec!["files"]);
     assert_eq!(t.shown(left), Some("files"));
     assert!(t.slot_views(right).is_empty());
     assert_eq!(t.shown(right), None);
-    assert_eq!(t.groups(), vec![g]);
-    assert_eq!(t.active_group(), g);
-    assert_eq!(t.focused(), Focus::Leaf(Leaf::Group(g)));
+    assert_eq!(t.focused(), Focus::Leaf(Leaf::Editor));
     let widths: Vec<f64> = t
         .node()
         .layout(unit())
@@ -45,6 +42,24 @@ fn default_layout_is_left_files_editor_empty_right() {
     for (w, want) in widths.iter().zip([0.2, 0.6, 0.2]) {
         assert!((w - want).abs() < 1e-9, "{widths:?}");
     }
+}
+
+#[test]
+fn default_layout_has_one_editor_leaf_and_one_group() {
+    let t = tree();
+    let editors = t
+        .node()
+        .leaves()
+        .into_iter()
+        .filter(|l| **l == Leaf::Editor)
+        .count();
+    assert_eq!(editors, 1);
+    let g = GroupId::new(0);
+    assert_eq!(t.region().tabs().len(), 1);
+    assert_eq!(t.region().all_groups(), vec![g]);
+    assert_eq!(t.active_group(), g);
+    assert_eq!(t.region().active_group(), g);
+    assert_eq!(t.focused(), Focus::Leaf(Leaf::Editor));
 }
 
 #[test]
@@ -82,8 +97,7 @@ fn unplaced_view_opens_in_first_slot_or_last_slot_when_home_right() {
     assert_eq!(t.show_view(&"ask", true), Some(right));
     assert_eq!(t.shown(right), Some("ask"));
     // A tree with no slot at all has nowhere to put it.
-    let mut bare: Tree =
-        LayoutTree::from_parts(Node::leaf(Leaf::Group(GroupId::new(0))), BTreeMap::new()).unwrap();
+    let mut bare: Tree = LayoutTree::from_parts(Node::leaf(Leaf::Editor), BTreeMap::new()).unwrap();
     assert_eq!(bare.show_view(&"tags", false), None);
     assert_eq!(bare.view_slot(&"tags"), None);
 }
@@ -167,27 +181,6 @@ fn close_slot_reports_absorber_for_focus() {
 }
 
 #[test]
-fn close_last_group_is_refused() {
-    let mut t = tree();
-    let g = t.active_group();
-    assert_eq!(t.close_group(g), Err(TreeError::LastGroup));
-    let g2 = t.split_group(g, Axis::Horizontal).unwrap();
-    assert_eq!(t.groups(), vec![g, g2]);
-    assert!(t.focus(Focus::Leaf(Leaf::Group(g2))));
-    assert_eq!(t.active_group(), g2);
-    assert_eq!(t.close_group(g2), Ok(()));
-    assert_eq!(t.groups(), vec![g]);
-    assert_eq!(t.active_group(), g);
-    assert_eq!(t.focused(), Focus::Leaf(Leaf::Group(g)));
-    assert_eq!(t.close_group(g2), Err(TreeError::NoSuchGroup));
-    assert_eq!(t.close_group(g), Err(TreeError::LastGroup));
-    assert_eq!(
-        t.split_group(g2, Axis::Vertical),
-        Err(TreeError::NoSuchGroup)
-    );
-}
-
-#[test]
 fn a_view_is_in_at_most_one_slot() {
     let mut t = tree();
     let (left, right) = sides(&t);
@@ -203,7 +196,7 @@ fn a_view_is_in_at_most_one_slot() {
             Axis::Horizontal,
             vec![
                 (1.0, Node::leaf(Leaf::Slot(SlotId::new(0)))),
-                (1.0, Node::leaf(Leaf::Group(GroupId::new(0)))),
+                (1.0, Node::leaf(Leaf::Editor)),
                 (1.0, Node::leaf(Leaf::Slot(SlotId::new(1)))),
             ],
         )
@@ -224,12 +217,11 @@ fn a_view_is_in_at_most_one_slot() {
 #[test]
 fn from_parts_validates_its_parts() {
     let s0 = SlotId::new(0);
-    let g0 = GroupId::new(0);
     let row = Node::split(
         Axis::Horizontal,
         vec![
             (1.0, Node::leaf(Leaf::Slot(s0))),
-            (1.0, Node::leaf(Leaf::Group(g0))),
+            (1.0, Node::leaf(Leaf::Editor)),
         ],
     );
     let ok = Tree::from_parts(
@@ -238,12 +230,12 @@ fn from_parts_validates_its_parts() {
     )
     .unwrap();
     assert_eq!(ok.shown(s0), Some("tags"));
-    assert_eq!(ok.focused(), Focus::Leaf(Leaf::Group(g0)));
+    assert_eq!(ok.focused(), Focus::Leaf(Leaf::Editor));
 
     let no_group: Node<Leaf> = Node::leaf(Leaf::Slot(s0));
     assert_eq!(
         Tree::from_parts(no_group, BTreeMap::from([(s0, (vec![], None))])).err(),
-        Some(TreeError::NoGroup)
+        Some(TreeError::NoEditor)
     );
     assert_eq!(
         Tree::from_parts(row.clone(), BTreeMap::new()).err(),
@@ -268,8 +260,8 @@ fn from_parts_validates_its_parts() {
     let twice = Node::split(
         Axis::Horizontal,
         vec![
-            (1.0, Node::leaf(Leaf::Group(g0))),
-            (1.0, Node::leaf(Leaf::Group(g0))),
+            (1.0, Node::leaf(Leaf::Editor)),
+            (1.0, Node::leaf(Leaf::Editor)),
         ],
     );
     assert_eq!(
@@ -283,29 +275,27 @@ fn new_ids_never_collide_with_given_ones() {
     let root = Node::split(
         Axis::Horizontal,
         vec![
-            (1.0, Node::leaf(Leaf::Group(GroupId::new(3)))),
+            (1.0, Node::leaf(Leaf::Editor)),
             (1.0, Node::leaf(Leaf::Slot(SlotId::new(5)))),
         ],
     );
     let mut t = Tree::from_parts(root, BTreeMap::from([(SlotId::new(5), (vec![], None))])).unwrap();
-    let g = t.split_group(GroupId::new(3), Axis::Vertical).unwrap();
-    assert_ne!(g, GroupId::new(3));
     let s = t.split_slot(SlotId::new(5), Axis::Vertical).unwrap();
     assert_ne!(s, SlotId::new(5));
-    assert!(t.resize_after(Leaf::Group(GroupId::new(3)), 0.3));
+    assert!(t.resize_after(Leaf::Editor, 0.3));
 }
 
 // ── Regions, geometric focus and zoom ─────────────────────────────────
 
-/// slot0 (0.2) | group0 (0.6) | [slot1 over slot2] (0.2)
-fn nested() -> (Tree, [SlotId; 3], GroupId) {
+/// slot0 (0.2) | editor (0.6) | [slot1 over slot2] (0.2)
+fn nested() -> (Tree, [SlotId; 3], Leaf) {
     let s = [SlotId::new(0), SlotId::new(1), SlotId::new(2)];
-    let g = GroupId::new(0);
+    let g = Leaf::Editor;
     let root = Node::split(
         Axis::Horizontal,
         vec![
             (0.2, Node::leaf(Leaf::Slot(s[0]))),
-            (0.6, Node::leaf(Leaf::Group(g))),
+            (0.6, Node::leaf(g)),
             (
                 0.2,
                 Node::split(
@@ -337,12 +327,7 @@ fn regions_cover_the_unit_square_without_the_rail() {
     let leaves: Vec<Leaf> = r.iter().map(|(l, _)| *l).collect();
     assert_eq!(
         leaves,
-        vec![
-            Leaf::Slot(s[0]),
-            Leaf::Group(g),
-            Leaf::Slot(s[1]),
-            Leaf::Slot(s[2])
-        ]
+        vec![Leaf::Slot(s[0]), g, Leaf::Slot(s[1]), Leaf::Slot(s[2])]
     );
     let area: f64 = r.iter().map(|(_, c)| c.width() * c.height()).sum();
     assert!((area - 1.0).abs() < 1e-9);
@@ -356,15 +341,15 @@ fn focus_dir_follows_geometry_between_nested_leaves() {
     // Two equal candidates on the right: the top-left one wins.
     assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Slot(s[1])));
     assert_eq!(t.focus_dir(Dir::Down), m(Leaf::Slot(s[2])));
-    assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Group(g)));
+    assert_eq!(t.focus_dir(Dir::Left), m(g));
     // The remembered leaf (last focused slot) breaks the tie.
     assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Slot(s[2])));
-    assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Group(g)));
+    assert_eq!(t.focus_dir(Dir::Left), m(g));
     assert_eq!(t.focus_dir(Dir::Left), m(Leaf::Slot(s[0])));
     assert_eq!(t.focused(), leaf(Leaf::Slot(s[0])));
-    // Back right into the group, which stays active.
-    assert_eq!(t.focus_dir(Dir::Right), m(Leaf::Group(g)));
-    assert_eq!(t.active_group(), g);
+    // Back right into the editor, whose group stays active.
+    assert_eq!(t.focus_dir(Dir::Right), m(g));
+    assert_eq!(t.active_group(), GroupId::new(0));
 }
 
 #[test]
@@ -386,10 +371,10 @@ fn focus_dir_does_not_wrap_at_edges() {
 #[test]
 fn up_down_with_nothing_stacked_is_not_handled() {
     let mut t = tree();
-    let g = t.active_group();
+    let g = Leaf::Editor;
     assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
     assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
-    assert_eq!(t.focused(), leaf(Leaf::Group(g)));
+    assert_eq!(t.focused(), leaf(g));
     assert!(t.focus(Focus::Rail));
     assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
     assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
@@ -435,7 +420,7 @@ fn zoom_keeps_every_placement() {
         assert_eq!(t.shown(slot), before.shown(slot));
     }
     // Focusing elsewhere keeps the zoom; a missing leaf is ignored.
-    assert!(t.focus(leaf(Leaf::Group(g))));
+    assert!(t.focus(leaf(g)));
     assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
     t.zoom(Some(Leaf::Slot(SlotId::new(99))));
     assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
@@ -446,16 +431,11 @@ fn zoom_keeps_every_placement() {
 
 #[test]
 fn zoom_clears_when_zoomed_slot_closes() {
-    let (mut t, s, g) = nested();
+    let (mut t, s, _) = nested();
     t.zoom(Some(Leaf::Slot(s[1])));
     t.close_slot(s[2]).unwrap();
     assert_eq!(t.zoomed(), Some(Leaf::Slot(s[1])));
     t.close_slot(s[1]).unwrap();
-    assert_eq!(t.zoomed(), None);
-
-    let g2 = t.split_group(g, Axis::Horizontal).unwrap();
-    t.zoom(Some(Leaf::Group(g2)));
-    t.close_group(g2).unwrap();
     assert_eq!(t.zoomed(), None);
 }
 
@@ -490,16 +470,13 @@ fn move_view_dir_targets_the_neighbour_slot() {
 #[test]
 fn focus_dir_while_zoomed_only_sees_the_zoomed_leaf_and_the_rail() {
     let (mut t, s, g) = nested();
-    t.zoom(Some(Leaf::Group(g)));
+    t.zoom(Some(g));
     assert_eq!(t.focus_dir(Dir::Right), TreeFocusMove::AtEdge);
     assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::NotHandled);
     assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
     assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
-    assert_eq!(
-        t.focus_dir(Dir::Right),
-        TreeFocusMove::Moved(leaf(Leaf::Group(g)))
-    );
-    assert_eq!(t.zoomed(), Some(Leaf::Group(g)));
+    assert_eq!(t.focus_dir(Dir::Right), TreeFocusMove::Moved(leaf(g)));
+    assert_eq!(t.zoomed(), Some(g));
 
     // A zoomed slot below another: nothing stacked is visible either.
     t.zoom(Some(Leaf::Slot(s[2])));
@@ -526,7 +503,7 @@ fn move_view_dir_is_refused_while_zoomed() {
 fn leaving_zoom_restores_normal_geometry() {
     let (mut t, s, g) = nested();
     assert!(t.place("tags", s[1], true));
-    t.zoom(Some(Leaf::Group(g)));
+    t.zoom(Some(g));
     t.zoom(None);
     assert_eq!(
         t.focus_dir(Dir::Right),
@@ -637,7 +614,7 @@ children = [{ views = ["files"], rail = "left" }, { editor = true }]
                     out.push(')');
                 }
                 None => match n.as_leaf().expect("leaf") {
-                    Leaf::Group(_) => out.push('E'),
+                    Leaf::Editor => out.push('E'),
                     Leaf::Slot(s) => {
                         out.push_str(&format!("S{:?}/{:?}", t.slot_views(*s), t.shown(*s)))
                     }
@@ -685,11 +662,11 @@ children = [{ views = ["files"], rail = "left" }, { editor = true }]
         assert_eq!(shape(&ok(&spec)), shape(&t), "{text}");
     }
 
-    /// The model supports several editor groups, but nothing can draw a
-    /// second one until group splitting exists: a spec naming two is refused
-    /// with the second leaf's path (Ruling 23).
+    /// A layout holds one editor region (ADR-0058); its groups split inside
+    /// it. A spec naming a second editor leaf is refused with that leaf's
+    /// path.
     #[test]
-    fn a_second_editor_group_is_rejected_with_its_path() {
+    fn spec_rejects_a_second_editor_leaf() {
         let spec = split(
             "horizontal",
             vec![
@@ -701,22 +678,25 @@ children = [{ views = ["files"], rail = "left" }, { editor = true }]
         let e = errs(&spec);
         assert_eq!(
             e,
-            vec![SpecError::MultipleEditorGroups {
+            vec![SpecError::MultipleEditorRegions {
                 path: "children[2].children[1]".into()
             }]
         );
         assert_eq!(e[0].path(), Some("children[2].children[1]"));
         let text = e[0].to_string();
-        assert!(text.contains("children[2].children[1]"), "{text}");
-        assert!(text.contains("until group splitting exists"), "{text}");
-        // A tree split into two groups by the model does not save as a preset
-        // that builds either.
+        assert_eq!(
+            text,
+            "The editor region in the node at children[2].children[1] is a second one; \
+             a layout holds one editor region (split the editor inside it instead)."
+        );
+        // A tree whose region is split into groups saves as a preset with one
+        // editor leaf, which builds.
         let mut t = LayoutTree::default_layout(DrawerView::Files);
-        t.split_group(t.groups()[0], Axis::Vertical).unwrap();
-        assert!(matches!(
-            errs(&to_spec(&t)).as_slice(),
-            [SpecError::MultipleEditorGroups { .. }]
-        ));
+        let g = t.active_group();
+        t.region_mut().split_group(g, Axis::Vertical).unwrap();
+        let rebuilt = ok(&to_spec(&t));
+        assert_eq!(shape(&rebuilt), shape(&t));
+        assert_eq!(rebuilt.region().all_groups().len(), 1);
     }
 
     /// Finite weights whose sum is not finite would lay out NaN rectangles:
@@ -811,7 +791,11 @@ children = [{ views = ["files"], rail = "left" }, { editor = true }]
     fn tree_without_editor_is_rejected() {
         let spec = split("horizontal", vec![slot(&["files"], None), slot(&[], None)]);
         let e = errs(&spec);
-        assert_eq!(e, vec![SpecError::NoEditorGroup]);
+        assert_eq!(e, vec![SpecError::NoEditorRegion]);
+        assert_eq!(
+            e[0].to_string(),
+            "The layout has no editor region (`editor = true`)."
+        );
         assert_eq!(e[0].path(), None);
         // Every problem is reported, not just the first.
         let many = split(
@@ -837,12 +821,12 @@ children = [{ views = ["files"], rail = "left" }, { editor = true }]
         assert!(e.contains(&SpecError::EmptySplit {
             path: "children[1]".into()
         }));
-        assert!(e.contains(&SpecError::NoEditorGroup));
+        assert!(e.contains(&SpecError::NoEditorRegion));
         assert_eq!(e.len(), 5, "{e:?}");
         // An editor-only tree is valid.
         let t = ok(&editor());
         assert!(t.slots().is_empty());
-        assert_eq!(t.groups().len(), 1);
+        assert_eq!(t.region().all_groups().len(), 1);
     }
 
     #[test]
@@ -1016,7 +1000,7 @@ editor = true
 fn shape_mirrors_the_tree_with_weights_in_reading_order() {
     let mut t = tree();
     let (left, right) = sides(&t);
-    let g = GroupId::new(0);
+    let g = Leaf::Editor;
     let low = t.split_slot(left, Axis::Vertical).unwrap();
     let TreeShape::Split { axis, children } = t.shape() else {
         panic!("the default root is a split");
@@ -1036,7 +1020,7 @@ fn shape_mirrors_the_tree_with_weights_in_reading_order() {
             ],
         }
     );
-    assert_eq!(children[1].1, TreeShape::Leaf(Leaf::Group(g)));
+    assert_eq!(children[1].1, TreeShape::Leaf(g));
     assert_eq!(children[2].1, TreeShape::Leaf(Leaf::Slot(right)));
 }
 
@@ -1044,7 +1028,7 @@ fn shape_mirrors_the_tree_with_weights_in_reading_order() {
 fn focus_dir_among_skips_leaves_that_are_not_visible() {
     let mut t = tree();
     let (left, right) = sides(&t);
-    let g = Leaf::Group(GroupId::new(0));
+    let g = Leaf::Editor;
     let not_right = move |l: Leaf| l != Leaf::Slot(right);
     // The hidden right slot is no target: Right from the editor is the edge.
     assert_eq!(
@@ -1118,7 +1102,7 @@ fn focus_from_the_rail_goes_toward_the_layout_for_each_position() {
 
 #[test]
 fn focus_toward_the_rail_from_the_layout_edge_reaches_it() {
-    let g = Leaf::Group(GroupId::new(0));
+    let g = Leaf::Editor;
     for rail in [RailPosition::Right, RailPosition::Top, RailPosition::Bottom] {
         let mut t = tree();
         let (left, right) = sides(&t);
@@ -1135,7 +1119,7 @@ fn focus_toward_the_rail_from_the_layout_edge_reaches_it() {
 
 #[test]
 fn focus_toward_a_hidden_rail_stops_at_the_edge() {
-    let g = Leaf::Group(GroupId::new(0));
+    let g = Leaf::Editor;
     let mut t = tree();
     let (left, right) = sides(&t);
     let only_group = move |l: Leaf| l != Leaf::Slot(left) && l != Leaf::Slot(right);
@@ -1157,9 +1141,9 @@ fn focus_toward_a_hidden_rail_stops_at_the_edge() {
 fn fit_collapses_trailing_slots_skips_undrawn_and_keeps_groups() {
     let t = tree();
     let (left, right) = sides(&t);
-    let g = Leaf::Group(GroupId::new(0));
+    let g = Leaf::Editor;
     let min = |leaf: Leaf| match leaf {
-        Leaf::Group(_) => (20.0, 0.0),
+        Leaf::Editor => (20.0, 0.0),
         Leaf::Slot(_) => (10.0, 6.0),
     };
     let area = UnitRect::new(0.0, 0.0, 35.0, 30.0);
@@ -1212,7 +1196,7 @@ fn focus_dir_among_measures_the_layout_as_drawn() {
     // the full tree X is the top half and P would win.
     let s: Vec<SlotId> = (0..5).map(SlotId::new).collect();
     let (x, y, p, q) = (s[1], s[2], s[3], s[4]);
-    let g = GroupId::new(0);
+    let g = Leaf::Editor;
     let col = |a, wa, b, wb| {
         Node::split(
             Axis::Vertical,
@@ -1225,7 +1209,7 @@ fn focus_dir_among_measures_the_layout_as_drawn() {
     let root = Node::split(
         Axis::Horizontal,
         vec![
-            (1.0, Node::leaf(Leaf::Group(g))),
+            (1.0, Node::leaf(g)),
             (1.0, col(x, 1.0, y, 1.0)),
             (1.0, col(p, 1.0, q, 2.0)),
         ],
@@ -1306,44 +1290,31 @@ fn place_beside_an_absent_slot_changes_nothing() {
 }
 
 #[test]
-fn place_beside_group_puts_the_new_slot_at_the_editor_edge() {
+fn place_beside_editor_puts_the_new_slot_at_the_editor_edge() {
     let (mut t, _) = right_with_two();
-    let g = t.active_group();
-    let b = t.place_beside_group("x", g, Dir::Left).unwrap();
+    let b = t.place_beside_editor("x", Dir::Left);
     assert_eq!(t.view_slot(&"x"), Some(b));
     assert_eq!(t.shown(b), Some("x"));
-    let group = t
+    let editor = t
         .regions()
         .into_iter()
-        .find(|(l, _)| *l == Leaf::Group(g))
+        .find(|(l, _)| *l == Leaf::Editor)
         .map(|(_, r)| r)
         .unwrap();
-    assert!((rect_of(&t, b).right() - group.x()).abs() < 1e-9);
+    assert!((rect_of(&t, b).right() - editor.x()).abs() < 1e-9);
 }
 
 #[test]
-fn place_beside_group_right_puts_the_new_slot_after_the_editor() {
+fn place_beside_editor_right_puts_the_new_slot_after_the_editor() {
     let (mut t, _) = right_with_two();
-    let g = t.active_group();
-    let b = t.place_beside_group("x", g, Dir::Right).unwrap();
-    let group = t
+    let b = t.place_beside_editor("x", Dir::Right);
+    let editor = t
         .regions()
         .into_iter()
-        .find(|(l, _)| *l == Leaf::Group(g))
+        .find(|(l, _)| *l == Leaf::Editor)
         .map(|(_, r)| r)
         .unwrap();
-    assert!((rect_of(&t, b).x() - group.right()).abs() < 1e-9);
-}
-
-#[test]
-fn place_beside_an_absent_group_changes_nothing() {
-    let (mut t, _) = right_with_two();
-    let before = t.clone();
-    assert_eq!(
-        t.place_beside_group("x", GroupId::new(99), Dir::Left),
-        Err(TreeError::NoSuchGroup)
-    );
-    assert_eq!(t, before);
+    assert!((rect_of(&t, b).x() - editor.right()).abs() < 1e-9);
 }
 
 #[test]
@@ -1425,9 +1396,9 @@ fn vacate_close_closes_a_slot_with_a_sibling_on_its_side() {
 
 /// FILES (s0) and ASK (s1) side by side over FIND (s2) left, the group, and
 /// OUTLINE (s3) right, weighted `left : group : right`.
-fn ask_beside_files(left: f64, group: f64, right: f64) -> (Tree, [SlotId; 4], GroupId) {
+fn ask_beside_files(left: f64, group: f64, right: f64) -> (Tree, [SlotId; 4], Leaf) {
     let s = [0, 1, 2, 3].map(SlotId::new);
-    let g = GroupId::new(0);
+    let g = Leaf::Editor;
     let pair = Node::split(
         Axis::Horizontal,
         vec![
@@ -1443,7 +1414,7 @@ fn ask_beside_files(left: f64, group: f64, right: f64) -> (Tree, [SlotId; 4], Gr
         Axis::Horizontal,
         vec![
             (left, column),
-            (group, Node::leaf(Leaf::Group(g))),
+            (group, Node::leaf(g)),
             (right, Node::leaf(Leaf::Slot(s[3]))),
         ],
     );
@@ -1459,7 +1430,7 @@ fn ask_beside_files(left: f64, group: f64, right: f64) -> (Tree, [SlotId; 4], Gr
 /// Group 20 wide, ASK (s1) 18 × 12, every other slot 10 × 6.
 fn room_min(leaf: Leaf) -> (f64, f64) {
     match leaf {
-        Leaf::Group(_) => (20.0, 0.0),
+        Leaf::Editor => (20.0, 0.0),
         Leaf::Slot(s) if s == SlotId::new(1) => (18.0, 12.0),
         Leaf::Slot(_) => (10.0, 6.0),
     }
@@ -1490,7 +1461,7 @@ fn make_room_grows_the_column_holding_a_collapsed_slot() {
     assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
     let column = fit_width(&fit, Leaf::Slot(s[0])) + fit_width(&fit, Leaf::Slot(s[1]));
     assert!(column >= 28.0 - 1e-9, "{column}");
-    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+    assert!(fit_width(&fit, g) >= 20.0 - 1e-9);
     assert!(fit_width(&fit, Leaf::Slot(s[3])) >= 10.0 - 1e-9);
 }
 
@@ -1504,7 +1475,7 @@ fn make_room_never_shrinks_the_group_below_its_minimum() {
     assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &|_| true));
     let fit = t.fit(area, &room_min, &|_| true);
     assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
-    let group = fit_width(&fit, Leaf::Group(g));
+    let group = fit_width(&fit, g);
     assert!(group >= 20.0 - 1e-9, "{group}");
 }
 
@@ -1542,7 +1513,7 @@ fn make_room_leaves_undrawn_leaves_alone() {
     assert!(t.make_room(&[Leaf::Slot(s[1])], area, &room_min, &drawn));
     let fit = t.fit(area, &room_min, &drawn);
     assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
-    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+    assert!(fit_width(&fit, g) >= 20.0 - 1e-9);
     assert!((rect_of(&t, s[3]).width() - outline).abs() < 1e-9);
 }
 
@@ -1553,7 +1524,7 @@ fn make_room_leaves_undrawn_leaves_alone() {
 #[test]
 fn make_room_grows_for_every_leaf_it_is_given() {
     let s = [0, 1, 2].map(SlotId::new);
-    let g = GroupId::new(0);
+    let g = Leaf::Editor;
     let cell = Node::split(
         Axis::Horizontal,
         vec![
@@ -1562,10 +1533,7 @@ fn make_room_grows_for_every_leaf_it_is_given() {
             (1.0, Node::leaf(Leaf::Slot(s[2]))),
         ],
     );
-    let root = Node::split(
-        Axis::Horizontal,
-        vec![(0.5, cell), (0.5, Node::leaf(Leaf::Group(g)))],
-    );
+    let root = Node::split(Axis::Horizontal, vec![(0.5, cell), (0.5, Node::leaf(g))]);
     let slots = BTreeMap::from([
         (s[0], (vec!["files"], Some("files"))),
         (s[1], (vec!["ask"], Some("ask"))),
@@ -1584,40 +1552,144 @@ fn make_room_grows_for_every_leaf_it_is_given() {
     assert!(both.make_room(&[x, b], area, &room_min, &|_| true));
     let fit = both.fit(area, &room_min, &|_| true);
     assert!(fit.collapsed.is_empty(), "{:?}", fit.collapsed);
-    assert!(fit_width(&fit, Leaf::Group(g)) >= 20.0 - 1e-9);
+    assert!(fit_width(&fit, g) >= 20.0 - 1e-9);
 }
 
-/// Left slot, group A, a slot between the groups, group B (active).
-fn slot_between_two_groups() -> (Tree, GroupId, GroupId, SlotId, SlotId) {
+// ── The editor region inside the tree (ADR-0058) ──────────────────────
+
+fn assert_rect(got: UnitRect, want: (f64, f64, f64, f64)) {
+    let have = (got.x(), got.y(), got.width(), got.height());
+    for (a, b) in [
+        (have.0, want.0),
+        (have.1, want.1),
+        (have.2, want.2),
+        (have.3, want.3),
+    ] {
+        assert!((a - b).abs() < 1e-9, "{have:?} != {want:?}");
+    }
+}
+
+#[test]
+fn regions_split_the_editor_leaf_into_the_shown_tabs_group_rects() {
     let mut t = tree();
-    let a = t.active_group();
-    let b = t.split_group(a, Axis::Horizontal).unwrap();
-    let mid = t.place_beside_group("mid", b, Dir::Left).unwrap();
-    t.focus(Focus::Leaf(Leaf::Group(b)));
-    assert_eq!(t.active_group(), b);
-    (t, a, b, sides(&tree()).0, mid)
+    let g0 = t.active_group();
+    let g1 = t.region_mut().split_group(g0, Axis::Horizontal).unwrap();
+    let g2 = t.region_mut().split_group(g1, Axis::Vertical).unwrap();
+    // The outer tree still has one editor leaf, whole.
+    let editor: Vec<UnitRect> = t
+        .regions()
+        .into_iter()
+        .filter(|(l, _)| *l == Leaf::Editor)
+        .map(|(_, r)| r)
+        .collect();
+    assert_eq!(editor.len(), 1);
+    assert_rect(editor[0], (0.2, 0.0, 0.6, 1.0));
+    // Its rectangle is shared out among the shown tab's groups.
+    let groups = t.group_regions();
+    let ids: Vec<GroupId> = groups.iter().map(|(g, _)| *g).collect();
+    assert_eq!(ids, vec![g0, g1, g2]);
+    assert_rect(groups[0].1, (0.2, 0.0, 0.3, 1.0));
+    assert_rect(groups[1].1, (0.5, 0.0, 0.3, 0.5));
+    assert_rect(groups[2].1, (0.5, 0.5, 0.3, 0.5));
+    // Another tab shown: only its group, over the whole editor leaf.
+    let (tab, g3) = t.region_mut().new_tab();
+    assert_eq!(t.region().shown(), tab);
+    let groups = t.group_regions();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].0, g3);
+    assert_rect(groups[0].1, (0.2, 0.0, 0.6, 1.0));
 }
 
 #[test]
-fn edge_group_is_the_outermost_one_whichever_is_active() {
-    let (mut t, a, b, _, _) = slot_between_two_groups();
-    assert_eq!(t.edge_group(Side::Left), Some(a));
-    assert_eq!(t.edge_group(Side::Right), Some(b));
-    t.focus(Focus::Leaf(Leaf::Group(a)));
-    assert_eq!(t.edge_group(Side::Left), Some(a));
-    assert_eq!(t.edge_group(Side::Right), Some(b));
+fn focus_dir_moves_between_groups_of_the_shown_tab_before_leaving_the_region() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let g0 = t.active_group();
+    let g1 = t.region_mut().split_group(g0, Axis::Horizontal).unwrap();
+    let editor = TreeFocusMove::Moved(Focus::Leaf(Leaf::Editor));
+    assert_eq!(t.focus_dir(Dir::Right), editor);
+    assert_eq!(t.active_group(), g1);
+    assert_eq!(t.focused(), Focus::Leaf(Leaf::Editor));
+    // At the region's right edge: on to the right slot.
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(right)))
+    );
+    // Back in, the group last active has the keyboard.
+    assert_eq!(t.focus_dir(Dir::Left), editor);
+    assert_eq!(t.active_group(), g1);
+    assert_eq!(t.focus_dir(Dir::Left), editor);
+    assert_eq!(t.active_group(), g0);
+    assert_eq!(
+        t.focus_dir(Dir::Left),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(left)))
+    );
+    // Groups of a tab that is not shown are no targets.
+    assert_eq!(t.focus_dir(Dir::Right), editor);
+    let (_, g2) = t.region_mut().new_tab();
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(right)))
+    );
+    assert_eq!(t.active_group(), g2);
 }
 
 #[test]
-fn edge_slots_exclude_slots_between_groups_and_ignore_the_active_group() {
-    let (mut t, a, _, _, mid) = slot_between_two_groups();
-    let left = t.edge_slots(Side::Left);
-    assert_eq!(left.len(), 1);
-    assert!(!left.contains(&mid));
-    // Relative to the active group B, the slot between the groups counts.
-    assert!(t.side_slots(Side::Left).contains(&mid));
-    t.focus(Focus::Leaf(Leaf::Group(a)));
-    assert_eq!(t.edge_slots(Side::Left), left);
+fn focus_dir_leaves_the_region_at_its_edge_into_the_neighbor_slot() {
+    // slot0 | editor (g0 over g1) | slot1 over slot2
+    let (mut t, s, _) = nested();
+    let g0 = t.active_group();
+    let g1 = t.region_mut().split_group(g0, Axis::Vertical).unwrap();
+    // From the top group, Up is the edge: something is stacked in the
+    // column (the lower group), so the key is handled.
+    assert_eq!(t.focus_dir(Dir::Up), TreeFocusMove::AtEdge);
+    assert_eq!(
+        t.focus_dir(Dir::Down),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Editor))
+    );
+    assert_eq!(t.active_group(), g1);
+    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::AtEdge);
+    // Leaving to the right is measured from the lower group, so the lower
+    // slot wins (from the whole region, the top-left one would).
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(s[2])))
+    );
+    assert!(t.focus(Focus::Leaf(Leaf::Editor)));
+    assert_eq!(t.active_group(), g1);
+    assert!(t.region_mut().set_active_group(g0));
+    assert_eq!(
+        t.focus_dir(Dir::Right),
+        TreeFocusMove::Moved(Focus::Leaf(Leaf::Slot(s[1])))
+    );
+}
+
+#[test]
+fn edge_group_of_a_side_is_the_region_not_a_group() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let g0 = t.active_group();
+    let g1 = t.region_mut().split_group(g0, Axis::Horizontal).unwrap();
+    // A slot placed at the left edge of the editor lands left of the whole
+    // region, never between its groups.
+    let b = t.place_beside_editor("x", Dir::Left);
+    let groups = t.group_regions();
+    assert_eq!(
+        groups.iter().map(|(g, _)| *g).collect::<Vec<_>>(),
+        vec![g0, g1]
+    );
+    for (_, r) in &groups {
+        assert!(r.x() >= rect_of(&t, b).right() - 1e-9, "{r:?}");
+    }
+    assert!((rect_of(&t, b).right() - groups[0].1.x()).abs() < 1e-9);
+    assert_eq!(t.edge_slots(Side::Left), vec![left, b]);
+    assert_eq!(t.side_slots(Side::Left), vec![left, b]);
+    // On the right, the same.
+    let c = t.place_beside_editor("y", Dir::Right);
+    let groups = t.group_regions();
+    assert!((rect_of(&t, c).x() - groups[1].1.right()).abs() < 1e-9);
+    assert_eq!(t.edge_slots(Side::Right), vec![c, right]);
+    assert_eq!(t.region().all_groups(), vec![g0, g1]);
 }
 
 #[test]

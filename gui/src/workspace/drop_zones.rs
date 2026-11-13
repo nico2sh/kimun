@@ -368,7 +368,7 @@ impl Workspace {
     }
 
     /// The slot a window-edge strip fills: the first slot outside the
-    /// editor groups on that side, drawn or kept empty. Not relative to
+    /// editor region on that side, drawn or kept empty. Not relative to
     /// the active group, so the strip means the same whatever has focus.
     pub(super) fn window_edge_slot(&self, side: Side) -> Option<SlotId> {
         self.layout.edge_slots(side).first().copied()
@@ -408,7 +408,7 @@ impl Workspace {
     /// shown there staying placed, hidden ([`Self::move_into`]); an edge
     /// puts it in a new slot on that side of the slot ([`Self::spawn_beside`]);
     /// a window-edge strip does the first for the side's first slot, else
-    /// makes a slot at the edge of the outermost editor group on that side
+    /// makes a slot at that edge of the whole editor region
     /// ([`Self::spawn_at`]). A drop that makes a slot makes room for it;
     /// with no room, nothing changes and a flash says so on release (the
     /// zone is drawn all the same: whether it fits is worked out only
