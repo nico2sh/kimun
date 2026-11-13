@@ -594,9 +594,9 @@ impl Workspace {
             .filter_map(|other| Some((other, self.layout.shown(other)?)))
             .map(|(other, shown)| {
                 let title = view_registry::spec(shown).title;
-                // Only Left and Right join the slot they reach, as the
-                // pick does; Up and Down trade places there instead.
-                let hint = [Dir::Left, Dir::Right]
+                // Only Up and Down trade places in the slot they reach, as
+                // the pick does; Left and Right join its stack instead.
+                let hint = [Dir::Up, Dir::Down]
                     .into_iter()
                     .find(|dir| reach(*dir) == Some(other))
                     .and_then(chord);

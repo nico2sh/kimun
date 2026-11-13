@@ -177,8 +177,7 @@ impl Zone {
 /// long as the drag lives (GPUI exposes no accessor for the payload, and a
 /// divider's drag is a drag too).
 pub(crate) struct LiveViewDrag {
-    view: DrawerView,
-    from: DragFrom,
+    drag: ViewDrag,
     chip: WeakEntity<DragChip>,
 }
 
@@ -240,8 +239,8 @@ impl DropOutcome {
     }
 
     /// The colour of the zone and label this outcome belongs to.
-    pub(crate) fn accent(outcome: Option<Self>, theme: &Theme) -> Rgba {
-        if outcome.is_some_and(Self::is_no_room) {
+    pub(crate) fn accent(self, theme: &Theme) -> Rgba {
+        if self.is_no_room() {
             theme::error(theme)
         } else {
             theme::focus_border(theme)
@@ -284,8 +283,7 @@ impl Workspace {
         move |drag, _, _, cx| {
             let chip = cx.new(|_| DragChip::new(drag.view));
             let live = LiveViewDrag {
-                view: drag.view,
-                from: drag.from,
+                drag: *drag,
                 chip: chip.downgrade(),
             };
             this.update(cx, |this, cx| {
@@ -301,21 +299,27 @@ impl Workspace {
     /// when the drag ends (released, cancelled).
     pub(crate) fn dragged_view(&self, cx: &App) -> Option<DrawerView> {
         let live = self.view_drag.as_ref()?;
-        (cx.has_active_drag() && live.chip.upgrade().is_some()).then_some(live.view)
+        (cx.has_active_drag() && live.chip.upgrade().is_some()).then_some(live.drag.view)
     }
 
-    /// Work out [`Self::drop_outcomes`] for this frame: what a drop on each
+    /// Work out [`Self::drop_outcomes`] for the drag: what a drop on each
     /// zone that is drawn would do, so the zone under the pointer can say
     /// so. Cleared when no drag is live.
     pub(super) fn refresh_drop_outcomes(&mut self, window: &Window, cx: &App) {
-        self.drop_outcomes.clear();
-        let Some(view) = self.zones_for(cx) else {
+        let Some(drag) = self.zones_for(cx) else {
+            self.drop_outcomes.clear();
+            self.drop_outcomes_for = None;
             self.hovered_zone = None;
             return;
         };
-        let Some(from) = self.view_drag.as_ref().map(|live| live.from) else {
+        // The layout cannot change while the drag lives (a drop ends it), so
+        // the outcomes are worked out once per drag, not every frame.
+        if self.drop_outcomes_for == Some(drag) {
             return;
-        };
+        }
+        self.drop_outcomes.clear();
+        self.drop_outcomes_for = Some(drag);
+        let ViewDrag { view, from } = drag;
         for target in self.drop_targets() {
             if self.drop_target_allowed(view, target) {
                 let outcome = self.drop_outcome(view, from, target, window);
@@ -343,10 +347,6 @@ impl Workspace {
     fn resolved_placement(&self, from: DragFrom, target: DropTarget) -> Placement {
         match (from, target.placement()) {
             (DragFrom::Rail, Placement::Into(slot)) => Placement::Replace(slot),
-            (DragFrom::Rail, Placement::AtEdge(side)) => match self.window_edge_slot(side) {
-                Some(slot) => Placement::Replace(slot),
-                None => Placement::AtEdge(side),
-            },
             (_, placement) => placement,
         }
     }
@@ -409,9 +409,10 @@ impl Workspace {
     /// ends the drag ([`Self::end_view_drag`]), a dialog's overlay keeps a
     /// drag from starting under it, and a drop checks for an open dialog
     /// itself; `self.modal` can outlive a dialog the kit closed.
-    fn zones_for(&self, cx: &App) -> Option<DrawerView> {
-        self.dragged_view(cx)
-            .filter(|_| self.layout.zoomed().is_none())
+    fn zones_for(&self, cx: &App) -> Option<ViewDrag> {
+        self.dragged_view(cx)?;
+        let live = self.view_drag.as_ref()?;
+        self.layout.zoomed().is_none().then_some(live.drag)
     }
 
     /// End a view's drag, if one is live, with nothing dropped; its zones
@@ -448,45 +449,56 @@ impl Workspace {
     /// where the drop would change nothing is left out. `None` while no
     /// view is dragged.
     pub(super) fn zone_layer(&self, slot: SlotId, cx: &mut Context<Self>) -> Option<gpui_kit::Div> {
-        let dragged = self.zones_for(cx)?;
+        let dragged = self.zones_for(cx)?.view;
         let shown = self.layout.shown(slot)?;
         let quarter = relative(0.25);
-        let zones = Zone::ALL
-            .into_iter()
-            .filter_map(|zone| {
-                let target = DropTarget::Slot(slot, zone);
-                let el =
-                    self.drop_zone(zone_id(shown, zone), zone_label(zone), dragged, target, cx)?;
-                let el = match zone {
-                    Zone::Centre => el.top(quarter).bottom(quarter).left(quarter).right(quarter),
-                    Zone::Edge(Dir::Left) => el
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(quarter)
-                        .min_w(px(EDGE_ZONE_MIN)),
-                    Zone::Edge(Dir::Right) => el
-                        .top_0()
-                        .bottom_0()
-                        .right_0()
-                        .w(quarter)
-                        .min_w(px(EDGE_ZONE_MIN)),
-                    Zone::Edge(Dir::Up) => el
-                        .top_0()
-                        .left(quarter)
-                        .right(quarter)
-                        .h(quarter)
-                        .min_h(px(EDGE_ZONE_MIN)),
-                    Zone::Edge(Dir::Down) => el
-                        .bottom_0()
-                        .left(quarter)
-                        .right(quarter)
-                        .h(quarter)
-                        .min_h(px(EDGE_ZONE_MIN)),
-                };
-                Some(el.test_support().into_any_element())
-            })
-            .collect::<Vec<_>>();
+        // Each zone fills a cell of a grid that tiles the body: the left and
+        // right edges run its full height, the top and bottom edges and the
+        // centre share the column between them. The cells never overlap, so
+        // one pointer position is one zone. A zone that is not drawn leaves
+        // its cell empty, keeping the others where they are.
+        let mut cell = |zone: Zone| {
+            let target = DropTarget::Slot(slot, zone);
+            let el = self
+                .drop_zone(zone_id(shown, zone), zone_label(zone), dragged, target, cx)
+                .map(|el| el.inset_0().test_support().into_any_element());
+            div().relative().children(el)
+        };
+        let side = |cell: gpui_kit::Div| {
+            cell.flex_none()
+                .h_full()
+                .w(quarter)
+                .min_w(px(EDGE_ZONE_MIN))
+        };
+        let band = |cell: gpui_kit::Div| {
+            cell.flex_none()
+                .w_full()
+                .h(quarter)
+                .min_h(px(EDGE_ZONE_MIN))
+        };
+        let left = side(cell(Zone::Edge(Dir::Left)));
+        let up = band(cell(Zone::Edge(Dir::Up)));
+        let centre = cell(Zone::Centre).flex_1().min_h_0().w_full();
+        let down = band(cell(Zone::Edge(Dir::Down)));
+        let right = side(cell(Zone::Edge(Dir::Right)));
+        let grid = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_row()
+            .child(left)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(up)
+                    .child(centre)
+                    .child(down),
+            )
+            .child(right);
         // The labels lie over every zone, at the centre of the body, so no
         // zone's border crosses one and a narrow zone does not clip it.
         let tags = Zone::ALL.into_iter().filter_map(|zone| {
@@ -502,7 +514,7 @@ impl Workspace {
                     .into_any_element(),
             )
         });
-        Some(div().absolute().inset_0().children(zones).children(tags))
+        Some(div().absolute().inset_0().child(grid).children(tags))
     }
 
     /// The window-edge strips over the editor Panel while a view is
@@ -510,7 +522,7 @@ impl Workspace {
     /// that side's kept-empty slot, else making a column beside the editor. Empty while no view is
     /// dragged; a strip where the drop would change nothing is left out.
     pub(super) fn window_strips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(dragged) = self.zones_for(cx) else {
+        let Some(ViewDrag { view: dragged, .. }) = self.zones_for(cx) else {
             return Vec::new();
         };
         STRIP_SIDES
@@ -563,7 +575,7 @@ impl Workspace {
         }
         let outcome = self.drop_outcomes.get(&target).copied()?;
         let theme = theme::current(cx);
-        let accent = DropOutcome::accent(Some(outcome), &theme);
+        let accent = outcome.accent(&theme);
         Some(
             div()
                 .px_2()
@@ -596,7 +608,9 @@ impl Workspace {
         }
         let theme = theme::current(cx);
         let outcome = self.drop_outcomes.get(&target).copied();
-        let accent = DropOutcome::accent(outcome, &theme);
+        let accent = outcome.map_or_else(|| theme::focus_border(&theme), |o| o.accent(&theme));
+        // What a drop here would do, for the accessibility tree too.
+        let label: SharedString = outcome.map_or_else(|| label.into(), |o| o.label().into());
         let fill = Rgba {
             a: ZONE_FILL_ALPHA,
             ..accent
@@ -608,8 +622,7 @@ impl Workspace {
         // Resting: every zone drawn for the drag shows a dashed outline, so
         // the places to drop are visible before the pointer is over one.
         let mut zone = div()
-            .id(id.clone())
-            .group(id)
+            .id(id)
             .role(Role::Group)
             .aria_label(label)
             .absolute()

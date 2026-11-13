@@ -902,8 +902,10 @@ fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext
         }
         assert_eq!(
             shell.workspace.read(cx).move_chooser_hints(cx),
+            // "Into Outline slot" swaps; the Right chord joins OUTLINE's
+            // stack instead, so that row names no chord.
             Some(vec![
-                move_chord(Dir::Right, cx),
+                None,
                 move_chord(Dir::Up, cx),
                 move_chord(Dir::Down, cx),
                 move_chord(Dir::Left, cx),
@@ -1115,19 +1117,21 @@ fn a_filtered_pick_runs_the_row_the_query_kept(cx: &mut TestAppContext) {
 }
 
 /// FILES over FIND, one view each: the Up chord reaches FILES' slot from
-/// FIND, but it trades places there, which picking "Into Files slot" does
-/// not: that row names no chord.
+/// FIND and trades places there, as picking "Into Files slot" does: that
+/// row names the chord.
 #[gpui_kit::test]
-fn an_into_row_above_names_no_chord(cx: &mut TestAppContext) {
+fn an_into_row_above_names_the_up_chord(cx: &mut TestAppContext) {
     let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(move_button(DrawerView::Find), cx);
         window.render_frame(cx);
         assert_eq!(move_rows(&shell, cx), [into(DrawerView::Files)]);
+        let up = move_chord(Dir::Up, cx);
+        assert!(up.is_some(), "the Up chord is bound");
         assert_eq!(
             shell.workspace.read(cx).move_chooser_hints(cx),
-            Some(vec![None])
+            Some(vec![up])
         );
     })
     .unwrap();
