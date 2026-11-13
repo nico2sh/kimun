@@ -1028,7 +1028,7 @@ impl Workspace {
             // (no argument only) on the history; opens wait for it. With no
             // record the history restores as it always did, opens going
             // through at once. A note on the command line opens alone, and
-            // the record stays as it is until the arrangement changes.
+            // the record stays as it is until a structural change.
             // (The record is a small file of the app's own: read here, so
             // opens know at once whether to wait.)
             let record = matches!(first, FirstNote::Restore | FirstNote::Rejected(_))
@@ -1036,8 +1036,13 @@ impl Workspace {
                 .flatten();
             let restoring = record.is_some();
             let start = match &first {
-                FirstNote::Note(path) => session::SessionStart::Launch(path.clone()),
+                FirstNote::Note(_) => session::SessionStart::Launch,
                 _ if restoring => session::SessionStart::Restore { history: restore },
+                // A file there that did not load (a newer build's, a read
+                // that failed) is kept until a real change.
+                _ if session_file.exists() => {
+                    session::SessionStart::Unreadable { history: restore }
+                }
                 _ => session::SessionStart::Fresh,
             };
             self.begin_session(session_file, start);

@@ -26,16 +26,21 @@
 //! argument: the editor stays empty, as it did). A restore whose job fails
 //! lands on the history too, and the stored record is kept (only a real
 //! change writes). Only a stored record that loads makes a restore: with
-//! none, opens go through at once as they always did. Until the restore
+//! none, opens go through at once as they always did. A stored file that
+//! exists but does not load (a newer build's format, or a read that failed)
+//! is kept the same way: the history's note (or the empty group) is no
+//! change, only a real one writes. Until the restore
 //! lands nothing is written, so a quit meanwhile keeps the record, and an
 //! open asked for meanwhile waits:
 //! the newest one opens afterwards, in the restored active group by the
 //! plain open's rules (a note a restored group holds is focused there), or
 //! in a new tab or split when that is what was asked for.
 //!
-//! **A note on the command line** opens alone in one group. That one group
-//! holding it (or empty, while it opens or when it will not) is no change:
-//! the record stays as it is until the arrangement differs.
+//! **A note on the command line** opens alone in one group. Until the
+//! first structural change (a tab or group added, removed, moved or
+//! swapped) one tab of one group is no change, whatever note it holds:
+//! opening another note there keeps the stored arrangement. After a
+//! structural change every change is written as usual.
 //!
 //! **A workspace switch** writes the old workspace's record under the old
 //! workspace, resets the region to one empty group, and restores the new
@@ -168,10 +173,15 @@ pub(crate) enum SessionStart {
     /// on the history's newest note when the record has no note left.
     Restore { history: bool },
     /// The note named on the command line opens alone: the record stays as
-    /// it is until the arrangement differs from that one group holding it.
-    Launch(VaultPath),
-    /// No stored record (or none that loads): nothing restores from it,
-    /// and opens go through at once.
+    /// it is until the first structural change.
+    Launch,
+    /// A stored file exists but does not load (another build's format, a
+    /// read that failed): nothing restores from it and opens go through at
+    /// once, but it is kept until a real change, as after a failed restore.
+    /// With `history`, the history's newest note lands.
+    Unreadable { history: bool },
+    /// No stored record: nothing restores from it, and opens go through at
+    /// once.
     Fresh,
 }
 
@@ -196,10 +206,13 @@ pub(crate) struct SessionHost {
     /// written or restored, or a launch's baseline. A record equal to it is
     /// not a change.
     last: Option<SessionRecord>,
-    /// A launch's empty start (one empty group, before its note lands, or
-    /// for good when that note will not open): not a change either, until
-    /// the first real change.
+    /// An empty start (one empty group, before the history's note lands, or
+    /// for good when it will not open): not a change either, until the
+    /// first real change.
     launch: Option<SessionRecord>,
+    /// A command-line launch: until the first structural change, one tab
+    /// of one group is no change, whatever note it holds.
+    structure_only: bool,
     /// The record last seen at a notify: a notify that leaves it as it is
     /// does not restart the debounce.
     seen: Option<SessionRecord>,
@@ -219,15 +232,28 @@ pub(crate) struct SessionHost {
     _watch: Option<Subscription>,
 }
 
-/// The record of one group holding `note`: what a launch on `note` shows.
+/// Whether `record` is one tab of one group, whatever note it holds: the
+/// structure a command-line launch starts with.
+fn is_one_group(record: &SessionRecord) -> bool {
+    matches!(
+        record.tabs.as_slice(),
+        [TabRecord {
+            tree: GroupTreeRecord::Leaf { .. },
+            ..
+        }]
+    )
+}
+
+/// The record of one group holding `note`: what a start landing on `note`
+/// shows.
 fn one_group(note: Option<VaultPath>) -> SessionRecord {
-    SessionRecord {
-        tabs: vec![TabRecord {
+    SessionRecord::new(
+        vec![TabRecord {
             tree: GroupTreeRecord::Leaf { note },
             active: 0,
         }],
-        shown: 0,
-    }
+        0,
+    )
 }
 
 impl Workspace {
@@ -254,26 +280,46 @@ impl Workspace {
         self.session.file = Some(file);
         self.session.seen = None;
         self.session.queued = None;
+        self.session.last = None;
+        self.session.launch = None;
+        self.session.structure_only = false;
+        self.session.restoring = false;
+        self.session.history = false;
         match start {
             SessionStart::Restore { history } => {
-                self.session.last = None;
-                self.session.launch = None;
                 self.session.restoring = true;
                 self.session.history = history;
             }
-            SessionStart::Launch(note) => {
-                self.session.last = Some(one_group(Some(note)));
-                self.session.launch = Some(one_group(None));
-                self.session.restoring = false;
-                self.session.history = false;
+            SessionStart::Launch => self.session.structure_only = true,
+            SessionStart::Unreadable { history } => {
+                let landed = history.then(|| self.history_newest()).flatten();
+                self.keep_stored_record(landed);
             }
-            SessionStart::Fresh => {
-                self.session.last = None;
-                self.session.launch = None;
-                self.session.restoring = false;
-                self.session.history = false;
-            }
+            SessionStart::Fresh => {}
         }
+    }
+
+    /// The history's newest note, unchecked: where a start with no record
+    /// to restore lands (as with a vault that did not index).
+    fn history_newest(&self) -> Option<VaultPath> {
+        self.settings.as_ref().and_then(|settings| {
+            settings
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .current_last_paths()
+                .first()
+                .cloned()
+        })
+    }
+
+    /// The stored file was never applied: the one group the start lands on
+    /// (`landed` when it is a note, or empty before it lands or when it
+    /// will not) must not overwrite it. Only a real change does.
+    fn keep_stored_record(&mut self, landed: Option<VaultPath>) {
+        let landed = landed.filter(VaultPath::is_note);
+        self.session.last = Some(one_group(landed));
+        self.session.launch = Some(one_group(None));
+        self.session.seen = None;
     }
 
     /// Stop recording (the workspace is left): what is not written yet is
@@ -283,6 +329,7 @@ impl Workspace {
         self.session.file = None;
         self.session.last = None;
         self.session.launch = None;
+        self.session.structure_only = false;
         self.session.seen = None;
         self.session.restoring = false;
         self.session.queued = None;
@@ -330,7 +377,9 @@ impl Workspace {
 
     /// Whether `record` is what the file holds already.
     fn session_unchanged(&self, record: &SessionRecord) -> bool {
-        self.session.last.as_ref() == Some(record) || self.session.launch.as_ref() == Some(record)
+        self.session.last.as_ref() == Some(record)
+            || self.session.launch.as_ref() == Some(record)
+            || (self.session.structure_only && is_one_group(record))
     }
 
     /// The window changed (or was only redrawn): when the record differs
@@ -373,9 +422,10 @@ impl Workspace {
             return;
         }
         self.session.last = Some(record.clone());
-        // A real change: the launch's empty start is a state like any other
-        // from now on.
+        // A real change: an empty start, and a launch's one group, are
+        // states like any other from now on.
         self.session.launch = None;
+        self.session.structure_only = false;
         self.session.writer.submit(file, record);
     }
 
@@ -423,31 +473,17 @@ impl Workspace {
         if !self.session.restoring {
             return;
         }
-        let target: Option<RestoreTarget> = self.session.history.then(|| {
-            let newest = self.settings.as_ref().and_then(|settings| {
-                settings
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .current_last_paths()
-                    .first()
-                    .cloned()
-            });
-            RestoreTarget {
-                path: newest.unwrap_or_else(VaultPath::root),
-                gone: None,
-            }
+        let newest = self
+            .session
+            .history
+            .then(|| self.history_newest())
+            .flatten();
+        let target: Option<RestoreTarget> = self.session.history.then(|| RestoreTarget {
+            path: newest.clone().unwrap_or_else(VaultPath::root),
+            gone: None,
         });
-        let landed = target
-            .as_ref()
-            .map(|t| t.path.clone())
-            .filter(VaultPath::is_note);
         self.session_restored(target.map(Landing::History), cx);
-        // The stored record was never applied: the history's one group
-        // (or the empty one before it lands) must not overwrite it. Only
-        // a real change does.
-        self.session.last = Some(one_group(landed));
-        self.session.launch = Some(one_group(None));
-        self.session.seen = None;
+        self.keep_stored_record(newest);
     }
 
     /// The open asked for while the restore was on its way, in the active
@@ -574,10 +610,11 @@ mod tests {
     use super::*;
     use kimun_core::nfs::VaultPath;
     use kimun_core::system::SystemPath;
-    use kimun_notes::settings::session::{GroupTreeRecord, TabRecord};
+    use kimun_notes::settings::session::{GroupTreeRecord, SESSION_VERSION, TabRecord};
 
     fn record(note: &str) -> SessionRecord {
         SessionRecord {
+            version: SESSION_VERSION,
             tabs: vec![TabRecord {
                 tree: GroupTreeRecord::Leaf {
                     note: Some(VaultPath::new(note)),

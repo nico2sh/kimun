@@ -13,7 +13,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::settings::session::{
-    AxisRecord, GroupTreeRecord, SessionFile, SessionRecord, TabRecord,
+    AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionFile, SessionRecord, TabRecord,
 };
 use tokio::runtime::Runtime;
 
@@ -169,6 +169,7 @@ fn started_on_a(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Win) {
 /// `c.md` over an empty group.
 fn two_tab_record() -> SessionRecord {
     SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: GroupTreeRecord::Split {
@@ -220,6 +221,7 @@ fn a_change_writes_the_record_after_the_debounce(cx: &mut TestAppContext) {
     assert_eq!(
         session_of(&v).load(),
         Some(SessionRecord {
+            version: SESSION_VERSION,
             tabs: vec![
                 TabRecord {
                     tree: leaf(Some("a.md")),
@@ -284,6 +286,7 @@ fn quit_writes_the_record_at_once(cx: &mut TestAppContext) {
     assert_eq!(
         record,
         SessionRecord {
+            version: SESSION_VERSION,
             tabs: vec![TabRecord {
                 tree: GroupTreeRecord::Split {
                     axis: AxisRecord::Vertical,
@@ -411,6 +414,7 @@ fn every_note_missing_falls_back_to_the_history(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: leaf(Some("x.md")),
@@ -537,6 +541,7 @@ fn a_switch_saves_the_old_record_and_restores_the_new(cx: &mut TestAppContext) {
     assert_eq!(
         b_file.load(),
         Some(SessionRecord {
+            version: SESSION_VERSION,
             tabs: vec![TabRecord {
                 tree: GroupTreeRecord::Split {
                     axis: AxisRecord::Vertical,
@@ -830,4 +835,99 @@ fn a_restore_that_cannot_apply_writes_nothing(cx: &mut TestAppContext) {
     win.quit(cx);
     cx.run_until_parked();
     assert_eq!(bytes(&v), before);
+}
+
+// ── A stored file that does not load ─────────────────────────────────────
+
+/// Regression lock (final review I2): a stored file this build cannot load
+/// (a newer build's format here; a read that failed is the same) is kept
+/// byte for byte through the start, the debounce and a quit, whether the
+/// history lands a note or the editor stays empty, and with a refused
+/// argument too. A real change then writes.
+#[gpui_kit::test]
+fn a_stored_file_that_does_not_load_is_kept_until_a_real_change(cx: &mut TestAppContext) {
+    const NEWER: &[u8] = br#"{"version":2,"future":true}"#;
+    let rt = runtime();
+    let _guard = rt.enter();
+    for (history, first, text) in [
+        (&["d.md"][..], FirstNote::Restore, "delta"),
+        (&[][..], FirstNote::Restore, ""),
+        (
+            &["d.md"][..],
+            FirstNote::Rejected("bad?name is not a note".into()),
+            "",
+        ),
+    ] {
+        let v = rt.block_on(test_vault(NOTES, history));
+        std::fs::write(session_of(&v).path().as_path(), NEWER).unwrap();
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, first.clone()),
+            v.settings.clone(),
+        ));
+        drive(&rt, cx, |cx| {
+            !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == text
+        });
+        win.after_debounce(cx);
+        win.quit(cx);
+        cx.run_until_parked();
+        assert_eq!(bytes(&v), NEWER, "kept: {first:?}");
+
+        win.with(cx, |w, cx| w.open_note_in_new_tab(path("a.md"), cx));
+        drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "alpha");
+        win.after_debounce(cx);
+        assert_eq!(session_of(&v).load(), Some(win.record(cx)), "{first:?}");
+    }
+}
+
+// ── A command-line launch keeps the arrangement ──────────────────────────
+
+/// Final-review ruling: after a launch with a note on the command line,
+/// opening another note in its one group (a click in FILES) is no change:
+/// the stored arrangement stays, through the debounce and a quit.
+#[gpui_kit::test]
+fn a_command_line_launch_keeps_the_record_when_another_note_opens(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Note(path("d.md")));
+    let before = bytes(&v);
+    drive(&rt, cx, |cx| {
+        win.text(cx) == "delta" && !win.indexing(cx) && win.all_idle(cx)
+    });
+    win.with(cx, |w, cx| w.open_note(path("a.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "alpha");
+    win.after_debounce(cx);
+    assert_eq!(bytes(&v), before, "a note replaced in the one group");
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(bytes(&v), before, "nor at a quit");
+}
+
+/// A structural change after a command-line launch (a tab added) replaces
+/// the stored record, and from then on every change is written, a note
+/// replaced in a group as well.
+#[gpui_kit::test]
+fn a_command_line_launch_writes_once_a_tab_is_added(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Note(path("d.md")));
+    drive(&rt, cx, |cx| {
+        win.text(cx) == "delta" && !win.indexing(cx) && win.all_idle(cx)
+    });
+    win.with(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "beta");
+    win.after_debounce(cx);
+    assert_eq!(session_of(&v).load(), Some(win.record(cx)), "replaced");
+    assert_eq!(win.notes_by_tab(cx).len(), 2);
+
+    win.with(cx, |w, cx| w.open_note(path("c.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "gamma");
+    win.after_debounce(cx);
+    assert_eq!(
+        session_of(&v).load(),
+        Some(win.record(cx)),
+        "normal writes resume"
+    );
 }

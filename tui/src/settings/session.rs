@@ -105,14 +105,37 @@ pub struct TabRecord {
     pub active: usize,
 }
 
+/// The format version this build writes and reads ([`SessionRecord::version`]).
+pub const SESSION_VERSION: u32 = 1;
+
 /// Everything a restore needs: the tabs and which one is shown.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
+    /// The format the record is written in: [`SESSION_VERSION`] for every
+    /// record this build makes. A file of another version (a newer build's)
+    /// does not load.
+    pub version: u32,
     pub tabs: Vec<TabRecord>,
     pub shown: usize,
 }
 
+/// Just the version of a stored record, read before the rest so a record
+/// from another build is told apart from a broken one.
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
+}
+
 impl SessionRecord {
+    /// A record of this build's version.
+    pub fn new(tabs: Vec<TabRecord>, shown: usize) -> Self {
+        Self {
+            version: SESSION_VERSION,
+            tabs,
+            shown,
+        }
+    }
+
     /// Whether the record can be restored without panicking: at least one tab,
     /// `shown` and every `active` in range, no empty split, no weight that is
     /// not a positive number. A record failing
@@ -166,9 +189,9 @@ impl SessionFile {
         self.path.exists()
     }
 
-    /// The stored session. Missing, unreadable, malformed or invalid (see
-    /// [`SessionRecord`]) all yield `None`; failures other than a missing file
-    /// are logged.
+    /// The stored session. Missing, unreadable, malformed, of another
+    /// version than [`SESSION_VERSION`] or invalid (see [`SessionRecord`])
+    /// all yield `None`; failures other than a missing file are logged.
     pub fn load(&self) -> Option<SessionRecord> {
         let bytes = match std::fs::read(&self.path) {
             Ok(b) => b,
@@ -178,6 +201,22 @@ impl SessionFile {
                 return None;
             }
         };
+        match serde_json::from_slice::<VersionProbe>(&bytes) {
+            Ok(probe) if probe.version == SESSION_VERSION => {}
+            Ok(probe) => {
+                tracing::warn!(
+                    "ignoring session file {} of version {} (this build reads {})",
+                    self.path,
+                    probe.version,
+                    SESSION_VERSION
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!("ignoring unreadable session file {}: {}", self.path, e);
+                return None;
+            }
+        }
         let record: SessionRecord = match serde_json::from_slice(&bytes) {
             Ok(r) => r,
             Err(e) => {

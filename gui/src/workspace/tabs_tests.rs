@@ -668,7 +668,9 @@ fn close_flushes_every_group_before_the_window_closes(cx: &mut TestAppContext) {
 fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
     use super::reopen_tests::{BETA, open_on_a, pair, set_current};
     use kimun_notes::settings::EditorBackendSetting;
-    use kimun_notes::settings::session::{AxisRecord, GroupTreeRecord, SessionRecord, TabRecord};
+    use kimun_notes::settings::session::{
+        AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionRecord, TabRecord,
+    };
 
     let rt = runtime();
     let _guard = rt.enter();
@@ -678,6 +680,7 @@ fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
         note: Some(path(note)),
     };
     let b_record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![TabRecord {
             tree: GroupTreeRecord::Split {
                 axis: AxisRecord::Horizontal,
