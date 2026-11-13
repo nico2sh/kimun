@@ -22,10 +22,12 @@
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
 //!
-//! **Ctrl+W under vim.** Vim's Ctrl+W is its window prefix. The engine here
-//! reads no Ctrl+W, so the chord closes the tab in vim Normal mode too, like
-//! any other Ctrl+letter the engine does not read. But while the engine holds
-//! a pending sequence (a count, an operator, `g`, `f`, `r`, ...) the key is
+//! **Ctrl+W under vim.** Vim's Ctrl+W is its window prefix in Normal mode
+//! and deletes a word in Insert mode. In Insert mode the key is the
+//! editor's, never the tab close ([`KeyCtx::vim_insert`]). In Normal mode
+//! the engine here reads no Ctrl+W, so the chord closes the tab, like any
+//! other Ctrl+letter the engine does not read. But while the engine holds a
+//! pending sequence (a count, an operator, `g`, `f`, `r`, ...) the key is
 //! part of what the user is typing to vim: Ctrl+W then goes to the engine,
 //! which ends or ignores the sequence as it does any Ctrl chord, and no tab
 //! closes ([`KeyCtx::vim_pending`]).
@@ -84,6 +86,9 @@ pub struct KeyCtx {
     /// The vim engine holds a pending sequence (a count, an operator, an
     /// awaited key): Ctrl+W is the engine's then, not the tab close.
     pub vim_pending: bool,
+    /// The vim engine is in Insert mode: Ctrl+W is the engine's then (vim's
+    /// delete-word), not the tab close.
+    pub vim_insert: bool,
 }
 
 /// Where an action's chord is live. Two actions may share a chord only when
@@ -219,13 +224,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // (Cmd+Option+R on macOS, as the left's).
         A::ToggleRightDrawer if mac => &["cmd+alt+r"],
         A::ToggleRightDrawer => &["alt+r"],
-        // Arranging the layout tree (ADR-0052), only from the rail or a
-        // slot, so the editor keeps these chords (Option+Shift+Arrow and
-        // Alt+Shift+letter are text keys there). The directional-focus
+        // Arranging the layout tree (ADR-0052). The directional-focus
         // chord plus Shift carries the focused view to the neighbouring
-        // slot that way. Splitting and closing are the same modifiers with
-        // a letter: R splits right, D splits down, W closes (the desktop's
-        // close). Not Ctrl+letter, so the vim rule never meets them.
+        // slot that way, only from the rail or a slot, so the editor keeps
+        // it (Option+Shift+Arrow is a text key there). Splitting and closing
+        // are the same modifiers with a letter: R splits right, D splits
+        // down, W closes (the desktop's close). Those work everywhere, the
+        // editor too: they act on the focused leaf, a slot or the editor's
+        // active group (ADR-0058). Not Ctrl+letter, so the vim rule never
+        // meets them.
         A::MoveViewToNeighbour(dir) => match (mac, dir) {
             (true, Dir::Left) => &["cmd+alt+shift+left"],
             (true, Dir::Right) => &["cmd+alt+shift+right"],
@@ -650,19 +657,20 @@ impl Keymap {
                 query: false,
                 browser: false,
                 vim_pending: false,
+                vim_insert: false,
             })
     }
 
     /// The action `chord` triggers in `ctx`, if any: a [`Scope::Query`]
     /// binding first where a query is typed. `None` also when the vim rule
-    /// gives the chord to the editor, and for Ctrl+W while the vim engine
-    /// holds a pending sequence (the module docs).
+    /// gives the chord to the editor, and for Ctrl+W while the vim engine is
+    /// in Insert mode or holds a pending sequence (the module docs).
     pub fn resolve(&self, chord: KeyInput, ctx: KeyCtx) -> Option<&ActionShortcuts> {
         let vim_editor = ctx.vim && ctx.panel == Panel::Editor;
         if vim_editor && self.platform == Platform::LinuxWindows && is_vim_ctrl_chord(chord) {
             return None;
         }
-        if vim_editor && ctx.vim_pending && is_vim_window_prefix(chord) {
+        if vim_editor && (ctx.vim_pending || ctx.vim_insert) && is_vim_window_prefix(chord) {
             return None;
         }
         let live = |b: &&Binding| b.chord == chord && Scope::of(&b.action).applies(ctx);
@@ -694,7 +702,8 @@ fn is_vim_ctrl_chord(chord: KeyInput) -> bool {
     chord.mods == Mods::CTRL && matches!(chord.key, Key::Char('r' | 'c' | 'x' | 'v'))
 }
 
-/// Vim's window prefix, Ctrl+W: the engine's while it holds a pending
+/// Vim's window prefix (Insert mode's delete-word), Ctrl+W: the engine's in
+/// Insert mode ([`KeyCtx::vim_insert`]) and while it holds a pending
 /// sequence ([`KeyCtx::vim_pending`]), whatever the keymap binds to it.
 fn is_vim_window_prefix(chord: KeyInput) -> bool {
     chord == KeyInput::ctrl('w')

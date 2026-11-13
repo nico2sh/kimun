@@ -48,6 +48,7 @@ fn ctx(panel: Panel, vim: bool) -> KeyCtx {
         query: false,
         browser: false,
         vim_pending: false,
+        vim_insert: false,
     }
 }
 
@@ -967,6 +968,7 @@ fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
                                 query,
                                 browser: query,
                                 vim_pending: false,
+                                vim_insert: false,
                             }
                         ),
                         Some(&A::ToggleZoom),
@@ -1021,6 +1023,7 @@ fn toggle_rail_has_a_unique_default_chord_on_every_platform() {
                                 query,
                                 browser: query,
                                 vim_pending: false,
+                                vim_insert: false,
                             }
                         ),
                         Some(&A::ToggleRail),
@@ -1056,6 +1059,7 @@ fn every_default_action_is_reachable_in_every_context() {
                             query,
                             browser: query,
                             vim_pending: false,
+                            vim_insert: false,
                         };
                         if !Scope::of(&action).applies(at) {
                             continue;
@@ -1695,6 +1699,7 @@ fn ctrl_w_does_not_close_a_tab_while_vim_holds_a_pending_prefix() {
     let ctrl_w = chord("ctrl+w");
     let pending = |panel, vim| KeyCtx {
         vim_pending: true,
+        vim_insert: false,
         ..ctx(panel, vim)
     };
     assert_eq!(lw.resolve(ctrl_w, pending(Panel::Editor, true)), None);
@@ -1743,6 +1748,54 @@ fn ctrl_w_does_not_close_a_tab_while_vim_holds_a_pending_prefix() {
     let mac = Keymap::defaults(MacOs);
     assert_eq!(
         mac.resolve(chord("cmd+w"), pending(Panel::Editor, true)),
+        Some(&A::CloseTab)
+    );
+}
+
+/// Final-review ruling: in vim Insert mode Ctrl+W is the editor's (vim's
+/// delete-word), never the tab close, pending sequence or not. Normal mode
+/// keeps the pending-prefix rule, and the plain editor closes the tab.
+#[test]
+fn ctrl_w_in_vim_insert_mode_goes_to_the_editor() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let ctrl_w = chord("ctrl+w");
+    let insert = |vim| KeyCtx {
+        vim_insert: true,
+        ..ctx(Panel::Editor, vim)
+    };
+    assert_eq!(lw.resolve(ctrl_w, insert(true)), None, "vim Insert");
+    // Normal mode: with nothing pending it closes the tab; pending, not.
+    assert_eq!(
+        lw.resolve(ctrl_w, ctx(Panel::Editor, true)),
+        Some(&A::CloseTab),
+        "vim Normal, nothing pending"
+    );
+    let pending = KeyCtx {
+        vim_pending: true,
+        ..ctx(Panel::Editor, true)
+    };
+    assert_eq!(lw.resolve(ctrl_w, pending), None, "vim Normal, pending");
+    // The plain editor never runs vim: the flag means nothing there.
+    assert_eq!(
+        lw.resolve(ctrl_w, ctx(Panel::Editor, false)),
+        Some(&A::CloseTab),
+        "plain editor"
+    );
+    // Only Ctrl+W yields: the other tab chords still run in Insert mode.
+    for (written, action) in [
+        ("ctrl+t", A::NewTab),
+        ("ctrl+tab", A::NextTab),
+        ("ctrl+s", A::SaveNote),
+    ] {
+        assert_eq!(
+            lw.resolve(chord(written), insert(true)),
+            Some(&action),
+            "{written}"
+        );
+    }
+    // macOS closes with Cmd+W, which vim never reads.
+    assert_eq!(
+        Keymap::defaults(MacOs).resolve(chord("cmd+w"), insert(true)),
         Some(&A::CloseTab)
     );
 }

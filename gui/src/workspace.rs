@@ -2545,6 +2545,7 @@ impl Workspace {
                 query: false,
                 browser: false,
                 vim_pending: false,
+                vim_insert: false,
             },
             Panel::Editor => self.active_state().editor.read(cx).key_ctx(),
             panel => KeyCtx {
@@ -2553,6 +2554,7 @@ impl Workspace {
                 query: self.find_has_keyboard(),
                 browser: false,
                 vim_pending: false,
+                vim_insert: false,
             },
         }
     }
