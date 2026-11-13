@@ -19,7 +19,10 @@
 //!    startup ([`Workspace::enter`]): indexed in the background, the session
 //!    restored, the drawer views rebuilt over it, the server sync restarted
 //!    when one is configured, the window title renamed. The layout, the
-//!    theme, the keymap and the focus handles stay.
+//!    theme, the keymap and the focus handles stay. The tabs and groups do
+//!    not: the old workspace's are written to its session file first, the
+//!    region starts again from one empty group, and the new workspace's
+//!    session file restores its own ([`super::session`]).
 //!
 //! **No stale messages.** Each vault entry gets its own app channel: the
 //! listener of the old one is dropped with the messages still queued on it,
@@ -42,6 +45,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Context, Window};
 use kimun_core::NoteVault;
 use kimun_notes::logic::ask_flow::AskFlow;
+use kimun_notes::logic::editor_region::EditorRegion;
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
@@ -310,7 +314,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The old workspace's arrangement, under the old workspace, before
+        // anything of it goes; the next starts from one empty group and
+        // its own record.
+        self.write_session_now();
         self.leave_vault(window, cx);
+        self.replace_region(EditorRegion::new(), cx);
         // The editor engine the settings name now (the setup or the
         // preferences may have changed it): a fresh, empty one of that kind.
         if let Some(settings) = self.settings.as_ref() {
@@ -421,6 +430,8 @@ impl Workspace {
         self.note_gone = None;
         self.restore_pending = false;
         self.first_open_pending = false;
+        // Nothing more is recorded for the old workspace.
+        self.end_session();
         self.status = Status::default();
         self.closing = Closing::Open;
     }

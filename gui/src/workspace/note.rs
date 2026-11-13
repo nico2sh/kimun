@@ -121,6 +121,18 @@ impl NoteHost {
         .flatten()
         .any(|held| held.is_like(path))
     }
+
+    /// The note this group is on as the session record keeps it: the one
+    /// asked for or being read (a note still on its way counts as where the
+    /// group goes), else the one it shows. `None` for an empty group, and
+    /// for one showing an attachment (it holds no note).
+    pub(crate) fn target(&self) -> Option<VaultPath> {
+        self.wanted
+            .as_ref()
+            .or(self.session.pending_open())
+            .or(self.note.as_ref())
+            .cloned()
+    }
 }
 
 /// Where closing the window stands.
@@ -1088,7 +1100,9 @@ impl Workspace {
                 tracing::warn!("quitting with unsaved edits to {note}");
                 eprintln!("kimun-gui: quitting with unsaved edits to {note}");
             }
-            // The layout's last write lands before the app goes.
+            // The session's and the layout's last writes land before the
+            // app goes.
+            workspace.write_session_now();
             let layout_writer = workspace.layout_writer.clone();
             async move { layout_writer.flush() }
         }));
@@ -1157,6 +1171,8 @@ impl Workspace {
         {
             self.layout_flushes += 1;
         }
+        // The tabs and groups as the window leaves them, at once.
+        self.write_session_now();
         self.layout_writer.flush();
     }
 
@@ -1167,6 +1183,9 @@ impl Workspace {
         {
             self.quits += 1;
         }
+        // The tabs and groups as the app leaves them, at once (the quit
+        // hook writes them again, for a quit that does not come by here).
+        self.write_session_now();
         // An update replaced this app: start it again as this one ends. A
         // failure only costs the user the manual start.
         if std::mem::take(&mut self.updates.restart_pending)

@@ -673,6 +673,9 @@ pub(crate) struct Workspace {
     pub(crate) titlebar: titlebar::TitleBar,
     /// The update flow: its checks, its dialog, an install ([`update`]).
     pub(crate) updates: update::UpdateHost,
+    /// The workspace's session file: the tabs and groups recorded as they
+    /// change, and restored when the workspace opens ([`session`]).
+    session: session::SessionHost,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -868,7 +871,9 @@ impl Workspace {
             theme_picker: None,
             titlebar: titlebar::TitleBar::new(),
             updates: update::UpdateHost::new(update::default_backend()),
+            session: session::SessionHost::default(),
         };
+        this.watch_session(cx);
         this.sync_slot_handles(cx);
         this.load_presets(cx);
         this
@@ -999,10 +1004,12 @@ impl Workspace {
                 });
             }
             self.refresh_git();
-            {
+            let session_file = {
                 let settings = settings.read().unwrap_or_else(|e| e.into_inner());
+                let session_file = settings.session_for(&name);
                 self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
-            }
+                session_file
+            };
             self.start_links(vault.clone(), tx.clone(), window, cx);
             self.start_outline(tx.clone(), window, cx);
             self.start_find(vault.clone(), tx.clone(), window, cx);
@@ -1015,12 +1022,20 @@ impl Workspace {
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
             self.first_open_pending = matches!(first, FirstNote::Restore | FirstNote::Note(_));
-            tokio::spawn(startup::index_and_restore(
+            // The arrangement is recorded from now on; a restore lands on
+            // the session record when it has a note left to open, else on
+            // the history ([`session`]).
+            self.begin_session(session_file.clone(), restore);
+            let job = tokio::spawn(startup::index_and_restore(
                 vault,
                 settings,
                 restore,
+                restore.then_some(session_file),
                 tx.clone(),
             ));
+            if restore {
+                self.await_session_restore(job, cx);
+            }
             match first {
                 FirstNote::Restore => {}
                 FirstNote::Note(path) => {
@@ -3616,6 +3631,7 @@ mod saved_searches;
 mod search;
 mod semantic;
 mod server;
+mod session;
 mod sort;
 mod switcher;
 mod tab_strip;
@@ -3686,6 +3702,8 @@ mod saved_searches_tests;
 mod search_tests;
 #[cfg(test)]
 mod semantic_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod slot_tests;
 #[cfg(test)]
