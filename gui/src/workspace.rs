@@ -2907,14 +2907,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> status_row::RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static> {
         let verb = if self.rail_hidden { "Show" } else { "Hide" };
-        let label = match keymap::chord_label(cx, &ActionShortcuts::ToggleRail) {
-            Some(chord) => format!("{verb} rail ({chord})"),
-            None => format!("{verb} rail"),
-        };
+        let label =
+            chrome::tooltip_with_chord(&format!("{verb} rail"), &ActionShortcuts::ToggleRail, cx);
         status_row::RailSegment {
             position: self.rail,
             hidden: self.rail_hidden,
-            label: label.into(),
+            label,
             on_toggle: cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_rail(window, cx)),
         }
     }
@@ -3048,11 +3046,7 @@ impl Workspace {
                 ActionShortcuts::ToggleRightDrawer,
             ),
         };
-        let chord = keymap::chord_label(cx, &action);
-        let tip: SharedString = match chord {
-            Some(chord) => format!("{name} ({chord})").into(),
-            None => name.into(),
-        };
+        let tip: SharedString = chrome::tooltip_with_chord(name, &action, cx);
         let glyph = if open {
             theme::focus_border(&theme)
         } else {
@@ -3663,6 +3657,7 @@ mod ask;
 mod ask_sources;
 mod attachment;
 mod chevron;
+mod chrome;
 mod config;
 mod create;
 mod drawer_list;

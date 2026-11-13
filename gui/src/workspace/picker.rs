@@ -120,13 +120,11 @@ const SEARCH_STACKED_LIST_SHARE: f32 = 0.4;
 /// does it.
 fn to_find_tooltip(cx: &gpui_kit::App) -> SharedString {
     let title = kimun_notes::logic::view_registry::spec(DrawerView::Find).title;
-    match crate::keymap::chord_label(
-        cx,
+    super::chrome::tooltip_with_chord(
+        &format!("Open in {title}"),
         &kimun_notes::logic::actions::ActionShortcuts::OpenQueryInSidebar,
-    ) {
-        Some(chord) => format!("Open in {title} ({chord})").into(),
-        None => format!("Open in {title}").into(),
-    }
+        cx,
+    )
 }
 
 /// The search browser's body height, in rems, in a window whose usable
