@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.13](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.12...kimun-notes-v0.24.13) - 2026-11-13
+
+### Added
+
+- zone highlighting for views in sidebar
+
+### Fixed
+
+- small refactos on duplications
+- better logic for view swapping
+
+### Other
+
+- close slots with context menu
+
 ## [0.24.12](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.11...kimun-notes-v0.24.12) - 2026-11-12
 
 ### Added
