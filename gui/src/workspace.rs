@@ -3651,6 +3651,7 @@ mod links;
 mod modal;
 mod note;
 mod note_flush;
+mod note_menu;
 mod onboarding;
 mod outline;
 mod palette;
@@ -3707,6 +3708,8 @@ mod footer_tests;
 mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
+#[cfg(test)]
+mod note_menu_tests;
 #[cfg(test)]
 mod note_tests;
 #[cfg(test)]
