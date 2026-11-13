@@ -765,6 +765,17 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Some(slot)
     }
 
+    /// Take `view` out of the slot that holds it, leaving it unplaced, and
+    /// return that slot. A slot left with no shown view keeps its other
+    /// views hidden; closing an emptied slot is the caller's
+    /// ([`Self::vacate_close`]). `None`, nothing changes, when `view` is
+    /// unplaced.
+    pub fn unplace(&mut self, view: &V) -> Option<SlotId> {
+        let slot = self.view_slot(view)?;
+        self.slots.get_mut(&slot)?.remove(view);
+        Some(slot)
+    }
+
     /// Move `view` to `slot`, shown there, replacing the view `slot`
     /// showed (which stays placed there, hidden). A view placed elsewhere
     /// leaves its old slot; a view already in `slot` is just shown. False

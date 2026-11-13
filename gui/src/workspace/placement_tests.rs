@@ -917,8 +917,8 @@ fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext
 }
 
 /// FILES over FIND, one view each: picking FIND's slot moves FILES there
-/// (shown, FIND stays placed there, hidden, as the move chord does), the
-/// slot FILES left closes, and the keyboard follows FILES. Saved.
+/// (shown) and FIND takes the slot FILES left, so no slot closes; the
+/// keyboard follows FILES. Saved.
 #[gpui_kit::test]
 fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -945,16 +945,15 @@ fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         assert!(!chooser_open(&shell, window, cx), "the chooser closed");
         let slots = layout(&shell, cx).slots();
-        assert!(!slots.contains(&top), "the vacated slot closed");
-        assert_eq!(
-            views_of(&shell, bottom, cx),
-            [DrawerView::Find, DrawerView::Files]
-        );
+        assert!(slots.contains(&top), "a swap closes no slot");
+        assert_eq!(views_of(&shell, top, cx), [DrawerView::Find]);
+        assert_eq!(shown_in(&shell, top, cx), Some(DrawerView::Find));
+        assert_eq!(views_of(&shell, bottom, cx), [DrawerView::Files]);
         assert_eq!(shown_in(&shell, bottom, cx), Some(DrawerView::Files));
         assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(bottom)));
         assert_eq!(
             saved_placed(&path),
-            [vec![DrawerView::Find, DrawerView::Files]]
+            [vec![DrawerView::Find], vec![DrawerView::Files]]
         );
     })
     .unwrap();

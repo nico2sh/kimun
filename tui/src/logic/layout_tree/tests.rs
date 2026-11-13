@@ -1677,3 +1677,15 @@ fn slot_beside_rail_follows_the_edge() {
     assert_eq!(t.slot_beside_rail(RailPosition::Bottom), Some(left_below));
     let _ = right_below;
 }
+
+#[test]
+fn unplace_takes_a_view_out_and_keeps_the_rest() {
+    let mut t = LayoutTree::default_layout("files");
+    let left = t.view_slot(&"files").unwrap();
+    assert!(t.place("find", left, false));
+    assert_eq!(t.unplace(&"files"), Some(left));
+    assert_eq!(t.view_slot(&"files"), None);
+    assert_eq!(t.shown(left), None);
+    assert_eq!(t.slot_views(left), ["find"]);
+    assert_eq!(t.unplace(&"files"), None, "already unplaced");
+}

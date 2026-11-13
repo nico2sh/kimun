@@ -212,7 +212,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use self::drop_zones::{LiveViewDrag, ViewDrag};
+use self::drop_zones::{DragFrom, LiveViewDrag, ViewDrag};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -2896,7 +2896,7 @@ impl Workspace {
             })
             .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
             // A drag source only: the rail is not a drop target (ADR-0054 §8).
-            .on_drag(ViewDrag(view), self.view_drag_ghost(cx))
+            .on_drag(ViewDrag(view, DragFrom::Rail), self.view_drag_ghost(cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate_rail_view(view, window, cx)
             }))

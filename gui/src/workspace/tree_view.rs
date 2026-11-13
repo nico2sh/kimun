@@ -75,7 +75,7 @@ use kimun_notes::logic::layout_tree::{
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
-use super::drop_zones::ViewDrag;
+use super::drop_zones::{DragFrom, ViewDrag};
 use super::{Workspace, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -1161,7 +1161,7 @@ impl Workspace {
             .id(SharedString::from(format!("slot-drag-{}", view.id())))
             .w_full()
             .child(header)
-            .on_drag(ViewDrag(view), self.view_drag_ghost(cx));
+            .on_drag(ViewDrag(view, DragFrom::Header), self.view_drag_ghost(cx));
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.
