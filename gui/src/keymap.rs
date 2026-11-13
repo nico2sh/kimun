@@ -17,7 +17,8 @@
 //! (Ctrl+S saves, Ctrl+E opens FILES). Every default bound to a bare
 //! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads, unless
 //! another default already holds that Ctrl+Shift chord (Ctrl+Shift+W is the
-//! quick note, so Ctrl+W, the tab close, has no twin).
+//! quick note, so Ctrl+W, the tab close, has no twin) or the action opts out
+//! (the new tab: vim reads no Ctrl+T, and Ctrl+Shift+T is left free).
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
 //!
@@ -324,8 +325,8 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
         // Tabs (ADR-0058) use the browser chords. New and close follow
-        // `primary` (Cmd+T, Cmd+W on macOS). Ctrl+T gets its vim twin
-        // (Ctrl+Shift+T); Ctrl+W gets none, as the quick note holds
+        // `primary` (Cmd+T, Cmd+W on macOS). Neither has a vim twin: Ctrl+T
+        // opts out (`takes_vim_twin`), and the quick note holds
         // Ctrl+Shift+W. Vim's Ctrl+W window prefix: see the module docs.
         A::NewTab => &["primary+t"],
         A::CloseTab => &["primary+w"],
@@ -537,7 +538,10 @@ impl Keymap {
             keymap.bind(action, written, *chord, &mut errors);
             // The vim rule's twin: Ctrl+Shift for a bare Ctrl+letter, unless
             // another action's default holds that chord.
-            if platform == Platform::LinuxWindows && is_bare_ctrl_letter(*chord) {
+            if platform == Platform::LinuxWindows
+                && is_bare_ctrl_letter(*chord)
+                && takes_vim_twin(action)
+            {
                 let twin = KeyInput::new(
                     chord.key,
                     Mods {
@@ -669,6 +673,13 @@ impl Keymap {
             .or_else(|| self.bindings.iter().find(live))
             .map(|b| &b.action)
     }
+}
+
+/// Whether `action`'s bare Ctrl+letter default gets its Ctrl+Shift twin.
+/// Not the new tab: vim reads no Ctrl+T, and Ctrl+Shift+T stays free (the
+/// browsers' "reopen closed tab").
+fn takes_vim_twin(action: &ActionShortcuts) -> bool {
+    !matches!(action, ActionShortcuts::NewTab)
 }
 
 /// Ctrl and a letter, nothing else held.

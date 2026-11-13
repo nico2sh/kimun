@@ -122,6 +122,19 @@ mod tests {
     }
 
     /// Every FILES row icon resolves too.
+    /// The tab strip's close and plus glyphs are bundled: an icon the
+    /// source does not carry draws an empty button.
+    #[test]
+    fn every_tab_strip_icon_is_bundled() {
+        for icon in crate::workspace::TAB_STRIP_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
     #[test]
     fn every_files_row_icon_is_bundled() {
         for icon in crate::workspace::FILES_ICONS {

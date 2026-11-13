@@ -381,7 +381,8 @@ fn keys_go_to_the_focused_panel_only(cx: &mut TestAppContext) {
 }
 
 /// Alt+Arrow moves focus between the panels without wrapping; Alt+E and
-/// Alt+F cycle through the visible ones, wrapping.
+/// Alt+F (Cmd+Option+E and Cmd+Option+S on macOS) cycle through the
+/// visible ones, wrapping.
 #[gpui_kit::test]
 fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
     let shell = open_default(cx, "");

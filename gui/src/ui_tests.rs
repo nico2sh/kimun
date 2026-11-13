@@ -1732,27 +1732,25 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         window.press("ctrl-r", cx);
         assert!(!bar_open(&view, cx));
         assert_eq!(spy.read(cx).bubbled, 0, "vim consumed Ctrl-R");
+        // Ctrl-Shift-T is bound to nothing (the new tab has no twin): the
+        // editor keeps it, nothing bubbles.
         window.press("ctrl-shift-t", cx);
-        assert_eq!(
-            spy.read(cx).bubbled,
-            1,
-            "the new tab's vim twin passes the editor by"
-        );
-        // Vim reads no Ctrl-T: the bare chord passes too.
+        assert_eq!(spy.read(cx).bubbled, 0, "Ctrl-Shift-T is no app chord");
+        // Vim reads no Ctrl-T: the new tab's chord passes the editor by.
         window.press("ctrl-t", cx);
         assert_eq!(
             spy.read(cx).bubbled,
-            2,
+            1,
             "the new tab's chord passes the editor by"
         );
         // Vim's Ctrl-W window prefix: with an operator pending the engine
         // takes Ctrl-W (no tab closes); with nothing pending it bubbles.
         window.press("d", cx);
         window.press("ctrl-w", cx);
-        assert_eq!(spy.read(cx).bubbled, 2, "vim holds `d`: Ctrl-W is vim's");
+        assert_eq!(spy.read(cx).bubbled, 1, "vim holds `d`: Ctrl-W is vim's");
         window.press("escape", cx);
         window.press("ctrl-w", cx);
-        assert_eq!(spy.read(cx).bubbled, 3, "nothing pending: the tab close");
+        assert_eq!(spy.read(cx).bubbled, 2, "nothing pending: the tab close");
         assert_eq!(text(&view, cx), all, "the `d` deleted nothing");
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx), "Ctrl-F is find under vim");

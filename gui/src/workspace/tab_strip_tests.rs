@@ -216,6 +216,7 @@ impl Win {
         cx.read(|cx| self.workspace.read(cx).note_held())
     }
 
+    #[cfg(unix)]
     fn wanted_in(&self, group: GroupId, cx: &TestAppContext) -> bool {
         cx.read(|cx| {
             self.workspace
