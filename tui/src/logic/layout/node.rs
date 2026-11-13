@@ -313,6 +313,32 @@ impl<L: Clone + PartialEq> Node<L> {
         true
     }
 
+    /// Remove the leaf `target`, its weight going to one neighbour: the
+    /// sibling before it in its split (the one after it when it is first),
+    /// so that neighbour takes its whole area and every other cell keeps
+    /// its own. A split left with one child collapses into it. False when
+    /// `target` is absent or is the root leaf.
+    pub(crate) fn remove_leaf_to_neighbour(&mut self, target: &L) -> bool {
+        let Kind::Split { children, .. } = &mut self.kind else {
+            return false;
+        };
+        let Some(i) = children.iter().position(|c| c.node.contains(target)) else {
+            return false;
+        };
+        if children[i].node.as_leaf().is_some() {
+            let gone = children.remove(i);
+            let neighbour = i.saturating_sub(1);
+            children[neighbour].weight += gone.weight;
+        } else if !children[i].node.remove_leaf_to_neighbour(target) {
+            return false;
+        }
+        if children.len() == 1 {
+            let only = children.remove(0).node;
+            *self = only;
+        }
+        true
+    }
+
     /// The root split's children as fractions summing to 1; empty for a leaf.
     #[cfg(test)]
     pub(crate) fn ratios(&self) -> Vec<f64> {

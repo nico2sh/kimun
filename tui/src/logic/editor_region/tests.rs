@@ -246,3 +246,59 @@ fn active_group_of_names_a_hidden_tabs_active_group() {
     r.close_tab(tab);
     assert_eq!(r.active_group_of(tab), None);
 }
+
+/// The shape names the shown tab's arrangement with normalized weights;
+/// the widest row counts the groups side by side, a stacked split taking
+/// its widest child.
+#[test]
+fn shape_and_widest_row_follow_the_shown_tab() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    assert_eq!(r.shape(), GroupShape::Group(a));
+    assert_eq!(r.widest_row(), 1);
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    assert_eq!(
+        r.shape(),
+        GroupShape::Split {
+            axis: Axis::Horizontal,
+            children: vec![(0.5, GroupShape::Group(a)), (0.5, GroupShape::Group(b))],
+        }
+    );
+    assert_eq!(r.widest_row(), 2);
+    assert_eq!(r.shape().last_group(), b);
+    // Stacking under `b` adds no width; splitting the lower one does.
+    let c = r.split_group(b, Axis::Vertical).unwrap();
+    assert_eq!(r.widest_row(), 2);
+    assert_eq!(r.shape().last_group(), c);
+    let d = r.split_group(c, Axis::Horizontal).unwrap();
+    assert_eq!(r.widest_row(), 3);
+    assert_eq!(r.shape().last_group(), d);
+    // Another tab has its own shape.
+    let (_, e) = r.new_tab();
+    assert_eq!(r.shape(), GroupShape::Group(e));
+    assert_eq!(r.widest_row(), 1);
+}
+
+/// A closed group's area goes to one neighbour, the group before it (the
+/// one after it when it is first); every other group keeps its size.
+#[test]
+fn closing_a_group_gives_its_area_to_the_group_before_it() {
+    let width = |r: &EditorRegion| -> Vec<(GroupId, f64)> {
+        r.regions()
+            .into_iter()
+            .map(|(g, rect)| (g, rect.width()))
+            .collect()
+    };
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let c = r.split_group(b, Axis::Horizontal).unwrap();
+    assert_eq!(width(&r), vec![(a, 0.5), (b, 0.25), (c, 0.25)]);
+    assert_eq!(r.close_group(b), Some(CloseOutcome::Group));
+    assert_eq!(width(&r), vec![(a, 0.75), (c, 0.25)]);
+    // The first group's area goes to the one after it.
+    let d = r.split_group(c, Axis::Horizontal).unwrap();
+    assert_eq!(width(&r), vec![(a, 0.75), (c, 0.125), (d, 0.125)]);
+    assert_eq!(r.close_group(a), Some(CloseOutcome::Group));
+    assert_eq!(width(&r), vec![(c, 0.875), (d, 0.125)]);
+}

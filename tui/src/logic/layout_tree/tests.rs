@@ -1167,6 +1167,60 @@ fn fit_collapses_trailing_slots_skips_undrawn_and_keeps_groups() {
     assert!((fit.rects[0].1.width() - 15.0).abs() < 1e-9);
 }
 
+/// The editor leaf's minimum grows with the widest row of groups in the
+/// shown tab: 50 units hold FILES (10) beside one group (20) and the
+/// right slot (10), but a second group side by side (40) collapses the
+/// slots, last first; the editor leaf never collapses. A stacked split
+/// adds no width.
+#[test]
+fn the_editor_minimum_follows_the_widest_row_of_groups() {
+    let mut t = tree();
+    let (left, right) = sides(&t);
+    let per_group = (20.0, 0.0);
+    assert_eq!(t.editor_min(per_group), (20.0, 0.0));
+    let area = UnitRect::new(0.0, 0.0, 50.0, 30.0);
+    let fit_now = |t: &Tree| {
+        let min = |leaf: Leaf| match leaf {
+            Leaf::Editor => t.editor_min(per_group),
+            Leaf::Slot(_) => (10.0, 0.0),
+        };
+        t.fit(area, &min, &|_| true)
+    };
+    assert!(fit_now(&t).collapsed.is_empty());
+
+    let first = t.active_group();
+    let below = t
+        .region_mut()
+        .split_group(first, Axis::Vertical)
+        .expect("split");
+    assert_eq!(t.editor_min(per_group), (20.0, 0.0), "stacked: one row");
+    assert!(fit_now(&t).collapsed.is_empty());
+
+    let beside = t
+        .region_mut()
+        .split_group(below, Axis::Horizontal)
+        .expect("split");
+    assert_eq!(t.editor_min(per_group), (40.0, 0.0));
+    let fit = fit_now(&t);
+    assert_eq!(fit.collapsed, vec![Leaf::Slot(right)]);
+    let ids: Vec<Leaf> = fit.rects.iter().map(|(l, _)| *l).collect();
+    assert_eq!(ids, vec![Leaf::Slot(left), Leaf::Editor]);
+
+    // Two side by side on top too: still two in the widest row.
+    t.region_mut()
+        .split_group(first, Axis::Horizontal)
+        .expect("split");
+    assert_eq!(t.editor_min(per_group), (40.0, 0.0));
+    t.region_mut()
+        .split_group(beside, Axis::Horizontal)
+        .expect("split");
+    assert_eq!(t.editor_min(per_group), (60.0, 0.0));
+    let fit = fit_now(&t);
+    assert_eq!(fit.collapsed, vec![Leaf::Slot(right), Leaf::Slot(left)]);
+    assert_eq!(fit.rects.len(), 1);
+    assert_eq!(fit.rects[0].0, Leaf::Editor);
+}
+
 #[test]
 fn side_queries_follow_the_active_group() {
     let t = tree();
