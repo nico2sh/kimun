@@ -100,7 +100,7 @@ fn session_and_history_files_share_a_directory() {
 /// were created under (`file_key`). The session must follow the same rule as
 /// the history, so after a rename the new name still finds the saved session.
 #[test]
-fn workspace_rename_moves_the_session_file() {
+fn workspace_rename_keeps_the_session_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let config_dir = tmp.path().canonicalize().unwrap();
     let mut settings = AppSettings::load_from_file(config_dir.join("config.toml")).unwrap();
@@ -241,4 +241,42 @@ fn a_failed_write_leaves_the_previous_file_intact() {
         return;
     }
     assert_eq!(file.load(), Some(two_tab_record()));
+}
+
+/// A split weight that is negative or zero cannot be laid out: the record
+/// is unreadable, like any other inconsistent one. (JSON has no NaN or
+/// infinity, so a non-finite weight cannot be written; the check refuses
+/// one all the same.)
+#[test]
+fn a_negative_or_zero_weight_loads_none() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = session_in(&tmp);
+    for bad in [-1.0, 0.0] {
+        let mut record = two_tab_record();
+        let GroupTreeRecord::Split { weights, .. } = &mut record.tabs[1].tree else {
+            unreachable!("the second tab is a split");
+        };
+        weights[0] = bad;
+        file.save(&record).unwrap();
+        assert_eq!(file.load(), None, "weight {bad} is refused");
+    }
+    // A nested split is checked too.
+    let mut nested = two_tab_record();
+    let GroupTreeRecord::Split { children, .. } = &mut nested.tabs[1].tree else {
+        unreachable!("the second tab is a split");
+    };
+    let GroupTreeRecord::Split { weights, .. } = &mut children[1] else {
+        unreachable!("its second child is a split");
+    };
+    weights[1] = 0.0;
+    file.save(&nested).unwrap();
+    assert_eq!(file.load(), None, "a nested zero weight is refused");
+    // Positive weights of any scale are fine.
+    let mut scaled = two_tab_record();
+    let GroupTreeRecord::Split { weights, .. } = &mut scaled.tabs[1].tree else {
+        unreachable!("the second tab is a split");
+    };
+    *weights = vec![0.001, 1000.0];
+    file.save(&scaled).unwrap();
+    assert!(file.load().is_some());
 }

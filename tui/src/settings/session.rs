@@ -80,7 +80,8 @@ impl GroupTreeRecord {
         }
     }
 
-    /// A split needs children, and one weight per child.
+    /// A split needs children, and one weight per child, each finite and
+    /// above zero (a share of the split it can be laid out with).
     fn is_well_formed(&self) -> bool {
         match self {
             Self::Leaf { .. } => true,
@@ -89,6 +90,7 @@ impl GroupTreeRecord {
             } => {
                 !children.is_empty()
                     && weights.len() == children.len()
+                    && weights.iter().all(|w| w.is_finite() && *w > 0.0)
                     && children.iter().all(Self::is_well_formed)
             }
         }
@@ -112,7 +114,8 @@ pub struct SessionRecord {
 
 impl SessionRecord {
     /// Whether the record can be restored without panicking: at least one tab,
-    /// `shown` and every `active` in range, no empty split. A record failing
+    /// `shown` and every `active` in range, no empty split, no weight that is
+    /// not a positive number. A record failing
     /// this is treated as unreadable.
     fn is_valid(&self) -> bool {
         self.shown < self.tabs.len()

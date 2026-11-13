@@ -7,8 +7,11 @@
 //! [`CloseOutcome::Emptied`]. Group ids come from one monotonic counter
 //! shared by all tabs and are never reused.
 
+use kimun_core::nfs::VaultPath;
+
 use crate::logic::layout::node::Node;
 use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
+use crate::settings::session::{GroupTreeRecord, SessionRecord, TabRecord};
 
 /// Identifies one tab. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -459,6 +462,133 @@ impl EditorRegion {
             self.remove_from(at, group);
             false
         }
+    }
+}
+
+// ── Record and restore ────────────────────────────────────────────────
+
+impl EditorRegion {
+    /// The region as a session record (ADR-0058): every tab in order with
+    /// its splits, their axes and weights (normalized per split), the note
+    /// of each group as `note_of` says (`None` for an empty group), each
+    /// tab's active group and the shown tab.
+    pub fn to_record(&self, note_of: impl Fn(GroupId) -> Option<VaultPath>) -> SessionRecord {
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|t| TabRecord {
+                tree: tree_record(&t.root, &note_of),
+                active: t
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .position(|g| *g == t.active)
+                    .expect("a tab's active group is its own"),
+            })
+            .collect();
+        SessionRecord {
+            tabs,
+            shown: self.position(self.shown).expect("the shown tab exists"),
+        }
+    }
+
+    /// The region `record` describes, with fresh ids, and the note each
+    /// group opens, in reading order. A group whose note is missing
+    /// (`exists` says no, or the path is no note at all, such as an empty
+    /// one) stays in its place, empty. A note recorded in two groups opens
+    /// in the first only: a note is open in at most one group. The recorded
+    /// shown tab, each tab's active group, the splits and their weights come
+    /// back. A record that leaves no note to open is a fresh start: one tab
+    /// with one empty group.
+    pub fn from_record(
+        record: &SessionRecord,
+        exists: impl Fn(&VaultPath) -> bool,
+    ) -> (EditorRegion, Vec<(GroupId, VaultPath)>) {
+        let mut region = EditorRegion {
+            tabs: Vec::with_capacity(record.tabs.len()),
+            shown: TabId(0),
+            next_tab: 0,
+            next_group: 0,
+        };
+        let mut notes = Vec::new();
+        for (at, tab) in record.tabs.iter().enumerate() {
+            let root = region.build(&tab.tree, &exists, &mut notes);
+            let leaves: Vec<GroupId> = root.leaves().into_iter().copied().collect();
+            let id = region.fresh_tab();
+            region.tabs.push(Tab {
+                id,
+                active: leaves[tab.active.min(leaves.len() - 1)],
+                root,
+            });
+            if at == record.shown {
+                region.shown = id;
+            }
+        }
+        if notes.is_empty() {
+            return (EditorRegion::new(), notes);
+        }
+        if region.position(region.shown).is_none() {
+            region.shown = region.tabs[0].id;
+        }
+        (region, notes)
+    }
+
+    /// The node `tree` describes, its groups numbered on; each note that
+    /// opens goes to `notes`.
+    fn build(
+        &mut self,
+        tree: &GroupTreeRecord,
+        exists: &impl Fn(&VaultPath) -> bool,
+        notes: &mut Vec<(GroupId, VaultPath)>,
+    ) -> Node<GroupId> {
+        match tree {
+            GroupTreeRecord::Leaf { note } => {
+                let group = self.fresh_group();
+                if let Some(note) = note
+                    && note.is_note()
+                    && !notes.iter().any(|(_, held)| held.is_like(note))
+                    && exists(note)
+                {
+                    notes.push((group, note.clone()));
+                }
+                Node::leaf(group)
+            }
+            GroupTreeRecord::Split {
+                axis,
+                weights,
+                children,
+            } => {
+                let children = weights
+                    .iter()
+                    .zip(children)
+                    .map(|(w, child)| (*w, self.build(child, exists, notes)))
+                    .collect();
+                Node::split((*axis).into(), children)
+            }
+        }
+    }
+}
+
+/// [`EditorRegion::to_record`] of one node.
+fn tree_record(
+    node: &Node<GroupId>,
+    note_of: &impl Fn(GroupId) -> Option<VaultPath>,
+) -> GroupTreeRecord {
+    match node.split_children() {
+        Some((axis, children)) => {
+            let (weights, children) = children
+                .into_iter()
+                .map(|(w, child)| (w, tree_record(child, note_of)))
+                .unzip();
+            GroupTreeRecord::Split {
+                axis: axis.into(),
+                weights,
+                children,
+            }
+        }
+        None => GroupTreeRecord::Leaf {
+            note: note_of(*node.as_leaf().expect("a node is a leaf or a split")),
+        },
     }
 }
 
