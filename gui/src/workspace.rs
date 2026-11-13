@@ -238,6 +238,9 @@ pub(crate) use titlebar::WINDOW_CONTROL_ICONS;
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
 
+/// Why a slot does not close: it is the last on its side of the editor.
+pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
+
 /// Where the layout, and the settings the window changes, are persisted.
 #[derive(Clone)]
 pub(crate) enum LayoutStore {
@@ -2278,16 +2281,31 @@ impl Workspace {
         let Some(focused) = self.focused_slot() else {
             return false;
         };
-        match self.layout.close_slot(focused) {
+        self.close_slot(focused, window, cx);
+        true
+    }
+
+    /// Close `slot` ([`LayoutTree::close_slot`]): its views join the
+    /// neighbouring slot that takes over its area, hidden, and the keyboard
+    /// goes there when that slot is drawn (else to the editor). The last
+    /// slot on its side of the editor stays ([`LayoutTree::last_on_side`]),
+    /// so that side can be shown again, and a flash says so. Persisted.
+    /// The `CloseSlot` chord and the slot menu's `Close slot`.
+    pub(super) fn close_slot(&mut self, slot: SlotId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.last_on_side(slot) {
+            self.flash(LAST_ON_SIDE, cx);
+            return;
+        }
+        match self.layout.close_slot(slot) {
             Ok(_) => {
                 self.tidy_layout(cx);
                 self.apply_focus(window, cx);
                 self.save_layout(cx);
             }
-            Err(TreeError::LastSlot) => self.flash("This is the only slot", cx),
+            Err(TreeError::LastSlot) => self.flash(LAST_ON_SIDE, cx),
             Err(_) => {}
         }
-        true
+        cx.notify();
     }
 
     /// `ToggleZoom` (ADR-0053): zoom the focused leaf, a slot or the
