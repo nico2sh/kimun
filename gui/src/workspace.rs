@@ -198,7 +198,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeError, TreeFocusMove,
+    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -539,8 +539,8 @@ pub(crate) struct Workspace {
     /// view is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
     /// empty otherwise.
     drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
-    /// The drag [`Self::drop_outcomes`] were worked out for.
-    drop_outcomes_for: Option<ViewDrag>,
+    /// The drag and window size [`Self::drop_outcomes`] were worked out for.
+    drop_outcomes_for: Option<(ViewDrag, gpui_kit::Size<gpui_kit::Pixels>)>,
     /// The zone the drag is over, for its label ([`Self::zone_tag`]).
     hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
@@ -2296,14 +2296,12 @@ impl Workspace {
             self.flash(LAST_ON_SIDE, cx);
             return;
         }
-        match self.layout.close_slot(slot) {
-            Ok(_) => {
-                self.tidy_layout(cx);
-                self.apply_focus(window, cx);
-                self.save_layout(cx);
-            }
-            Err(TreeError::LastSlot) => self.flash(LAST_ON_SIDE, cx),
-            Err(_) => {}
+        // An error is only a slot gone meanwhile: the last slot overall is
+        // the last on its side, refused above.
+        if self.layout.close_slot(slot).is_ok() {
+            self.tidy_layout(cx);
+            self.apply_focus(window, cx);
+            self.save_layout(cx);
         }
         cx.notify();
     }

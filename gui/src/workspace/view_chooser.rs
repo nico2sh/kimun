@@ -554,9 +554,10 @@ impl Workspace {
     /// other drawn slot in reading order (titled by the view it shows),
     /// then a new slot above, below, left and right of `slot` when `slot`
     /// holds other views (alone there, there is nothing to leave behind).
-    /// A row names the move chord that does the same: the slot a Left or
-    /// Right chord reaches (Up and Down trade places, which a pick does
-    /// not), or the new slot on a side with nothing there.
+    /// A row names the move chord that does the same: the slot an Up or
+    /// Down chord reaches (both trade places, as a pick does; Left and
+    /// Right join that slot's stack instead), or the new slot on a side
+    /// with nothing there.
     fn move_rows(
         &self,
         view: DrawerView,
@@ -634,9 +635,8 @@ impl Workspace {
     }
 
     /// Move `view` out of `from` to `target`. Into a slot: shown there,
-    /// the view shown there staying placed, hidden (as the move chord
-    /// does); `from` closes when that emptied it
-    /// ([`Self::close_if_vacated`]). A new slot: on that side of `from`
+    /// trading places with the view shown there ([`Self::move_into`], as
+    /// the Up and Down chords do). A new slot: on that side of `from`
     /// ([`Self::spawn_beside`]). The keyboard follows the view. Persisted.
     /// Nothing changes when the view left `from` meanwhile, or while
     /// zoomed.
