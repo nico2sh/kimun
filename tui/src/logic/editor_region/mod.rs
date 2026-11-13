@@ -8,7 +8,7 @@
 //! shared by all tabs and are never reused.
 
 use crate::logic::layout::node::Node;
-use crate::logic::layout::{Axis, GroupId, UnitRect};
+use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
 
 /// Identifies one tab. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -363,15 +363,8 @@ impl EditorRegion {
         if from == target || self.position(target).is_none() {
             return false;
         }
-        let from_at = self.position(from).expect("the tab exists");
-        let was_shown = self.shown == from;
-        if self.tabs[from_at].root.leaves().len() == 1 {
-            self.tabs.remove(from_at);
-            if was_shown {
-                self.shown = target;
-            }
-        } else {
-            self.remove_from(from_at, group);
+        if self.detach(group, from) {
+            self.shown = target;
         }
         let at = self.position(target).expect("checked above");
         let t = &mut self.tabs[at];
@@ -379,6 +372,93 @@ impl EditorRegion {
         t.root.split_leaf(&after, Axis::Horizontal, group);
         t.active = group;
         true
+    }
+
+    /// Move `group` (keeping its id) next to `target`, on its `dir` side,
+    /// in whichever tab `target` is: the two share `target`'s area. The
+    /// moved group becomes the active group of that tab. If it was alone in
+    /// its tab, that tab closes; and if that was the shown tab, `target`'s
+    /// tab is shown. False (nothing changes) when `group` is `target` or
+    /// either is unknown.
+    pub fn move_group_beside(&mut self, group: GroupId, target: GroupId, dir: Dir) -> bool {
+        if group == target || self.group_tab(target).is_none() {
+            return false;
+        }
+        let Some(from) = self.group_tab(group) else {
+            return false;
+        };
+        let closed_shown = self.detach(group, from);
+        let tab = self.group_tab(target).expect("checked above");
+        let at = self.position(tab).expect("the tab exists");
+        let (axis, before) = match dir {
+            Dir::Up => (Axis::Vertical, true),
+            Dir::Down => (Axis::Vertical, false),
+            Dir::Left => (Axis::Horizontal, true),
+            Dir::Right => (Axis::Horizontal, false),
+        };
+        let t = &mut self.tabs[at];
+        t.root.split_leaf_at(&target, axis, group, before, None);
+        t.active = group;
+        if closed_shown {
+            self.shown = tab;
+        }
+        true
+    }
+
+    /// Swap the places of `a` and `b`, in one tab or across two: each takes
+    /// the other's place and size, the tree is otherwise unchanged. A tab
+    /// whose active group left takes the group that came in as active; the
+    /// shown tab is unchanged. False (nothing changes) when `a` is `b` or
+    /// either is unknown.
+    pub fn swap_groups(&mut self, a: GroupId, b: GroupId) -> bool {
+        if a == b || self.group_tab(a).is_none() || self.group_tab(b).is_none() {
+            return false;
+        }
+        for t in &mut self.tabs {
+            t.root.swap_leaves(&a, &b);
+            if !t.root.contains(&t.active) {
+                t.active = if t.active == a { b } else { a };
+            }
+        }
+        true
+    }
+
+    /// Move `group` (keeping its id) into a new tab after the last one,
+    /// alone there and active. If it was alone in its tab, that tab closes;
+    /// and if that was the shown tab, the new tab is shown (else the shown
+    /// tab stays). `None` (nothing changes) for an unknown group, and for
+    /// the only group of the only tab: the move would change nothing.
+    pub fn move_group_to_new_tab(&mut self, group: GroupId) -> Option<TabId> {
+        let from = self.group_tab(group)?;
+        if self.tabs.len() == 1 && self.groups(from).len() == 1 {
+            return None;
+        }
+        let closed_shown = self.detach(group, from);
+        let id = self.fresh_tab();
+        self.tabs.push(Tab {
+            id,
+            root: Node::leaf(group),
+            active: group,
+        });
+        if closed_shown {
+            self.shown = id;
+        }
+        Some(id)
+    }
+
+    /// Take `group` out of `from` for a move: when it is alone there, the
+    /// tab closes (the caller makes sure another tab remains or follows);
+    /// otherwise its neighbour takes its area. True when the tab closed
+    /// and it was the shown one: the caller shows where the group went.
+    fn detach(&mut self, group: GroupId, from: TabId) -> bool {
+        let at = self.position(from).expect("the tab exists");
+        if self.tabs[at].root.leaves().len() == 1 {
+            self.tabs.remove(at);
+            self.shown == from
+        } else {
+            self.remove_from(at, group);
+            false
+        }
     }
 }
 

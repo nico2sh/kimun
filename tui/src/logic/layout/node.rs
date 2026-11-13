@@ -291,6 +291,27 @@ impl<L: Clone + PartialEq> Node<L> {
         }
     }
 
+    /// Put `b` where `a` is and `a` where `b` is, wherever either sits in
+    /// this tree; every split and weight stays. A leaf that is absent is
+    /// simply not found: with one of the two here, it is replaced by the
+    /// other (a swap across two trees runs this on each).
+    pub(crate) fn swap_leaves(&mut self, a: &L, b: &L) {
+        match &mut self.kind {
+            Kind::Leaf(id) => {
+                if id == a {
+                    *id = b.clone();
+                } else if id == b {
+                    *id = a.clone();
+                }
+            }
+            Kind::Split { children, .. } => {
+                for c in children {
+                    c.node.swap_leaves(a, b);
+                }
+            }
+        }
+    }
+
     /// Remove the leaf `target`. A split left with one child collapses into
     /// it. The root leaf cannot be removed (the owner drops the whole node).
     /// False when `target` is absent or is the root leaf.

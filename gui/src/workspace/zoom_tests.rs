@@ -776,3 +776,66 @@ fn switching_tabs_while_zoomed_ends_the_zoom(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| ws.read(cx).layout.region().tabs().len()), 3);
     assert_eq!(zoomed(cx), None);
 }
+
+/// Zoomed on a split tab, directional focus never changes the group (the
+/// zoom would then show another one): Alt+Left goes to the rail, Alt+Right
+/// comes back to the same group, the zoom stays. A plain open still
+/// replaces the note inside the zoomed group.
+#[gpui_kit::test]
+fn directional_focus_does_not_change_group_while_zoomed(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::Axis;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[("a.md", "alpha"), ("b.md", "beta"), ("c.md", "gamma")],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let right = cx.read(|cx| ws.read(cx).layout.active_group());
+    let press = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let active = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.active_group());
+    let focus = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.focused());
+    let zoomed = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.zoomed());
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("alt-left", cx);
+    assert_eq!(active(cx), right, "the left group did not become active");
+    assert_eq!(focus(cx), Focus::Rail);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("alt-right", cx);
+    assert_eq!(active(cx), right);
+    assert_eq!(focus(cx), Focus::Leaf(Leaf::Editor));
+    for key in ["alt-up", "alt-down", "alt-right"] {
+        press(key, cx);
+        assert_eq!(active(cx), right, "{key}");
+        assert_eq!(focus(cx), Focus::Leaf(Leaf::Editor), "{key}");
+    }
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+
+    // A plain open replaces the note inside the zoomed group.
+    cx.update(|cx| ws.update(cx, |w, cx| w.open_note(VaultPath::new("c.md"), cx)));
+    drive(&rt, cx, |cx| started.text(cx) == "gamma");
+    assert_eq!(active(cx), right);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+}
