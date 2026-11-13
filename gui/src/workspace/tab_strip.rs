@@ -42,12 +42,13 @@ use kimun_notes::logic::session::FlushResult;
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::chrome;
 use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
 use super::session::Queued;
-use crate::{keymap, theme};
+use crate::theme;
 
 /// The strip's element id.
 pub(crate) const TAB_STRIP_ID: &str = "tab-strip";
@@ -509,10 +510,7 @@ impl Workspace {
             .collect();
         let theme = theme::current(cx);
         let hover = theme::hover_background(&theme);
-        let tip: SharedString = match keymap::chord_label(cx, &ActionShortcuts::NewTab) {
-            Some(chord) => format!("New tab ({chord})").into(),
-            None => "New tab".into(),
-        };
+        let tip = chrome::tooltip_with_chord("New tab", &ActionShortcuts::NewTab, cx);
         let new_tab = div()
             .id(TAB_NEW_ID)
             .test_support()
@@ -617,43 +615,27 @@ impl Workspace {
         };
         let trail_content: Option<AnyElement> = match self.tab_trail(tab, shown, cx) {
             Trail::Close => {
-                let close_tip: SharedString =
-                    match keymap::chord_label(cx, &ActionShortcuts::CloseTab) {
-                        Some(chord) => format!("Close tab ({chord})").into(),
-                        None => "Close tab".into(),
-                    };
+                let close_tip =
+                    chrome::tooltip_with_chord("Close tab", &ActionShortcuts::CloseTab, cx);
                 Some(
-                    div()
-                        .id(ElementId::NamedInteger(TAB_CLOSE_ID.into(), at as u64))
-                        .test_support()
-                        .role(Role::Button)
-                        .aria_label("Close tab")
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size_full()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(hover))
-                        .child(Icon::new(CLOSE_ICON).size_3())
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(close_tip.clone()).build(window, cx)
-                        })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.close_tab(tab, cx);
-                        }))
-                        .into_any_element(),
+                    chrome::close_button(
+                        ElementId::NamedInteger(TAB_CLOSE_ID.into(), at as u64),
+                        "Close tab",
+                        close_tip,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.close_tab(tab, cx)),
+                        cx,
+                    )
+                    .size_full()
+                    .rounded_full()
+                    .into_any_element(),
                 )
             }
             Trail::Unsaved => Some(
-                div()
-                    .id(ElementId::NamedInteger(TAB_UNSAVED_ID.into(), at as u64))
-                    .test_support()
-                    .size(rems(0.375))
-                    .rounded_full()
-                    .bg(theme::unsaved(&theme))
-                    .into_any_element(),
+                chrome::unsaved_dot(
+                    ElementId::NamedInteger(TAB_UNSAVED_ID.into(), at as u64),
+                    cx,
+                )
+                .into_any_element(),
             ),
             Trail::Nothing => None,
         };

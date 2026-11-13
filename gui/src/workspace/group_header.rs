@@ -22,10 +22,8 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::Icon;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
@@ -38,7 +36,7 @@ use super::Workspace;
 use super::drop_zones::GroupDrag;
 use super::tab_strip::{EMPTY_LABEL, group_name};
 use super::tree_view::{LEAF_BORDER, LEAF_RADIUS_REMS};
-use crate::{keymap, theme};
+use crate::theme;
 
 /// A group's element id prefix (with its position in the shown tab).
 pub(crate) const GROUP_ID: &str = "editor-group";
@@ -203,36 +201,23 @@ impl Workspace {
         let dirty = self.editor_dirty_in(group, cx);
         let keyboard = group == self.layout.active_group()
             && self.layout.focused() == Focus::Leaf(Leaf::Editor);
-        let hover = theme::hover_background(&theme);
         let spoken: SharedString = if dirty {
             format!("{title}, unsaved").into()
         } else {
             title.clone()
         };
-        let close_tip: SharedString = match keymap::chord_label(cx, &ActionShortcuts::CloseSlot) {
-            Some(chord) => format!("Close group ({chord})").into(),
-            None => "Close group".into(),
-        };
-        let close = div()
-            .id(group_element(GROUP_CLOSE_ID, at))
-            .test_support()
-            .role(Role::Button)
-            .aria_label("Close group")
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .size(rems(1.125))
-            .rounded_sm()
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover))
-            .child(Icon::new(CLOSE_ICON).size_3())
-            .tooltip(move |window, cx| Tooltip::new(close_tip.clone()).build(window, cx))
+        let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
+        let close = super::chrome::close_button(
+            group_element(GROUP_CLOSE_ID, at),
+            "Close group",
+            super::chrome::tooltip_with_chord("Close group", &ActionShortcuts::CloseSlot, cx),
             // The header's own click (activate the group) does not follow.
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                this.close_editor_group(group, cx);
-            }));
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.close_editor_group(group, cx)),
+            cx,
+        )
+        .flex_none()
+        .size(rems(1.125))
+        .rounded_sm();
         div()
             .id(group_element(GROUP_HEADER_ID, at))
             .test_support()
@@ -278,16 +263,10 @@ impl Workspace {
             )
             .when(dirty, |row| {
                 row.child(
-                    div()
-                        .id(group_element(GROUP_UNSAVED_ID, at))
-                        .test_support()
-                        .flex_none()
-                        .size(rems(0.375))
-                        .rounded_full()
-                        .bg(theme::unsaved(&theme)),
+                    super::chrome::unsaved_dot(group_element(GROUP_UNSAVED_ID, at), cx).flex_none(),
                 )
             })
-            .child(self.menu_button(group_element(GROUP_MENU_ID, at), group, cx))
+            .child(menu)
             .child(close)
             .into_any_element()
     }
