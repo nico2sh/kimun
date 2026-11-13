@@ -567,6 +567,7 @@ impl EditorView {
             query: false,
             browser: false,
             vim_pending: vim && self.editor.pending_input_hint().is_some(),
+            vim_insert: vim && self.editor.modal_is_insert() == Some(true),
         }
     }
 

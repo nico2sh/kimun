@@ -695,6 +695,15 @@ impl gpui_kit::Render for KeySpy {
 
 /// A vim editor showing `text` inside a [`KeySpy`].
 fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<KeySpy>) {
+    open_spy_with(cx, text, true)
+}
+
+/// [`open_spy`] over the vim editor (`vim`) or the plain one.
+fn open_spy_with(
+    cx: &mut TestAppContext,
+    text: &str,
+    vim: bool,
+) -> (AnyWindowHandle, Entity<KeySpy>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
@@ -712,7 +721,7 @@ fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<Key
             },
             cx,
             |window, cx| {
-                let editor = cx.new(|cx| EditorView::new(Some(text), true, cx));
+                let editor = cx.new(|cx| EditorView::new(Some(text), vim, cx));
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
                 cx.new(|_| KeySpy { editor, bubbled: 0 })
             },
@@ -1716,6 +1725,46 @@ fn replacing(view: &Entity<EditorView>, cx: &gpui_kit::App) -> bool {
         .editor
         .find_bar()
         .is_some_and(|b| b.is_replacing())
+}
+
+/// Regression lock (final-review ruling): in vim Insert mode Ctrl-W is the
+/// editor's, never the tab close (it does not bubble), with or without a
+/// pending sequence in Normal mode before; back in Normal mode with nothing
+/// pending it bubbles (the tab close) again. The plain editor lets it
+/// bubble.
+#[gpui_kit::test]
+fn ctrl_w_in_vim_insert_mode_stays_in_the_editor(cx: &mut TestAppContext) {
+    let (handle, spy) = open_spy(cx, "one two");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let view = spy.read(cx).editor.clone();
+        window.press("A", cx);
+        assert_eq!(mode(&view, cx).as_deref(), Some("INSERT"));
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 0, "Insert: Ctrl-W is the editor's");
+        assert_eq!(mode(&view, cx).as_deref(), Some("INSERT"));
+        window.press("escape", cx);
+        assert_eq!(mode(&view, cx).as_deref(), Some("NORMAL"));
+        window.press("d", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 0, "Normal, `d` pending: vim's");
+        window.press("escape", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(
+            spy.read(cx).bubbled,
+            1,
+            "Normal, nothing pending: the close"
+        );
+    })
+    .unwrap();
+
+    let (handle, spy) = open_spy_with(cx, "one two", false);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 1, "plain editor: the close");
+    })
+    .unwrap();
 }
 
 /// The vim rule (ADR-0050 §6, narrowed): only the Ctrl+letters the vim engine
