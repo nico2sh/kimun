@@ -395,12 +395,7 @@ impl EditorRegion {
         let closed_shown = self.detach(group, from);
         let tab = self.group_tab(target).expect("checked above");
         let at = self.position(tab).expect("the tab exists");
-        let (axis, before) = match dir {
-            Dir::Up => (Axis::Vertical, true),
-            Dir::Down => (Axis::Vertical, false),
-            Dir::Left => (Axis::Horizontal, true),
-            Dir::Right => (Axis::Horizontal, false),
-        };
+        let (axis, before) = dir.split_axis();
         let t = &mut self.tabs[at];
         t.root.split_leaf_at(&target, axis, group, before, None);
         t.active = group;

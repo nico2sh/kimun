@@ -103,13 +103,19 @@ pub(crate) enum FileDialogView {
     Delete,
 }
 
-/// Run `flushes` side by side; each result with its group.
-pub(super) async fn run_all(
-    flushes: Vec<(GroupId, FlushRequest)>,
-) -> Vec<(GroupId, Result<FlushResult, JoinError>)> {
-    let running: Vec<_> = flushes
+/// Spawn every future of `items` first (so they run side by side), then
+/// await them in the order given; each result keeps its group. A panicked
+/// or cancelled job comes back as its `JoinError`, never dropped.
+pub(super) async fn run_all_of<T, F>(
+    items: impl IntoIterator<Item = (GroupId, F)>,
+) -> Vec<(GroupId, Result<T, JoinError>)>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    let running: Vec<_> = items
         .into_iter()
-        .map(|(group, flush)| (group, tokio::spawn(flush.run())))
+        .map(|(group, job)| (group, tokio::spawn(job)))
         .collect();
     let mut results = Vec::with_capacity(running.len());
     for (group, run) in running {
@@ -118,19 +124,23 @@ pub(super) async fn run_all(
     results
 }
 
+/// Run `flushes` side by side; each result with its group.
+pub(super) async fn run_all(
+    flushes: Vec<(GroupId, FlushRequest)>,
+) -> Vec<(GroupId, Result<FlushResult, JoinError>)> {
+    run_all_of(
+        flushes
+            .into_iter()
+            .map(|(group, flush)| (group, flush.run())),
+    )
+    .await
+}
+
 /// Run `reads` side by side; each result with its group.
 async fn run_all_reads(
     reads: Vec<(GroupId, ReadRequest)>,
 ) -> Vec<(GroupId, Result<NoteRead, JoinError>)> {
-    let running: Vec<_> = reads
-        .into_iter()
-        .map(|(group, read)| (group, tokio::spawn(read.run())))
-        .collect();
-    let mut results = Vec::with_capacity(running.len());
-    for (group, run) in running {
-        results.push((group, run.await));
-    }
-    results
+    run_all_of(reads.into_iter().map(|(group, read)| (group, read.run()))).await
 }
 
 /// Whether `note` is `base` itself or lies below it (`base` a folder

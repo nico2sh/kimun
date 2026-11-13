@@ -293,11 +293,7 @@ impl Workspace {
     /// The group holding `path` ([`NoteHost::holds`]), in any tab. A note
     /// is open in at most one group (ADR-0058).
     pub(crate) fn locate_note(&self, path: &VaultPath) -> Option<GroupId> {
-        self.layout.region().all_groups().into_iter().find(|group| {
-            self.state(*group)
-                .and_then(|s| s.notes.as_ref())
-                .is_some_and(|host| host.holds(path))
-        })
+        self.group_where(|host| host.holds(path))
     }
 
     /// Open the note at `path` in the active group's editor: save the open
@@ -925,13 +921,7 @@ impl Workspace {
     /// whose session names it (a note is open in one group), else the
     /// active one (a stale report, which marks nothing).
     fn group_saving(&self, path: &VaultPath) -> GroupId {
-        self.group_ids()
-            .into_iter()
-            .find(|group| {
-                self.state(*group)
-                    .and_then(|s| s.notes.as_ref())
-                    .is_some_and(|h| h.session.path() == path)
-            })
+        self.group_where(|h| h.session.path() == path)
             .unwrap_or_else(|| self.layout.active_group())
     }
 
@@ -1074,14 +1064,7 @@ impl Workspace {
             _ => None,
         };
         let group = counted
-            .and_then(|path| {
-                self.group_ids().into_iter().find(|group| {
-                    self.state(*group)
-                        .and_then(|s| s.notes.as_ref())
-                        .and_then(|h| h.note.as_ref())
-                        == Some(path)
-                })
-            })
+            .and_then(|path| self.group_where(|h| h.note.as_ref() == Some(path)))
             .unwrap_or_else(|| self.layout.active_group());
         if let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut())
             && let Some(note) = host.note.as_ref()
@@ -1404,14 +1387,7 @@ impl Workspace {
         // Detached: removing the window drops the workspace, which must not
         // cancel the task that removes it.
         cx.spawn(async move |this, cx| {
-            let running: Vec<_> = flushes
-                .into_iter()
-                .map(|(group, flush)| (group, tokio::spawn(flush.run())))
-                .collect();
-            let mut results = Vec::with_capacity(running.len());
-            for (group, run) in running {
-                results.push((group, run.await));
-            }
+            let results = super::file_ops::run_all(flushes).await;
             // `Some(true)`: the app was asked to end; `Some(false)`: only the window
             // goes; `None`: the close did not go through.
             let ended = this

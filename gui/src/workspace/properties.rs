@@ -1176,12 +1176,7 @@ impl Workspace {
     /// The group whose open note is `path`, in any tab, the active one
     /// first (a note is open in one group).
     fn group_holding(&self, path: &VaultPath) -> Option<GroupId> {
-        self.group_ids_active_first().into_iter().find(|group| {
-            self.state(*group)
-                .and_then(|s| s.notes.as_ref())
-                .and_then(|h| h.note.as_ref())
-                .is_some_and(|note| note.is_like(path))
-        })
+        self.group_where_active_first(|h| h.note.as_ref().is_some_and(|note| note.is_like(path)))
     }
 
     /// Whether something holds the open note so nothing else may write it:
@@ -1434,13 +1429,7 @@ impl Workspace {
     pub(crate) fn reload_from_disk(&mut self, path: VaultPath, cx: &mut Context<Self>) {
         // The group whose session is on the note, in any tab.
         let group = self
-            .group_ids_active_first()
-            .into_iter()
-            .find(|group| {
-                self.state(*group)
-                    .and_then(|s| s.notes.as_ref())
-                    .is_some_and(|h| path.is_like(h.session.path()))
-            })
+            .group_where_active_first(|h| path.is_like(h.session.path()))
             .unwrap_or_else(|| self.layout.active_group());
         let Some(state) = self.groups.get_mut(&group) else {
             return;

@@ -209,14 +209,7 @@ impl Workspace {
         }
         self.reopening = Some(cx.spawn(async move |this, cx| {
             if !flushes.is_empty() {
-                let running: Vec<_> = flushes
-                    .into_iter()
-                    .map(|(group, flush)| (group, tokio::spawn(flush.run())))
-                    .collect();
-                let mut flushed = Vec::with_capacity(running.len());
-                for (group, run) in running {
-                    flushed.push((group, run.await));
-                }
+                let flushed = super::file_ops::run_all(flushes).await;
                 let go = this
                     .update(cx, |workspace, cx| workspace.reopen_flushed(flushed, cx))
                     .unwrap_or(false);
