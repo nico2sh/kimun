@@ -306,7 +306,10 @@ mod in_workspace {
 
     use gpui_kit::MouseButton;
     use gpui_kit::test::{ClickOptions, TestWindowExt as _};
-    use gpui_kit::{AppContext as _, Bounds, Focusable as _, Pixels, TestAppContext, point, px};
+    use gpui_kit::{
+        AppContext as _, Bounds, Focusable as _, Modifiers, Pixels, TestAppContext,
+        VisualTestContext, point, px,
+    };
     use kimun_core::nfs::VaultPath;
     use kimun_notes::logic::layout_tree::{Axis, GroupId};
     use tokio::runtime::Runtime;
@@ -319,7 +322,7 @@ mod in_workspace {
     };
     use super::super::modal::ModalKind;
     use super::super::note_menu::{
-        MenuItem, NOTE_MENU_ID, NOTE_MENU_LAYER_ID, menu_item_element_id,
+        MENU_NOTE_CHANGED, MenuItem, NOTE_MENU_ID, NOTE_MENU_LAYER_ID, menu_item_element_id,
     };
     use super::super::route::NO_NOTE;
     use super::super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -948,7 +951,7 @@ mod in_workspace {
     }
 
     #[test]
-    fn the_corner_button_is_dim_until_the_pointer_is_near() {
+    fn the_corner_opacity_constants_dim_until_near() {
         assert!(corner_opacity(false) > 0.0 && corner_opacity(false) < corner_opacity(true));
         assert_eq!(corner_opacity(true), 1.0);
         assert_eq!(corner_opacity(false), CORNER_DIM_OPACITY);
@@ -1003,5 +1006,41 @@ mod in_workspace {
         });
         assert!(!menu_open(&s, cx));
         assert_eq!(note_in(&s, group, cx), Some(path("b.md")));
+        assert_eq!(s.flash(cx).as_deref(), Some(MENU_NOTE_CHANGED));
+    }
+
+    /// A press on the menu button and a move past the pointer threshold,
+    /// the button held, starts no group drag: the button is not the
+    /// header's handle.
+    #[gpui_kit::test]
+    fn a_press_on_the_menu_button_does_not_start_a_group_drag(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s, [_left, _right]) = two_groups(cx, &rt);
+        let from = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .find(group_element(GROUP_MENU_ID, 0))
+                    .bounds()
+                    .center()
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(s.handle, cx);
+        visual.simulate_mouse_move(from, None, Modifiers::default());
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let mut at = from;
+        for _ in 0..4 {
+            at = point(at.x + px(10.), at.y);
+            visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+        }
+        assert!(
+            !cx.update(|cx| cx.has_active_drag()),
+            "no drag from the menu button"
+        );
+        assert!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx).is_none()));
+        let mut visual = VisualTestContext::from_window(s.handle, cx);
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
     }
 }

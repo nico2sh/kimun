@@ -507,7 +507,18 @@ impl Workspace {
     /// group holds is focused there), or in a new tab or split; each
     /// structural command on the active group of then.
     fn run_queued(&mut self, cx: &mut Context<Self>) {
+        // A close names the group the user saw while the restore was on its
+        // way, the empty one the record replaced. Only a group a held new
+        // tab, split or open made since is still there to close; before
+        // that, the close would hit a restored group nobody asked about.
+        let mut made_a_group = false;
         for queued in std::mem::take(&mut self.session.queued) {
+            made_a_group |= matches!(
+                queued,
+                Queued::NewTab
+                    | Queued::Split(_)
+                    | Queued::Open(_, _, QueuedOpen::NewTab | QueuedOpen::Split(_))
+            );
             match queued {
                 Queued::Open(path, emphasis, QueuedOpen::Plain) => {
                     self.open_note_with(path, emphasis, cx)
@@ -519,6 +530,7 @@ impl Workspace {
                 Queued::NewTab => self.new_tab(cx),
                 Queued::Split(axis) => self.split_active_group(axis, cx),
                 Queued::StepTab { forward } => self.step_tab(forward, cx),
+                Queued::CloseGroup if !made_a_group => {}
                 Queued::CloseGroup => {
                     let active = self.layout.active_group();
                     self.close_editor_group(active, cx);

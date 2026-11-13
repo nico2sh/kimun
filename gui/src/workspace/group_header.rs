@@ -109,6 +109,10 @@ impl Workspace {
             .xsmall()
             .label("⋯")
             .tooltip("Note menu")
+            // A press here is the button's, not the header's drag handle.
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 if this.layout.active_group() != group {
@@ -131,7 +135,8 @@ impl Workspace {
             .id("group-menu-corner-wrap")
             .absolute()
             .top_1()
-            .right_1()
+            // Clear of a scrollbar down the document's right edge.
+            .right_4()
             .opacity(corner_opacity(false))
             .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
             .hover(|s| s.opacity(corner_opacity(true)))

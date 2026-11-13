@@ -582,9 +582,13 @@ impl Workspace {
                 continue;
             };
             let at = host.session.path().clone();
-            if let Some(read) = host.session.begin_rename(&at, &new) {
-                reads.push((group, read));
-            }
+            // `begin_rename` refuses only a path other than the session's
+            // own, and `at` is exactly that.
+            let read = host
+                .session
+                .begin_rename(&at, &new)
+                .expect("a rename of the session's own path always begins");
+            reads.push((group, read));
         }
         reads
     }
