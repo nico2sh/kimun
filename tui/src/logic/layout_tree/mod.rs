@@ -440,7 +440,8 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// left reaches [`Focus::Rail`], and Right from the rail reaches the
     /// first leaf (leftmost, then topmost); Up/Down from the rail are not
     /// handled. While a leaf is zoomed, only it and the rail are visible:
-    /// the zoomed leaf covers the unit square and is the only candidate.
+    /// the zoomed leaf covers the unit square and is the only candidate;
+    /// zoomed on the editor, the active group never changes.
     pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
         self.focus_dir_in(dir, &|_| true, Some(RailPosition::Left))
     }
@@ -509,8 +510,11 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             return TreeFocusMove::NotHandled;
         };
         // Inside the editor region: another group of the shown tab first.
+        // Not while zoomed: the zoom shows the active group alone, so the
+        // other groups are no targets (and moving to one would change what
+        // the zoom shows).
         let mut stacked_inside = false;
-        if current == Leaf::Editor {
+        if current == Leaf::Editor && self.zoomed.is_none() {
             let groups = self.region.regions();
             let active = self.region.active_group();
             if let Some(inner) = groups.iter().find(|(g, _)| *g == active).map(|(_, r)| *r) {

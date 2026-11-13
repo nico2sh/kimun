@@ -302,3 +302,188 @@ fn closing_a_group_gives_its_area_to_the_group_before_it() {
     assert_eq!(r.close_group(a), Some(CloseOutcome::Group));
     assert_eq!(width(&r), vec![(c, 0.875), (d, 0.125)]);
 }
+
+/// Every invariant of the region: each tab holds a group, the shown tab
+/// exists, each tab's active group is one of its own, and no group sits in
+/// two places.
+fn assert_valid(r: &EditorRegion) {
+    assert!(!r.tabs().is_empty(), "the region holds a tab");
+    assert!(r.tabs().contains(&r.shown()), "the shown tab exists");
+    for tab in r.tabs() {
+        let groups = r.groups(tab);
+        assert!(!groups.is_empty(), "{tab:?} holds a group");
+        let active = r.active_group_of(tab).unwrap();
+        assert!(
+            groups.contains(&active),
+            "{tab:?}'s active group is its own"
+        );
+    }
+    let mut all = r.all_groups();
+    let n = all.len();
+    all.sort_by_key(|g| format!("{g:?}"));
+    all.dedup();
+    assert_eq!(all.len(), n, "no group sits in two places");
+}
+
+#[test]
+fn move_group_beside_relocates_a_group_within_its_tab() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let c = r.split_group(b, Axis::Horizontal).unwrap();
+    // c goes above a: a column of [c, a] left of b.
+    assert!(r.move_group_beside(c, a, Dir::Up));
+    assert_eq!(r.groups(r.shown()), vec![c, a, b], "keeps its id");
+    assert_eq!(
+        r.shape(),
+        GroupShape::Split {
+            axis: Axis::Horizontal,
+            children: vec![
+                (
+                    0.5,
+                    GroupShape::Split {
+                        axis: Axis::Vertical,
+                        children: vec![(0.5, GroupShape::Group(c)), (0.5, GroupShape::Group(a))],
+                    }
+                ),
+                (0.5, GroupShape::Group(b)),
+            ],
+        }
+    );
+    assert_eq!(r.active_group(), c, "the moved group is active");
+    // Each side of the target.
+    assert!(r.move_group_beside(c, b, Dir::Right));
+    assert_eq!(r.groups(r.shown()), vec![a, b, c]);
+    assert!(r.move_group_beside(c, b, Dir::Left));
+    assert_eq!(r.groups(r.shown()), vec![a, c, b]);
+    assert!(r.move_group_beside(a, b, Dir::Down));
+    assert_eq!(r.groups(r.shown()), vec![c, b, a]);
+    assert_eq!(r.tabs().len(), 1);
+    assert_valid(&r);
+}
+
+#[test]
+fn move_group_beside_refuses_itself_and_unknown_groups() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let before = r.clone();
+    assert!(!r.move_group_beside(a, a, Dir::Left));
+    assert!(!r.move_group_beside(GroupId::new(99), a, Dir::Left));
+    assert!(!r.move_group_beside(a, GroupId::new(99), Dir::Left));
+    assert_eq!(r, before, "nothing changed");
+    let _ = b;
+}
+
+#[test]
+fn move_group_beside_across_tabs_closes_a_source_tab_left_empty() {
+    let mut r = EditorRegion::new();
+    let first = r.shown();
+    let a = r.active_group();
+    let (second, b) = r.new_tab();
+    let b2 = r.split_group(b, Axis::Horizontal).unwrap();
+    // b2 leaves a tab that keeps b: that tab stays, b active there.
+    r.set_active_group(b2);
+    assert!(r.move_group_beside(b2, a, Dir::Left));
+    assert_eq!(r.groups(first), vec![b2, a]);
+    assert_eq!(r.groups(second), vec![b]);
+    assert_eq!(r.active_group_of(second), Some(b));
+    assert_eq!(r.active_group_of(first), Some(b2));
+    assert_eq!(r.shown(), second, "the shown tab is kept");
+    assert_valid(&r);
+    // b is alone in the shown tab: the tab closes and the target shows.
+    assert!(r.move_group_beside(b, a, Dir::Down));
+    assert_eq!(r.tabs(), vec![first]);
+    assert_eq!(r.shown(), first);
+    assert_eq!(r.groups(first), vec![b2, a, b]);
+    assert_eq!(r.active_group(), b);
+    assert_valid(&r);
+    // Ids are never reused after the tab closed.
+    let (_, fresh) = r.new_tab();
+    assert!(![a, b, b2].contains(&fresh));
+}
+
+#[test]
+fn swap_groups_trades_places_within_a_tab() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let c = r.split_group(b, Axis::Vertical).unwrap();
+    r.resize_after(a, 0.3);
+    assert!(r.swap_groups(a, c));
+    assert_eq!(
+        r.shape(),
+        GroupShape::Split {
+            axis: Axis::Horizontal,
+            children: vec![
+                (0.3, GroupShape::Group(c)),
+                (
+                    0.7,
+                    GroupShape::Split {
+                        axis: Axis::Vertical,
+                        children: vec![(0.5, GroupShape::Group(b)), (0.5, GroupShape::Group(a))],
+                    }
+                ),
+            ],
+        },
+        "the places and their sizes stay; the groups trade them"
+    );
+    assert_eq!(r.active_group(), a, "the active group is kept");
+    assert_valid(&r);
+}
+
+#[test]
+fn swap_groups_works_across_tabs_and_keeps_active_groups_valid() {
+    let mut r = EditorRegion::new();
+    let first = r.shown();
+    let a = r.active_group();
+    let a2 = r.split_group(a, Axis::Horizontal).unwrap();
+    let (second, b) = r.new_tab();
+    assert!(r.swap_groups(a, b));
+    assert_eq!(r.groups(first), vec![b, a2]);
+    assert_eq!(r.groups(second), vec![a]);
+    assert_eq!(
+        r.active_group_of(first),
+        Some(b),
+        "the active place follows"
+    );
+    assert_eq!(r.active_group_of(second), Some(a));
+    assert_eq!(r.shown(), second);
+    assert_valid(&r);
+    // Refused: itself, unknown.
+    let before = r.clone();
+    assert!(!r.swap_groups(a, a));
+    assert!(!r.swap_groups(a, GroupId::new(99)));
+    assert!(!r.swap_groups(GroupId::new(99), a));
+    assert_eq!(r, before);
+}
+
+#[test]
+fn move_group_to_new_tab_takes_the_group_alone_into_a_new_last_tab() {
+    let mut r = EditorRegion::new();
+    let first = r.shown();
+    let a = r.active_group();
+    let a2 = r.split_group(a, Axis::Horizontal).unwrap();
+    r.set_active_group(a2);
+    let tab = r.move_group_to_new_tab(a2).unwrap();
+    assert_eq!(r.tabs(), vec![first, tab]);
+    assert_eq!(r.groups(tab), vec![a2], "keeps its id");
+    assert_eq!(r.active_group_of(tab), Some(a2));
+    assert_eq!(r.groups(first), vec![a]);
+    assert_eq!(r.shown(), first, "the source tab stays shown");
+    assert_eq!(r.active_group(), a);
+    assert_valid(&r);
+    // Alone in the shown tab: that tab closes, the new one shows.
+    let tab2 = r.move_group_to_new_tab(a).unwrap();
+    assert_eq!(r.tabs(), vec![tab, tab2]);
+    assert_eq!(r.groups(tab2), vec![a]);
+    assert_eq!(r.shown(), tab2);
+    assert_valid(&r);
+    // Alone in the only tab: refused, nothing changes.
+    let mut lone = EditorRegion::new();
+    let only = lone.active_group();
+    let before = lone.clone();
+    assert_eq!(lone.move_group_to_new_tab(only), None);
+    assert_eq!(lone.move_group_to_new_tab(GroupId::new(99)), None);
+    assert_eq!(lone, before);
+}
