@@ -284,6 +284,18 @@ impl EditorView {
         self.tx = tx;
     }
 
+    /// Whether the editor reports on `tx`'s channel (tests).
+    #[cfg(test)]
+    pub(crate) fn reports_on(&self, tx: &AppTx) -> bool {
+        self.tx.same_channel(tx)
+    }
+
+    /// Whether the editor completes `[[` and `#` from a vault (tests).
+    #[cfg(test)]
+    pub(crate) fn completes(&self) -> bool {
+        self.autocomplete.is_some()
+    }
+
     /// Run the double-click rule on `clock` instead of the real one (tests).
     #[cfg(test)]
     pub(crate) fn set_clock(&mut self, clock: fn() -> Instant) {

@@ -81,7 +81,6 @@ use std::sync::Arc;
 
 use crate::mono_families::{self, MonoFamilies};
 
-use super::group::active_mut;
 use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
 use kimun_notes::logic::preferences::SavePlan;
@@ -2454,8 +2453,12 @@ impl Workspace {
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }
-        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref()) {
-            host.session.retime_autosave(tx);
+        if let Some(tx) = self.tx.as_ref() {
+            for state in self.groups.values_mut() {
+                if let Some(host) = state.notes.as_mut() {
+                    host.session.retime_autosave(tx);
+                }
+            }
         }
         if reopen {
             match self.tx.clone() {

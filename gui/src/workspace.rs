@@ -922,9 +922,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.listen(rx, cx);
-        self.active_state()
-            .editor
-            .update(cx, |view, _| view.set_channel(tx.clone()));
+        // Every group's editor, not only the one shown.
+        for state in self.groups.values() {
+            state
+                .editor
+                .update(cx, |view, _| view.set_channel(tx.clone()));
+        }
         self.tx = Some(tx);
     }
 
@@ -959,20 +962,24 @@ impl Workspace {
             Start::OpenFailed(_) => {}
         }
         if let Start::Vault(VaultStart { vault, name, first }) = start {
-            self.active_state_mut().notes = Some(NoteHost::new(NoteSession::new(
-                vault.clone(),
-                settings.clone(),
-                VaultPath::root(),
-            )));
-            self.refresh_git();
-            // The editor completes `[[` and `#` from this vault's notes and tags.
-            self.active_state().editor.update(cx, |view, _| {
-                view.set_suggestions(Some(std::sync::Arc::new(
-                    kimun_notes::logic::autocomplete::VaultSuggestions {
-                        vault: vault.clone(),
-                    },
+            // Every group gets a note session over the vault, on no note
+            // yet: the groups a vault change left stay, empty.
+            for state in self.groups.values_mut() {
+                state.notes = Some(NoteHost::new(NoteSession::new(
+                    vault.clone(),
+                    settings.clone(),
+                    VaultPath::root(),
                 )));
-            });
+                // The editor completes `[[` and `#` from this vault's notes and tags.
+                state.editor.update(cx, |view, _| {
+                    view.set_suggestions(Some(std::sync::Arc::new(
+                        kimun_notes::logic::autocomplete::VaultSuggestions {
+                            vault: vault.clone(),
+                        },
+                    )));
+                });
+            }
+            self.refresh_git();
             {
                 let settings = settings.read().unwrap_or_else(|e| e.into_inner());
                 self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
@@ -1032,7 +1039,9 @@ impl Workspace {
             // A background parse/layout job of the editor finished, or
             // FILES' listing has rows to show.
             AppMessage::Redraw => {
-                self.active_state().editor.update(cx, |_, cx| cx.notify());
+                for state in self.groups.values() {
+                    state.editor.update(cx, |_, cx| cx.notify());
+                }
                 self.poll_files(cx);
                 self.poll_picker(cx);
                 self.poll_views(cx);
@@ -1058,8 +1067,10 @@ impl Workspace {
                 self.status.indexing = false;
                 self.status.read_only = true;
                 // Nothing is written from here on: no tick to run.
-                if let Some(host) = self.active_state_mut().notes.as_mut() {
-                    host.session.stop_autosave();
+                for state in self.groups.values_mut() {
+                    if let Some(host) = state.notes.as_mut() {
+                        host.session.stop_autosave();
+                    }
                 }
                 self.flash_error(conflict_flash(&details), cx);
                 // Preferences > Workspaces, with the vault's own words, so

@@ -95,6 +95,23 @@ impl Workspace {
             .expect("the active group has a state")
     }
 
+    /// Every group of the region, in every tab, in the region's order: what
+    /// the note lifecycle (saves, the close, a vault change, file
+    /// operations) walks, so no group is left out for not being active.
+    pub(crate) fn group_ids(&self) -> Vec<GroupId> {
+        self.layout.region().all_groups()
+    }
+
+    /// [`Self::group_ids`] with the active group first: where one of them
+    /// is named in a message, the one the user looks at comes first.
+    pub(crate) fn group_ids_active_first(&self) -> Vec<GroupId> {
+        let active = self.layout.active_group();
+        let mut groups = self.group_ids();
+        groups.retain(|g| *g != active);
+        groups.insert(0, active);
+        groups
+    }
+
     /// The state of `group`, if it has one.
     pub(crate) fn state(&self, group: GroupId) -> Option<&GroupState> {
         self.groups.get(&group)

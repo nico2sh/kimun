@@ -1183,7 +1183,10 @@ impl Workspace {
             || self.property_write.is_some()
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
-            || self.active_state().attachment_flushing.is_some()
+            || self
+                .groups
+                .values()
+                .any(|s| s.attachment_flushing.is_some())
             || self.search_flush.is_some()
             || self.updates.flushing.is_some()
             || self.reopen_running()
