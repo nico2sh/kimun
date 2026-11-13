@@ -913,3 +913,45 @@ fn the_plus_button_is_outside_the_scrolling_row(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// Regression lock (final review minor): a window close whose flush is
+/// refused in a later group (another flush of that note is still out)
+/// gives up with a flash, every group's tick back and the earlier groups'
+/// prepared flushes dropped unrun; the window stays, nothing is written.
+#[gpui_kit::test]
+fn a_close_refused_by_a_later_group_says_so_and_restarts_every_tick(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+    let a = started.active(cx);
+    started.split_with("b.md", cx);
+    let b = started.active(cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    started.set_text_in(a, "alpha edited", cx);
+    started.set_text_in(b, "beta edited", cx);
+    // a is flushed first (the active group), b refuses.
+    cx.update(|cx| started.workspace.update(cx, |w, cx| w.focus_group(a, cx)));
+    let outstanding = cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.begin_note_flush_in(b, cx))
+    });
+    assert!(outstanding.is_some());
+
+    let closed = gpui_kit::VisualTestContext::from_window(started.handle, cx).simulate_close();
+    assert!(!closed, "the window stays");
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Another save is still running. The window stays open.")
+    );
+    assert_eq!(
+        cx.read(|cx| started.workspace.read(cx).closing),
+        super::note::Closing::Open
+    );
+    assert_eq!(started.tick_in(a, cx), Some(tick), "a's tick is back");
+    assert_eq!(started.tick_in(b, cx), Some(tick), "b's tick is back");
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha"));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+    drop(outstanding);
+}
