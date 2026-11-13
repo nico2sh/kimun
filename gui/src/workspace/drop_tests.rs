@@ -119,10 +119,10 @@ fn centre_drop_shows_the_view_in_that_slot_and_closes_the_vacated_one(cx: &mut T
     .unwrap();
 }
 
-/// An edge makes a slot on that side of the target; the view's slot holds
-/// other views, so it stays. The keyboard follows the view.
+/// A view dragged on an edge of its own slot is refused, whatever else the
+/// slot holds: the drop would split its own stack.
 #[gpui_kit::test]
-fn edge_drop_makes_a_slot_on_that_side(cx: &mut TestAppContext) {
+fn edge_drop_on_own_slot_does_nothing_even_with_hidden_views(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
@@ -133,21 +133,20 @@ fn edge_drop_makes_a_slot_on_that_side(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        let old = slot_of(&shell, DrawerView::Files, cx);
-        assert!(drop_view(
-            &shell,
-            DrawerView::Files,
-            DropTarget::Slot(old, Zone::Edge(Dir::Down)),
-            window,
-            cx
-        ));
-        let left = slots_of(&shell, Side::Left, cx);
-        assert_eq!(left.len(), 2);
-        assert_eq!(left[0], old);
-        let tree = layout(&shell, cx);
-        assert_eq!(tree.shown(old), Some(DrawerView::Find));
-        assert_eq!(tree.shown(left[1]), Some(DrawerView::Files));
-        assert_eq!(tree.focused(), Focus::Leaf(Leaf::Slot(left[1])));
+        let own = slot_of(&shell, DrawerView::Files, cx);
+        let before = layout(&shell, cx);
+        for view in [DrawerView::Files, DrawerView::Find] {
+            for dir in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+                assert!(!drop_view(
+                    &shell,
+                    view,
+                    DropTarget::Slot(own, Zone::Edge(dir)),
+                    window,
+                    cx
+                ));
+            }
+        }
+        assert_eq!(layout(&shell, cx), before);
     })
     .unwrap();
 }
@@ -405,25 +404,25 @@ fn drop_saves_the_layout(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
-        &files_over_find_hidden(),
+        &stacked_left_and_outline_right(),
         "",
         false,
         LayoutStore::File(path.clone()),
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        let old = slot_of(&shell, DrawerView::Files, cx);
+        let outline = slot_of(&shell, DrawerView::Outline, cx);
         assert!(drop_view(
             &shell,
-            DrawerView::Files,
-            DropTarget::Slot(old, Zone::Edge(Dir::Down)),
+            DrawerView::Find,
+            DropTarget::Slot(outline, Zone::Edge(Dir::Down)),
             window,
             cx
         ));
         window.render_frame(cx);
         assert_eq!(
             saved_placed(&path),
-            [vec![DrawerView::Find], vec![DrawerView::Files]]
+            [vec![DrawerView::Files], vec![DrawerView::Outline], vec![DrawerView::Find]]
         );
     })
     .unwrap();
@@ -860,8 +859,7 @@ fn dropping_on_a_slot_edge_places_the_view_there(cx: &mut TestAppContext) {
 
 /// A zone where a drop would change nothing is not drawn, so it never
 /// highlights and a release there does nothing: the centre of the view's
-/// own slot, and the window edge whose first slot holds it. The edges of
-/// its slot, which holds another view, are drawn.
+/// own slot, its edges, and the window edge whose first slot holds it.
 #[gpui_kit::test]
 fn a_disallowed_zone_is_not_drawn(cx: &mut TestAppContext) {
     let shell = open_shell(
@@ -878,7 +876,7 @@ fn a_disallowed_zone_is_not_drawn(cx: &mut TestAppContext) {
     assert!(!drawn(&shell, zone_id(DrawerView::Files, Zone::Centre), cx));
     assert!(!drawn(&shell, window_strip_id(Side::Left), cx));
     for dir in EDGES {
-        assert!(drawn(
+        assert!(!drawn(
             &shell,
             zone_id(DrawerView::Files, Zone::Edge(dir)),
             cx
