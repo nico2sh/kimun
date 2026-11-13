@@ -895,15 +895,22 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         if !self.slots.get(&slot)?.views.is_empty() {
             return None;
         }
-        let side = self.slot_side(slot);
-        if !self
-            .slots()
-            .into_iter()
-            .any(|s| s != slot && self.slot_side(s) == side)
-        {
+        if self.last_on_side(slot) {
             return None;
         }
         self.close_slot(slot).ok()
+    }
+
+    /// Whether `slot` is the last slot on its side of the active group
+    /// ([`Self::slot_side`]): no other slot reads as on that side. Such a
+    /// slot is never closed, by a move or an explicit close, so the side
+    /// can be shown again.
+    pub fn last_on_side(&self, slot: SlotId) -> bool {
+        let side = self.slot_side(slot);
+        !self
+            .slots()
+            .into_iter()
+            .any(|s| s != slot && self.slot_side(s) == side)
     }
 
     /// Close `slot` and return the slot that absorbed its views, which

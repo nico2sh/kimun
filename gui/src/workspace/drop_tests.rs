@@ -625,8 +625,8 @@ fn a_click_without_movement_still_activates_the_rail_cell(cx: &mut TestAppContex
     assert!(!shown(cx), "the click hid FILES");
 }
 
-/// The `⋯` button is not part of the drag source: a click opens the move
-/// chooser.
+/// The `⋯` button is not part of the drag source: a click opens the slot
+/// menu, whose first item opens the move chooser.
 #[gpui_kit::test]
 fn the_move_button_still_clicks(cx: &mut TestAppContext) {
     let shell = open_shell(
@@ -641,6 +641,9 @@ fn the_move_button_still_clicks(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(button, cx);
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("enter", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -650,6 +653,74 @@ fn the_move_button_still_clicks(cx: &mut TestAppContext) {
             "the move chooser is open"
         );
     });
+}
+
+/// Pick the second item of `view`'s slot menu, "Close slot".
+fn close_from_menu(shell: &Shell, view: DrawerView, cx: &mut TestAppContext) {
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(move_button_id(view), cx);
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The slot menu's "Close slot" closes that slot: its views join the slot
+/// that takes over its area, hidden.
+#[gpui_kit::test]
+fn the_slot_menu_closes_the_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let find = cx
+        .update_window(shell.handle, |_, window, cx| {
+            window.render_frame(cx);
+            slot_of(&shell, DrawerView::Find, cx)
+        })
+        .unwrap();
+    close_from_menu(&shell, DrawerView::Find, cx);
+    shell.workspace.read_with(cx, |ws, _| {
+        assert!(!ws.layout.slots().contains(&find), "FIND's slot closed");
+        let files = ws.layout.view_slot(&DrawerView::Files).unwrap();
+        assert_eq!(ws.layout.view_slot(&DrawerView::Find), Some(files));
+        assert_eq!(ws.layout.shown(files), Some(DrawerView::Files));
+    });
+}
+
+/// The last slot on its side of the editor offers no "Close slot": the
+/// right slot of a layout with one slot per side stays.
+#[gpui_kit::test]
+fn the_last_slot_on_a_side_offers_no_close(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let before = layout_now(&shell, cx);
+    close_from_menu(&shell, DrawerView::Outline, cx);
+    assert_eq!(layout_now(&shell, cx), before);
+}
+
+/// The only slot's "Close slot" is not offered: picking it changes nothing.
+#[gpui_kit::test]
+fn the_only_slot_offers_no_close(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &files_alone(), "", false, LayoutStore::Off);
+    let before = layout_now(&shell, cx);
+    close_from_menu(&shell, DrawerView::Files, cx);
+    // Only the focus moved: the click on `⋯` focused the slot.
+    assert_eq!(layout_now(&shell, cx), before);
 }
 
 // --- Carried over from the resolution tasks (ADR-0054 §1, §2) ---

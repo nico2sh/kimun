@@ -1720,3 +1720,18 @@ fn a_slot_above_or_below_the_editor_still_takes_half_of_it() {
         .unwrap();
     assert!((rect_of(&t, new).height() - group.height()).abs() < 1e-9);
 }
+
+#[test]
+fn the_last_slot_on_a_side_is_known_and_follows_the_active_group() {
+    let t = LayoutTree::default_layout("files");
+    let slots = t.slots();
+    let (left, right) = (slots[0], slots[1]);
+    assert!(t.last_on_side(left));
+    assert!(t.last_on_side(right));
+
+    let mut t = t;
+    let below = t.split_slot(left, Axis::Vertical).unwrap();
+    assert!(!t.last_on_side(left), "two slots on the left");
+    assert!(!t.last_on_side(below));
+    assert!(t.last_on_side(right));
+}
