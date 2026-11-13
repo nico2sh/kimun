@@ -524,7 +524,8 @@ pub(crate) struct Workspace {
     following: Option<Task<()>>,
     /// Hands URLs, images and attachments to the system's default program.
     pub(crate) opener: follow::Opener,
-    /// Keeps the Footer's dirty state in step with the editor.
+    /// Keeps the Footer's dirty state in step with the first group's
+    /// editor (a group made later holds its own, [`group::GroupState`]).
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
     /// Resolves the workspace's chords before a slot's own key bindings
@@ -553,7 +554,7 @@ pub(crate) struct Workspace {
     /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
     /// that never call it.
     settings: Option<SharedSettings>,
-    /// The editor's requests that need the window (vim `:`).
+    /// The first group's editor's requests that need the window (vim `:`).
     _editor_events: Subscription,
     /// The pending leader sequence and its which-key popup ([`leader`]).
     pub(crate) leader: LeaderState,
@@ -714,13 +715,7 @@ impl Workspace {
             .unwrap_or(0);
         // Every edit notifies the editor; the Footer only redraws when the
         // dirty state flips.
-        let editor_watch = cx.observe(&editor, |this, editor, cx| {
-            let dirty = editor.read(cx).editor.is_dirty();
-            if this.status.dirty != dirty {
-                this.status.dirty = dirty;
-                cx.notify();
-            }
-        });
+        let editor_watch = cx.observe(&editor, Self::editor_changed);
         let this = cx.entity().downgrade();
         let shell_keys = cx.intercept_keystrokes(move |event, window, cx| {
             this.update(cx, |workspace, cx| {
@@ -3539,6 +3534,8 @@ mod sort_tests;
 mod start_tests;
 #[cfg(test)]
 mod switcher_tests;
+#[cfg(test)]
+mod tabs_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

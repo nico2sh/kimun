@@ -557,6 +557,12 @@ impl NoteSession {
         self.pending_open.is_some()
     }
 
+    /// The note being opened, between [`Self::begin_open`] and
+    /// [`Self::finish_open`].
+    pub fn pending_open(&self) -> Option<&VaultPath> {
+        self.pending_open.as_ref()
+    }
+
     #[cfg(test)]
     pub(crate) fn autosave_task_mut(&mut self) -> &mut SingleSlotTask<()> {
         &mut self.autosave_task
