@@ -377,10 +377,10 @@ impl Workspace {
     /// Whether dropping `view` on `target` changes anything: not while
     /// zoomed (the other slots are not on screen), not on the centre of the
     /// slot already showing it (a view hidden there is shown by the drop),
-    /// not on an edge of the slot holding only that view (nothing to leave
-    /// behind there), not on a window edge whose first slot already shows
-    /// it, and not on a slot that is gone. A view
-    /// no slot holds is placed by any zone.
+    /// not on an edge of the slot already holding it (a drop would split
+    /// its own stack; the keyboard and the chooser still can), not on a
+    /// window edge whose first slot already shows it, and not on a slot
+    /// that is gone. A view no slot holds is placed by any zone.
     pub(crate) fn drop_target_allowed(&self, view: DrawerView, target: DropTarget) -> bool {
         if self.layout.zoomed().is_some() {
             return false;
@@ -393,9 +393,7 @@ impl Workspace {
                 }
                 match zone {
                     Zone::Centre => self.layout.shown(slot) != Some(view),
-                    Zone::Edge(_) => {
-                        !(from == Some(slot) && self.layout.slot_views(slot).len() < 2)
-                    }
+                    Zone::Edge(_) => from != Some(slot),
                 }
             }
             DropTarget::Window(side) => self
