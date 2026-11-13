@@ -174,8 +174,10 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::ReplaceInBuffer if mac => &["cmd+alt+f"],
         A::ReplaceInBuffer => &["ctrl+h"],
         // The left side's toggle: L for left. Alt+letter, so the browser
-        // chord Ctrl+T is the new tab's (ADR-0058). Literal Alt on every
-        // platform, as the tab chords keep literal Ctrl.
+        // chord Ctrl+T is the new tab's (ADR-0058). On macOS Option+letter
+        // types text, so it is Cmd+Option+L there, as every other Option
+        // chord of this table.
+        A::ToggleSidebar if mac => &["cmd+alt+l"],
         A::ToggleSidebar => &["alt+l"],
         // Directional focus (ADR-0050 §4). Not Ctrl+Arrow (word motion) and
         // not Ctrl+Alt+Arrow (GNOME's workspace switch).
@@ -192,8 +194,13 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The wrapping panel cycle (the TUI's Tab / Shift+Tab, whose Tab the
         // editor keeps for indent): E forward, F back. Alt+letter, so the
         // browser's Ctrl+Tab and Ctrl+Shift+Tab move between tabs
-        // (ADR-0058). No editor or vim key is Alt+letter.
+        // (ADR-0058). On Linux and Windows neither the plain editor nor the
+        // vim engine reads an Alt+letter. On macOS Option+letter types text
+        // (Option+E is a dead key), so the chords add Cmd there; back is S,
+        // as Cmd+Option+F is the platform's find-and-replace.
+        A::FocusEditor if mac => &["cmd+alt+e"],
         A::FocusEditor => &["alt+e"],
+        A::FocusSidebar if mac => &["cmd+alt+s"],
         A::FocusSidebar => &["alt+f"],
         // Write the open note now (the TUI's leader `w`). Everywhere: the
         // note is the window's, whichever panel has the keyboard.
@@ -207,7 +214,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // still bind it under `[gui.keys]`). Never Shift+Enter: in the editor
         // that is a plain newline.
         A::FollowLink => &["primary+enter"],
-        // The right side's toggle: R for right, beside the left's Alt+L.
+        // The right side's toggle: R for right, beside the left's Alt+L
+        // (Cmd+Option+R on macOS, as the left's).
+        A::ToggleRightDrawer if mac => &["cmd+alt+r"],
         A::ToggleRightDrawer => &["alt+r"],
         // Arranging the layout tree (ADR-0052), only from the rail or a
         // slot, so the editor keeps these chords (Option+Shift+Arrow and
