@@ -25,7 +25,7 @@ use gpui_kit::{
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::KeyInput;
 use kimun_notes::logic::layout::Dir;
-use kimun_notes::logic::layout_tree::SlotId;
+use kimun_notes::logic::layout_tree::{Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
@@ -388,9 +388,14 @@ impl Workspace {
     }
 
     /// Move `view` into `slot` ([`LayoutTree::move_view`]): shown there,
-    /// the slot it leaves closed if that emptied it
-    /// ([`Self::close_if_vacated`]), the keyboard on `slot`. Persisted.
-    /// False when `slot` is absent.
+    /// the keyboard on `slot`. Persisted. False when `slot` is absent.
+    ///
+    /// A view shown in another slot trades places with the view `slot`
+    /// shows: that view takes the slot `view` left, so both stay drawn and
+    /// no slot closes. Any other move (a hidden view, a view no slot holds,
+    /// a `slot` showing nothing) puts `view` in `slot`, the view shown there
+    /// staying placed, hidden; the slot `view` leaves closes if that emptied
+    /// it ([`Self::close_if_vacated`]).
     ///
     /// [`LayoutTree::move_view`]: kimun_notes::logic::layout_tree::LayoutTree::move_view
     pub(super) fn move_into(
@@ -400,12 +405,24 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let from = self.layout.view_slot(&view);
+        let from = self.layout.view_slot(&view).filter(|from| *from != slot);
+        let swap_with = self.swap_partner(view, slot);
         if !self.layout.move_view(view, slot) {
             return false;
         }
-        if let Some(from) = from.filter(|from| *from != slot) {
-            self.close_if_vacated(from, view);
+        match (from, swap_with) {
+            (Some(from), Some(other)) => {
+                let moved = self.layout.move_view(other, from);
+                debug_assert!(moved, "the slot the view left is still there");
+                // The zoom follows the view, as it does when its slot closes.
+                if self.layout.zoomed() == Some(Leaf::Slot(from)) {
+                    self.layout.zoom(Some(Leaf::Slot(slot)));
+                }
+            }
+            (Some(from), None) => {
+                self.close_if_vacated(from, view);
+            }
+            _ => {}
         }
         self.focus_slot_ending_zoom(slot);
         self.ensure_files_listing(cx);
@@ -414,6 +431,37 @@ impl Workspace {
         self.save_layout(cx);
         cx.notify();
         true
+    }
+
+    /// The view `view` would trade places with if moved into `slot`: the
+    /// one `slot` shows, when `view` is shown in another slot
+    /// ([`Self::move_into`]).
+    pub(super) fn swap_partner(&self, view: DrawerView, slot: SlotId) -> Option<DrawerView> {
+        self.layout
+            .view_slot(&view)
+            .filter(|from| *from != slot)
+            .filter(|from| self.layout.shown(*from) == Some(view))?;
+        self.layout.shown(slot)
+    }
+
+    /// A rail drag onto a slot's centre: like [`Self::move_into`], but the
+    /// view `slot` shows is unplaced instead of swapped or kept hidden
+    /// there, so the rail still lists it as any view no slot holds. False
+    /// when `slot` is absent.
+    pub(super) fn replace_into(
+        &mut self,
+        view: DrawerView,
+        slot: SlotId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.layout.slots().contains(&slot) {
+            return false;
+        }
+        if let Some(shown) = self.layout.shown(slot).filter(|shown| *shown != view) {
+            self.layout.unplace(&shown);
+        }
+        self.move_into(view, slot, window, cx)
     }
 
     /// The rows of the views the rail offers that no slot shows, in
@@ -506,9 +554,10 @@ impl Workspace {
     /// other drawn slot in reading order (titled by the view it shows),
     /// then a new slot above, below, left and right of `slot` when `slot`
     /// holds other views (alone there, there is nothing to leave behind).
-    /// A row names the move chord that does the same: the slot a Left or
-    /// Right chord reaches (Up and Down trade places, which a pick does
-    /// not), or the new slot on a side with nothing there.
+    /// A row names the move chord that does the same: the slot an Up or
+    /// Down chord reaches (both trade places, as a pick does; Left and
+    /// Right join that slot's stack instead), or the new slot on a side
+    /// with nothing there.
     fn move_rows(
         &self,
         view: DrawerView,
@@ -546,9 +595,9 @@ impl Workspace {
             .filter_map(|other| Some((other, self.layout.shown(other)?)))
             .map(|(other, shown)| {
                 let title = view_registry::spec(shown).title;
-                // Only Left and Right join the slot they reach, as the
-                // pick does; Up and Down trade places there instead.
-                let hint = [Dir::Left, Dir::Right]
+                // Only Up and Down trade places in the slot they reach, as
+                // the pick does; Left and Right join its stack instead.
+                let hint = [Dir::Up, Dir::Down]
                     .into_iter()
                     .find(|dir| reach(*dir) == Some(other))
                     .and_then(chord);
@@ -586,9 +635,8 @@ impl Workspace {
     }
 
     /// Move `view` out of `from` to `target`. Into a slot: shown there,
-    /// the view shown there staying placed, hidden (as the move chord
-    /// does); `from` closes when that emptied it
-    /// ([`Self::close_if_vacated`]). A new slot: on that side of `from`
+    /// trading places with the view shown there ([`Self::move_into`], as
+    /// the Up and Down chords do). A new slot: on that side of `from`
     /// ([`Self::spawn_beside`]). The keyboard follows the view. Persisted.
     /// Nothing changes when the view left `from` meanwhile, or while
     /// zoomed.

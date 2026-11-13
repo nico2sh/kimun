@@ -465,11 +465,11 @@ fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut Te
 }
 
 /// "Reset layout to default" is always offered, with or without a presets
-/// file: after the default left slot was closed (no slot left of the
-/// editor, nothing to toggle back), it brings the default structure back,
-/// saves it and clears the recorded preset (Ruling 23).
+/// file: after the layout changed (FILES moved to the right slot), it
+/// brings the default structure back, saves it and clears the recorded
+/// preset (Ruling 23).
 #[gpui_kit::test]
-fn reset_layout_to_default_undoes_a_closed_left_slot(cx: &mut TestAppContext) {
+fn reset_layout_to_default_undoes_a_moved_view(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
     std::fs::write(&config, "[gui]\nlayout_preset = \"focus\"\n").unwrap();
     let shell = open_with(cx, &config, None);
@@ -478,12 +478,10 @@ fn reset_layout_to_default_undoes_a_closed_left_slot(cx: &mut TestAppContext) {
 
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
-            let left = w.layout.slots()[0];
-            w.layout
-                .focus(kimun_notes::logic::layout_tree::Focus::Leaf(Leaf::Slot(
-                    left,
-                )));
-            w.close_focused_slot(window, cx);
+            // FILES moves into the right slot (the last slot on a side
+            // cannot close, so this is the change the reset undoes).
+            let right = w.layout.slots()[1];
+            w.move_into(DrawerView::Files, right, window, cx);
         });
         window.render_frame(cx);
     })

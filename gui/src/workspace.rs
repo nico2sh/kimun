@@ -198,7 +198,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeError, TreeFocusMove,
+    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -212,7 +212,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use self::drop_zones::{LiveViewDrag, ViewDrag};
+use self::drop_zones::{DragFrom, LiveViewDrag, ViewDrag};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -237,6 +237,9 @@ pub(crate) use titlebar::WINDOW_CONTROL_ICONS;
 
 /// The key context of the workspace root.
 const KEY_CONTEXT: &str = "KimunWorkspace";
+
+/// Why a slot does not close: it is the last on its side of the editor.
+pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
 
 /// Where the layout, and the settings the window changes, are persisted.
 #[derive(Clone)]
@@ -532,6 +535,14 @@ pub(crate) struct Workspace {
     /// The view being dragged onto a drop zone, while one is
     /// ([`Self::dragged_view`]).
     view_drag: Option<LiveViewDrag>,
+    /// What a drop on each zone would do, worked out while a
+    /// view is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
+    /// empty otherwise.
+    drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
+    /// The drag and window size [`Self::drop_outcomes`] were worked out for.
+    drop_outcomes_for: Option<(ViewDrag, gpui_kit::Size<gpui_kit::Pixels>)>,
+    /// The zone the drag is over, for its label ([`Self::zone_tag`]).
+    hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
     /// is open ([`modal`]).
     pub(crate) modal: Option<ModalKind>,
@@ -804,6 +815,9 @@ impl Workspace {
             _on_quit: None,
             _shell_keys: shell_keys,
             view_drag: None,
+            drop_outcomes: HashMap::new(),
+            drop_outcomes_for: None,
+            hovered_zone: None,
             modal: None,
             palette: None,
             view_chooser: None,
@@ -2026,9 +2040,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<SlotId, NoNewSlot> {
+        let placed = self.try_new_slot(view, beside, dir, window);
+        if placed == Err(NoNewSlot::NoRoom) {
+            let name = view_registry::spec(view).name;
+            self.flash(format!("No room for {name} here"), cx);
+        }
+        placed
+    }
+
+    /// The model steps of [`Self::place_new_slot`], without its flash: on
+    /// `Err` the layout is as it was.
+    fn try_new_slot(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &Window,
+    ) -> Result<SlotId, NoNewSlot> {
         let visible = self.fitting_leaves(window);
         let from = self.layout.view_slot(&view);
-        let placed = self.try_layout(|ws| {
+        self.try_layout(|ws| {
             let new = match beside {
                 Leaf::Slot(slot) => ws.layout.place_beside(view, slot, dir),
                 Leaf::Group(group) => ws.layout.place_beside_group(view, group, dir),
@@ -2042,12 +2073,23 @@ impl Workspace {
             } else {
                 Err(NoNewSlot::NoRoom)
             }
-        });
-        if placed == Err(NoNewSlot::NoRoom) {
-            let name = view_registry::spec(view).name;
-            self.flash(format!("No room for {name} here"), cx);
-        }
-        placed
+        })
+    }
+
+    /// Whether the window has room for `view` in a new slot on the `dir`
+    /// side of `beside`: the steps of [`Self::place_new_slot`] run and
+    /// undone, the layout as it was either way.
+    pub(super) fn new_slot_fits(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &Window,
+    ) -> bool {
+        let undo = self.layout.clone();
+        let fits = self.try_new_slot(view, beside, dir, window).is_ok();
+        self.layout = undo;
+        fits
     }
 
     /// Run `edit`, which may change the layout and nothing else of the
@@ -2239,16 +2281,29 @@ impl Workspace {
         let Some(focused) = self.focused_slot() else {
             return false;
         };
-        match self.layout.close_slot(focused) {
-            Ok(_) => {
-                self.tidy_layout(cx);
-                self.apply_focus(window, cx);
-                self.save_layout(cx);
-            }
-            Err(TreeError::LastSlot) => self.flash("This is the only slot", cx),
-            Err(_) => {}
-        }
+        self.close_slot(focused, window, cx);
         true
+    }
+
+    /// Close `slot` ([`LayoutTree::close_slot`]): its views join the
+    /// neighbouring slot that takes over its area, hidden, and the keyboard
+    /// goes there when that slot is drawn (else to the editor). The last
+    /// slot on its side of the editor stays ([`LayoutTree::last_on_side`]),
+    /// so that side can be shown again, and a flash says so. Persisted.
+    /// The `CloseSlot` chord and the slot menu's `Close slot`.
+    pub(super) fn close_slot(&mut self, slot: SlotId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.last_on_side(slot) {
+            self.flash(LAST_ON_SIDE, cx);
+            return;
+        }
+        // An error is only a slot gone meanwhile: the last slot overall is
+        // the last on its side, refused above.
+        if self.layout.close_slot(slot).is_ok() {
+            self.tidy_layout(cx);
+            self.apply_focus(window, cx);
+            self.save_layout(cx);
+        }
+        cx.notify();
     }
 
     /// `ToggleZoom` (ADR-0053): zoom the focused leaf, a slot or the
@@ -2896,7 +2951,14 @@ impl Workspace {
             })
             .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
             // A drag source only: the rail is not a drop target (ADR-0054 §8).
-            .on_drag(ViewDrag(view), self.view_drag_ghost(cx))
+            .cursor_grab()
+            .on_drag(
+                ViewDrag {
+                    view,
+                    from: DragFrom::Rail,
+                },
+                self.view_drag_ghost(cx),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate_rail_view(view, window, cx)
             }))
@@ -3126,6 +3188,7 @@ impl Render for Workspace {
     /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prune_view_drag(cx);
+        self.refresh_drop_outcomes(window, cx);
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
         // The tree is fitted to the height the bar leaves; a change in the

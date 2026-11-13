@@ -57,6 +57,11 @@ fn first_at_rail(regions: &[(Leaf, UnitRect)], rail: RailPosition) -> Option<Lea
         .map(|(l, _)| *l)
 }
 
+/// The share of its split a side column takes: a side slot of
+/// [`LayoutTree::default_layout`], and a slot placed left or right of an
+/// editor group.
+const SIDE_COLUMN_SHARE: f64 = 0.2;
+
 /// Identifies one slot. Stable across splits and closes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SlotId(u32);
@@ -198,9 +203,9 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let root = Node::split(
             Axis::Horizontal,
             vec![
-                (0.2, Node::leaf(Leaf::Slot(left))),
+                (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(left))),
                 (0.6, Node::leaf(Leaf::Group(GroupId::new(0)))),
-                (0.2, Node::leaf(Leaf::Slot(right))),
+                (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(right))),
             ],
         );
         let slots = BTreeMap::from([
@@ -765,6 +770,17 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Some(slot)
     }
 
+    /// Take `view` out of the slot that holds it, leaving it unplaced, and
+    /// return that slot. A slot left with no shown view keeps its other
+    /// views hidden; closing an emptied slot is the caller's
+    /// ([`Self::vacate_close`]). `None`, nothing changes, when `view` is
+    /// unplaced.
+    pub fn unplace(&mut self, view: &V) -> Option<SlotId> {
+        let slot = self.view_slot(view)?;
+        self.slots.get_mut(&slot)?.remove(view);
+        Some(slot)
+    }
+
     /// Move `view` to `slot`, shown there, replacing the view `slot`
     /// showed (which stays placed there, hidden). A view placed elsewhere
     /// leaves its old slot; a view already in `slot` is just shown. False
@@ -849,9 +865,13 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             Dir::Right => (Axis::Horizontal, false),
         };
         let new = SlotId(self.next_slot);
+        // Beside an editor group the new slot is a side column: the share
+        // of a side slot in the default layout, not half the editor.
+        let share = (matches!(target, Leaf::Group(_)) && axis == Axis::Horizontal)
+            .then_some(SIDE_COLUMN_SHARE);
         if !self
             .root
-            .split_leaf_at(&target, axis, Leaf::Slot(new), before)
+            .split_leaf_at(&target, axis, Leaf::Slot(new), before, share)
         {
             return None;
         }
@@ -875,15 +895,22 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         if !self.slots.get(&slot)?.views.is_empty() {
             return None;
         }
-        let side = self.slot_side(slot);
-        if !self
-            .slots()
-            .into_iter()
-            .any(|s| s != slot && self.slot_side(s) == side)
-        {
+        if self.last_on_side(slot) {
             return None;
         }
         self.close_slot(slot).ok()
+    }
+
+    /// Whether `slot` is the last slot on its side of the active group
+    /// ([`Self::slot_side`]): no other slot reads as on that side. Such a
+    /// slot is never closed, by a move or an explicit close, so the side
+    /// can be shown again.
+    pub fn last_on_side(&self, slot: SlotId) -> bool {
+        let side = self.slot_side(slot);
+        !self
+            .slots()
+            .into_iter()
+            .any(|s| s != slot && self.slot_side(s) == side)
     }
 
     /// Close `slot` and return the slot that absorbed its views, which

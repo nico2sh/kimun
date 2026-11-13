@@ -1677,3 +1677,61 @@ fn slot_beside_rail_follows_the_edge() {
     assert_eq!(t.slot_beside_rail(RailPosition::Bottom), Some(left_below));
     let _ = right_below;
 }
+
+#[test]
+fn unplace_takes_a_view_out_and_keeps_the_rest() {
+    let mut t = LayoutTree::default_layout("files");
+    let left = t.view_slot(&"files").unwrap();
+    assert!(t.place("find", left, false));
+    assert_eq!(t.unplace(&"files"), Some(left));
+    assert_eq!(t.view_slot(&"files"), None);
+    assert_eq!(t.shown(left), None);
+    assert_eq!(t.slot_views(left), ["find"]);
+    assert_eq!(t.unplace(&"files"), None, "already unplaced");
+}
+
+#[test]
+fn a_slot_beside_the_editor_takes_a_side_columns_share_not_half_of_it() {
+    let mut t = LayoutTree::default_layout("files");
+    let g = t.active_group();
+    let new = t.place_beside_group("x", g, Dir::Right).unwrap();
+    let group = t
+        .regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Group(g))
+        .map(|(_, r)| r)
+        .unwrap();
+    // The default sides are 0.2 wide, the editor 0.6: the new column is as
+    // wide as a side, and the editor gave up the difference.
+    assert!((rect_of(&t, new).width() - 0.2).abs() < 1e-9);
+    assert!((group.width() - 0.4).abs() < 1e-9);
+}
+
+#[test]
+fn a_slot_above_or_below_the_editor_still_takes_half_of_it() {
+    let mut t = LayoutTree::default_layout("files");
+    let g = t.active_group();
+    let new = t.place_beside_group("x", g, Dir::Down).unwrap();
+    let group = t
+        .regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Group(g))
+        .map(|(_, r)| r)
+        .unwrap();
+    assert!((rect_of(&t, new).height() - group.height()).abs() < 1e-9);
+}
+
+#[test]
+fn the_last_slot_on_a_side_is_known_and_follows_the_active_group() {
+    let t = LayoutTree::default_layout("files");
+    let slots = t.slots();
+    let (left, right) = (slots[0], slots[1]);
+    assert!(t.last_on_side(left));
+    assert!(t.last_on_side(right));
+
+    let mut t = t;
+    let below = t.split_slot(left, Axis::Vertical).unwrap();
+    assert!(!t.last_on_side(left), "two slots on the left");
+    assert!(!t.last_on_side(below));
+    assert!(t.last_on_side(right));
+}

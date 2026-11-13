@@ -63,6 +63,7 @@ use gpui_kit::base::{
 };
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Bounds, ClickEvent, Context, DragMoveEvent, InteractiveElement,
@@ -75,7 +76,7 @@ use kimun_notes::logic::layout_tree::{
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
-use super::drop_zones::ViewDrag;
+use super::drop_zones::{DragFrom, ViewDrag};
 use super::{Workspace, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -90,6 +91,12 @@ pub(super) const RESIZE_STEP: f64 = 0.05;
 pub(crate) const TOO_SMALL: &str = "Too small";
 /// The element id of that placeholder.
 pub(crate) const TOO_SMALL_ID: &str = "slot-too-small";
+
+/// The slot menu's item that opens the move chooser.
+pub(crate) const MOVE_VIEW_ITEM: &str = "Move view…";
+
+/// The slot menu's item that closes the slot.
+pub(crate) const CLOSE_SLOT_ITEM: &str = "Close slot";
 
 /// The element id of the `⋯` in the header of the slot showing `view`
 /// (`slot-move-files`).
@@ -1112,9 +1119,10 @@ impl Workspace {
     /// The strip at the top of a drawn slot: the title of the view it shows
     /// on the header background, a hairline under it, and the accent on the title while
     /// the slot has the focus. It ends with a quiet
-    /// `⋯` (its own id, [`move_button_id`]): it gives the slot the keyboard
-    /// and asks where the view goes ([`Workspace::open_move_chooser`]). The
-    /// hook for further slot actions.
+    /// `⋯` (its own id, [`move_button_id`]): a menu of the slot's actions,
+    /// moving its view ([`Workspace::open_move_chooser`]) and closing it
+    /// ([`Workspace::close_slot`]; greyed out for the last slot on its
+    /// side of the editor).
     fn render_slot_header(
         &self,
         slot: SlotId,
@@ -1160,8 +1168,15 @@ impl Workspace {
         let strip = div()
             .id(SharedString::from(format!("slot-drag-{}", view.id())))
             .w_full()
+            .cursor_grab()
             .child(header)
-            .on_drag(ViewDrag(view), self.view_drag_ghost(cx));
+            .on_drag(
+                ViewDrag {
+                    view,
+                    from: DragFrom::Header,
+                },
+                self.view_drag_ghost(cx),
+            );
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.
@@ -1178,11 +1193,36 @@ impl Workspace {
                         .ghost()
                         .xsmall()
                         .label("⋯")
-                        .tooltip("Move view…")
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            this.focus_slot(slot, window, cx);
-                            this.open_move_chooser(slot, window, cx);
-                        })),
+                        .tooltip("View actions")
+                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, {
+                            let this = cx.entity().downgrade();
+                            move |menu, _, cx| {
+                                // Worked out when the menu opens, not every
+                                // frame: each side reading is a layout pass.
+                                let only = this
+                                    .upgrade()
+                                    .is_none_or(|ws| ws.read(cx).layout.last_on_side(slot));
+                                let run = |action: fn(&mut Workspace, SlotId, &mut Window, &mut Context<Workspace>)| {
+                                    let this = this.clone();
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
+                                        this.update(cx, |ws, cx| action(ws, slot, window, cx)).ok();
+                                    }
+                                };
+                                menu.item(PopupMenuItem::new(MOVE_VIEW_ITEM).on_click(run(
+                                    |ws, slot, window, cx| {
+                                        ws.focus_slot(slot, window, cx);
+                                        ws.open_move_chooser(slot, window, cx);
+                                    },
+                                )))
+                                .item(
+                                    PopupMenuItem::new(CLOSE_SLOT_ITEM)
+                                        .disabled(only)
+                                        .on_click(run(|ws, slot, window, cx| {
+                                            ws.close_slot(slot, window, cx);
+                                        })),
+                                )
+                            }
+                        }),
                 ),
         )
     }
