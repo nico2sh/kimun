@@ -584,6 +584,9 @@ pub(crate) struct Workspace {
     groups_closing: Option<(tab_strip::CloseTarget, Task<()>)>,
     /// The tab strip's sideways scroll ([`tab_strip`]).
     tab_scroll: ScrollHandle,
+    /// The tab whose pill the pointer is over: it shows its close button
+    /// ([`tab_strip`]).
+    tab_hover: Option<kimun_notes::logic::editor_region::TabId>,
     /// Why a group shows no note: the one it held was deleted or moved
     /// away. Only that group says so; cleared when a note opens there.
     pub(crate) note_gone: Option<(GroupId, EmptyState)>,
@@ -826,6 +829,7 @@ impl Workspace {
             file_task: None,
             groups_closing: None,
             tab_scroll: ScrollHandle::new(),
+            tab_hover: None,
             note_gone: None,
             picker: None,
             quick_note: None,
