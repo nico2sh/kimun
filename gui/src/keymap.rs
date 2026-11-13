@@ -117,10 +117,10 @@ impl Scope {
             | ActionShortcuts::ReplaceInBuffer
             | ActionShortcuts::FollowLink
             | ActionShortcuts::Text(_) => Scope::Editor,
+            // The split and close chords act on the focused leaf, a slot
+            // or the editor's active group (ADR-0058), so they are
+            // everywhere's; the rail does not handle them.
             ActionShortcuts::MoveViewToNeighbour(_)
-            | ActionShortcuts::SplitSlotRight
-            | ActionShortcuts::SplitSlotDown
-            | ActionShortcuts::CloseSlot
             | ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::OpenSortDialog => Scope::Shell,

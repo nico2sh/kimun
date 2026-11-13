@@ -885,7 +885,9 @@ fn retired_drawer_actions_are_gone_from_the_gui_keymap() {
 
 /// The layout-tree commands' defaults (ADR-0052) are unique: each chord
 /// resolves to its command from the rail and every slot, no other default
-/// holds it in an overlapping scope, and the editor keeps it.
+/// holds it in an overlapping scope. The editor keeps the move chords;
+/// the split and close chords act there too, on its active group
+/// (ADR-0058).
 #[test]
 fn layout_tree_defaults_hold_unique_chords() {
     let expected = [
@@ -910,8 +912,9 @@ fn layout_tree_defaults_hold_unique_chords() {
                 .map(|b| &b.action)
                 .collect();
             assert_eq!(holders, [action], "{p:?} {written}");
+            let everywhere = matches!(action, A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot);
             for panel in PANELS {
-                let want = (panel != Panel::Editor).then_some(action);
+                let want = (everywhere || panel != Panel::Editor).then_some(action);
                 assert_eq!(
                     keymap.resolve(key, ctx(panel, false)),
                     want,
@@ -1180,15 +1183,26 @@ fn linux_windows_resolution_table() {
                 "ctrl+shift+tab",
                 [prev_tab.clone(), prev_tab.clone(), prev_tab],
             ),
-            // Arranging views: the rail's and the slots', never the
-            // editor's (it keeps Alt+Shift+Arrow).
+            // Moving views: the rail's and the slots', never the editor's
+            // (it keeps Alt+Shift+Arrow).
             ("alt+shift+left", [None, None, to_left]),
             ("alt+shift+right", [None, None, to_right]),
             ("alt+shift+up", [None, None, view_up]),
             ("alt+shift+down", [None, None, view_down]),
-            ("alt+shift+r", [None, None, split_right]),
-            ("alt+shift+d", [None, None, split_down]),
-            ("alt+shift+w", [None, None, close_slot]),
+            // Split and close act on the focused leaf: a slot, or the
+            // editor's active group (ADR-0058).
+            (
+                "alt+shift+r",
+                [split_right.clone(), split_right.clone(), split_right],
+            ),
+            (
+                "alt+shift+d",
+                [split_down.clone(), split_down.clone(), split_down],
+            ),
+            (
+                "alt+shift+w",
+                [close_slot.clone(), close_slot.clone(), close_slot],
+            ),
             // The retired drawer-era split / unsplit chords are free.
             ("alt+shift+s", [None, None, None]),
             ("alt+shift+u", [None, None, None]),
@@ -1259,9 +1273,20 @@ fn macos_resolution_table() {
             ("cmd+alt+shift+right", [None, None, to_right]),
             ("cmd+alt+shift+up", [None, None, view_up]),
             ("cmd+alt+shift+down", [None, None, view_down]),
-            ("cmd+alt+shift+r", [None, None, split_right]),
-            ("cmd+alt+shift+d", [None, None, split_down]),
-            ("cmd+alt+shift+w", [None, None, close_slot]),
+            // Split and close act on the focused leaf: a slot, or the
+            // editor's active group (ADR-0058).
+            (
+                "cmd+alt+shift+r",
+                [split_right.clone(), split_right.clone(), split_right],
+            ),
+            (
+                "cmd+alt+shift+d",
+                [split_down.clone(), split_down.clone(), split_down],
+            ),
+            (
+                "cmd+alt+shift+w",
+                [close_slot.clone(), close_slot.clone(), close_slot],
+            ),
             // The retired drawer-era split / unsplit chords are free.
             ("cmd+alt+shift+s", [None, None, None]),
             ("cmd+alt+shift+u", [None, None, None]),

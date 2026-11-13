@@ -84,13 +84,18 @@ pub enum ActionShortcuts {
     /// query help is built into its search views.
     QuerySyntax,
     /// Split the focused slot side by side: a new slot opens right of
-    /// it (ADR-0052).
+    /// it (ADR-0052). With the editor focused (the desktop app), its
+    /// active group splits instead: an empty group opens right of it
+    /// (ADR-0058).
     SplitSlotRight,
     /// Split the focused slot into two stacked slots: a new slot
-    /// opens below it (ADR-0052).
+    /// opens below it (ADR-0052). With the editor focused (the desktop
+    /// app), an empty group opens below the active group (ADR-0058).
     SplitSlotDown,
     /// Close the focused slot; its views
-    /// join the neighbouring slot taking over its area (ADR-0052).
+    /// join the neighbouring slot taking over its area (ADR-0052). With
+    /// the editor focused (the desktop app), the active group closes, its
+    /// note saved first; a neighbour takes its space (ADR-0058).
     CloseSlot,
     /// Move the focused view to the nearest slot in that direction
     /// (ADR-0052 geometry). On disk it is one name per direction,

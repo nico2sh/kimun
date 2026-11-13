@@ -228,6 +228,8 @@ use kimun_notes::logic::task_slot::TaskSlot;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
+#[cfg(test)]
+pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
 use modal::ModalKind;
 pub(crate) use note::Closing;
@@ -243,6 +245,8 @@ const KEY_CONTEXT: &str = "KimunWorkspace";
 
 /// Why a slot does not close: it is the last on its side of the editor.
 pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
+/// Why the split chord does nothing on the editor while zoomed.
+pub(crate) const ZOOMED_NO_GROUP_SPLIT: &str = "Leave zoom to split the editor";
 
 /// Where the layout, and the settings the window changes, are persisted.
 #[derive(Clone)]
@@ -574,15 +578,15 @@ pub(crate) struct Workspace {
     /// The file operation running (its flush, the core call, the reload of
     /// a followed note). One at a time.
     file_task: Option<Task<()>>,
-    /// The close of a tab under way: the flush of its groups, then their
-    /// removal ([`tab_strip`]). One at a time; it holds the notes as a file
-    /// operation does.
-    tab_closing: Option<Task<()>>,
+    /// The close of a tab or a group under way: the flush of its groups,
+    /// then their removal ([`tab_strip`]). One at a time; it holds the
+    /// notes as a file operation does.
+    groups_closing: Option<(tab_strip::CloseTarget, Task<()>)>,
     /// The tab strip's sideways scroll ([`tab_strip`]).
     tab_scroll: ScrollHandle,
-    /// Why the editor Panel shows no note: the open one was deleted or
-    /// moved away. Cleared when a note opens.
-    pub(crate) note_gone: Option<EmptyState>,
+    /// Why a group shows no note: the one it held was deleted or moved
+    /// away. Only that group says so; cleared when a note opens there.
+    pub(crate) note_gone: Option<(GroupId, EmptyState)>,
     /// The note picker in the modal slot, while one is open ([`picker`]).
     pub(crate) picker: Option<WeakEntity<picker::NotePicker>>,
     /// The quick note in the modal slot, while it is open ([`create`]).
@@ -820,7 +824,7 @@ impl Workspace {
             file_dialog: None,
             file_status: None,
             file_task: None,
-            tab_closing: None,
+            groups_closing: None,
             tab_scroll: ScrollHandle::new(),
             note_gone: None,
             picker: None,
@@ -2270,12 +2274,80 @@ impl Workspace {
         true
     }
 
-    /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view
-    /// the new slot, right of the focused slot (`axis` horizontal) or below
-    /// it, holds ([`Self::open_split_chooser`]); the slot arrives filled.
-    /// Handled whenever a slot has the keyboard, except under another
-    /// modal, where the key passes on; zoomed it flashes and splits
-    /// nothing (the new slot would not be drawn).
+    /// `SplitSlotRight` / `SplitSlotDown` on the focused leaf. On a slot,
+    /// the slot splits ([`Self::split_focused_slot`]). On the editor
+    /// region, the active group splits (ADR-0058): an empty group comes
+    /// after it, right of it (`axis` horizontal) or below it, becomes the
+    /// active group and takes the keyboard; it shows the empty-group hint,
+    /// which offers the note finder. Not handled on the rail.
+    pub(crate) fn split_focused(
+        &mut self,
+        axis: TreeAxis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Editor) => {
+                self.split_active_group(axis, cx);
+                true
+            }
+            Focus::Leaf(Leaf::Slot(_)) => self.split_focused_slot(axis, window, cx),
+            Focus::Rail => false,
+        }
+    }
+
+    /// Split the active group along `axis` (see [`Self::split_focused`]).
+    /// Refused with a flash while zoomed (the new group would replace the
+    /// zoomed one on screen) and while the tab's close writes its notes (it
+    /// would go with the tab); nothing without a vault or while the window
+    /// closes.
+    fn split_active_group(&mut self, axis: TreeAxis, cx: &mut Context<Self>) {
+        if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+            return;
+        }
+        if self.layout.zoomed().is_some() {
+            self.flash(ZOOMED_NO_GROUP_SPLIT, cx);
+            return;
+        }
+        let active = self.layout.active_group();
+        if self.tab_mid_close(self.layout.region().shown()) {
+            self.flash_error(tab_strip::TAB_CLOSING, cx);
+            return;
+        }
+        let Some(state) = self.new_group_state(cx) else {
+            return;
+        };
+        let Some(group) = self.layout.region_mut().split_group(active, axis) else {
+            return;
+        };
+        self.insert_group(group, state, cx);
+        self.focus_group(group, cx);
+    }
+
+    /// `CloseSlot` on the focused leaf. On a slot, the slot closes
+    /// ([`Self::close_focused_slot`]). On the editor region, the active
+    /// group closes ([`Self::close_editor_group`]): its note written first,
+    /// a neighbour takes its space; the last group of a tab closes the tab,
+    /// and the last group of the last tab stays, empty. Not handled on the
+    /// rail.
+    pub(crate) fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Editor) => {
+                let active = self.layout.active_group();
+                self.close_editor_group(active, cx);
+                true
+            }
+            Focus::Leaf(Leaf::Slot(_)) => self.close_focused_slot(window, cx),
+            Focus::Rail => false,
+        }
+    }
+
+    /// Split the focused slot (ADR-0054 §1): ask which view the new slot,
+    /// right of it (`axis` horizontal) or below it, holds
+    /// ([`Self::open_split_chooser`]); the slot arrives filled. Handled
+    /// whenever a slot has the keyboard, except under another modal, where
+    /// the key passes on; zoomed it flashes and splits nothing (the new
+    /// slot would not be drawn).
     fn split_focused_slot(
         &mut self,
         axis: TreeAxis,
@@ -2296,12 +2368,11 @@ impl Workspace {
         self.open_split_chooser(slot, dir, window, cx)
     }
 
-    /// `CloseSlot` (Ruling 15): close the focused slot. While zoomed only
-    /// the zoomed slot is on screen, so that is the one that closes (and
-    /// zoom ends). Its
-    /// views join the neighbouring slot that takes over its area, hidden,
-    /// and the keyboard goes there when that slot is drawn (else to the
-    /// editor). The only slot stays. Persisted.
+    /// Close the focused slot (Ruling 15). While zoomed only the zoomed
+    /// slot is on screen, so that is the one that closes (and zoom ends).
+    /// Its views join the neighbouring slot that takes over its area,
+    /// hidden, and the keyboard goes there when that slot is drawn (else to
+    /// the editor). The only slot stays. Persisted.
     fn close_focused_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(focused) = self.focused_slot() else {
             return false;
@@ -2577,12 +2648,12 @@ impl Workspace {
                 return self.move_view_vertically(false, window, cx);
             }
             ActionShortcuts::SplitSlotRight => {
-                return self.split_focused_slot(TreeAxis::Horizontal, window, cx);
+                return self.split_focused(TreeAxis::Horizontal, window, cx);
             }
             ActionShortcuts::SplitSlotDown => {
-                return self.split_focused_slot(TreeAxis::Vertical, window, cx);
+                return self.split_focused(TreeAxis::Vertical, window, cx);
             }
-            ActionShortcuts::CloseSlot => return self.close_focused_slot(window, cx),
+            ActionShortcuts::CloseSlot => return self.close_focused(window, cx),
             ActionShortcuts::ToggleZoom => self.toggle_zoom(window, cx),
             ActionShortcuts::ToggleRail => self.toggle_rail(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
@@ -3001,15 +3072,22 @@ impl Workspace {
     /// What the editor Panel shows in place of the editor while a vault is
     /// open but no note is (yet): typing there could never be saved. `None`
     /// once a note is open, and without a vault (the fixture tests' editor).
+    /// The active group's ([`Self::note_empty_state_in`]).
     pub(crate) fn note_empty_state(&self) -> Option<EmptyState> {
-        let host = self.active_state().notes.as_ref()?;
+        self.note_empty_state_in(self.layout.active_group())
+    }
+
+    /// [`Self::note_empty_state`] for `group`: only the group whose note
+    /// went away says so, and only the active group waits for the restore.
+    pub(crate) fn note_empty_state_in(&self, group: GroupId) -> Option<EmptyState> {
+        let host = self.state(group)?.notes.as_ref()?;
         if host.note.is_some() {
             return None;
         }
-        if let Some(gone) = self.note_gone.clone() {
-            return Some(gone);
+        if let Some((_, gone)) = self.note_gone.as_ref().filter(|(g, _)| *g == group) {
+            return Some(gone.clone());
         }
-        let (title, detail) = if self.restore_pending {
+        let (title, detail) = if self.restore_pending && group == self.layout.active_group() {
             (
                 "Opening your last note…",
                 "It opens once the workspace is indexed.",
@@ -3026,20 +3104,30 @@ impl Workspace {
         })
     }
 
-    /// The editor Panel: the editor (or the attachment view, or the empty
-    /// state) over the Footer.
-    pub(super) fn render_editor(
+    /// Whether `group` shows its editor ([`Self::render_group_document`]).
+    fn group_editor_shown(&self, group: GroupId) -> bool {
+        self.empty.is_none()
+            && self.state(group).is_some_and(|s| s.attachment.is_none())
+            && self.note_empty_state_in(group).is_none()
+    }
+
+    /// What `group` shows: its attachment view, else why there is no note
+    /// (the window's own empty state first), else its editor. Whether the
+    /// editor is what shows.
+    pub(super) fn render_group_document(
         &self,
-        window: &mut Window,
+        group: GroupId,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let attachment = self
-            .active_state()
-            .attachment
-            .clone()
-            .filter(|_| self.empty.is_none());
+    ) -> (AnyElement, bool) {
+        let Some(state) = self.state(group) else {
+            return (div().flex_1().into_any_element(), false);
+        };
+        let attachment = state.attachment.clone().filter(|_| self.empty.is_none());
         let empty = match &attachment {
-            None => self.empty.clone().or_else(|| self.note_empty_state()),
+            None => self
+                .empty
+                .clone()
+                .or_else(|| self.note_empty_state_in(group)),
             Some(_) => None,
         };
         let editor_shown = empty.is_none() && attachment.is_none();
@@ -3049,11 +3137,7 @@ impl Workspace {
             // away from a workspace that would not open, the leader, the
             // palette).
             (Some(empty), _) => self
-                .render_empty(
-                    empty,
-                    &self.active_state().editor.read(cx).focus_handle(cx),
-                    cx,
-                )
+                .render_empty(empty, &state.editor.read(cx).focus_handle(cx), cx)
                 .into_any_element(),
             (None, Some(view)) => div()
                 .flex()
@@ -3065,8 +3149,34 @@ impl Workspace {
             (None, None) => div()
                 .flex_1()
                 .min_h_0()
-                .child(self.active_state().editor.clone())
+                .child(state.editor.clone())
                 .into_any_element(),
+        };
+        (document, editor_shown)
+    }
+
+    /// The editor Panel, `size` px (its layout cell): the tab strip, the
+    /// shown tab's groups and the Footer. One group draws its document
+    /// alone, as the Panel always did; two or more are laid out side by
+    /// side, each under its header ([`Self::render_groups`]). Zoomed, only
+    /// the active group shows, with no strip and no header (ADR-0058).
+    pub(super) fn render_editor(
+        &self,
+        size: (f64, f64),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let zoomed = self.layout.zoomed() == Some(Leaf::Editor);
+        let region = self.layout.region();
+        let several = !zoomed && region.groups(region.shown()).len() > 1;
+        let active = self.layout.active_group();
+        let (document, editor_shown) = if several {
+            (
+                self.render_groups(size, f64::from(window.rem_size()), cx),
+                self.group_editor_shown(active),
+            )
+        } else {
+            self.render_group_document(active, cx)
         };
         // The which-key docks over the bottom of the document, right above
         // the Footer, so showing it never reflows the note.
@@ -3095,8 +3205,13 @@ impl Workspace {
                 .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.focus_panel(Panel::Editor, window, cx)
                 }))
-                // The tab strip over the shown tab, with two tabs or more.
-                .children(self.render_tab_strip(cx))
+                // The tab strip over the shown tab, with two tabs or more;
+                // a zoom shows the group alone.
+                .children(if zoomed {
+                    None
+                } else {
+                    self.render_tab_strip(cx)
+                })
                 .child(document)
                 .child(self.render_footer(editor_shown, window, cx)),
             )
@@ -3462,6 +3577,7 @@ mod find;
 mod folder_chooser;
 mod follow;
 mod group;
+mod group_header;
 mod input_autocomplete;
 mod key_suggestions;
 mod keyboard_help;
@@ -3562,6 +3678,8 @@ mod semantic_tests;
 mod slot_tests;
 #[cfg(test)]
 mod sort_tests;
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod start_tests;
 #[cfg(test)]

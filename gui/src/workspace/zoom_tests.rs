@@ -647,3 +647,132 @@ fn a_rail_click_on_a_hidden_placed_view_ends_zoom(cx: &mut TestAppContext) {
         .unwrap();
     }
 }
+
+/// Zoom on the editor of a split tab (ADR-0058) shows the active group
+/// alone: no other group, no header, no tab strip and no slot; leaving
+/// zoom draws them all again.
+#[gpui_kit::test]
+fn zoom_on_a_group_shows_only_that_group(cx: &mut TestAppContext) {
+    use super::group_header::{GROUP_HEADER_ID, GROUP_ID, group_element};
+    use super::tab_strip::TAB_STRIP_ID;
+    use gpui_kit::Focusable as _;
+    use kimun_notes::logic::layout_tree::Axis;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[("a.md", "alpha"), ("b.md", "beta"), ("c.md", "gamma")],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    // A second tab, then back to the first; split there.
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_new_tab(VaultPath::new("c.md"), cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "gamma");
+    cx.update_window(started.handle, |_, window, cx| window.press("ctrl-tab", cx))
+        .unwrap();
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let active = cx.read(|cx| ws.read(cx).layout.active_group());
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(TAB_STRIP_ID).is_some());
+        assert!(window.try_find(group_element(GROUP_ID, 0)).is_some());
+        assert_eq!(window.find_all("editor").len(), 2);
+
+        window.press(ZOOM, cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).layout.zoomed(), Some(Leaf::Editor));
+        assert!(window.try_find(TAB_STRIP_ID).is_none());
+        assert!(window.try_find(group_element(GROUP_ID, 0)).is_none());
+        assert!(window.try_find(group_element(GROUP_HEADER_ID, 1)).is_none());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
+        assert_eq!(window.find_all("editor").len(), 1);
+        // The one drawn is the active group's, with the keyboard.
+        let editor = ws.read(cx).state(active).unwrap().editor.clone();
+        assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+        let panel = window.find("editor-panel").bounds();
+        let rail = window.find("rail").bounds();
+        assert!(close(panel.left(), f32::from(rail.right())), "{panel:?}");
+
+        window.press(ZOOM, cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).layout.zoomed(), None);
+        assert!(window.try_find(TAB_STRIP_ID).is_some());
+        assert!(window.try_find(group_element(GROUP_HEADER_ID, 1)).is_some());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+        assert_eq!(window.find_all("editor").len(), 2);
+    })
+    .unwrap();
+}
+
+/// Showing another tab ends a zoom on the editor (a zoom shows one group
+/// of one tab): the next-tab chord and a new tab alike.
+#[gpui_kit::test]
+fn switching_tabs_while_zoomed_ends_the_zoom(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_new_tab(VaultPath::new("b.md"), cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let second = cx.read(|cx| ws.read(cx).layout.region().shown());
+    // Each key in a frame of its own: the keyboard follows the shown tab's
+    // editor once the frame settles.
+    let press = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let zoomed = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.zoomed());
+    let shown = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.region().shown());
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-tab", cx);
+    assert_ne!(shown(cx), second);
+    assert_eq!(zoomed(cx), None);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+    })
+    .unwrap();
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-shift-tab", cx);
+    assert_eq!(shown(cx), second);
+    assert_eq!(zoomed(cx), None);
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-t", cx);
+    assert_eq!(cx.read(|cx| ws.read(cx).layout.region().tabs().len()), 3);
+    assert_eq!(zoomed(cx), None);
+}

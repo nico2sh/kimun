@@ -54,7 +54,8 @@ use super::keyboard_help::action_label;
 use super::modal::{ModalKind, Slot};
 use super::presets::PresetCommand;
 use super::route::{
-    NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS, NO_WORKSPACE,
+    NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS,
+    NEEDS_SLOT_OR_EDITOR_FOCUS, NO_WORKSPACE,
 };
 use crate::input;
 use crate::keymap;
@@ -211,10 +212,7 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
         (MOVE_VIEW_TO.into(), PaletteRun::MoveViewTo),
         window_row(A::SplitSlotRight),
         window_row(A::SplitSlotDown),
-        (
-            "+window · close slot".into(),
-            PaletteRun::Chord(A::CloseSlot),
-        ),
+        window_row(A::CloseSlot),
         (
             "+window · toggle zoom".into(),
             PaletteRun::Chord(A::ToggleZoom),
@@ -483,7 +481,12 @@ impl Workspace {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
             A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
-            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => slot_focus_block(opener),
+            // A slot splits or closes; the editor, its active group.
+            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => match opener {
+                Panel::Drawer(_) => None,
+                Panel::Editor => self.active_state().notes.is_none().then_some(NO_WORKSPACE),
+                Panel::Rail => Some(NEEDS_SLOT_OR_EDITOR_FOCUS),
+            },
             A::QuickNote | A::OpenSortDialog | A::NewTab | A::CloseTab => {
                 self.active_state().notes.is_none().then_some(NO_WORKSPACE)
             }

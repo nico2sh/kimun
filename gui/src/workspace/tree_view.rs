@@ -70,13 +70,15 @@ use gpui_kit::{
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, Rgba, Role,
     SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
+use kimun_notes::logic::editor_region::GroupShape;
 use kimun_notes::logic::layout_tree::{
-    Axis, Fit, Focus, LayoutTree, Leaf, SlotId, TreeShape, UnitRect,
+    Axis, Fit, Focus, GroupId, LayoutTree, Leaf, SlotId, TreeShape, UnitRect,
 };
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
+use super::group_header::{GROUP_ID, group_element};
 use super::{Workspace, route, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -106,6 +108,11 @@ pub(crate) fn move_button_id(view: DrawerView) -> SharedString {
 
 /// The window background between two drawn neighbours, in px.
 const GAP: f64 = 1.0;
+
+/// The element id of the divider after the group at `n` in the shown tab.
+pub(crate) fn group_divider_id(n: usize) -> SharedString {
+    format!("group-divider-{n}").into()
+}
 
 /// Window background around each leaf's border.
 pub(super) const LEAF_MARGIN: Pixels = px(4.);
@@ -222,16 +229,33 @@ impl DividerCell {
     }
 }
 
-/// Each divider's cells, keyed by the divider's leaf (the last leaf of the
-/// cell before it), written as the tree is prepainted.
-pub(super) type DividerCells = Rc<RefCell<HashMap<Leaf, DividerCell>>>;
+/// Where a divider sits: after a leaf of the layout tree (the last leaf of
+/// the cell before it), or between two groups of the shown tab, after a
+/// group (the last group of the cell before it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DividerAt {
+    Leaf(Leaf),
+    Group(GroupId),
+}
 
-/// The payload of a divider drag: the leaf whose following boundary it
-/// moves ([`LayoutTree::resize_after_visible`]).
+impl From<Leaf> for DividerAt {
+    fn from(leaf: Leaf) -> Self {
+        DividerAt::Leaf(leaf)
+    }
+}
+
+/// Each divider's cells, keyed by where it sits, written as the tree is
+/// prepainted.
+pub(super) type DividerCells = Rc<RefCell<HashMap<DividerAt, DividerCell>>>;
+
+/// The payload of a divider drag: the leaf or group whose following
+/// boundary it moves ([`LayoutTree::resize_after_visible`],
+/// [`EditorRegion::resize_after`]).
 ///
 /// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
+/// [`EditorRegion::resize_after`]: kimun_notes::logic::editor_region::EditorRegion::resize_after
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DividerDrag(Leaf);
+pub(crate) struct DividerDrag(DividerAt);
 
 /// What a divider drag shows under the pointer: nothing, the cells
 /// themselves follow.
@@ -315,10 +339,15 @@ impl Workspace {
         }
     }
 
-    /// The minimum (width, height) of `leaf`, in rems.
+    /// The minimum (width, height) of `leaf`, in rems. The editor region's
+    /// width is [`EDITOR_MIN_REMS`] for each group in the widest row of the
+    /// shown tab ([`LayoutTree::editor_min`]): groups side by side ask for
+    /// room, so the slots collapse first and a group never does.
+    ///
+    /// [`LayoutTree::editor_min`]: kimun_notes::logic::layout_tree::LayoutTree::editor_min
     fn leaf_min(&self, leaf: Leaf) -> (f64, f64) {
         match leaf {
-            Leaf::Editor => (f64::from(EDITOR_MIN_REMS), 0.0),
+            Leaf::Editor => self.layout.editor_min((f64::from(EDITOR_MIN_REMS), 0.0)),
             Leaf::Slot(slot) => self.slot_min(slot),
         }
     }
@@ -545,7 +574,10 @@ impl Workspace {
             )
             // Every tree holds the editor region, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
-            .unwrap_or_else(|| self.render_editor(window, cx).into_any_element());
+            .unwrap_or_else(|| {
+                self.render_editor(self.tree_area(window), window, cx)
+                    .into_any_element()
+            });
         self.tree_frame().child(tree).into_any_element()
     }
 
@@ -560,7 +592,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let content = match leaf {
-            Leaf::Editor => self.render_editor(window, cx).into_any_element(),
+            Leaf::Editor => self
+                .render_editor(self.tree_area(window), window, cx)
+                .into_any_element(),
             Leaf::Slot(_) => {
                 let slot = self
                     .render_node(
@@ -600,7 +634,7 @@ impl Workspace {
     ) -> Option<AnyElement> {
         match shape {
             TreeShape::Leaf(Leaf::Editor) => {
-                Some(self.render_editor(window, cx).into_any_element())
+                Some(self.render_editor(size, window, cx).into_any_element())
             }
             TreeShape::Leaf(Leaf::Slot(slot)) => {
                 if !self.leaf_visible(Leaf::Slot(*slot)) {
@@ -682,7 +716,7 @@ impl Workspace {
                 let mut handles: Vec<AnyElement> = Vec::new();
                 // (element before, element after, divider leaf, minimums)
                 // per divider.
-                let mut pairs: Vec<(usize, usize, Leaf, f64, f64)> = Vec::new();
+                let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
                 // Consecutive drawn children are neighbours on screen, and
                 // the tree resizes between them across hidden siblings
                 // (`resize_after_visible`), so every seam is a divider.
@@ -690,13 +724,18 @@ impl Workspace {
                 let mut any_divider = false;
                 for (_, weight, min, last, element) in drawn {
                     if let Some((prev_element, prev_last, prev_min)) = previous {
-                        elements.push(self.render_gap(axis, None, cx));
-                        handles.push(self.render_gap(axis, Some(prev_last), cx));
+                        elements.push(self.render_gap(axis, None, None, cx));
+                        handles.push(self.render_gap(
+                            axis,
+                            Some(DividerAt::Leaf(prev_last)),
+                            None,
+                            cx,
+                        ));
                         any_divider = true;
                         pairs.push((
                             prev_element,
                             elements.len(),
-                            prev_last,
+                            DividerAt::Leaf(prev_last),
                             prev_min,
                             min.unwrap_or(0.0) / rem,
                         ));
@@ -716,53 +755,223 @@ impl Workspace {
                             .into_any_element(),
                     );
                 }
-                let cells = self.divider_cells.clone();
-                Some(
-                    div()
-                        .on_children_prepainted(move |bounds, _, _| {
-                            let mut cells = cells.borrow_mut();
-                            for (before, after, leaf, min_before, min_after) in &pairs {
-                                if let (Some(b), Some(a)) =
-                                    (bounds.get(*before), bounds.get(*after))
-                                {
-                                    cells.insert(
-                                        *leaf,
-                                        DividerCell {
-                                            axis,
-                                            before: *b,
-                                            after: *a,
-                                            min_before: *min_before,
-                                            min_after: *min_after,
-                                        },
-                                    );
-                                }
-                            }
-                        })
-                        .relative()
-                        .flex()
-                        .map(|row| match axis {
-                            Axis::Horizontal => row.flex_row(),
-                            Axis::Vertical => row.flex_col(),
-                        })
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .children(elements)
-                        .into_any_element(),
-                )
+                Some(self.split_frame(axis, pairs, elements))
             }
         }
     }
 
-    /// The pixel of window background between two drawn neighbours, so
-    /// touching cells never merge; with `divider` (the last leaf of the
-    /// cell before it), a resize handle straddling it.
-    fn render_gap(&self, axis: Axis, divider: Option<Leaf>, cx: &mut Context<Self>) -> AnyElement {
-        let gap = div().flex_none().relative().map(|gap| match axis {
-            Axis::Horizontal => gap.w(px(1.)).h_full(),
-            Axis::Vertical => gap.h(px(1.)).w_full(),
-        });
-        let Some(leaf) = divider else {
+    /// The row (`axis` horizontal) or column of a split's `elements`,
+    /// recording each divider's cells as it is prepainted: `pairs` holds,
+    /// per divider, the elements before and after it, where it sits and
+    /// the two cells' minimums in rems.
+    fn split_frame(
+        &self,
+        axis: Axis,
+        pairs: Vec<(usize, usize, DividerAt, f64, f64)>,
+        elements: Vec<AnyElement>,
+    ) -> AnyElement {
+        let cells = self.divider_cells.clone();
+        div()
+            .on_children_prepainted(move |bounds, _, _| {
+                let mut cells = cells.borrow_mut();
+                for (before, after, at, min_before, min_after) in &pairs {
+                    if let (Some(b), Some(a)) = (bounds.get(*before), bounds.get(*after)) {
+                        cells.insert(
+                            *at,
+                            DividerCell {
+                                axis,
+                                before: *b,
+                                after: *a,
+                                min_before: *min_before,
+                                min_after: *min_after,
+                            },
+                        );
+                    }
+                }
+            })
+            .relative()
+            .flex()
+            .map(|row| match axis {
+                Axis::Horizontal => row.flex_row(),
+                Axis::Vertical => row.flex_col(),
+            })
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .children(elements)
+            .into_any_element()
+    }
+
+    /// The shown tab's groups, laid out in the editor Panel of `size` px
+    /// (its layout cell) as the tree lays out its leaves: each split a
+    /// flex row or column whose children grow by their weights, a hairline
+    /// between neighbours that is also a divider ([`DividerAt::Group`]).
+    /// A group's minimum width is [`EDITOR_MIN_REMS`] for each group in its
+    /// widest row; where the minimums do not fit (the region is never
+    /// collapsed) the groups share by weight alone, so none disappears.
+    pub(super) fn render_groups(
+        &self,
+        size: (f64, f64),
+        rem: f64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let region = self.layout.region();
+        let order = region.groups(region.shown());
+        // The groups get the Panel less its margin and border.
+        let inset = 2.0 * f64::from(f32::from(LEAF_MARGIN + LEAF_BORDER));
+        let size = ((size.0 - inset).max(0.0), (size.1 - inset).max(0.0));
+        self.render_group_node(&region.shape(), size, &order, rem, cx)
+    }
+
+    /// `shape`, a part of the shown tab, drawn in `size` px; `order` is the
+    /// tab's groups in reading order (a group's place there names its
+    /// elements).
+    fn render_group_node(
+        &self,
+        shape: &GroupShape,
+        size: (f64, f64),
+        order: &[GroupId],
+        rem: f64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (axis, children) = match shape {
+            GroupShape::Group(group) => {
+                let at = order.iter().position(|g| g == group).unwrap_or_default();
+                return self.render_group(at, *group, cx);
+            }
+            GroupShape::Split { axis, children } => (*axis, children),
+        };
+        let (length, cross) = match axis {
+            Axis::Horizontal => size,
+            Axis::Vertical => (size.1, size.0),
+        };
+        let per_group = f64::from(EDITOR_MIN_REMS) * rem;
+        let mins: Vec<f64> = children
+            .iter()
+            .map(|(_, child)| match axis {
+                Axis::Horizontal => child.widest_row() as f64 * per_group,
+                Axis::Vertical => 0.0,
+            })
+            .collect();
+        let gaps = children.len().saturating_sub(1) as f64 * GAP;
+        let cells: Vec<(f64, f64)> = children
+            .iter()
+            .zip(&mins)
+            .map(|((weight, _), min)| (*weight, *min))
+            .collect();
+        let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
+        let line = theme::divider(&theme::current(cx));
+        // The weights are normalized: they are the grow factors.
+        let cell = |weight: f64, min: Option<f64>| {
+            div()
+                .flex()
+                .flex_basis(rems(0.))
+                .flex_grow(weight as f32)
+                .min_w_0()
+                .min_h_0()
+                .when_some(min, |cell, min| match axis {
+                    Axis::Horizontal => cell.min_w(px(min as f32)),
+                    Axis::Vertical => cell.min_h(px(min as f32)),
+                })
+        };
+        let mut elements: Vec<AnyElement> = Vec::new();
+        let mut handles: Vec<AnyElement> = Vec::new();
+        let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
+        let mut previous: Option<(usize, GroupId, f64)> = None;
+        for (((weight, child), along), min) in children.iter().zip(&sizes).zip(&mins) {
+            let child_size = match axis {
+                Axis::Horizontal => (*along, cross),
+                Axis::Vertical => (cross, *along),
+            };
+            let element = self.render_group_node(child, child_size, order, rem, cx);
+            // Minimums are set only where they all fit.
+            let min = held.then_some(*min);
+            let min_rems = min.unwrap_or(0.0) / rem;
+            if let Some((prev_element, prev_last, prev_min)) = previous {
+                let divider = DividerAt::Group(prev_last);
+                elements.push(self.render_gap(axis, None, Some(line), cx));
+                handles.push(self.render_gap(axis, Some(divider), None, cx));
+                pairs.push((prev_element, elements.len(), divider, prev_min, min_rems));
+            }
+            previous = Some((elements.len(), child.last_group(), min_rems));
+            elements.push(cell(*weight, min).child(element).into_any_element());
+            handles.push(cell(*weight, min).into_any_element());
+        }
+        // The handles over the groups, in an empty copy of the cells and
+        // gaps, as the tree's are.
+        elements.push(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .map(|row| match axis {
+                    Axis::Horizontal => row.flex_row(),
+                    Axis::Vertical => row.flex_col(),
+                })
+                .children(handles)
+                .into_any_element(),
+        );
+        self.split_frame(axis, pairs, elements)
+    }
+
+    /// The group `group`, at `at` in the shown tab: its header over what it
+    /// shows ([`Workspace::render_group_document`]), with the target marker
+    /// while it wears it. A press in its document makes it the active
+    /// group (its header's click does the same; its close button does not).
+    fn render_group(&self, at: usize, group: GroupId, cx: &mut Context<Self>) -> AnyElement {
+        let (document, _) = self.render_group_document(group, cx);
+        div()
+            .id(group_element(GROUP_ID, at))
+            .test_support()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .child(self.render_group_header(at, group, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        if this.layout.active_group() != group {
+                            this.focus_group(group, cx);
+                        }
+                    }))
+                    .child(document),
+            )
+            .when(self.wears_target_marker(group), |el| {
+                el.child(self.render_target_marker(at, cx))
+            })
+            .into_any_element()
+    }
+
+    /// The pixel between two drawn neighbours, so touching cells never
+    /// merge: window background between leaves, `line` (a hairline colour)
+    /// between groups. With `divider` (where it sits), a resize handle
+    /// straddling it.
+    fn render_gap(
+        &self,
+        axis: Axis,
+        divider: Option<DividerAt>,
+        line: Option<Rgba>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let gap = div()
+            .flex_none()
+            .relative()
+            .when_some(line, |gap, line| gap.bg(line))
+            .map(|gap| match axis {
+                Axis::Horizontal => gap.w(px(1.)).h_full(),
+                Axis::Vertical => gap.h(px(1.)).w_full(),
+            });
+        let Some(at) = divider else {
             return gap.into_any_element();
         };
         // The kit's axis is the one the handle resizes along.
@@ -771,13 +980,13 @@ impl Workspace {
             Axis::Vertical => gpui_kit::Axis::Vertical,
         };
         gap.child(
-            resize_handle::<DividerDrag, DragGhost>(self.divider_id(leaf), handle_axis)
+            resize_handle::<DividerDrag, DragGhost>(self.divider_id(at), handle_axis)
                 .with_appearance(seam(handle_axis, theme::focus_border(&theme::current(cx))))
-                .on_drag(DividerDrag(leaf), |_, _, _, cx| cx.new(|_| DragGhost))
+                .on_drag(DividerDrag(at), |_, _, _, cx| cx.new(|_| DragGhost))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                        this.grab_divider(leaf, event.position)
+                        this.grab_divider(at, event.position)
                     }),
                 )
                 .on_mouse_up(
@@ -788,24 +997,33 @@ impl Workspace {
         .into_any_element()
     }
 
-    /// The element id of the divider after `leaf`: `divider-slot-<n>` by
-    /// the slot's place among the tree's slots in reading order, or
-    /// `divider-group-0` for the editor leaf (the id it had as the one
-    /// editor group).
-    fn divider_id(&self, leaf: Leaf) -> SharedString {
-        match leaf {
-            Leaf::Slot(slot) => {
+    /// The element id of the divider at `at`: after a leaf,
+    /// `divider-slot-<n>` by the slot's place among the tree's slots in
+    /// reading order, or `divider-group-0` for the editor leaf (the id it
+    /// had as the one editor group); between groups, `group-divider-<n>` by
+    /// the place of the group before it in the shown tab.
+    fn divider_id(&self, at: DividerAt) -> SharedString {
+        match at {
+            DividerAt::Leaf(Leaf::Slot(slot)) => {
                 let n = self.layout.slots().iter().position(|s| *s == slot);
                 format!("divider-slot-{}", n.unwrap_or_default()).into()
             }
-            Leaf::Editor => "divider-group-0".into(),
+            DividerAt::Leaf(Leaf::Editor) => "divider-group-0".into(),
+            DividerAt::Group(group) => {
+                let region = self.layout.region();
+                let n = region
+                    .groups(region.shown())
+                    .iter()
+                    .position(|g| *g == group);
+                group_divider_id(n.unwrap_or_default())
+            }
         }
     }
 
-    /// A press on the divider after `leaf` at `at`: remember how far from
+    /// A press on the divider `divider` at `at`: remember how far from
     /// the boundary it landed.
-    fn grab_divider(&mut self, leaf: Leaf, at: Point<Pixels>) {
-        self.press_offset = match self.divider_cells.borrow().get(&leaf) {
+    fn grab_divider(&mut self, divider: DividerAt, at: Point<Pixels>) {
+        self.press_offset = match self.divider_cells.borrow().get(&divider) {
             Some(cell) => along(cell.axis, at) - (cell.start() + cell.first()),
             None => 0.0,
         };
@@ -818,38 +1036,45 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let DividerDrag(leaf) = *event.drag(cx);
-        let Some(axis) = self.divider_cells.borrow().get(&leaf).map(|c| c.axis) else {
+        let DividerDrag(at) = *event.drag(cx);
+        let Some(axis) = self.divider_cells.borrow().get(&at).map(|c| c.axis) else {
             return;
         };
         let pixel = along(axis, event.event.position) - self.press_offset;
-        self.on_divider_drag(leaf, pixel, window, cx);
+        self.on_divider_drag(at, pixel, window, cx);
     }
 
-    /// The divider after `leaf` dragged to `pixel` (window px along its
+    /// The divider at `at` dragged to `pixel` (window px along its
     /// axis): the cell before it takes the share of the two cells' combined
-    /// drawn extent that ends there ([`LayoutTree::resize_after_visible`]), held so
-    /// neither cell goes under its drawn minimum (Ruling 16: past a floor
-    /// flex would take the difference from a third cell). Only those two
-    /// cells' weights change. Saved when the drag ends
-    /// ([`Self::end_resize`]), not on every move.
+    /// drawn extent that ends there ([`LayoutTree::resize_after_visible`];
+    /// between groups [`EditorRegion::resize_after`]), held so neither cell
+    /// goes under its drawn minimum (Ruling 16: past a floor flex would
+    /// take the difference from a third cell). Only those two cells'
+    /// weights change. Saved when the drag ends ([`Self::end_resize`]), not
+    /// on every move.
     ///
     /// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
+    /// [`EditorRegion::resize_after`]: kimun_notes::logic::editor_region::EditorRegion::resize_after
     pub(crate) fn on_divider_drag(
         &mut self,
-        leaf: Leaf,
+        at: impl Into<DividerAt>,
         pixel: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(cell) = self.divider_cells.borrow().get(&leaf).copied() else {
+        let at = at.into();
+        let Some(cell) = self.divider_cells.borrow().get(&at).copied() else {
             return;
         };
         let rem = f64::from(window.rem_size());
         let Some(share) = cell.share_at(pixel - cell.start(), rem) else {
             return;
         };
-        if self.resize_after_visible(leaf, share) {
+        let moved = match at {
+            DividerAt::Leaf(leaf) => self.resize_after_visible(leaf, share),
+            DividerAt::Group(group) => self.layout.region_mut().resize_after(group, share),
+        };
+        if moved {
             self.resizing = true;
             cx.notify();
         }
@@ -882,7 +1107,12 @@ impl Workspace {
             Ok(target) => target,
             Err(reason) => return self.flash(reason, cx),
         };
-        let Some(cell) = self.divider_cells.borrow().get(&divider).copied() else {
+        let Some(cell) = self
+            .divider_cells
+            .borrow()
+            .get(&DividerAt::Leaf(divider))
+            .copied()
+        else {
             return self.flash(NOTHING_TO_RESIZE, cx);
         };
         let step = if grow == leaf_before {
