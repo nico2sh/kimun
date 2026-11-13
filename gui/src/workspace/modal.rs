@@ -187,7 +187,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.cancel_leader(cx);
-        self.end_view_drag(window, cx);
+        self.end_drag(window, cx);
         if let Slot::Own(kind) = slot {
             self.modal = Some(kind);
         }

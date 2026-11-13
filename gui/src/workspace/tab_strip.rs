@@ -8,7 +8,11 @@
 //! labels do not fit, and keeps the shown tab in view.
 //!
 //! The tab commands live here too: a new tab (one empty group, which takes
-//! the keyboard), the next and previous tab (wrapping), and the close. A
+//! the keyboard), the next and previous tab (wrapping), and the close.
+//!
+//! While a group header is dragged ([`super::group_drop`]) the strip shows
+//! even with one tab: each other tab's label and the plus button are drop
+//! targets, with the drop zones' look ([`Workspace::drop_zone`]). A
 //! close writes the unsaved text of every group of the tab first (all at
 //! once, as the window's close does); when a write fails or cannot start
 //! the tab stays and the flash says why. Closing the last tab leaves one
@@ -34,6 +38,7 @@ use kimun_notes::logic::session::FlushResult;
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
@@ -43,6 +48,8 @@ use crate::{keymap, theme};
 pub(crate) const TAB_STRIP_ID: &str = "tab-strip";
 /// The plus button's element id.
 pub(crate) const TAB_NEW_ID: &str = "tab-strip-new";
+/// The plus button's drop zone's element id, during a group's drag.
+pub(crate) const TAB_NEW_DROP_ID: &str = "drop-tab-new";
 /// The unsaved dot's id, with the tab's position.
 pub(crate) const TAB_UNSAVED_ID: &str = "tab-unsaved";
 /// A close button's id, with the tab's position.
@@ -85,6 +92,12 @@ impl CloseTarget {
 /// The element id of the label at `index` (its position in the strip).
 pub(crate) fn tab_label_id(index: usize) -> ElementId {
     ElementId::NamedInteger("tab-label".into(), index as u64)
+}
+
+/// The element id of the drop zone over the label at `index`, during a
+/// group's drag.
+pub(crate) fn tab_drop_id(index: usize) -> ElementId {
+    ElementId::NamedInteger("drop-tab".into(), index as u64)
 }
 
 /// What `group` shows, named as the Footer names it: the attachment in
@@ -184,7 +197,7 @@ impl Workspace {
     }
 
     /// Bring the shown tab's label into the strip's view.
-    fn scroll_to_shown_tab(&self) {
+    pub(super) fn scroll_to_shown_tab(&self) {
         let region = self.layout.region();
         if let Some(at) = region.tabs().iter().position(|t| *t == region.shown()) {
             self.tab_scroll.scroll_to_item(at);
@@ -430,11 +443,11 @@ impl Workspace {
     // ---- Drawing -------------------------------------------------------------
 
     /// The strip over the shown tab, or `None` while the region holds one
-    /// tab (ADR-0058).
+    /// tab and no group is dragged (ADR-0058).
     pub(super) fn render_tab_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
-        if tabs.len() < 2 {
+        if tabs.len() < 2 && self.dragged_group(cx).is_none() {
             return None;
         }
         let shown = region.shown();
@@ -458,6 +471,7 @@ impl Workspace {
             .flex_none()
             .items_center()
             .justify_center()
+            .relative()
             .size(rems(1.5))
             .mx_1()
             .rounded_md()
@@ -469,7 +483,12 @@ impl Workspace {
                     .text_color(theme::muted(&theme)),
             )
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.new_tab(cx)));
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.new_tab(cx)))
+            // During a group's drag: the group goes to a new tab.
+            .children(
+                self.drop_zone(TAB_NEW_DROP_ID, DropTarget::NewTab, cx)
+                    .map(|zone| zone.inset_0().test_support()),
+            );
         Some(
             div()
                 .id(TAB_STRIP_ID)
@@ -597,6 +616,11 @@ impl Workspace {
                 )
             })
             .child(close)
+            // During a group's drag: the group joins this tab.
+            .children(
+                self.drop_zone(tab_drop_id(at), DropTarget::Tab(tab), cx)
+                    .map(|zone| zone.inset_0().test_support()),
+            )
             .into_any_element()
     }
 }

@@ -932,8 +932,11 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .child(self.render_group_header(at, group, cx))
+            // The body, under the header: while a group is dragged its
+            // zones (the inner layer) lie over it.
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
@@ -944,7 +947,8 @@ impl Workspace {
                             this.focus_group(group, cx);
                         }
                     }))
-                    .child(document),
+                    .child(document)
+                    .children(self.group_zone_layer(at, group, cx)),
             )
             .when(self.wears_target_marker(group), |el| {
                 el.child(self.render_target_marker(at, cx))

@@ -213,7 +213,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use self::drop_zones::{DragFrom, LiveViewDrag, ViewDrag};
+use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -538,15 +538,15 @@ pub(crate) struct Workspace {
     /// Resolves the workspace's chords before a slot's own key bindings
     /// can take them ([`Self::intercept_shell_key`]).
     _shell_keys: Subscription,
-    /// The view being dragged onto a drop zone, while one is
-    /// ([`Self::dragged_view`]).
-    view_drag: Option<LiveViewDrag>,
-    /// What a drop on each zone would do, worked out while a
-    /// view is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
+    /// The view or group being dragged onto a drop zone, while one is
+    /// ([`Self::live_drag`], [`Self::dragged_group`]).
+    drag: Option<LiveDrag>,
+    /// What a drop on each zone would do, worked out while a view or a
+    /// group is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
     /// empty otherwise.
     drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
     /// The drag and window size [`Self::drop_outcomes`] were worked out for.
-    drop_outcomes_for: Option<(ViewDrag, gpui_kit::Size<gpui_kit::Pixels>)>,
+    drop_outcomes_for: Option<(Dragged, gpui_kit::Size<gpui_kit::Pixels>)>,
     /// The zone the drag is over, for its label ([`Self::zone_tag`]).
     hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
@@ -808,7 +808,7 @@ impl Workspace {
             _editor_watch: editor_watch,
             _on_quit: None,
             _shell_keys: shell_keys,
-            view_drag: None,
+            drag: None,
             drop_outcomes: HashMap::new(),
             drop_outcomes_for: None,
             hovered_zone: None,
@@ -2534,7 +2534,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Esc during a view's drag ends the drag, ahead of any binding.
-        if self.escape_ends_view_drag(event, window, cx) {
+        if self.escape_ends_drag(event, window, cx) {
             return;
         }
         // The setup assistant and Preferences have every key; no shell chord
@@ -3346,7 +3346,7 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.prune_view_drag(cx);
+        self.prune_drag(cx);
         self.refresh_drop_outcomes(window, cx);
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
@@ -3577,6 +3577,7 @@ mod find;
 mod folder_chooser;
 mod follow;
 mod group;
+mod group_drop;
 mod group_header;
 mod input_autocomplete;
 mod key_suggestions;
