@@ -3,9 +3,9 @@
 //! is live each drawn slot overlays its body with a [`Workspace::zone_layer`]
 //! (a centre and four edges) and the editor Panel adds a strip at its left
 //! and right edge ([`Workspace::window_strips`]). A zone is drawn only where
-//! [`Workspace::drop_target_allowed`] holds, and highlights while the drag
-//! is over it. A release on it runs [`Workspace::drop_view`], the steps of
-//! the move chooser: the slot the view leaves closes when emptied
+//! [`Workspace::drop_target_allowed`] holds, with a faint outline while the
+//! drag lives, and highlights while the drag is over it. A release on it
+//! runs [`Workspace::drop_view`], the steps of the move chooser: the slot the view leaves closes when emptied
 //! ([`Workspace::close_if_vacated`]), the keyboard follows the view, the
 //! layout is saved. Esc, a modal or the leader opening ends the drag with
 //! nothing changed; while zoomed no zone is drawn.
@@ -33,6 +33,12 @@ const WINDOW_STRIP: f32 = 24.;
 /// The opacity of a zone's highlight (the focus colour), so the view
 /// under it still reads in light and dark themes.
 const ZONE_FILL_ALPHA: f32 = 0.25;
+
+/// The opacity of a zone's resting dashed outline, while the drag is not
+/// over it: enough to show where the zones are, far less than the
+/// highlight so the one under the pointer stands out. A resting zone has
+/// no tint.
+const ZONE_REST_ALPHA: f32 = 0.3;
 
 /// The payload of a drag: the view being placed (from a slot header, or a
 /// rail entry whatever slot holds it, if any).
@@ -344,19 +350,31 @@ impl Workspace {
             a: ZONE_FILL_ALPHA,
             ..accent
         };
+        let rest_border = Rgba {
+            a: ZONE_REST_ALPHA,
+            ..accent
+        };
+        // Resting: every zone drawn for the drag shows a dashed outline, so
+        // the places to drop are visible before the pointer is over one.
+        let mut zone = div()
+            .id(id)
+            .role(Role::Group)
+            .aria_label(label)
+            .absolute()
+            .rounded_md()
+            .border_1()
+            .border_color(rest_border)
+            .cursor_grabbing();
+        zone.style().border_style = Some(gpui_kit::BorderStyle::Dashed);
         Some(
-            div()
-                .id(id)
-                .role(Role::Group)
-                .aria_label(label)
-                .absolute()
-                .rounded_md()
-                .drag_over::<ViewDrag>(move |style, _, _, _| {
-                    style.bg(fill).border_2().border_color(accent)
-                })
-                .on_drop(cx.listener(move |this, drag: &ViewDrag, window, cx| {
-                    this.drop_dragged(drag.0, drag.1, target, window, cx)
-                })),
+            zone.drag_over::<ViewDrag>(move |mut style, _, _, _| {
+                // Under the drag: a solid, stronger border and the fill.
+                style.border_style = Some(gpui_kit::BorderStyle::Solid);
+                style.bg(fill).border_2().border_color(accent)
+            })
+            .on_drop(cx.listener(move |this, drag: &ViewDrag, window, cx| {
+                this.drop_dragged(drag.0, drag.1, target, window, cx)
+            })),
         )
     }
 

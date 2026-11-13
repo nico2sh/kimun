@@ -1160,6 +1160,7 @@ impl Workspace {
         let strip = div()
             .id(SharedString::from(format!("slot-drag-{}", view.id())))
             .w_full()
+            .cursor_grab()
             .child(header)
             .on_drag(ViewDrag(view, DragFrom::Header), self.view_drag_ghost(cx));
         // The button is the strip's sibling, not its child: the strip's id
