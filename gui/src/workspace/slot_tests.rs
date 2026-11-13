@@ -551,29 +551,18 @@ fn a_slot_splits_and_closes(cx: &mut TestAppContext) {
             [vec![DrawerView::Files, DrawerView::Find], vec![]]
         );
 
-        // Closing the right slot merges its views, hidden, into the
-        // nearest slot (the left one: the editor takes the area over); the
-        // keyboard goes there, since FIND, promoted when FILES left it,
-        // is shown.
+        // The right slot, now FILES', is the last on its side: it stays,
+        // and a flash says so.
         window.press("alt-shift-right", cx);
         let right = shell.slots(cx)[1];
         assert_eq!(shell.focus(cx), Focus::Leaf(Leaf::Slot(right)));
         window.press("alt-shift-w", cx);
-        assert_eq!(shell.slots(cx), [left]);
-        assert_eq!(
-            shell.placed_on(Side::Left, cx),
-            [DrawerView::Find, DrawerView::Files]
-        );
-        assert_eq!(
-            shell.focused(cx),
-            Panel::Drawer(Side::Left),
-            "its absorber is drawn"
-        );
-        // The last slot stays.
-        window.click(rail_cell_id(DrawerView::Files), cx);
+        assert_eq!(shell.slots(cx), [left, right]);
+        assert_eq!(shell.flash(cx).as_deref(), Some(super::LAST_ON_SIDE));
+        // So does the left one, the last on its side.
+        window.press("alt-left", cx);
         window.press("alt-shift-w", cx);
-        assert_eq!(shell.slots(cx), [left]);
-        assert_eq!(shell.flash(cx).as_deref(), Some("This is the only slot"));
+        assert_eq!(shell.slots(cx), [left, right]);
     })
     .unwrap();
 }

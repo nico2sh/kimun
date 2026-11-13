@@ -16,12 +16,17 @@ use super::Workspace;
 /// Where a view is placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Placement {
-    /// Shown in this slot, the view shown there staying placed, hidden.
+    /// Shown in this slot. A view shown in another slot trades places with
+    /// the view shown here; any other view is placed here, the view shown
+    /// here staying placed, hidden ([`Workspace::move_into`]).
     Into(SlotId),
+    /// Shown in this slot, the view shown there leaving the layout
+    /// (unplaced, back to the rail only): a rail drag's centre.
+    Replace(SlotId),
     /// In a new slot on this side of this slot.
     Beside(SlotId, Dir),
-    /// At the window edge on this side: that side's first slot, else a new
-    /// slot at that edge of the editor region.
+    /// At the window edge on this side: that side's kept-empty slot, else a
+    /// new slot at that edge of the editor region.
     AtEdge(Side),
 }
 
@@ -40,6 +45,7 @@ impl Workspace {
     ) -> bool {
         match placement {
             Placement::Into(slot) => self.move_into(view, slot, window, cx),
+            Placement::Replace(slot) => self.replace_into(view, slot, window, cx),
             Placement::Beside(slot, dir) => {
                 self.spawn_beside(view, slot, dir, window, cx).handled()
             }

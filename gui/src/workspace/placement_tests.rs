@@ -843,6 +843,14 @@ fn move_button(view: DrawerView) -> gpui_kit::SharedString {
     super::tree_view::move_button_id(view)
 }
 
+/// Open `view`'s slot menu (`⋯`) and pick its first item, "Move view…".
+fn open_move_menu(view: DrawerView, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+    window.click(move_button(view), cx);
+    window.render_frame(cx);
+    window.press("down", cx);
+    window.press("enter", cx);
+}
+
 /// The labels the open move chooser offers, in its order.
 fn move_rows(shell: &Shell, cx: &gpui_kit::App) -> Vec<String> {
     shell
@@ -887,7 +895,7 @@ fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext
         window.render_frame(cx);
         window.click(slot_id(DrawerView::Files), cx);
         let before = layout(&shell, cx);
-        window.click(move_button(DrawerView::Files), cx);
+        open_move_menu(DrawerView::Files, window, cx);
         window.render_frame(cx);
         assert!(chooser_open(&shell, window, cx), "the chooser is open");
         let mut want = vec![into(DrawerView::Outline)];
@@ -902,8 +910,10 @@ fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext
         }
         assert_eq!(
             shell.workspace.read(cx).move_chooser_hints(cx),
+            // "Into Outline slot" swaps; the Right chord joins OUTLINE's
+            // stack instead, so that row names no chord.
             Some(vec![
-                move_chord(Dir::Right, cx),
+                None,
                 move_chord(Dir::Up, cx),
                 move_chord(Dir::Down, cx),
                 move_chord(Dir::Left, cx),
@@ -917,8 +927,8 @@ fn the_move_chooser_lists_other_slots_and_four_new_sides(cx: &mut TestAppContext
 }
 
 /// FILES over FIND, one view each: picking FIND's slot moves FILES there
-/// (shown, FIND stays placed there, hidden, as the move chord does), the
-/// slot FILES left closes, and the keyboard follows FILES. Saved.
+/// (shown) and FIND takes the slot FILES left, so no slot closes; the
+/// keyboard follows FILES. Saved.
 #[gpui_kit::test]
 fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
     let (_dir, path) = temp_config();
@@ -934,7 +944,7 @@ fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
         .update_window(shell.handle, |_, window, cx| {
             window.render_frame(cx);
             let left = left_slots(&shell, cx);
-            window.click(move_button(DrawerView::Files), cx);
+            open_move_menu(DrawerView::Files, window, cx);
             window.render_frame(cx);
             assert_eq!(move_rows(&shell, cx), [into(DrawerView::Find)]);
             window.press("enter", cx);
@@ -945,16 +955,15 @@ fn picking_a_slot_moves_the_view_there(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         assert!(!chooser_open(&shell, window, cx), "the chooser closed");
         let slots = layout(&shell, cx).slots();
-        assert!(!slots.contains(&top), "the vacated slot closed");
-        assert_eq!(
-            views_of(&shell, bottom, cx),
-            [DrawerView::Find, DrawerView::Files]
-        );
+        assert!(slots.contains(&top), "a swap closes no slot");
+        assert_eq!(views_of(&shell, top, cx), [DrawerView::Find]);
+        assert_eq!(shown_in(&shell, top, cx), Some(DrawerView::Find));
+        assert_eq!(views_of(&shell, bottom, cx), [DrawerView::Files]);
         assert_eq!(shown_in(&shell, bottom, cx), Some(DrawerView::Files));
         assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(bottom)));
         assert_eq!(
             saved_placed(&path),
-            [vec![DrawerView::Find, DrawerView::Files]]
+            [vec![DrawerView::Find], vec![DrawerView::Files]]
         );
     })
     .unwrap();
@@ -976,7 +985,7 @@ fn picking_a_new_side_places_the_view_in_a_new_slot(cx: &mut TestAppContext) {
     let old = cx
         .update_window(shell.handle, |_, window, cx| {
             window.render_frame(cx);
-            window.click(move_button(DrawerView::Files), cx);
+            open_move_menu(DrawerView::Files, window, cx);
             window.render_frame(cx);
             assert_eq!(move_rows(&shell, cx), NEW_SIDES);
             for _ in 0..3 {
@@ -1020,7 +1029,7 @@ fn the_header_button_opens_the_chooser_for_its_slot(cx: &mut TestAppContext) {
         window.click(slot_id(DrawerView::Files), cx);
         assert_ne!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(outline)));
         assert!(window.try_find(move_button(DrawerView::Outline)).is_some());
-        window.click(move_button(DrawerView::Outline), cx);
+        open_move_menu(DrawerView::Outline, window, cx);
         window.render_frame(cx);
         assert_eq!(focus(&shell, cx), Focus::Leaf(Leaf::Slot(outline)));
         assert!(chooser_open(&shell, window, cx), "the chooser is open");
@@ -1040,7 +1049,7 @@ fn a_slot_with_a_lone_view_offers_no_new_slot_rows(cx: &mut TestAppContext) {
     let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(move_button(DrawerView::Find), cx);
+        open_move_menu(DrawerView::Find, window, cx);
         window.render_frame(cx);
         assert!(chooser_open(&shell, window, cx));
         assert_eq!(move_rows(&shell, cx), [into(DrawerView::Files)]);
@@ -1052,7 +1061,7 @@ fn a_slot_with_a_lone_view_offers_no_new_slot_rows(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.click(slot_id(DrawerView::Files), cx);
         let before = layout(&shell, cx);
-        window.click(move_button(DrawerView::Files), cx);
+        open_move_menu(DrawerView::Files, window, cx);
         window.render_frame(cx);
         assert!(!chooser_open(&shell, window, cx), "no chooser");
         assert_eq!(
@@ -1074,7 +1083,7 @@ fn the_move_chooser_does_not_open_while_zoomed(cx: &mut TestAppContext) {
         window.click(slot_id(DrawerView::Files), cx);
         window.press(ZOOM, cx);
         window.render_frame(cx);
-        window.click(move_button(DrawerView::Files), cx);
+        open_move_menu(DrawerView::Files, window, cx);
         window.render_frame(cx);
         assert!(!chooser_open(&shell, window, cx));
     })
@@ -1116,19 +1125,21 @@ fn a_filtered_pick_runs_the_row_the_query_kept(cx: &mut TestAppContext) {
 }
 
 /// FILES over FIND, one view each: the Up chord reaches FILES' slot from
-/// FIND, but it trades places there, which picking "Into Files slot" does
-/// not: that row names no chord.
+/// FIND and trades places there, as picking "Into Files slot" does: that
+/// row names the chord.
 #[gpui_kit::test]
-fn an_into_row_above_names_no_chord(cx: &mut TestAppContext) {
+fn an_into_row_above_names_the_up_chord(cx: &mut TestAppContext) {
     let shell = open_shell(cx, 1000., &stacked_left(), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(move_button(DrawerView::Find), cx);
+        open_move_menu(DrawerView::Find, window, cx);
         window.render_frame(cx);
         assert_eq!(move_rows(&shell, cx), [into(DrawerView::Files)]);
+        let up = move_chord(Dir::Up, cx);
+        assert!(up.is_some(), "the Up chord is bound");
         assert_eq!(
             shell.workspace.read(cx).move_chooser_hints(cx),
-            Some(vec![None])
+            Some(vec![up])
         );
     })
     .unwrap();
@@ -1164,7 +1175,7 @@ fn the_move_chooser_hints_follow_a_replaced_keymap(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(move_button(DrawerView::Files), cx);
+        open_move_menu(DrawerView::Files, window, cx);
         window.render_frame(cx);
         assert_eq!(move_rows(&shell, cx).len(), 5);
         assert_eq!(
@@ -1249,7 +1260,7 @@ fn the_chooser_new_slot_rows_make_room_too(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(move_button(DrawerView::Files), cx);
+        open_move_menu(DrawerView::Files, window, cx);
         window.render_frame(cx);
         let mut want = vec![into(DrawerView::Tags), into(DrawerView::Outline)];
         want.extend(NEW_SIDES.map(String::from));

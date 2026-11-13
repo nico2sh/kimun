@@ -335,12 +335,19 @@ fn zoom_works_on_an_editor_group_and_on_a_slot(cx: &mut TestAppContext) {
 }
 
 /// Closing the zoomed slot leaves zoom: the remaining layout is drawn.
+/// OUTLINE's slot has TAGS' below it, so it is not the last on its side.
 #[gpui_kit::test]
 fn closing_zoomed_slot_clears_zoom(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
-        &files_editor_outline(),
+        &gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+              { weight = 0.2, views = [\"files\"], shown = \"files\" },\n\
+              { weight = 0.6, editor = true },\n\
+              { weight = 0.2, split = \"vertical\", children = [\n\
+                { weight = 0.5, views = [\"outline\"], shown = \"outline\" },\n\
+                { weight = 0.5, views = [\"tags\"], shown = \"tags\" },\n\
+              ] },\n]\n"),
         "",
         false,
         LayoutStore::Off,
@@ -353,7 +360,7 @@ fn closing_zoomed_slot_clears_zoom(cx: &mut TestAppContext) {
         window.press("alt-shift-w", cx);
         window.render_frame(cx);
         assert_eq!(shell.zoomed(cx), None);
-        assert_eq!(shell.workspace.read(cx).layout.slots().len(), 1);
+        assert_eq!(shell.workspace.read(cx).layout.slots().len(), 2);
         assert!(window.try_find("editor-panel").is_some());
         assert!(window.try_find(status_row::ZOOM_ID).is_none());
     })
