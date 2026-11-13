@@ -37,7 +37,7 @@ use std::time::Duration;
 use gpui_kit::{App, AppContext, Context, SharedString, Task, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::doc_meta::DocMeta;
-use kimun_notes::logic::layout_tree::GroupId;
+use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::session::{
     FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
@@ -107,6 +107,19 @@ impl NoteHost {
     /// Whether an open was asked for and waits for the switch under way.
     pub(crate) fn is_open_wanted(&self) -> bool {
         self.wanted.is_some()
+    }
+
+    /// Whether this group holds `path`: the note it shows, or the one it
+    /// was asked to open or is opening (so a note still on its way counts).
+    pub(crate) fn holds(&self, path: &VaultPath) -> bool {
+        [
+            self.note.as_ref(),
+            self.wanted.as_ref(),
+            self.session.pending_open(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|held| held.is_like(path))
     }
 }
 
@@ -251,19 +264,92 @@ impl Workspace {
 
     // ---- Opening -------------------------------------------------------------
 
-    /// Open the note at `path` in the editor: save the open one, then read
-    /// and load this one (the attachment view, if one shows, gives way once
-    /// it has loaded). A directory (the root, when the history is empty) or
-    /// an attachment is not a note: nothing happens.
+    /// The group holding `path` ([`NoteHost::holds`]), in any tab. A note
+    /// is open in at most one group (ADR-0058).
+    pub(crate) fn locate_note(&self, path: &VaultPath) -> Option<GroupId> {
+        self.layout.region().all_groups().into_iter().find(|group| {
+            self.state(*group)
+                .and_then(|s| s.notes.as_ref())
+                .is_some_and(|host| host.holds(path))
+        })
+    }
+
+    /// Open the note at `path` in the active group's editor: save the open
+    /// one, then read and load this one (the attachment view, if one shows,
+    /// gives way once it has loaded). A note another group holds is not
+    /// opened again: that group's tab shows and its editor takes the
+    /// keyboard. A directory (the root, when the history is empty) or an
+    /// attachment is not a note: nothing happens.
     pub(crate) fn open_note(&mut self, path: VaultPath, cx: &mut Context<Self>) {
         self.open_note_with(path, None, cx);
     }
 
-    /// [`Self::open_note`] in the editor of `group`, active or not.
+    /// Open the note at `path` in a new tab, after the last one: its one
+    /// group starts empty, becomes the active group with the keyboard, and
+    /// the note opens into it. A note already open somewhere is focused
+    /// there instead ([`Self::focus_group`]); no tab is made.
     #[allow(
         dead_code,
-        reason = "called by the group tasks that follow; tests use it now"
+        reason = "the tab and split chords (a later task) call it; tests use it now"
     )]
+    pub(crate) fn open_note_in_new_tab(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        if let Some(group) = self.locate_note(&path) {
+            self.focus_group(group, cx);
+            return;
+        }
+        if !self.may_open(&path) {
+            return;
+        }
+        let Some(state) = self.new_group_state(cx) else {
+            return;
+        };
+        let (_, group) = self.layout.region_mut().new_tab();
+        self.insert_group(group, state, cx);
+        self.focus_group(group, cx);
+        self.open_note_in(group, path, cx);
+    }
+
+    /// Open the note at `path` in a new group split off the active one
+    /// along `axis`, right after it: the group starts empty, becomes the
+    /// active group with the keyboard, and the note opens into it. A note
+    /// already open somewhere is focused there instead; no group is made.
+    #[allow(
+        dead_code,
+        reason = "the tab and split chords (a later task) call it; tests use it now"
+    )]
+    pub(crate) fn open_note_in_split(
+        &mut self,
+        path: VaultPath,
+        axis: Axis,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.locate_note(&path) {
+            self.focus_group(group, cx);
+            return;
+        }
+        if !self.may_open(&path) {
+            return;
+        }
+        let Some(state) = self.new_group_state(cx) else {
+            return;
+        };
+        let active = self.layout.active_group();
+        let Some(group) = self.layout.region_mut().split_group(active, axis) else {
+            return;
+        };
+        self.insert_group(group, state, cx);
+        self.focus_group(group, cx);
+        self.open_note_in(group, path, cx);
+    }
+
+    /// Whether an open of `path` may start: it is a note and the window is
+    /// not closing.
+    fn may_open(&self, path: &VaultPath) -> bool {
+        path.is_note() && !matches!(self.closing, Closing::Requested | Closing::Flushing)
+    }
+
+    /// [`Self::open_note`] in the editor of `group`, active or not, with no
+    /// one-copy check: the caller made sure no other group holds `path`.
     pub(crate) fn open_note_in(&mut self, group: GroupId, path: VaultPath, cx: &mut Context<Self>) {
         self.open_note_in_with(group, path, None, cx);
     }
@@ -277,6 +363,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let group = self.layout.active_group();
+        // One copy: a note open in another group is shown there. The
+        // active group's own note opens again, as it always did.
+        if let Some(holder) = self.locate_note(&path)
+            && holder != group
+        {
+            self.focus_group(holder, cx);
+            return;
+        }
         self.open_note_in_with(group, path, emphasis, cx);
     }
 
@@ -287,7 +381,7 @@ impl Workspace {
         emphasis: Option<Vec<String>>,
         cx: &mut Context<Self>,
     ) {
-        if !path.is_note() || matches!(self.closing, Closing::Requested | Closing::Flushing) {
+        if !self.may_open(&path) {
             return;
         }
         // The newest request wins: an attachment still being read is dropped.
@@ -504,11 +598,17 @@ impl Workspace {
                 }
                 host.note = Some(path.clone());
                 host.meta.load_note_counts(&path, &tx);
-                self.note_gone = None;
-                self.status.note = Some(path.clone());
-                self.files_note_opened(&path, cx);
-                // The note takes the editor Panel back from an attachment.
-                self.clear_attachment(cx);
+                if group == self.layout.active_group() {
+                    self.note_gone = None;
+                    self.status.note = Some(path.clone());
+                    self.files_note_opened(&path, cx);
+                    // The note takes the editor Panel back from an attachment.
+                    self.clear_attachment(cx);
+                } else if let Some(state) = self.state_mut(group) {
+                    // Not on display: its attachment goes quietly.
+                    state._attachment_events = None;
+                    state.attachment = None;
+                }
             }
             // The editor still holds the note it had: point the session back
             // at it, so nothing is saved under the missing path.
