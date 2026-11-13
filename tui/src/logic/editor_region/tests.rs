@@ -490,7 +490,9 @@ fn move_group_to_new_tab_takes_the_group_alone_into_a_new_last_tab() {
 
 // ── Record and restore ───────────────────────────────────────────────────
 
-use crate::settings::session::{AxisRecord, GroupTreeRecord, SessionRecord, TabRecord};
+use crate::settings::session::{
+    AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionRecord, TabRecord,
+};
 use kimun_core::nfs::VaultPath;
 
 fn note(path: &str) -> VaultPath {
@@ -577,6 +579,7 @@ fn record_keeps_the_weights_exactly() {
 #[test]
 fn restore_rebuilds_nested_splits() {
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![TabRecord {
             tree: GroupTreeRecord::Split {
                 axis: AxisRecord::Vertical,
@@ -670,6 +673,7 @@ fn restore_with_every_note_missing_gives_one_empty_group() {
 fn restore_treats_an_empty_note_path_as_missing() {
     // An empty string loads as `VaultPath::new("")`: no note at all.
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![TabRecord {
             tree: GroupTreeRecord::Split {
                 axis: AxisRecord::Horizontal,
@@ -688,6 +692,7 @@ fn restore_treats_an_empty_note_path_as_missing() {
 #[test]
 fn restore_ignores_a_duplicate_note_and_keeps_the_first() {
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: leaf_record(Some("same.md")),
@@ -720,6 +725,7 @@ fn restore_ignores_a_duplicate_note_and_keeps_the_first() {
 #[test]
 fn restore_shows_the_recorded_tab_and_active_group() {
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: GroupTreeRecord::Split {
@@ -759,6 +765,7 @@ fn restore_shows_the_recorded_tab_and_active_group() {
 #[test]
 fn restore_keeps_a_tab_whose_notes_are_all_missing() {
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: GroupTreeRecord::Split {

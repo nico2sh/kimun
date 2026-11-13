@@ -2,7 +2,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::history::HistoryFile;
 use kimun_notes::settings::session::{
-    AxisRecord, GroupTreeRecord, SessionFile, SessionRecord, TabRecord,
+    AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionFile, SessionRecord, TabRecord,
 };
 
 mod common;
@@ -20,6 +20,7 @@ fn leaf(note: Option<&str>) -> GroupTreeRecord {
 
 fn two_tab_record() -> SessionRecord {
     SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![
             TabRecord {
                 tree: leaf(Some("notes/a.md")),
@@ -208,6 +209,7 @@ fn a_leaf_with_no_note_round_trips_as_an_empty_group() {
     let tmp = tempfile::TempDir::new().unwrap();
     let file = session_in(&tmp);
     let record = SessionRecord {
+        version: SESSION_VERSION,
         tabs: vec![TabRecord {
             tree: leaf(None),
             active: 0,
@@ -279,4 +281,36 @@ fn a_negative_or_zero_weight_loads_none() {
     *weights = vec![0.001, 1000.0];
     file.save(&scaled).unwrap();
     assert!(file.load().is_some());
+}
+
+/// Every record is written with this build's format version, and a file of
+/// another version (a newer build's, with fields this one does not know)
+/// or with none does not load: the caller keeps such a file untouched.
+#[test]
+fn a_record_of_another_version_loads_none() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = session_in(&tmp);
+    file.save(&two_tab_record()).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(file.path().as_path()).unwrap()).unwrap();
+    assert_eq!(json["version"], serde_json::json!(SESSION_VERSION));
+    assert_eq!(SESSION_VERSION, 1);
+
+    std::fs::write(file.path().as_path(), br#"{"version":2,"future":true}"#).unwrap();
+    assert_eq!(file.load(), None);
+
+    // A whole record, only its version newer.
+    let mut newer = json.clone();
+    newer["version"] = serde_json::json!(SESSION_VERSION + 1);
+    std::fs::write(file.path().as_path(), serde_json::to_vec(&newer).unwrap()).unwrap();
+    assert_eq!(file.load(), None);
+
+    let mut unversioned = json;
+    unversioned.as_object_mut().unwrap().remove("version");
+    std::fs::write(
+        file.path().as_path(),
+        serde_json::to_vec(&unversioned).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(file.load(), None);
 }

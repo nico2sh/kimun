@@ -488,10 +488,10 @@ impl EditorRegion {
                     .expect("a tab's active group is its own"),
             })
             .collect();
-        SessionRecord {
+        SessionRecord::new(
             tabs,
-            shown: self.position(self.shown).expect("the shown tab exists"),
-        }
+            self.position(self.shown).expect("the shown tab exists"),
+        )
     }
 
     /// The region `record` describes, with fresh ids, and the note each
