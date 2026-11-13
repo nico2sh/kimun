@@ -318,7 +318,8 @@ mod in_workspace {
     use super::super::file_dialogs::FileOpKind;
     use super::super::file_ops::{FileDialogView, FileOpRequest};
     use super::super::group_header::{
-        CORNER_DIM_OPACITY, CORNER_MENU_ID, GROUP_ID, GROUP_MENU_ID, corner_opacity, group_element,
+        CORNER_DIM_OPACITY, CORNER_MENU_ID, GROUP_CLOSE_ID, GROUP_ID, GROUP_MENU_ID,
+        corner_opacity, group_element,
     };
     use super::super::modal::ModalKind;
     use super::super::note_menu::{
@@ -1037,6 +1038,41 @@ mod in_workspace {
         assert!(
             !cx.update(|cx| cx.has_active_drag()),
             "no drag from the menu button"
+        );
+        assert!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx).is_none()));
+        let mut visual = VisualTestContext::from_window(s.handle, cx);
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    /// A press on the close button and a move past the pointer threshold,
+    /// the button held, starts no group drag: the button is not the
+    /// header's handle.
+    #[gpui_kit::test]
+    fn a_press_on_the_close_button_does_not_start_a_group_drag(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s, [_left, _right]) = two_groups(cx, &rt);
+        let from = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .find(group_element(GROUP_CLOSE_ID, 0))
+                    .bounds()
+                    .center()
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(s.handle, cx);
+        visual.simulate_mouse_move(from, None, Modifiers::default());
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let mut at = from;
+        for _ in 0..4 {
+            at = point(at.x + px(10.), at.y);
+            visual.simulate_mouse_move(at, MouseButton::Left, Modifiers::default());
+        }
+        assert!(
+            !cx.update(|cx| cx.has_active_drag()),
+            "no drag from the close button"
         );
         assert!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx).is_none()));
         let mut visual = VisualTestContext::from_window(s.handle, cx);
