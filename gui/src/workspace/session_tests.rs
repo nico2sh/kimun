@@ -1169,9 +1169,6 @@ fn a_notify_that_changes_no_record_builds_none(cx: &mut TestAppContext) {
     assert!((weights[0] - 0.55).abs() < 1e-9, "{weights:?}");
 }
 
-/// Every kind of structural change still reaches the session file: an
-/// open in a new tab, a split, a resize, a tab switch, a group moved, two
-/// groups swapped, a group closed, another note in a group.
 /// A step of [`every_structural_change_reaches_the_file`]: the record now on
 /// disk differs from the previous step's, so a no-op step cannot pass.
 fn step(previous: &SessionRecord, now: SessionRecord, what: &str) -> SessionRecord {
@@ -1179,6 +1176,9 @@ fn step(previous: &SessionRecord, now: SessionRecord, what: &str) -> SessionReco
     now
 }
 
+/// Every kind of structural change still reaches the session file: an
+/// open in a new tab, a split, a resize, a tab switch, a group moved, two
+/// groups swapped, a group closed, another note in a group.
 #[gpui_kit::test]
 fn every_structural_change_reaches_the_file(cx: &mut TestAppContext) {
     let rt = runtime();

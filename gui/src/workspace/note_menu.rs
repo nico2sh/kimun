@@ -51,9 +51,9 @@ pub(crate) const NOTE_MENU_ID: &str = "note-menu";
 /// The window-wide layer under the open menu: a press on it dismisses.
 pub(crate) const NOTE_MENU_LAYER_ID: &str = "note-menu-layer";
 
-/// The menu's width, in rems.
 /// Why a pick did nothing: its group shows another note by now.
 pub(crate) const MENU_NOTE_CHANGED: &str = "The note changed. Open the menu again.";
+/// The menu's width, in rems.
 const MENU_REMS: f32 = 18.;
 
 /// How far the menu keeps from the window's edges, in px.
