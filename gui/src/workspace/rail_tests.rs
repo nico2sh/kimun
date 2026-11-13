@@ -361,11 +361,11 @@ fn a_hidden_rail_is_out_of_the_focus_cycle_and_directional_focus(cx: &mut TestAp
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         for _ in 0..6 {
-            window.press("ctrl-tab", cx);
+            window.press("alt-e", cx);
             assert_ne!(focus(&shell, cx), Focus::Rail);
         }
         for _ in 0..6 {
-            window.press("ctrl-shift-tab", cx);
+            window.press("alt-f", cx);
             assert_ne!(focus(&shell, cx), Focus::Rail);
         }
         // Left from the left-most leaf is the edge, not the hidden rail.
@@ -497,7 +497,7 @@ fn the_side_toggle_chords_still_work_with_the_rail_hidden(cx: &mut TestAppContex
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(left_shown(&shell, cx), [Some(DrawerView::Files)]);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert_eq!(left_shown(&shell, cx), [None]);
         assert!(hidden(&shell, cx));

@@ -560,11 +560,13 @@ impl EditorView {
     /// The workspace resolves the chords the editor lets bubble in this same
     /// context, so the two never disagree about whose a key is.
     pub(crate) fn key_ctx(&self) -> KeyCtx {
+        let vim = self.editor.is_vim() && !self.editor.find_open();
         KeyCtx {
             panel: Panel::Editor,
-            vim: self.editor.is_vim() && !self.editor.find_open(),
+            vim,
             query: false,
             browser: false,
+            vim_pending: vim && self.editor.pending_input_hint().is_some(),
         }
     }
 

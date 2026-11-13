@@ -231,3 +231,18 @@ fn move_group_that_is_alone_closes_its_old_tab() {
     assert_eq!(r.group_tab(a), Some(second));
     let _ = third;
 }
+
+#[test]
+fn active_group_of_names_a_hidden_tabs_active_group() {
+    let mut r = EditorRegion::new();
+    let first_tab = r.shown();
+    let first = r.active_group();
+    let second = r.split_group(first, Axis::Horizontal).unwrap();
+    assert!(r.set_active_group(second));
+    let (tab, group) = r.new_tab();
+    assert_eq!(r.shown(), tab);
+    assert_eq!(r.active_group_of(first_tab), Some(second));
+    assert_eq!(r.active_group_of(tab), Some(group));
+    r.close_tab(tab);
+    assert_eq!(r.active_group_of(tab), None);
+}

@@ -609,12 +609,7 @@ fn keys_in_the_chooser_do_not_reach_the_view_below(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(chooser_open(&shell, window, cx));
         window.input("zz", cx);
-        for key in [
-            "alt-shift-down",
-            "alt-shift-r",
-            "alt-shift-d",
-            "ctrl-shift-t",
-        ] {
+        for key in ["alt-shift-down", "alt-shift-r", "alt-shift-d", "alt-r"] {
             window.press(key, cx);
             assert!(chooser_open(&shell, window, cx), "{key}: still open");
             assert_eq!(layout(&shell, cx), before, "{key}");
@@ -1224,9 +1219,9 @@ fn the_last_slot_on_a_side_stays_when_vacated(cx: &mut TestAppContext) {
         assert!(links.right() <= editor.left(), "left of the editor");
 
         // The left side toggle hides LINKS and shows it again.
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         assert_eq!(shown_in(&shell, left, cx), None);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         assert_eq!(shown_in(&shell, left, cx), Some(DrawerView::Links));
         assert_ne!(flash(&shell, cx).as_deref(), Some("No slot on that side"));
     })

@@ -662,7 +662,7 @@ impl Workspace {
 
     /// [`Self::drop_attachment`] for `group`; the status line's name goes
     /// only with the active group's.
-    fn drop_attachment_in(&mut self, group: GroupId) -> bool {
+    pub(super) fn drop_attachment_in(&mut self, group: GroupId) -> bool {
         if group == self.layout.active_group() {
             self.status.attachment = None;
         }

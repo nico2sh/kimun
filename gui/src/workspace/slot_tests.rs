@@ -250,7 +250,7 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         let offered = shell.workspace.read(cx).side_chooser_views(cx);
         let offered = offered.expect("the chooser is open");
@@ -274,7 +274,7 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
     .unwrap();
     cx.update_window(shell.handle, |_, window, cx| {
         // Open again and pick the first row.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         assert!(shell.workspace.read(cx).side_chooser_views(cx).is_some());
         window.press("enter", cx);
     })
@@ -292,14 +292,14 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
         assert_eq!(saved_placed(&path)[1], shown);
 
         // Again: hidden, the editor gets the width back.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         assert!(shell.shown_on(Side::Right, cx).is_empty());
         assert!(close(window.find("editor-panel").bounds().right(), 1000.));
         assert_eq!(shell.focused(cx), Panel::Editor);
 
         // Again: the remembered view comes back, no chooser.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         assert!(shell.workspace.read(cx).side_chooser_views(cx).is_none());
         assert_eq!(shell.shown_on(Side::Right, cx), shown);
@@ -327,7 +327,7 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
         window.click(rail_cell_id(DrawerView::Tags), cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Tags]);
 
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(window.try_find(slot_id(DrawerView::Tags)).is_none());
         let rail = window.find("rail").bounds();
@@ -344,7 +344,7 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("visible"), "{written}");
 
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(window.try_find(slot_id(DrawerView::Tags)).is_some());
         assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
@@ -688,9 +688,9 @@ fn directional_focus_crosses_slots(cx: &mut TestAppContext) {
         step("alt-right", slot(files_s), &files);
         step("alt-right", editor, &editor_id);
         // A side toggled off is skipped.
-        step("ctrl-shift-t", editor, &editor_id);
+        step("alt-r", editor, &editor_id);
         step("alt-right", editor, &editor_id);
-        step("ctrl-t", editor, &editor_id);
+        step("alt-l", editor, &editor_id);
         step("alt-left", Focus::Rail, &rail);
     })
     .unwrap();
@@ -950,7 +950,7 @@ fn toggling_a_side_without_a_slot_says_so(cx: &mut TestAppContext) {
     let shell = open_shell(cx, 1000., &gui(&layout), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         assert_eq!(shell.flash(cx).as_deref(), Some("No slot on that side"));
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
     })
@@ -1295,7 +1295,7 @@ fn a_slot_not_drawn_has_no_divider_until_a_view_shows_there(cx: &mut TestAppCont
         window.render_frame(cx);
         assert!(window.try_find("divider-slot-0").is_some());
         assert!(window.try_find("divider-group-0").is_none());
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.press("enter", cx);
     })
     .unwrap();

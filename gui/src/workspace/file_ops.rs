@@ -108,7 +108,7 @@ pub(crate) enum FileDialogView {
 }
 
 /// Run `flushes` side by side; each result with its group.
-async fn run_all(
+pub(super) async fn run_all(
     flushes: Vec<(GroupId, FlushRequest)>,
 ) -> Vec<(GroupId, Result<FlushResult, JoinError>)> {
     let running: Vec<_> = flushes

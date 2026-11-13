@@ -47,6 +47,7 @@ fn ctx(panel: Panel, vim: bool) -> KeyCtx {
         vim,
         query: false,
         browser: false,
+        vim_pending: false,
     }
 }
 
@@ -167,11 +168,11 @@ fn default_tables() {
             lw("ctrl+shift+o", A::OpenNote),
             lw("ctrl+j", A::NewJournal),
             lw("ctrl+shift+j", A::NewJournal),
-            lw("ctrl+t", A::ToggleSidebar),
+            lw("alt+l", A::ToggleSidebar),
             lw("ctrl+e", A::OpenFileBrowser),
             lw("ctrl+shift+e", A::OpenFileBrowser),
-            lw("ctrl+tab", A::FocusEditor),
-            lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("alt+e", A::FocusEditor),
+            lw("alt+f", A::FocusSidebar),
             lw("ctrl+r", A::OpenSortDialog),
             lw("ctrl+shift+r", A::OpenSortDialog),
             lw("f(2)", A::FileOperations),
@@ -194,7 +195,7 @@ fn default_tables() {
             lw("alt+right", A::FocusRegion(Dir::Right)),
             lw("alt+up", A::FocusRegion(Dir::Up)),
             lw("alt+down", A::FocusRegion(Dir::Down)),
-            lw("ctrl+shift+t", A::ToggleRightDrawer),
+            lw("alt+r", A::ToggleRightDrawer),
             lw("ctrl+s", A::SaveNote),
             lw("ctrl+shift+s", A::SaveNote),
             lw("f(1)", A::KeyboardHelp),
@@ -209,6 +210,11 @@ fn default_tables() {
             lw("ctrl+shift+m", A::ToggleZoom),
             lw("ctrl+shift+enter", A::OpenQueryInSidebar),
             lw("ctrl+shift+a", A::ToggleRail),
+            lw("ctrl+t", A::NewTab),
+            lw("ctrl+shift+t", A::NewTab),
+            lw("ctrl+w", A::CloseTab),
+            lw("ctrl+tab", A::NextTab),
+            lw("ctrl+shift+tab", A::PrevTab),
         ]
     );
     assert_eq!(
@@ -220,10 +226,10 @@ fn default_tables() {
             lw("cmd+k", A::SearchNotes),
             lw("cmd+o", A::OpenNote),
             lw("cmd+j", A::NewJournal),
-            lw("cmd+t", A::ToggleSidebar),
+            lw("alt+l", A::ToggleSidebar),
             lw("cmd+e", A::OpenFileBrowser),
-            lw("ctrl+tab", A::FocusEditor),
-            lw("ctrl+shift+tab", A::FocusSidebar),
+            lw("alt+e", A::FocusEditor),
+            lw("alt+f", A::FocusSidebar),
             lw("cmd+r", A::OpenSortDialog),
             lw("f(2)", A::FileOperations),
             lw("cmd+enter", A::FollowLink),
@@ -241,7 +247,7 @@ fn default_tables() {
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
             lw("cmd+alt+up", A::FocusRegion(Dir::Up)),
             lw("cmd+alt+down", A::FocusRegion(Dir::Down)),
-            lw("cmd+shift+t", A::ToggleRightDrawer),
+            lw("alt+r", A::ToggleRightDrawer),
             lw("cmd+s", A::SaveNote),
             lw("f(1)", A::KeyboardHelp),
             lw("f(1)", A::QuerySyntax),
@@ -255,6 +261,10 @@ fn default_tables() {
             lw("cmd+shift+m", A::ToggleZoom),
             lw("cmd+shift+enter", A::OpenQueryInSidebar),
             lw("cmd+shift+a", A::ToggleRail),
+            lw("cmd+t", A::NewTab),
+            lw("cmd+w", A::CloseTab),
+            lw("ctrl+tab", A::NextTab),
+            lw("ctrl+shift+tab", A::PrevTab),
         ]
     );
 }
@@ -594,7 +604,7 @@ fn the_copy_row_chord_is_the_slots_only() {
 /// The finder (Ctrl/Cmd+O), today's journal (Ctrl/Cmd+J) and the quick
 /// note (Ctrl/Cmd+Shift+W) (M6 G4), from every panel and under vim too: the
 /// vim engine reads none of them. The two bare Ctrl+letters get their
-/// Ctrl+Shift twins; bare Ctrl+W stays unbound (a desktop "close").
+/// Ctrl+Shift twins; bare Ctrl+W is the desktop's close, the tab's.
 #[test]
 fn the_finder_journal_and_quick_note_chords_from_every_panel() {
     let lw = Keymap::defaults(LinuxWindows);
@@ -611,7 +621,7 @@ fn the_finder_journal_and_quick_note_chords_from_every_panel() {
             ] {
                 assert_eq!(lw.resolve(chord(written), at), Some(&action), "{written}");
             }
-            assert_eq!(lw.resolve(chord("ctrl+w"), at), None);
+            assert_eq!(lw.resolve(chord("ctrl+w"), at), Some(&A::CloseTab));
             assert_eq!(mac.resolve(chord("cmd+o"), at), Some(&A::OpenNote));
             assert_eq!(mac.resolve(chord("cmd+j"), at), Some(&A::NewJournal));
             assert_eq!(mac.resolve(chord("cmd+shift+w"), at), Some(&A::QuickNote));
@@ -744,36 +754,36 @@ fn the_leader_chord_from_every_panel() {
     assert_eq!(mac.chord_for(&A::Leader), Some(chord("cmd+shift+b")));
 }
 
-/// A vim twin yields to another action's default: Ctrl+Shift+T is the
-/// right side's toggle, not Ctrl+T's twin. With the right toggle rebound,
-/// Ctrl+T gets its twin back.
+/// A vim twin yields to another action's default: Ctrl+Shift+W is the
+/// quick note, not Ctrl+W's (the tab close's) twin. With the quick note
+/// rebound, Ctrl+W gets its twin back.
 #[test]
 fn a_vim_twin_yields_to_another_default() {
     let lw = Keymap::defaults(LinuxWindows);
     let twins: Vec<_> = lw
         .bindings
         .iter()
-        .filter(|b| b.chord == chord("ctrl+shift+t"))
+        .filter(|b| b.chord == chord("ctrl+shift+w"))
         .map(|b| b.action.clone())
         .collect();
-    assert_eq!(twins, vec![A::ToggleRightDrawer]);
-    // Ctrl+T itself is still the left toggle in the vim editor.
+    assert_eq!(twins, vec![A::QuickNote]);
+    // Ctrl+W itself still closes the tab in the vim editor (nothing pending).
     assert_eq!(
-        lw.resolve(chord("ctrl+t"), ctx(Panel::Editor, true)),
-        Some(&A::ToggleSidebar)
+        lw.resolve(chord("ctrl+w"), ctx(Panel::Editor, true)),
+        Some(&A::CloseTab)
     );
     let (keymap, errors) = Keymap::load(
         LinuxWindows,
-        &overrides(&[("ToggleRightDrawer", &["primary+alt+b"])]),
+        &overrides(&[("QuickNote", &["primary+alt+b"])]),
     );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
-        keymap.resolve(chord("ctrl+shift+t"), ctx(Panel::Editor, true)),
-        Some(&A::ToggleSidebar)
+        keymap.resolve(chord("ctrl+shift+w"), ctx(Panel::Editor, true)),
+        Some(&A::CloseTab)
     );
     assert_eq!(
         keymap.resolve(chord("ctrl+alt+b"), ctx(Panel::Rail, false)),
-        Some(&A::ToggleRightDrawer)
+        Some(&A::QuickNote)
     );
 }
 
@@ -954,6 +964,7 @@ fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
                                 vim,
                                 query,
                                 browser: query,
+                                vim_pending: false,
                             }
                         ),
                         Some(&A::ToggleZoom),
@@ -1007,6 +1018,7 @@ fn toggle_rail_has_a_unique_default_chord_on_every_platform() {
                                 vim,
                                 query,
                                 browser: query,
+                                vim_pending: false,
                             }
                         ),
                         Some(&A::ToggleRail),
@@ -1041,6 +1053,7 @@ fn every_default_action_is_reachable_in_every_context() {
                             vim,
                             query,
                             browser: query,
+                            vim_pending: false,
                         };
                         if !Scope::of(&action).applies(at) {
                             continue;
@@ -1111,6 +1124,10 @@ fn linux_windows_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let new_tab = Some(A::NewTab);
+    let close_tab = Some(A::CloseTab);
+    let next_tab = Some(A::NextTab);
+    let prev_tab = Some(A::PrevTab);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
     let to_left = Some(A::MoveViewToNeighbour(Dir::Left));
@@ -1129,11 +1146,22 @@ fn linux_windows_resolution_table() {
             ("ctrl+shift+f", [find.clone(), find, None]),
             ("ctrl+h", [replace.clone(), replace.clone(), None]),
             ("ctrl+shift+h", [replace.clone(), replace, None]),
-            // Ctrl+T has no vim twin: Ctrl+Shift+T is the right slot's.
-            ("ctrl+t", [toggle.clone(), toggle.clone(), toggle]),
+            ("alt+l", [toggle.clone(), toggle.clone(), toggle]),
             (
-                "ctrl+shift+t",
+                "alt+r",
                 [right_side.clone(), right_side.clone(), right_side],
+            ),
+            // The tab chords (ADR-0058). Ctrl+T has its vim twin; Ctrl+W
+            // has none (Ctrl+Shift+W is the quick note's).
+            (
+                "ctrl+t",
+                [new_tab.clone(), new_tab.clone(), new_tab.clone()],
+            ),
+            ("ctrl+shift+t", [new_tab.clone(), new_tab.clone(), new_tab]),
+            ("ctrl+w", [close_tab.clone(), close_tab.clone(), close_tab]),
+            (
+                "ctrl+shift+w",
+                [Some(A::QuickNote), Some(A::QuickNote), Some(A::QuickNote)],
             ),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
@@ -1148,8 +1176,13 @@ fn linux_windows_resolution_table() {
             ("alt+right", [right.clone(), right.clone(), right]),
             ("alt+up", [up.clone(), up.clone(), up]),
             ("alt+down", [down.clone(), down.clone(), down]),
-            ("ctrl+tab", [next.clone(), next.clone(), next]),
-            ("ctrl+shift+tab", [prev.clone(), prev.clone(), prev]),
+            ("alt+e", [next.clone(), next.clone(), next]),
+            ("alt+f", [prev.clone(), prev.clone(), prev]),
+            ("ctrl+tab", [next_tab.clone(), next_tab.clone(), next_tab]),
+            (
+                "ctrl+shift+tab",
+                [prev_tab.clone(), prev_tab.clone(), prev_tab],
+            ),
             // Arranging views: the rail's and the slots', never the
             // editor's (it keeps Alt+Shift+Arrow).
             ("alt+shift+left", [None, None, to_left]),
@@ -1172,7 +1205,7 @@ fn linux_windows_resolution_table() {
             ("cmd+f", [None, None, None]),
             ("cmd+alt+left", [None, None, None]),
             ("ctrl+left", [None, None, None]),
-            ("alt+f", [None, None, None]),
+            ("alt+g", [None, None, None]),
         ],
     );
 }
@@ -1188,6 +1221,10 @@ fn macos_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let new_tab = Some(A::NewTab);
+    let close_tab = Some(A::CloseTab);
+    let next_tab = Some(A::NextTab);
+    let prev_tab = Some(A::PrevTab);
     let files = Some(A::OpenFileBrowser);
     let follow = Some(A::FollowLink);
     let to_left = Some(A::MoveViewToNeighbour(Dir::Left));
@@ -1204,7 +1241,9 @@ fn macos_resolution_table() {
             //                 plain editor  vim editor  slot / rail
             ("cmd+f", [find.clone(), find, None]),
             ("cmd+alt+f", [replace.clone(), replace, None]),
-            ("cmd+t", [toggle.clone(), toggle.clone(), toggle]),
+            ("alt+l", [toggle.clone(), toggle.clone(), toggle]),
+            ("cmd+t", [new_tab.clone(), new_tab.clone(), new_tab]),
+            ("cmd+w", [close_tab.clone(), close_tab.clone(), close_tab]),
             ("cmd+e", [files.clone(), files.clone(), files]),
             ("cmd+n", [None, None, None]),
             ("cmd+enter", [follow.clone(), follow, None]),
@@ -1212,8 +1251,13 @@ fn macos_resolution_table() {
             ("cmd+alt+right", [right.clone(), right.clone(), right]),
             ("cmd+alt+up", [up.clone(), up.clone(), up]),
             ("cmd+alt+down", [down.clone(), down.clone(), down]),
-            ("ctrl+tab", [next.clone(), next.clone(), next]),
-            ("ctrl+shift+tab", [prev.clone(), prev.clone(), prev]),
+            ("alt+e", [next.clone(), next.clone(), next]),
+            ("alt+f", [prev.clone(), prev.clone(), prev]),
+            ("ctrl+tab", [next_tab.clone(), next_tab.clone(), next_tab]),
+            (
+                "ctrl+shift+tab",
+                [prev_tab.clone(), prev_tab.clone(), prev_tab],
+            ),
             ("cmd+alt+shift+left", [None, None, to_left]),
             ("cmd+alt+shift+right", [None, None, to_right]),
             ("cmd+alt+shift+up", [None, None, view_up]),
@@ -1225,9 +1269,10 @@ fn macos_resolution_table() {
             ("cmd+alt+shift+s", [None, None, None]),
             ("cmd+alt+shift+u", [None, None, None]),
             (
-                "cmd+shift+t",
+                "alt+r",
                 [right_side.clone(), right_side.clone(), right_side],
             ),
+            ("cmd+shift+t", [None, None, None]),
             ("cmd+alt+b", [None, None, None]),
             // Option+Shift+Arrow is word selection on macOS: not ours.
             ("alt+shift+left", [None, None, None]),
@@ -1235,6 +1280,7 @@ fn macos_resolution_table() {
             ("ctrl+f", [None, None, None]),
             ("ctrl+h", [None, None, None]),
             ("ctrl+t", [None, None, None]),
+            ("ctrl+w", [None, None, None]),
             ("ctrl+e", [None, None, None]),
             ("ctrl+n", [None, None, None]),
             ("ctrl+enter", [None, None, None]),
@@ -1277,7 +1323,7 @@ fn an_empty_list_unbinds() {
     assert!(errors.is_empty());
     assert!(keymap.bindings.iter().all(|b| b.action != A::ToggleSidebar));
     assert_eq!(
-        keymap.resolve(chord("ctrl+t"), ctx(Panel::Rail, false)),
+        keymap.resolve(chord("alt+l"), ctx(Panel::Rail, false)),
         None
     );
 }
@@ -1304,7 +1350,7 @@ fn every_modifier_name_is_accepted() {
 fn unknown_actions_and_bad_chords_are_reported_and_the_rest_loads() {
     let o = overrides(&[
         ("NoSuchAction", &["ctrl+q"]),
-        ("ToggleRightDrawer", &["ctrl+banana", "alt+r"]),
+        ("ToggleRightDrawer", &["ctrl+banana", "alt+g"]),
     ]);
     let (keymap, errors) = Keymap::load(LinuxWindows, &o);
     assert_eq!(
@@ -1322,32 +1368,34 @@ fn unknown_actions_and_bad_chords_are_reported_and_the_rest_loads() {
     );
     let rail = ctx(Panel::Rail, false);
     assert_eq!(
-        keymap.resolve(chord("alt+r"), rail),
+        keymap.resolve(chord("alt+g"), rail),
         Some(&A::ToggleRightDrawer)
     );
+    // The override replaced the default.
+    assert_eq!(keymap.resolve(chord("alt+r"), rail), None);
     // Defaults untouched.
     assert_eq!(
-        keymap.resolve(chord("ctrl+t"), rail),
+        keymap.resolve(chord("alt+l"), rail),
         Some(&A::ToggleSidebar)
     );
 }
 
 #[test]
 fn a_chord_held_by_another_action_is_rejected_not_stolen() {
-    // Ctrl+T is ToggleSidebar's default; the override loses, the default stays.
-    let o = overrides(&[("ToggleRightDrawer", &["primary+t", "primary+shift+g"])]);
+    // Alt+L is ToggleSidebar's default; the override loses, the default stays.
+    let o = overrides(&[("ToggleRightDrawer", &["alt+l", "primary+shift+g"])]);
     let (keymap, errors) = Keymap::load(LinuxWindows, &o);
     assert_eq!(
         errors,
         vec![KeymapError::Collision {
             action: A::ToggleRightDrawer,
-            chord: "primary+t".into(),
+            chord: "alt+l".into(),
             taken_by: A::ToggleSidebar,
         }]
     );
     let slot = ctx(Panel::Drawer(Side::Left), false);
     assert_eq!(
-        keymap.resolve(chord("ctrl+t"), slot),
+        keymap.resolve(chord("alt+l"), slot),
         Some(&A::ToggleSidebar)
     );
     assert_eq!(
@@ -1380,13 +1428,13 @@ fn two_overrides_on_one_chord_keep_the_first_in_action_order() {
 fn rebinding_the_holder_frees_its_chord() {
     let o = overrides(&[
         ("ToggleSidebar", &["primary+b"]),
-        ("FindInBuffer", &["primary+t"]),
+        ("FindInBuffer", &["alt+l"]),
     ]);
     let (keymap, errors) = Keymap::load(LinuxWindows, &o);
     assert!(errors.is_empty(), "{errors:?}");
     let editor = ctx(Panel::Editor, false);
     assert_eq!(
-        keymap.resolve(chord("ctrl+t"), editor),
+        keymap.resolve(chord("alt+l"), editor),
         Some(&A::FindInBuffer)
     );
     assert_eq!(
@@ -1439,12 +1487,12 @@ fn legacy_action_names_are_accepted() {
 fn errors_read_as_config_lines() {
     let e = KeymapError::Collision {
         action: A::ToggleRightDrawer,
-        chord: "primary+t".into(),
+        chord: "alt+l".into(),
         taken_by: A::ToggleSidebar,
     };
     assert_eq!(
         e.to_string(),
-        "[gui.keys] ToggleRightDrawer = \"primary+t\": already bound to ToggleSidebar"
+        "[gui.keys] ToggleRightDrawer = \"alt+l\": already bound to ToggleSidebar"
     );
 }
 
@@ -1493,4 +1541,167 @@ fn the_open_in_find_chord_is_scoped_to_the_browser() {
         assert_eq!(lw.resolve(key, query_ctx(panel)), None, "{panel:?} FIND");
         assert_eq!(lw.resolve(key, ctx(panel, false)), None, "{panel:?}");
     }
+}
+
+// ------------------------------------------------------------------ tabs
+
+/// No two default bindings share a chord where both are live, on either
+/// platform: a chord resolves to one action (the query scopes shadow by
+/// design, and are the only pairs allowed).
+#[test]
+fn default_chords_have_no_duplicates() {
+    for p in PLATFORMS {
+        let (keymap, errors) = Keymap::load(p, &BTreeMap::new());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
+        for (i, a) in keymap.bindings.iter().enumerate() {
+            for b in &keymap.bindings[i + 1..] {
+                if a.chord != b.chord {
+                    continue;
+                }
+                assert!(
+                    !Scope::of(&a.action).overlaps(Scope::of(&b.action)),
+                    "{p:?}: {} is both {} and {}",
+                    describe(a.chord),
+                    a.action,
+                    b.action
+                );
+            }
+        }
+        // The pairs that do share a chord are only the shadowing ones.
+        let shared: Vec<(String, ActionShortcuts, ActionShortcuts)> = keymap
+            .bindings
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| {
+                keymap.bindings[i + 1..]
+                    .iter()
+                    .filter(move |b| b.chord == a.chord)
+                    .map(move |b| (describe(a.chord), a.action.clone(), b.action.clone()))
+            })
+            .collect();
+        assert_eq!(
+            shared,
+            [("f(1)".to_string(), A::KeyboardHelp, A::QuerySyntax)],
+            "{p:?}"
+        );
+    }
+}
+
+/// The tab chords and the side and focus chords they displaced, exactly as
+/// the plan's constraints write them, on both platforms; each is live from
+/// every panel, plain or vim (nothing pending), and nothing else holds it.
+#[test]
+fn tab_chords_match_the_constraints() {
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        let (new, close, new_twin): (&str, &str, &[&str]) = if p == MacOs {
+            ("cmd+t", "cmd+w", &[])
+        } else {
+            // Ctrl+T is a bare Ctrl+letter: it gets its vim twin.
+            ("ctrl+t", "ctrl+w", &["ctrl+shift+t"])
+        };
+        let mut new_chords = vec![chord(new)];
+        new_chords.extend(new_twin.iter().map(|c| chord(c)));
+        let expected: [(ActionShortcuts, Vec<KeyInput>); 8] = [
+            (A::NewTab, new_chords),
+            (A::CloseTab, vec![chord(close)]),
+            (A::NextTab, vec![chord("ctrl+tab")]),
+            (A::PrevTab, vec![chord("ctrl+shift+tab")]),
+            (A::FocusEditor, vec![chord("alt+e")]),
+            (A::FocusSidebar, vec![chord("alt+f")]),
+            (A::ToggleSidebar, vec![chord("alt+l")]),
+            (A::ToggleRightDrawer, vec![chord("alt+r")]),
+        ];
+        for (action, chords) in &expected {
+            assert_eq!(&keymap.chords_for(action), chords, "{p:?} {action}");
+            for key in chords {
+                for panel in PANELS {
+                    for vim in [false, true] {
+                        assert_eq!(
+                            keymap.resolve(*key, ctx(panel, vim)),
+                            Some(action),
+                            "{p:?} {} {panel:?} vim={vim}",
+                            describe(*key)
+                        );
+                    }
+                }
+                assert!(!keymap.vim_shadows(action, *key), "{p:?} {action}");
+            }
+        }
+        // The old homes of the displaced chords now belong to the tabs.
+        assert_eq!(
+            keymap.resolve(chord("ctrl+tab"), ctx(Panel::Rail, false)),
+            Some(&A::NextTab)
+        );
+        assert_eq!(
+            keymap.resolve(
+                parse_chord("primary+shift+t", p).unwrap(),
+                ctx(Panel::Rail, false)
+            ),
+            (p == LinuxWindows).then_some(&A::NewTab),
+            "{p:?}: the right toggle's old chord"
+        );
+    }
+}
+
+/// Vim's Ctrl+W is a window prefix. With nothing pending in the vim engine
+/// Ctrl+W closes the tab (the engine reads no Ctrl+W); while it holds a
+/// pending sequence (`d`, `2`, `g`, ...) Ctrl+W is the engine's and no tab
+/// closes. The plain editor and every other panel never hold a sequence.
+#[test]
+fn ctrl_w_does_not_close_a_tab_while_vim_holds_a_pending_prefix() {
+    let lw = Keymap::defaults(LinuxWindows);
+    let ctrl_w = chord("ctrl+w");
+    let pending = |panel, vim| KeyCtx {
+        vim_pending: true,
+        ..ctx(panel, vim)
+    };
+    assert_eq!(lw.resolve(ctrl_w, pending(Panel::Editor, true)), None);
+    assert_eq!(
+        lw.resolve(ctrl_w, ctx(Panel::Editor, true)),
+        Some(&A::CloseTab)
+    );
+    assert_eq!(
+        lw.resolve(ctrl_w, ctx(Panel::Editor, false)),
+        Some(&A::CloseTab)
+    );
+    // The rule is the vim editor's only: a slot closes the tab whatever.
+    for panel in PANELS.into_iter().filter(|p| *p != Panel::Editor) {
+        assert_eq!(
+            lw.resolve(ctrl_w, pending(panel, true)),
+            Some(&A::CloseTab),
+            "{panel:?}"
+        );
+    }
+    // Only Ctrl+W yields: the other tab chords still run mid-sequence.
+    for (written, action) in [
+        ("ctrl+t", A::NewTab),
+        ("ctrl+tab", A::NextTab),
+        ("ctrl+shift+tab", A::PrevTab),
+        ("ctrl+s", A::SaveNote),
+    ] {
+        assert_eq!(
+            lw.resolve(chord(written), pending(Panel::Editor, true)),
+            Some(&action),
+            "{written}"
+        );
+    }
+    // A Ctrl+W bound by an override yields the same way: the rule follows
+    // the key, vim's window prefix, not the action.
+    let (keymap, errors) = Keymap::load(
+        LinuxWindows,
+        &overrides(&[("CloseTab", &["alt+w"]), ("SaveNote", &["primary+w"])]),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(keymap.resolve(ctrl_w, pending(Panel::Editor, true)), None);
+    assert_eq!(
+        keymap.resolve(chord("alt+w"), pending(Panel::Editor, true)),
+        Some(&A::CloseTab)
+    );
+    // macOS closes with Cmd+W, which vim never reads, pending or not.
+    let mac = Keymap::defaults(MacOs);
+    assert_eq!(
+        mac.resolve(chord("cmd+w"), pending(Panel::Editor, true)),
+        Some(&A::CloseTab)
+    );
 }

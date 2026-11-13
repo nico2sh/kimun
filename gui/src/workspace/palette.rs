@@ -83,6 +83,9 @@ pub(crate) enum PaletteRun {
 /// place in [`chord_rows`]).
 const MOVE_VIEW_TO: &str = "+window · move view to…";
 
+/// Why the next and previous tab rows do nothing.
+pub(crate) const ONE_TAB: &str = "Only one tab is open";
+
 /// Why the row for the rail's current position does nothing.
 const RAIL_ALREADY_HERE: &str = "The rail is already there";
 
@@ -120,6 +123,11 @@ impl PaletteEntry {
     #[cfg(test)]
     pub(crate) fn blocked(&self) -> Option<&'static str> {
         self.blocked
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hint(&self) -> Option<KeyInput> {
+        self.hint
     }
 
     #[cfg(test)]
@@ -215,6 +223,11 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
             "+window · toggle rail".into(),
             PaletteRun::Chord(A::ToggleRail),
         ),
+        // The tabs (ADR-0058).
+        window_row(A::NewTab),
+        window_row(A::CloseTab),
+        window_row(A::NextTab),
+        window_row(A::PrevTab),
         (
             "+text · find in note".into(),
             PaletteRun::Chord(A::FindInBuffer),
@@ -471,9 +484,10 @@ impl Workspace {
             }
             A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
             A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => slot_focus_block(opener),
-            A::QuickNote | A::OpenSortDialog => {
+            A::QuickNote | A::OpenSortDialog | A::NewTab | A::CloseTab => {
                 self.active_state().notes.is_none().then_some(NO_WORKSPACE)
             }
+            A::NextTab | A::PrevTab => (self.layout.region().tabs().len() < 2).then_some(ONE_TAB),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
             A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
                 && self.focused_view() == Some(DrawerView::Find)))

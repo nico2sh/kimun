@@ -831,7 +831,7 @@ fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
     // Hide the left slot first.
     let shown = cx.read(|cx| started.workspace.read(cx).side_drawn(Side::Left));
     if shown {
-        press(&started, "ctrl-t", cx);
+        press(&started, "alt-l", cx);
     }
     assert!(!cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
     press(&started, "ctrl-shift-b", cx);

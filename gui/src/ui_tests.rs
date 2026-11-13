@@ -1736,15 +1736,24 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         assert_eq!(
             spy.read(cx).bubbled,
             1,
-            "the right side's chord passes the editor by"
+            "the new tab's vim twin passes the editor by"
         );
-        // Ctrl-T has no vim twin, but vim reads no Ctrl-T: it passes too.
+        // Vim reads no Ctrl-T: the bare chord passes too.
         window.press("ctrl-t", cx);
         assert_eq!(
             spy.read(cx).bubbled,
             2,
-            "the left side's chord passes the editor by"
+            "the new tab's chord passes the editor by"
         );
+        // Vim's Ctrl-W window prefix: with an operator pending the engine
+        // takes Ctrl-W (no tab closes); with nothing pending it bubbles.
+        window.press("d", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 2, "vim holds `d`: Ctrl-W is vim's");
+        window.press("escape", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 3, "nothing pending: the tab close");
+        assert_eq!(text(&view, cx), all, "the `d` deleted nothing");
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx), "Ctrl-F is find under vim");
         assert!(!replacing(&view, cx));
@@ -1809,8 +1818,8 @@ fn the_macos_table_finds_on_cmd_f(cx: &mut TestAppContext) {
 }
 
 /// A chord bound to an app command the editor does not own (focus, the
-/// slot) is not the editor's to act on: Alt+Left no longer moves by word
-/// (ADR-0050 §4), Ctrl-T does not reach the editor.
+/// slot, the tabs) is not the editor's to act on: Alt+Left no longer moves
+/// by word (ADR-0050 §4), Ctrl-Tab and Ctrl-T do not reach the editor.
 #[gpui_kit::test]
 fn app_chords_pass_the_editor_by(cx: &mut TestAppContext) {
     let (handle, view) = open(cx, "foo bar");

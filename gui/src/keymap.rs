@@ -16,10 +16,18 @@
 //! whatever the keymap says. Other Ctrl+letters stay the app's, vim or not
 //! (Ctrl+S saves, Ctrl+E opens FILES). Every default bound to a bare
 //! Ctrl+letter also gets a Ctrl+Shift twin, which vim never reads, unless
-//! another default already holds that Ctrl+Shift chord (Ctrl+Shift+T is the
-//! right side's toggle, so Ctrl+T has no twin; vim reads no Ctrl+T).
+//! another default already holds that Ctrl+Shift chord (Ctrl+Shift+W is the
+//! quick note, so Ctrl+W, the tab close, has no twin).
 //! On macOS `primary` is Cmd, which vim does not use, so nothing collides.
 //! In the plain editor, and with any other panel focused, app chords win.
+//!
+//! **Ctrl+W under vim.** Vim's Ctrl+W is its window prefix. The engine here
+//! reads no Ctrl+W, so the chord closes the tab in vim Normal mode too, like
+//! any other Ctrl+letter the engine does not read. But while the engine holds
+//! a pending sequence (a count, an operator, `g`, `f`, `r`, ...) the key is
+//! part of what the user is typing to vim: Ctrl+W then goes to the engine,
+//! which ends or ignores the sequence as it does any Ctrl chord, and no tab
+//! closes ([`KeyCtx::vim_pending`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -72,6 +80,9 @@ pub struct KeyCtx {
     /// The search browser is the open modal. [`Scope::Browser`] chords are
     /// live only then (never in FIND, which is a query without a browser).
     pub browser: bool,
+    /// The vim engine holds a pending sequence (a count, an operator, an
+    /// awaited key): Ctrl+W is the engine's then, not the tab close.
+    pub vim_pending: bool,
 }
 
 /// Where an action's chord is live. Two actions may share a chord only when
@@ -162,8 +173,10 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // find-and-replace. Elsewhere Ctrl+H stays where M4 put it.
         A::ReplaceInBuffer if mac => &["cmd+alt+f"],
         A::ReplaceInBuffer => &["ctrl+h"],
-        // The TUI's side toggle, kept for muscle memory.
-        A::ToggleSidebar => &["primary+t"],
+        // The left side's toggle: L for left. Alt+letter, so the browser
+        // chord Ctrl+T is the new tab's (ADR-0058). Literal Alt on every
+        // platform, as the tab chords keep literal Ctrl.
+        A::ToggleSidebar => &["alt+l"],
         // Directional focus (ADR-0050 §4). Not Ctrl+Arrow (word motion) and
         // not Ctrl+Alt+Arrow (GNOME's workspace switch).
         A::FocusRegion(dir) => match (mac, dir) {
@@ -177,10 +190,11 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
             (false, Dir::Down) => &["alt+down"],
         },
         // The wrapping panel cycle (the TUI's Tab / Shift+Tab, whose Tab the
-        // editor keeps for indent). Literal Ctrl on every platform: Cmd+Tab
-        // is macOS's app switcher.
-        A::FocusEditor => &["ctrl+tab"],
-        A::FocusSidebar => &["ctrl+shift+tab"],
+        // editor keeps for indent): E forward, F back. Alt+letter, so the
+        // browser's Ctrl+Tab and Ctrl+Shift+Tab move between tabs
+        // (ADR-0058). No editor or vim key is Alt+letter.
+        A::FocusEditor => &["alt+e"],
+        A::FocusSidebar => &["alt+f"],
         // Write the open note now (the TUI's leader `w`). Everywhere: the
         // note is the window's, whichever panel has the keyboard.
         A::SaveNote => &["primary+s"],
@@ -193,11 +207,8 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // still bind it under `[gui.keys]`). Never Shift+Enter: in the editor
         // that is a plain newline.
         A::FollowLink => &["primary+enter"],
-        // The right side's toggle: the left toggle plus Shift. It takes
-        // the Ctrl+Shift+T that would be Ctrl+T's vim twin (no twin is made
-        // for a chord another default holds); Ctrl+T needs none, as vim
-        // reads no Ctrl+T.
-        A::ToggleRightDrawer => &["primary+shift+t"],
+        // The right side's toggle: R for right, beside the left's Alt+L.
+        A::ToggleRightDrawer => &["alt+r"],
         // Arranging the layout tree (ADR-0052), only from the rail or a
         // slot, so the editor keeps these chords (Option+Shift+Arrow and
         // Alt+Shift+letter are text keys there). The directional-focus
@@ -303,6 +314,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,
+        // Tabs (ADR-0058) use the browser chords. New and close follow
+        // `primary` (Cmd+T, Cmd+W on macOS). Ctrl+T gets its vim twin
+        // (Ctrl+Shift+T); Ctrl+W gets none, as the quick note holds
+        // Ctrl+Shift+W. Vim's Ctrl+W window prefix: see the module docs.
+        A::NewTab => &["primary+t"],
+        A::CloseTab => &["primary+w"],
+        // Literal Ctrl on every platform: Cmd+Tab is macOS's app switcher.
+        A::NextTab => &["ctrl+tab"],
+        A::PrevTab => &["ctrl+shift+tab"],
     })
 }
 
@@ -616,18 +636,20 @@ impl Keymap {
                 vim: true,
                 query: false,
                 browser: false,
+                vim_pending: false,
             })
     }
 
     /// The action `chord` triggers in `ctx`, if any: a [`Scope::Query`]
     /// binding first where a query is typed. `None` also when the vim rule
-    /// gives the chord to the editor.
+    /// gives the chord to the editor, and for Ctrl+W while the vim engine
+    /// holds a pending sequence (the module docs).
     pub fn resolve(&self, chord: KeyInput, ctx: KeyCtx) -> Option<&ActionShortcuts> {
-        if self.platform == Platform::LinuxWindows
-            && ctx.vim
-            && ctx.panel == Panel::Editor
-            && is_vim_ctrl_chord(chord)
-        {
+        let vim_editor = ctx.vim && ctx.panel == Panel::Editor;
+        if vim_editor && self.platform == Platform::LinuxWindows && is_vim_ctrl_chord(chord) {
+            return None;
+        }
+        if vim_editor && ctx.vim_pending && is_vim_window_prefix(chord) {
             return None;
         }
         let live = |b: &&Binding| b.chord == chord && Scope::of(&b.action).applies(ctx);
@@ -650,6 +672,12 @@ fn is_bare_ctrl_letter(chord: KeyInput) -> bool {
 /// keeps it (Ctrl+S saves, Ctrl+E opens FILES) even in vim mode.
 fn is_vim_ctrl_chord(chord: KeyInput) -> bool {
     chord.mods == Mods::CTRL && matches!(chord.key, Key::Char('r' | 'c' | 'x' | 'v'))
+}
+
+/// Vim's window prefix, Ctrl+W: the engine's while it holds a pending
+/// sequence ([`KeyCtx::vim_pending`]), whatever the keymap binds to it.
+fn is_vim_window_prefix(chord: KeyInput) -> bool {
+    chord == KeyInput::ctrl('w')
 }
 
 /// The keymap in effect, shared by every view that resolves keys.

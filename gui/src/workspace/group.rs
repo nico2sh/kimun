@@ -197,8 +197,9 @@ impl Workspace {
 
     /// Make `group` the active group, show its tab and give its editor the
     /// keyboard; a zoom on a slot ends, as the group is asked to show. The
-    /// Footer, FILES' mark and the views that follow the open note follow
-    /// the group. Nothing happens for an unknown group.
+    /// Footer (its counts fetched again), FILES' mark and the views that
+    /// follow the open note follow the group. Nothing happens for an
+    /// unknown group.
     pub(crate) fn focus_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         if !self.groups.contains_key(&group) || !self.layout.region_mut().set_active_group(group) {
             return;
@@ -208,13 +209,15 @@ impl Workspace {
         }
         self.layout.focus(Focus::Leaf(Leaf::Editor));
         self.sync_active_status(cx);
+        // Counts kept while the group was hidden may be stale.
+        self.refresh_note_counts();
         self.focus_shown_content(cx);
         cx.notify();
     }
 
     /// The Footer, FILES' open-note mark and the views that follow the
     /// open note take the active group's note, attachment and dirty state.
-    fn sync_active_status(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_active_status(&mut self, cx: &mut Context<Self>) {
         let state = self.active_state();
         let note = state.notes.as_ref().and_then(|h| h.note.clone());
         let attachment = state
