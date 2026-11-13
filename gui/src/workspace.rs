@@ -2799,8 +2799,7 @@ impl Workspace {
                         // window follows it as on every other route
                         // ([`Self::focus_group`]).
                         if self.layout.active_group() != active_before {
-                            self.sync_active_status(cx);
-                            self.refresh_note_counts();
+                            self.follow_active_group(cx);
                         }
                         self.apply_focus(window, cx)
                     }

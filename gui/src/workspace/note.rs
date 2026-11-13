@@ -324,10 +324,6 @@ impl Workspace {
     /// group starts empty, becomes the active group with the keyboard, and
     /// the note opens into it. A note already open somewhere is focused
     /// there instead ([`Self::focus_group`]); no tab is made.
-    #[allow(
-        dead_code,
-        reason = "the tab and split chords (a later task) call it; tests use it now"
-    )]
     pub(crate) fn open_note_in_new_tab(&mut self, path: VaultPath, cx: &mut Context<Self>) {
         // A stored record still restoring would replace the new tab: the
         // open waits for it ([`super::session`]).
@@ -358,10 +354,6 @@ impl Workspace {
     /// active group with the keyboard, and the note opens into it. A note
     /// already open somewhere is focused there instead; no group is made.
     /// Refused with a flash while the shown tab's close writes its notes.
-    #[allow(
-        dead_code,
-        reason = "the tab and split chords (a later task) call it; tests use it now"
-    )]
     pub(crate) fn open_note_in_split(
         &mut self,
         path: VaultPath,
@@ -669,10 +661,9 @@ impl Workspace {
                     self.files_note_opened(&path, cx);
                     // The note takes the editor Panel back from an attachment.
                     self.clear_attachment(cx);
-                } else if let Some(state) = self.state_mut(group) {
+                } else {
                     // Not on display: its attachment goes quietly.
-                    state._attachment_events = None;
-                    state.attachment = None;
+                    self.drop_attachment_in(group);
                 }
             }
             // The editor still holds the note it had: point the session back

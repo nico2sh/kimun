@@ -1006,10 +1006,15 @@ impl Win {
     }
 
     /// The record is on disk once the debounce is over.
-    fn assert_written(&self, v: &TestVault, what: &str, cx: &mut TestAppContext) {
+    fn assert_written(&self, v: &TestVault, what: &str, cx: &mut TestAppContext) -> SessionRecord {
         self.after_debounce(cx);
         let now = self.record(cx);
-        assert_eq!(session_of(v).load(), Some(now), "{what} reaches the file");
+        assert_eq!(
+            session_of(v).load().as_ref(),
+            Some(&now),
+            "{what} reaches the file"
+        );
+        now
     }
 }
 
@@ -1059,50 +1064,82 @@ fn a_notify_that_changes_no_record_builds_none(cx: &mut TestAppContext) {
 /// Every kind of structural change still reaches the session file: an
 /// open in a new tab, a split, a resize, a tab switch, a group moved, two
 /// groups swapped, a group closed, another note in a group.
+/// A step of [`every_structural_change_reaches_the_file`]: the record now on
+/// disk differs from the previous step's, so a no-op step cannot pass.
+fn step(previous: &SessionRecord, now: SessionRecord, what: &str) -> SessionRecord {
+    assert_ne!(&now, previous, "{what} changes the record");
+    now
+}
+
 #[gpui_kit::test]
 fn every_structural_change_reaches_the_file(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, win) = started_on_a(cx, &rt);
+    let start = win.record(cx);
 
     win.with(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx));
     drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "beta");
-    win.assert_written(&v, "an open in a new tab", cx);
+    let mut last = step(
+        &start,
+        win.assert_written(&v, "an open in a new tab", cx),
+        "an open in a new tab",
+    );
 
     win.with(cx, |w, cx| {
         w.open_note_in_split(path("c.md"), Axis::Vertical, cx)
     });
     drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "gamma");
-    win.assert_written(&v, "a split", cx);
+    last = step(&last, win.assert_written(&v, "a split", cx), "a split");
 
     let groups = win.groups_of_shown(cx);
     win.with(cx, |w, cx| {
         w.layout.region_mut().resize_after(groups[0], 0.3);
         cx.notify();
     });
-    win.assert_written(&v, "a resize", cx);
+    last = step(&last, win.assert_written(&v, "a resize", cx), "a resize");
 
     win.with(cx, |w, cx| w.step_tab(false, cx));
-    win.assert_written(&v, "a tab switch", cx);
+    last = step(
+        &last,
+        win.assert_written(&v, "a tab switch", cx),
+        "a tab switch",
+    );
     win.with(cx, |w, cx| w.step_tab(true, cx));
-    win.assert_written(&v, "a tab switch back", cx);
+    last = step(
+        &last,
+        win.assert_written(&v, "a tab switch back", cx),
+        "a tab switch back",
+    );
 
     win.drop_group(groups[0], DropTarget::Group(groups[1], Zone::Centre), cx);
-    win.assert_written(&v, "a swap", cx);
+    last = step(&last, win.assert_written(&v, "a swap", cx), "a swap");
 
     win.drop_group(groups[1], DropTarget::NewTab, cx);
-    win.assert_written(&v, "a group moved to a new tab", cx);
+    last = step(
+        &last,
+        win.assert_written(&v, "a group moved to a new tab", cx),
+        "a group moved to a new tab",
+    );
     assert_eq!(win.notes_by_tab(cx).len(), 3);
 
     win.with(cx, |w, cx| w.open_note(path("d.md"), cx));
     drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "delta");
-    win.assert_written(&v, "another note in a group", cx);
+    last = step(
+        &last,
+        win.assert_written(&v, "another note in a group", cx),
+        "another note in a group",
+    );
 
     let active = win.active(cx);
     win.with(cx, |w, cx| w.close_editor_group(active, cx));
     drive(&rt, cx, |cx| {
         win.all_idle(cx) && cx.read(|cx| !win.workspace.read(cx).note_held())
     });
-    win.assert_written(&v, "a group closed", cx);
+    step(
+        &last,
+        win.assert_written(&v, "a group closed", cx),
+        "a group closed",
+    );
     win.assert_states_in_step(cx);
 }

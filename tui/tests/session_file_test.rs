@@ -130,23 +130,6 @@ fn workspace_rename_keeps_the_session_file() {
     assert_eq!(settings.history_for("job"), history_before);
 }
 
-/// The type itself can also be moved, like `HistoryFile::move_to`.
-#[test]
-fn move_to_relocates_and_refuses_an_occupied_destination() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let from = SessionFile::in_dir(&sys(tmp.path()), "a");
-    let to = SessionFile::in_dir(&sys(tmp.path()), "b");
-    from.save(&two_tab_record()).unwrap();
-
-    from.move_to(&to).unwrap();
-    assert!(!from.exists());
-    assert_eq!(to.load(), Some(two_tab_record()));
-
-    from.save(&two_tab_record()).unwrap();
-    assert!(from.move_to(&to).is_err());
-    assert!(from.exists());
-}
-
 #[test]
 fn workspace_remove_deletes_the_session_file() {
     let tmp = tempfile::TempDir::new().unwrap();

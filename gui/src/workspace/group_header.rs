@@ -20,7 +20,6 @@
 //! a plain open (from FILES, the finder, a link) replaces. With one group
 //! there is no doubt, and nothing is drawn.
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -57,12 +56,10 @@ pub(crate) const LONE_GROUP_HOVER: &str = "lone-group";
 pub(crate) const CORNER_DIM_OPACITY: f32 = 0.35;
 /// The target marker's id prefix.
 pub(crate) const GROUP_TARGET_ID: &str = "group-target";
-/// The close glyph: the kit's own close icon, as on a tab.
-const CLOSE_ICON: IconName = IconName::Close;
 /// Every glyph a header draws, for the bundle test: an icon the asset
 /// source does not carry paints nothing.
 #[cfg(test)]
-pub(crate) const ICONS: [IconName; 1] = [CLOSE_ICON];
+pub(crate) const ICONS: [gpui_kit::assets::IconName; 1] = [super::chrome::CLOSE_ICON];
 
 /// `prefix` with the group's position in the shown tab (reading order).
 pub(crate) fn group_element(prefix: &'static str, at: usize) -> ElementId {
