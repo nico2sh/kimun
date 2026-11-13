@@ -17,12 +17,11 @@ use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::message::{AppMessage, FileOp};
 use tokio::runtime::Runtime;
 
-use super::file_dialogs::{
-    CONFIRM_ID, FileOpKind, MENU_ID, MoveDialog, RenameDialog, menu_item_id,
-};
+use super::file_dialogs::{CONFIRM_ID, FileOpKind, MoveDialog, RenameDialog};
 use super::file_ops::FileDialogView;
 use super::files::row_id;
 use super::modal::ModalKind;
+use super::note_menu::{MenuItem, NOTE_MENU_ID, menu_item_element_id};
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
@@ -111,6 +110,10 @@ impl Started {
 
     fn footer_note(&self, cx: &TestAppContext) -> Option<VaultPath> {
         cx.read(|cx| self.workspace.read(cx).status.note.clone())
+    }
+
+    fn note_menu_open(&self, cx: &TestAppContext) -> bool {
+        cx.read(|cx| self.workspace.read(cx).note_menu.is_some())
     }
 
     fn modal(&self, cx: &TestAppContext) -> Option<ModalKind> {
@@ -265,8 +268,9 @@ fn renaming_the_dirty_open_note_keeps_its_edits(cx: &mut TestAppContext) {
     assert!(started.is_dirty(cx));
     // F2, then R: the note menu, then its rename dialog.
     started.hit("f2", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
     started.hit("r", cx);
+    assert!(!started.note_menu_open(cx));
     assert_eq!(started.modal(cx), Some(ModalKind::Rename));
     assert_eq!(started.rename_target(cx), path("a.md"));
     assert_eq!(started.rename_to(&rt, "b", cx), ValidationState::Available);
@@ -633,33 +637,38 @@ fn other_entries_leave_the_open_note_alone(cx: &mut TestAppContext) {
 
 // ── the menu and the modal slot ─────────────────────────────────────────
 
-/// Escape closes the note menu and gives the keyboard back to the note;
-/// only one modal is ever open.
+/// Escape closes the note menu and gives the keyboard back to the note. A
+/// dialog opening gives the menu way, and no menu opens over a dialog.
 #[gpui_kit::test]
 fn escape_closes_and_only_one_modal_opens(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
     started.hit("f2", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(MENU_ID).visible());
-        assert!(window.find(menu_item_id(FileOpKind::Delete)).visible());
+        assert!(window.find(NOTE_MENU_ID).visible());
+        assert!(
+            window
+                .find(menu_item_element_id(MenuItem::Note(FileOpKind::Delete)))
+                .visible()
+        );
     })
     .unwrap();
-    // Neither the palette nor another dialog opens over it.
-    started.hit("ctrl-shift-p", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
-    started.open_op_dialog(FileOpKind::Rename, "a.md", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
     started.hit("escape", cx);
-    settle(&started, cx);
-    assert!(!started.dialog_open(cx));
+    assert!(!started.note_menu_open(cx));
     assert!(started.editor_focused(cx));
 
-    // The rename dialog: Escape closes it too, and nothing changed.
+    // A dialog opening closes the menu; the dialog's close gives the
+    // keyboard back to the note.
+    started.hit("f2", cx);
     started.open_op_dialog(FileOpKind::Rename, "a.md", cx);
+    assert!(!started.note_menu_open(cx));
+    assert_eq!(started.modal(cx), Some(ModalKind::Rename));
+    // Under the dialog the chord opens no menu.
+    started.hit("f2", cx);
+    assert!(!started.note_menu_open(cx));
     started.hit("escape", cx);
     settle(&started, cx);
     assert!(!started.dialog_open(cx));
@@ -681,15 +690,15 @@ fn editor_right_click_opens_the_menu_without_a_selection(cx: &mut TestAppContext
     })
     .unwrap();
     cx.run_until_parked();
-    assert!(!started.dialog_open(cx), "a selection: no menu");
+    assert!(!started.note_menu_open(cx), "a selection: no menu");
     started.hit("right", cx);
     cx.update_window(started.handle, |_, window, cx| {
         window.right_click("editor", cx)
     })
     .unwrap();
     cx.run_until_parked();
-    assert!(started.dialog_open(cx));
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
+    assert!(!started.dialog_open(cx), "the menu is no modal");
 }
 
 /// A FILES row's context menu offers rename, move and delete for its

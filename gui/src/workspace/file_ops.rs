@@ -1,6 +1,6 @@
 //! **File operations** in the window (M6 G3): rename, move and delete a
-//! note, folder or attachment, from the note menu (the `FileOperations`
-//! chord, the editor's right-click without a selection), a FILES row's
+//! note, folder or attachment, from the note menu ([`super::note_menu`]:
+//! the `FileOperations` chord, the editor's right-click), a FILES row's
 //! context menu, or the leader and the palette. The dialogs are
 //! [`super::file_dialogs`]; every change on disk is core's, through
 //! `logic::file_ops`. This file owns what happens around the open note.
@@ -48,16 +48,13 @@ use tokio::task::JoinError;
 
 use super::Workspace;
 use super::file_dialogs::{
-    DeleteBody, FileOpKind, FileOpsMenu, MoveDialog, OpStatus, RenameDialog, confirm_delete,
+    DeleteBody, FileOpKind, MoveDialog, OpStatus, RenameDialog, confirm_delete,
 };
 use super::modal::{self, ModalKind, Slot};
 use super::note_flush::FlushBlock;
-use super::route::NO_NOTE;
 use crate::startup::EmptyState;
 use crate::tasks;
 
-/// The note menu's width, in rems.
-const MENU_REMS: f32 = 18.;
 /// The rename and move dialogs' width, in rems.
 const DIALOG_REMS: f32 = 30.;
 
@@ -101,7 +98,6 @@ impl FileOpRequest {
 #[derive(Clone)]
 #[cfg(test)]
 pub(crate) enum FileDialogView {
-    Menu,
     Rename(gpui_kit::WeakEntity<RenameDialog>),
     Move(gpui_kit::WeakEntity<MoveDialog>),
     Delete,
@@ -143,75 +139,6 @@ fn name_of(path: &VaultPath) -> String {
 }
 
 impl Workspace {
-    /// The `FileOperations` chord: the note menu for the open note, or say
-    /// there is none.
-    pub(crate) fn file_ops_chord(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self
-            .active_state()
-            .notes
-            .as_ref()
-            .and_then(|h| h.note.clone())
-        {
-            Some(note) => self.open_file_ops_menu(note, false, window, cx),
-            None => self.flash(NO_NOTE, cx),
-        }
-    }
-
-    /// Open the note menu for `target` in the modal slot, with
-    /// `Properties…` first when `with_properties` (the editor's right-click).
-    /// Refused while a modal is open, and without a vault.
-    pub(crate) fn open_file_ops_menu(
-        &mut self,
-        target: VaultPath,
-        with_properties: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if modal::dialog_open(window, cx) || self.active_state().notes.is_none() {
-            return;
-        }
-        let workspace = cx.entity().downgrade();
-        let title = name_of(&target);
-        let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, cx));
-        #[cfg(test)]
-        {
-            self.file_dialog = Some(FileDialogView::Menu);
-        }
-        self.show_modal(
-            Slot::Own(ModalKind::FileOps),
-            MENU_REMS,
-            modal::focus_view(menu.clone()),
-            move |dialog, _, _| {
-                let chooser = menu.clone();
-                dialog
-                    .title(title.clone())
-                    // Enter picks the selected item; the item's dialog
-                    // replaces this one, so the kit must not close anything
-                    // itself.
-                    .on_ok(move |_, window, cx| {
-                        chooser.update(cx, |menu, cx| menu.choose_selected(window, cx));
-                        false
-                    })
-                    .child(menu.clone())
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// An item of the note menu was picked: the menu gives way to its
-    /// dialog.
-    pub(crate) fn choose_file_op(
-        &mut self,
-        kind: FileOpKind,
-        target: VaultPath,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_modal(window, cx);
-        self.open_file_dialog(kind, target, window, cx);
-    }
-
     /// Open the rename, move or delete dialog for `target`. Refused while a
     /// modal is open, and without a vault.
     pub(crate) fn open_file_dialog(
@@ -569,7 +496,7 @@ impl Workspace {
             // The note renamed or moved, or a folder holding it: it follows,
             // in every group holding it.
             FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
-                (self.note_moved(from, to), false)
+                (self.note_moved(from, to, cx), false)
             }
             FileOp::Deleted(path) => (Vec::new(), self.note_deleted(path, cx)),
             _ => (Vec::new(), false),
@@ -619,7 +546,10 @@ impl Workspace {
         &mut self,
         from: &VaultPath,
         to: &VaultPath,
+        cx: &mut Context<Self>,
     ) -> Vec<(GroupId, ReadRequest)> {
+        // A note menu on the old path would act on a stale one.
+        self.forget_note_menu_under(from, cx);
         let mut reads = Vec::new();
         for group in self.group_ids() {
             let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
@@ -645,6 +575,7 @@ impl Workspace {
     /// is gone). Whether the active group was one of them; the caller
     /// says so in the editor Panel.
     pub(crate) fn note_deleted(&mut self, path: &VaultPath, cx: &mut Context<Self>) -> bool {
+        self.forget_note_menu_under(path, cx);
         self.empty_groups_where(|note| relocated(note, path, path).is_some(), cx)
     }
 

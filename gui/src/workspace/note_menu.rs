@@ -6,28 +6,56 @@
 //! an item that cannot act is hidden, never grayed out. The view only emits
 //! [`NoteMenuEvent`]s; the workspace that draws it runs the pick. The menu
 //! is not modal: a key it does not use goes on to its parent.
+//!
+//! **In the window.** The workspace holds at most one open menu
+//! ([`OpenNoteMenu`]) and draws it as a deferred, anchored overlay over a
+//! window-wide layer that dismisses it on a press. It opens from the
+//! editor's right-click (at the pointer, for the clicked group, which the
+//! press already made active) and from the `FileOperations` chord (under
+//! the active group's top-right corner). It is refused while a modal is
+//! open, and gives way to one that opens. A pick closes the menu, makes the
+//! menu's group active and runs what the matching chord runs, once the
+//! keyboard is back where it was. Escape, a press outside, and the menu's
+//! note renamed, moved or deleted, its group closed, or a drag starting
+//! close it.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, Role, StatefulInteractiveElement, Styled,
-    WeakEntity, Window, div,
+    Anchor, AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, Pixels, Point, Render, Role, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, anchored, canvas, deferred, div, point, px, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::file_ops::relocated;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::layout_tree::GroupId;
+use kimun_notes::logic::layout_tree::{Axis as TreeAxis, GroupId};
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
+use super::modal;
 use crate::input;
 use crate::keymap;
 use crate::theme;
 
 /// The menu's element id, for tests.
 pub(crate) const NOTE_MENU_ID: &str = "note-menu";
+
+/// The window-wide layer under the open menu: a press on it dismisses.
+pub(crate) const NOTE_MENU_LAYER_ID: &str = "note-menu-layer";
+
+/// The menu's width, in rems.
+const MENU_REMS: f32 = 18.;
+
+/// How far the menu keeps from the window's edges, in px.
+const EDGE_MARGIN: f32 = 8.;
 
 /// One row of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +145,17 @@ pub(crate) fn menu_items(ctx: &MenuContext) -> Vec<MenuItem> {
     items
 }
 
+/// Where the divider goes: before the first layout item, when note items
+/// come before it.
+pub(crate) fn divider_at(items: &[MenuItem]) -> Option<usize> {
+    items.iter().position(|i| !i.is_note()).filter(|&ix| ix > 0)
+}
+
+/// The element id of a layout item's chord hint (`note-menu-new-tab-hint`).
+pub(crate) fn menu_item_hint_id(item: MenuItem) -> SharedString {
+    format!("{}-hint", menu_item_element_id(item)).into()
+}
+
 /// A menu item's element id (`note-menu-rename`).
 pub(crate) fn menu_item_element_id(item: MenuItem) -> &'static str {
     match item {
@@ -140,34 +179,27 @@ pub(crate) enum NoteMenuEvent {
 }
 
 /// The note menu view.
-// The group, the target and the workspace are read by the host that draws
-// the menu (the workspace wiring).
-#[allow(dead_code)]
 pub(crate) struct NoteMenu {
     group: GroupId,
     target: Option<VaultPath>,
     items: Vec<MenuItem>,
-    workspace: WeakEntity<Workspace>,
     focus: FocusHandle,
     selected: usize,
 }
 
 impl EventEmitter<NoteMenuEvent> for NoteMenu {}
 
-#[allow(dead_code)]
 impl NoteMenu {
     pub(crate) fn new(
         group: GroupId,
         target: Option<VaultPath>,
         ctx: MenuContext,
-        workspace: WeakEntity<Workspace>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             group,
             target,
             items: menu_items(&ctx),
-            workspace,
             focus: cx.focus_handle(),
             selected: 0,
         }
@@ -236,11 +268,7 @@ impl Render for NoteMenu {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let first_layout = self
-            .items
-            .iter()
-            .position(|i| !i.is_note())
-            .filter(|&ix| ix > 0);
+        let first_layout = divider_at(&self.items);
         let rows = self
             .items
             .iter()
@@ -262,6 +290,10 @@ impl Render for NoteMenu {
                     ),
                     (None, Some(action)) => keymap::chord_label(cx, &action).map(|chord| {
                         div()
+                            .id(menu_item_hint_id(item))
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(chord.clone())
                             .text_xs()
                             .text_color(theme::muted(t))
                             .child(chord)
@@ -309,5 +341,319 @@ impl Render for NoteMenu {
             .flex_col()
             .gap_0p5()
             .children(rows)
+    }
+}
+
+/// The open note menu: its view, where it is anchored and by which corner,
+/// and what had the keyboard before it.
+pub(crate) struct OpenNoteMenu {
+    pub(crate) view: Entity<NoteMenu>,
+    pub(crate) at: Point<Pixels>,
+    anchor: Anchor,
+    /// Where the keyboard goes back when the menu is dismissed.
+    pub(crate) restore: Option<FocusHandle>,
+    _events: Subscription,
+}
+
+/// Where each drawn group was last laid out, in window coordinates: the
+/// `FileOperations` chord anchors the menu at the active group's top-right
+/// corner. Written while the groups are painted.
+pub(crate) type GroupBounds = Rc<RefCell<HashMap<GroupId, Bounds<Pixels>>>>;
+
+/// An invisible element over its parent that records the parent's bounds
+/// as `group`'s in `bounds`.
+pub(super) fn group_bounds_probe(bounds: &GroupBounds, group: GroupId) -> impl IntoElement {
+    let bounds = bounds.clone();
+    canvas(
+        move |rect, _, _| {
+            bounds.borrow_mut().insert(group, rect);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+impl Workspace {
+    /// Open the note menu for `group` with its top-left corner at `at`
+    /// (window coordinates; the editor's right-click). See
+    /// [`Self::open_note_menu_anchored`].
+    pub(crate) fn open_note_menu(
+        &mut self,
+        group: GroupId,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_note_menu_anchored(group, at, Anchor::TopLeft, window, cx);
+    }
+
+    /// Open the note menu for `group`, its `anchor` corner at `at`, with
+    /// the keyboard. Refused while a modal is open, and for a group with no
+    /// note session (no vault). A menu already open gives way to it.
+    fn open_note_menu_anchored(
+        &mut self,
+        group: GroupId,
+        at: Point<Pixels>,
+        anchor: Anchor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if modal::dialog_open(window, cx) {
+            return;
+        }
+        let Some(host) = self.state(group).and_then(|s| s.notes.as_ref()) else {
+            return;
+        };
+        let target = host.note.clone();
+        let region = self.layout.region();
+        let Some(tab) = region.group_tab(group) else {
+            return;
+        };
+        let ctx = MenuContext {
+            has_note: target.is_some(),
+            groups_in_tab: region.groups(tab).len(),
+            tabs: region.tabs().len(),
+        };
+        self.cancel_leader(cx);
+        self.end_drag(window, cx);
+        let restore = match self.note_menu.take() {
+            Some(open) => open.restore,
+            None => window.focused(cx),
+        };
+        let view = cx.new(|cx| NoteMenu::new(group, target, ctx, cx));
+        let events = cx.subscribe_in(&view, window, Self::on_note_menu_event);
+        let focus = view.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        self.note_menu = Some(OpenNoteMenu {
+            view,
+            at,
+            anchor,
+            restore,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// The `FileOperations` chord: the note menu for the active group,
+    /// under its top-right corner (an empty group gets the layout actions).
+    /// Again while the menu is open, it closes it.
+    pub(crate) fn file_ops_chord(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.note_menu.is_some() {
+            self.close_note_menu(window, cx);
+            return;
+        }
+        let group = self.layout.active_group();
+        let corner = self
+            .group_bounds
+            .borrow()
+            .get(&group)
+            .map(|b| b.top_right());
+        // Before the group's first paint: the window's top-right corner.
+        let at = corner.unwrap_or_else(|| point(window.viewport_size().width, px(0.)));
+        self.open_note_menu_anchored(group, at, Anchor::TopRight, window, cx);
+    }
+
+    /// Dismiss the open menu: the keyboard goes back where it was.
+    pub(crate) fn close_note_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = self.note_menu.take() else {
+            return;
+        };
+        match open.restore {
+            Some(handle) => window.focus(&handle, cx),
+            None => self.apply_focus(window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Close the open menu where there is no window at hand (its note or
+    /// its group went, a drag started): the keyboard goes to the focused
+    /// leaf once the update is done.
+    pub(super) fn forget_note_menu(&mut self, cx: &mut Context<Self>) {
+        if self.note_menu.take().is_none() {
+            return;
+        }
+        self.with_window(cx, |workspace, window, cx| {
+            if workspace.note_menu.is_none() {
+                workspace.apply_focus(window, cx);
+            }
+        });
+        cx.notify();
+    }
+
+    /// Close the menu when its group is `group` (the group is going).
+    pub(super) fn forget_note_menu_of(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        if self.note_menu_group(cx) == Some(group) {
+            self.forget_note_menu(cx);
+        }
+    }
+
+    /// Close the menu when its note is at or below `path` (renamed, moved
+    /// or deleted): it would act on a stale path.
+    pub(super) fn forget_note_menu_under(&mut self, path: &VaultPath, cx: &mut Context<Self>) {
+        let stale = self.note_menu.as_ref().is_some_and(|open| {
+            open.view
+                .read(cx)
+                .target()
+                .is_some_and(|note| relocated(note, path, path).is_some())
+        });
+        if stale {
+            self.forget_note_menu(cx);
+        }
+    }
+
+    /// The group the open menu acts on.
+    fn note_menu_group(&self, cx: &App) -> Option<GroupId> {
+        self.note_menu
+            .as_ref()
+            .map(|open| open.view.read(cx).group())
+    }
+
+    /// While the menu is open it keeps the keyboard: what the layout would
+    /// focus becomes where a dismiss returns it ([`Self::apply_focus`]).
+    /// False when no menu is open.
+    pub(super) fn keep_focus_on_note_menu(
+        &mut self,
+        handle: FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(open) = self.note_menu.as_mut() else {
+            return false;
+        };
+        open.restore = Some(handle);
+        let menu = open.view.read(cx).focus_handle(cx);
+        window.focus(&menu, cx);
+        true
+    }
+
+    fn on_note_menu_event(
+        &mut self,
+        menu: &Entity<NoteMenu>,
+        event: &NoteMenuEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .note_menu
+            .as_ref()
+            .is_none_or(|open| &open.view != menu)
+        {
+            return;
+        }
+        match event {
+            NoteMenuEvent::Dismissed => self.close_note_menu(window, cx),
+            NoteMenuEvent::Picked(item) => {
+                let item = *item;
+                let (group, target) = {
+                    let menu = menu.read(cx);
+                    (menu.group(), menu.target().cloned())
+                };
+                self.close_note_menu(window, cx);
+                // Once the keyboard is back, so a dialog the pick opens
+                // returns it there when it closes.
+                let workspace = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace.run_note_menu_pick(group, target, item, window, cx)
+                        })
+                        .ok();
+                });
+            }
+        }
+    }
+
+    /// Run `item`, picked in `group`'s menu: the group becomes active with
+    /// the keyboard, then the item does what its chord does.
+    fn run_note_menu_pick(
+        &mut self,
+        group: GroupId,
+        target: Option<VaultPath>,
+        item: MenuItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state(group).is_none() {
+            return;
+        }
+        self.focus_group(group, cx);
+        self.apply_focus(window, cx);
+        match item {
+            MenuItem::Note(kind) => {
+                if let Some(target) = target {
+                    self.open_file_dialog(kind, target, window, cx);
+                }
+            }
+            MenuItem::SplitRight => {
+                self.split_focused(TreeAxis::Horizontal, window, cx);
+            }
+            MenuItem::SplitDown => {
+                self.split_focused(TreeAxis::Vertical, window, cx);
+            }
+            MenuItem::NewTab => self.new_tab(cx),
+            MenuItem::CloseGroup => self.close_editor_group(group, cx),
+            MenuItem::CloseTab => self.close_shown_tab(cx),
+        }
+        cx.notify();
+    }
+
+    /// The open menu over a window-wide layer that dismisses it on a
+    /// press, kept inside the window.
+    pub(super) fn render_note_menu(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let open = self.note_menu.as_ref()?;
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let size = window.viewport_size();
+        let workspace = cx.entity().downgrade();
+        let dismiss = move || {
+            let workspace = workspace.clone();
+            move |_: &gpui_kit::MouseDownEvent, window: &mut Window, cx: &mut App| {
+                workspace
+                    .update(cx, |this, cx| this.close_note_menu(window, cx))
+                    .ok();
+            }
+        };
+        let menu = div()
+            .occlude()
+            .w(rems(MENU_REMS))
+            .p_1()
+            .bg(theme::panel_background(t))
+            .border_1()
+            .border_color(theme::divider(t))
+            .rounded_md()
+            .shadow_md()
+            .child(open.view.clone());
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .id(NOTE_MENU_LAYER_ID)
+                        .test_support()
+                        .occlude()
+                        .w(size.width)
+                        .h(size.height)
+                        .on_mouse_down(MouseButton::Left, dismiss())
+                        .on_mouse_down(MouseButton::Right, dismiss())
+                        .on_mouse_down(MouseButton::Middle, dismiss())
+                        .on_scroll(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            anchored()
+                                .position(open.at)
+                                .anchor(open.anchor)
+                                .snap_to_window_with_margin(px(EDGE_MARGIN))
+                                .child(menu),
+                        ),
+                ),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
+            .into_any_element(),
+        )
     }
 }

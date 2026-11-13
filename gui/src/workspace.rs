@@ -552,6 +552,10 @@ pub(crate) struct Workspace {
     /// What the window's one modal slot holds, while the kit says a dialog
     /// is open ([`modal`]).
     pub(crate) modal: Option<ModalKind>,
+    /// The note menu, while it is open ([`note_menu`]).
+    pub(crate) note_menu: Option<note_menu::OpenNoteMenu>,
+    /// Where each drawn group was last laid out ([`note_menu::GroupBounds`]).
+    group_bounds: note_menu::GroupBounds,
     /// The command palette's view while it is open (tests read its rows).
     pub(crate) palette: Option<WeakEntity<Palette>>,
     /// The view chooser while it is open: split, side or move
@@ -819,6 +823,8 @@ impl Workspace {
             drop_outcomes_for: None,
             hovered_zone: None,
             modal: None,
+            note_menu: None,
+            group_bounds: Default::default(),
             palette: None,
             view_chooser: None,
             settings: None,
@@ -895,23 +901,24 @@ impl Workspace {
     /// The editor asked for something only the window has.
     fn on_editor_event(
         &mut self,
-        _: &Entity<EditorView>,
+        editor: &Entity<EditorView>,
         event: &EditorEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             EditorEvent::OpenPalette => self.open_palette(window, cx),
-            // Right-click without a selection: the note menu, for the note
-            // the editor shows, with its properties first.
-            EditorEvent::ContextMenu => {
-                if let Some(note) = self
-                    .active_state()
-                    .notes
-                    .as_ref()
-                    .and_then(|h| h.note.clone())
-                {
-                    self.open_file_ops_menu(note, true, window, cx);
+            // Right-click without a selection: the note menu at the
+            // pointer, for the group whose editor it is (the press already
+            // made it the active group).
+            EditorEvent::ContextMenu { at } => {
+                let group = self
+                    .groups
+                    .iter()
+                    .find(|(_, state)| &state.editor == editor)
+                    .map(|(group, _)| *group);
+                if let Some(group) = group {
+                    self.open_note_menu(group, *at, window, cx);
                 }
             }
         }
@@ -1810,6 +1817,11 @@ impl Workspace {
             return;
         }
         let handle = self.handle_for(self.layout.focused(), cx);
+        // The open note menu keeps the keyboard; the handle is where it
+        // goes back.
+        if self.keep_focus_on_note_menu(handle.clone(), window, cx) {
+            return;
+        }
         window.focus(&handle, cx);
     }
 
@@ -3243,6 +3255,9 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .child(document)
+            // A lone group's bounds are the document's; several groups
+            // record their own.
+            .children((!several).then(|| note_menu::group_bounds_probe(&self.group_bounds, active)))
             // A lone group (a tab just opened mid-drag) takes a group's
             // drop too; several groups carry their own layers.
             .children(
@@ -3500,6 +3515,9 @@ impl Workspace {
             .when(!self.rail_hidden && !self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
+            // Inside the workspace's key context: a key the menu does not
+            // use reaches the workspace's chords.
+            .children(self.render_note_menu(window, cx))
             .into_any_element()
     }
 }
