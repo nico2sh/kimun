@@ -406,9 +406,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let from = self.layout.view_slot(&view).filter(|from| *from != slot);
-        let swap_with = from
-            .filter(|from| self.layout.shown(*from) == Some(view))
-            .and_then(|_| self.layout.shown(slot));
+        let swap_with = self.swap_partner(view, slot);
         if !self.layout.move_view(view, slot) {
             return false;
         }
@@ -433,6 +431,17 @@ impl Workspace {
         self.save_layout(cx);
         cx.notify();
         true
+    }
+
+    /// The view `view` would trade places with if moved into `slot`: the
+    /// one `slot` shows, when `view` is shown in another slot
+    /// ([`Self::move_into`]).
+    pub(super) fn swap_partner(&self, view: DrawerView, slot: SlotId) -> Option<DrawerView> {
+        self.layout
+            .view_slot(&view)
+            .filter(|from| *from != slot)
+            .filter(|from| self.layout.shown(*from) == Some(view))?;
+        self.layout.shown(slot)
     }
 
     /// A rail drag onto a slot's centre: like [`Self::move_into`], but the

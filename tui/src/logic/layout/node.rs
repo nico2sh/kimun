@@ -220,23 +220,33 @@ impl<L: Clone + PartialEq> Node<L> {
     /// that split as a sibling; otherwise `target` becomes a two-way split.
     /// `target` gives up half its weight. False when `target` is absent.
     pub(crate) fn split_leaf(&mut self, target: &L, axis: Axis, new: L) -> bool {
-        self.split_leaf_at(target, axis, new, false)
+        self.split_leaf_at(target, axis, new, false, None)
     }
 
     /// [`Self::split_leaf`] with the new leaf before (above, left of)
-    /// `target` when `before`, after it otherwise.
-    pub(crate) fn split_leaf_at(&mut self, target: &L, axis: Axis, new: L, before: bool) -> bool {
+    /// `target` when `before`, after it otherwise. With a `share` (a
+    /// fraction of the split's total weight) the new leaf takes that much
+    /// from `target`, at most the half it would take by default.
+    pub(crate) fn split_leaf_at(
+        &mut self,
+        target: &L,
+        axis: Axis,
+        new: L,
+        before: bool,
+        share: Option<f64>,
+    ) -> bool {
         match &mut self.kind {
             Kind::Leaf(id) => {
                 if id != target {
                     return false;
                 }
+                let taken = share.map_or(0.5, |share| share.min(0.5));
                 let old = Child {
-                    weight: 1.0,
+                    weight: 1.0 - taken,
                     node: Node::leaf(id.clone()),
                 };
                 let new = Child {
-                    weight: 1.0,
+                    weight: taken,
                     node: Node::leaf(new),
                 };
                 self.kind = Kind::Split {
@@ -254,22 +264,26 @@ impl<L: Clone + PartialEq> Node<L> {
                 children,
             } => {
                 let own = *own;
+                let total: f64 = children.iter().map(|c| c.weight).sum();
                 for i in 0..children.len() {
                     let is_target = children[i].node.as_leaf() == Some(target);
                     if is_target && own == axis {
                         let half = children[i].weight / 2.0;
-                        children[i].weight = half;
+                        let taken = share.map_or(half, |share| (share * total).min(half));
+                        children[i].weight -= taken;
                         children.insert(
                             if before { i } else { i + 1 },
                             Child {
-                                weight: half,
+                                weight: taken,
                                 node: Node::leaf(new),
                             },
                         );
                         return true;
                     }
                     if children[i].node.contains(target) {
-                        return children[i].node.split_leaf_at(target, axis, new, before);
+                        return children[i]
+                            .node
+                            .split_leaf_at(target, axis, new, before, share);
                     }
                 }
                 false
