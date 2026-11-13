@@ -10,10 +10,10 @@
 //!    written?
 
 use gpui_kit::{App, Context};
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::session::{FlushRequest, SaveOutcome};
 
 use super::Workspace;
-use super::group::active_mut;
 use super::note::{Closing, flush_problem};
 
 /// Why the open note cannot be let go now.
@@ -45,14 +45,20 @@ impl FlushBlock {
 impl Workspace {
     /// The first reason the open note cannot be flushed and let go, if any.
     pub(super) fn flush_block(&self, cx: &App) -> Option<FlushBlock> {
-        let host = self.active_state().notes.as_ref()?;
+        self.flush_block_in(self.layout.active_group(), cx)
+    }
+
+    /// [`Self::flush_block`] for the note `group` holds.
+    pub(super) fn flush_block_in(&self, group: GroupId, cx: &App) -> Option<FlushBlock> {
+        let host = self.state(group)?.notes.as_ref()?;
         if self.closing != Closing::Open {
             Some(FlushBlock::Closing)
         } else if self.note_held() {
             Some(FlushBlock::Held)
         } else if host.is_switching() || host.is_open_wanted() {
             Some(FlushBlock::Opening)
-        } else if host.note.is_some() && self.editor_dirty(cx) && !self.can_save() {
+        } else if host.note.is_some() && self.editor_dirty_in(group, cx) && !self.can_save_in(group)
+        {
             Some(FlushBlock::Unsaveable)
         } else {
             None
@@ -66,7 +72,16 @@ impl Workspace {
     /// caller runs the request, applies it ([`Self::apply_flush`]) and
     /// unblocks typing.
     pub(super) fn begin_note_flush(&mut self, cx: &mut Context<Self>) -> Option<FlushRequest> {
-        let state = active_mut!(self);
+        self.begin_note_flush_in(self.layout.active_group(), cx)
+    }
+
+    /// [`Self::begin_note_flush`] for the note `group` holds.
+    pub(super) fn begin_note_flush_in(
+        &mut self,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> Option<FlushRequest> {
+        let state = self.groups.get_mut(&group)?;
         let host = state.notes.as_mut()?;
         host.session.stop_autosave();
         match host
@@ -74,12 +89,12 @@ impl Workspace {
             .prepare_flush(Some(&state.editor.read(cx).editor))
         {
             Ok(flush) => {
-                self.block_input(true, cx);
+                self.block_input_in(group, true, cx);
                 Some(flush)
             }
             Err(_) => {
                 // Never in a read-only vault, where the tick does not run.
-                self.restart_tick_unless_read_only();
+                self.restart_tick_unless_read_only_in(group);
                 None
             }
         }
@@ -89,8 +104,18 @@ impl Workspace {
     /// problem, else text typed since (nothing types while it runs, but a
     /// buffer still dirty must not be run over).
     pub(super) fn flush_failure(&self, outcome: &SaveOutcome, cx: &App) -> Option<String> {
+        self.flush_failure_in(self.layout.active_group(), outcome, cx)
+    }
+
+    /// [`Self::flush_failure`] for the editor of `group`.
+    pub(super) fn flush_failure_in(
+        &self,
+        group: GroupId,
+        outcome: &SaveOutcome,
+        cx: &App,
+    ) -> Option<String> {
         flush_problem(outcome).or_else(|| {
-            self.editor_dirty(cx)
+            self.editor_dirty_in(group, cx)
                 .then(|| "the editor still has unsaved edits".to_string())
         })
     }

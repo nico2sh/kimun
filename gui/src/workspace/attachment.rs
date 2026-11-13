@@ -506,14 +506,22 @@ impl Workspace {
     /// newer request replaces a read still under way; one made while the
     /// open note is being flushed for an attachment waits for that.
     pub(crate) fn open_attachment(&mut self, path: &VaultPath, cx: &mut Context<Self>) {
+        self.open_attachment_in(self.layout.active_group(), path, cx);
+    }
+
+    /// [`Self::open_attachment`] in `group`, active or not.
+    fn open_attachment_in(&mut self, group: GroupId, path: &VaultPath, cx: &mut Context<Self>) {
         if self.closing != Closing::Open {
             return;
         }
         let Some(vault) = self.vault() else {
             return;
         };
-        if self.active_state().attachment_flushing.is_some() {
-            self.active_state_mut().attachment_wanted = Some(path.clone());
+        let Some(state) = self.state_mut(group) else {
+            return;
+        };
+        if state.attachment_flushing.is_some() {
+            state.attachment_wanted = Some(path.clone());
             return;
         }
         let read = {
@@ -521,10 +529,9 @@ impl Workspace {
             tokio::spawn(async move { load(&vault, &path).await })
         };
         let path = path.clone();
-        // The read lands in the group that asked for it.
-        let group = self.layout.active_group();
         // Leaving the note for it needs the window (a flush runs in it).
         let window = self.window;
+        // The read lands in the group that asked for it.
         let task = cx.spawn(async move |this, cx| {
             let loaded = tasks::joined(read).await;
             let Some(window) = window else {
@@ -551,9 +558,10 @@ impl Workspace {
         }
     }
 
-    /// The attachment was read: show it, leaving the open note for it
-    /// first ([`Workspace::leave_note`]: flushed, or refused and the note
-    /// stays); or say why not.
+    /// The attachment was read: show it in the group that asked for it,
+    /// leaving that group's note for it first ([`Workspace::leave_note`]:
+    /// flushed, or refused and the note stays); or say why not. Dropped
+    /// when the group is gone.
     fn attachment_loaded(
         &mut self,
         group: GroupId,
@@ -562,9 +570,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(state) = self.state_mut(group) {
-            state.attachment_loading = None;
-        }
+        let Some(state) = self.state_mut(group) else {
+            return;
+        };
+        state.attachment_loading = None;
         let loaded = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -574,38 +583,55 @@ impl Workspace {
         };
         let name = loaded.name().clone();
         self.leave_note(
+            group,
             LeavingFor::Attachment,
             name,
             move |workspace, left, _, cx| match left {
-                NoteLeft::Now => workspace.show_attachment(loaded, cx),
+                NoteLeft::Now => workspace.show_attachment(group, loaded, cx),
                 NoteLeft::Flushed => {
-                    workspace.show_attachment(loaded, cx);
+                    workspace.show_attachment(group, loaded, cx);
                     // One asked for while the flush ran goes now.
-                    if let Some(next) = workspace.active_state_mut().attachment_wanted.take() {
-                        workspace.open_attachment(&next, cx);
+                    if let Some(next) = workspace
+                        .state_mut(group)
+                        .and_then(|s| s.attachment_wanted.take())
+                    {
+                        workspace.open_attachment_in(group, &next, cx);
                     }
                 }
-                NoteLeft::Stays => workspace.active_state_mut().attachment_wanted = None,
+                NoteLeft::Stays => {
+                    if let Some(state) = workspace.state_mut(group) {
+                        state.attachment_wanted = None;
+                    }
+                }
             },
             window,
             cx,
         );
     }
 
-    /// Put `loaded` in the editor Panel, the note (already flushed) let go
-    /// ([`Workspace::release_note`]), so nothing can save while the
-    /// attachment shows.
-    fn show_attachment(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        self.release_note(cx);
+    /// Put `loaded` in `group`'s editor Panel, its note (already flushed)
+    /// let go ([`Workspace::release_note_in`]), so nothing can save while
+    /// the attachment shows. The Footer, FILES and the keyboard follow when
+    /// `group` is the active one.
+    fn show_attachment(&mut self, group: GroupId, loaded: Loaded, cx: &mut Context<Self>) {
+        if self.state(group).is_none() {
+            return;
+        }
+        self.release_note_in(group, cx);
         let path = loaded.path.clone();
-        self.status.attachment = Some(path.clone());
         let chord = self.chord_labels.follow_link;
         let view = cx.new(|cx| AttachmentView::new(loaded, chord, cx));
-        self.active_state_mut()._attachment_events =
-            Some(cx.subscribe(&view, |this, _, event, cx| match event {
-                AttachmentEvent::OpenExternally => this.open_attachment_externally(cx),
-            }));
-        self.active_state_mut().attachment = Some(view);
+        let events = cx.subscribe(&view, |this, _, event, cx| match event {
+            AttachmentEvent::OpenExternally => this.open_attachment_externally(cx),
+        });
+        if let Some(state) = self.state_mut(group) {
+            state._attachment_events = Some(events);
+            state.attachment = Some(view);
+        }
+        if group != self.layout.active_group() {
+            return;
+        }
+        self.status.attachment = Some(path.clone());
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, cx| pane.set_open_note(Some(path), cx));
         }

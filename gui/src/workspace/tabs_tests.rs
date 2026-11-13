@@ -12,9 +12,11 @@ use gpui_kit::{AppContext as _, Focusable as _, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor_region::TabId;
 use kimun_notes::logic::layout_tree::{Axis, Focus, GroupId, Leaf};
+use kimun_notes::logic::message::AppMessage;
 use tokio::runtime::Runtime;
 
-use super::start_tests::{Started, drive, open_started, runtime, vault_start};
+use super::file_ops::FileOpRequest;
+use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
@@ -424,4 +426,588 @@ impl Win {
     fn locate(&self, note: &VaultPath, cx: &TestAppContext) -> Option<GroupId> {
         cx.read(|cx| self.workspace.read(cx).locate_note(note))
     }
+}
+
+// ── every group shares the window's note lifecycle (Task 6b) ────────────
+
+/// The note's text on disk (`None`: not there).
+fn disk(rt: &Runtime, v: &TestVault, p: &str) -> Option<String> {
+    rt.block_on(v.vault.get_note_text(&path(p))).ok()
+}
+
+fn exists(rt: &Runtime, v: &TestVault, p: &str) -> bool {
+    rt.block_on(v.vault.exists(&path(p)))
+}
+
+/// Run tokio and GPUI in turn until `done`, or `limit` rounds: whether it
+/// got there (a wait that may fail an assertion after it, not a panic).
+fn settle(
+    rt: &Runtime,
+    cx: &mut TestAppContext,
+    limit: usize,
+    mut done: impl FnMut(&mut TestAppContext) -> bool,
+) -> bool {
+    for _ in 0..limit {
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(5)));
+        cx.run_until_parked();
+        if done(cx) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A vault holding `notes`, its autosave tick at one second, started on
+/// `first` and driven until it shows.
+fn started_with(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    notes: &[(&str, &str)],
+    first: &str,
+) -> (TestVault, Win) {
+    let v = rt.block_on(test_vault(notes, &[]));
+    v.settings.write().unwrap().autosave_interval_secs = 1;
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path(first))),
+        v.settings.clone(),
+    );
+    let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
+    drive(rt, cx, |cx| started.text(cx) == want);
+    (v, Win(started))
+}
+
+impl Win {
+    /// Replace `group`'s text with `text`, as typing would: the buffer is
+    /// dirty after it.
+    fn set_text_in(&self, group: GroupId, text: &str, cx: &mut TestAppContext) {
+        let editor = cx.read(|cx| self.workspace.read(cx).state(group).unwrap().editor.clone());
+        cx.update(|cx| {
+            editor.update(cx, |view, cx| {
+                // Emptied (a load, clean), then typed into: dirty.
+                view.editor.set_text(String::new());
+                view.editor.insert_at_cursor(text);
+                cx.notify();
+            })
+        });
+        assert!(self.dirty_in(group, cx), "the text is unsaved");
+    }
+
+    fn dirty_in(&self, group: GroupId, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            let editor = self.workspace.read(cx).state(group).unwrap().editor.clone();
+            editor.read(cx).editor.is_dirty()
+        })
+    }
+
+    /// The path `group`'s note session names.
+    fn session_in(&self, group: GroupId, cx: &TestAppContext) -> VaultPath {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .unwrap()
+                .session
+                .path()
+                .clone()
+        })
+    }
+
+    fn running(&self, cx: &TestAppContext) -> bool {
+        cx.read(|cx| self.workspace.read(cx).file_task.is_some())
+    }
+
+    /// Ask for `request` as a dialog's confirm does.
+    fn file_op(&self, request: FileOpRequest, cx: &mut TestAppContext) {
+        let workspace = self.workspace.clone();
+        cx.update_window(self.handle, |_, window, cx| {
+            workspace.update(cx, |w, cx| w.request_file_op(request, window, cx))
+        })
+        .unwrap();
+    }
+
+    /// [`Self::file_op`], driven until it and every open after it ended.
+    fn run_file_op(&self, rt: &Runtime, request: FileOpRequest, cx: &mut TestAppContext) {
+        self.file_op(request, cx);
+        drive(rt, cx, |cx| !self.running(cx) && self.all_idle(cx));
+    }
+
+    fn close(&self, cx: &mut TestAppContext) -> bool {
+        gpui_kit::VisualTestContext::from_window(self.handle, cx).simulate_close()
+    }
+
+    fn is_closed(&self, cx: &mut TestAppContext) -> bool {
+        cx.update_window(self.handle, |_, _, _| ()).is_err()
+    }
+}
+
+/// Let more than one autosave tick (1 s) pass on the runtime's real clock.
+fn past_a_tick(rt: &Runtime, cx: &mut TestAppContext) {
+    for _ in 0..30 {
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(50)));
+        cx.run_until_parked();
+    }
+}
+
+/// The tick writes every group's unsaved text, not only the active one's.
+#[gpui_kit::test]
+fn autosave_tick_saves_every_dirty_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    started.split("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+    started.set_text_in(second, "beta edited", cx);
+
+    send(&started, AppMessage::Autosave, cx);
+    settle(&rt, cx, 400, |cx| {
+        !started.dirty_in(first, cx) && !started.dirty_in(second, cx)
+    });
+
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha edited"));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta edited"));
+    assert!(!started.dirty_in(first, cx));
+    assert!(!started.dirty_in(second, cx));
+    assert_eq!(started.active(cx), second);
+}
+
+/// A save's report marks the group that holds its note saved, whichever
+/// group is active; a failed one is flashed and leaves it dirty.
+#[gpui_kit::test]
+fn autosave_completed_clears_the_dirty_state_of_the_group_that_saved(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+    started.set_text_in(second, "beta edited", cx);
+    let revision = cx.read(|cx| {
+        let editor = started
+            .workspace
+            .read(cx)
+            .state(first)
+            .unwrap()
+            .editor
+            .clone();
+        editor.read(cx).editor.content_revision()
+    });
+
+    send(
+        &started,
+        AppMessage::AutosaveCompleted {
+            path: path("b.md"),
+            saved_revision: None,
+            title: None,
+            error: Some("disk full".into()),
+        },
+        cx,
+    );
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Couldn't save b.md: disk full")
+    );
+    send(
+        &started,
+        AppMessage::AutosaveCompleted {
+            path: path("a.md"),
+            saved_revision: Some(revision),
+            title: Some("alpha edited".into()),
+            error: None,
+        },
+        cx,
+    );
+
+    assert!(
+        !started.dirty_in(first, cx),
+        "the group that saved is clean"
+    );
+    assert!(
+        started.dirty_in(second, cx),
+        "the active group still is not"
+    );
+    cx.read(|cx| assert!(started.workspace.read(cx).status.dirty));
+    assert_eq!(started.active(cx), second);
+}
+
+/// Closing the window writes the unsaved text of every group first, the
+/// hidden one included, and only then closes.
+#[gpui_kit::test]
+fn close_flushes_every_group_before_the_window_closes(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    started.split("c.md", cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    // Only groups the user is not looking at hold unsaved text.
+    started.set_text_in(first, "alpha edited", cx);
+    started.set_text_in(second, "beta edited", cx);
+
+    assert!(!started.close(cx), "the close waits for the writes");
+    drive(&rt, cx, |cx| started.is_closed(cx));
+
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha edited"));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta edited"));
+    assert_eq!(disk(&rt, &v, "c.md").as_deref(), Some("gamma"));
+}
+
+/// A vault switch writes every group's text to the old vault, then every
+/// group is on the new one: an empty note session over it, the editor on
+/// the new channel, completing from it, of the engine the settings name.
+#[gpui_kit::test]
+fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
+    use super::reopen_tests::{BETA, open_on_a, pair, set_current};
+    use kimun_notes::settings::EditorBackendSetting;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let started = Win(open_on_a(cx, &rt, &p, super::LayoutStore::Off));
+    let first = started.active(cx);
+    started.new_tab("afriend.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+    let old_tx = cx.read(|cx| started.workspace.read(cx).tx.clone().unwrap());
+
+    set_current(&p.settings, "b");
+    p.settings.write().unwrap().editor_backend = EditorBackendSetting::Vim;
+    started.workspace.update(cx, |w, cx| w.reopen(cx));
+    drive(&rt, cx, |cx| {
+        !cx.read(|cx| started.workspace.read(cx).reopen_running())
+            && !started.indexing(cx)
+            && started.text(cx) == BETA
+    });
+
+    assert_eq!(
+        std::fs::read_to_string(p.a.join("alpha.md")).unwrap(),
+        "alpha edited",
+        "the hidden group's text went to the old vault first"
+    );
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.note_in(second, cx), Some(path("beta.md")));
+    assert_eq!(started.note_in(first, cx), None);
+    assert_eq!(started.text_in(first, cx), "");
+    assert!(!started.dirty_in(first, cx));
+    cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        let vault = w.vault().unwrap();
+        let tx = w.tx.clone().unwrap();
+        assert!(!tx.same_channel(&old_tx), "a fresh channel");
+        for group in [first, second] {
+            let state = w.state(group).unwrap();
+            let host = state.notes.as_ref().expect("a note session");
+            assert!(
+                std::sync::Arc::ptr_eq(host.session.vault(), &vault),
+                "{group:?} is on the new vault"
+            );
+            let editor = state.editor.read(cx);
+            assert!(
+                editor.reports_on(&tx),
+                "{group:?} reports on the new channel"
+            );
+            assert!(!editor.reports_on(&old_tx));
+            assert!(editor.completes(), "{group:?} completes from the vault");
+            assert!(editor.editor.is_vim(), "{group:?} runs the engine set");
+        }
+    });
+    started.assert_states_in_step(cx);
+}
+
+/// An open asked of a group while an operation held the notes waits; when
+/// the operation ends it goes in that group even though another group is
+/// active by then, so the group does not hold the note forever.
+#[gpui_kit::test]
+fn file_op_ended_resumes_a_parked_open_in_every_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let first = started.active(cx);
+
+    // An operation on another note holds every open until it ends.
+    started.file_op(
+        FileOpRequest::Rename {
+            from: path("e.md"),
+            to: path("f.md"),
+        },
+        cx,
+    );
+    assert!(started.running(cx));
+    started.new_tab("c.md", cx);
+    let second = started.active(cx);
+    assert_ne!(second, first);
+    assert!(
+        cx.read(|cx| started
+            .workspace
+            .read(cx)
+            .state(second)
+            .and_then(|s| s.notes.as_ref())
+            .is_some_and(|h| h.is_open_wanted())),
+        "the open waits for the operation"
+    );
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.focus_group(first, cx))
+    });
+    assert_eq!(started.active(cx), first);
+
+    settle(&rt, cx, 1000, |cx| {
+        !started.running(cx) && started.all_idle(cx)
+    });
+
+    assert!(exists(&rt, &v, "f.md"));
+    assert_eq!(started.note_in(second, cx), Some(path("c.md")));
+    assert_eq!(started.text_in(second, cx), "gamma");
+    assert_eq!(started.holders(&path("c.md"), cx), vec![second]);
+    assert!(started.idle(second, cx));
+    assert_eq!(started.active(cx), first);
+    assert_eq!(started.note_in(first, cx), Some(path("a.md")));
+}
+
+/// Renaming a note open in a tab that is not shown: that group follows it
+/// to its new name with its unsaved text written there, and the shown tab
+/// is left as it was.
+#[gpui_kit::test]
+fn rename_updates_a_group_in_a_hidden_tab(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    let first_tab = started.shown_tab(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    let second_tab = started.shown_tab(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+
+    started.run_file_op(
+        &rt,
+        FileOpRequest::Rename {
+            from: path("a.md"),
+            to: path("r.md"),
+        },
+        cx,
+    );
+
+    assert!(!exists(&rt, &v, "a.md"));
+    assert_eq!(disk(&rt, &v, "r.md").as_deref(), Some("alpha edited"));
+    assert_eq!(started.note_in(first, cx), Some(path("r.md")));
+    assert_eq!(started.session_in(first, cx), path("r.md"));
+    assert_eq!(started.text_in(first, cx), "alpha edited");
+    assert!(
+        !started.dirty_in(first, cx),
+        "reloaded clean at the new name"
+    );
+    assert_eq!(started.locate(&path("r.md"), cx), Some(first));
+    assert_eq!(started.locate(&path("a.md"), cx), None);
+    // The shown tab is untouched.
+    assert_eq!(started.tabs(cx), vec![first_tab, second_tab]);
+    assert_eq!(started.shown_tab(cx), second_tab);
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.note_in(second, cx), Some(path("b.md")));
+    cx.read(|cx| assert_eq!(started.workspace.read(cx).status.note, Some(path("b.md"))));
+
+    // Later saves of the followed group land on the new name.
+    started.set_text_in(first, "alpha again", cx);
+    send(&started, AppMessage::Autosave, cx);
+    drive(&rt, cx, |cx| !started.dirty_in(first, cx));
+    assert_eq!(disk(&rt, &v, "r.md").as_deref(), Some("alpha again"));
+    assert!(!exists(&rt, &v, "a.md"));
+}
+
+/// Moving a folder: every group holding a note below it follows, at any
+/// depth, in any tab; a group holding a note elsewhere is left alone.
+#[gpui_kit::test]
+fn move_of_a_folder_updates_every_group_below_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let notes = [
+        ("d/x.md", "ex"),
+        ("d/sub/y.md", "why"),
+        ("z/k.md", "kay"),
+        ("top.md", "top"),
+    ];
+    let (v, started) = started_with(cx, &rt, &notes, "d/x.md");
+    let first = started.active(cx);
+    started.split("d/sub/y.md", cx);
+    let second = started.active(cx);
+    started.new_tab("top.md", cx);
+    let third = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(second, "why edited", cx);
+
+    started.run_file_op(
+        &rt,
+        FileOpRequest::Move {
+            from: path("d"),
+            to: path("z/d"),
+        },
+        cx,
+    );
+
+    assert!(!exists(&rt, &v, "d"));
+    assert_eq!(disk(&rt, &v, "z/d/x.md").as_deref(), Some("ex"));
+    assert_eq!(disk(&rt, &v, "z/d/sub/y.md").as_deref(), Some("why edited"));
+    let is = |got: Option<VaultPath>, want: &str| got.is_some_and(|n| n.is_like(&path(want)));
+    assert!(is(started.note_in(first, cx), "z/d/x.md"));
+    assert!(is(started.note_in(second, cx), "z/d/sub/y.md"));
+    assert!(
+        started
+            .session_in(second, cx)
+            .is_like(&path("z/d/sub/y.md"))
+    );
+    assert_eq!(started.text_in(first, cx), "ex");
+    assert_eq!(started.text_in(second, cx), "why edited");
+    assert!(!started.dirty_in(second, cx));
+    assert_eq!(started.note_in(third, cx), Some(path("top.md")));
+    assert_eq!(started.active(cx), third);
+    started.assert_states_in_step(cx);
+}
+
+/// Deleting a note turns its group into an empty group in the same place:
+/// the split stays, nothing holds the note, no tick brings it back. The
+/// active group's delete says so in its Panel.
+#[gpui_kit::test]
+fn delete_empties_the_group_in_place_and_keeps_the_split(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_with(cx, &rt, NOTES, "a.md");
+    let first = started.active(cx);
+    let tab = started.shown_tab(cx);
+    started.split("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("a.md")), cx);
+
+    assert!(!exists(&rt, &v, "a.md"));
+    assert_eq!(started.groups_of(tab, cx), vec![first, second]);
+    assert_eq!(started.note_in(first, cx), None);
+    assert_eq!(started.session_in(first, cx), VaultPath::root());
+    assert_eq!(started.text_in(first, cx), "");
+    assert!(!started.dirty_in(first, cx));
+    assert_eq!(started.locate(&path("a.md"), cx), None);
+    // The active group keeps its note and the Panel says nothing.
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.note_in(second, cx), Some(path("b.md")));
+    assert_eq!(started.text(cx), "beta");
+    assert_eq!(started.placeholder(cx), None);
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("b.md")), cx);
+
+    assert!(!exists(&rt, &v, "b.md"));
+    assert_eq!(started.groups_of(tab, cx), vec![first, second]);
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.note_in(second, cx), None);
+    assert_eq!(started.text_in(second, cx), "");
+    assert_eq!(started.placeholder(cx).as_deref(), Some("b.md was deleted"));
+    past_a_tick(&rt, cx);
+    assert!(!exists(&rt, &v, "a.md"), "no tick recreates it");
+    assert!(!exists(&rt, &v, "b.md"), "no tick recreates it");
+    started.assert_states_in_step(cx);
+}
+
+/// Unsaved text in a hidden group is written before its note is deleted,
+/// as for the open note: a write that fails refuses the delete, and the
+/// group keeps its note and its text.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn delete_with_unsaved_text_writes_before_it(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_with(cx, &rt, NOTES, "a.md");
+    let first = started.active(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+    let file = v.workspace.as_path().join("a.md");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("a.md")), cx);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let flash = started.flash(cx).unwrap();
+    assert!(
+        flash.starts_with("Couldn't save a.md:") && flash.ends_with("Nothing was deleted."),
+        "{flash}"
+    );
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("alpha"));
+    assert_eq!(started.note_in(first, cx), Some(path("a.md")));
+    assert_eq!(started.text_in(first, cx), "alpha edited");
+    assert!(started.dirty_in(first, cx), "the text is still unsaved");
+    assert_eq!(started.active(cx), second);
+
+    // Writable again: the text is written, then the note goes.
+    started.run_file_op(&rt, FileOpRequest::Delete(path("a.md")), cx);
+    assert!(!exists(&rt, &v, "a.md"));
+    assert_eq!(started.note_in(first, cx), None);
+    assert!(!started.dirty_in(first, cx));
+    past_a_tick(&rt, cx);
+    assert!(!exists(&rt, &v, "a.md"), "no tick recreates it");
+}
+
+/// A new tab or split whose note is not there (or would not read) keeps
+/// its group, empty: it holds nothing, so the note opens elsewhere later.
+#[gpui_kit::test]
+fn a_failed_open_in_a_new_tab_leaves_an_empty_group_that_holds_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    let first_tab = started.shown_tab(cx);
+
+    started.new_tab("missing.md", cx);
+    let second = started.active(cx);
+    let second_tab = started.shown_tab(cx);
+    assert_eq!(started.holders(&path("missing.md"), cx), vec![second]);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+
+    assert_eq!(started.tabs(cx), vec![first_tab, second_tab]);
+    assert_eq!(started.groups_of(second_tab, cx), vec![second]);
+    assert_eq!(started.note_in(second, cx), None);
+    assert_eq!(started.session_in(second, cx), VaultPath::root());
+    assert_eq!(started.text_in(second, cx), "");
+    assert_eq!(
+        started.holders(&path("missing.md"), cx),
+        Vec::<GroupId>::new()
+    );
+    assert_eq!(started.locate(&path("missing.md"), cx), None);
+
+    // A folder named like a note does not read: the split stays empty too.
+    std::fs::create_dir(v.workspace.as_path().join("odd.md")).unwrap();
+    started.split("odd.md", cx);
+    let third = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    assert_eq!(started.groups_of(second_tab, cx), vec![second, third]);
+    assert_eq!(started.note_in(third, cx), None);
+    assert_eq!(started.holders(&path("odd.md"), cx), Vec::<GroupId>::new());
+
+    // Made later, the note opens where it is asked for, not in a group that
+    // once tried it.
+    rt.block_on(v.vault.create_note(&path("missing.md"), "found"))
+        .unwrap();
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.focus_group(first, cx))
+    });
+    started.plain("missing.md", cx);
+    drive(&rt, cx, |cx| {
+        started.note_in(first, cx) == Some(path("missing.md"))
+    });
+    assert_eq!(started.text_in(first, cx), "found");
+    assert_eq!(started.holders(&path("missing.md"), cx), vec![first]);
+    started.assert_states_in_step(cx);
 }
