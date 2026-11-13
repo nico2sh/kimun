@@ -487,10 +487,11 @@ fn deleting_the_open_notes_folder_discards_it(cx: &mut TestAppContext) {
 
 // ── move ─────────────────────────────────────────────────────────────────
 
-/// Moving the open note: its edits go with it, the old place stays empty
-/// through later ticks, and FILES lists where it went.
+/// Moving the open note: its edits go with it, the editor follows it to
+/// its new place (nothing says it was moved), the old place stays empty
+/// through later ticks, and later saves land at the new place.
 #[gpui_kit::test]
-fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
+fn moving_the_open_note_follows_it(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("z/k.md", "k")], &[]));
@@ -515,11 +516,23 @@ fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
 
     assert_eq!(disk(&rt, &v, "z/a.md").as_deref(), Some("Xalpha"));
     assert!(!exists(&rt, &v, "a.md"));
-    assert_eq!(started.note_open(cx), None);
-    assert_eq!(started.placeholder(cx).as_deref(), Some("a.md was moved"));
     assert!(
-        started.files_dir(cx).is_like(&VaultPath::root()),
-        "FILES stays in the folder the note left"
+        started
+            .note_open(cx)
+            .is_some_and(|n| n.is_like(&path("z/a.md")))
+    );
+    assert!(started.session_at(cx).is_like(&path("z/a.md")));
+    assert!(
+        started
+            .footer_note(cx)
+            .is_some_and(|n| n.is_like(&path("z/a.md")))
+    );
+    assert_eq!(started.text(cx), "Xalpha");
+    assert!(!started.is_dirty(cx), "reloaded clean at the new place");
+    assert_eq!(started.placeholder(cx), None, "nothing says it was moved");
+    assert!(
+        cx.read(|cx| started.workspace.read(cx).note_gone.is_none()),
+        "no moved notice"
     );
     // The listing of the folder it left refreshes without it.
     drive(&rt, cx, |cx| {
@@ -527,6 +540,13 @@ fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
     });
     past_a_tick(&rt, cx);
     assert!(!exists(&rt, &v, "a.md"), "no tick recreates the old place");
+    // Later saves land at the new place.
+    settle(&started, cx);
+    started.typed("Y", cx);
+    started.hit("ctrl-s", cx);
+    drive(&rt, cx, |cx| !started.is_dirty(cx));
+    assert!(disk(&rt, &v, "z/a.md").unwrap().contains('Y'));
+    assert!(!exists(&rt, &v, "a.md"));
 }
 
 /// Moving a folder holding the open note: the note follows.

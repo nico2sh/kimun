@@ -1011,3 +1011,188 @@ fn a_failed_open_in_a_new_tab_leaves_an_empty_group_that_holds_nothing(cx: &mut 
     assert_eq!(started.holders(&path("missing.md"), cx), vec![first]);
     started.assert_states_in_step(cx);
 }
+
+// ── review round 1: moves follow, properties and attachments find their group
+
+/// Moving a note by itself while a group in a hidden tab holds it: that
+/// group follows it to the new place with its unsaved text written there;
+/// the tabs, the split and the shown tab stay as they were.
+#[gpui_kit::test]
+fn move_of_a_single_note_updates_a_group_in_a_hidden_tab(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let notes = [
+        ("a.md", "alpha"),
+        ("b.md", "beta"),
+        ("c.md", "gamma"),
+        ("z/k.md", "kay"),
+    ];
+    let (v, started) = started_with(cx, &rt, &notes, "a.md");
+    let first = started.active(cx);
+    let first_tab = started.shown_tab(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    let second_tab = started.shown_tab(cx);
+    started.split("c.md", cx);
+    let third = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    started.set_text_in(first, "alpha edited", cx);
+
+    started.run_file_op(
+        &rt,
+        FileOpRequest::Move {
+            from: path("a.md"),
+            to: path("z/a.md"),
+        },
+        cx,
+    );
+
+    assert!(!exists(&rt, &v, "a.md"));
+    assert_eq!(disk(&rt, &v, "z/a.md").as_deref(), Some("alpha edited"));
+    assert_eq!(started.note_in(first, cx), Some(path("z/a.md")));
+    assert_eq!(started.session_in(first, cx), path("z/a.md"));
+    assert_eq!(started.text_in(first, cx), "alpha edited");
+    assert!(
+        !started.dirty_in(first, cx),
+        "reloaded clean at the new place"
+    );
+    assert_eq!(started.locate(&path("z/a.md"), cx), Some(first));
+    assert_eq!(started.locate(&path("a.md"), cx), None);
+    assert_eq!(started.tabs(cx), vec![first_tab, second_tab]);
+    assert_eq!(started.groups_of(first_tab, cx), vec![first]);
+    assert_eq!(started.groups_of(second_tab, cx), vec![second, third]);
+    assert_eq!(started.shown_tab(cx), second_tab);
+    assert_eq!(started.active(cx), third);
+    assert_eq!(started.placeholder(cx), None, "nothing says it was moved");
+
+    // Later saves of the followed group land at the new place.
+    started.set_text_in(first, "alpha again", cx);
+    send(&started, AppMessage::Autosave, cx);
+    drive(&rt, cx, |cx| !started.dirty_in(first, cx));
+    assert_eq!(disk(&rt, &v, "z/a.md").as_deref(), Some("alpha again"));
+    past_a_tick(&rt, cx);
+    assert!(!exists(&rt, &v, "a.md"), "no tick recreates the old place");
+    started.assert_states_in_step(cx);
+}
+
+/// The properties of a note a hidden group holds with unsaved text: that
+/// group is flushed before the dialog opens, the write lands, the group
+/// reloads the written text clean, and its later autosave keeps the write.
+#[gpui_kit::test]
+fn properties_write_flushes_the_group_that_holds_the_note(cx: &mut TestAppContext) {
+    use super::properties::PropertyJob;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let notes = [("a.md", "---\ntag: x\n---\nalpha\n"), ("b.md", "beta")];
+    let (v, started) = started_with(cx, &rt, &notes, "a.md");
+    let first = started.active(cx);
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    let edited = "---\ntag: x\n---\nalpha edited\n";
+    started.set_text_in(first, edited, cx);
+
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| w.open_properties(path("a.md"), window, cx))
+    })
+    .unwrap();
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            !w.note_held() && w.properties_dialog().is_some()
+        })
+    });
+    assert_eq!(
+        disk(&rt, &v, "a.md").as_deref(),
+        Some(edited),
+        "the holding group's text is on disk before the dialog opens"
+    );
+    assert!(!started.dirty_in(first, cx));
+
+    let written = cx.update(|cx| {
+        started.workspace.update(cx, |w, cx| {
+            w.request_property_write(path("a.md"), PropertyJob::Delete("tag".into()), cx)
+        })
+    });
+    assert_eq!(written, Ok(()));
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| !started.workspace.read(cx).note_held())
+            && !disk(&rt, &v, "a.md").unwrap().contains("tag")
+            && !started.text_in(first, cx).contains("tag")
+    });
+    let on_disk = disk(&rt, &v, "a.md").unwrap();
+    assert!(on_disk.contains("alpha edited"), "{on_disk}");
+    assert_eq!(started.text_in(first, cx), on_disk, "the holder reloaded");
+    assert!(!started.dirty_in(first, cx));
+
+    // The group's later autosave keeps the write.
+    started.set_text_in(first, &format!("{on_disk}more\n"), cx);
+    send(&started, AppMessage::Autosave, cx);
+    drive(&rt, cx, |cx| !started.dirty_in(first, cx));
+    let after = disk(&rt, &v, "a.md").unwrap();
+    assert!(!after.contains("tag"), "{after}");
+    assert!(after.contains("alpha edited"), "{after}");
+    assert_eq!(started.active(cx), second);
+}
+
+/// An attachment shown in a group of a hidden tab follows a rename and
+/// goes on a delete, while the shown tab's group is left alone.
+#[gpui_kit::test]
+fn attachment_rename_follows_the_group_that_shows_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    rt.block_on(v.vault.save_attachment(&path("notes.txt"), b"some text\n"))
+        .unwrap();
+    let first = started.active(cx);
+    let shown = |group: GroupId, cx: &TestAppContext| -> Option<VaultPath> {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.state(group)
+                .and_then(|s| s.attachment.as_ref())
+                .map(|view| view.read(cx).path().clone())
+        })
+    };
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.open_attachment(&path("notes.txt"), cx))
+    });
+    drive(&rt, cx, |cx| shown(first, cx) == Some(path("notes.txt")));
+    started.new_tab("b.md", cx);
+    let second = started.active(cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+
+    started.run_file_op(
+        &rt,
+        FileOpRequest::Rename {
+            from: path("notes.txt"),
+            to: path("renamed.txt"),
+        },
+        cx,
+    );
+    settle(&rt, cx, 400, |cx| {
+        shown(first, cx).is_some_and(|p| p.is_like(&path("renamed.txt")))
+    });
+    assert!(
+        shown(first, cx).is_some_and(|p| p.is_like(&path("renamed.txt"))),
+        "{:?}",
+        shown(first, cx)
+    );
+    assert_eq!(shown(second, cx), None);
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.note_in(second, cx), Some(path("b.md")));
+    cx.read(|cx| assert_eq!(started.workspace.read(cx).status.attachment, None));
+
+    started.run_file_op(&rt, FileOpRequest::Delete(path("renamed.txt")), cx);
+    assert_eq!(shown(first, cx), None);
+    assert_eq!(
+        started.placeholder(cx),
+        None,
+        "the shown group says nothing"
+    );
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.text(cx), "beta");
+}

@@ -930,13 +930,8 @@ impl Workspace {
 
     // ---- The Footer's counts ----------------------------------------------
 
-    /// Re-read the open note's property count (it was saved).
-    pub(super) fn refresh_note_properties(&mut self) {
-        self.refresh_note_properties_in(self.layout.active_group());
-    }
-
-    /// [`Self::refresh_note_properties`] for the note `group` holds.
-    fn refresh_note_properties_in(&mut self, group: GroupId) {
+    /// Re-read the property count of the note `group` holds (it was saved).
+    pub(super) fn refresh_note_properties_in(&mut self, group: GroupId) {
         if let (Some(host), Some(tx)) = (
             self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()),
             self.tx.as_ref(),

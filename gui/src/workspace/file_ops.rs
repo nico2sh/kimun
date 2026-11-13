@@ -14,13 +14,15 @@
 //! disk, the dialog stays open saying why, and the tick and the input come
 //! back. Only then does core run the operation. After it:
 //!
-//! - **Followed.** A rename of the note, or a rename or move of a folder
-//!   holding it: the session retargets to where the note went (the same
-//!   place under the new folder, `file_ops::relocated`) and reloads it clean
-//!   from there (a note rename may rewrite its self-links). The editor stays;
-//!   the Footer, the FILES marker and the counts follow.
-//! - **Gone.** A delete of the note or of a folder holding it, a move of the
-//!   note itself, or a reload that fails after a rename: the tick and any
+//! - **Followed.** A rename or move of the note, or of a folder holding it:
+//!   the session retargets to where the note went (the same place under the
+//!   new folder, `file_ops::relocated`) and reloads it clean from there (a
+//!   note rename may rewrite its self-links). The editor stays; the Footer,
+//!   the FILES marker and the counts follow. Every group holding the note
+//!   follows it, in any tab (ADR-0058).
+//! - **Gone.** A delete of the note or of a folder holding it, or a reload
+//!   that fails after a rename or move: the group stays where it is, empty
+//!   (ADR-0058). The tick and any
 //!   background save are stopped, the buffer is discarded *without* saving
 //!   (the file is gone or elsewhere; a save would recreate it), the editor
 //!   Panel says what happened, and FILES shows where it was (or went).
@@ -564,25 +566,16 @@ impl Workspace {
             .and_then(|h| h.note.clone())
             .filter(|_| touched.contains(&active));
         let (reads, active_gone) = match &op {
-            // The note renamed, or a folder holding it renamed: it follows.
-            FileOp::Renamed { from, to } => (self.note_moved(from, to), false),
-            // The note itself moved: it is let go, as a delete would; the
-            // notes below a moved folder follow it.
-            FileOp::Moved { from, to } => {
-                let gone = self.empty_groups_where(|note| note.is_like(from), cx);
-                (self.note_moved(from, to), gone)
+            // The note renamed or moved, or a folder holding it: it follows,
+            // in every group holding it.
+            FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
+                (self.note_moved(from, to), false)
             }
             FileOp::Deleted(path) => (Vec::new(), self.note_deleted(path, cx)),
             _ => (Vec::new(), false),
         };
         if let Some(open) = open.filter(|_| active_gone) {
             let (title, detail, dir) = match &op {
-                // FILES stays in the folder the note left, as the TUI does.
-                FileOp::Moved { from, to } => (
-                    format!("{} was moved", name_of(&open)),
-                    format!("It is now {to}."),
-                    from.get_parent_path().0,
-                ),
                 FileOp::Deleted(path) => (
                     format!("{} was deleted", name_of(&open)),
                     "FILES shows the folder it was in.".to_string(),
