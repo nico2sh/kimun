@@ -697,7 +697,7 @@ fn a_lost_read_lets_saves_and_the_close_resume(cx: &mut TestAppContext) {
         w.active_state_mut()
             .editor
             .update(cx, |view, _| view.input_blocked = true);
-        w.switch_read(Err(error), cx);
+        w.switch_read(w.layout.active_group(), Err(error), cx);
     });
     assert!(!started.open_pending(cx));
     assert!(started.flash_is_error(cx));
@@ -985,4 +985,57 @@ fn the_app_level_close_window_saves_and_leaves_the_app(cx: &mut TestAppContext) 
     drive(&rt, cx, |cx| started.is_closed(cx));
     assert_eq!(started.quits(cx), 0, "the app stays");
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+}
+
+// ── groups ───────────────────────────────────────────────────────────────
+
+/// A switch remembers the group that started it: the flush it ran lands in
+/// that group even when another one became active meanwhile.
+#[gpui_kit::test]
+fn a_flush_result_applies_to_the_group_that_started_it(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::{Axis, Focus, Leaf};
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    started.type_text("X", cx);
+    assert!(started.dirty(cx));
+
+    let (first, second) = cx.update(|cx| {
+        started.workspace.update(cx, |w, cx| {
+            let first = w.layout.active_group();
+            let second = w
+                .layout
+                .split_group(first, Axis::Horizontal)
+                .expect("the first group splits");
+            let settings = v.settings.clone();
+            w.add_group_for_test(second, Some(settings), cx);
+            // The switch starts in the first group, its flush still running.
+            w.open_note_in(first, path("b.md"), cx);
+            // Another group becomes the active one before the flush lands.
+            assert!(w.layout.focus(Focus::Leaf(Leaf::Group(second))));
+            (first, second)
+        })
+    });
+
+    let first_note = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.state(first)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.note.clone())
+        })
+    };
+    drive(&rt, cx, |cx| first_note(cx) == Some(path("b.md")));
+
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+    cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        assert_eq!(w.layout.active_group(), second);
+        let other = w.state(second).expect("the second group has a state");
+        assert_eq!(other.notes.as_ref().and_then(|h| h.note.clone()), None);
+        assert_eq!(other.editor.read(cx).editor.get_text(), "");
+        let own = w.state(first).expect("the first group has a state");
+        assert_eq!(own.editor.read(cx).editor.get_text(), "beta");
+    });
 }

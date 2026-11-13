@@ -242,7 +242,7 @@ impl Workspace {
         flushed: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outcome = self.apply_flush(flushed, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
         let Some(problem) = self.flush_failure(&outcome, cx) else {
             // Typing stays blocked until the new vault is in.
             return true;

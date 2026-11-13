@@ -418,7 +418,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outcome = self.apply_flush(flushed, cx);
+        let outcome = self.apply_flush(self.layout.active_group(), flushed, cx);
         let problem = self.flush_failure(&outcome, cx);
         let Some(problem) = problem else {
             return true;
@@ -667,7 +667,7 @@ impl Workspace {
             && host.is_open_wanted()
             && !host.is_switching()
         {
-            self.switch(cx);
+            self.switch(self.layout.active_group(), cx);
         }
         cx.notify();
     }
