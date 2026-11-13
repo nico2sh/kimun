@@ -12,6 +12,7 @@ use kimun_notes::logic::editor_region::TabId;
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use tokio::runtime::Runtime;
 
+use super::file_ops::FileOpRequest;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use super::tab_strip::{TAB_STRIP_ID, TAB_UNSAVED_ID, tab_dirty, tab_label, tab_label_id};
 use crate::startup::FirstNote;
@@ -189,6 +190,40 @@ impl Win {
             self.workspace
                 .update(cx, |w, cx| w.open_note_in_split(note, Axis::Horizontal, cx))
         });
+    }
+
+    /// `group`'s autosave tick period, `None` while its tick is stopped.
+    fn tick_in(&self, group: GroupId, cx: &TestAppContext) -> Option<u64> {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.session.autosave_interval())
+        })
+    }
+
+    /// Whether `group`'s editor refuses typing (a flush holds it).
+    fn input_blocked(&self, group: GroupId, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            let editor = self.workspace.read(cx).state(group).unwrap().editor.clone();
+            editor.read(cx).input_blocked
+        })
+    }
+
+    /// Whether something holds the notes (a tab close among them).
+    fn held(&self, cx: &TestAppContext) -> bool {
+        cx.read(|cx| self.workspace.read(cx).note_held())
+    }
+
+    fn wanted_in(&self, group: GroupId, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .is_some_and(|h| h.is_open_wanted())
+        })
     }
 
     fn focus_group(&self, group: GroupId, cx: &mut TestAppContext) {
@@ -556,4 +591,191 @@ fn the_strip_keeps_the_shown_tab_in_view(cx: &mut TestAppContext) {
     assert!(in_view(0, cx), "wrapped to the first: back in view");
     started.press("ctrl-shift-tab", cx);
     assert!(in_view(30, cx));
+}
+
+/// A write that fails during the close keeps the tab: the text stays in
+/// the editor, unsaved; the flash says why; the group's tick and keyboard
+/// come back; and the hold on the notes ends, so an open parked meanwhile
+/// goes on.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn closing_a_tab_whose_flush_fails_keeps_the_tab_and_its_text(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+    let a = started.active(cx);
+    started.new_tab_with("b.md", cx);
+    let b = started.active(cx);
+    let tab = started.shown_tab(cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    let file = v.workspace.as_path().join("b.md");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+    started.set_text_in(b, "beta edited", cx);
+
+    started.press("ctrl-w", cx);
+    // The flush runs: the notes are held, the group's tick stopped and its
+    // keyboard blocked. An open asked for meanwhile waits.
+    assert!(started.held(cx));
+    assert_eq!(started.tick_in(b, cx), None);
+    assert!(started.input_blocked(b, cx));
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.open_note_in(a, path("d.md"), cx))
+    });
+    assert!(started.wanted_in(a, cx), "the open waits for the close");
+    drive(&rt, cx, |cx| !started.held(cx));
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let flash = started.flash(cx).unwrap();
+    assert!(
+        flash.starts_with("Couldn't save b.md:") && flash.ends_with("The tab stays open."),
+        "{flash}"
+    );
+    assert_eq!(started.tabs(cx).len(), 2);
+    assert_eq!(started.shown_tab(cx), tab);
+    assert_eq!(started.active(cx), b);
+    assert_eq!(started.note_in(b, cx), Some(path("b.md")));
+    assert_eq!(started.text_in(b, cx), "beta edited");
+    assert!(started.dirty_in(b, cx), "the text is still unsaved");
+    assert!(started.dirty_tab(tab, cx));
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+    assert_eq!(started.tick_in(b, cx), Some(tick), "the tick is back");
+    assert!(!started.input_blocked(b, cx), "the keyboard is back");
+    // The parked open went on once the hold ended.
+    drive(&rt, cx, |cx| started.note_in(a, cx) == Some(path("d.md")));
+    started.assert_states_in_step(cx);
+
+    // Writable again: the next close writes the text and closes the tab.
+    started.press("ctrl-w", cx);
+    drive(&rt, cx, |cx| started.tabs(cx).len() == 1);
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta edited"));
+    started.assert_states_in_step(cx);
+}
+
+/// A note of the tab that cannot be let go yet refuses the close with a
+/// flash: one still opening, or one another operation holds. The tab
+/// stays and nothing is written.
+#[gpui_kit::test]
+fn closing_a_tab_while_a_note_is_held_refuses_with_a_flash(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+
+    // Opening: the new tab's note is still being read.
+    started.new_tab_with("b.md", cx);
+    let b = started.active(cx);
+    assert!(!started.idle(cx), "b.md is still opening");
+    started.press("ctrl-w", cx);
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("A note in this tab is still opening. Try again in a moment.")
+    );
+    assert_eq!(started.tabs(cx).len(), 2);
+    assert!(!started.held(cx), "the refusal holds nothing");
+    drive(&rt, cx, |cx| started.idle(cx));
+    assert_eq!(started.note_in(b, cx), Some(path("b.md")));
+
+    // Held: a file operation on another note runs.
+    started.set_text_in(b, "beta edited", cx);
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.request_file_op(
+                FileOpRequest::Rename {
+                    from: path("d.md"),
+                    to: path("e.md"),
+                },
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    assert!(started.held(cx));
+    started.press("ctrl-w", cx);
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Another operation on the note is still running. The tab stays open.")
+    );
+    assert_eq!(started.tabs(cx).len(), 2);
+    assert_eq!(started.active(cx), b);
+    assert_eq!(started.text_in(b, cx), "beta edited");
+    assert!(started.dirty_in(b, cx));
+    assert!(!started.input_blocked(b, cx));
+    assert_eq!(
+        started.tick_in(b, cx),
+        Some(tick),
+        "the tick was never stopped"
+    );
+    drive(&rt, cx, |cx| !started.held(cx));
+    assert_eq!(
+        disk(&rt, &v, "b.md").as_deref(),
+        Some("beta"),
+        "nothing written"
+    );
+    started.assert_states_in_step(cx);
+}
+
+/// A tab of two groups whose second flush cannot start (another flush of
+/// that note is still out): the first group's flush, already begun, is
+/// dropped unrun and the group gets its tick and keyboard back; the tab
+/// stays and the flash says why. Once that other flush is gone the close
+/// goes through.
+#[gpui_kit::test]
+fn partial_rollback_when_begin_note_flush_refuses_a_later_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started(cx, &rt);
+    let tick = v.settings.read().unwrap().autosave_interval_secs;
+    started.new_tab_with("b.md", cx);
+    let b = started.active(cx);
+    started.split_with("c.md", cx);
+    let c = started.active(cx);
+    let tab = started.shown_tab(cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    assert_eq!(started.groups_of(tab, cx), [b, c]);
+    started.set_text_in(b, "beta edited", cx);
+    started.set_text_in(c, "gamma edited", cx);
+    // Another flush of c.md is out, not yet run.
+    let outstanding = cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.begin_note_flush_in(c, cx))
+    });
+    assert!(outstanding.is_some());
+
+    started.press("ctrl-w", cx);
+
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some("Another save is still running. The tab stays open.")
+    );
+    assert!(!started.held(cx), "no close runs");
+    assert_eq!(started.tabs(cx).len(), 2);
+    assert_eq!(started.groups_of(tab, cx), [b, c]);
+    // The first group, begun and rolled back.
+    assert_eq!(started.tick_in(b, cx), Some(tick), "b's tick is back");
+    assert!(!started.input_blocked(b, cx), "b's keyboard is back");
+    assert_eq!(started.text_in(b, cx), "beta edited");
+    assert!(started.dirty_in(b, cx));
+    assert_eq!(started.text_in(c, cx), "gamma edited");
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
+    assert_eq!(disk(&rt, &v, "c.md").as_deref(), Some("gamma"));
+
+    // The other flush goes away unrun: the close now writes both.
+    drop(outstanding);
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.block_input_in(c, false, cx))
+    });
+    started.press("ctrl-w", cx);
+    drive(&rt, cx, |cx| started.tabs(cx).len() == 1);
+    assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta edited"));
+    assert_eq!(disk(&rt, &v, "c.md").as_deref(), Some("gamma edited"));
+    started.assert_states_in_step(cx);
 }

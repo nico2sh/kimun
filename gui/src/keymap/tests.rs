@@ -226,10 +226,10 @@ fn default_tables() {
             lw("cmd+k", A::SearchNotes),
             lw("cmd+o", A::OpenNote),
             lw("cmd+j", A::NewJournal),
-            lw("alt+l", A::ToggleSidebar),
+            lw("cmd+alt+l", A::ToggleSidebar),
             lw("cmd+e", A::OpenFileBrowser),
-            lw("alt+e", A::FocusEditor),
-            lw("alt+f", A::FocusSidebar),
+            lw("cmd+alt+e", A::FocusEditor),
+            lw("cmd+alt+s", A::FocusSidebar),
             lw("cmd+r", A::OpenSortDialog),
             lw("f(2)", A::FileOperations),
             lw("cmd+enter", A::FollowLink),
@@ -247,7 +247,7 @@ fn default_tables() {
             lw("cmd+alt+right", A::FocusRegion(Dir::Right)),
             lw("cmd+alt+up", A::FocusRegion(Dir::Up)),
             lw("cmd+alt+down", A::FocusRegion(Dir::Down)),
-            lw("alt+r", A::ToggleRightDrawer),
+            lw("cmd+alt+r", A::ToggleRightDrawer),
             lw("cmd+s", A::SaveNote),
             lw("f(1)", A::KeyboardHelp),
             lw("f(1)", A::QuerySyntax),
@@ -1241,7 +1241,7 @@ fn macos_resolution_table() {
             //                 plain editor  vim editor  slot / rail
             ("cmd+f", [find.clone(), find, None]),
             ("cmd+alt+f", [replace.clone(), replace, None]),
-            ("alt+l", [toggle.clone(), toggle.clone(), toggle]),
+            ("cmd+alt+l", [toggle.clone(), toggle.clone(), toggle]),
             ("cmd+t", [new_tab.clone(), new_tab.clone(), new_tab]),
             ("cmd+w", [close_tab.clone(), close_tab.clone(), close_tab]),
             ("cmd+e", [files.clone(), files.clone(), files]),
@@ -1251,8 +1251,8 @@ fn macos_resolution_table() {
             ("cmd+alt+right", [right.clone(), right.clone(), right]),
             ("cmd+alt+up", [up.clone(), up.clone(), up]),
             ("cmd+alt+down", [down.clone(), down.clone(), down]),
-            ("alt+e", [next.clone(), next.clone(), next]),
-            ("alt+f", [prev.clone(), prev.clone(), prev]),
+            ("cmd+alt+e", [next.clone(), next.clone(), next]),
+            ("cmd+alt+s", [prev.clone(), prev.clone(), prev]),
             ("ctrl+tab", [next_tab.clone(), next_tab.clone(), next_tab]),
             (
                 "ctrl+shift+tab",
@@ -1269,9 +1269,15 @@ fn macos_resolution_table() {
             ("cmd+alt+shift+s", [None, None, None]),
             ("cmd+alt+shift+u", [None, None, None]),
             (
-                "alt+r",
+                "cmd+alt+r",
                 [right_side.clone(), right_side.clone(), right_side],
             ),
+            // Option+letter types text on macOS: the Linux side and focus
+            // chords are not ours there.
+            ("alt+e", [None, None, None]),
+            ("alt+f", [None, None, None]),
+            ("alt+l", [None, None, None]),
+            ("alt+r", [None, None, None]),
             ("cmd+shift+t", [None, None, None]),
             ("cmd+alt+b", [None, None, None]),
             // Option+Shift+Arrow is word selection on macOS: not ours.
@@ -1588,8 +1594,10 @@ fn default_chords_have_no_duplicates() {
 }
 
 /// The tab chords and the side and focus chords they displaced, exactly as
-/// the plan's constraints write them, on both platforms; each is live from
-/// every panel, plain or vim (nothing pending), and nothing else holds it.
+/// the plan's constraints write them for Linux and Windows (Alt+letter), and
+/// with Cmd+Option on macOS, where Option+letter types text (focus back is
+/// S there: Cmd+Option+F is Replace). Each is live from every panel, plain
+/// or vim (nothing pending), and nothing else holds it.
 #[test]
 fn tab_chords_match_the_constraints() {
     for p in PLATFORMS {
@@ -1600,6 +1608,11 @@ fn tab_chords_match_the_constraints() {
             // Ctrl+T is a bare Ctrl+letter: it gets its vim twin.
             ("ctrl+t", "ctrl+w", &["ctrl+shift+t"])
         };
+        let (focus_editor, focus_sidebar, left, right) = if p == MacOs {
+            ("cmd+alt+e", "cmd+alt+s", "cmd+alt+l", "cmd+alt+r")
+        } else {
+            ("alt+e", "alt+f", "alt+l", "alt+r")
+        };
         let mut new_chords = vec![chord(new)];
         new_chords.extend(new_twin.iter().map(|c| chord(c)));
         let expected: [(ActionShortcuts, Vec<KeyInput>); 8] = [
@@ -1607,10 +1620,10 @@ fn tab_chords_match_the_constraints() {
             (A::CloseTab, vec![chord(close)]),
             (A::NextTab, vec![chord("ctrl+tab")]),
             (A::PrevTab, vec![chord("ctrl+shift+tab")]),
-            (A::FocusEditor, vec![chord("alt+e")]),
-            (A::FocusSidebar, vec![chord("alt+f")]),
-            (A::ToggleSidebar, vec![chord("alt+l")]),
-            (A::ToggleRightDrawer, vec![chord("alt+r")]),
+            (A::FocusEditor, vec![chord(focus_editor)]),
+            (A::FocusSidebar, vec![chord(focus_sidebar)]),
+            (A::ToggleSidebar, vec![chord(left)]),
+            (A::ToggleRightDrawer, vec![chord(right)]),
         ];
         for (action, chords) in &expected {
             assert_eq!(&keymap.chords_for(action), chords, "{p:?} {action}");
