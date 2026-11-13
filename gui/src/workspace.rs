@@ -3187,6 +3187,13 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .child(document)
+            // A lone group (a tab just opened mid-drag) takes a group's
+            // drop too; several groups carry their own layers.
+            .children(
+                (!several)
+                    .then(|| self.group_zone_layer(0, active, cx))
+                    .flatten(),
+            )
             .children(self.render_which_key(cx));
         div()
             .id("editor-panel")

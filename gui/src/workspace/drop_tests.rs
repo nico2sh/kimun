@@ -2391,6 +2391,44 @@ mod group_drag {
         release(&shell, at, cx);
     }
 
+    /// A tab chord mid-drag changes the shown tab: the new tab's group
+    /// gets its zones (the outcomes follow the shown tab, they are not
+    /// kept from the drag's start), and a drop there moves the dragged
+    /// group into that tab beside it.
+    #[gpui_kit::test]
+    fn a_new_tab_mid_drag_gives_its_group_zones(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let first = region(&s, cx).shown();
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        press_and_move(&shell, from, 40., cx);
+        press_key(&shell, "ctrl-t", cx);
+        assert!(cx.update(|cx| cx.has_active_drag()), "the drag lives on");
+        let r = region(&s, cx);
+        assert_eq!(r.tabs().len(), 2);
+        let new_tab = r.shown();
+        assert_ne!(new_tab, first);
+        let [empty] = r.groups(new_tab)[..] else {
+            panic!("one group in the new tab");
+        };
+        for zone in Zone::ALL {
+            assert!(drawn(&shell, group_zone_id(0, zone), cx), "{zone:?}");
+        }
+        let target = point_in(&shell, group_zone_id(0, Zone::Edge(Dir::Right)), None, cx);
+        move_held(&shell, target, cx);
+        release(&shell, target, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.groups(new_tab), vec![empty, a]);
+        assert_eq!(r.groups(first), vec![b]);
+        assert_eq!(r.active_group(), a);
+        assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
+        assert_in_step(&s, cx);
+    }
+
     /// The unsaved text of the dragged group moves with it: nothing is
     /// written, its editor keeps the edit and its unsaved mark.
     #[gpui_kit::test]

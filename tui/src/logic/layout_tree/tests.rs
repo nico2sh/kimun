@@ -1688,23 +1688,28 @@ fn focus_dir_moves_between_groups_of_the_shown_tab_before_leaving_the_region() {
     assert_eq!(t.active_group(), g2);
 }
 
-/// Zoomed on the editor, only the zoomed group shows: directional focus
-/// never makes another group of the tab active (the zoom would then show
-/// that group); it leaves the editor by the zoom's own rules.
+/// Zoomed on the editor, directional focus still moves between the groups
+/// of the shown tab (the zoom then shows the group that became active) and
+/// the zoom stays; past the region's edge it follows the zoom's own rules
+/// (only the rail is reachable).
 #[test]
-fn focus_dir_does_not_change_group_while_the_editor_is_zoomed() {
+fn focus_dir_moves_between_groups_while_the_editor_is_zoomed() {
     let mut t = tree();
     let g0 = t.active_group();
     let g1 = t.region_mut().split_group(g0, Axis::Horizontal).unwrap();
     let g2 = t.region_mut().split_group(g0, Axis::Vertical).unwrap();
     t.zoom(Some(Leaf::Editor));
-    assert_eq!(t.focus_dir(Dir::Right), TreeFocusMove::AtEdge);
-    assert_eq!(t.focus_dir(Dir::Down), TreeFocusMove::NotHandled);
+    let editor = TreeFocusMove::Moved(Focus::Leaf(Leaf::Editor));
+    assert_eq!(t.focus_dir(Dir::Right), editor);
+    assert_eq!(t.active_group(), g1);
+    assert_eq!(t.focus_dir(Dir::Left), editor);
     assert_eq!(t.active_group(), g0);
-    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
-    assert_eq!(t.active_group(), g0);
+    assert_eq!(t.focus_dir(Dir::Down), editor);
+    assert_eq!(t.active_group(), g2);
     assert_eq!(t.zoomed(), Some(Leaf::Editor));
-    let _ = (g1, g2);
+    assert_eq!(t.focus_dir(Dir::Left), TreeFocusMove::Moved(Focus::Rail));
+    assert_eq!(t.active_group(), g2);
+    assert_eq!(t.zoomed(), Some(Leaf::Editor));
 }
 
 #[test]
