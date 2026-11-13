@@ -31,7 +31,11 @@ use crate::{input, theme};
 
 /// How wide a window-edge strip is, in px: room to aim at without hiding
 /// the editor.
-const WINDOW_STRIP: f32 = 24.;
+const WINDOW_STRIP: f32 = 40.;
+
+/// The least thickness of a slot's edge zone, in px: a quarter of a small
+/// slot is too thin to aim at.
+const EDGE_ZONE_MIN: f32 = 32.;
 
 /// The sides the window-edge strips lie on.
 const STRIP_SIDES: [Side; 2] = [Side::Left, Side::Right];
@@ -455,10 +459,30 @@ impl Workspace {
                     self.drop_zone(zone_id(shown, zone), zone_label(zone), dragged, target, cx)?;
                 let el = match zone {
                     Zone::Centre => el.top(quarter).bottom(quarter).left(quarter).right(quarter),
-                    Zone::Edge(Dir::Left) => el.top_0().bottom_0().left_0().w(quarter),
-                    Zone::Edge(Dir::Right) => el.top_0().bottom_0().right_0().w(quarter),
-                    Zone::Edge(Dir::Up) => el.top_0().left(quarter).right(quarter).h(quarter),
-                    Zone::Edge(Dir::Down) => el.bottom_0().left(quarter).right(quarter).h(quarter),
+                    Zone::Edge(Dir::Left) => el
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(quarter)
+                        .min_w(px(EDGE_ZONE_MIN)),
+                    Zone::Edge(Dir::Right) => el
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(quarter)
+                        .min_w(px(EDGE_ZONE_MIN)),
+                    Zone::Edge(Dir::Up) => el
+                        .top_0()
+                        .left(quarter)
+                        .right(quarter)
+                        .h(quarter)
+                        .min_h(px(EDGE_ZONE_MIN)),
+                    Zone::Edge(Dir::Down) => el
+                        .bottom_0()
+                        .left(quarter)
+                        .right(quarter)
+                        .h(quarter)
+                        .min_h(px(EDGE_ZONE_MIN)),
                 };
                 Some(el.test_support().into_any_element())
             })
