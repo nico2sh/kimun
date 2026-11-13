@@ -25,7 +25,7 @@ use gpui_kit::{
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::KeyInput;
 use kimun_notes::logic::layout::Dir;
-use kimun_notes::logic::layout_tree::SlotId;
+use kimun_notes::logic::layout_tree::{Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
@@ -412,11 +412,11 @@ impl Workspace {
         }
         match (from, swap_with) {
             (Some(from), Some(other)) => {
-                self.layout.move_view(other, from);
+                let moved = self.layout.move_view(other, from);
+                debug_assert!(moved, "the slot the view left is still there");
                 // The zoom follows the view, as it does when its slot closes.
-                if self.layout.zoomed() == Some(kimun_notes::logic::layout_tree::Leaf::Slot(from)) {
-                    self.layout
-                        .zoom(Some(kimun_notes::logic::layout_tree::Leaf::Slot(slot)));
+                if self.layout.zoomed() == Some(Leaf::Slot(from)) {
+                    self.layout.zoom(Some(Leaf::Slot(slot)));
                 }
             }
             (Some(from), None) => {

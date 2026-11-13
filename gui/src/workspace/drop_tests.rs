@@ -1753,3 +1753,35 @@ fn the_zone_under_the_drag_is_remembered_for_its_label(cx: &mut TestAppContext) 
     release(&shell, centre, cx);
     assert_eq!(hovered(cx), None, "the drag ended");
 }
+
+/// A strip whose side has a kept-empty slot fills it, so its outcome is
+/// never "no room", however narrow the window.
+#[gpui_kit::test]
+fn the_outcome_of_filling_a_kept_empty_slot_needs_no_room(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        400.,
+        &gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+              { weight = 0.8, editor = true },\n\
+              { weight = 0.2, views = [\"outline\"], shown = \"outline\" },\n]\n"),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        shell.workspace.update(cx, |ws, _| {
+            ws.layout.hide_view(&DrawerView::Outline);
+        });
+        let outcome = shell.workspace.update(cx, |ws, _| {
+            ws.drop_outcome(
+                DrawerView::Find,
+                DragFrom::Header,
+                DropTarget::Window(Side::Right),
+                window,
+            )
+        });
+        assert_eq!(outcome, DropOutcome::AtEdge(Side::Right));
+    })
+    .unwrap();
+}

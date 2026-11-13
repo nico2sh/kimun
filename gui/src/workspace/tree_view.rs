@@ -1162,7 +1162,13 @@ impl Workspace {
             .w_full()
             .cursor_grab()
             .child(header)
-            .on_drag(ViewDrag(view, DragFrom::Header), self.view_drag_ghost(cx));
+            .on_drag(
+                ViewDrag {
+                    view,
+                    from: DragFrom::Header,
+                },
+                self.view_drag_ghost(cx),
+            );
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.

@@ -23,6 +23,7 @@ use kimun_notes::logic::layout::{Dir, Side};
 use kimun_notes::logic::layout_tree::{Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
+use kimun_notes::settings::themes::Theme;
 
 use super::placement::Placement;
 use super::{Workspace, modal};
@@ -45,7 +46,10 @@ const ZONE_REST_ALPHA: f32 = 0.3;
 /// The payload of a drag: the view being placed (from a slot header, or a
 /// rail entry whatever slot holds it, if any).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ViewDrag(pub DrawerView, pub DragFrom);
+pub(crate) struct ViewDrag {
+    pub view: DrawerView,
+    pub from: DragFrom,
+}
 
 /// Where a [`ViewDrag`] started. A slot header's drag swaps with the view
 /// it lands on; a rail entry's drag replaces it, the replaced view going
@@ -151,6 +155,17 @@ pub(crate) enum Zone {
     Edge(Dir),
 }
 
+impl Zone {
+    /// Every zone of a slot, the centre first.
+    pub(crate) const ALL: [Zone; 5] = [
+        Zone::Centre,
+        Zone::Edge(Dir::Left),
+        Zone::Edge(Dir::Right),
+        Zone::Edge(Dir::Up),
+        Zone::Edge(Dir::Down),
+    ];
+}
+
 /// The drag of a view under way: the view, and the ghost GPUI holds for as
 /// long as the drag lives (GPUI exposes no accessor for the payload, and a
 /// divider's drag is a drag too).
@@ -211,6 +226,21 @@ pub(crate) enum DropOutcome {
 }
 
 impl DropOutcome {
+    /// Whether the drop would change nothing for want of room: its zone and
+    /// label show it in the error colour.
+    pub(crate) fn is_no_room(self) -> bool {
+        matches!(self, DropOutcome::NoRoom(_))
+    }
+
+    /// The colour of the zone and label this outcome belongs to.
+    pub(crate) fn accent(outcome: Option<Self>, theme: &Theme) -> Rgba {
+        if outcome.is_some_and(Self::is_no_room) {
+            theme::error(theme)
+        } else {
+            theme::focus_border(theme)
+        }
+    }
+
     /// The words on the zone.
     pub(crate) fn label(self) -> String {
         let name = |view| view_registry::spec(view).name;
@@ -236,10 +266,10 @@ impl Workspace {
     {
         let this = cx.entity().downgrade();
         move |drag, _, _, cx| {
-            let chip = cx.new(|_| DragChip::new(drag.0));
+            let chip = cx.new(|_| DragChip::new(drag.view));
             let live = LiveViewDrag {
-                view: drag.0,
-                from: drag.1,
+                view: drag.view,
+                from: drag.from,
                 chip: chip.downgrade(),
             };
             this.update(cx, |this, cx| {
@@ -263,40 +293,33 @@ impl Workspace {
     /// so. Cleared when no drag is live.
     pub(super) fn refresh_drop_outcomes(&mut self, window: &Window, cx: &App) {
         self.drop_outcomes.clear();
-        if self.zones_for(cx).is_none() {
+        let Some(view) = self.zones_for(cx) else {
             self.hovered_zone = None;
-        }
-        let (Some(view), Some(from)) = (
-            self.zones_for(cx),
-            self.view_drag.as_ref().map(|live| live.from),
-        ) else {
             return;
         };
-        let mut targets: Vec<DropTarget> = Vec::new();
-        for slot in self.layout.slots() {
-            if self.layout.shown(slot).is_none() {
-                continue;
-            }
-            for zone in [
-                Zone::Centre,
-                Zone::Edge(Dir::Left),
-                Zone::Edge(Dir::Right),
-                Zone::Edge(Dir::Up),
-                Zone::Edge(Dir::Down),
-            ] {
-                targets.push(DropTarget::Slot(slot, zone));
-            }
-        }
-        targets.extend([
-            DropTarget::Window(Side::Left),
-            DropTarget::Window(Side::Right),
-        ]);
-        for target in targets {
+        let Some(from) = self.view_drag.as_ref().map(|live| live.from) else {
+            return;
+        };
+        for target in self.drop_targets() {
             if self.drop_target_allowed(view, target) {
                 let outcome = self.drop_outcome(view, from, target, window);
                 self.drop_outcomes.insert(target, outcome);
             }
         }
+    }
+
+    /// Every zone drawn for a drag, in layout order: the five of each drawn
+    /// slot, then the two window-edge strips. Not filtered by what a drop
+    /// would change ([`Self::drop_target_allowed`]).
+    pub(super) fn drop_targets(&self) -> Vec<DropTarget> {
+        let slot_zones = self
+            .layout
+            .slots()
+            .into_iter()
+            .filter(|slot| self.layout.shown(*slot).is_some())
+            .flat_map(|slot| Zone::ALL.map(|zone| DropTarget::Slot(slot, zone)));
+        let strips = [Side::Left, Side::Right].map(DropTarget::Window);
+        slot_zones.chain(strips).collect()
     }
 
     /// Where a drop of `view` on `target` places it: a rail drag replaces
@@ -337,14 +360,20 @@ impl Workspace {
                     DropOutcome::NoRoom(view)
                 }
             }
-            Placement::AtEdge(side) => match self.layout.edge_group(side) {
-                Some(group)
-                    if !self.new_slot_fits(view, Leaf::Group(group), side.dir(), window) =>
-                {
+            // A kept-empty slot is filled, which needs no new slot.
+            Placement::AtEdge(side) if self.window_edge_slot(side).is_some() => {
+                DropOutcome::AtEdge(side)
+            }
+            Placement::AtEdge(side) => {
+                let fits = self.layout.edge_group(side).is_none_or(|group| {
+                    self.new_slot_fits(view, Leaf::Group(group), side.dir(), window)
+                });
+                if fits {
+                    DropOutcome::AtEdge(side)
+                } else {
                     DropOutcome::NoRoom(view)
                 }
-                _ => DropOutcome::AtEdge(side),
-            },
+            }
         }
     }
 
@@ -406,38 +435,25 @@ impl Workspace {
         let dragged = self.zones_for(cx)?;
         let shown = self.layout.shown(slot)?;
         let quarter = relative(0.25);
-        let zones = [
-            Zone::Centre,
-            Zone::Edge(Dir::Left),
-            Zone::Edge(Dir::Right),
-            Zone::Edge(Dir::Up),
-            Zone::Edge(Dir::Down),
-        ]
-        .into_iter()
-        .filter_map(|zone| {
-            let target = DropTarget::Slot(slot, zone);
-            let el = self.drop_zone(zone_id(shown, zone), zone_label(zone), dragged, target, cx)?;
-            let el = match zone {
-                Zone::Centre => el.top(quarter).bottom(quarter).left(quarter).right(quarter),
-                Zone::Edge(Dir::Left) => el.top_0().bottom_0().left_0().w(quarter),
-                Zone::Edge(Dir::Right) => el.top_0().bottom_0().right_0().w(quarter),
-                Zone::Edge(Dir::Up) => el.top_0().left(quarter).right(quarter).h(quarter),
-                Zone::Edge(Dir::Down) => el.bottom_0().left(quarter).right(quarter).h(quarter),
-            };
-            Some(el.test_support().into_any_element())
-        })
-        .collect::<Vec<_>>();
+        let zones = Zone::ALL
+            .into_iter()
+            .filter_map(|zone| {
+                let target = DropTarget::Slot(slot, zone);
+                let el =
+                    self.drop_zone(zone_id(shown, zone), zone_label(zone), dragged, target, cx)?;
+                let el = match zone {
+                    Zone::Centre => el.top(quarter).bottom(quarter).left(quarter).right(quarter),
+                    Zone::Edge(Dir::Left) => el.top_0().bottom_0().left_0().w(quarter),
+                    Zone::Edge(Dir::Right) => el.top_0().bottom_0().right_0().w(quarter),
+                    Zone::Edge(Dir::Up) => el.top_0().left(quarter).right(quarter).h(quarter),
+                    Zone::Edge(Dir::Down) => el.bottom_0().left(quarter).right(quarter).h(quarter),
+                };
+                Some(el.test_support().into_any_element())
+            })
+            .collect::<Vec<_>>();
         // The labels lie over every zone, at the centre of the body, so no
         // zone's border crosses one and a narrow zone does not clip it.
-        let tags = [
-            Zone::Centre,
-            Zone::Edge(Dir::Left),
-            Zone::Edge(Dir::Right),
-            Zone::Edge(Dir::Up),
-            Zone::Edge(Dir::Down),
-        ]
-        .into_iter()
-        .filter_map(|zone| {
+        let tags = Zone::ALL.into_iter().filter_map(|zone| {
             let chip = self.zone_tag(DropTarget::Slot(slot, zone), cx)?;
             Some(
                 div()
@@ -511,12 +527,7 @@ impl Workspace {
         }
         let outcome = self.drop_outcomes.get(&target).copied()?;
         let theme = theme::current(cx);
-        let no_room = matches!(outcome, DropOutcome::NoRoom(_));
-        let accent = if no_room {
-            theme::error(&theme)
-        } else {
-            theme::focus_border(&theme)
-        };
+        let accent = DropOutcome::accent(Some(outcome), &theme);
         Some(
             div()
                 .px_2()
@@ -526,7 +537,7 @@ impl Workspace {
                 .border_1()
                 .border_color(accent)
                 .text_xs()
-                .text_color(if no_room {
+                .text_color(if outcome.is_no_room() {
                     theme::error(&theme)
                 } else {
                     theme::foreground(&theme)
@@ -553,12 +564,7 @@ impl Workspace {
         }
         let theme = theme::current(cx);
         let outcome = self.drop_outcomes.get(&target).copied();
-        let no_room = matches!(outcome, Some(DropOutcome::NoRoom(_)));
-        let accent = if no_room {
-            theme::error(&theme)
-        } else {
-            theme::focus_border(&theme)
-        };
+        let accent = DropOutcome::accent(outcome, &theme);
         let fill = Rgba {
             a: ZONE_FILL_ALPHA,
             ..accent
@@ -603,7 +609,7 @@ impl Workspace {
                 style.bg(fill).border_2().border_color(accent)
             })
             .on_drop(cx.listener(move |this, drag: &ViewDrag, window, cx| {
-                this.drop_dragged(drag.0, drag.1, target, window, cx)
+                this.drop_dragged(drag.view, drag.from, target, window, cx)
             })),
         )
     }
