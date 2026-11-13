@@ -910,3 +910,58 @@ fn the_deleted_message_stays_in_its_own_group(cx: &mut TestAppContext) {
     });
     cx.read(|cx| assert!(started.workspace.read(cx).note_gone.is_none()));
 }
+
+/// Regression lock (final review I1): Alt+Arrow between the groups of a
+/// tab makes the other group active AND moves the window to its note, as
+/// a click on the group does: the Footer's note and dirty state and FILES'
+/// open-note mark follow, zoomed or not.
+#[gpui_kit::test]
+fn directional_focus_between_groups_syncs_the_window(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    let left = started.active(cx);
+    started.split_with("b.md", cx);
+    drive(&rt, cx, |cx| {
+        started.note_in(started.active(cx), cx) == Some(path("b.md")) && started.idle(cx)
+    });
+    let right = started.active(cx);
+    assert_ne!(left, right);
+    started.set_text_in(right, "beta edited", cx);
+    started.focus_editor(cx);
+    let footer = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            (w.status.note.clone(), w.status.dirty)
+        })
+    };
+    let marked = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let files = started.workspace.read(cx).files.clone()?;
+            files.read(cx).model().open_note().cloned()
+        })
+    };
+    assert_eq!(footer(cx), (Some(path("b.md")), true));
+
+    for zoomed in [false, true] {
+        if zoomed {
+            started.press("ctrl-shift-m", cx);
+            let zoom = cx.read(|cx| started.workspace.read(cx).layout.zoomed());
+            assert_eq!(zoom, Some(Leaf::Editor));
+        }
+        started.press("alt-left", cx);
+        assert_eq!(started.active(cx), left, "zoomed={zoomed}");
+        assert_eq!(footer(cx), (Some(path("a.md")), false), "zoomed={zoomed}");
+        assert!(
+            marked(cx).is_some_and(|m| m.is_like(&path("a.md"))),
+            "FILES marks a.md, zoomed={zoomed}"
+        );
+        started.press("alt-right", cx);
+        assert_eq!(started.active(cx), right, "zoomed={zoomed}");
+        assert_eq!(footer(cx), (Some(path("b.md")), true), "zoomed={zoomed}");
+        assert!(
+            marked(cx).is_some_and(|m| m.is_like(&path("b.md"))),
+            "FILES marks b.md, zoomed={zoomed}"
+        );
+    }
+}
