@@ -33,6 +33,9 @@ use crate::{input, theme};
 /// the editor.
 const WINDOW_STRIP: f32 = 24.;
 
+/// The sides the window-edge strips lie on.
+const STRIP_SIDES: [Side; 2] = [Side::Left, Side::Right];
+
 /// The opacity of a zone's highlight (the focus colour), so the view
 /// under it still reads in light and dark themes.
 const ZONE_FILL_ALPHA: f32 = 0.25;
@@ -241,6 +244,15 @@ impl DropOutcome {
         }
     }
 
+    /// The colour of the label's text: the error colour for no room.
+    pub(crate) fn label_colour(self, theme: &Theme) -> Rgba {
+        if self.is_no_room() {
+            theme::error(theme)
+        } else {
+            theme::foreground(theme)
+        }
+    }
+
     /// The words on the zone.
     pub(crate) fn label(self) -> String {
         let name = |view| view_registry::spec(view).name;
@@ -318,7 +330,7 @@ impl Workspace {
             .into_iter()
             .filter(|slot| self.layout.shown(*slot).is_some())
             .flat_map(|slot| Zone::ALL.map(|zone| DropTarget::Slot(slot, zone)));
-        let strips = [Side::Left, Side::Right].map(DropTarget::Window);
+        let strips = STRIP_SIDES.map(DropTarget::Window);
         slot_zones.chain(strips).collect()
     }
 
@@ -477,7 +489,7 @@ impl Workspace {
         let Some(dragged) = self.zones_for(cx) else {
             return Vec::new();
         };
-        [Side::Left, Side::Right]
+        STRIP_SIDES
             .into_iter()
             .filter_map(|side| {
                 let el = self.drop_zone(
@@ -496,7 +508,7 @@ impl Workspace {
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .chain([Side::Left, Side::Right].into_iter().filter_map(|side| {
+            .chain(STRIP_SIDES.into_iter().filter_map(|side| {
                 let chip = self.zone_tag(DropTarget::Window(side), cx)?;
                 // Over the editor, just inside the strip.
                 let row = div()
@@ -537,11 +549,7 @@ impl Workspace {
                 .border_1()
                 .border_color(accent)
                 .text_xs()
-                .text_color(if outcome.is_no_room() {
-                    theme::error(&theme)
-                } else {
-                    theme::foreground(&theme)
-                })
+                .text_color(outcome.label_colour(&theme))
                 .whitespace_nowrap()
                 .child(SharedString::from(outcome.label())),
         )
@@ -689,12 +697,13 @@ impl Workspace {
     /// puts it in a new slot on that side of the slot ([`Self::spawn_beside`]);
     /// a window-edge strip does the first for that side's kept-empty slot
     /// ([`Self::window_edge_slot`]), else makes a column beside the
-    /// outermost editor group on that side ([`Self::spawn_at`]). A drop that makes a slot makes room for it;
-    /// with no room, nothing changes and a flash says so on release (the
-    /// zone is drawn all the same: whether it fits is worked out only
-    /// then). A drag from the rail ([`DragFrom::Rail`]) replaces the view a
-    /// slot shows instead of swapping ([`Self::replace_into`]). False, nothing changed, when [`Self::drop_target_allowed`]
-    /// says so.
+    /// outermost editor group on that side ([`Self::spawn_at`]). A drop
+    /// that makes a slot makes room for it; with no room, nothing changes
+    /// and a flash says so on release (the zone said so before, in red:
+    /// [`DropOutcome::NoRoom`]). A drag from the rail ([`DragFrom::Rail`])
+    /// replaces the view a slot shows instead of swapping
+    /// ([`Self::replace_into`]). False, nothing changed, when
+    /// [`Self::drop_target_allowed`] says so.
     pub(crate) fn drop_view(
         &mut self,
         view: DrawerView,
