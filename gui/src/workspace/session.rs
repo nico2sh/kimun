@@ -4,24 +4,34 @@
 //! workspace opens.
 //!
 //! **Saving.** Every change the window is told of (a notify) is checked
-//! against the record last written: a note opened or replaced in a group, a
-//! tab made, closed, switched or reordered, a group split, closed, moved or
-//! swapped, a divider dragged, another active group. A change waits
+//! against the record the file holds (last written, restored, or a
+//! launch's baseline): a note opened or replaced in a group, a tab made,
+//! closed, switched or reordered, a group split, closed, moved or swapped, a
+//! divider dragged, another active group. A change waits
 //! [`SESSION_DEBOUNCE`] for the next one (a divider drag is many), then the
 //! newest record goes to a background writer that keeps only the newest
 //! ([`SessionWriter`], the layout writer's pattern). A quit or a window close
-//! writes it at once and waits for the write. A group's note is the one it
-//! holds or is opening ([`super::note::NoteHost::target`]); a group showing
-//! an attachment holds none. Without a workspace nothing is written.
+//! writes it at once and waits for the write, when it differs from what the
+//! file holds. A group's note is the one it holds or is opening
+//! ([`super::note::NoteHost::target`]); a group showing an attachment holds
+//! none. Without a workspace nothing is written.
 //!
-//! **Restoring.** Once the vault indexed, a record that still has a note to
-//! open wins over the history: the region is rebuilt from it
+//! **Restoring.** A start with no note on the command line, or with one
+//! that was refused, restores: once the vault indexed, a record that still
+//! has a note to open wins over the history. The region is rebuilt from it
 //! ([`EditorRegion::from_record`], a gone note dropped from its group), every
 //! group gets a state ([`Workspace::replace_region`]) and each note opens
 //! in its group the normal way. With no record, or none of its notes left,
-//! the history's newest note opens as before. Until the restore lands
-//! nothing is written, so a quit meanwhile keeps the record; a change the
-//! user makes meanwhile wins over it (the restore is dropped).
+//! the history's newest note opens as before (not after a refused
+//! argument: the editor stays empty, as it did). A restore whose job fails
+//! lands on the history too. Until the restore lands nothing is written, so
+//! a quit meanwhile keeps the record, and an open asked for meanwhile waits:
+//! the newest one opens in the restored active group afterwards, by the
+//! plain open's rules (a note a restored group holds is focused there).
+//!
+//! **A note on the command line** opens alone in one group. That one group
+//! holding it (or empty, while it opens or when it will not) is no change:
+//! the record stays as it is until the arrangement differs.
 //!
 //! **A workspace switch** writes the old workspace's record under the old
 //! workspace, resets the region to one empty group, and restores the new
@@ -32,13 +42,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use gpui_kit::{Context, Subscription, Task};
+use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor_region::EditorRegion;
-use kimun_notes::settings::session::{SessionFile, SessionRecord};
+use kimun_notes::logic::startup::RestoreTarget;
+use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
 
 use super::Workspace;
 use super::group::GroupState;
 use super::note::NoteHost;
-use crate::startup::SessionRestore;
+use crate::startup::{self, Landing, SessionRestore};
 
 /// How long a change waits for the next before the record is written.
 pub(crate) const SESSION_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -145,25 +157,59 @@ fn write(file: &SessionFile, record: &SessionRecord) {
     }
 }
 
+/// How the window entered the workspace, for the record.
+pub(crate) enum SessionStart {
+    /// Land on the session record once the vault indexed; with `history`,
+    /// on the history's newest note when the record has no note left.
+    Restore { history: bool },
+    /// The note named on the command line opens alone: the record stays as
+    /// it is until the arrangement differs from that one group holding it.
+    Launch(VaultPath),
+}
+
 /// The window's side of the session file.
 #[derive(Default)]
 pub(crate) struct SessionHost {
     /// The open workspace's session file; `None` without a workspace.
     file: Option<SessionFile>,
     writer: SessionWriter,
-    /// The record last written, restored or scheduled: a change that
-    /// leaves the record as it is writes nothing.
+    /// The record the file holds as far as the window knows: the one last
+    /// written or restored, or a launch's baseline. A record equal to it is
+    /// not a change.
     last: Option<SessionRecord>,
-    /// A restore is on its way: the record of what the window held when it
-    /// started. Nothing is written meanwhile; a change from it drops the
-    /// restore.
-    restoring: Option<SessionRecord>,
+    /// A launch's empty start (one empty group, before its note lands, or
+    /// for good when that note will not open): not a change either, until
+    /// the first real change.
+    launch: Option<SessionRecord>,
+    /// The record last seen at a notify: a notify that leaves it as it is
+    /// does not restart the debounce.
+    seen: Option<SessionRecord>,
+    /// A restore is on its way: nothing is written, and an open asked for
+    /// meanwhile waits for it (`queued`).
+    restoring: bool,
+    /// The restore falls back to the history's newest note.
+    history: bool,
+    /// The newest open asked for while the restore was on its way, and its
+    /// search needles: it goes into the active group once the restore
+    /// landed.
+    queued: Option<(VaultPath, Option<Vec<String>>)>,
     /// The restore's wait for the indexing and the record's checks.
     restore_task: Option<Task<()>>,
     /// The debounce of the next write.
     timer: Option<Task<()>>,
     /// The window's notifies, each a possible change.
     _watch: Option<Subscription>,
+}
+
+/// The record of one group holding `note`: what a launch on `note` shows.
+fn one_group(note: Option<VaultPath>) -> SessionRecord {
+    SessionRecord {
+        tabs: vec![TabRecord {
+            tree: GroupTreeRecord::Leaf { note },
+            active: 0,
+        }],
+        shown: 0,
+    }
 }
 
 impl Workspace {
@@ -184,58 +230,97 @@ impl Workspace {
         })
     }
 
-    /// Record to `file` from now on (the workspace was entered). With
-    /// `restoring`, a restore is on its way and nothing is written until it
-    /// lands ([`Self::session_restored`]).
-    pub(super) fn begin_session(&mut self, file: SessionFile, restoring: bool) {
+    /// Record to `file` from now on (the workspace was entered), as `start`
+    /// says.
+    pub(super) fn begin_session(&mut self, file: SessionFile, start: SessionStart) {
         self.session.file = Some(file);
-        self.session.last = None;
-        self.session.restoring = restoring.then(|| self.session_record());
+        self.session.seen = None;
+        self.session.queued = None;
+        match start {
+            SessionStart::Restore { history } => {
+                self.session.last = None;
+                self.session.launch = None;
+                self.session.restoring = true;
+                self.session.history = history;
+            }
+            SessionStart::Launch(note) => {
+                self.session.last = Some(one_group(Some(note)));
+                self.session.launch = Some(one_group(None));
+                self.session.restoring = false;
+                self.session.history = false;
+            }
+        }
     }
 
     /// Stop recording (the workspace is left): what is not written yet is
-    /// dropped, as is a restore on its way. [`Self::write_session_now`]
-    /// first to keep it.
+    /// dropped, as is a restore on its way and an open waiting for it.
+    /// [`Self::write_session_now`] first to keep it.
     pub(super) fn end_session(&mut self) {
         self.session.file = None;
         self.session.last = None;
-        self.session.restoring = None;
+        self.session.launch = None;
+        self.session.seen = None;
+        self.session.restoring = false;
+        self.session.queued = None;
         self.session.restore_task = None;
         self.session.timer = None;
     }
 
+    /// Whether a restore is on its way: an open asked for now waits for it
+    /// ([`Self::queue_open`]).
+    pub(super) fn session_restoring(&self) -> bool {
+        self.session.restoring
+    }
+
+    /// Keep `path` (with its search needles) to open in the active group
+    /// once the restore landed. A newer open replaces it.
+    pub(super) fn queue_open(&mut self, path: VaultPath, emphasis: Option<Vec<String>>) {
+        self.session.queued = Some((path, emphasis));
+    }
+
     /// Wait for the restore `job` (the indexing, then the record's checks),
-    /// then apply what it found.
+    /// then apply what it found. A job that failed (it panicked) lands on
+    /// the history, as a start without a record does.
     pub(super) fn await_session_restore(
         &mut self,
-        job: tokio::task::JoinHandle<Option<SessionRestore>>,
+        job: tokio::task::JoinHandle<Option<Landing>>,
         cx: &mut Context<Self>,
     ) {
         self.session.restore_task = Some(cx.spawn(async move |this, cx| {
-            let restored = job.await.ok().flatten();
-            this.update(cx, |workspace, cx| workspace.session_restored(restored, cx))
-                .ok();
+            let landing = job.await;
+            this.update(cx, |workspace, cx| match landing {
+                Ok(landing) => workspace.session_restored(landing, cx),
+                Err(e) => {
+                    tracing::warn!("the session restore failed: {e}");
+                    workspace.session_restore_failed(cx)
+                }
+            })
+            .ok();
         }));
     }
 
+    /// Whether `record` is what the file holds already.
+    fn session_unchanged(&self, record: &SessionRecord) -> bool {
+        self.session.last.as_ref() == Some(record) || self.session.launch.as_ref() == Some(record)
+    }
+
     /// The window changed (or was only redrawn): when the record differs
-    /// from the last, write it after the debounce.
+    /// from what the file holds, write it after the debounce.
     fn session_changed(&mut self, cx: &mut Context<Self>) {
-        if self.session.file.is_none() {
+        if self.session.file.is_none() || self.session.restoring {
             return;
         }
         let record = self.session_record();
-        if let Some(baseline) = &self.session.restoring {
-            if *baseline == record {
-                return;
-            }
-            // The user changed something first: theirs wins.
-            self.session.restoring = None;
-        }
-        if self.session.last.as_ref() == Some(&record) {
+        if self.session.seen.as_ref() == Some(&record) {
             return;
         }
-        self.session.last = Some(record);
+        let unchanged = self.session_unchanged(&record);
+        self.session.seen = Some(record);
+        if unchanged {
+            // Back to what the file holds: nothing to write.
+            self.session.timer = None;
+            return;
+        }
         self.session.timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SESSION_DEBOUNCE).await;
             this.update(cx, |workspace, _| workspace.write_session())
@@ -243,50 +328,112 @@ impl Workspace {
         }));
     }
 
-    /// Hand the record of now to the writer. Nothing without a workspace,
-    /// nor while a restore is on its way.
+    /// Hand the record of now to the writer when it differs from what the
+    /// file holds. Nothing without a workspace, nor while a restore is on
+    /// its way.
     fn write_session(&mut self) {
         self.session.timer = None;
-        if self.session.restoring.is_some() {
+        if self.session.restoring {
             return;
         }
         let Some(file) = self.session.file.clone() else {
             return;
         };
         let record = self.session_record();
+        if self.session_unchanged(&record) {
+            return;
+        }
         self.session.last = Some(record.clone());
+        // A real change: the launch's empty start is a state like any other
+        // from now on.
+        self.session.launch = None;
         self.session.writer.submit(file, record);
     }
 
-    /// Write the record now, without the debounce, and wait for it: the
-    /// window is about to go, or to leave its workspace.
+    /// [`Self::write_session`] now, without the debounce, and wait for it:
+    /// the window is about to go, or to leave its workspace.
     pub(super) fn write_session_now(&mut self) {
         self.write_session();
         self.session.writer.flush();
     }
 
-    /// The restore's answer: `None` when the history restores instead (or
-    /// the job failed). Dropped when the user changed something meanwhile.
-    fn session_restored(&mut self, restored: Option<SessionRestore>, cx: &mut Context<Self>) {
+    /// The restore's answer ([`Landing`]); `None` when nothing restores
+    /// (a refused argument with no record left).
+    fn session_restored(&mut self, landing: Option<Landing>, cx: &mut Context<Self>) {
         self.session.restore_task = None;
-        let Some(baseline) = self.session.restoring.take() else {
-            return;
-        };
-        let Some(restored) = restored else {
-            // The history's note is on its way: it clears the Panel's
-            // "opening your last note" when it lands.
-            return;
-        };
-        self.restore_pending = false;
-        self.first_open_pending = false;
-        if self.session_record() != baseline
-            || self.groups_closing.is_some()
-            || !self.replace_region(restored.region, cx)
-        {
-            self.ensure_files_listing(cx);
-            cx.notify();
+        if !self.session.restoring {
             return;
         }
+        match landing {
+            Some(Landing::Session(restored)) => self.land_on_record(restored, cx),
+            Some(Landing::History(target)) => {
+                self.session.restoring = false;
+                // As before the record: the open asked for meanwhile goes
+                // first, then the history's note.
+                self.open_queued(cx);
+                if let Some(tx) = self.tx.clone() {
+                    startup::send_history(target, &tx);
+                }
+            }
+            None => {
+                self.session.restoring = false;
+                self.restore_pending = false;
+                self.first_open_pending = false;
+                self.open_queued(cx);
+            }
+        }
+        self.ensure_files_listing(cx);
+        cx.notify();
+    }
+
+    /// The restore failed: land on the history's newest note (unchecked,
+    /// as with a vault that did not index), or nowhere for a refused
+    /// argument.
+    fn session_restore_failed(&mut self, cx: &mut Context<Self>) {
+        self.session.restore_task = None;
+        if !self.session.restoring {
+            return;
+        }
+        let target = self.session.history.then(|| {
+            let newest = self.settings.as_ref().and_then(|settings| {
+                settings
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .current_last_paths()
+                    .first()
+                    .cloned()
+            });
+            RestoreTarget {
+                path: newest.unwrap_or_else(VaultPath::root),
+                gone: None,
+            }
+        });
+        self.session_restored(target.map(Landing::History), cx);
+    }
+
+    /// The open asked for while the restore was on its way, in the active
+    /// group by the plain open's rules (a note another group holds is
+    /// focused there).
+    fn open_queued(&mut self, cx: &mut Context<Self>) {
+        if let Some((path, emphasis)) = self.session.queued.take() {
+            self.open_note_with(path, emphasis, cx);
+        }
+    }
+
+    /// The record wins: its region replaces the window's (one empty group
+    /// at most, as every open waited), each note opens in its group, then
+    /// the open asked for meanwhile in the active group.
+    fn land_on_record(&mut self, restored: SessionRestore, cx: &mut Context<Self>) {
+        self.restore_pending = false;
+        self.first_open_pending = false;
+        if self.groups_closing.is_some() || !self.replace_region(restored.region, cx) {
+            self.session.restoring = false;
+            self.open_queued(cx);
+            return;
+        }
+        // Lifted before the record's own notes open, so they are not
+        // queued as the user's would be.
+        self.session.restoring = false;
         for (group, note) in restored.notes {
             self.open_note_in(group, note, cx);
         }
@@ -302,10 +449,12 @@ impl Workspace {
             );
         }
         // What the restore opened is what the file says: nothing to write
-        // until the user changes something.
-        self.session.last = Some(self.session_record());
-        self.ensure_files_listing(cx);
-        cx.notify();
+        // until something changes. The open asked for meanwhile is such a
+        // change.
+        let restored = self.session_record();
+        self.session.seen = Some(restored.clone());
+        self.session.last = Some(restored);
+        self.open_queued(cx);
     }
 
     /// Put `region` in place of the live editor region: every group of it
@@ -350,6 +499,9 @@ impl Workspace {
         self.note_gone = None;
         self.tab_hover = None;
         self.groups_closing = None;
+        self.with_window(cx, |workspace, window, cx| {
+            workspace.end_group_drag(window, cx)
+        });
         debug_assert!(
             self.layout
                 .region()
