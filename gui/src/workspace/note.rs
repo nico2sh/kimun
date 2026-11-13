@@ -39,7 +39,7 @@ use gpui_kit::{App, AppContext, Context, SharedString, Task, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::doc_meta::DocMeta;
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
-use kimun_notes::logic::message::AppMessage;
+use kimun_notes::logic::message::{AppMessage, TickId};
 use kimun_notes::logic::session::{
     FlushResult, NoteRead, NoteSession, OpenOutcome, SaveCompleted, SaveOutcome,
 };
@@ -83,6 +83,12 @@ pub(crate) struct NoteHost {
     /// The open note's backlink and property counts for the Footer,
     /// fetched in the background on open, save and file operations.
     pub(crate) meta: DocMeta,
+    /// Test-only: how often an autosave tick looked at this group, and how
+    /// many saves a tick began for it.
+    #[cfg(test)]
+    pub(crate) tick_checks: usize,
+    #[cfg(test)]
+    pub(crate) tick_writes: usize,
 }
 
 impl NoteHost {
@@ -98,6 +104,10 @@ impl NoteHost {
             switching: None,
             save_again: false,
             discard_expiry: None,
+            #[cfg(test)]
+            tick_checks: 0,
+            #[cfg(test)]
+            tick_writes: 0,
         }
     }
 
@@ -129,11 +139,15 @@ impl NoteHost {
     /// group goes), else the one it shows. `None` for an empty group, and
     /// for one showing an attachment (it holds no note).
     pub(crate) fn target(&self) -> Option<VaultPath> {
+        self.target_ref().cloned()
+    }
+
+    /// [`Self::target`], borrowed.
+    pub(crate) fn target_ref(&self) -> Option<&VaultPath> {
         self.wanted
             .as_ref()
             .or(self.session.pending_open())
             .or(self.note.as_ref())
-            .cloned()
     }
 }
 
@@ -848,10 +862,27 @@ impl Workspace {
 
     // ---- Saving --------------------------------------------------------------
 
-    /// The periodic tick: write the note of every group in the background
-    /// if dirty (each group's session ticks, and each tick writes them all:
-    /// a group with nothing new to write declines).
+    /// A bare autosave: write the note of every group in the background if
+    /// dirty (a group with nothing new to write declines). The GUI's own
+    /// ticks are per group ([`Self::autosave_tick`]).
     pub(crate) fn autosave(&mut self, cx: &mut Context<Self>) {
+        for group in self.group_ids() {
+            self.autosave_in(group, cx);
+        }
+    }
+
+    /// The periodic tick of one note session: write the note of the group
+    /// that session belongs to, if dirty. Every group's session runs its own
+    /// tick, so each group is looked at once per interval. A tick whose
+    /// session is gone (its group closed meanwhile) writes nothing.
+    pub(crate) fn autosave_tick(&mut self, tick: TickId, cx: &mut Context<Self>) {
+        if let Some(group) = self.group_where(|h| h.session.autosave_tick() == tick) {
+            self.autosave_in(group, cx);
+        }
+    }
+
+    /// Write `group`'s note in the background if dirty.
+    fn autosave_in(&mut self, group: GroupId, cx: &mut Context<Self>) {
         // Never while a file operation holds the note: it was flushed, and the
         // path the save would bake in may be renamed or deleted under it.
         // Nor while a property write or its reload does: the buffer's
@@ -862,15 +893,22 @@ impl Workspace {
         let Some(tx) = self.tx.clone() else {
             return;
         };
-        for group in self.group_ids() {
-            if !self.can_save_in(group) {
-                continue;
-            }
-            if let Some(state) = self.groups.get_mut(&group)
-                && let Some(host) = state.notes.as_mut()
-            {
-                host.session
-                    .spawn_autosave(Some(&state.editor.read(cx).editor), &tx);
+        #[cfg(test)]
+        if let Some(host) = self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()) {
+            host.tick_checks += 1;
+        }
+        if !self.can_save_in(group) {
+            return;
+        }
+        if let Some(state) = self.groups.get_mut(&group)
+            && let Some(host) = state.notes.as_mut()
+        {
+            let _began = host
+                .session
+                .spawn_autosave(Some(&state.editor.read(cx).editor), &tx);
+            #[cfg(test)]
+            if _began {
+                host.tick_writes += 1;
             }
         }
     }

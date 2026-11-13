@@ -17,6 +17,7 @@ use kimun_notes::settings::session::{
 };
 use tokio::runtime::Runtime;
 
+use super::drop_zones::{DropTarget, Zone};
 use super::reopen_tests::{open, pair, set_current};
 use super::session::SESSION_DEBOUNCE;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
@@ -111,6 +112,14 @@ impl Win {
 
     fn active(&self, cx: &TestAppContext) -> GroupId {
         cx.read(|cx| self.workspace.read(cx).layout.active_group())
+    }
+
+    /// The groups of the shown tab, in reading order.
+    fn groups_of_shown(&self, cx: &TestAppContext) -> Vec<GroupId> {
+        cx.read(|cx| {
+            let region = self.workspace.read(cx).layout.region();
+            region.groups(region.shown())
+        })
     }
 
     /// The groups of the region and the states held, the same set.
@@ -975,4 +984,125 @@ fn a_command_line_launch_writes_once_a_tab_is_added(cx: &mut TestAppContext) {
         Some(win.record(cx)),
         "normal writes resume"
     );
+}
+
+// ── What a notify costs ─────────────────────────────────────────────────
+
+impl Win {
+    /// How many records the window built so far.
+    fn builds(&self, cx: &TestAppContext) -> usize {
+        cx.read(|cx| self.workspace.read(cx).session.builds.get())
+    }
+
+    /// Drop `group` on `target`, as a drag does.
+    fn drop_group(&self, group: GroupId, target: DropTarget, cx: &mut TestAppContext) {
+        let workspace = self.workspace.clone();
+        let dropped = cx
+            .update_window(self.handle, |_, window, cx| {
+                workspace.update(cx, |w, cx| w.drop_group(group, target, window, cx))
+            })
+            .unwrap();
+        assert!(dropped);
+    }
+
+    /// The record is on disk once the debounce is over.
+    fn assert_written(&self, v: &TestVault, what: &str, cx: &mut TestAppContext) {
+        self.after_debounce(cx);
+        let now = self.record(cx);
+        assert_eq!(session_of(v).load(), Some(now), "{what} reaches the file");
+    }
+}
+
+/// A notify that changes nothing the record holds (a tab hovered, a flash,
+/// a redraw) builds no record, and neither do the moves of a divider drag:
+/// the one record built is the one written once the debounce is over.
+#[gpui_kit::test]
+fn a_notify_that_changes_no_record_builds_none(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, win) = started_on_a(cx, &rt);
+    win.with(cx, |w, cx| {
+        w.open_note_in_split(path("b.md"), Axis::Horizontal, cx)
+    });
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "beta");
+    win.assert_written(&v, "the split", cx);
+
+    let before = win.builds(cx);
+    let tab = cx.read(|cx| win.workspace.read(cx).layout.region().shown());
+    for i in 0..10 {
+        win.with(cx, |w, cx| {
+            w.tab_hover = (i % 2 == 0).then_some(tab);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(win.builds(cx) - before, 0, "a hover builds no record");
+
+    let first = win.groups_of_shown(cx)[0];
+    for share in [0.3, 0.35, 0.4, 0.45, 0.5, 0.55] {
+        win.with(cx, |w, cx| {
+            w.layout.region_mut().resize_after(first, share);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(win.builds(cx) - before, 0, "a drag's moves build no record");
+    win.after_debounce(cx);
+    assert_eq!(win.builds(cx) - before, 1, "the write builds one");
+    let saved = session_of(&v).load().expect("a record");
+    let GroupTreeRecord::Split { weights, .. } = &saved.tabs[0].tree else {
+        panic!("a split: {saved:?}");
+    };
+    assert!((weights[0] - 0.55).abs() < 1e-9, "{weights:?}");
+}
+
+/// Every kind of structural change still reaches the session file: an
+/// open in a new tab, a split, a resize, a tab switch, a group moved, two
+/// groups swapped, a group closed, another note in a group.
+#[gpui_kit::test]
+fn every_structural_change_reaches_the_file(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, win) = started_on_a(cx, &rt);
+
+    win.with(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "beta");
+    win.assert_written(&v, "an open in a new tab", cx);
+
+    win.with(cx, |w, cx| {
+        w.open_note_in_split(path("c.md"), Axis::Vertical, cx)
+    });
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "gamma");
+    win.assert_written(&v, "a split", cx);
+
+    let groups = win.groups_of_shown(cx);
+    win.with(cx, |w, cx| {
+        w.layout.region_mut().resize_after(groups[0], 0.3);
+        cx.notify();
+    });
+    win.assert_written(&v, "a resize", cx);
+
+    win.with(cx, |w, cx| w.step_tab(false, cx));
+    win.assert_written(&v, "a tab switch", cx);
+    win.with(cx, |w, cx| w.step_tab(true, cx));
+    win.assert_written(&v, "a tab switch back", cx);
+
+    win.drop_group(groups[0], DropTarget::Group(groups[1], Zone::Centre), cx);
+    win.assert_written(&v, "a swap", cx);
+
+    win.drop_group(groups[1], DropTarget::NewTab, cx);
+    win.assert_written(&v, "a group moved to a new tab", cx);
+    assert_eq!(win.notes_by_tab(cx).len(), 3);
+
+    win.with(cx, |w, cx| w.open_note(path("d.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "delta");
+    win.assert_written(&v, "another note in a group", cx);
+
+    let active = win.active(cx);
+    win.with(cx, |w, cx| w.close_editor_group(active, cx));
+    drive(&rt, cx, |cx| {
+        win.all_idle(cx) && cx.read(|cx| !win.workspace.read(cx).note_held())
+    });
+    win.assert_written(&v, "a group closed", cx);
+    win.assert_states_in_step(cx);
 }

@@ -96,7 +96,7 @@ use kimun_core::NoteVault;
 use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 
-use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::message::{AppMessage, AppTx, TickId};
 use crate::settings::SharedSettings;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -513,11 +513,18 @@ impl NoteSession {
         self.autosave.stop();
     }
 
-    /// (Re)start the periodic tick (`AppMessage::Autosave` every
-    /// `autosave_interval_secs`). Calls `tokio::spawn`: needs a tokio context.
+    /// (Re)start the periodic tick (`AppMessage::AutosaveOf` every
+    /// `autosave_interval_secs`, naming [`Self::autosave_tick`]). Calls
+    /// `tokio::spawn`: needs a tokio context.
     pub fn restart_autosave(&mut self, tx: &AppTx) {
         let interval = self.settings.read().unwrap().autosave_interval_secs;
         self.autosave.restart(interval, tx.clone());
+    }
+
+    /// What this session's autosave ticks name themselves as
+    /// (`AppMessage::AutosaveOf`), the same for the session's whole life.
+    pub fn autosave_tick(&self) -> TickId {
+        self.autosave.id()
     }
 
     /// The running tick's period in seconds, `None` while no tick runs.
