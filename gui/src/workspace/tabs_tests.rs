@@ -15,7 +15,7 @@ use kimun_notes::logic::layout_tree::{Axis, Focus, GroupId, Leaf};
 use kimun_notes::logic::message::AppMessage;
 use tokio::runtime::Runtime;
 
-use super::file_ops::FileOpRequest;
+use super::file_ops::{FileOpRequest, run_all_of};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -1263,4 +1263,59 @@ fn note_deleted_empties_groups_at_or_below_the_deleted_path(cx: &mut TestAppCont
     assert_eq!(started.note_in(top, cx), None);
     assert_eq!(started.note_in(k, cx), Some(path("dd/k.md")));
     started.assert_states_in_step(cx);
+}
+
+/// `group_where` walks the region's order, `group_where_active_first`
+/// tries the active group first, and neither invents a fallback.
+#[gpui_kit::test]
+fn the_group_scan_keeps_its_order_and_has_no_fallback(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    started.split("b.md", cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    let (first, active) = cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        (w.group_ids()[0], w.layout.active_group())
+    });
+    assert_ne!(first, active, "the active group is not first in the region");
+    cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        assert_eq!(w.group_where(|_| true), Some(first));
+        assert_eq!(w.group_where_active_first(|_| true), Some(active));
+        assert_eq!(w.group_where(|h| h.holds(&path("a.md"))), Some(first));
+        assert_eq!(w.group_where(|_| false), None);
+        assert_eq!(w.group_where_active_first(|_| false), None);
+    });
+}
+
+/// The fan-out starts every job before awaiting any, returns the results
+/// in the order given, and hands a panicked job back as an error.
+#[gpui_kit::test]
+fn the_fan_out_keeps_order_and_reports_a_panic(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    started.split("b.md", cx);
+    drive(&rt, cx, |cx| started.all_idle(cx));
+    let groups = cx.read(|cx| started.workspace.read(cx).group_ids());
+    let (g0, g1) = (groups[0], groups[1]);
+    type Job = std::pin::Pin<Box<dyn std::future::Future<Output = u8> + Send>>;
+    let jobs: Vec<(GroupId, Job)> = vec![
+        (
+            g0,
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                1
+            }),
+        ),
+        (g1, Box::pin(async { panic!("a flush panicked") })),
+        (g0, Box::pin(async { 3 })),
+    ];
+    let results = rt.block_on(run_all_of(jobs));
+    let order: Vec<_> = results.iter().map(|(g, _)| *g).collect();
+    assert_eq!(order, vec![g0, g1, g0]);
+    assert_eq!(*results[0].1.as_ref().unwrap(), 1);
+    assert!(results[1].1.as_ref().unwrap_err().is_panic());
+    assert_eq!(*results[2].1.as_ref().unwrap(), 3);
 }

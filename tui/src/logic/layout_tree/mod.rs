@@ -857,12 +857,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// The split behind [`Self::place_beside`]: `None` when `target` is not
     /// a leaf of the tree.
     fn place_beside_leaf(&mut self, view: V, target: Leaf, dir: Dir) -> Option<SlotId> {
-        let (axis, before) = match dir {
-            Dir::Up => (Axis::Vertical, true),
-            Dir::Down => (Axis::Vertical, false),
-            Dir::Left => (Axis::Horizontal, true),
-            Dir::Right => (Axis::Horizontal, false),
-        };
+        let (axis, before) = dir.split_axis();
         let new = SlotId(self.next_slot);
         // Beside the editor region the new slot is a side column: the share
         // of a side slot in the default layout, not half the editor.

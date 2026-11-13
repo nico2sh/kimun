@@ -112,6 +112,34 @@ impl Workspace {
         groups
     }
 
+    /// The first group, in the region's order ([`Self::group_ids`]), whose
+    /// note host satisfies `pred`. `None` when none does: a caller that
+    /// wants a fallback adds it.
+    pub(crate) fn group_where(&self, pred: impl Fn(&NoteHost) -> bool) -> Option<GroupId> {
+        self.first_group_where(self.group_ids(), pred)
+    }
+
+    /// [`Self::group_where`] trying the active group first
+    /// ([`Self::group_ids_active_first`]).
+    pub(crate) fn group_where_active_first(
+        &self,
+        pred: impl Fn(&NoteHost) -> bool,
+    ) -> Option<GroupId> {
+        self.first_group_where(self.group_ids_active_first(), pred)
+    }
+
+    fn first_group_where(
+        &self,
+        groups: Vec<GroupId>,
+        pred: impl Fn(&NoteHost) -> bool,
+    ) -> Option<GroupId> {
+        groups.into_iter().find(|group| {
+            self.state(*group)
+                .and_then(|s| s.notes.as_ref())
+                .is_some_and(&pred)
+        })
+    }
+
     /// The state of `group`, if it has one.
     pub(crate) fn state(&self, group: GroupId) -> Option<&GroupState> {
         self.groups.get(&group)
