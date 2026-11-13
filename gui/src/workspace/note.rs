@@ -47,6 +47,7 @@ use tokio::task::JoinError;
 
 use super::Workspace;
 use super::group::active_mut;
+use super::session::QueuedOpen;
 
 /// How long the "close again to discard" warning holds: a close within it
 /// (and before any new edit) discards the unsaved edits. Its own clock, not
@@ -315,6 +316,12 @@ impl Workspace {
         reason = "the tab and split chords (a later task) call it; tests use it now"
     )]
     pub(crate) fn open_note_in_new_tab(&mut self, path: VaultPath, cx: &mut Context<Self>) {
+        // A stored record still restoring would replace the new tab: the
+        // open waits for it ([`super::session`]).
+        if self.session_restoring() && self.may_open(&path) {
+            self.queue_open(path, None, QueuedOpen::NewTab);
+            return;
+        }
         if let Some(group) = self.locate_note(&path) {
             self.focus_group(group, cx);
             return;
@@ -348,6 +355,11 @@ impl Workspace {
         axis: Axis,
         cx: &mut Context<Self>,
     ) {
+        // As for a new tab: the split waits for a restore on its way.
+        if self.session_restoring() && self.may_open(&path) {
+            self.queue_open(path, None, QueuedOpen::Split(axis));
+            return;
+        }
         if let Some(group) = self.locate_note(&path) {
             self.focus_group(group, cx);
             return;
@@ -417,7 +429,7 @@ impl Workspace {
         // open goes into its active group once it landed (the newest
         // request kept, [`super::session`]).
         if self.session_restoring() {
-            self.queue_open(path, emphasis);
+            self.queue_open(path, emphasis, QueuedOpen::Plain);
             return;
         }
         // The newest request wins: an attachment still being read is dropped.

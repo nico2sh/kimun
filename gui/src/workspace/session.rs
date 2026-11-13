@@ -24,10 +24,14 @@
 //! in its group the normal way. With no record, or none of its notes left,
 //! the history's newest note opens as before (not after a refused
 //! argument: the editor stays empty, as it did). A restore whose job fails
-//! lands on the history too. Until the restore lands nothing is written, so
-//! a quit meanwhile keeps the record, and an open asked for meanwhile waits:
-//! the newest one opens in the restored active group afterwards, by the
-//! plain open's rules (a note a restored group holds is focused there).
+//! lands on the history too, and the stored record is kept (only a real
+//! change writes). Only a stored record that loads makes a restore: with
+//! none, opens go through at once as they always did. Until the restore
+//! lands nothing is written, so a quit meanwhile keeps the record, and an
+//! open asked for meanwhile waits:
+//! the newest one opens afterwards, in the restored active group by the
+//! plain open's rules (a note a restored group holds is focused there), or
+//! in a new tab or split when that is what was asked for.
 //!
 //! **A note on the command line** opens alone in one group. That one group
 //! holding it (or empty, while it opens or when it will not) is no change:
@@ -44,6 +48,7 @@ use std::time::Duration;
 use gpui_kit::{Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::layout_tree::Axis;
 use kimun_notes::logic::startup::RestoreTarget;
 use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
 
@@ -165,6 +170,20 @@ pub(crate) enum SessionStart {
     /// The note named on the command line opens alone: the record stays as
     /// it is until the arrangement differs from that one group holding it.
     Launch(VaultPath),
+    /// No stored record (or none that loads): nothing restores from it,
+    /// and opens go through at once.
+    Fresh,
+}
+
+/// Where an open asked for during a restore goes once it landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueuedOpen {
+    /// The active group, by the plain open's rules.
+    Plain,
+    /// A new tab ([`Workspace::open_note_in_new_tab`]).
+    NewTab,
+    /// A new group split off the active one ([`Workspace::open_note_in_split`]).
+    Split(Axis),
 }
 
 /// The window's side of the session file.
@@ -189,10 +208,9 @@ pub(crate) struct SessionHost {
     restoring: bool,
     /// The restore falls back to the history's newest note.
     history: bool,
-    /// The newest open asked for while the restore was on its way, and its
-    /// search needles: it goes into the active group once the restore
-    /// landed.
-    queued: Option<(VaultPath, Option<Vec<String>>)>,
+    /// The newest open asked for while the restore was on its way, its
+    /// search needles and where it goes: it opens once the restore landed.
+    queued: Option<(VaultPath, Option<Vec<String>>, QueuedOpen)>,
     /// The restore's wait for the indexing and the record's checks.
     restore_task: Option<Task<()>>,
     /// The debounce of the next write.
@@ -249,6 +267,12 @@ impl Workspace {
                 self.session.restoring = false;
                 self.session.history = false;
             }
+            SessionStart::Fresh => {
+                self.session.last = None;
+                self.session.launch = None;
+                self.session.restoring = false;
+                self.session.history = false;
+            }
         }
     }
 
@@ -272,10 +296,15 @@ impl Workspace {
         self.session.restoring
     }
 
-    /// Keep `path` (with its search needles) to open in the active group
+    /// Keep `path` (with its search needles) to open where `kind` says
     /// once the restore landed. A newer open replaces it.
-    pub(super) fn queue_open(&mut self, path: VaultPath, emphasis: Option<Vec<String>>) {
-        self.session.queued = Some((path, emphasis));
+    pub(super) fn queue_open(
+        &mut self,
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+        kind: QueuedOpen,
+    ) {
+        self.session.queued = Some((path, emphasis, kind));
     }
 
     /// Wait for the restore `job` (the indexing, then the record's checks),
@@ -394,7 +423,7 @@ impl Workspace {
         if !self.session.restoring {
             return;
         }
-        let target = self.session.history.then(|| {
+        let target: Option<RestoreTarget> = self.session.history.then(|| {
             let newest = self.settings.as_ref().and_then(|settings| {
                 settings
                     .read()
@@ -408,15 +437,30 @@ impl Workspace {
                 gone: None,
             }
         });
+        let landed = target
+            .as_ref()
+            .map(|t| t.path.clone())
+            .filter(VaultPath::is_note);
         self.session_restored(target.map(Landing::History), cx);
+        // The stored record was never applied: the history's one group
+        // (or the empty one before it lands) must not overwrite it. Only
+        // a real change does.
+        self.session.last = Some(one_group(landed));
+        self.session.launch = Some(one_group(None));
+        self.session.seen = None;
     }
 
     /// The open asked for while the restore was on its way, in the active
     /// group by the plain open's rules (a note another group holds is
     /// focused there).
     fn open_queued(&mut self, cx: &mut Context<Self>) {
-        if let Some((path, emphasis)) = self.session.queued.take() {
-            self.open_note_with(path, emphasis, cx);
+        let Some((path, emphasis, kind)) = self.session.queued.take() else {
+            return;
+        };
+        match kind {
+            QueuedOpen::Plain => self.open_note_with(path, emphasis, cx),
+            QueuedOpen::NewTab => self.open_note_in_new_tab(path, cx),
+            QueuedOpen::Split(axis) => self.open_note_in_split(path, axis, cx),
         }
     }
 
@@ -427,7 +471,14 @@ impl Workspace {
         self.restore_pending = false;
         self.first_open_pending = false;
         if self.groups_closing.is_some() || !self.replace_region(restored.region, cx) {
+            // Not applied: the stored record is still the better one, so
+            // what the window holds now is no change; only the user's own
+            // is (the open asked for meanwhile, for one).
             self.session.restoring = false;
+            let now = self.session_record();
+            self.session.seen = Some(now.clone());
+            self.session.last = Some(now);
+            self.session.launch = None;
             self.open_queued(cx);
             return;
         }

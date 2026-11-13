@@ -25,7 +25,7 @@ use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
 use kimun_notes::settings::SharedSettings;
-use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord};
+use kimun_notes::settings::session::{GroupTreeRecord, SessionRecord};
 
 /// The application's name, as the window title shows it.
 pub(crate) const APP_NAME: &str = "kimün";
@@ -207,8 +207,8 @@ pub(crate) enum Landing {
 /// left off. Reports on `tx` as the TUI's start screen does: `IndexingDone`
 /// (or `VaultConflict` for names that differ only by case).
 ///
-/// With `session`, the answer is where to land, and nothing more is sent:
-/// the session record when it still has a note to open
+/// With `session` (the stored record), the answer is where to land, and
+/// nothing more is sent: that record when it still has a note to open
 /// ([`Landing::Session`]), else, when `history`, the history's newest note
 /// ([`Landing::History`]), else nothing. Without `session`, when `history`,
 /// the history's newest note is sent: a `FlashMessage` when the last note
@@ -222,7 +222,7 @@ pub(crate) async fn index_and_restore(
     vault: Arc<NoteVault>,
     settings: SharedSettings,
     history: bool,
-    session: Option<SessionFile>,
+    session: Option<SessionRecord>,
     tx: AppTx,
 ) -> Option<Landing> {
     let indexed = match vault.validate_and_init().await {
@@ -241,18 +241,16 @@ pub(crate) async fn index_and_restore(
             false
         }
     };
-    let Some(file) = session else {
+    let Some(record) = session else {
         if history {
             let target = restore_target(&settings, Some(&vault), indexed).await;
             send_history(target, &tx);
         }
         return None;
     };
-    if let Some(record) = file.load() {
-        let restored = session_restore(&vault, &record, indexed).await;
-        if !restored.notes.is_empty() {
-            return Some(Landing::Session(restored));
-        }
+    let restored = session_restore(&vault, &record, indexed).await;
+    if !restored.notes.is_empty() {
+        return Some(Landing::Session(restored));
     }
     if !history {
         return None;
