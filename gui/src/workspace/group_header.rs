@@ -10,9 +10,9 @@
 //! The header reads like a slot header (the same strip, background and
 //! hairline, the title in the focus colour while its group has the
 //! keyboard), and its controls light up under the pointer as the tab
-//! strip's do. It is also where dragging a group's note will start (a
-//! later milestone): its id is stable for that, and nothing is draggable
-//! yet.
+//! strip's do. It is the group's drag handle: dragged past the pointer
+//! threshold it carries the group ([`super::group_drop`]), its id stable
+//! so a press that activates the group keeps the half-made drag.
 //!
 //! The **target marker**: while the keyboard is outside the editor (in a
 //! slot or on the rail) and the tab shows two or more groups, the active
@@ -33,6 +33,7 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::layout_tree::{Focus, GroupId, Leaf};
 
 use super::Workspace;
+use super::drop_zones::GroupDrag;
 use super::tab_strip::{EMPTY_LABEL, group_name};
 use crate::{keymap, theme};
 
@@ -160,6 +161,11 @@ impl Workspace {
             } else {
                 theme::foreground(&theme)
             })
+            .cursor_grab()
+            .on_drag(
+                GroupDrag { group },
+                self.group_drag_ghost(title.clone(), cx),
+            )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if this.layout.active_group() != group {
                     this.focus_group(group, cx);

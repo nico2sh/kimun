@@ -415,7 +415,7 @@ fn split_chord_on_a_group_adds_an_empty_group(cx: &mut TestAppContext) {
 
 /// On a slot the split chord still splits the slot (the chooser asks what
 /// the new slot holds) and the close chord closes it; the editor's groups
-/// do not change.
+/// do not change. A regression lock: it passed before splits existed.
 #[gpui_kit::test]
 fn split_chord_on_a_slot_still_splits_the_slot(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -450,7 +450,8 @@ fn split_chord_on_a_slot_still_splits_the_slot(cx: &mut TestAppContext) {
 }
 
 /// With one group nothing changes: no header, no group cell, no target
-/// marker even with the keyboard in a slot, and one editor drawn.
+/// marker even with the keyboard in a slot, and one editor drawn. A
+/// regression lock: one group looks as it did before splits.
 #[gpui_kit::test]
 fn header_hidden_with_one_group(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -709,7 +710,8 @@ fn target_marker_shows_on_the_active_group_while_focus_is_in_a_slot(cx: &mut Tes
 }
 
 /// A plain open from FILES replaces the note of the marked (active)
-/// group; the other group keeps its note.
+/// group; the other group keeps its note. The open is a regression lock
+/// (it passed before); the marker check is new.
 #[gpui_kit::test]
 fn plain_open_from_files_replaces_the_marked_group(cx: &mut TestAppContext) {
     let rt = runtime();
