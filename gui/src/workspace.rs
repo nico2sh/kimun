@@ -2355,9 +2355,14 @@ impl Workspace {
     /// Refused with a flash while zoomed (the new group would replace the
     /// zoomed one on screen) and while the tab's close writes its notes (it
     /// would go with the tab); nothing without a vault or while the window
-    /// closes.
+    /// closes. While a stored record restores, it waits for it
+    /// ([`session`]).
     fn split_active_group(&mut self, axis: TreeAxis, cx: &mut Context<Self>) {
         if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+            return;
+        }
+        // The restore would replace the new group: the split waits.
+        if self.hold_while_restoring(session::Queued::Split(axis)) {
             return;
         }
         if self.layout.zoomed().is_some() {

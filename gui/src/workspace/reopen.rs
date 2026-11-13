@@ -180,7 +180,8 @@ impl Workspace {
                 match self.begin_note_flush_in(group, cx) {
                     Some(flush) => flushes.push((group, flush)),
                     None => {
-                        for (begun, _) in flushes {
+                        for (begun, flush) in flushes {
+                            self.give_back_flush_in(begun, flush);
                             self.restart_tick_unless_read_only_in(begun);
                         }
                         for any in self.group_ids() {

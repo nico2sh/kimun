@@ -34,7 +34,11 @@
 //! open asked for meanwhile waits:
 //! the newest one opens afterwards, in the restored active group by the
 //! plain open's rules (a note a restored group holds is focused there), or
-//! in a new tab or split when that is what was asked for.
+//! in a new tab or split when that is what was asked for. A new tab, a
+//! split, a tab step and a group close asked for meanwhile wait the same
+//! way (the restore would replace what they made): once it landed they run
+//! in the order they were asked for, the open among them, on the restored
+//! region, each on its active group then ([`Queued`]).
 //!
 //! **A note on the command line** opens alone in one group. Until the
 //! first structural change (a tab or group added, removed, moved or
@@ -196,6 +200,24 @@ pub(crate) enum QueuedOpen {
     Split(Axis),
 }
 
+/// What was asked for while a restore was on its way, run in order once
+/// it landed ([`Workspace::run_queued`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Queued {
+    /// An open of the note, with its search needles, where the kind says.
+    /// Only the newest open is kept.
+    Open(VaultPath, Option<Vec<String>>, QueuedOpen),
+    /// [`Workspace::new_tab`].
+    NewTab,
+    /// A split of the active group ([`Workspace::split_focused`]).
+    Split(Axis),
+    /// [`Workspace::step_tab`].
+    StepTab { forward: bool },
+    /// [`Workspace::close_editor_group`] on the active group (the only
+    /// group there is while a restore is on its way).
+    CloseGroup,
+}
+
 /// The window's side of the session file.
 #[derive(Default)]
 pub(crate) struct SessionHost {
@@ -216,14 +238,14 @@ pub(crate) struct SessionHost {
     /// The record last seen at a notify: a notify that leaves it as it is
     /// does not restart the debounce.
     seen: Option<SessionRecord>,
-    /// A restore is on its way: nothing is written, and an open asked for
-    /// meanwhile waits for it (`queued`).
+    /// A restore is on its way: nothing is written, and an open or a
+    /// structural command asked for meanwhile waits for it (`queued`).
     restoring: bool,
     /// The restore falls back to the history's newest note.
     history: bool,
-    /// The newest open asked for while the restore was on its way, its
-    /// search needles and where it goes: it opens once the restore landed.
-    queued: Option<(VaultPath, Option<Vec<String>>, QueuedOpen)>,
+    /// What was asked for while the restore was on its way, in order (the
+    /// newest open only): it runs once the restore landed.
+    queued: Vec<Queued>,
     /// The restore's wait for the indexing and the record's checks.
     restore_task: Option<Task<()>>,
     /// The debounce of the next write.
@@ -279,7 +301,7 @@ impl Workspace {
     pub(super) fn begin_session(&mut self, file: SessionFile, start: SessionStart) {
         self.session.file = Some(file);
         self.session.seen = None;
-        self.session.queued = None;
+        self.session.queued.clear();
         self.session.last = None;
         self.session.launch = None;
         self.session.structure_only = false;
@@ -332,7 +354,7 @@ impl Workspace {
         self.session.structure_only = false;
         self.session.seen = None;
         self.session.restoring = false;
-        self.session.queued = None;
+        self.session.queued.clear();
         self.session.restore_task = None;
         self.session.timer = None;
     }
@@ -351,7 +373,21 @@ impl Workspace {
         emphasis: Option<Vec<String>>,
         kind: QueuedOpen,
     ) {
-        self.session.queued = Some((path, emphasis, kind));
+        self.session
+            .queued
+            .retain(|queued| !matches!(queued, Queued::Open(..)));
+        self.session.queued.push(Queued::Open(path, emphasis, kind));
+    }
+
+    /// Hold the structural `command` while a restore is on its way, to run
+    /// after the ones before it once it landed. False (nothing held) when
+    /// no restore is on its way: the caller runs it now.
+    pub(super) fn hold_while_restoring(&mut self, command: Queued) -> bool {
+        if !self.session.restoring {
+            return false;
+        }
+        self.session.queued.push(command);
+        true
     }
 
     /// Wait for the restore `job` (the indexing, then the record's checks),
@@ -449,7 +485,7 @@ impl Workspace {
                 self.session.restoring = false;
                 // As before the record: the open asked for meanwhile goes
                 // first, then the history's note.
-                self.open_queued(cx);
+                self.run_queued(cx);
                 if let Some(tx) = self.tx.clone() {
                     startup::send_history(target, &tx);
                 }
@@ -458,7 +494,7 @@ impl Workspace {
                 self.session.restoring = false;
                 self.restore_pending = false;
                 self.first_open_pending = false;
-                self.open_queued(cx);
+                self.run_queued(cx);
             }
         }
         self.ensure_files_listing(cx);
@@ -486,17 +522,28 @@ impl Workspace {
         self.keep_stored_record(newest);
     }
 
-    /// The open asked for while the restore was on its way, in the active
-    /// group by the plain open's rules (a note another group holds is
-    /// focused there).
-    fn open_queued(&mut self, cx: &mut Context<Self>) {
-        let Some((path, emphasis, kind)) = self.session.queued.take() else {
-            return;
-        };
-        match kind {
-            QueuedOpen::Plain => self.open_note_with(path, emphasis, cx),
-            QueuedOpen::NewTab => self.open_note_in_new_tab(path, cx),
-            QueuedOpen::Split(axis) => self.open_note_in_split(path, axis, cx),
+    /// What was asked for while the restore was on its way, in order: the
+    /// open in the active group by the plain open's rules (a note another
+    /// group holds is focused there), or in a new tab or split; each
+    /// structural command on the active group of then.
+    fn run_queued(&mut self, cx: &mut Context<Self>) {
+        for queued in std::mem::take(&mut self.session.queued) {
+            match queued {
+                Queued::Open(path, emphasis, QueuedOpen::Plain) => {
+                    self.open_note_with(path, emphasis, cx)
+                }
+                Queued::Open(path, _, QueuedOpen::NewTab) => self.open_note_in_new_tab(path, cx),
+                Queued::Open(path, _, QueuedOpen::Split(axis)) => {
+                    self.open_note_in_split(path, axis, cx)
+                }
+                Queued::NewTab => self.new_tab(cx),
+                Queued::Split(axis) => self.split_active_group(axis, cx),
+                Queued::StepTab { forward } => self.step_tab(forward, cx),
+                Queued::CloseGroup => {
+                    let active = self.layout.active_group();
+                    self.close_editor_group(active, cx);
+                }
+            }
         }
     }
 
@@ -515,7 +562,7 @@ impl Workspace {
             self.session.seen = Some(now.clone());
             self.session.last = Some(now);
             self.session.launch = None;
-            self.open_queued(cx);
+            self.run_queued(cx);
             return;
         }
         // Lifted before the record's own notes open, so they are not
@@ -541,7 +588,7 @@ impl Workspace {
         let restored = self.session_record();
         self.session.seen = Some(restored.clone());
         self.session.last = Some(restored);
-        self.open_queued(cx);
+        self.run_queued(cx);
     }
 
     /// Put `region` in place of the live editor region: every group of it

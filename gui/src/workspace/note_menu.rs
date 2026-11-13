@@ -34,12 +34,12 @@ use gpui_kit::{
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::file_ops::relocated;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout_tree::{Axis as TreeAxis, GroupId};
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
+use super::file_ops::path_at_or_below;
 use super::modal;
 use crate::input;
 use crate::keymap;
@@ -497,7 +497,7 @@ impl Workspace {
             open.view
                 .read(cx)
                 .target()
-                .is_some_and(|note| relocated(note, path, path).is_some())
+                .is_some_and(|note| path_at_or_below(note, path))
         });
         if stale {
             self.forget_note_menu(cx);
@@ -567,8 +567,11 @@ impl Workspace {
     }
 
     /// Run `item`, picked in `group`'s menu: the group becomes active with
-    /// the keyboard, then the item does what its chord does.
-    fn run_note_menu_pick(
+    /// the keyboard, then the item does what its chord does. Nothing when
+    /// the group is gone, or now shows another note than `target`, the one
+    /// the menu named (the pick runs a moment after the click): the item
+    /// would act on a note the user did not pick it for.
+    pub(super) fn run_note_menu_pick(
         &mut self,
         group: GroupId,
         target: Option<VaultPath>,
@@ -576,7 +579,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state(group).is_none() {
+        let Some(state) = self.state(group) else {
+            return;
+        };
+        let now = state.notes.as_ref().and_then(|h| h.note.as_ref());
+        if now != target.as_ref() {
+            self.close_note_menu(window, cx);
             return;
         }
         self.focus_group(group, cx);

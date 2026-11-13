@@ -133,6 +133,14 @@ async fn run_all_reads(
     results
 }
 
+/// Whether `note` is `base` itself or lies below it (`base` a folder
+/// holding it): what a rename, move or delete of `base` touches. Compared
+/// by components (core's `is_like` / `is_ancestor_of`), so case and
+/// absolute / relative spellings do not matter.
+pub(super) fn path_at_or_below(note: &VaultPath, base: &VaultPath) -> bool {
+    note.is_like(base) || base.is_ancestor_of(note)
+}
+
 /// An entry's name as the dialogs and the editor Panel say it.
 fn name_of(path: &VaultPath) -> String {
     path.get_parent_path().1
@@ -345,8 +353,9 @@ impl Workspace {
                 None => {
                     // The tick is back already (`begin_note_flush_in`); the
                     // groups begun before it get theirs and their input
-                    // back, their flushes dropped unrun.
-                    for (begun, _) in flushes {
+                    // back, their flushes given back unrun.
+                    for (begun, flush) in flushes {
+                        self.give_back_flush_in(begun, flush);
                         self.restart_tick_unless_read_only_in(begun);
                         self.block_input_in(begun, false, cx);
                     }
@@ -576,7 +585,7 @@ impl Workspace {
     /// says so in the editor Panel.
     pub(crate) fn note_deleted(&mut self, path: &VaultPath, cx: &mut Context<Self>) -> bool {
         self.forget_note_menu_under(path, cx);
-        self.empty_groups_where(|note| relocated(note, path, path).is_some(), cx)
+        self.empty_groups_where(|note| path_at_or_below(note, path), cx)
     }
 
     /// Empty every group whose note matches `gone` ([`Self::empty_group`]);
