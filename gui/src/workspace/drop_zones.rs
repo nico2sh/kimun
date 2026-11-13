@@ -429,12 +429,15 @@ impl Workspace {
             self.hovered_zone = None;
             return;
         };
-        // The layout cannot change while the drag lives (a drop ends it), so
-        // the outcomes are worked out once per drag and window size, not
-        // every frame.
-        // The window may change size mid-drag, and with it the room.
+        // The slots cannot change while a view's drag lives (a drop ends
+        // it), so its outcomes are worked out once per drag and window
+        // size, not every frame: each one measures the room. The window may
+        // change size mid-drag, and with it the room.
+        // A group's outcomes measure nothing, and a tab chord mid-drag
+        // (Ctrl+T, Ctrl+Tab) changes the shown tab and its groups: they are
+        // worked out every frame.
         let key = (drag, window.viewport_size());
-        if self.drop_outcomes_for == Some(key) {
+        if matches!(drag, Dragged::View(_)) && self.drop_outcomes_for == Some(key) {
             return;
         }
         self.drop_outcomes.clear();

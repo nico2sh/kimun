@@ -709,6 +709,40 @@ fn target_marker_shows_on_the_active_group_while_focus_is_in_a_slot(cx: &mut Tes
     assert!(!started.drawn(group_element(GROUP_TARGET_ID, 1), cx));
 }
 
+/// The marker bends with the Panel's rounded corners instead of sticking
+/// out past them: it is the top border of a box over the whole group, and
+/// only the top corners the group shares with the Panel are rounded (none
+/// below the tab strip, none for a group under another). GPUI's test
+/// snapshot exposes no corner radius, so the decision is checked here and
+/// the box's extent in the window; the curve itself is checked by eye.
+#[gpui_kit::test]
+fn target_marker_rounds_only_the_panel_corners(cx: &mut TestAppContext) {
+    use super::group_header::marker_corners;
+    let full = UnitRect::new(0.0, 0.0, 1.0, 1.0);
+    let left = UnitRect::new(0.0, 0.0, 0.5, 1.0);
+    let right = UnitRect::new(0.5, 0.0, 0.5, 1.0);
+    let lower_left = UnitRect::new(0.0, 0.5, 0.5, 0.5);
+    assert_eq!(marker_corners(full, false), (true, true));
+    assert_eq!(marker_corners(left, false), (true, false));
+    assert_eq!(marker_corners(right, false), (false, true));
+    assert_eq!(marker_corners(lower_left, false), (false, false));
+    assert_eq!(
+        marker_corners(left, true),
+        (false, false),
+        "under the strip"
+    );
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    started.split_with("b.md", cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    started.press("ctrl-e", cx);
+    let marker = started.bounds(group_element(GROUP_TARGET_ID, 1), cx);
+    let group = started.bounds(group_element(GROUP_ID, 1), cx);
+    assert_eq!(marker, group, "the box covers the group, inside the Panel");
+}
+
 /// A plain open from FILES replaces the note of the marked (active)
 /// group; the other group keeps its note. The open is a regression lock
 /// (it passed before); the marker check is new.

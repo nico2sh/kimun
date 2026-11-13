@@ -27,14 +27,15 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, div, rems,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, div, px, rems,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::layout_tree::{Focus, GroupId, Leaf};
+use kimun_notes::logic::layout_tree::{Focus, GroupId, Leaf, UnitRect};
 
 use super::Workspace;
 use super::drop_zones::GroupDrag;
 use super::tab_strip::{EMPTY_LABEL, group_name};
+use super::tree_view::{LEAF_BORDER, LEAF_RADIUS_REMS};
 use crate::{keymap, theme};
 
 /// A group's element id prefix (with its position in the shown tab).
@@ -59,6 +60,18 @@ pub(crate) fn group_element(prefix: &'static str, at: usize) -> ElementId {
     ElementId::NamedInteger(prefix.into(), at as u64)
 }
 
+/// Which top corners of a group at `rect` (in the region's unit square)
+/// are corners of the editor Panel too, and so rounded: (left, right).
+/// None while the tab strip is drawn above the groups (`strip`), nor for a
+/// group below another.
+pub(crate) fn marker_corners(rect: UnitRect, strip: bool) -> (bool, bool) {
+    const EPS: f64 = 1e-6;
+    if strip || rect.y() > EPS {
+        return (false, false);
+    }
+    (rect.x() <= EPS, rect.right() >= 1.0 - EPS)
+}
+
 /// What `group`'s header calls it: the name of what it shows, as the
 /// Footer names it, or `Empty`.
 pub(crate) fn group_title(workspace: &Workspace, group: GroupId, cx: &App) -> SharedString {
@@ -79,18 +92,39 @@ impl Workspace {
             && self.layout.focused() != Focus::Leaf(Leaf::Editor)
     }
 
-    /// The target marker over the group at `at`: a bar in the focus colour
-    /// along its top. Laid over the group, it takes no room and no pointer.
-    pub(super) fn render_target_marker(&self, at: usize, cx: &App) -> AnyElement {
+    /// The target marker over `group`, at `at` in the shown tab: a line in
+    /// the focus colour along its top. It is the top border of a box over
+    /// the whole group, so where the group's top corner is a corner of the
+    /// editor Panel the line bends with the Panel's rounded corner instead
+    /// of sticking out past it ([`marker_corners`]). Laid over the group,
+    /// it takes no room and no pointer. `rem` is the window's rem in px.
+    pub(super) fn render_target_marker(
+        &self,
+        at: usize,
+        group: GroupId,
+        rem: f64,
+        cx: &App,
+    ) -> AnyElement {
+        let region = self.layout.region();
+        let rect = region
+            .regions()
+            .into_iter()
+            .find(|(g, _)| *g == group)
+            .map(|(_, rect)| rect);
+        let strip = region.tabs().len() > 1 || self.dragged_group(cx).is_some();
+        let (left, right) = rect.map_or((false, false), |rect| marker_corners(rect, strip));
+        // The Panel's corner (`rounded_md`) less its border: the curve of
+        // the Panel's inner edge.
+        let radius = px((LEAF_RADIUS_REMS * rem) as f32) - LEAF_BORDER;
         div()
             .id(group_element(GROUP_TARGET_ID, at))
             .test_support()
             .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h_0p5()
-            .bg(theme::focus_border(&theme::current(cx)))
+            .inset_0()
+            .border_t_2()
+            .border_color(theme::focus_border(&theme::current(cx)))
+            .when(left, |el| el.rounded_tl(radius))
+            .when(right, |el| el.rounded_tr(radius))
             .into_any_element()
     }
 

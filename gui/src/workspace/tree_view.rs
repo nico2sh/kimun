@@ -120,7 +120,9 @@ pub(super) const LEAF_MARGIN: Pixels = px(4.);
 /// Space between a slot header (or the border) and the view under it.
 const CONTENT_PADDING: Pixels = px(8.);
 /// The hairline border of a leaf's surface (`border_1`).
-const LEAF_BORDER: Pixels = px(1.);
+pub(super) const LEAF_BORDER: Pixels = px(1.);
+/// The corner radius of a leaf's surface, in rems (`rounded_md`).
+pub(super) const LEAF_RADIUS_REMS: f64 = 0.375;
 
 /// Width a view gets inside a leaf cell `cell` px wide: the cell less the
 /// margin, the border and the content padding on both sides.
@@ -837,7 +839,7 @@ impl Workspace {
         let (axis, children) = match shape {
             GroupShape::Group(group) => {
                 let at = order.iter().position(|g| g == group).unwrap_or_default();
-                return self.render_group(at, *group, cx);
+                return self.render_group(at, *group, rem, cx);
             }
             GroupShape::Split { axis, children } => (*axis, children),
         };
@@ -920,7 +922,13 @@ impl Workspace {
     /// shows ([`Workspace::render_group_document`]), with the target marker
     /// while it wears it. A press in its document makes it the active
     /// group (its header's click does the same; its close button does not).
-    fn render_group(&self, at: usize, group: GroupId, cx: &mut Context<Self>) -> AnyElement {
+    fn render_group(
+        &self,
+        at: usize,
+        group: GroupId,
+        rem: f64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (document, _) = self.render_group_document(group, cx);
         div()
             .id(group_element(GROUP_ID, at))
@@ -951,7 +959,7 @@ impl Workspace {
                     .children(self.group_zone_layer(at, group, cx)),
             )
             .when(self.wears_target_marker(group), |el| {
-                el.child(self.render_target_marker(at, cx))
+                el.child(self.render_target_marker(at, group, rem, cx))
             })
             .into_any_element()
     }
@@ -1227,7 +1235,7 @@ impl Workspace {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .rounded_md()
+            .rounded(rems(LEAF_RADIUS_REMS as f32))
             .border_1()
             .border_color(border)
             .bg(background)
