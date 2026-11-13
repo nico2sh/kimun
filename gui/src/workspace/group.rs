@@ -246,11 +246,17 @@ impl Workspace {
             self.layout.zoom(None);
         }
         self.layout.focus(Focus::Leaf(Leaf::Editor));
+        self.follow_active_group(cx);
+        self.focus_shown_content(cx);
+        cx.notify();
+    }
+
+    /// The window follows a changed active group: the Footer and the views
+    /// take its note, and the counts kept while it was hidden are read again.
+    pub(super) fn follow_active_group(&mut self, cx: &mut Context<Self>) {
         self.sync_active_status(cx);
         // Counts kept while the group was hidden may be stale.
         self.refresh_note_counts();
-        self.focus_shown_content(cx);
-        cx.notify();
     }
 
     /// The Footer, FILES' open-note mark and the views that follow the

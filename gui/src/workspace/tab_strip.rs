@@ -64,15 +64,12 @@ pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
 pub(crate) const EMPTY_LABEL: &str = "Empty";
 /// Why no group is added to a tab whose close is under way.
 pub(crate) const TAB_CLOSING: &str = "This tab is closing. Its notes are being saved.";
-/// A tab's close glyph: the kit's own close icon (its dialogs and toasts
-/// draw it), carried by the default bundle. Lucide's `x` is not bundled.
-const CLOSE_ICON: IconName = IconName::Close;
 /// The plus button's glyph.
 const NEW_ICON: IconName = IconName::Plus;
 /// Every glyph the strip draws, for the bundle test: an icon the asset
 /// source does not carry paints nothing.
 #[cfg(test)]
-pub(crate) const ICONS: [IconName; 2] = [CLOSE_ICON, NEW_ICON];
+pub(crate) const ICONS: [IconName; 2] = [chrome::CLOSE_ICON, NEW_ICON];
 /// The widest a pill grows before its name is cut with an ellipsis.
 const LABEL_MAX_REMS: f32 = 14.;
 /// A pill's height (and the plus button's size): a comfortable click

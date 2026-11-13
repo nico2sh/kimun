@@ -1301,16 +1301,29 @@ fn the_fan_out_keeps_order_and_reports_a_panic(cx: &mut TestAppContext) {
     let groups = cx.read(|cx| started.workspace.read(cx).group_ids());
     let (g0, g1) = (groups[0], groups[1]);
     type Job = std::pin::Pin<Box<dyn std::future::Future<Output = u8> + Send>>;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let first_done = std::sync::Arc::new(AtomicBool::new(false));
+    let third_ran_before_first_done = std::sync::Arc::new(AtomicBool::new(false));
+    let (done, early) = (first_done.clone(), third_ran_before_first_done.clone());
+    let (done_first, early_third) = (done.clone(), early.clone());
     let jobs: Vec<(GroupId, Job)> = vec![
         (
             g0,
-            Box::pin(async {
+            Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                done_first.store(true, Ordering::SeqCst);
                 1
             }),
         ),
         (g1, Box::pin(async { panic!("a flush panicked") })),
-        (g0, Box::pin(async { 3 })),
+        (
+            g0,
+            Box::pin(async move {
+                // Spawned eagerly: it runs while job 1 still sleeps.
+                early_third.store(!done.load(Ordering::SeqCst), Ordering::SeqCst);
+                3
+            }),
+        ),
     ];
     let results = rt.block_on(run_all_of(jobs));
     let order: Vec<_> = results.iter().map(|(g, _)| *g).collect();
@@ -1318,4 +1331,8 @@ fn the_fan_out_keeps_order_and_reports_a_panic(cx: &mut TestAppContext) {
     assert_eq!(*results[0].1.as_ref().unwrap(), 1);
     assert!(results[1].1.as_ref().unwrap_err().is_panic());
     assert_eq!(*results[2].1.as_ref().unwrap(), 3);
+    assert!(
+        third_ran_before_first_done.load(Ordering::SeqCst),
+        "every job is spawned before the first is awaited"
+    );
 }

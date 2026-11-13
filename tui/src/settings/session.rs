@@ -242,20 +242,6 @@ impl SessionFile {
         system::replace_atomically(self.path.as_path(), &body)
     }
 
-    /// Moves this file to `dest`, for a workspace being renamed. Refuses an
-    /// existing destination; a missing source is a no-op.
-    pub fn move_to(&self, dest: &SessionFile) -> Result<(), SystemError> {
-        if !self.exists() {
-            return Ok(());
-        }
-        if dest.exists() {
-            return Err(SystemError::AlreadyExists {
-                path: dest.path.to_string(),
-            });
-        }
-        system::move_file(self.path.as_path(), dest.path.as_path())
-    }
-
     /// Deletes this file. A missing file is not an error.
     pub fn remove(&self) -> Result<(), SystemError> {
         system::remove_file(self.path.as_path())

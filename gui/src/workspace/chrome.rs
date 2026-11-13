@@ -22,6 +22,10 @@ pub(crate) fn tooltip_with_chord(label: &str, action: &ActionShortcuts, cx: &App
     }
 }
 
+/// The close glyph: the kit's own close icon (its dialogs and toasts draw
+/// it), carried by the default bundle. Lucide's `x` is not bundled.
+pub(crate) const CLOSE_ICON: IconName = IconName::Close;
+
 /// A close button: the close icon, the hover fill, a tooltip, and a click
 /// that stops propagating (the host's own click does not follow) before
 /// `on_close` runs. The caller sets the size, the rounding and whether it
@@ -44,7 +48,7 @@ pub(crate) fn close_button(
         .justify_center()
         .cursor_pointer()
         .hover(move |style| style.bg(hover))
-        .child(Icon::new(IconName::Close).size_3())
+        .child(Icon::new(CLOSE_ICON).size_3())
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
