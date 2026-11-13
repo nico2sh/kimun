@@ -11,6 +11,7 @@
 use gpui_kit::{AppContext as _, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
+use kimun_notes::logic::message::AppMessage;
 use kimun_notes::settings::session::{
     AxisRecord, GroupTreeRecord, SessionFile, SessionRecord, TabRecord,
 };
@@ -18,7 +19,7 @@ use tokio::runtime::Runtime;
 
 use super::reopen_tests::{open, pair, set_current};
 use super::session::SESSION_DEBOUNCE;
-use super::start_tests::{Started, drive, open_started, runtime, vault_start};
+use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::{LayoutStore, Workspace};
 use crate::startup::{FirstNote, Start};
 use crate::test_vault::{NAME, TestVault, test_vault};
@@ -703,7 +704,7 @@ fn a_failed_restore_lands_on_the_history(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let record = two_tab_record();
-    let (_v, win) = started(cx, &rt, &["d.md"], Some(&record), FirstNote::Restore);
+    let (v, win) = started(cx, &rt, &["d.md"], Some(&record), FirstNote::Restore);
     win.with(cx, |w, cx| {
         let job = tokio::spawn(async { panic!("the restore job fails in this test") });
         w.await_session_restore(job, cx);
@@ -713,4 +714,120 @@ fn a_failed_restore_lands_on_the_history(cx: &mut TestAppContext) {
     });
     assert!(!cx.read(|cx| win.workspace.read(cx).restore_pending));
     assert_eq!(win.notes_by_tab(cx), vec![vec![Some("d.md".to_string())]]);
+    // The stored record was never applied: the history's note does not
+    // overwrite it, at the debounce or at a quit.
+    win.after_debounce(cx);
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(session_of(&v).load(), Some(record));
+    // A real change does.
+    win.with(cx, |w, cx| w.open_note_in_new_tab(path("a.md"), cx));
+    drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "alpha");
+    win.after_debounce(cx);
+    assert_eq!(session_of(&v).load(), Some(win.record(cx)));
+}
+
+// ── Which opens wait ──────────────────────────────────────────────────────
+
+/// With no stored record nothing restores from one: an open while the
+/// vault indexes goes through at once, as before the session file.
+#[gpui_kit::test]
+fn with_no_record_an_open_during_indexing_opens_at_once(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, win) = started(cx, &rt, &["d.md"], None, FirstNote::Restore);
+    assert!(win.indexing(cx));
+    win.with(cx, |w, cx| w.open_note(path("b.md"), cx));
+    assert!(!cx.read(|cx| win.workspace.read(cx).session_restoring()));
+    assert_eq!(
+        win.record(cx).tabs[0].tree,
+        leaf(Some("b.md")),
+        "the group is on its way to it now"
+    );
+    drive(&rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+}
+
+/// With a stored record the open waits for it, and the Panel keeps saying
+/// the last session is on its way (even for an `OpenPath` on the channel).
+#[gpui_kit::test]
+fn with_a_record_an_open_during_indexing_is_queued(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    assert!(win.indexing(cx));
+    win.with(cx, |w, cx| w.open_note(path("b.md"), cx));
+    send(&win, AppMessage::open(path("d.md")), cx);
+    assert!(cx.read(|cx| win.workspace.read(cx).session_restoring()));
+    assert_eq!(
+        win.record(cx).tabs[0].tree,
+        leaf(None),
+        "nothing opened yet"
+    );
+    assert_eq!(
+        win.placeholder(cx).as_deref(),
+        Some("Opening your last note…")
+    );
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "delta"
+    });
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("d.md".to_string()), None],
+        ],
+        "the newest open, in the restored active group"
+    );
+}
+
+/// A new tab (or split) asked for during the restore waits too: no tab is
+/// made for the restore to throw away; it is made after, with its note.
+#[gpui_kit::test]
+fn a_new_tab_during_the_restore_waits_for_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    win.with(cx, |w, cx| w.open_note_in_new_tab(path("d.md"), cx));
+    assert_eq!(win.notes_by_tab(cx).len(), 1, "no tab yet");
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.text(cx) == "delta"
+    });
+    win.assert_states_in_step(cx);
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![Some("c.md".to_string()), None],
+            vec![Some("d.md".to_string())],
+        ]
+    );
+}
+
+/// A restore that cannot be applied (a close was running) leaves the stored
+/// record as it is: what the window holds instead is no change.
+#[gpui_kit::test]
+fn a_restore_that_cannot_apply_writes_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    let before = bytes(&v);
+    win.with(cx, |w, _| {
+        let group = w.layout.active_group();
+        w.groups_closing = Some((
+            super::tab_strip::CloseTarget::Group(group),
+            gpui_kit::Task::ready(()),
+        ));
+    });
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && !cx.read(|cx| win.workspace.read(cx).session_restoring())
+    });
+    win.with(cx, |w, _| w.groups_closing = None);
+    assert_eq!(win.notes_by_tab(cx), vec![vec![None]], "not applied");
+    win.after_debounce(cx);
+    win.quit(cx);
+    cx.run_until_parked();
+    assert_eq!(bytes(&v), before);
 }

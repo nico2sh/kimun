@@ -1023,24 +1023,32 @@ impl Workspace {
             self.restore_pending = restore;
             self.first_open_pending = matches!(first, FirstNote::Restore | FirstNote::Note(_));
             // The arrangement is recorded from now on ([`session`]). A
-            // start with no note (or a refused one) lands on the session
-            // record when it has a note left to open, else (no argument
-            // only) on the history. A note on the command line opens alone,
-            // and the record stays as it is until the arrangement changes.
-            let from_record = matches!(first, FirstNote::Restore | FirstNote::Rejected(_));
+            // start with no note (or a refused one) and a stored record
+            // lands on that record when it has a note left to open, else
+            // (no argument only) on the history; opens wait for it. With no
+            // record the history restores as it always did, opens going
+            // through at once. A note on the command line opens alone, and
+            // the record stays as it is until the arrangement changes.
+            // (The record is a small file of the app's own: read here, so
+            // opens know at once whether to wait.)
+            let record = matches!(first, FirstNote::Restore | FirstNote::Rejected(_))
+                .then(|| session_file.load())
+                .flatten();
+            let restoring = record.is_some();
             let start = match &first {
                 FirstNote::Note(path) => session::SessionStart::Launch(path.clone()),
-                _ => session::SessionStart::Restore { history: restore },
+                _ if restoring => session::SessionStart::Restore { history: restore },
+                _ => session::SessionStart::Fresh,
             };
-            self.begin_session(session_file.clone(), start);
+            self.begin_session(session_file, start);
             let job = tokio::spawn(startup::index_and_restore(
                 vault,
                 settings,
                 restore,
-                from_record.then_some(session_file),
+                record,
                 tx.clone(),
             ));
-            if from_record {
+            if restoring {
                 self.await_session_restore(job, cx);
             }
             match first {
@@ -1122,9 +1130,13 @@ impl Workspace {
             }
             AppMessage::OpenPath { path, emphasis } => {
                 // The restore's landing (or anything after it): no longer
-                // "opening your last note".
-                self.restore_pending = false;
-                self.first_open_pending = false;
+                // "opening your last note". Unless the session record is
+                // still restoring: the open waits for it, and so does the
+                // Panel's word that something is on its way.
+                if !self.session_restoring() {
+                    self.restore_pending = false;
+                    self.first_open_pending = false;
+                }
                 if path.is_note() {
                     // A search result arrives with its query's needles.
                     self.open_note_with(path, emphasis, cx);
