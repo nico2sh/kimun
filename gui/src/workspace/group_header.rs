@@ -23,6 +23,8 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -46,6 +48,15 @@ pub(crate) const GROUP_HEADER_ID: &str = "group-header";
 pub(crate) const GROUP_UNSAVED_ID: &str = "group-unsaved";
 /// A header's close button's id prefix.
 pub(crate) const GROUP_CLOSE_ID: &str = "group-close";
+/// A header's note-menu button's id prefix.
+pub(crate) const GROUP_MENU_ID: &str = "group-menu";
+/// The floating note-menu button of a lone group (no header).
+pub(crate) const CORNER_MENU_ID: &str = "group-menu-corner";
+/// The hover group of a lone group's document: the corner button lights up
+/// while the pointer is anywhere over it.
+pub(crate) const LONE_GROUP_HOVER: &str = "lone-group";
+/// The corner button's opacity until the group or the button is hovered.
+pub(crate) const CORNER_DIM_OPACITY: f32 = 0.35;
 /// The target marker's id prefix.
 pub(crate) const GROUP_TARGET_ID: &str = "group-target";
 /// The close glyph: the kit's own close icon, as on a tab.
@@ -80,7 +91,59 @@ pub(crate) fn group_title(workspace: &Workspace, group: GroupId, cx: &App) -> Sh
         .into()
 }
 
+/// The corner button's opacity: full while the pointer is `near` (over
+/// the group or the button), dim otherwise.
+pub(crate) fn corner_opacity(near: bool) -> f32 {
+    if near { 1.0 } else { CORNER_DIM_OPACITY }
+}
+
 impl Workspace {
+    /// The `⋯` button that opens the note menu for `group`. Its click acts
+    /// on the group it belongs to (making it active first) and stops there:
+    /// the header's own click and drag do not follow. The menu opens with
+    /// its top-left at the pointer (the click position: the button's
+    /// bounds are not recorded).
+    fn menu_button(
+        &self,
+        id: impl Into<ElementId>,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        Button::new(id)
+            .ghost()
+            .xsmall()
+            .label("⋯")
+            .tooltip("Note menu")
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if this.layout.active_group() != group {
+                    this.focus_group(group, cx);
+                }
+                this.open_note_menu(group, event.position(), window, cx);
+            }))
+    }
+
+    /// The floating corner button of a lone group: top-right of its
+    /// document, dim until the group or the button is hovered, drawn over
+    /// the document so it reserves no space. The find bar docks at the
+    /// bottom of the editor, so the two never meet.
+    pub(super) fn render_corner_menu_button(
+        &self,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("group-menu-corner-wrap")
+            .absolute()
+            .top_1()
+            .right_1()
+            .opacity(corner_opacity(false))
+            .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
+            .hover(|s| s.opacity(corner_opacity(true)))
+            .child(self.menu_button(CORNER_MENU_ID, group, cx))
+            .into_any_element()
+    }
+
     /// Whether `group` wears the target marker: it is the active group of
     /// a shown tab with two or more groups, and the keyboard is outside the
     /// editor.
@@ -224,6 +287,7 @@ impl Workspace {
                         .bg(theme::unsaved(&theme)),
                 )
             })
+            .child(self.menu_button(group_element(GROUP_MENU_ID, at), group, cx))
             .child(close)
             .into_any_element()
     }
