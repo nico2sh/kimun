@@ -986,6 +986,15 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
 
     // ── Sizes ─────────────────────────────────────────────────────────
 
+    /// The editor leaf's minimum (width, height) for [`Self::fit`] and
+    /// [`Self::make_room`], from `per_group`, one group's minimum: the
+    /// width is that many times the widest row of groups in the shown tab
+    /// ([`EditorRegion::widest_row`]), so groups side by side ask for room
+    /// and the slots collapse before any group is squeezed under its own.
+    pub fn editor_min(&self, per_group: (f64, f64)) -> (f64, f64) {
+        (per_group.0 * self.region.widest_row() as f64, per_group.1)
+    }
+
     /// Move the boundary after `leaf`'s branch so it takes `share` of the
     /// pair (see `Node::resize_after`). False when there is none.
     pub fn resize_after(&mut self, leaf: Leaf, share: f64) -> bool {

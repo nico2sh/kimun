@@ -26,6 +26,68 @@ pub enum CloseOutcome {
     Emptied,
 }
 
+/// A read-only picture of a tab's arrangement, for a frontend that draws
+/// it: each split with its axis and its children's weights (normalized per
+/// split), each group by id, in reading order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupShape {
+    Group(GroupId),
+    Split {
+        axis: Axis,
+        children: Vec<(f64, GroupShape)>,
+    },
+}
+
+impl GroupShape {
+    fn of(node: &Node<GroupId>) -> GroupShape {
+        match node.split_children() {
+            Some((axis, children)) => GroupShape::Split {
+                axis,
+                children: children
+                    .into_iter()
+                    .map(|(w, child)| (w, GroupShape::of(child)))
+                    .collect(),
+            },
+            None => GroupShape::Group(*node.as_leaf().expect("a node is a leaf or a split")),
+        }
+    }
+
+    /// The most groups that sit side by side along one row: a side-by-side
+    /// split adds its children's rows, a stacked one takes the widest.
+    /// One for a lone group.
+    pub fn widest_row(&self) -> usize {
+        match self {
+            GroupShape::Group(_) => 1,
+            GroupShape::Split {
+                axis: Axis::Horizontal,
+                children,
+            } => children.iter().map(|(_, c)| c.widest_row()).sum(),
+            GroupShape::Split {
+                axis: Axis::Vertical,
+                children,
+            } => children
+                .iter()
+                .map(|(_, c)| c.widest_row())
+                .max()
+                .unwrap_or(1),
+        }
+    }
+
+    /// The last group in reading order: in every split under it, it is in
+    /// the last child, so [`EditorRegion::resize_after`] on it moves the
+    /// boundary after this shape.
+    pub fn last_group(&self) -> GroupId {
+        match self {
+            GroupShape::Group(g) => *g,
+            GroupShape::Split { children, .. } => children
+                .last()
+                .expect("a split holds at least two children")
+                .1
+                .last_group(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Tab {
     id: TabId,
@@ -220,8 +282,11 @@ impl EditorRegion {
         Some(new)
     }
 
-    /// Close `group`. `None` for an unknown group. When the active group of
-    /// its tab closes, the group before it (or the first) becomes active.
+    /// Close `group`. `None` for an unknown group. Its neighbour takes its
+    /// area: the group (or branch) before it in its split, the one after it
+    /// when it is first; every other group keeps its size. When the active
+    /// group of its tab closes, the group before it (or the first) becomes
+    /// active.
     pub fn close_group(&mut self, group: GroupId) -> Option<CloseOutcome> {
         let tab = self.group_tab(group)?;
         let at = self.position(tab).expect("the tab exists");
@@ -246,7 +311,7 @@ impl EditorRegion {
             .into_iter()
             .position(|g| *g == group)
             .expect("the group is in the tab");
-        t.root.remove_leaf(&group);
+        t.root.remove_leaf_to_neighbour(&group);
         if t.active == group {
             let left = t.root.leaves();
             t.active = *left[pos.saturating_sub(1).min(left.len() - 1)];
@@ -260,6 +325,18 @@ impl EditorRegion {
         self.shown_tab()
             .root
             .layout(UnitRect::new(0.0, 0.0, 1.0, 1.0))
+    }
+
+    /// The shown tab's arrangement, for drawing it.
+    pub fn shape(&self) -> GroupShape {
+        GroupShape::of(&self.shown_tab().root)
+    }
+
+    /// The most groups side by side in one row of the shown tab
+    /// ([`GroupShape::widest_row`]): what the region's minimum width is a
+    /// multiple of, so a tab with groups side by side asks for more room.
+    pub fn widest_row(&self) -> usize {
+        self.shape().widest_row()
     }
 
     /// Move the boundary after `group`'s branch so it takes `share` of the
