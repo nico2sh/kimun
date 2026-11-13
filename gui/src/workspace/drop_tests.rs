@@ -13,7 +13,7 @@ use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::gui::GuiSettings;
 
-use super::drop_zones::{DropTarget, Zone, window_strip_id, zone_id};
+use super::drop_zones::{DragFrom, DropTarget, Zone, window_strip_id, zone_id};
 use super::modal::ModalKind;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use super::tests::{Shell, gui, open_shell, saved, temp_config};
@@ -67,10 +67,22 @@ fn drop_view(
     window: &mut gpui_kit::Window,
     cx: &mut gpui_kit::App,
 ) -> bool {
+    drop_view_from(shell, view, DragFrom::Header, target, window, cx)
+}
+
+/// [`drop_view`] for a drag that started at `from`.
+fn drop_view_from(
+    shell: &Shell,
+    view: DrawerView,
+    from: DragFrom,
+    target: DropTarget,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) -> bool {
     let allowed = shell.workspace.read(cx).drop_target_allowed(view, target);
     let ran = shell
         .workspace
-        .update(cx, |w, cx| w.drop_view(view, target, window, cx));
+        .update(cx, |w, cx| w.drop_view(view, from, target, window, cx));
     assert_eq!(allowed, ran, "highlighting and the drop agree");
     ran
 }
@@ -84,10 +96,10 @@ fn saved_placed(path: &std::path::Path) -> Vec<Vec<DrawerView>> {
         .collect()
 }
 
-/// The centre of another slot shows the view there; the slot it left,
-/// holding nothing now, closes (another slot is on its side).
+/// The centre of another slot that shows a view swaps the two: each takes
+/// the other's slot, and neither slot closes.
 #[gpui_kit::test]
-fn centre_drop_shows_the_view_in_that_slot_and_closes_the_vacated_one(cx: &mut TestAppContext) {
+fn centre_drop_swaps_with_the_view_shown_in_that_slot(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
@@ -109,20 +121,18 @@ fn centre_drop_shows_the_view_in_that_slot_and_closes_the_vacated_one(cx: &mut T
         ));
         let tree = layout(&shell, cx);
         assert_eq!(tree.shown(files), Some(DrawerView::Find));
-        assert_eq!(
-            tree.slot_views(files),
-            [DrawerView::Files, DrawerView::Find]
-        );
-        assert!(!tree.slots().contains(&find), "the vacated slot closed");
+        assert_eq!(tree.slot_views(files), [DrawerView::Find]);
+        assert_eq!(tree.shown(find), Some(DrawerView::Files));
+        assert_eq!(tree.slot_views(find), [DrawerView::Files]);
         assert_eq!(tree.focused(), Focus::Leaf(Leaf::Slot(files)));
     })
     .unwrap();
 }
 
-/// A view dragged on an edge of its own slot is refused, whatever else the
-/// slot holds: the drop would split its own stack.
+/// The view a slot shows, dragged on an edge of that slot, is refused
+/// whatever else the slot holds: the drop would split its own stack.
 #[gpui_kit::test]
-fn edge_drop_on_own_slot_does_nothing_even_with_hidden_views(cx: &mut TestAppContext) {
+fn edge_drop_of_the_shown_view_on_its_own_slot_does_nothing(cx: &mut TestAppContext) {
     let shell = open_shell(
         cx,
         1000.,
@@ -135,18 +145,47 @@ fn edge_drop_on_own_slot_does_nothing_even_with_hidden_views(cx: &mut TestAppCon
         window.render_frame(cx);
         let own = slot_of(&shell, DrawerView::Files, cx);
         let before = layout(&shell, cx);
-        for view in [DrawerView::Files, DrawerView::Find] {
-            for dir in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
-                assert!(!drop_view(
-                    &shell,
-                    view,
-                    DropTarget::Slot(own, Zone::Edge(dir)),
-                    window,
-                    cx
-                ));
-            }
+        for dir in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+            assert!(!drop_view(
+                &shell,
+                DrawerView::Files,
+                DropTarget::Slot(own, Zone::Edge(dir)),
+                window,
+                cx
+            ));
         }
         assert_eq!(layout(&shell, cx), before);
+    })
+    .unwrap();
+}
+
+/// A view hidden in a slot can be split out on that slot's edges: it gets
+/// a new slot and the view the slot shows stays.
+#[gpui_kit::test]
+fn edge_drop_of_a_hidden_view_on_its_own_slot_splits_it_out(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &files_over_find_hidden(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let own = slot_of(&shell, DrawerView::Find, cx);
+        assert!(drop_view(
+            &shell,
+            DrawerView::Find,
+            DropTarget::Slot(own, Zone::Edge(Dir::Down)),
+            window,
+            cx
+        ));
+        let tree = layout(&shell, cx);
+        assert_eq!(tree.shown(own), Some(DrawerView::Files));
+        let left = slots_of(&shell, Side::Left, cx);
+        assert_eq!(left.len(), 2);
+        assert_eq!(tree.shown(left[1]), Some(DrawerView::Find));
     })
     .unwrap();
 }
@@ -271,15 +310,10 @@ fn window_edge_fills_the_kept_slot_of_an_emptied_side(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        let files = slot_of(&shell, DrawerView::Files, cx);
         let right = slot_of(&shell, DrawerView::Outline, cx);
-        assert!(drop_view(
-            &shell,
-            DrawerView::Outline,
-            DropTarget::Slot(files, Zone::Centre),
-            window,
-            cx
-        ));
+        shell.workspace.update(cx, |ws, _| {
+            ws.layout.hide_view(&DrawerView::Outline);
+        });
         assert_eq!(layout(&shell, cx).shown(right), None, "kept, undrawn");
         assert_eq!(slots_of(&shell, Side::Right, cx), [right]);
 
@@ -422,7 +456,11 @@ fn drop_saves_the_layout(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             saved_placed(&path),
-            [vec![DrawerView::Files], vec![DrawerView::Outline], vec![DrawerView::Find]]
+            [
+                vec![DrawerView::Files],
+                vec![DrawerView::Outline],
+                vec![DrawerView::Find]
+            ]
         );
     })
     .unwrap();
@@ -1439,4 +1477,99 @@ fn a_drag_released_off_every_zone_is_forgotten_on_the_next_frame(cx: &mut TestAp
         "the dead drag is dropped"
     );
     assert_eq!(layout_now(&shell, cx), before);
+}
+
+/// A rail drag on the centre of a slot replaces the view shown there: that
+/// view is unplaced (back to the rail only), not kept hidden in the slot.
+#[gpui_kit::test]
+fn rail_drag_on_a_centre_unplaces_the_replaced_view(cx: &mut TestAppContext) {
+    let shell = open_shell(cx, 1000., &files_alone(), "", false, LayoutStore::Off);
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let slot = slot_of(&shell, DrawerView::Files, cx);
+        assert!(drop_view_from(
+            &shell,
+            DrawerView::Find,
+            DragFrom::Rail,
+            DropTarget::Slot(slot, Zone::Centre),
+            window,
+            cx
+        ));
+        let tree = layout(&shell, cx);
+        assert_eq!(tree.shown(slot), Some(DrawerView::Find));
+        assert_eq!(tree.slot_views(slot), [DrawerView::Find]);
+        assert_eq!(tree.view_slot(&DrawerView::Files), None, "back to the rail");
+        // Files, from the rail again, can split out like any other view.
+        assert!(drop_view_from(
+            &shell,
+            DrawerView::Files,
+            DragFrom::Rail,
+            DropTarget::Slot(slot, Zone::Edge(Dir::Down)),
+            window,
+            cx
+        ));
+        let tree = layout(&shell, cx);
+        assert_eq!(tree.shown(slot), Some(DrawerView::Find));
+        assert!(tree.view_slot(&DrawerView::Files).is_some());
+    })
+    .unwrap();
+}
+
+/// A rail drag of a view hidden in another slot replaces too, and the slot
+/// it left keeps what it still holds.
+#[gpui_kit::test]
+fn rail_drag_of_a_placed_view_replaces_and_leaves_its_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let files = slot_of(&shell, DrawerView::Files, cx);
+        assert!(drop_view_from(
+            &shell,
+            DrawerView::Outline,
+            DragFrom::Rail,
+            DropTarget::Slot(files, Zone::Centre),
+            window,
+            cx
+        ));
+        let tree = layout(&shell, cx);
+        assert_eq!(tree.shown(files), Some(DrawerView::Outline));
+        assert_eq!(tree.slot_views(files), [DrawerView::Outline]);
+        assert_eq!(tree.view_slot(&DrawerView::Files), None);
+    })
+    .unwrap();
+}
+
+/// A swap made while a slot is zoomed (by the chooser or a chord; a drop
+/// is refused then) keeps the zoom on the view, as when its slot closes.
+#[gpui_kit::test]
+fn a_swap_keeps_the_zoom_on_the_moved_view(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let files = slot_of(&shell, DrawerView::Files, cx);
+        let find = slot_of(&shell, DrawerView::Find, cx);
+        shell.workspace.update(cx, |ws, cx| {
+            ws.layout.zoom(Some(Leaf::Slot(find)));
+            assert!(ws.move_into(DrawerView::Find, files, window, cx));
+        });
+        let tree = layout(&shell, cx);
+        assert_eq!(tree.shown(files), Some(DrawerView::Find));
+        assert_eq!(tree.shown(find), Some(DrawerView::Files));
+        assert_eq!(tree.zoomed(), Some(Leaf::Slot(files)));
+    })
+    .unwrap();
 }

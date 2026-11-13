@@ -37,7 +37,16 @@ const ZONE_FILL_ALPHA: f32 = 0.25;
 /// The payload of a drag: the view being placed (from a slot header, or a
 /// rail entry whatever slot holds it, if any).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ViewDrag(pub DrawerView);
+pub(crate) struct ViewDrag(pub DrawerView, pub DragFrom);
+
+/// Where a [`ViewDrag`] started. A slot header's drag swaps with the view
+/// it lands on; a rail entry's drag replaces it, the replaced view going
+/// back to the rail unplaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragFrom {
+    Header,
+    Rail,
+}
 
 /// The element id of the ghost a drag of `view` shows (`drag-chip-files`).
 pub(crate) fn drag_chip_id(view: DrawerView) -> SharedString {
@@ -346,7 +355,7 @@ impl Workspace {
                     style.bg(fill).border_2().border_color(accent)
                 })
                 .on_drop(cx.listener(move |this, drag: &ViewDrag, window, cx| {
-                    this.drop_dragged(drag.0, target, window, cx)
+                    this.drop_dragged(drag.0, drag.1, target, window, cx)
                 })),
         )
     }
@@ -356,6 +365,7 @@ impl Workspace {
     fn drop_dragged(
         &mut self,
         view: DrawerView,
+        from: DragFrom,
         target: DropTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -364,7 +374,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        self.drop_view(view, target, window, cx);
+        self.drop_view(view, from, target, window, cx);
     }
 
     /// The slot a window-edge strip fills: the first slot outside the
@@ -377,15 +387,15 @@ impl Workspace {
     /// Whether dropping `view` on `target` changes anything: not while
     /// zoomed (the other slots are not on screen), not on the centre of the
     /// slot already showing it (a view hidden there is shown by the drop),
-    /// not on an edge of the slot already holding it (a drop would split
-    /// its own stack; the keyboard and the chooser still can), not on a
+    /// not on an edge of the slot already showing it (a drop would split
+    /// its own stack; the keyboard and the chooser still can; a view
+    /// hidden there is split out), not on a
     /// window edge whose first slot already shows it, and not on a slot
     /// that is gone. A view no slot holds is placed by any zone.
     pub(crate) fn drop_target_allowed(&self, view: DrawerView, target: DropTarget) -> bool {
         if self.layout.zoomed().is_some() {
             return false;
         }
-        let from = self.layout.view_slot(&view);
         match target {
             DropTarget::Slot(slot, zone) => {
                 if !self.layout.slots().contains(&slot) {
@@ -393,7 +403,7 @@ impl Workspace {
                 }
                 match zone {
                     Zone::Centre => self.layout.shown(slot) != Some(view),
-                    Zone::Edge(_) => from != Some(slot),
+                    Zone::Edge(_) => self.layout.shown(slot) != Some(view),
                 }
             }
             DropTarget::Window(side) => self
@@ -410,11 +420,13 @@ impl Workspace {
     /// ([`Self::spawn_at`]). A drop that makes a slot makes room for it;
     /// with no room, nothing changes and a flash says so on release (the
     /// zone is drawn all the same: whether it fits is worked out only
-    /// then). False, nothing changed, when [`Self::drop_target_allowed`]
+    /// then). A drag from the rail ([`DragFrom::Rail`]) replaces the view a
+    /// slot shows instead of swapping ([`Self::replace_into`]). False, nothing changed, when [`Self::drop_target_allowed`]
     /// says so.
     pub(crate) fn drop_view(
         &mut self,
         view: DrawerView,
+        from: DragFrom,
         target: DropTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -422,6 +434,14 @@ impl Workspace {
         if !self.drop_target_allowed(view, target) {
             return false;
         }
-        self.place(view, target.placement(), window, cx)
+        let placement = match (from, target.placement()) {
+            (DragFrom::Rail, Placement::Into(slot)) => Placement::Replace(slot),
+            (DragFrom::Rail, Placement::AtEdge(side)) => match self.window_edge_slot(side) {
+                Some(slot) => Placement::Replace(slot),
+                None => Placement::AtEdge(side),
+            },
+            (_, placement) => placement,
+        };
+        self.place(view, placement, window, cx)
     }
 }
