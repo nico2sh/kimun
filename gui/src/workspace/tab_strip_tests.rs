@@ -14,7 +14,10 @@ use tokio::runtime::Runtime;
 
 use super::file_ops::FileOpRequest;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
-use super::tab_strip::{TAB_STRIP_ID, TAB_UNSAVED_ID, tab_dirty, tab_label, tab_label_id};
+use super::tab_strip::{
+    TAB_LABELS_ID, TAB_NEW_ID, TAB_STRIP_ID, TAB_UNSAVED_ID, tab_dirty, tab_label, tab_label_id,
+    tab_trail_id,
+};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
@@ -289,7 +292,14 @@ fn strip_shows_with_two_tabs(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(started.labels(cx), ["a.md", "b.md", "Empty"]);
 
-    // The second tab's close button closes it (b.md was clean).
+    // The second tab's close button, shown under the pointer, closes it
+    // (b.md was clean).
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(tab_label_id(1), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
         window.click(ElementId::NamedInteger("tab-close".into(), 1), cx)
@@ -779,4 +789,127 @@ fn partial_rollback_when_begin_note_flush_refuses_a_later_group(cx: &mut TestApp
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta edited"));
     assert_eq!(disk(&rt, &v, "c.md").as_deref(), Some("gamma edited"));
     started.assert_states_in_step(cx);
+}
+
+/// What each pill shows, as the tests can read it: its selected state, and
+/// what its one trailing slot holds (the close button, the unsaved dot or
+/// nothing).
+struct Pill {
+    selected: Option<bool>,
+    /// The trailing slot's children: `close`, `dot`, or none.
+    trail: Vec<&'static str>,
+}
+
+impl Win {
+    fn pill(&self, at: usize, cx: &mut TestAppContext) -> Pill {
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let selected = window.find(tab_label_id(at)).selected();
+            let mut trail = Vec::new();
+            let scope = window.within(tab_trail_id(at));
+            if scope
+                .try_find(ElementId::NamedInteger("tab-close".into(), at as u64))
+                .is_some()
+            {
+                trail.push("close");
+            }
+            if scope.try_find((TAB_UNSAVED_ID, at)).is_some() {
+                trail.push("dot");
+            }
+            Pill { selected, trail }
+        })
+        .unwrap()
+    }
+
+    fn hover(&self, id: impl Into<ElementId>, cx: &mut TestAppContext) {
+        let id = id.into();
+        cx.update_window(self.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+}
+
+/// The shown tab's pill is the selected one, the others are not. Its one
+/// trailing slot holds the close button; an inactive pill's slot is empty
+/// until the pointer is over it, and then holds the close button. A tab
+/// with unsaved text shows the dot in that slot, which turns into the close
+/// button under the pointer. Never two things in one slot.
+#[gpui_kit::test]
+fn pills_show_the_selection_and_one_trailing_affordance(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    let a = started.active(cx);
+    started.new_tab_with("b.md", cx);
+    started.new_tab_with("c.md", cx);
+    drive(&rt, cx, |cx| started.idle(cx));
+    // The pointer away from the strip.
+    started.hover("editor-panel", cx);
+
+    let p = started.pill(2, cx);
+    assert_eq!((p.selected, p.trail), (Some(true), vec!["close"]));
+    for at in [0, 1] {
+        let p = started.pill(at, cx);
+        assert_eq!((p.selected, p.trail), (Some(false), vec![]), "pill {at}");
+    }
+
+    // Under the pointer an inactive pill offers its close button.
+    started.hover(tab_label_id(0), cx);
+    assert_eq!(started.pill(0, cx).trail, ["close"]);
+    assert!(started.pill(1, cx).trail.is_empty());
+    assert_eq!(
+        started.pill(2, cx).trail,
+        ["close"],
+        "the shown keeps its own"
+    );
+
+    // Unsaved text in the first tab: its slot holds the dot, and the close
+    // button again under the pointer.
+    started.set_text_in(a, "alpha edited", cx);
+    started.hover(tab_label_id(1), cx);
+    assert_eq!(started.pill(0, cx).trail, ["dot"]);
+    assert_eq!(started.pill(1, cx).trail, ["close"]);
+    started.hover(tab_label_id(0), cx);
+    assert_eq!(started.pill(0, cx).trail, ["close"]);
+    assert!(started.pill(1, cx).trail.is_empty());
+
+    // The slot keeps one size whatever it holds: the pill does not jump.
+    let widths = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..3)
+                .map(|at| window.find(tab_trail_id(at)).bounds().size.width)
+                .collect::<Vec<_>>()
+        })
+        .unwrap()
+    };
+    let w = widths(cx);
+    assert!(w.iter().all(|x| *x == w[0]), "{w:?}");
+}
+
+/// The plus button sits after the pills, outside their scrolling row, so
+/// it shows however many tabs there are.
+#[gpui_kit::test]
+fn the_plus_button_is_outside_the_scrolling_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    for _ in 0..30 {
+        started.press("ctrl-t", cx);
+    }
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.within(TAB_LABELS_ID).try_find(TAB_NEW_ID).is_none());
+        assert!(window.within(TAB_STRIP_ID).try_find(TAB_NEW_ID).is_some());
+        let row = window.find(TAB_LABELS_ID).bounds();
+        let plus = window.find(TAB_NEW_ID).bounds();
+        let strip = window.find(TAB_STRIP_ID).bounds();
+        assert!(plus.left() >= row.right(), "after the row");
+        assert!(plus.right() <= strip.right(), "inside the strip");
+        assert!(window.find(TAB_NEW_ID).visible());
+    })
+    .unwrap();
 }

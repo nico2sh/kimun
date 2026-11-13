@@ -1,11 +1,15 @@
-//! The **tab strip** (ADR-0058): a row of labels over the shown tab, one
-//! per tab, with a plus button that opens a tab. Hidden while the region
-//! holds one tab, so a window that never opens a second tab looks as it
-//! always did. A label names the note of its tab's active group
-//! ([`tab_label`]) and carries the Footer's unsaved dot while any group of
-//! the tab has unsaved text ([`tab_dirty`]). A click on a label shows its
-//! tab; its close button closes it. The strip scrolls sideways when the
-//! labels do not fit, and keeps the shown tab in view.
+//! The **tab strip** (ADR-0058): a row of pill buttons over the shown tab,
+//! one per tab, with a round plus button after them that opens a tab.
+//! Hidden while the region holds one tab, so a window that never opens a
+//! second tab looks as it always did. A pill names the note of its tab's
+//! active group ([`tab_label`]). The shown tab's pill is filled with the
+//! selected tint; the others are bare until the pointer is over them. Each
+//! pill has one trailing slot of a fixed size ([`Trail`]): the close button
+//! on the shown pill and on the pill under the pointer, else the Footer's
+//! unsaved dot while any group of the tab has unsaved text
+//! ([`tab_dirty`]). A click on a pill shows its tab; its close button
+//! closes it. The pills scroll sideways when they do not fit, and the shown
+//! tab is kept in view.
 //!
 //! The tab commands live here too: a new tab (one empty group, which takes
 //! the keyboard), the next and previous tab (wrapping), and the close.
@@ -67,8 +71,32 @@ const NEW_ICON: IconName = IconName::Plus;
 /// source does not carry paints nothing.
 #[cfg(test)]
 pub(crate) const ICONS: [IconName; 2] = [CLOSE_ICON, NEW_ICON];
-/// The widest a label grows before its name is cut with an ellipsis.
+/// The widest a pill grows before its name is cut with an ellipsis.
 const LABEL_MAX_REMS: f32 = 14.;
+/// A pill's height (and the plus button's size): a comfortable click
+/// target that keeps the strip about as tall as a slot header.
+const PILL_HEIGHT_REMS: f32 = 1.625;
+/// The trailing slot of a pill: the close button, the unsaved dot or
+/// nothing, always this size.
+const TRAIL_REMS: f32 = 1.125;
+/// The scrolling row of pills.
+pub(crate) const TAB_LABELS_ID: &str = "tab-strip-labels";
+
+/// What sits in the trailing slot of a tab's pill. The close button shows
+/// on the pill under the pointer; else the unsaved dot while any group of
+/// the tab has unsaved text (it turns into the close button under the
+/// pointer); else the close button on the shown tab; else nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trail {
+    Close,
+    Unsaved,
+    Nothing,
+}
+
+/// The element id of the trailing slot of the pill at `index`.
+pub(crate) fn tab_trail_id(index: usize) -> ElementId {
+    ElementId::NamedInteger("tab-trail".into(), index as u64)
+}
 
 /// What a running close takes away once its notes are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,7 +471,9 @@ impl Workspace {
     // ---- Drawing -------------------------------------------------------------
 
     /// The strip over the shown tab, or `None` while the region holds one
-    /// tab and no group is dragged (ADR-0058).
+    /// tab and no group is dragged (ADR-0058). A row of pill buttons that
+    /// scrolls sideways, and the round plus button after it, outside the
+    /// scroll so it always shows.
     pub(super) fn render_tab_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
@@ -472,22 +502,19 @@ impl Workspace {
             .items_center()
             .justify_center()
             .relative()
-            .size(rems(1.5))
-            .mx_1()
-            .rounded_md()
+            .size(rems(PILL_HEIGHT_REMS))
+            .rounded_full()
+            .text_color(theme::muted(&theme))
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
-            .child(
-                Icon::new(NEW_ICON)
-                    .size_4()
-                    .text_color(theme::muted(&theme)),
-            )
+            .child(Icon::new(NEW_ICON).size_4())
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.new_tab(cx)))
-            // During a group's drag: the group goes to a new tab.
+            // During a group's drag: the group goes to a new tab. The zone
+            // follows the round button.
             .children(
                 self.drop_zone(TAB_NEW_DROP_ID, DropTarget::NewTab, cx)
-                    .map(|zone| zone.inset_0().test_support()),
+                    .map(|zone| zone.inset_0().rounded_full().test_support()),
             );
         Some(
             div()
@@ -499,16 +526,21 @@ impl Workspace {
                 .flex_row()
                 .flex_none()
                 .items_center()
+                .gap_1()
                 .w_full()
+                .px_1()
+                .py_1()
                 .bg(theme::panel_background(&theme))
                 .border_b_1()
                 .border_color(theme::divider(&theme))
                 .child(
                     div()
-                        .id("tab-strip-labels")
+                        .id(TAB_LABELS_ID)
                         .test_support()
                         .flex()
                         .flex_row()
+                        .items_center()
+                        .gap_1()
                         .flex_1()
                         .min_w_0()
                         .overflow_x_scroll()
@@ -520,9 +552,38 @@ impl Workspace {
         )
     }
 
-    /// The label of `tab`, at `at` in the strip. The shown tab sits on the
-    /// page's colour with a bar in the focus colour along its top; the
-    /// others are muted and light up under the pointer.
+    /// What the trailing slot of `tab`'s pill holds (see [`Trail`]).
+    pub(crate) fn tab_trail(&self, tab: TabId, shown: bool, cx: &App) -> Trail {
+        if self.tab_hover == Some(tab) {
+            Trail::Close
+        } else if tab_dirty(self, tab, cx) {
+            Trail::Unsaved
+        } else if shown {
+            Trail::Close
+        } else {
+            Trail::Nothing
+        }
+    }
+
+    /// The pointer entered or left `tab`'s pill.
+    fn hover_tab(&mut self, tab: TabId, hovered: bool, cx: &mut Context<Self>) {
+        let now = match (hovered, self.tab_hover) {
+            (true, _) => Some(tab),
+            (false, Some(t)) if t == tab => None,
+            (false, other) => other,
+        };
+        if now != self.tab_hover {
+            self.tab_hover = now;
+            cx.notify();
+        }
+    }
+
+    /// The pill of `tab`, at `at` in the strip. The shown tab is filled
+    /// with the selected tint (the rail's shown view uses it) and reads in
+    /// the foreground colour; the others have no fill, muted text, and the
+    /// hover fill under the pointer. One trailing slot of a fixed size
+    /// holds the close button, the unsaved dot or nothing, so a pill never
+    /// changes width as the pointer moves.
     fn render_tab(&self, at: usize, tab: TabId, shown: bool, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let label = tab_label(self, tab, cx);
@@ -533,29 +594,57 @@ impl Workspace {
         } else {
             label.clone()
         };
-        let close_tip: SharedString = match keymap::chord_label(cx, &ActionShortcuts::CloseTab) {
-            Some(chord) => format!("Close tab ({chord})").into(),
-            None => "Close tab".into(),
+        let trail_content: Option<AnyElement> = match self.tab_trail(tab, shown, cx) {
+            Trail::Close => {
+                let close_tip: SharedString =
+                    match keymap::chord_label(cx, &ActionShortcuts::CloseTab) {
+                        Some(chord) => format!("Close tab ({chord})").into(),
+                        None => "Close tab".into(),
+                    };
+                Some(
+                    div()
+                        .id(ElementId::NamedInteger(TAB_CLOSE_ID.into(), at as u64))
+                        .test_support()
+                        .role(Role::Button)
+                        .aria_label("Close tab")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size_full()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .child(Icon::new(CLOSE_ICON).size_3())
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(close_tip.clone()).build(window, cx)
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.close_tab(tab, cx);
+                        }))
+                        .into_any_element(),
+                )
+            }
+            Trail::Unsaved => Some(
+                div()
+                    .id(ElementId::NamedInteger(TAB_UNSAVED_ID.into(), at as u64))
+                    .test_support()
+                    .size(rems(0.375))
+                    .rounded_full()
+                    .bg(theme::unsaved(&theme))
+                    .into_any_element(),
+            ),
+            Trail::Nothing => None,
         };
-        let close = div()
-            .id(ElementId::NamedInteger(TAB_CLOSE_ID.into(), at as u64))
+        let trail = div()
+            .id(tab_trail_id(at))
             .test_support()
-            .role(Role::Button)
-            .aria_label("Close tab")
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .size(rems(1.125))
-            .rounded_sm()
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover))
-            .child(Icon::new(CLOSE_ICON).size_3())
-            .tooltip(move |window, cx| Tooltip::new(close_tip.clone()).build(window, cx))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                this.close_tab(tab, cx);
-            }));
+            .size(rems(TRAIL_REMS))
+            .children(trail_content);
         div()
             .id(tab_label_id(at))
             .test_support()
@@ -568,32 +657,27 @@ impl Workspace {
             .flex_none()
             .items_center()
             .gap_1()
-            .h(rems(1.875))
+            .h(rems(PILL_HEIGHT_REMS))
             .max_w(rems(LABEL_MAX_REMS))
             .pl_3()
             .pr_1()
+            .rounded_full()
             .text_sm()
             .whitespace_nowrap()
             .cursor_pointer()
-            .border_r_1()
-            .border_color(theme::divider(&theme))
-            .when(shown, |row| {
-                row.bg(theme::background(&theme))
+            .when(shown, |pill| {
+                pill.bg(theme::selected_background(&theme))
                     .text_color(theme::foreground(&theme))
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h_0p5()
-                            .bg(theme::focus_border(&theme)),
-                    )
             })
-            .when(!shown, |row| {
-                row.text_color(theme::muted(&theme))
+            .when(!shown, |pill| {
+                pill.text_color(theme::muted(&theme))
                     .hover(move |style| style.bg(hover))
             })
+            .on_hover(
+                cx.listener(move |this, hovered: &bool, _: &mut Window, cx| {
+                    this.hover_tab(tab, *hovered, cx)
+                }),
+            )
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _: &mut Window, cx| this.show_tab(tab, cx)),
             )
@@ -604,22 +688,12 @@ impl Workspace {
                     .text_ellipsis()
                     .child(label),
             )
-            .when(dirty, |row| {
-                row.child(
-                    div()
-                        .id(ElementId::NamedInteger(TAB_UNSAVED_ID.into(), at as u64))
-                        .test_support()
-                        .flex_none()
-                        .size(rems(0.375))
-                        .rounded_full()
-                        .bg(theme::unsaved(&theme)),
-                )
-            })
-            .child(close)
-            // During a group's drag: the group joins this tab.
+            .child(trail)
+            // During a group's drag: the group joins this tab. The zone
+            // covers the whole pill and follows its round ends.
             .children(
                 self.drop_zone(tab_drop_id(at), DropTarget::Tab(tab), cx)
-                    .map(|zone| zone.inset_0().test_support()),
+                    .map(|zone| zone.inset_0().rounded_full().test_support()),
             )
             .into_any_element()
     }
