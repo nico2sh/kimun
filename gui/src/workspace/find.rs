@@ -933,6 +933,7 @@ impl Workspace {
         if let Some(find) = self.find.clone() {
             let shown = self.is_shown(DrawerView::Find);
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())

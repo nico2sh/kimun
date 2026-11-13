@@ -44,7 +44,7 @@ impl Started {
     fn cell(&self, col: u16, row: u16, cx: &mut TestAppContext) -> Point<Pixels> {
         cx.update_window(self.handle, |_, window, cx| {
             window.render_frame(cx);
-            let editor = self.workspace.read(cx).editor.clone();
+            let editor = self.workspace.read(cx).active_state().editor.clone();
             let painted = editor.read(cx).painted.clone().expect("a frame");
             let c = painted.cells;
             point(
@@ -106,7 +106,7 @@ fn started_on(
     // Two presses are a double-click by the clock between them: freeze it, so a
     // loaded machine cannot put 400 ms between two simulated presses.
     cx.update(|cx| {
-        let editor = started.workspace.read(cx).editor.clone();
+        let editor = started.workspace.read(cx).active_state().editor.clone();
         editor.update(cx, |view, _| {
             view.set_clock(crate::editor_view::frozen_clock)
         });
@@ -291,7 +291,16 @@ fn a_single_click_on_a_link_only_places_the_caret(cx: &mut TestAppContext) {
     started.click(on_link, cx);
     settle(&rt, cx);
     assert!(started.on("a.md", cx));
-    let caret = cx.read(|cx| started.workspace.read(cx).editor.read(cx).editor.cursor());
+    let caret = cx.read(|cx| {
+        started
+            .workspace
+            .read(cx)
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .cursor()
+    });
     // The link's brackets were concealed under the press: cell 7 is its `v`.
     assert_eq!(caret, (0, 9));
     let next = started.cell(8, 0, cx);

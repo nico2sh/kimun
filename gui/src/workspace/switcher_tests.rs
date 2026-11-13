@@ -255,7 +255,7 @@ fn picking_the_current_workspace_only_closes(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (p, started) = on_a(cx, &rt);
-    let editor = cx.read(|cx| started.workspace.read(cx).editor.entity_id());
+    let editor = cx.read(|cx| started.workspace.read(cx).active_state().editor.entity_id());
     press(&started, "f5", cx);
     press(&started, "enter", cx);
     started.settle_dialog(cx);
@@ -267,7 +267,7 @@ fn picking_the_current_workspace_only_closes(cx: &mut TestAppContext) {
     assert_eq!(current(&p.settings).as_deref(), Some("a"));
     assert_eq!(on_disk_current(&p.config).as_deref(), Some("a"));
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).editor.entity_id()),
+        cx.read(|cx| started.workspace.read(cx).active_state().editor.entity_id()),
         editor
     );
     // A click on the current row does the same.

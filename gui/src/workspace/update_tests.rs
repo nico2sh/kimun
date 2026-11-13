@@ -1249,7 +1249,7 @@ fn install_does_not_start_while_the_window_closes(cx: &mut TestAppContext) {
     s.up_found(&rt, cx);
     s.up_on_window(cx, |w, window, cx| {
         // No note open: the shortcut straight to the install.
-        w.notes.as_mut().expect("a vault").note = None;
+        w.active_state_mut().notes.as_mut().expect("a vault").note = None;
         w.closing = Closing::Flushing;
         w.install_update(window, cx);
         w.closing = Closing::Open;

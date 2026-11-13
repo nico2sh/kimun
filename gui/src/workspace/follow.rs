@@ -48,11 +48,16 @@ impl Workspace {
     /// nothing there is followable. On the attachment view, open the
     /// attachment externally (there is no caret).
     pub(crate) fn follow_at_cursor(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.attachment.is_some() {
+        if self.active_state().attachment.is_some() {
             self.open_attachment_externally(cx);
             return true;
         }
-        let target = self.editor.read(cx).editor.follow_target_at_cursor();
+        let target = self
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .follow_target_at_cursor();
         match target {
             Some(FollowTarget::Link { target, kind }) => self.follow_link(target, kind, cx),
             Some(FollowTarget::Label(name)) => self.follow_label(&name, cx),
@@ -74,7 +79,7 @@ impl Workspace {
         kind: LinkSpanKind,
         cx: &mut Context<Self>,
     ) {
-        let Some(host) = self.notes.as_ref() else {
+        let Some(host) = self.active_state().notes.as_ref() else {
             return;
         };
         // Links are followed from a note; without one there is no text.
@@ -139,7 +144,7 @@ impl Workspace {
     /// The vault path of `file`, an OS path a link resolved to; `None` when
     /// it lies outside the vault.
     fn vault_path_of(&self, file: &Path) -> Option<VaultPath> {
-        let host = self.notes.as_ref()?;
+        let host = self.active_state().notes.as_ref()?;
         VaultPath::from_path(host.session.vault().workspace_path(), file).ok()
     }
 

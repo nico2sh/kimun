@@ -785,7 +785,11 @@ impl Workspace {
         {
             return;
         }
-        let has_note = self.notes.as_ref().is_some_and(|h| h.note.is_some());
+        let has_note = self
+            .active_state()
+            .notes
+            .as_ref()
+            .is_some_and(|h| h.note.is_some());
         if !has_note || self.status.read_only {
             self.start_install(cx);
             return;

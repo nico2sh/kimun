@@ -471,7 +471,9 @@ impl Workspace {
             }
             A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
             A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => slot_focus_block(opener),
-            A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),
+            A::QuickNote | A::OpenSortDialog => {
+                self.active_state().notes.is_none().then_some(NO_WORKSPACE)
+            }
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
             A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
                 && self.focused_view() == Some(DrawerView::Find)))
@@ -517,11 +519,13 @@ impl Workspace {
                 self.perform_route(route, window, cx);
             }
             PaletteRun::Chord(ActionShortcuts::FindInBuffer) => {
-                self.editor
+                self.active_state()
+                    .editor
                     .update(cx, |editor, cx| editor.find_command(false, window, cx));
             }
             PaletteRun::Chord(ActionShortcuts::ReplaceInBuffer) => {
-                self.editor
+                self.active_state()
+                    .editor
                     .update(cx, |editor, cx| editor.find_command(true, window, cx));
             }
             PaletteRun::Chord(action) => {

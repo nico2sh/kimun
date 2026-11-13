@@ -13,6 +13,7 @@ use gpui_kit::{App, Context};
 use kimun_notes::logic::session::{FlushRequest, SaveOutcome};
 
 use super::Workspace;
+use super::group::active_mut;
 use super::note::{Closing, flush_problem};
 
 /// Why the open note cannot be let go now.
@@ -44,7 +45,7 @@ impl FlushBlock {
 impl Workspace {
     /// The first reason the open note cannot be flushed and let go, if any.
     pub(super) fn flush_block(&self, cx: &App) -> Option<FlushBlock> {
-        let host = self.notes.as_ref()?;
+        let host = self.active_state().notes.as_ref()?;
         if self.closing != Closing::Open {
             Some(FlushBlock::Closing)
         } else if self.note_held() {
@@ -65,11 +66,12 @@ impl Workspace {
     /// caller runs the request, applies it ([`Self::apply_flush`]) and
     /// unblocks typing.
     pub(super) fn begin_note_flush(&mut self, cx: &mut Context<Self>) -> Option<FlushRequest> {
-        let host = self.notes.as_mut()?;
+        let state = active_mut!(self);
+        let host = state.notes.as_mut()?;
         host.session.stop_autosave();
         match host
             .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
+            .prepare_flush(Some(&state.editor.read(cx).editor))
         {
             Ok(flush) => {
                 self.block_input(true, cx);

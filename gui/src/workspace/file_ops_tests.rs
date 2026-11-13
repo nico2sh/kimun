@@ -73,17 +73,39 @@ impl Started {
     }
 
     fn is_dirty(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     }
 
     fn note_open(&self, cx: &TestAppContext) -> Option<VaultPath> {
-        cx.read(|cx| self.workspace.read(cx).notes.as_ref()?.note.clone())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .notes
+                .as_ref()?
+                .note
+                .clone()
+        })
     }
 
     fn session_at(&self, cx: &TestAppContext) -> VaultPath {
         cx.read(|cx| {
             let w = self.workspace.read(cx);
-            w.notes.as_ref().unwrap().session.path().clone()
+            w.active_state()
+                .notes
+                .as_ref()
+                .unwrap()
+                .session
+                .path()
+                .clone()
         })
     }
 

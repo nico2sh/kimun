@@ -120,7 +120,15 @@ fn rows(s: &Started, cx: &TestAppContext) -> Vec<[String; 3]> {
 }
 
 fn is_dirty(s: &Started, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).editor.read(cx).editor.is_dirty())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .is_dirty()
+    })
 }
 
 /// Nothing holds the note: no write, no reload, no opening flush.
@@ -224,7 +232,7 @@ fn adding_a_property_writes_it_and_reloads_the_note_clean(cx: &mut TestAppContex
     drive(&rt, cx, |cx| {
         cx.read(|cx| {
             let w = started.workspace.read(cx);
-            w.notes.as_ref().unwrap().meta.properties() == Some(3)
+            w.active_state().notes.as_ref().unwrap().meta.properties() == Some(3)
         })
     });
     // No tick writes the old frontmatter back.
@@ -528,7 +536,8 @@ fn a_write_under_unsaved_edits_is_refused(cx: &mut TestAppContext) {
     let (v, started) = started_on(cx, &rt, &[("a.md", TOML)], "a.md");
     open_loaded(&rt, &started, cx);
     started.workspace.update(cx, |w, cx| {
-        w.editor
+        w.active_state_mut()
+            .editor
             .update(cx, |view, _| view.editor.insert_at_cursor("typed"))
     });
     assert!(is_dirty(&started, cx));

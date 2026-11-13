@@ -929,7 +929,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if modal::dialog_open(window, cx) || self.notes.is_none() {
+        if modal::dialog_open(window, cx) || self.active_state().notes.is_none() {
             return;
         }
         let title = format!("{} notes match \"{target}\"", results.len());
@@ -1003,7 +1003,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<NotePicker<R>>> {
         let tx = self.tx.clone()?;
-        let vault = self.notes.as_ref().map(|host| host.session.vault().clone());
+        let vault = self
+            .active_state()
+            .notes
+            .as_ref()
+            .map(|host| host.session.vault().clone());
         let workspace = cx.entity().downgrade();
         let picker = cx.new(|cx| {
             NotePicker::new(

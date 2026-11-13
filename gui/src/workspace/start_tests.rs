@@ -44,7 +44,7 @@ pub(super) struct Started {
 impl Started {
     pub(super) fn text(&self, cx: &TestAppContext) -> String {
         cx.read(|cx| {
-            let editor = self.workspace.read(cx).editor.clone();
+            let editor = self.workspace.read(cx).active_state().editor.clone();
             editor.read(cx).editor.get_text()
         })
     }
@@ -703,7 +703,7 @@ fn a_redraw_on_the_channel_repaints_the_editor(cx: &mut TestAppContext) {
     use std::cell::Cell;
     use std::rc::Rc;
     let started = open_started(cx, no_vault(), no_settings());
-    let editor = cx.read(|cx| started.workspace.read(cx).editor.clone());
+    let editor = cx.read(|cx| started.workspace.read(cx).active_state().editor.clone());
     let notified = Rc::new(Cell::new(0));
     let _observer = cx.update(|cx| {
         let notified = notified.clone();

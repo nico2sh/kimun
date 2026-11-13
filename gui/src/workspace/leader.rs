@@ -219,7 +219,7 @@ impl Workspace {
     /// with the keyboard, in Normal mode with nothing pending, its find bar
     /// closed and its input open.
     fn space_leads(&self, cx: &gpui_kit::App) -> bool {
-        let view = self.editor.read(cx);
+        let view = self.active_state().editor.read(cx);
         self.focused_panel() == Panel::Editor
             && self.empty.is_none()
             && self.note_empty_state().is_none()
