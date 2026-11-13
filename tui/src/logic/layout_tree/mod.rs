@@ -57,8 +57,9 @@ fn first_at_rail(regions: &[(Leaf, UnitRect)], rail: RailPosition) -> Option<Lea
         .map(|(l, _)| *l)
 }
 
-/// The share of its split a slot placed beside an editor group takes: the
-/// weight of a side slot in [`LayoutTree::default_layout`].
+/// The share of its split a side column takes: a side slot of
+/// [`LayoutTree::default_layout`], and a slot placed left or right of an
+/// editor group.
 const SIDE_COLUMN_SHARE: f64 = 0.2;
 
 /// Identifies one slot. Stable across splits and closes.
@@ -202,9 +203,9 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let root = Node::split(
             Axis::Horizontal,
             vec![
-                (0.2, Node::leaf(Leaf::Slot(left))),
+                (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(left))),
                 (0.6, Node::leaf(Leaf::Group(GroupId::new(0)))),
-                (0.2, Node::leaf(Leaf::Slot(right))),
+                (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(right))),
             ],
         );
         let slots = BTreeMap::from([
@@ -866,7 +867,8 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let new = SlotId(self.next_slot);
         // Beside an editor group the new slot is a side column: the share
         // of a side slot in the default layout, not half the editor.
-        let share = matches!(target, Leaf::Group(_)).then_some(SIDE_COLUMN_SHARE);
+        let share = (matches!(target, Leaf::Group(_)) && axis == Axis::Horizontal)
+            .then_some(SIDE_COLUMN_SHARE);
         if !self
             .root
             .split_leaf_at(&target, axis, Leaf::Slot(new), before, share)
