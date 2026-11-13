@@ -92,14 +92,14 @@ pub(crate) const TOO_SMALL: &str = "Too small";
 /// The element id of that placeholder.
 pub(crate) const TOO_SMALL_ID: &str = "slot-too-small";
 
-/// The element id of the `⋯` in the header of the slot showing `view`
-/// (`slot-move-files`).
 /// The slot menu's item that opens the move chooser.
 pub(crate) const MOVE_VIEW_ITEM: &str = "Move view…";
 
 /// The slot menu's item that closes the slot.
 pub(crate) const CLOSE_SLOT_ITEM: &str = "Close slot";
 
+/// The element id of the `⋯` in the header of the slot showing `view`
+/// (`slot-move-files`).
 pub(crate) fn move_button_id(view: DrawerView) -> SharedString {
     format!("slot-move-{}", view.id()).into()
 }
@@ -1196,8 +1196,12 @@ impl Workspace {
                         .tooltip("View actions")
                         .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, {
                             let this = cx.entity().downgrade();
-                            let only = self.layout.last_on_side(slot);
-                            move |menu, _, _| {
+                            move |menu, _, cx| {
+                                // Worked out when the menu opens, not every
+                                // frame: each side reading is a layout pass.
+                                let only = this
+                                    .upgrade()
+                                    .is_none_or(|ws| ws.read(cx).layout.last_on_side(slot));
                                 let run = |action: fn(&mut Workspace, SlotId, &mut Window, &mut Context<Workspace>)| {
                                     let this = this.clone();
                                     move |_: &ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
