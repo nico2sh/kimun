@@ -532,6 +532,11 @@ pub(crate) struct Workspace {
     /// The view being dragged onto a drop zone, while one is
     /// ([`Self::dragged_view`]).
     view_drag: Option<LiveViewDrag>,
+    /// What a drop on each zone would do, worked out each frame while a
+    /// view is dragged ([`Self::refresh_drop_outcomes`]); empty otherwise.
+    drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
+    /// The zone the drag is over, for its label ([`Self::zone_tag`]).
+    hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
     /// is open ([`modal`]).
     pub(crate) modal: Option<ModalKind>,
@@ -804,6 +809,8 @@ impl Workspace {
             _on_quit: None,
             _shell_keys: shell_keys,
             view_drag: None,
+            drop_outcomes: HashMap::new(),
+            hovered_zone: None,
             modal: None,
             palette: None,
             view_chooser: None,
@@ -2026,9 +2033,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<SlotId, NoNewSlot> {
+        let placed = self.try_new_slot(view, beside, dir, window);
+        if placed == Err(NoNewSlot::NoRoom) {
+            let name = view_registry::spec(view).name;
+            self.flash(format!("No room for {name} here"), cx);
+        }
+        placed
+    }
+
+    /// The model steps of [`Self::place_new_slot`], without its flash: on
+    /// `Err` the layout is as it was.
+    fn try_new_slot(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &Window,
+    ) -> Result<SlotId, NoNewSlot> {
         let visible = self.fitting_leaves(window);
         let from = self.layout.view_slot(&view);
-        let placed = self.try_layout(|ws| {
+        self.try_layout(|ws| {
             let new = match beside {
                 Leaf::Slot(slot) => ws.layout.place_beside(view, slot, dir),
                 Leaf::Group(group) => ws.layout.place_beside_group(view, group, dir),
@@ -2042,12 +2066,23 @@ impl Workspace {
             } else {
                 Err(NoNewSlot::NoRoom)
             }
-        });
-        if placed == Err(NoNewSlot::NoRoom) {
-            let name = view_registry::spec(view).name;
-            self.flash(format!("No room for {name} here"), cx);
-        }
-        placed
+        })
+    }
+
+    /// Whether the window has room for `view` in a new slot on the `dir`
+    /// side of `beside`: the steps of [`Self::place_new_slot`] run and
+    /// undone, the layout as it was either way.
+    pub(super) fn new_slot_fits(
+        &mut self,
+        view: DrawerView,
+        beside: Leaf,
+        dir: Dir,
+        window: &Window,
+    ) -> bool {
+        let undo = self.layout.clone();
+        let fits = self.try_new_slot(view, beside, dir, window).is_ok();
+        self.layout = undo;
+        fits
     }
 
     /// Run `edit`, which may change the layout and nothing else of the
@@ -3127,6 +3162,7 @@ impl Render for Workspace {
     /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prune_view_drag(cx);
+        self.refresh_drop_outcomes(window, cx);
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
         // The tree is fitted to the height the bar leaves; a change in the

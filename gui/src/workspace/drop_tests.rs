@@ -13,7 +13,7 @@ use kimun_notes::logic::layout_tree::{Focus, LayoutTree, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::gui::GuiSettings;
 
-use super::drop_zones::{DragFrom, DropTarget, Zone, window_strip_id, zone_id};
+use super::drop_zones::{DragFrom, DropOutcome, DropTarget, Zone, window_strip_id, zone_id};
 use super::modal::ModalKind;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use super::tests::{Shell, gui, open_shell, saved, temp_config};
@@ -361,7 +361,8 @@ fn window_edge_creates_a_slot_when_the_side_has_none(cx: &mut TestAppContext) {
         assert_eq!(tree.shown(old), Some(DrawerView::Find));
         assert_eq!(tree.focused(), Focus::Leaf(Leaf::Slot(right[0])));
 
-        // And the left edge of a window whose left side is that slot.
+        // The left side has a drawn slot (showing FIND): FILES gets a
+        // column beside the editor, not that slot.
         assert!(drop_view(
             &shell,
             DrawerView::Files,
@@ -369,11 +370,44 @@ fn window_edge_creates_a_slot_when_the_side_has_none(cx: &mut TestAppContext) {
             window,
             cx
         ));
-        assert_eq!(
-            slots_of(&shell, Side::Left, cx).len(),
-            1,
-            "joined the first"
-        );
+        let tree = layout(&shell, cx);
+        assert_eq!(slots_of(&shell, Side::Left, cx).len(), 2);
+        assert_eq!(tree.shown(old), Some(DrawerView::Find), "FIND kept");
+    })
+    .unwrap();
+}
+
+/// A side with slots stacked in a column: the strip adds a column beside
+/// the editor, and no view of the stack is replaced.
+#[gpui_kit::test]
+fn window_edge_beside_a_stack_adds_a_column(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let files = slot_of(&shell, DrawerView::Files, cx);
+        let find = slot_of(&shell, DrawerView::Find, cx);
+        assert_eq!(slots_of(&shell, Side::Left, cx).len(), 2);
+        assert!(drop_view(
+            &shell,
+            DrawerView::Outline,
+            DropTarget::Window(Side::Left),
+            window,
+            cx
+        ));
+        let tree = layout(&shell, cx);
+        assert_eq!(slots_of(&shell, Side::Left, cx).len(), 3);
+        assert_eq!(tree.shown(files), Some(DrawerView::Files));
+        assert_eq!(tree.shown(find), Some(DrawerView::Find));
+        let new = tree.view_slot(&DrawerView::Outline).expect("placed");
+        assert!(![files, find].contains(&new));
+        assert_eq!(tree.shown(new), Some(DrawerView::Outline));
     })
     .unwrap();
 }
@@ -1572,4 +1606,150 @@ fn a_swap_keeps_the_zoom_on_the_moved_view(cx: &mut TestAppContext) {
         assert_eq!(tree.zoomed(), Some(Leaf::Slot(files)));
     })
     .unwrap();
+}
+
+/// What a drop would do, worked out without doing it: a header drag
+/// swaps with the view shown, a rail drag replaces it, an edge makes a
+/// slot.
+#[gpui_kit::test]
+fn the_outcome_of_a_drop_is_worked_out_without_changing_anything(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let files = slot_of(&shell, DrawerView::Files, cx);
+        let before = layout(&shell, cx);
+        let centre = DropTarget::Slot(files, Zone::Centre);
+        let edge = DropTarget::Slot(files, Zone::Edge(Dir::Right));
+        let outcome =
+            |from, view, target, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
+                shell
+                    .workspace
+                    .update(cx, |ws, _| ws.drop_outcome(view, from, target, window))
+            };
+        assert_eq!(
+            outcome(DragFrom::Header, DrawerView::Find, centre, window, cx),
+            DropOutcome::Swap(DrawerView::Files)
+        );
+        assert_eq!(
+            outcome(DragFrom::Rail, DrawerView::Find, centre, window, cx),
+            DropOutcome::Replace(DrawerView::Files)
+        );
+        assert_eq!(
+            outcome(DragFrom::Header, DrawerView::Find, edge, window, cx),
+            DropOutcome::NewSlot(Dir::Right)
+        );
+        assert_eq!(layout(&shell, cx), before, "nothing changed");
+    })
+    .unwrap();
+}
+
+/// A drop that cannot fit says so before the release, and changes nothing.
+#[gpui_kit::test]
+fn the_outcome_says_when_there_is_no_room(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        600.,
+        &gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+              { weight = 0.8, editor = true },\n\
+              { weight = 0.2, views = [\"outline\"], shown = \"outline\" },\n]\n"),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    cx.update_window(shell.handle, |_, window, cx| {
+        window.render_frame(cx);
+        let before = layout(&shell, cx);
+        let outcome = shell.workspace.update(cx, |ws, _| {
+            ws.drop_outcome(
+                DrawerView::Find,
+                DragFrom::Rail,
+                DropTarget::Window(Side::Left),
+                window,
+            )
+        });
+        assert_eq!(outcome, DropOutcome::NoRoom(DrawerView::Find));
+        assert_eq!(outcome.label(), "No room for Find here");
+        assert_eq!(layout(&shell, cx), before, "nothing changed");
+    })
+    .unwrap();
+}
+
+/// While a view is dragged each drawn zone knows its outcome; they go with
+/// the drag.
+#[gpui_kit::test]
+fn zones_know_their_outcome_while_a_drag_lives(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    assert!(
+        shell
+            .workspace
+            .read_with(cx, |ws, _| ws.drop_outcomes.is_empty())
+    );
+    let from = files_header(&shell, cx);
+    press_and_move(&shell, from, 40., cx);
+    let files = cx
+        .update_window(shell.handle, |_, _, cx| {
+            slot_of(&shell, DrawerView::Files, cx)
+        })
+        .unwrap();
+    let find = cx
+        .update_window(shell.handle, |_, _, cx| {
+            slot_of(&shell, DrawerView::Find, cx)
+        })
+        .unwrap();
+    shell.workspace.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.drop_outcomes.get(&DropTarget::Slot(find, Zone::Centre)),
+            Some(&DropOutcome::Swap(DrawerView::Find))
+        );
+        assert!(
+            !ws.drop_outcomes
+                .contains_key(&DropTarget::Slot(files, Zone::Centre)),
+            "a zone that is not drawn has none"
+        );
+    });
+}
+
+/// The zone the drag is over is remembered for its label, and forgotten when
+/// the pointer leaves it and when the drag ends.
+#[gpui_kit::test]
+fn the_zone_under_the_drag_is_remembered_for_its_label(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let find = cx
+        .update_window(shell.handle, |_, _, cx| {
+            slot_of(&shell, DrawerView::Find, cx)
+        })
+        .unwrap();
+    let hovered = |cx: &mut TestAppContext| shell.workspace.read_with(cx, |ws, _| ws.hovered_zone);
+    let from = files_header(&shell, cx);
+    press_and_move(&shell, from, 40., cx);
+    let centre = point_in(&shell, zone_id(DrawerView::Find, Zone::Centre), None, cx);
+    move_held(&shell, centre, cx);
+    assert_eq!(hovered(cx), Some(DropTarget::Slot(find, Zone::Centre)));
+    let off = point_in(&shell, "slot-files", None, cx);
+    move_held(&shell, off, cx);
+    assert_eq!(hovered(cx), None, "left the zone");
+    move_held(&shell, centre, cx);
+    release(&shell, centre, cx);
+    assert_eq!(hovered(cx), None, "the drag ended");
 }

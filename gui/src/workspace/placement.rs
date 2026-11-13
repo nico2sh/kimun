@@ -25,8 +25,8 @@ pub(crate) enum Placement {
     Replace(SlotId),
     /// In a new slot on this side of this slot.
     Beside(SlotId, Dir),
-    /// At the window edge on this side: that side's first slot, else a new
-    /// slot at the edge of the outermost editor group.
+    /// At the window edge on this side: that side's kept-empty slot, else a
+    /// new slot beside the outermost editor group.
     AtEdge(Side),
 }
 

@@ -1689,3 +1689,20 @@ fn unplace_takes_a_view_out_and_keeps_the_rest() {
     assert_eq!(t.slot_views(left), ["find"]);
     assert_eq!(t.unplace(&"files"), None, "already unplaced");
 }
+
+#[test]
+fn a_slot_beside_the_editor_takes_a_side_columns_share_not_half_of_it() {
+    let mut t = LayoutTree::default_layout("files");
+    let g = t.active_group();
+    let new = t.place_beside_group("x", g, Dir::Right).unwrap();
+    let group = t
+        .regions()
+        .into_iter()
+        .find(|(l, _)| *l == Leaf::Group(g))
+        .map(|(_, r)| r)
+        .unwrap();
+    // The default sides are 0.2 wide, the editor 0.6: the new column is as
+    // wide as a side, and the editor gave up the difference.
+    assert!((rect_of(&t, new).width() - 0.2).abs() < 1e-9);
+    assert!((group.width() - 0.4).abs() < 1e-9);
+}

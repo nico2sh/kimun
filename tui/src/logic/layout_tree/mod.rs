@@ -57,6 +57,10 @@ fn first_at_rail(regions: &[(Leaf, UnitRect)], rail: RailPosition) -> Option<Lea
         .map(|(l, _)| *l)
 }
 
+/// The share of its split a slot placed beside an editor group takes: the
+/// weight of a side slot in [`LayoutTree::default_layout`].
+const SIDE_COLUMN_SHARE: f64 = 0.2;
+
 /// Identifies one slot. Stable across splits and closes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SlotId(u32);
@@ -860,9 +864,12 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             Dir::Right => (Axis::Horizontal, false),
         };
         let new = SlotId(self.next_slot);
+        // Beside an editor group the new slot is a side column: the share
+        // of a side slot in the default layout, not half the editor.
+        let share = matches!(target, Leaf::Group(_)).then_some(SIDE_COLUMN_SHARE);
         if !self
             .root
-            .split_leaf_at(&target, axis, Leaf::Slot(new), before)
+            .split_leaf_at(&target, axis, Leaf::Slot(new), before, share)
         {
             return None;
         }
