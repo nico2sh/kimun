@@ -17,8 +17,8 @@ use kimun_notes::logic::message::{AppMessage, FileOp, OverlayData};
 use tokio::runtime::Runtime;
 
 use super::file_dialogs::FileOpKind;
-use super::file_dialogs::menu_item_id;
 use super::modal::ModalKind;
+use super::note_menu::{MenuItem, menu_item_element_id};
 use super::properties::{
     ADD_ID, KEY_INPUT_ID, PropertiesDialog, REFUSED, STORE_ANYWAY_ID, VALUE_INPUT_ID, row_id,
     suggestion_id,
@@ -623,18 +623,18 @@ fn the_footer_count_opens_it(cx: &mut TestAppContext) {
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Properties));
 }
 
-/// The editor's right-click menu offers `Properties…` first; the F2 menu
-/// does not.
+/// The note menu offers `Properties…` first, from the right-click and
+/// from F2 alike, and its letter opens the dialog.
 #[gpui_kit::test]
-fn the_editor_menu_offers_properties_and_f2_does_not(cx: &mut TestAppContext) {
+fn the_note_menu_offers_properties_from_the_right_click_and_f2(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", TOML)], "a.md");
+    let properties = menu_item_element_id(MenuItem::Note(FileOpKind::Properties));
     press(&started, "f2", cx);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::FileOps));
-    assert!(!shows(&started, menu_item_id(FileOpKind::Properties), cx));
+    assert!(shows(&started, properties, cx));
     press(&started, "escape", cx);
-    started.settle_dialog(cx);
+    assert!(!shows(&started, properties, cx));
 
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -642,8 +642,7 @@ fn the_editor_menu_offers_properties_and_f2_does_not(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::FileOps));
-    assert!(shows(&started, menu_item_id(FileOpKind::Properties), cx));
+    assert!(shows(&started, properties, cx));
     press(&started, "p", cx);
     drive(&rt, cx, |cx| dialog(&started, cx).is_some());
     started.settle_dialog(cx);

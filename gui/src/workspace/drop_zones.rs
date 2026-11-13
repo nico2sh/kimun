@@ -399,6 +399,7 @@ impl Workspace {
         };
         this.update(cx, |this, cx| {
             this.drag = Some(live);
+            this.forget_note_menu(cx);
             cx.notify();
         })
         .ok();

@@ -939,6 +939,10 @@ impl Workspace {
             .flex_1()
             .min_w_0()
             .min_h_0()
+            .child(super::note_menu::group_bounds_probe(
+                &self.group_bounds,
+                group,
+            ))
             .child(self.render_group_header(at, group, cx))
             // The body, under the header: while a group is dragged its
             // zones (the inner layer) lie over it.
