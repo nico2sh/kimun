@@ -33,7 +33,14 @@ Install the server with the script. The option `--service` starts the server whe
 curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
 ```
 
-It works on Linux and on macOS with Apple silicon. For Docker, Windows, and other installs, read the [server README](https://github.com/nico2sh/kimun/tree/main/server).
+It works on Linux and on macOS with Apple silicon.
+
+On Windows, there is no install script. Use one of these ways:
+
+- Docker. This is the simplest way. The [server README](https://github.com/nico2sh/kimun/tree/main/server) has the command.
+- WSL2 (Linux inside Windows). Open a WSL2 terminal and run the same install command. WSL2 must have systemd turned on for the `--service` option.
+
+Intel Macs have no prebuilt server. Use Docker there. The server README also describes the install with Cargo.
 
 Then tell Kimün where the server is. Open Preferences, go to Server, and enter the address. The default local address is `http://localhost:7573`. To turn the feature off, leave the address empty.
 
@@ -49,6 +56,6 @@ When a new server version exists, the desktop app tells you. What happens next d
 
 If you installed it with the script and the `--service` option, and the server runs on your computer, the message has an `Update now` button. Preferences, Server shows the same button. The app downloads the new version, checks its signature, and restarts the server. If the new server does not start, the app puts the old one back and tells you.
 
-For every other server, update it the way you installed it. This includes a server on another computer, a Docker container, and a server that you installed with Cargo. To update a server that you installed with the script, run the same command again. The script restarts the server for you.
+For every other server, update it the way you installed it. This includes a server on another computer, a Docker container, a server on Windows, and a server that you installed with Cargo. To update a server that you installed with the script, run the same command again. The script restarts the server for you.
 
 If you installed the script version before this feature existed, the button does not appear yet. Run the install command once. After that, the button works.
