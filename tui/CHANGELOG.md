@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.0...kimun-notes-v0.25.1) - 2026-11-14
+
+### Other
+
+- animation on resizing the sidebar
+
 ## [0.25.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.12...kimun-notes-v0.25.0) - 2026-11-14
 
 ### Added
