@@ -37,6 +37,7 @@ mod identity_tests;
 mod input;
 mod keymap;
 mod mono_families;
+mod motion;
 mod row_cache;
 mod row_paint;
 mod shell_layout;

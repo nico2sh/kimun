@@ -243,6 +243,8 @@ pub(super) fn open_started_with(
         gpui_kit::init(cx);
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+        // Layouts are drawn at rest at once, as in `open_shell`.
+        cx.set_reduce_motion(true);
     });
     let layout =
         crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);
