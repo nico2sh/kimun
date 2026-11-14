@@ -45,7 +45,7 @@ jobs:
           # case-insensitive-filesystem paths (`CASE_INSENSITIVE_FS` in
           # core/src/nfs) that Linux never exercises.
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-24.04
             lint: true
           - name: macOS ARM
             os: macos-latest
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install GPUI system libraries
         if: runner.os == 'Linux'
@@ -255,7 +255,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install GPUI system libraries
         if: runner.os == 'Linux'

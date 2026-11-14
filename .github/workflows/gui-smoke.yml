@@ -14,10 +14,10 @@ name: gui-smoke
 jobs:
   smoke:
     name: GUI starts (Linux, Xvfb)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install GPUI system libraries, Xvfb and a software Vulkan driver
         run: |
