@@ -2278,6 +2278,8 @@ impl Workspace {
                 return;
             };
             self.cancel_leader(cx);
+            // Preferences take the window: the note menu goes.
+            self.close_note_menu(window, cx);
             let original = (*theme::current(cx)).clone();
             let store = self.store.clone();
             let view = cx.new(|cx| PreferencesView::new(settings, original, store, window, cx));
@@ -2453,8 +2455,12 @@ impl Workspace {
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| pane.set_sort_defaults(&snapshot, cx));
         }
-        if let (Some(host), Some(tx)) = (self.notes.as_mut(), self.tx.as_ref()) {
-            host.session.retime_autosave(tx);
+        if let Some(tx) = self.tx.as_ref() {
+            for state in self.groups.values_mut() {
+                if let Some(host) = state.notes.as_mut() {
+                    host.session.retime_autosave(tx);
+                }
+            }
         }
         if reopen {
             match self.tx.clone() {

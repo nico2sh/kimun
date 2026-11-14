@@ -73,7 +73,6 @@ use super::key_suggestions::KeySuggestions;
 use super::modal::{self, ModalKind, Slot};
 use super::reopen;
 use crate::input;
-use crate::keymap;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -172,10 +171,7 @@ pub(super) fn chip_label(field: &SortField, order: SortOrder) -> SharedString {
 
 /// The chip's tooltip: what a click does, and the chord that does it.
 fn sort_tip(cx: &App) -> SharedString {
-    match keymap::chord_label(cx, &ActionShortcuts::OpenSortDialog) {
-        Some(chord) => format!("Change the sort ({chord})").into(),
-        None => "Change the sort".into(),
-    }
+    super::chrome::tooltip_with_chord("Change the sort", &ActionShortcuts::OpenSortDialog, cx)
 }
 
 /// The sort dialog's view. See the module docs.

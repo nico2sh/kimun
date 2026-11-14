@@ -187,8 +187,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, AnyWindowHandle, App, AppContext, ClickEvent, ClipboardItem, Context,
     Entity, FocusHandle, Focusable, InputPreference, InteractiveElement, IntoElement, KeyDownEvent,
-    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Role, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div, rems,
+    KeystrokeEvent, MouseButton, MouseDownEvent, ParentElement, Render, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, div,
+    rems,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -198,7 +199,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
 use kimun_notes::logic::layout_tree::{
-    Axis as TreeAxis, Dir, Focus, LayoutTree, Leaf, RailPosition, SlotId, TreeFocusMove,
+    Axis as TreeAxis, Dir, Focus, GroupId, LayoutTree, Leaf, RailPosition, SlotId, TreeFocusMove,
 };
 use kimun_notes::logic::leader_route::AskStep;
 use kimun_notes::logic::list::ListRow as _;
@@ -212,7 +213,7 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use self::drop_zones::{DragFrom, LiveViewDrag, ViewDrag};
+use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -227,11 +228,15 @@ use kimun_notes::logic::task_slot::TaskSlot;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
+#[cfg(test)]
+pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
 use modal::ModalKind;
 pub(crate) use note::Closing;
 use note::NoteHost;
 pub(crate) use palette::Palette;
+#[cfg(test)]
+pub(crate) use tab_strip::ICONS as TAB_STRIP_ICONS;
 #[cfg(test)]
 pub(crate) use titlebar::WINDOW_CONTROL_ICONS;
 
@@ -240,6 +245,10 @@ const KEY_CONTEXT: &str = "KimunWorkspace";
 
 /// Why a slot does not close: it is the last on its side of the editor.
 pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
+/// Why the split chord does nothing on the editor while zoomed.
+pub(crate) const ZOOMED_NO_GROUP_SPLIT: &str = "Leave zoom to split the pane";
+/// Why the move chord does nothing on the editor while zoomed.
+pub(crate) const ZOOMED_NO_GROUP_MOVE: &str = "Leave zoom to move the pane";
 
 /// Where the layout, and the settings the window changes, are persisted.
 #[derive(Clone)]
@@ -401,7 +410,8 @@ pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 /// The window's root view. See the module docs.
 pub(crate) struct Workspace {
     pub(crate) layout: LayoutTree<DrawerView>,
-    pub(crate) editor: Entity<EditorView>,
+    /// The state of each editor group (editor, note session, attachment).
+    pub(crate) groups: HashMap<GroupId, group::GroupState>,
     rail_focus: FocusHandle,
     /// Each slot's handle: the slot's scope, and the keyboard target of a
     /// slot whose view has no focusable content of its own (or that shows
@@ -453,9 +463,6 @@ pub(crate) struct Workspace {
     empty: Option<EmptyState>,
     /// What the Footer shows.
     pub(crate) status: Status,
-    /// The note session over the vault, when the window has one (not in the
-    /// empty states, nor in the tests that feed the editor text directly).
-    pub(crate) notes: Option<NoteHost>,
     /// The window's app channel, once [`Self::start`] set it up: the sender
     /// background jobs report on, and the task draining its receiver.
     tx: Option<AppTx>,
@@ -526,26 +533,31 @@ pub(crate) struct Workspace {
     following: Option<Task<()>>,
     /// Hands URLs, images and attachments to the system's default program.
     pub(crate) opener: follow::Opener,
-    /// Keeps the Footer's dirty state in step with the editor.
+    /// Keeps the Footer's dirty state in step with the first group's
+    /// editor (a group made later holds its own, [`group::GroupState`]).
     _editor_watch: Subscription,
     _on_quit: Option<Subscription>,
     /// Resolves the workspace's chords before a slot's own key bindings
     /// can take them ([`Self::intercept_shell_key`]).
     _shell_keys: Subscription,
-    /// The view being dragged onto a drop zone, while one is
-    /// ([`Self::dragged_view`]).
-    view_drag: Option<LiveViewDrag>,
-    /// What a drop on each zone would do, worked out while a
-    /// view is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
+    /// The view or group being dragged onto a drop zone, while one is
+    /// ([`Self::live_drag`], [`Self::dragged_group`]).
+    drag: Option<LiveDrag>,
+    /// What a drop on each zone would do, worked out while a view or a
+    /// group is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
     /// empty otherwise.
     drop_outcomes: HashMap<drop_zones::DropTarget, drop_zones::DropOutcome>,
     /// The drag and window size [`Self::drop_outcomes`] were worked out for.
-    drop_outcomes_for: Option<(ViewDrag, gpui_kit::Size<gpui_kit::Pixels>)>,
+    drop_outcomes_for: Option<(Dragged, gpui_kit::Size<gpui_kit::Pixels>)>,
     /// The zone the drag is over, for its label ([`Self::zone_tag`]).
     hovered_zone: Option<drop_zones::DropTarget>,
     /// What the window's one modal slot holds, while the kit says a dialog
     /// is open ([`modal`]).
     pub(crate) modal: Option<ModalKind>,
+    /// The note menu, while it is open ([`note_menu`]).
+    pub(crate) note_menu: Option<note_menu::OpenNoteMenu>,
+    /// Where each drawn group was last laid out ([`note_menu::GroupBounds`]).
+    group_bounds: note_menu::GroupBounds,
     /// The command palette's view while it is open (tests read its rows).
     pub(crate) palette: Option<WeakEntity<Palette>>,
     /// The view chooser while it is open: split, side or move
@@ -555,7 +567,7 @@ pub(crate) struct Workspace {
     /// [`reopen`] persists): `None` before [`Self::start`] and in the tests
     /// that never call it.
     settings: Option<SharedSettings>,
-    /// The editor's requests that need the window (vim `:`).
+    /// The first group's editor's requests that need the window (vim `:`).
     _editor_events: Subscription,
     /// The pending leader sequence and its which-key popup ([`leader`]).
     pub(crate) leader: LeaderState,
@@ -572,9 +584,18 @@ pub(crate) struct Workspace {
     /// The file operation running (its flush, the core call, the reload of
     /// a followed note). One at a time.
     file_task: Option<Task<()>>,
-    /// Why the editor Panel shows no note: the open one was deleted or
-    /// moved away. Cleared when a note opens.
-    pub(crate) note_gone: Option<EmptyState>,
+    /// The close of a tab or a group under way: the flush of its groups,
+    /// then their removal ([`tab_strip`]). One at a time; it holds the
+    /// notes as a file operation does.
+    groups_closing: Option<(tab_strip::CloseTarget, Task<()>)>,
+    /// The tab strip's sideways scroll ([`tab_strip`]).
+    tab_scroll: ScrollHandle,
+    /// The tab whose pill the pointer is over: it shows its close button
+    /// ([`tab_strip`]).
+    tab_hover: Option<kimun_notes::logic::editor_region::TabId>,
+    /// Why a group shows no note: the one it held was deleted or moved
+    /// away. Only that group says so; cleared when a note opens there.
+    pub(crate) note_gone: Option<(GroupId, EmptyState)>,
     /// The note picker in the modal slot, while one is open ([`picker`]).
     pub(crate) picker: Option<WeakEntity<picker::NotePicker>>,
     /// The quick note in the modal slot, while it is open ([`create`]).
@@ -616,17 +637,6 @@ pub(crate) struct Workspace {
     property_write: Option<(VaultPath, Task<()>)>,
     /// The open note being reloaded from disk after a property write.
     note_reload: Option<Task<()>>,
-    /// The attachment the editor Panel shows instead of the editor
-    /// ([`attachment`]), and its events.
-    pub(crate) attachment: Option<Entity<attachment::AttachmentView>>,
-    _attachment_events: Option<Subscription>,
-    /// The read of an attachment asked for (a newer request replaces it).
-    attachment_loading: Option<Task<()>>,
-    /// The flush of the open note before an attachment shows: it holds the
-    /// note like a file operation does.
-    attachment_flushing: Option<Task<()>>,
-    /// An attachment asked for while that flush ran: it opens next.
-    attachment_wanted: Option<VaultPath>,
     /// The view ASK (the Thread), when the window has a vault ([`ask`]),
     /// and its events. It lives as long as the vault session, shown or not.
     pub(crate) ask: Option<Entity<ask::AskView>>,
@@ -669,6 +679,9 @@ pub(crate) struct Workspace {
     pub(crate) titlebar: titlebar::TitleBar,
     /// The update flow: its checks, its dialog, an install ([`update`]).
     pub(crate) updates: update::UpdateHost,
+    /// The workspace's session file: the tabs and groups recorded as they
+    /// change, and restored when the workspace opens ([`session`]).
+    session: session::SessionHost,
 }
 
 /// The labels the window derives from the active keymap's chords.
@@ -727,13 +740,7 @@ impl Workspace {
             .unwrap_or(0);
         // Every edit notifies the editor; the Footer only redraws when the
         // dirty state flips.
-        let editor_watch = cx.observe(&editor, |this, editor, cx| {
-            let dirty = editor.read(cx).editor.is_dirty();
-            if this.status.dirty != dirty {
-                this.status.dirty = dirty;
-                cx.notify();
-            }
-        });
+        let editor_watch = cx.observe(&editor, Self::editor_changed);
         let this = cx.entity().downgrade();
         let shell_keys = cx.intercept_keystrokes(move |event, window, cx| {
             this.update(cx, |workspace, cx| {
@@ -746,7 +753,7 @@ impl Workspace {
             this.chord_labels = ChordLabels::new(cx);
             this.config.update(cx, |_, cx| cx.notify());
             let chord = this.chord_labels.follow_link;
-            if let Some(view) = this.attachment.as_ref() {
+            if let Some(view) = this.active_state().attachment.as_ref() {
                 view.update(cx, |view, cx| view.set_open_chord(chord, cx));
             }
             cx.notify();
@@ -754,8 +761,8 @@ impl Workspace {
         let config = cx.new(config::ConfigView::new);
         let config_events = cx.subscribe_in(&config, window, Self::on_config_event);
         let mut this = Self {
+            groups: HashMap::from([(layout.active_group(), group::GroupState::new(editor))]),
             layout,
-            editor,
             rail_focus: cx.focus_handle(),
             slot_focus: HashMap::new(),
             last_slot: None,
@@ -775,7 +782,6 @@ impl Workspace {
             rail_hidden: recorded_gui.rail_hidden(),
             empty: None,
             status: Status::default(),
-            notes: None,
             tx: None,
             _messages: None,
             action_timers: HashMap::new(),
@@ -814,11 +820,13 @@ impl Workspace {
             _editor_watch: editor_watch,
             _on_quit: None,
             _shell_keys: shell_keys,
-            view_drag: None,
+            drag: None,
             drop_outcomes: HashMap::new(),
             drop_outcomes_for: None,
             hovered_zone: None,
             modal: None,
+            note_menu: None,
+            group_bounds: Default::default(),
             palette: None,
             view_chooser: None,
             settings: None,
@@ -830,6 +838,9 @@ impl Workspace {
             file_dialog: None,
             file_status: None,
             file_task: None,
+            groups_closing: None,
+            tab_scroll: ScrollHandle::new(),
+            tab_hover: None,
             note_gone: None,
             picker: None,
             quick_note: None,
@@ -848,11 +859,6 @@ impl Workspace {
             properties_opening: None,
             property_write: None,
             note_reload: None,
-            attachment: None,
-            _attachment_events: None,
-            attachment_loading: None,
-            attachment_flushing: None,
-            attachment_wanted: None,
             ask: None,
             _ask_events: None,
             ask_sources: None,
@@ -873,7 +879,9 @@ impl Workspace {
             theme_picker: None,
             titlebar: titlebar::TitleBar::new(),
             updates: update::UpdateHost::new(update::default_backend()),
+            session: session::SessionHost::default(),
         };
+        this.watch_session(cx);
         this.sync_slot_handles(cx);
         this.load_presets(cx);
         this
@@ -895,18 +903,24 @@ impl Workspace {
     /// The editor asked for something only the window has.
     fn on_editor_event(
         &mut self,
-        _: &Entity<EditorView>,
+        editor: &Entity<EditorView>,
         event: &EditorEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             EditorEvent::OpenPalette => self.open_palette(window, cx),
-            // Right-click without a selection: the note menu, for the note
-            // the editor shows, with its properties first.
-            EditorEvent::ContextMenu => {
-                if let Some(note) = self.notes.as_ref().and_then(|h| h.note.clone()) {
-                    self.open_file_ops_menu(note, true, window, cx);
+            // Right-click without a selection: the note menu at the
+            // pointer, for the group whose editor it is (the press already
+            // made it the active group).
+            EditorEvent::ContextMenu { at } => {
+                let group = self
+                    .groups
+                    .iter()
+                    .find(|(_, state)| &state.editor == editor)
+                    .map(|(group, _)| *group);
+                if let Some(group) = group {
+                    self.open_note_menu(group, *at, window, cx);
                 }
             }
         }
@@ -941,8 +955,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.listen(rx, cx);
-        self.editor
-            .update(cx, |view, _| view.set_channel(tx.clone()));
+        // Every group's editor, not only the one shown.
+        for state in self.groups.values() {
+            state
+                .editor
+                .update(cx, |view, _| view.set_channel(tx.clone()));
+        }
         self.tx = Some(tx);
     }
 
@@ -977,24 +995,30 @@ impl Workspace {
             Start::OpenFailed(_) => {}
         }
         if let Start::Vault(VaultStart { vault, name, first }) = start {
-            self.notes = Some(NoteHost::new(NoteSession::new(
-                vault.clone(),
-                settings.clone(),
-                VaultPath::root(),
-            )));
-            self.refresh_git();
-            // The editor completes `[[` and `#` from this vault's notes and tags.
-            self.editor.update(cx, |view, _| {
-                view.set_suggestions(Some(std::sync::Arc::new(
-                    kimun_notes::logic::autocomplete::VaultSuggestions {
-                        vault: vault.clone(),
-                    },
+            // Every group gets a note session over the vault, on no note
+            // yet: the groups a vault change left stay, empty.
+            for state in self.groups.values_mut() {
+                state.notes = Some(NoteHost::new(NoteSession::new(
+                    vault.clone(),
+                    settings.clone(),
+                    VaultPath::root(),
                 )));
-            });
-            {
-                let settings = settings.read().unwrap_or_else(|e| e.into_inner());
-                self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
+                // The editor completes `[[` and `#` from this vault's notes and tags.
+                state.editor.update(cx, |view, _| {
+                    view.set_suggestions(Some(std::sync::Arc::new(
+                        kimun_notes::logic::autocomplete::VaultSuggestions {
+                            vault: vault.clone(),
+                        },
+                    )));
+                });
             }
+            self.refresh_git();
+            let session_file = {
+                let settings = settings.read().unwrap_or_else(|e| e.into_inner());
+                let session_file = settings.session_for(&name);
+                self.start_files(vault.clone(), name, &settings, tx.clone(), window, cx);
+                session_file
+            };
             self.start_links(vault.clone(), tx.clone(), window, cx);
             self.start_outline(tx.clone(), window, cx);
             self.start_find(vault.clone(), tx.clone(), window, cx);
@@ -1007,12 +1031,40 @@ impl Workspace {
             let restore = first == FirstNote::Restore;
             self.restore_pending = restore;
             self.first_open_pending = matches!(first, FirstNote::Restore | FirstNote::Note(_));
-            tokio::spawn(startup::index_and_restore(
+            // The arrangement is recorded from now on ([`session`]). A
+            // start with no note (or a refused one) and a stored record
+            // lands on that record when it has a note left to open, else
+            // (no argument only) on the history; opens wait for it. With no
+            // record the history restores as it always did, opens going
+            // through at once. A note on the command line opens alone, and
+            // the record stays as it is until a structural change.
+            // (The record is a small file of the app's own: read here, so
+            // opens know at once whether to wait.)
+            let record = matches!(first, FirstNote::Restore | FirstNote::Rejected(_))
+                .then(|| session_file.load())
+                .flatten();
+            let restoring = record.is_some();
+            let start = match &first {
+                FirstNote::Note(_) => session::SessionStart::Launch,
+                _ if restoring => session::SessionStart::Restore { history: restore },
+                // A file there that did not load (a newer build's, a read
+                // that failed) is kept until a real change.
+                _ if session_file.exists() => {
+                    session::SessionStart::Unreadable { history: restore }
+                }
+                _ => session::SessionStart::Fresh,
+            };
+            self.begin_session(session_file, start);
+            let job = tokio::spawn(startup::index_and_restore(
                 vault,
                 settings,
                 restore,
+                record,
                 tx.clone(),
             ));
+            if restoring {
+                self.await_session_restore(job, cx);
+            }
             match first {
                 FirstNote::Restore => {}
                 FirstNote::Note(path) => {
@@ -1050,7 +1102,9 @@ impl Workspace {
             // A background parse/layout job of the editor finished, or
             // FILES' listing has rows to show.
             AppMessage::Redraw => {
-                self.editor.update(cx, |_, cx| cx.notify());
+                for state in self.groups.values() {
+                    state.editor.update(cx, |_, cx| cx.notify());
+                }
                 self.poll_files(cx);
                 self.poll_picker(cx);
                 self.poll_views(cx);
@@ -1076,8 +1130,10 @@ impl Workspace {
                 self.status.indexing = false;
                 self.status.read_only = true;
                 // Nothing is written from here on: no tick to run.
-                if let Some(host) = self.notes.as_mut() {
-                    host.session.stop_autosave();
+                for state in self.groups.values_mut() {
+                    if let Some(host) = state.notes.as_mut() {
+                        host.session.stop_autosave();
+                    }
                 }
                 self.flash_error(conflict_flash(&details), cx);
                 // Preferences > Workspaces, with the vault's own words, so
@@ -1088,9 +1144,13 @@ impl Workspace {
             }
             AppMessage::OpenPath { path, emphasis } => {
                 // The restore's landing (or anything after it): no longer
-                // "opening your last note".
-                self.restore_pending = false;
-                self.first_open_pending = false;
+                // "opening your last note". Unless the session record is
+                // still restoring: the open waits for it, and so does the
+                // Panel's word that something is on its way.
+                if !self.session_restoring() {
+                    self.restore_pending = false;
+                    self.first_open_pending = false;
+                }
                 if path.is_note() {
                     // A search result arrives with its query's needles.
                     self.open_note_with(path, emphasis, cx);
@@ -1127,6 +1187,7 @@ impl Workspace {
             message @ (AppMessage::BacklinkCountLoaded { .. }
             | AppMessage::PropertyCountLoaded { .. }) => self.note_count_loaded(message),
             AppMessage::Autosave => self.autosave(cx),
+            AppMessage::AutosaveOf(tick) => self.autosave_tick(tick, cx),
             AppMessage::AutosaveCompleted {
                 path,
                 saved_revision,
@@ -1211,7 +1272,10 @@ impl Workspace {
 
     /// The open workspace's vault; `None` before one opens.
     pub(crate) fn vault(&self) -> Option<Arc<NoteVault>> {
-        self.notes.as_ref().map(|h| h.session.vault().clone())
+        self.active_state()
+            .notes
+            .as_ref()
+            .map(|h| h.session.vault().clone())
     }
 
     /// [`Self::vault`], or, without a workspace, the flash that says so
@@ -1441,6 +1505,7 @@ impl Workspace {
         if let Some(links) = self.links.clone() {
             let shown = self.is_shown(DrawerView::Links);
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())
@@ -1588,10 +1653,10 @@ impl Workspace {
         self.layout.shown(slot).is_some()
     }
 
-    /// Whether `leaf` is drawn: every editor group, and the drawn slots.
+    /// Whether `leaf` is drawn: the editor, and the drawn slots.
     fn leaf_drawn(&self, leaf: Leaf) -> bool {
         match leaf {
-            Leaf::Group(_) => true,
+            Leaf::Editor => true,
             Leaf::Slot(slot) => self.slot_drawn(slot),
         }
     }
@@ -1612,7 +1677,7 @@ impl Workspace {
     pub(crate) fn focused_panel(&self) -> Panel {
         match self.layout.focused() {
             Focus::Rail => Panel::Rail,
-            Focus::Leaf(Leaf::Group(_)) => Panel::Editor,
+            Focus::Leaf(Leaf::Editor) => Panel::Editor,
             Focus::Leaf(Leaf::Slot(slot)) => Panel::Drawer(self.slot_side(slot)),
         }
     }
@@ -1624,7 +1689,7 @@ impl Workspace {
             // A hidden rail takes no keyboard focus (ADR-0055 §9): a modal
             // that closes gives it back to the rail it was opened from.
             Panel::Rail if !self.rail_hidden => Focus::Rail,
-            Panel::Rail | Panel::Editor => Focus::Leaf(Leaf::Group(self.layout.active_group())),
+            Panel::Rail | Panel::Editor => Focus::Leaf(Leaf::Editor),
             Panel::Drawer(side) => match self
                 .side_slots(side)
                 .into_iter()
@@ -1654,9 +1719,7 @@ impl Workspace {
             .find(|s| self.leaf_visible(Leaf::Slot(*s)))
         {
             Some(other) => self.layout.focus(Focus::Leaf(Leaf::Slot(other))),
-            None => self
-                .layout
-                .focus(Focus::Leaf(Leaf::Group(self.layout.active_group()))),
+            None => self.layout.focus(Focus::Leaf(Leaf::Editor)),
         };
     }
 
@@ -1732,9 +1795,9 @@ impl Workspace {
                 None => self.slot_handle(slot),
             },
             // The attachment view while one shows, else the editor.
-            Focus::Leaf(Leaf::Group(_)) => match self.attachment.as_ref() {
+            Focus::Leaf(Leaf::Editor) => match self.active_state().attachment.as_ref() {
                 Some(view) => view.read(cx).focus_handle(cx),
-                None => self.editor.read(cx).focus_handle(cx),
+                None => self.active_state().editor.read(cx).focus_handle(cx),
             },
         }
     }
@@ -1757,6 +1820,11 @@ impl Workspace {
             return;
         }
         let handle = self.handle_for(self.layout.focused(), cx);
+        // The open note menu keeps the keyboard; the handle is where it
+        // goes back.
+        if self.keep_focus_on_note_menu(handle.clone(), window, cx) {
+            return;
+        }
         window.focus(&handle, cx);
     }
 
@@ -1906,7 +1974,7 @@ impl Workspace {
         match self.layout.focused() {
             Focus::Leaf(Leaf::Slot(slot)) => self.layout.shown(slot),
             Focus::Rail => self.rail_cursor_view(),
-            Focus::Leaf(Leaf::Group(_)) => None,
+            Focus::Leaf(Leaf::Editor) => None,
         }
     }
 
@@ -2026,7 +2094,7 @@ impl Workspace {
     /// Every placement that makes a slot goes through here (ADR-0054 §8):
     /// put `view` in a new slot on the `dir` side of `beside`
     /// ([`LayoutTree::place_beside`], or
-    /// [`LayoutTree::place_beside_group`] for an editor group); the slot
+    /// [`LayoutTree::place_beside_editor`] for the editor region); the slot
     /// the view left closes, or shows its next view
     /// ([`Self::close_if_vacated`]); then the window makes room for the
     /// new slot ([`Self::make_room`]). With no room, the layout is put
@@ -2062,7 +2130,7 @@ impl Workspace {
         self.try_layout(|ws| {
             let new = match beside {
                 Leaf::Slot(slot) => ws.layout.place_beside(view, slot, dir),
-                Leaf::Group(group) => ws.layout.place_beside_group(view, group, dir),
+                Leaf::Editor => Ok(ws.layout.place_beside_editor(view, dir)),
             }
             .map_err(|_| NoNewSlot::Refused)?;
             if let Some(from) = from {
@@ -2101,9 +2169,28 @@ impl Workspace {
         let undo = self.layout.clone();
         let result = edit(self);
         if result.is_err() {
-            self.layout = undo;
+            self.replace_layout(undo);
         }
         result
+    }
+
+    /// Put `layout` in place of the live one, keeping the live editor
+    /// region: its tabs and groups belong to the window, not to an
+    /// arrangement of slots, so a preset or an undo never touches them
+    /// (ADR-0058). `groups` therefore stays in step with the layout's
+    /// groups, the invariant the `group` accessors rely on.
+    pub(super) fn replace_layout(&mut self, mut layout: LayoutTree<DrawerView>) {
+        *layout.region_mut() = self.layout.region().clone();
+        self.layout = layout;
+        debug_assert!(
+            self.layout
+                .region()
+                .all_groups()
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                == self.groups.keys().copied().collect(),
+            "groups out of step with the layout"
+        );
     }
 
     /// The shared tail of every placement: settle and persist. Focus is
@@ -2177,7 +2264,7 @@ impl Workspace {
             // Only onto a slot that is drawn: one taking no space is not
             // stacked there.
             if !to.is_some_and(|to| undo.shown(to).is_some()) {
-                self.layout = undo;
+                self.replace_layout(undo);
                 return self.place(view, Placement::Beside(from, dir), window, cx)
                     || self.stacked(from);
             }
@@ -2245,12 +2332,124 @@ impl Workspace {
         true
     }
 
-    /// `SplitSlotRight` / `SplitSlotDown` (ADR-0054 §1): ask which view
-    /// the new slot, right of the focused slot (`axis` horizontal) or below
-    /// it, holds ([`Self::open_split_chooser`]); the slot arrives filled.
-    /// Handled whenever a slot has the keyboard, except under another
-    /// modal, where the key passes on; zoomed it flashes and splits
-    /// nothing (the new slot would not be drawn).
+    /// `SplitSlotRight` / `SplitSlotDown` on the focused leaf. On a slot,
+    /// the slot splits ([`Self::split_focused_slot`]). On the editor
+    /// region, the active group splits (ADR-0058): an empty group comes
+    /// after it, right of it (`axis` horizontal) or below it, becomes the
+    /// active group and takes the keyboard; it shows the empty-group hint,
+    /// which offers the note finder. Not handled on the rail.
+    pub(crate) fn split_focused(
+        &mut self,
+        axis: TreeAxis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Editor) => {
+                self.split_active_group(axis, cx);
+                true
+            }
+            Focus::Leaf(Leaf::Slot(_)) => self.split_focused_slot(axis, window, cx),
+            Focus::Rail => false,
+        }
+    }
+
+    /// Split the active group along `axis` (see [`Self::split_focused`]).
+    /// Refused with a flash while zoomed (the new group would replace the
+    /// zoomed one on screen) and while the tab's close writes its notes (it
+    /// would go with the tab); nothing without a vault or while the window
+    /// closes. While a stored record restores, it waits for it
+    /// ([`session`]).
+    fn split_active_group(&mut self, axis: TreeAxis, cx: &mut Context<Self>) {
+        if self.window_closing() {
+            return;
+        }
+        // The restore would replace the new group: the split waits.
+        if self.hold_while_restoring(session::Queued::Split(axis)) {
+            return;
+        }
+        if self.layout.zoomed().is_some() {
+            self.flash(ZOOMED_NO_GROUP_SPLIT, cx);
+            return;
+        }
+        let active = self.layout.active_group();
+        if self.tab_mid_close(self.layout.region().shown()) {
+            self.flash_error(tab_strip::TAB_CLOSING, cx);
+            return;
+        }
+        let Some(state) = self.new_group_state(cx) else {
+            return;
+        };
+        let Some(group) = self.layout.region_mut().split_group(active, axis) else {
+            return;
+        };
+        self.insert_group(group, state, cx);
+        self.focus_group(group, cx);
+    }
+
+    /// Whether the window is closing (asked to, or writing its notes first):
+    /// nothing may change what it is about to write.
+    pub(crate) fn window_closing(&self) -> bool {
+        matches!(self.closing, Closing::Requested | Closing::Flushing)
+    }
+
+    /// Whether groups may not be moved: the window is closing, or a group
+    /// or tab close is writing its notes ([`Self::groups_closing`]).
+    pub(crate) fn arrangement_locked(&self) -> bool {
+        self.window_closing() || self.groups_closing.is_some()
+    }
+
+    /// `MoveViewToNeighbour(dir)` on the editor: move the active group
+    /// toward `dir` inside its tab ([`EditorRegion::move_group_dir`]): it
+    /// swaps places with the group that way, or with none goes to that
+    /// outer edge of the tab. It stays active and keeps the keyboard.
+    /// Always handled. Refused with a flash while zoomed (the move would
+    /// show nothing); nothing while the window closes or a close writes its
+    /// notes ([`Self::arrangement_locked`]); nothing while a stored record
+    /// restores either: the layout on screen is not the one it will land, and
+    /// the move would be written over the stored record.
+    ///
+    /// [`EditorRegion::move_group_dir`]: kimun_notes::logic::editor_region::EditorRegion::move_group_dir
+    pub(crate) fn move_active_group(&mut self, dir: Dir, cx: &mut Context<Self>) -> bool {
+        if self.arrangement_locked() || self.session_restoring() {
+            return true;
+        }
+        if self.layout.zoomed().is_some() {
+            self.flash(ZOOMED_NO_GROUP_MOVE, cx);
+            return true;
+        }
+        let active = self.layout.active_group();
+        if self.layout.region_mut().move_group_dir(active, dir) {
+            self.focus_group(active, cx);
+            cx.notify();
+        }
+        true
+    }
+
+    /// `CloseSlot` on the focused leaf. On a slot, the slot closes
+    /// ([`Self::close_focused_slot`]). On the editor region, the active
+    /// group closes ([`Self::close_editor_group`]): its note written first,
+    /// a neighbour takes its space; the last group of a tab closes the tab,
+    /// and the last group of the last tab stays, empty. Not handled on the
+    /// rail.
+    pub(crate) fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match self.layout.focused() {
+            Focus::Leaf(Leaf::Editor) => {
+                let active = self.layout.active_group();
+                self.close_editor_group(active, cx);
+                true
+            }
+            Focus::Leaf(Leaf::Slot(_)) => self.close_focused_slot(window, cx),
+            Focus::Rail => false,
+        }
+    }
+
+    /// Split the focused slot (ADR-0054 §1): ask which view the new slot,
+    /// right of it (`axis` horizontal) or below it, holds
+    /// ([`Self::open_split_chooser`]); the slot arrives filled. Handled
+    /// whenever a slot has the keyboard, except under another modal, where
+    /// the key passes on; zoomed it flashes and splits nothing (the new
+    /// slot would not be drawn).
     fn split_focused_slot(
         &mut self,
         axis: TreeAxis,
@@ -2271,12 +2470,11 @@ impl Workspace {
         self.open_split_chooser(slot, dir, window, cx)
     }
 
-    /// `CloseSlot` (Ruling 15): close the focused slot. While zoomed only
-    /// the zoomed slot is on screen, so that is the one that closes (and
-    /// zoom ends). Its
-    /// views join the neighbouring slot that takes over its area, hidden,
-    /// and the keyboard goes there when that slot is drawn (else to the
-    /// editor). The only slot stays. Persisted.
+    /// Close the focused slot (Ruling 15). While zoomed only the zoomed
+    /// slot is on screen, so that is the one that closes (and zoom ends).
+    /// Its views join the neighbouring slot that takes over its area,
+    /// hidden, and the keyboard goes there when that slot is drawn (else to
+    /// the editor). The only slot stays. Persisted.
     fn close_focused_slot(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(focused) = self.focused_slot() else {
             return false;
@@ -2400,18 +2598,22 @@ impl Workspace {
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.focused_panel() {
             // The attachment view reads no vim keys.
-            Panel::Editor if self.attachment.is_some() => KeyCtx {
+            Panel::Editor if self.active_state().attachment.is_some() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
                 browser: false,
+                vim_pending: false,
+                vim_insert: false,
             },
-            Panel::Editor => self.editor.read(cx).key_ctx(),
+            Panel::Editor => self.active_state().editor.read(cx).key_ctx(),
             panel => KeyCtx {
                 panel,
                 vim: false,
                 query: self.find_has_keyboard(),
                 browser: false,
+                vim_pending: false,
+                vim_insert: false,
             },
         }
     }
@@ -2436,7 +2638,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Esc during a view's drag ends the drag, ahead of any binding.
-        if self.escape_ends_view_drag(event, window, cx) {
+        if self.escape_ends_drag(event, window, cx) {
             return;
         }
         // The setup assistant and Preferences have every key; no shell chord
@@ -2516,6 +2718,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The note menu is not modal: a chord that runs while it is open may
+        // change what it acts on (another note, tab or screen), so it closes
+        // first, the keyboard back where it was. Its own chord toggles it.
+        if *action != ActionShortcuts::FileOperations {
+            self.close_note_menu(window, cx);
+        }
         match action {
             ActionShortcuts::OpenCommandPalette => {
                 self.toggle_modal(ModalKind::Palette, Self::open_palette, window, cx)
@@ -2540,6 +2748,13 @@ impl Workspace {
                     self.move_view(*dir, window, cx)
                 };
             }
+            // On the editor the chords move its active group instead of a
+            // view (ADR-0058).
+            ActionShortcuts::MoveViewToNeighbour(dir)
+                if self.layout.focused() == Focus::Leaf(Leaf::Editor) =>
+            {
+                return self.move_active_group(*dir, cx);
+            }
             ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {
                 return self.move_view(*dir, window, cx);
             }
@@ -2550,12 +2765,12 @@ impl Workspace {
                 return self.move_view_vertically(false, window, cx);
             }
             ActionShortcuts::SplitSlotRight => {
-                return self.split_focused_slot(TreeAxis::Horizontal, window, cx);
+                return self.split_focused(TreeAxis::Horizontal, window, cx);
             }
             ActionShortcuts::SplitSlotDown => {
-                return self.split_focused_slot(TreeAxis::Vertical, window, cx);
+                return self.split_focused(TreeAxis::Vertical, window, cx);
             }
-            ActionShortcuts::CloseSlot => return self.close_focused_slot(window, cx),
+            ActionShortcuts::CloseSlot => return self.close_focused(window, cx),
             ActionShortcuts::ToggleZoom => self.toggle_zoom(window, cx),
             ActionShortcuts::ToggleRail => self.toggle_rail(window, cx),
             ActionShortcuts::SaveNote => self.save_note(cx),
@@ -2625,24 +2840,40 @@ impl Workspace {
             ActionShortcuts::FollowLink => {
                 self.follow_at_cursor(cx);
             }
-            ActionShortcuts::FocusRegion(dir) => match self.focus_dir(*dir) {
-                TreeFocusMove::Moved(_) => self.apply_focus(window, cx),
-                TreeFocusMove::AtEdge => {}
-                // Nothing stacked above or below: the chord is the focused
-                // panel's own key, not a focus move (ADR-0050 §4). The
-                // editor already let it pass, so it is handed back; anywhere
-                // else it goes on unswallowed.
-                TreeFocusMove::NotHandled => {
-                    let Some(key) = key else {
-                        return true;
-                    };
-                    if self.focused_panel() != Panel::Editor {
-                        return false;
+            ActionShortcuts::FocusRegion(dir) => {
+                match (self.layout.active_group(), self.focus_dir(*dir)) {
+                    (active_before, TreeFocusMove::Moved(_)) => {
+                        // A move between groups changed the active group: the
+                        // window follows it as on every other route
+                        // ([`Self::focus_group`]).
+                        if self.layout.active_group() != active_before {
+                            self.follow_active_group(cx);
+                        }
+                        self.apply_focus(window, cx)
                     }
-                    self.editor
-                        .update(cx, |editor, cx| editor.editor_key(key, window, cx));
+                    (_, TreeFocusMove::AtEdge) => {}
+                    // Nothing stacked above or below: the chord is the focused
+                    // panel's own key, not a focus move (ADR-0050 §4). The
+                    // editor already let it pass, so it is handed back; anywhere
+                    // else it goes on unswallowed.
+                    (_, TreeFocusMove::NotHandled) => {
+                        let Some(key) = key else {
+                            return true;
+                        };
+                        if self.focused_panel() != Panel::Editor {
+                            return false;
+                        }
+                        self.active_state()
+                            .editor
+                            .update(cx, |editor, cx| editor.editor_key(key, window, cx));
+                    }
                 }
-            },
+            }
+            // The tabs (ADR-0058).
+            ActionShortcuts::NewTab => self.new_tab(cx),
+            ActionShortcuts::CloseTab => self.close_shown_tab(cx),
+            ActionShortcuts::NextTab => self.step_tab(true, cx),
+            ActionShortcuts::PrevTab => self.step_tab(false, cx),
             ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
                 if let Some(next) = self.cycle_focus(*action == ActionShortcuts::FocusEditor) {
                     self.layout.focus(next);
@@ -2724,14 +2955,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> status_row::RailSegment<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static> {
         let verb = if self.rail_hidden { "Show" } else { "Hide" };
-        let label = match keymap::chord_label(cx, &ActionShortcuts::ToggleRail) {
-            Some(chord) => format!("{verb} rail ({chord})"),
-            None => format!("{verb} rail"),
-        };
+        let label =
+            chrome::tooltip_with_chord(&format!("{verb} rail"), &ActionShortcuts::ToggleRail, cx);
         status_row::RailSegment {
             position: self.rail,
             hidden: self.rail_hidden,
-            label: label.into(),
+            label,
             on_toggle: cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_rail(window, cx)),
         }
     }
@@ -2747,7 +2976,7 @@ impl Workspace {
             let leaf = self
                 .last_slot
                 .filter(|slot| self.slot_drawn(*slot))
-                .map_or(Leaf::Group(self.layout.active_group()), Leaf::Slot);
+                .map_or(Leaf::Editor, Leaf::Slot);
             self.layout.focus(Focus::Leaf(leaf));
         }
         self.apply_focus(window, cx);
@@ -2865,11 +3094,7 @@ impl Workspace {
                 ActionShortcuts::ToggleRightDrawer,
             ),
         };
-        let chord = keymap::chord_label(cx, &action);
-        let tip: SharedString = match chord {
-            Some(chord) => format!("{name} ({chord})").into(),
-            None => name.into(),
-        };
+        let tip: SharedString = chrome::tooltip_with_chord(name, &action, cx);
         let glyph = if open {
             theme::focus_border(&theme)
         } else {
@@ -2968,15 +3193,22 @@ impl Workspace {
     /// What the editor Panel shows in place of the editor while a vault is
     /// open but no note is (yet): typing there could never be saved. `None`
     /// once a note is open, and without a vault (the fixture tests' editor).
+    /// The active group's ([`Self::note_empty_state_in`]).
     pub(crate) fn note_empty_state(&self) -> Option<EmptyState> {
-        let host = self.notes.as_ref()?;
+        self.note_empty_state_in(self.layout.active_group())
+    }
+
+    /// [`Self::note_empty_state`] for `group`: only the group whose note
+    /// went away says so, and only the active group waits for the restore.
+    pub(crate) fn note_empty_state_in(&self, group: GroupId) -> Option<EmptyState> {
+        let host = self.host_in(group)?;
         if host.note.is_some() {
             return None;
         }
-        if let Some(gone) = self.note_gone.clone() {
-            return Some(gone);
+        if let Some((_, gone)) = self.note_gone.as_ref().filter(|(g, _)| *g == group) {
+            return Some(gone.clone());
         }
-        let (title, detail) = if self.restore_pending {
+        let (title, detail) = if self.restore_pending && group == self.layout.active_group() {
             (
                 "Opening your last note…",
                 "It opens once the workspace is indexed.",
@@ -2993,26 +3225,39 @@ impl Workspace {
         })
     }
 
-    /// The editor Panel: the editor (or the attachment view, or the empty
-    /// state) over the Footer.
-    pub(super) fn render_editor(
+    /// Whether `group` shows its editor ([`Self::render_group_document`]).
+    fn group_editor_shown(&self, group: GroupId) -> bool {
+        self.empty.is_none()
+            && self.state(group).is_some_and(|s| s.attachment.is_none())
+            && self.note_empty_state_in(group).is_none()
+    }
+
+    /// What `group` shows: its attachment view, else why there is no note
+    /// (the window's own empty state first), else its editor
+    /// ([`Self::group_editor_shown`] says which).
+    pub(super) fn render_group_document(
         &self,
-        window: &mut Window,
+        group: GroupId,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let attachment = self.attachment.clone().filter(|_| self.empty.is_none());
+    ) -> AnyElement {
+        let Some(state) = self.state(group) else {
+            return div().flex_1().into_any_element();
+        };
+        let attachment = state.attachment.clone().filter(|_| self.empty.is_none());
         let empty = match &attachment {
-            None => self.empty.clone().or_else(|| self.note_empty_state()),
+            None => self
+                .empty
+                .clone()
+                .or_else(|| self.note_empty_state_in(group)),
             Some(_) => None,
         };
-        let editor_shown = empty.is_none() && attachment.is_none();
-        let document = match (&empty, attachment) {
+        match (&empty, attachment) {
             // The editor is not drawn: its focus handle sits on the empty
             // state, so the keyboard still reaches the window's chords (F5
             // away from a workspace that would not open, the leader, the
             // palette).
             (Some(empty), _) => self
-                .render_empty(empty, &self.editor.read(cx).focus_handle(cx), cx)
+                .render_empty(empty, &state.editor.read(cx).focus_handle(cx), cx)
                 .into_any_element(),
             (None, Some(view)) => div()
                 .flex()
@@ -3024,18 +3269,56 @@ impl Workspace {
             (None, None) => div()
                 .flex_1()
                 .min_h_0()
-                .child(self.editor.clone())
+                .child(state.editor.clone())
                 .into_any_element(),
+        }
+    }
+
+    /// The editor Panel, `size` px (its layout cell): the tab strip, the
+    /// shown tab's groups and the Footer. One group draws its document
+    /// alone, as the Panel always did; two or more are laid out side by
+    /// side, each under its header ([`Self::render_groups`]). Zoomed, only
+    /// the active group shows, with no strip and no header (ADR-0058).
+    pub(super) fn render_editor(
+        &self,
+        size: (f64, f64),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let zoomed = self.layout.zoomed() == Some(Leaf::Editor);
+        let region = self.layout.region();
+        let several = !zoomed && region.groups(region.shown()).len() > 1;
+        let active = self.layout.active_group();
+        let document = if several {
+            self.render_groups(size, f64::from(window.rem_size()), cx)
+        } else {
+            self.render_group_document(active, cx)
         };
+        let editor_shown = self.group_editor_shown(active);
         // The which-key docks over the bottom of the document, right above
         // the Footer, so showing it never reflows the note.
         let document = div()
+            .id("editor-document")
+            .group(group_header::LONE_GROUP_HOVER)
             .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .child(document)
+            // A lone group (no header) has its note-menu button floating
+            // at the top-right corner of the document.
+            .children((!several).then(|| self.render_corner_menu_button(active, cx)))
+            // A lone group's bounds are the document's; several groups
+            // record their own.
+            .children((!several).then(|| note_menu::group_bounds_probe(&self.group_bounds, active)))
+            // A lone group (a tab just opened mid-drag) takes a group's
+            // drop too; several groups carry their own layers.
+            .children(
+                (!several)
+                    .then(|| self.group_zone_layer(0, active, cx))
+                    .flatten(),
+            )
             .children(self.render_which_key(cx));
         div()
             .id("editor-panel")
@@ -3049,11 +3332,18 @@ impl Workspace {
             .child(
                 Self::leaf_surface(
                     theme::background(&theme::current(cx)),
-                    self.leaf_border(Focus::Leaf(Leaf::Group(self.layout.active_group())), cx),
+                    self.leaf_border(Focus::Leaf(Leaf::Editor), cx),
                 )
                 .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.focus_panel(Panel::Editor, window, cx)
                 }))
+                // The tab strip over the shown tab, with two tabs or more;
+                // a zoom shows the group alone.
+                .children(if zoomed {
+                    None
+                } else {
+                    self.render_tab_strip(cx)
+                })
                 .child(document)
                 .child(self.render_footer(editor_shown, window, cx)),
             )
@@ -3107,10 +3397,11 @@ impl Workspace {
     /// its find bar closed; the find bar's matches while it is open; the
     /// note's counts once loaded, while a note is open.
     pub(crate) fn doc_facts(&self, editor_shown: bool, cx: &App) -> DocFacts {
-        let editor = &self.editor.read(cx).editor;
+        let editor = &self.active_state().editor.read(cx).editor;
         let focused = editor_shown && self.focused_panel() == Panel::Editor;
         let find_open = editor.find_open();
         let meta = self
+            .active_state()
             .notes
             .as_ref()
             .filter(|h| h.note.is_some())
@@ -3187,7 +3478,7 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     /// The title bar, when the window has one ([`titlebar`]), over the body.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.prune_view_drag(cx);
+        self.prune_drag(cx);
         self.refresh_drop_outcomes(window, cx);
         let bar = self.render_title_bar(window, cx);
         let body = self.render_body(window, cx);
@@ -3278,6 +3569,9 @@ impl Workspace {
             .when(!self.rail_hidden && !self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
+            // Inside the workspace's key context: a key the menu does not
+            // use reaches the workspace's chords.
+            .children(self.render_note_menu(window, cx))
             .into_any_element()
     }
 }
@@ -3407,6 +3701,7 @@ mod ask;
 mod ask_sources;
 mod attachment;
 mod chevron;
+mod chrome;
 mod config;
 mod create;
 mod drawer_list;
@@ -3417,6 +3712,9 @@ mod files;
 mod find;
 mod folder_chooser;
 mod follow;
+mod group;
+mod group_drop;
+mod group_header;
 mod input_autocomplete;
 mod key_suggestions;
 mod keyboard_help;
@@ -3426,6 +3724,7 @@ mod links;
 mod modal;
 mod note;
 mod note_flush;
+mod note_menu;
 mod onboarding;
 mod outline;
 mod palette;
@@ -3443,8 +3742,10 @@ mod saved_searches;
 mod search;
 mod semantic;
 mod server;
+mod session;
 mod sort;
 mod switcher;
+mod tab_strip;
 mod tags;
 mod theme_picker;
 pub(crate) mod titlebar;
@@ -3481,6 +3782,8 @@ mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
 #[cfg(test)]
+mod note_menu_tests;
+#[cfg(test)]
 mod note_tests;
 #[cfg(test)]
 mod onboarding_tests;
@@ -3513,13 +3816,21 @@ mod search_tests;
 #[cfg(test)]
 mod semantic_tests;
 #[cfg(test)]
+mod session_tests;
+#[cfg(test)]
 mod slot_tests;
 #[cfg(test)]
 mod sort_tests;
 #[cfg(test)]
+mod split_tests;
+#[cfg(test)]
 mod start_tests;
 #[cfg(test)]
 mod switcher_tests;
+#[cfg(test)]
+mod tab_strip_tests;
+#[cfg(test)]
+mod tabs_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

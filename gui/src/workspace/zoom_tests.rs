@@ -48,10 +48,6 @@ impl Shell {
             .view_slot(&view)
             .expect("the view is placed")
     }
-
-    fn group(&self, cx: &gpui_kit::App) -> Leaf {
-        Leaf::Group(self.workspace.read(cx).layout.active_group())
-    }
 }
 
 /// Every slot's drawn bounds (by reading order; `None` when not drawn) and
@@ -118,7 +114,7 @@ fn toggle_zoom_covers_everything_right_of_the_rail_and_keeps_footer(cx: &mut Tes
         assert_eq!(shell.focused(cx), Panel::Editor);
         window.press(ZOOM, cx);
         window.render_frame(cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         let editor = window.find("editor-panel").bounds();
         assert!(close(editor.left(), f32::from(rail.right())), "{editor:?}");
         assert!(close(editor.right(), 1000.), "{editor:?}");
@@ -161,7 +157,7 @@ fn zoom_restores_every_placement_exactly(cx: &mut TestAppContext) {
         // TAGS: it overlaps the editor most.
         window.press("alt-left", cx);
         // A side toggled off (its memory).
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         let before = snapshot(window, cx);
         assert_eq!(before.1[1], [DrawerView::Outline]);
         let tags = Leaf::Slot(shell.slot_of(DrawerView::Tags, cx));
@@ -241,7 +237,7 @@ fn escape_does_not_exit_zoom(cx: &mut TestAppContext) {
     let files = slot(DrawerView::Files, cx);
     assert_eq!(state(cx), (None, Focus::Leaf(files)));
     press("escape", cx);
-    assert!(matches!(state(cx).1, Focus::Leaf(Leaf::Group(_))));
+    assert!(matches!(state(cx).1, Focus::Leaf(Leaf::Editor)));
 
     press("ctrl-e", cx);
     press(ZOOM, cx);
@@ -288,7 +284,7 @@ fn escape_in_the_vim_editor_does_not_exit_zoom(cx: &mut TestAppContext) {
         window.press("escape", cx);
         window.press("escape", cx);
         window.render_frame(cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         assert_eq!(shell.focused(cx), Panel::Editor);
     })
     .unwrap();
@@ -310,7 +306,7 @@ fn zoom_works_on_an_editor_group_and_on_a_slot(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(shell.zoomed(cx), None);
         window.press(ZOOM, cx);
-        assert_eq!(shell.zoomed(cx), Some(shell.group(cx)));
+        assert_eq!(shell.zoomed(cx), Some(Leaf::Editor));
         window.press(ZOOM, cx);
         assert_eq!(shell.zoomed(cx), None);
 
@@ -387,7 +383,7 @@ fn hiding_the_zoomed_view_clears_zoom(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("alt-left", cx);
         window.press(ZOOM, cx);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert_eq!(shell.zoomed(cx), None);
         assert!(window.try_find("editor-panel").is_some());
@@ -542,7 +538,7 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        let editor = Focus::Leaf(shell.group(cx));
+        let editor = Focus::Leaf(Leaf::Editor);
         window.press(ZOOM, cx);
         window.render_frame(cx);
         for (key, expected) in [
@@ -551,15 +547,15 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
             ("alt-right", editor),
             ("alt-up", editor),
             ("alt-down", editor),
-            ("ctrl-tab", Focus::Rail),
-            ("ctrl-tab", editor),
-            ("ctrl-shift-tab", Focus::Rail),
-            ("ctrl-shift-tab", editor),
+            ("alt-e", Focus::Rail),
+            ("alt-e", editor),
+            ("alt-f", Focus::Rail),
+            ("alt-f", editor),
         ] {
             window.press(key, cx);
             window.render_frame(cx);
             assert_eq!(shell.tree_focus(cx), expected, "{key}");
-            assert_eq!(shell.zoomed(cx), Some(shell.group(cx)), "{key}");
+            assert_eq!(shell.zoomed(cx), Some(Leaf::Editor), "{key}");
         }
 
         // A zoomed slot at the right edge: Left goes to the rail, not the
@@ -650,4 +646,223 @@ fn a_rail_click_on_a_hidden_placed_view_ends_zoom(cx: &mut TestAppContext) {
         })
         .unwrap();
     }
+}
+
+/// Zoom on the editor of a split tab (ADR-0058) shows the active group
+/// alone: no other group, no header, no tab strip and no slot; leaving
+/// zoom draws them all again.
+#[gpui_kit::test]
+fn zoom_on_a_group_shows_only_that_group(cx: &mut TestAppContext) {
+    use super::group_header::{GROUP_HEADER_ID, GROUP_ID, group_element};
+    use super::tab_strip::TAB_STRIP_ID;
+    use gpui_kit::Focusable as _;
+    use kimun_notes::logic::layout_tree::Axis;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(
+        &[("a.md", "alpha"), ("b.md", "beta"), ("c.md", "gamma")],
+        &[],
+    ));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    // A second tab, then back to the first; split there.
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_new_tab(VaultPath::new("c.md"), cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "gamma");
+    cx.update_window(started.handle, |_, window, cx| window.press("ctrl-tab", cx))
+        .unwrap();
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let active = cx.read(|cx| ws.read(cx).layout.active_group());
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(TAB_STRIP_ID).is_some());
+        assert!(window.try_find(group_element(GROUP_ID, 0)).is_some());
+        assert_eq!(window.find_all("editor").len(), 2);
+
+        window.press(ZOOM, cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).layout.zoomed(), Some(Leaf::Editor));
+        assert!(window.try_find(TAB_STRIP_ID).is_none());
+        assert!(window.try_find(group_element(GROUP_ID, 0)).is_none());
+        assert!(window.try_find(group_element(GROUP_HEADER_ID, 1)).is_none());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
+        assert_eq!(window.find_all("editor").len(), 1);
+        // The one drawn is the active group's, with the keyboard.
+        let editor = ws.read(cx).state(active).unwrap().editor.clone();
+        assert!(editor.read(cx).focus_handle(cx).is_focused(window));
+        let panel = window.find("editor-panel").bounds();
+        let rail = window.find("rail").bounds();
+        assert!(close(panel.left(), f32::from(rail.right())), "{panel:?}");
+
+        window.press(ZOOM, cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).layout.zoomed(), None);
+        assert!(window.try_find(TAB_STRIP_ID).is_some());
+        assert!(window.try_find(group_element(GROUP_HEADER_ID, 1)).is_some());
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+        assert_eq!(window.find_all("editor").len(), 2);
+    })
+    .unwrap();
+}
+
+/// Showing another tab ends a zoom on the editor (a zoom shows one group
+/// of one tab): the next-tab chord and a new tab alike.
+#[gpui_kit::test]
+fn switching_tabs_while_zoomed_ends_the_zoom(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_new_tab(VaultPath::new("b.md"), cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let second = cx.read(|cx| ws.read(cx).layout.region().shown());
+    // Each key in a frame of its own: the keyboard follows the shown tab's
+    // editor once the frame settles.
+    let press = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let zoomed = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.zoomed());
+    let shown = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.region().shown());
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-tab", cx);
+    assert_ne!(shown(cx), second);
+    assert_eq!(zoomed(cx), None);
+    cx.update_window(started.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(slot_id(DrawerView::Files)).is_some());
+    })
+    .unwrap();
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-shift-tab", cx);
+    assert_eq!(shown(cx), second);
+    assert_eq!(zoomed(cx), None);
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    press("ctrl-t", cx);
+    assert_eq!(cx.read(|cx| ws.read(cx).layout.region().tabs().len()), 3);
+    assert_eq!(zoomed(cx), None);
+}
+
+/// Zoomed on a split tab, directional focus moves between the tab's
+/// groups: Alt+Right makes the right group active and the zoom shows it
+/// (its editor alone, with the keyboard), Alt+Left comes back. The zoom
+/// stays, and each group keeps its note and its text.
+#[gpui_kit::test]
+fn directional_focus_moves_the_zoomed_group_between_groups(cx: &mut TestAppContext) {
+    use gpui_kit::Focusable as _;
+    use kimun_notes::logic::layout_tree::Axis;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    let ws = started.workspace.clone();
+    let left = cx.read(|cx| ws.read(cx).layout.active_group());
+    cx.update(|cx| {
+        ws.update(cx, |w, cx| {
+            w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
+        })
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let right = cx.read(|cx| ws.read(cx).layout.active_group());
+    cx.update(|cx| ws.update(cx, |w, cx| w.focus_group(left, cx)));
+    cx.run_until_parked();
+    let press = |key: &str, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let active = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.active_group());
+    let zoomed = |cx: &TestAppContext| cx.read(|cx| ws.read(cx).layout.zoomed());
+    let text_of = |group, cx: &TestAppContext| {
+        cx.read(|cx| {
+            let editor = ws.read(cx).state(group).unwrap().editor.clone();
+            editor.read(cx).editor.get_text()
+        })
+    };
+    let note_of = |group, cx: &TestAppContext| {
+        cx.read(|cx| {
+            ws.read(cx)
+                .state(group)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.note.clone())
+        })
+    };
+    // The zoom draws one editor: the active group's, with the keyboard.
+    let shows = |group, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let editor = ws.read(cx).state(group).unwrap().editor.clone();
+            window.find_all("editor").len() == 1
+                && editor.read(cx).focus_handle(cx).is_focused(window)
+        })
+        .unwrap()
+    };
+    let unchanged = |cx: &TestAppContext| {
+        assert_eq!(note_of(left, cx), Some(VaultPath::new("a.md")));
+        assert_eq!(note_of(right, cx), Some(VaultPath::new("b.md")));
+        assert_eq!(text_of(left, cx), "alpha");
+        assert_eq!(text_of(right, cx), "beta");
+    };
+
+    press(ZOOM, cx);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    assert!(shows(left, cx));
+    press("alt-right", cx);
+    assert_eq!(active(cx), right, "the right group became active");
+    assert_eq!(zoomed(cx), Some(Leaf::Editor), "the zoom stays");
+    assert!(shows(right, cx), "the zoom shows the right group");
+    unchanged(cx);
+    press("alt-left", cx);
+    assert_eq!(active(cx), left);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
+    assert!(shows(left, cx));
+    unchanged(cx);
+    // Past the region's edge: the zoom's own rules, only the rail.
+    press("alt-left", cx);
+    assert_eq!(cx.read(|cx| ws.read(cx).layout.focused()), Focus::Rail);
+    assert_eq!(active(cx), left);
+    assert_eq!(zoomed(cx), Some(Leaf::Editor));
 }

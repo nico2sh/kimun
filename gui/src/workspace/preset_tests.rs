@@ -250,7 +250,7 @@ fn apply_preset_copies_into_live_state_and_saves(cx: &mut TestAppContext) {
     // Focus rests on the editor of the new tree.
     assert_eq!(
         got.focused(),
-        kimun_notes::logic::layout_tree::Focus::Leaf(Leaf::Group(got.active_group()))
+        kimun_notes::logic::layout_tree::Focus::Leaf(Leaf::Editor)
     );
     // "Reset to preset" is offered now.
     assert!(rows(&shell, cx).contains(&("Reset to preset".to_string(), None)));
@@ -433,11 +433,11 @@ fn invalid_preset_reports_each_error_and_keeps_current_layout(cx: &mut TestAppCo
     )));
 }
 
-/// A preset with two editor groups cannot be drawn (the editor renders
-/// once) and is refused until group splitting exists: the layout stays and
-/// one flash names the second editor's path (Ruling 23).
+/// A preset with two editor leaves is refused: a layout holds one editor
+/// region, whose groups split inside it (ADR-0058). The layout stays and
+/// one flash names the second editor's path.
 #[gpui_kit::test]
-fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut TestAppContext) {
+fn a_preset_with_two_editor_leaves_keeps_the_layout_and_flashes_once(cx: &mut TestAppContext) {
     let (_dir, config) = temp_config();
     let text = lines(&[
         "[preset.twins]",
@@ -453,7 +453,7 @@ fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut Te
 
     apply(&shell, cx, "twins");
     assert_eq!(live(&shell, cx), before);
-    assert_eq!(live(&shell, cx).groups().len(), 1);
+    assert_eq!(live(&shell, cx).region().all_groups().len(), 1);
     assert!(!config.exists(), "nothing saved");
     let shown = flashes(&shell, cx);
     assert_eq!(shown.len(), 1, "{shown:?}");
@@ -461,7 +461,105 @@ fn a_preset_with_two_editor_groups_keeps_the_layout_and_flashes_once(cx: &mut Te
     assert!(*error);
     assert!(message.contains("\"twins\""), "{message}");
     assert!(message.contains("children[2]"), "{message}");
-    assert!(message.contains("group splitting"), "{message}");
+    assert!(
+        message.contains("a layout holds one editor region"),
+        "{message}"
+    );
+}
+
+/// Presets cover only slots and the place of the editor region (ADR-0058):
+/// applying one keeps every tab, every group with its editor and open note,
+/// unsaved text included, and the shown tab and active group.
+#[gpui_kit::test]
+fn applying_a_preset_leaves_tabs_and_open_notes_untouched(cx: &mut TestAppContext) {
+    use kimun_core::nfs::VaultPath;
+
+    use super::start_tests::{drive, open_started, runtime, vault_start};
+    use crate::startup::FirstNote;
+    use crate::test_vault::test_vault;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    cx.update_window(started.handle, |_, window, cx| window.input("X", cx))
+        .unwrap();
+
+    // A second tab with its own group, holding b.
+    let (first, second) = cx.update(|cx| {
+        started.workspace.update(cx, |w, cx| {
+            let first = w.layout.active_group();
+            let (_, second) = w.layout.region_mut().new_tab();
+            // The helper reads the vault through the active group: give the
+            // new group its state from the first tab, then show it.
+            w.layout.region_mut().set_active_group(first);
+            w.add_group_for_test(second, Some(v.settings.clone()), cx);
+            w.layout.region_mut().set_active_group(second);
+            w.open_note_in(second, VaultPath::new("b.md"), cx);
+            w.presets = spec::parse_presets(&two_presets()).unwrap().preset;
+            (first, second)
+        })
+    });
+    let note_of = |g, cx: &TestAppContext| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.state(g)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.note.clone())
+        })
+    };
+    drive(&rt, cx, |cx| {
+        note_of(second, cx) == Some(VaultPath::new("b.md"))
+    });
+    let editors = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            [first, second].map(|g| w.state(g).expect("a state").editor.entity_id())
+        })
+    };
+    let region_before = cx.read(|cx| started.workspace.read(cx).layout.region().clone());
+    let editors_before = editors(cx);
+
+    cx.update_window(started.handle, |_, window, cx| {
+        started.workspace.update(cx, |w, cx| {
+            w.run_palette_row(
+                PaletteRun::Preset(PresetCommand::Apply("research".into())),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+
+    cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        // The preset's slots are in place...
+        assert_eq!(
+            spec::to_spec(&w.layout),
+            spec::to_spec(&built(&two_presets(), "research"))
+        );
+        // ...and the region is the one from before, tab for tab.
+        assert_eq!(w.layout.region(), &region_before);
+        assert_eq!(w.layout.region().tabs().len(), 2);
+        assert_eq!(w.layout.active_group(), second);
+        let mut held: Vec<_> = w.groups.keys().copied().collect();
+        held.sort_by_key(|g| *g == second);
+        assert_eq!(held, vec![first, second]);
+        let own = w.state(first).expect("the first group has a state");
+        assert_eq!(own.editor.read(cx).editor.get_text(), "Xalpha");
+        assert!(own.editor.read(cx).editor.is_dirty());
+        let other = w.state(second).expect("the second group has a state");
+        assert_eq!(other.editor.read(cx).editor.get_text(), "beta");
+    });
+    assert_eq!(note_of(first, cx), Some(VaultPath::new("a.md")));
+    assert_eq!(note_of(second, cx), Some(VaultPath::new("b.md")));
+    assert_eq!(editors(cx), editors_before);
 }
 
 /// "Reset layout to default" is always offered, with or without a presets
@@ -510,7 +608,7 @@ fn reset_to_preset_discards_dragged_weights(cx: &mut TestAppContext) {
     // A divider dragged (the editor's share) and a view moved.
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
-            let group = Leaf::Group(w.layout.active_group());
+            let group = Leaf::Editor;
             assert!(w.layout.resize_after(group, 0.8));
             let first = w.layout.slots()[0];
             w.layout.move_view(DrawerView::Links, first);
@@ -561,7 +659,7 @@ fn apply_preset_clears_session_only_state(cx: &mut TestAppContext) {
         shell.workspace.update(cx, |w, cx| {
             // A side toggled off, a zoomed leaf.
             w.toggle_side(kimun_notes::logic::layout::Side::Left, window, cx);
-            w.layout.zoom(Some(Leaf::Group(w.layout.active_group())));
+            w.layout.zoom(Some(Leaf::Editor));
         });
         window.render_frame(cx);
     })

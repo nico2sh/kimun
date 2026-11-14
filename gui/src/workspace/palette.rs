@@ -54,7 +54,8 @@ use super::keyboard_help::action_label;
 use super::modal::{ModalKind, Slot};
 use super::presets::PresetCommand;
 use super::route::{
-    NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS, NO_WORKSPACE,
+    NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS,
+    NEEDS_SLOT_OR_EDITOR_FOCUS, NO_WORKSPACE,
 };
 use crate::input;
 use crate::keymap;
@@ -82,6 +83,9 @@ pub(crate) enum PaletteRun {
 /// The move chooser's row: after the move rows, before splitting (its
 /// place in [`chord_rows`]).
 const MOVE_VIEW_TO: &str = "+window · move view to…";
+
+/// Why the next and previous tab rows do nothing.
+pub(crate) const ONE_TAB: &str = "Only one tab is open";
 
 /// Why the row for the rail's current position does nothing.
 const RAIL_ALREADY_HERE: &str = "The rail is already there";
@@ -120,6 +124,11 @@ impl PaletteEntry {
     #[cfg(test)]
     pub(crate) fn blocked(&self) -> Option<&'static str> {
         self.blocked
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hint(&self) -> Option<KeyInput> {
+        self.hint
     }
 
     #[cfg(test)]
@@ -203,10 +212,7 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
         (MOVE_VIEW_TO.into(), PaletteRun::MoveViewTo),
         window_row(A::SplitSlotRight),
         window_row(A::SplitSlotDown),
-        (
-            "+window · close slot".into(),
-            PaletteRun::Chord(A::CloseSlot),
-        ),
+        window_row(A::CloseSlot),
         (
             "+window · toggle zoom".into(),
             PaletteRun::Chord(A::ToggleZoom),
@@ -215,6 +221,11 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
             "+window · toggle rail".into(),
             PaletteRun::Chord(A::ToggleRail),
         ),
+        // The tabs (ADR-0058).
+        window_row(A::NewTab),
+        window_row(A::CloseTab),
+        window_row(A::NextTab),
+        window_row(A::PrevTab),
         (
             "+text · find in note".into(),
             PaletteRun::Chord(A::FindInBuffer),
@@ -470,8 +481,16 @@ impl Workspace {
                 (!self.note_has_keyboard(opener, cx)).then_some(NEEDS_NOTE_FOCUS)
             }
             A::MoveViewToNeighbour(_) => (opener == Panel::Editor).then_some(NEEDS_SLOT_FOCUS),
-            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => slot_focus_block(opener),
-            A::QuickNote | A::OpenSortDialog => self.notes.is_none().then_some(NO_WORKSPACE),
+            // A slot splits or closes; the editor, its active group.
+            A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot => match opener {
+                Panel::Drawer(_) => None,
+                Panel::Editor => self.active_state().notes.is_none().then_some(NO_WORKSPACE),
+                Panel::Rail => Some(NEEDS_SLOT_OR_EDITOR_FOCUS),
+            },
+            A::QuickNote | A::OpenSortDialog | A::NewTab | A::CloseTab => {
+                self.active_state().notes.is_none().then_some(NO_WORKSPACE)
+            }
+            A::NextTab | A::PrevTab => (self.layout.region().tabs().len() < 2).then_some(ONE_TAB),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
             A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
                 && self.focused_view() == Some(DrawerView::Find)))
@@ -517,11 +536,13 @@ impl Workspace {
                 self.perform_route(route, window, cx);
             }
             PaletteRun::Chord(ActionShortcuts::FindInBuffer) => {
-                self.editor
+                self.active_state()
+                    .editor
                     .update(cx, |editor, cx| editor.find_command(false, window, cx));
             }
             PaletteRun::Chord(ActionShortcuts::ReplaceInBuffer) => {
-                self.editor
+                self.active_state()
+                    .editor
                     .update(cx, |editor, cx| editor.find_command(true, window, cx));
             }
             PaletteRun::Chord(action) => {

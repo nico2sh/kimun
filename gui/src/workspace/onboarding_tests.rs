@@ -1008,7 +1008,7 @@ fn finishing_the_first_run_opens_the_new_vault(cx: &mut TestAppContext) {
         Some("notes-here - kimün")
     );
     let vim = cx.read(|cx| {
-        let editor = s.workspace.read(cx).editor.clone();
+        let editor = s.workspace.read(cx).active_state().editor.clone();
         editor.read(cx).editor.is_vim()
     });
     assert!(vim, "the chosen editor runs now");
@@ -1167,7 +1167,7 @@ fn shell_chords_are_inert_while_it_shows(cx: &mut TestAppContext) {
     let s = rerun(cx, &rt, &v);
     let left = |cx: &TestAppContext| cx.read(|cx| s.workspace.read(cx).side_drawn(Side::Left));
     let before = left(cx);
-    s.ob_press("ctrl-t", cx);
+    s.ob_press("alt-l", cx);
     assert_eq!(left(cx), before, "the side toggle is inert");
     s.ob_press("ctrl-shift-p", cx);
     assert_eq!(s.shown_modal(cx), None, "no palette");

@@ -160,17 +160,39 @@ impl Win {
         f: impl FnOnce(&super::attachment::AttachmentView) -> R,
     ) -> R {
         cx.read(|cx| {
-            let view = self.workspace.read(cx).attachment.clone().expect("a view");
+            let view = self
+                .workspace
+                .read(cx)
+                .active_state()
+                .attachment
+                .clone()
+                .expect("a view");
             f(view.read(cx))
         })
     }
 
     fn note_open(&self, cx: &TestAppContext) -> Option<VaultPath> {
-        cx.read(|cx| self.workspace.read(cx).notes.as_ref()?.note.clone())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .notes
+                .as_ref()?
+                .note
+                .clone()
+        })
     }
 
     fn is_dirty(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     }
 
     /// FILES' rows marked open.
@@ -341,7 +363,15 @@ fn the_dirty_note_is_flushed_and_nothing_saves_while_shown(cx: &mut TestAppConte
     cx.read(|cx| {
         let w = started.workspace.read(cx);
         assert!(!w.can_save(), "no note target");
-        assert!(w.notes.as_ref().unwrap().session.path().is_root_or_empty());
+        assert!(
+            w.active_state()
+                .notes
+                .as_ref()
+                .unwrap()
+                .session
+                .path()
+                .is_root_or_empty()
+        );
     });
 
     let file = v.workspace.as_path().join("a.md");

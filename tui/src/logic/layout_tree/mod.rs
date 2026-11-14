@@ -1,9 +1,11 @@
-//! The GUI's **layout tree** (ADR-0052): one recursive `Node` whose leaves
-//! are **slots** (holding **drawer views**) and **editor groups**, to the
-//! right of the Activity rail. This module owns the structure and placement
-//! rules — which views a slot holds, which one is shown, splitting and
-//! closing leaves — plus the stored focus, geometric focus moves and zoom. Toolkit-free; the TUI does not
-//! use it.
+//! The GUI's **layout tree** (ADR-0052, ADR-0058): one recursive `Node`
+//! whose leaves are **slots** (holding **drawer views**) and the one
+//! **editor region** leaf, to the right of the Activity rail. The region's
+//! tabs and editor groups live in its [`EditorRegion`], which the tree
+//! owns. This module owns the structure and placement rules — which views
+//! a slot holds, which one is shown, splitting and closing leaves — plus
+//! the stored focus, geometric focus moves and zoom. Toolkit-free; the TUI
+//! does not use it.
 //!
 //! Placement rules: a view is in at most one slot; a slot shows at most one
 //! of its views. Showing a view hides the one sharing its slot, which stays
@@ -17,16 +19,83 @@ pub mod spec;
 
 pub use rail::RailPosition;
 
+use crate::logic::editor_region::EditorRegion;
+
 pub use crate::logic::layout::node::Fit;
 pub(crate) use crate::logic::layout::node::Node;
 pub use crate::logic::layout::{Axis, Dir, GroupId, Side, UnitRect};
 
 /// Tolerance for comparing unit-square coordinates.
-const EPS: f64 = 1e-4;
+pub(crate) const EPS: f64 = 1e-4;
 
 /// Length of the overlap of `[a0, a1]` and `[b0, b1]` (0 when disjoint).
 fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
     (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// `inner`, a rectangle in the unit square, placed inside `outer`.
+fn within(outer: UnitRect, inner: UnitRect) -> UnitRect {
+    UnitRect::new(
+        outer.x() + inner.x() * outer.width(),
+        outer.y() + inner.y() * outer.height(),
+        inner.width() * outer.width(),
+        inner.height() * outer.height(),
+    )
+}
+
+/// The nearest region among `regions` in `dir` from `cur`, skipping
+/// `from`. Candidates lie wholly on that side and overlap `cur` across
+/// the axis. The nearest wins; ties go to the largest overlap, then the
+/// `remembered` one, then the top-left one.
+pub(crate) fn nearest<T: Copy + PartialEq>(
+    regions: &[(T, UnitRect)],
+    from: T,
+    cur: UnitRect,
+    dir: Dir,
+    remembered: &dyn Fn(T) -> bool,
+) -> Option<T> {
+    let across_x = |c: &UnitRect| overlap(c.x(), c.right(), cur.x(), cur.right());
+    let across_y = |c: &UnitRect| overlap(c.y(), c.bottom(), cur.y(), cur.bottom());
+    let candidates: Vec<(T, f64, f64, UnitRect)> = regions
+        .iter()
+        .filter(|(l, _)| *l != from)
+        .filter_map(|(l, c)| {
+            let (beyond, gap, ov) = match dir {
+                Dir::Left => (c.right() <= cur.x() + EPS, cur.x() - c.right(), across_y(c)),
+                Dir::Right => (c.x() >= cur.right() - EPS, c.x() - cur.right(), across_y(c)),
+                Dir::Up => (
+                    c.bottom() <= cur.y() + EPS,
+                    cur.y() - c.bottom(),
+                    across_x(c),
+                ),
+                Dir::Down => (
+                    c.y() >= cur.bottom() - EPS,
+                    c.y() - cur.bottom(),
+                    across_x(c),
+                ),
+            };
+            (beyond && ov > EPS).then_some((*l, gap, ov, *c))
+        })
+        .collect();
+    let nearest = candidates
+        .iter()
+        .map(|(_, gap, _, _)| *gap)
+        .fold(f64::INFINITY, f64::min);
+    candidates
+        .iter()
+        .filter(|(_, gap, _, _)| *gap <= nearest + EPS)
+        .max_by(|a, b| {
+            let overlap = if (a.2 - b.2).abs() <= EPS {
+                std::cmp::Ordering::Equal
+            } else {
+                a.2.total_cmp(&b.2)
+            };
+            overlap
+                .then(remembered(a.0).cmp(&remembered(b.0)))
+                .then(b.3.y().total_cmp(&a.3.y()))
+                .then(b.3.x().total_cmp(&a.3.x()))
+        })
+        .map(|(l, ..)| *l)
 }
 
 /// The leaf of `regions` that touches `rail`'s edge first: nearest the
@@ -58,8 +127,8 @@ fn first_at_rail(regions: &[(Leaf, UnitRect)], rail: RailPosition) -> Option<Lea
 }
 
 /// The share of its split a side column takes: a side slot of
-/// [`LayoutTree::default_layout`], and a slot placed left or right of an
-/// editor group.
+/// [`LayoutTree::default_layout`], and a slot placed left or right of the
+/// editor region.
 const SIDE_COLUMN_SHARE: f64 = 0.2;
 
 /// Identifies one slot. Stable across splits and closes.
@@ -73,14 +142,16 @@ impl SlotId {
     }
 }
 
-/// A leaf of the layout tree.
+/// A leaf of the layout tree: a slot, or the one editor region (whose
+/// tabs and groups are the tree's [`EditorRegion`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Leaf {
     Slot(SlotId),
-    Group(GroupId),
+    Editor,
 }
 
 /// What holds focus: the rail (outside the tree) or one leaf.
+/// `Focus::Leaf(Leaf::Editor)` is the region's active group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Focus {
     Rail,
@@ -130,19 +201,15 @@ impl TreeShape {
 /// Why a tree operation (or `LayoutTree::from_parts`) was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeError {
-    /// The only editor group cannot close.
-    LastGroup,
     /// The only slot cannot close: its views would have nowhere to go.
     LastSlot,
     /// No such slot in the tree (or a slot entry with no leaf).
     NoSuchSlot,
-    /// No such editor group in the tree.
-    NoSuchGroup,
     /// A view is not where it was claimed to be (a `shown` view not among
     /// its slot's views).
     NoSuchView,
-    /// The tree has no editor group.
-    NoGroup,
+    /// The tree has no editor leaf.
+    NoEditor,
     /// A view appears more than once.
     DuplicateView,
     /// A leaf id appears more than once in the node.
@@ -177,14 +244,15 @@ impl<V: Clone + PartialEq> SlotState<V> {
     }
 }
 
-/// The GUI layout: a tree of slots and editor groups, the views placed in
-/// each slot, the active group, the stored focus and the zoomed leaf. At
-/// least one editor group always exists.
+/// The GUI layout: a tree of slots and the one editor leaf, the views
+/// placed in each slot, the editor region's tabs and groups, the stored
+/// focus and the zoomed leaf. The editor leaf always exists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutTree<V> {
     root: Node<Leaf>,
     slots: BTreeMap<SlotId, SlotState<V>>,
-    active_group: GroupId,
+    /// The tabs and groups drawn in the editor leaf.
+    region: EditorRegion,
     focus: Focus,
     /// The slot focused last, the tie-breaker for geometric moves.
     last_slot: Option<SlotId>,
@@ -192,19 +260,18 @@ pub struct LayoutTree<V> {
     /// a placement).
     zoomed: Option<Leaf>,
     next_slot: u32,
-    next_group: u32,
 }
 
 impl<V: Clone + PartialEq> LayoutTree<V> {
     /// The built-in arrangement: a left slot showing `files`, the editor
-    /// group, and an empty right slot, at weights 0.2 / 0.6 / 0.2.
+    /// region (one tab, one group), and an empty right slot, at weights 0.2 / 0.6 / 0.2.
     pub fn default_layout(files: V) -> Self {
         let (left, right) = (SlotId(0), SlotId(1));
         let root = Node::split(
             Axis::Horizontal,
             vec![
                 (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(left))),
-                (0.6, Node::leaf(Leaf::Group(GroupId::new(0)))),
+                (0.6, Node::leaf(Leaf::Editor)),
                 (SIDE_COLUMN_SHARE, Node::leaf(Leaf::Slot(right))),
             ],
         );
@@ -218,11 +285,11 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// Build a tree from its parts: the node and, per slot leaf, its views
     /// and the shown one. **The single constructor** every layout goes
     /// through (the default layout and preset/spec building), so its
-    /// checks are the tree's invariants: leaf ids are distinct, at least
-    /// one editor group exists, every slot leaf has exactly one entry (and
-    /// every entry a leaf), every view is in at most one slot, and `shown`
-    /// is among its slot's views. The active group and focus start on the
-    /// first group in reading order.
+    /// checks are the tree's invariants: leaf ids are distinct (so there is
+    /// at most one editor leaf), the editor leaf exists, every slot leaf has
+    /// exactly one entry (and every entry a leaf), every view is in at most
+    /// one slot, and `shown` is among its slot's views. The region starts
+    /// with one tab of one group; focus starts on the editor.
     pub(crate) fn from_parts(
         root: Node<Leaf>,
         slots: BTreeMap<SlotId, (Vec<V>, Option<V>)>,
@@ -233,21 +300,14 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                 return Err(TreeError::DuplicateLeaf);
             }
         }
-        let groups: Vec<GroupId> = leaves
-            .iter()
-            .filter_map(|l| match l {
-                Leaf::Group(g) => Some(*g),
-                Leaf::Slot(_) => None,
-            })
-            .collect();
-        let Some(&first) = groups.first() else {
-            return Err(TreeError::NoGroup);
-        };
+        if !leaves.contains(&Leaf::Editor) {
+            return Err(TreeError::NoEditor);
+        }
         let slot_leaves: Vec<SlotId> = leaves
             .iter()
             .filter_map(|l| match l {
                 Leaf::Slot(s) => Some(*s),
-                Leaf::Group(_) => None,
+                Leaf::Editor => None,
             })
             .collect();
         if slot_leaves.iter().any(|s| !slots.contains_key(s)) {
@@ -286,12 +346,11 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Ok(Self {
             root,
             slots: states,
-            active_group: first,
-            focus: Focus::Leaf(Leaf::Group(first)),
+            region: EditorRegion::new(),
+            focus: Focus::Leaf(Leaf::Editor),
             last_slot: None,
             zoomed: None,
             next_slot,
-            next_group: next_group_after(&groups),
         })
     }
 
@@ -312,16 +371,16 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         self.focus
     }
 
-    /// Focus the rail or a leaf of the tree. Focusing a group makes it the
-    /// active group. False (nothing changes) for a leaf not in the tree.
+    /// Focus the rail or a leaf of the tree. Focusing the editor focuses
+    /// the region's active group. False (nothing changes) for a leaf not in
+    /// the tree.
     pub fn focus(&mut self, focus: Focus) -> bool {
         if let Focus::Leaf(leaf) = focus {
             if !self.root.contains(&leaf) {
                 return false;
             }
-            match leaf {
-                Leaf::Group(g) => self.active_group = g,
-                Leaf::Slot(s) => self.last_slot = Some(s),
+            if let Leaf::Slot(s) = leaf {
+                self.last_slot = Some(s);
             }
         }
         self.focus = focus;
@@ -331,77 +390,49 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     // ── Geometry ──────────────────────────────────────────────────────
 
     /// Every leaf with its rectangle in the unit square (the area right of
-    /// the rail; the rail itself is not a region), in reading order.
+    /// the rail; the rail itself is not a region), in reading order. The
+    /// editor leaf appears once, whole; [`Self::group_regions`] subdivides
+    /// it.
     pub fn regions(&self) -> Vec<(Leaf, UnitRect)> {
         self.root.layout(UnitRect::new(0.0, 0.0, 1.0, 1.0))
     }
 
-    /// Whether `leaf` is the one focus last rested on: the active group or
-    /// the slot focused last.
+    /// The editor leaf's rectangle in the unit square.
+    fn editor_rect(&self) -> Option<UnitRect> {
+        self.regions()
+            .into_iter()
+            .find(|(leaf, _)| *leaf == Leaf::Editor)
+            .map(|(_, rect)| rect)
+    }
+
+    /// The shown tab's groups with their rectangles in the unit square of
+    /// [`Self::regions`]: the editor leaf's rectangle subdivided by the
+    /// region's [`EditorRegion::regions`], in reading order.
+    pub fn group_regions(&self) -> Vec<(GroupId, UnitRect)> {
+        let Some(editor) = self.editor_rect() else {
+            return Vec::new();
+        };
+        self.region
+            .regions()
+            .into_iter()
+            .map(|(g, r)| (g, within(editor, r)))
+            .collect()
+    }
+
+    /// Whether `leaf` is the one focus last rested on: the editor (its
+    /// active group) or the slot focused last.
     fn is_remembered(&self, leaf: Leaf) -> bool {
         match leaf {
-            Leaf::Group(g) => g == self.active_group,
+            Leaf::Editor => true,
             Leaf::Slot(s) => self.last_slot == Some(s),
         }
     }
 
-    /// The nearest region among `regions` in `dir` from `cur`, skipping
-    /// `from`. Candidates lie wholly on that side and overlap `cur` across
-    /// the axis. The nearest wins; ties go to the largest overlap, then the
-    /// remembered leaf, then the top-left one.
-    fn nearest(
-        &self,
-        regions: &[(Leaf, UnitRect)],
-        from: Leaf,
-        cur: UnitRect,
-        dir: Dir,
-    ) -> Option<Leaf> {
-        let across_x = |c: &UnitRect| overlap(c.x(), c.right(), cur.x(), cur.right());
-        let across_y = |c: &UnitRect| overlap(c.y(), c.bottom(), cur.y(), cur.bottom());
-        let candidates: Vec<(Leaf, f64, f64, UnitRect)> = regions
-            .iter()
-            .filter(|(l, _)| *l != from)
-            .filter_map(|(l, c)| {
-                let (beyond, gap, ov) = match dir {
-                    Dir::Left => (c.right() <= cur.x() + EPS, cur.x() - c.right(), across_y(c)),
-                    Dir::Right => (c.x() >= cur.right() - EPS, c.x() - cur.right(), across_y(c)),
-                    Dir::Up => (
-                        c.bottom() <= cur.y() + EPS,
-                        cur.y() - c.bottom(),
-                        across_x(c),
-                    ),
-                    Dir::Down => (
-                        c.y() >= cur.bottom() - EPS,
-                        c.y() - cur.bottom(),
-                        across_x(c),
-                    ),
-                };
-                (beyond && ov > EPS).then_some((*l, gap, ov, *c))
-            })
-            .collect();
-        let nearest = candidates
-            .iter()
-            .map(|(_, gap, _, _)| *gap)
-            .fold(f64::INFINITY, f64::min);
-        candidates
-            .iter()
-            .filter(|(_, gap, _, _)| *gap <= nearest + EPS)
-            .max_by(|a, b| {
-                let overlap = if (a.2 - b.2).abs() <= EPS {
-                    std::cmp::Ordering::Equal
-                } else {
-                    a.2.total_cmp(&b.2)
-                };
-                overlap
-                    .then(self.is_remembered(a.0).cmp(&self.is_remembered(b.0)))
-                    .then(b.3.y().total_cmp(&a.3.y()))
-                    .then(b.3.x().total_cmp(&a.3.x()))
-            })
-            .map(|(l, ..)| *l)
-    }
-
     /// Move focus geometrically to the nearest leaf in `dir` (see
-    /// `Self::nearest`). No wrap: with no candidate, Left/Right report
+    /// `nearest`). From the editor, the shown tab's groups come first: the
+    /// nearest group that way becomes active and focus stays on the editor
+    /// leaf; only with none does focus leave the region, measured from the
+    /// active group's rectangle. No wrap: with no candidate, Left/Right report
     /// [`TreeFocusMove::AtEdge`], and so do Up/Down when something is
     /// stacked in the same column — otherwise [`TreeFocusMove::NotHandled`].
     /// The rail sits at the far left here (the GUI uses [`Self::focus_dir_in`]
@@ -409,7 +440,9 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// left reaches [`Focus::Rail`], and Right from the rail reaches the
     /// first leaf (leftmost, then topmost); Up/Down from the rail are not
     /// handled. While a leaf is zoomed, only it and the rail are visible:
-    /// the zoomed leaf covers the unit square and is the only candidate.
+    /// the zoomed leaf covers the unit square and is the only candidate;
+    /// zoomed on the editor, the other groups of the shown tab are still
+    /// reached first (the zoom shows the group that becomes active).
     pub fn focus_dir(&mut self, dir: Dir) -> TreeFocusMove {
         self.focus_dir_in(dir, &|_| true, Some(RailPosition::Left))
     }
@@ -470,14 +503,33 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                 };
             }
         };
-        let Some(cur) = regions
+        let Some(mut cur) = regions
             .iter()
             .find(|(l, _)| *l == current)
             .map(|(_, rect)| *rect)
         else {
             return TreeFocusMove::NotHandled;
         };
-        match self.nearest(&regions, current, cur, dir) {
+        // Inside the editor region: another group of the shown tab first.
+        // Zoomed on the editor too: the zoom then shows the group that
+        // became active.
+        let mut stacked_inside = false;
+        if current == Leaf::Editor {
+            let groups = self.region.regions();
+            let active = self.region.active_group();
+            if let Some(inner) = groups.iter().find(|(g, _)| *g == active).map(|(_, r)| *r) {
+                if let Some(g) = nearest(&groups, active, inner, dir, &|_| false) {
+                    self.region.set_active_group(g);
+                    self.focus = Focus::Leaf(Leaf::Editor);
+                    return TreeFocusMove::Moved(Focus::Leaf(Leaf::Editor));
+                }
+                stacked_inside = groups.iter().any(|(g, r)| {
+                    *g != active && overlap(r.x(), r.right(), inner.x(), inner.right()) > EPS
+                });
+                cur = within(cur, inner);
+            }
+        }
+        match nearest(&regions, current, cur, dir, &|l| self.is_remembered(l)) {
             Some(l) => {
                 self.focus(Focus::Leaf(l));
                 TreeFocusMove::Moved(Focus::Leaf(l))
@@ -489,9 +541,10 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             None => match dir {
                 Dir::Left | Dir::Right => TreeFocusMove::AtEdge,
                 Dir::Up | Dir::Down => {
-                    let stacked = regions.iter().any(|(l, c)| {
-                        *l != current && overlap(c.x(), c.right(), cur.x(), cur.right()) > EPS
-                    });
+                    let stacked = stacked_inside
+                        || regions.iter().any(|(l, c)| {
+                            *l != current && overlap(c.x(), c.right(), cur.x(), cur.right()) > EPS
+                        });
                     if stacked {
                         TreeFocusMove::AtEdge
                     } else {
@@ -504,19 +557,10 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
 
     // ── Sides ─────────────────────────────────────────────────────────
 
-    /// The active group's rectangle.
-    fn active_rect(&self) -> Option<UnitRect> {
-        let active = Leaf::Group(self.active_group);
-        self.regions()
-            .into_iter()
-            .find(|(leaf, _)| *leaf == active)
-            .map(|(_, rect)| rect)
-    }
-
     /// The slots of `side` in reading order: those lying entirely left
-    /// (right) of the active group.
+    /// (right) of the editor region.
     pub fn side_slots(&self, side: Side) -> Vec<SlotId> {
-        let Some(group) = self.active_rect() else {
+        let Some(group) = self.editor_rect() else {
             return Vec::new();
         };
         self.regions()
@@ -529,66 +573,28 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                     };
                     beside.then_some(slot)
                 }
-                Leaf::Group(_) => None,
+                Leaf::Editor => None,
             })
             .collect()
     }
 
-    /// The editor group nearest the window edge on `side`: the leftmost
-    /// (rightmost) one, the first in reading order on a tie. Unlike
-    /// [`Self::side_slots`] it does not depend on the active group.
-    pub fn edge_group(&self, side: Side) -> Option<GroupId> {
-        let mut best: Option<(GroupId, f64)> = None;
-        for (leaf, rect) in self.regions() {
-            let Leaf::Group(g) = leaf else { continue };
-            // Smaller is nearer the edge.
-            let key = match side {
-                Side::Left => rect.x(),
-                Side::Right => -rect.right(),
-            };
-            if best.is_none_or(|(_, k)| key < k - EPS) {
-                best = Some((g, key));
-            }
-        }
-        best.map(|(g, _)| g)
-    }
-
-    /// The slots lying entirely outside every editor group on `side`, in
-    /// reading order: the window-edge counterpart of [`Self::side_slots`],
-    /// the same whichever group is active.
+    /// The slots lying entirely outside the editor region on `side`, in
+    /// reading order: the window-edge counterpart of [`Self::side_slots`].
+    /// With one editor leaf (ADR-0058) no slot lies between groups, so the
+    /// two agree.
     pub fn edge_slots(&self, side: Side) -> Vec<SlotId> {
-        let regions = self.regions();
-        let groups = regions.iter().filter(|(l, _)| matches!(l, Leaf::Group(_)));
-        let bound = match side {
-            Side::Left => groups.map(|(_, r)| r.x()).fold(f64::INFINITY, f64::min),
-            Side::Right => groups
-                .map(|(_, r)| r.right())
-                .fold(f64::NEG_INFINITY, f64::max),
-        };
-        regions
-            .into_iter()
-            .filter_map(|(leaf, rect)| match leaf {
-                Leaf::Slot(slot) => {
-                    let outside = match side {
-                        Side::Left => rect.right() <= bound + EPS,
-                        Side::Right => rect.x() >= bound - EPS,
-                    };
-                    outside.then_some(slot)
-                }
-                Leaf::Group(_) => None,
-            })
-            .collect()
+        self.side_slots(side)
     }
 
     /// The side `slot` reads as: left when its centre lies left of the
-    /// active group's, else right.
+    /// editor region's, else right.
     pub fn slot_side(&self, slot: SlotId) -> Side {
         let rect = self
             .regions()
             .into_iter()
             .find(|(leaf, _)| *leaf == Leaf::Slot(slot))
             .map(|(_, rect)| rect);
-        match (rect, self.active_rect()) {
+        match (rect, self.editor_rect()) {
             (Some(rect), Some(group))
                 if rect.x() + rect.width() / 2.0 >= group.x() + group.width() / 2.0 =>
             {
@@ -631,7 +637,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
                     && drawn(*s)
                     && overlap(other.x(), other.right(), rect.x(), rect.right()) > EPS
             }
-            Leaf::Group(_) => false,
+            Leaf::Editor => false,
         })
     }
 
@@ -660,7 +666,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             .into_iter()
             .filter_map(|l| match l {
                 Leaf::Slot(s) => Some(*s),
-                Leaf::Group(_) => None,
+                Leaf::Editor => None,
             })
             .collect()
     }
@@ -752,7 +758,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             .into_iter()
             .filter(|(l, _)| matches!(l, Leaf::Slot(_)))
             .collect();
-        match self.nearest(&slots, from, cur, dir) {
+        match nearest(&slots, from, cur, dir, &|l| self.is_remembered(l)) {
             Some(Leaf::Slot(target)) => self.move_view(view.clone(), target),
             _ => false,
         }
@@ -841,34 +847,22 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             .ok_or(TreeError::NoSuchSlot)
     }
 
-    /// [`Self::place_beside`] against an editor group: the new slot lands
-    /// at that group's `dir` edge, which with the group between the sides
-    /// is the window-edge side for Left and Right.
-    /// [`TreeError::NoSuchGroup`] (nothing changes) when `group` is absent.
-    pub fn place_beside_group(
-        &mut self,
-        view: V,
-        group: GroupId,
-        dir: Dir,
-    ) -> Result<SlotId, TreeError> {
-        self.place_beside_leaf(view, Leaf::Group(group), dir)
-            .ok_or(TreeError::NoSuchGroup)
+    /// [`Self::place_beside`] against the editor region: the new slot
+    /// lands at the whole region's `dir` edge, never between its groups.
+    pub fn place_beside_editor(&mut self, view: V, dir: Dir) -> SlotId {
+        self.place_beside_leaf(view, Leaf::Editor, dir)
+            .expect("the editor leaf is always in the tree")
     }
 
     /// The split behind [`Self::place_beside`]: `None` when `target` is not
     /// a leaf of the tree.
     fn place_beside_leaf(&mut self, view: V, target: Leaf, dir: Dir) -> Option<SlotId> {
-        let (axis, before) = match dir {
-            Dir::Up => (Axis::Vertical, true),
-            Dir::Down => (Axis::Vertical, false),
-            Dir::Left => (Axis::Horizontal, true),
-            Dir::Right => (Axis::Horizontal, false),
-        };
+        let (axis, before) = dir.split_axis();
         let new = SlotId(self.next_slot);
-        // Beside an editor group the new slot is a side column: the share
+        // Beside the editor region the new slot is a side column: the share
         // of a side slot in the default layout, not half the editor.
-        let share = (matches!(target, Leaf::Group(_)) && axis == Axis::Horizontal)
-            .then_some(SIDE_COLUMN_SHARE);
+        let share =
+            (target == Leaf::Editor && axis == Axis::Horizontal).then_some(SIDE_COLUMN_SHARE);
         if !self
             .root
             .split_leaf_at(&target, axis, Leaf::Slot(new), before, share)
@@ -901,7 +895,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         self.close_slot(slot).ok()
     }
 
-    /// Whether `slot` is the last slot on its side of the active group
+    /// Whether `slot` is the last slot on its side of the editor region
     /// ([`Self::slot_side`]): no other slot reads as on that side. Such a
     /// slot is never closed, by a move or an explicit close, so the side
     /// can be shown again.
@@ -916,7 +910,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// Close `slot` and return the slot that absorbed its views, which
     /// join it hidden (its own shown view is unchanged). That is
     /// `Node::absorber` when it is a slot; when the leaf taking over the
-    /// area is a group, the nearest remaining slot in reading order on the
+    /// area is the editor, the nearest remaining slot in reading order on the
     /// absorber's side, else on the other side. Focus on the closed slot
     /// moves to the absorbing slot. Refused for the only slot
     /// ([`TreeError::LastSlot`]).
@@ -936,7 +930,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         let before = leaves[..at].iter().rev();
         let slot_of = |l: &Leaf| match l {
             Leaf::Slot(s) => Some(*s),
-            Leaf::Group(_) => None,
+            Leaf::Editor => None,
         };
         let target = if forward {
             after
@@ -971,66 +965,34 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         Ok(target)
     }
 
-    // ── Editor groups ─────────────────────────────────────────────────
+    // ── Editor region ─────────────────────────────────────────────────
 
-    /// Every editor group in reading order.
-    pub fn groups(&self) -> Vec<GroupId> {
-        self.root
-            .leaves()
-            .into_iter()
-            .filter_map(|l| match l {
-                Leaf::Group(g) => Some(*g),
-                Leaf::Slot(_) => None,
-            })
-            .collect()
+    /// The tabs and groups drawn in the editor leaf.
+    pub fn region(&self) -> &EditorRegion {
+        &self.region
     }
 
-    /// The group that owns save, the footer and `{note}`.
+    /// The tabs and groups drawn in the editor leaf, to change them.
+    pub fn region_mut(&mut self) -> &mut EditorRegion {
+        &mut self.region
+    }
+
+    /// The group that owns save, the footer and `{note}`: the region's
+    /// active group ([`EditorRegion::active_group`]).
     pub fn active_group(&self) -> GroupId {
-        self.active_group
-    }
-
-    /// Split `group` along `axis`; the new group comes right after it. The
-    /// active group and focus are unchanged.
-    pub fn split_group(&mut self, group: GroupId, axis: Axis) -> Result<GroupId, TreeError> {
-        let new = GroupId::new(self.next_group);
-        if !self
-            .root
-            .split_leaf(&Leaf::Group(group), axis, Leaf::Group(new))
-        {
-            return Err(TreeError::NoSuchGroup);
-        }
-        self.next_group += 1;
-        Ok(new)
-    }
-
-    /// Close `group`. The last group cannot close. When the active group
-    /// closes, the group before it (or the first) becomes active, and focus
-    /// on the closed group moves to the new active group.
-    pub fn close_group(&mut self, group: GroupId) -> Result<(), TreeError> {
-        let groups = self.groups();
-        let Some(pos) = groups.iter().position(|&g| g == group) else {
-            return Err(TreeError::NoSuchGroup);
-        };
-        if groups.len() == 1 {
-            return Err(TreeError::LastGroup);
-        }
-        let leaf = Leaf::Group(group);
-        self.root.remove_leaf(&leaf);
-        if self.active_group == group {
-            let groups = self.groups();
-            self.active_group = groups[pos.saturating_sub(1).min(groups.len() - 1)];
-        }
-        if self.focus == Focus::Leaf(leaf) {
-            self.focus = Focus::Leaf(Leaf::Group(self.active_group));
-        }
-        if self.zoomed == Some(leaf) {
-            self.zoomed = None;
-        }
-        Ok(())
+        self.region.active_group()
     }
 
     // ── Sizes ─────────────────────────────────────────────────────────
+
+    /// The editor leaf's minimum (width, height) for [`Self::fit`] and
+    /// [`Self::make_room`], from `per_group`, one group's minimum: the
+    /// width is that many times the widest row of groups in the shown tab
+    /// ([`EditorRegion::widest_row`]), so groups side by side ask for room
+    /// and the slots collapse before any group is squeezed under its own.
+    pub fn editor_min(&self, per_group: (f64, f64)) -> (f64, f64) {
+        (per_group.0 * self.region.widest_row() as f64, per_group.1)
+    }
 
     /// Move the boundary after `leaf`'s branch so it takes `share` of the
     /// pair (see `Node::resize_after`). False when there is none.
@@ -1056,7 +1018,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// are left out first (their siblings share their weight; they are not
     /// reported as collapsed), then each overflowing split collapses its
     /// children last → first by `min` (width, height; heights count only
-    /// in vertical splits), never a subtree holding an editor group. Units
+    /// in vertical splits), never a subtree holding the editor leaf. Units
     /// are the caller's (rems in the GUI). The tree itself, its weights
     /// and placements are untouched: collapse is the caller's session
     /// state.
@@ -1068,13 +1030,13 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     ) -> Fit<Leaf> {
         let mut root = self.root.clone();
         for leaf in self.root.leaves() {
-            // Groups are always drawn, so the root never empties.
-            if !matches!(leaf, Leaf::Group(_)) && !drawn(*leaf) {
+            // The editor is always drawn, so the root never empties.
+            if *leaf != Leaf::Editor && !drawn(*leaf) {
                 root.remove_leaf(leaf);
             }
         }
         root.layout_fit(area, &|leaf: &Leaf| min(*leaf), &|leaf: &Leaf| {
-            matches!(leaf, Leaf::Group(_))
+            *leaf == Leaf::Editor
         })
     }
 
@@ -1082,8 +1044,8 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
     /// collapses none of `leaves` (ADR-0054 §8): the cell holding a split
     /// that collapses one grows along that split's axis, in the nearest
     /// split above it along that axis, taking from its siblings only what
-    /// each has above its minimum, so none collapses there and no editor
-    /// group goes under its minimum. Repeated, a bounded number of times,
+    /// each has above its minimum, so none collapses there and the editor
+    /// leaf does not go under its minimum. Repeated, a bounded number of times,
     /// while one of `leaves` still collapses. True when none collapses
     /// (already, or now); false, nothing changed, when one is absent, not
     /// drawn, or there is no room to make for it.
@@ -1094,7 +1056,7 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
         min: &dyn Fn(Leaf) -> (f64, f64),
         drawn: &dyn Fn(Leaf) -> bool,
     ) -> bool {
-        let group = |leaf: &Leaf| matches!(leaf, Leaf::Group(_));
+        let group = |leaf: &Leaf| *leaf == Leaf::Editor;
         self.root.make_room(
             leaves,
             area,
@@ -1103,20 +1065,6 @@ impl<V: Clone + PartialEq> LayoutTree<V> {
             &|leaf: &Leaf| group(leaf) || drawn(*leaf),
         )
     }
-}
-
-/// The first group id above every id in `groups`. `GroupId` exposes no
-/// number, so match candidates upward until every given id is accounted for.
-fn next_group_after(groups: &[GroupId]) -> u32 {
-    let mut left = groups.len();
-    let mut n = 0u32;
-    while left > 0 {
-        if groups.contains(&GroupId::new(n)) {
-            left -= 1;
-        }
-        n += 1;
-    }
-    n
 }
 
 #[cfg(test)]

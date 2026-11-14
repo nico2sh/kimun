@@ -96,7 +96,7 @@ use kimun_core::NoteVault;
 use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 
-use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::message::{AppMessage, AppTx, TickId};
 use crate::settings::SharedSettings;
 use crate::util::single_slot_task::SingleSlotTask;
 
@@ -513,11 +513,18 @@ impl NoteSession {
         self.autosave.stop();
     }
 
-    /// (Re)start the periodic tick (`AppMessage::Autosave` every
-    /// `autosave_interval_secs`). Calls `tokio::spawn`: needs a tokio context.
+    /// (Re)start the periodic tick (`AppMessage::AutosaveOf` every
+    /// `autosave_interval_secs`, naming [`Self::autosave_tick`]). Calls
+    /// `tokio::spawn`: needs a tokio context.
     pub fn restart_autosave(&mut self, tx: &AppTx) {
         let interval = self.settings.read().unwrap().autosave_interval_secs;
         self.autosave.restart(interval, tx.clone());
+    }
+
+    /// What this session's autosave ticks name themselves as
+    /// (`AppMessage::AutosaveOf`), the same for the session's whole life.
+    pub fn autosave_tick(&self) -> TickId {
+        self.autosave.id()
     }
 
     /// The running tick's period in seconds, `None` while no tick runs.
@@ -555,6 +562,12 @@ impl NoteSession {
     /// [`Self::finish_open`].
     pub fn is_open_pending(&self) -> bool {
         self.pending_open.is_some()
+    }
+
+    /// The note being opened, between [`Self::begin_open`] and
+    /// [`Self::finish_open`].
+    pub fn pending_open(&self) -> Option<&VaultPath> {
+        self.pending_open.as_ref()
     }
 
     #[cfg(test)]
@@ -660,6 +673,18 @@ impl NoteSession {
             timeout: self.save_timeout,
             guard: self.flush_token.clone(),
         })
+    }
+
+    /// Let go of a flush that will not run: the background save it took
+    /// over goes back to the slot and finishes as it would have (dropping
+    /// the request would abort it). Background saves and flushes are
+    /// allowed again once it is given back.
+    pub fn give_back_flush(&mut self, flush: FlushRequest) {
+        let FlushRequest { in_flight, .. } = flush;
+        // Nothing else could start a save while the flush was out.
+        if !self.autosave_task.is_in_flight() {
+            self.autosave_task = in_flight;
+        }
     }
 
     /// Apply a flush: a write of the open note marks the buffer saved

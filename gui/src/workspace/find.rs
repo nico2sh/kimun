@@ -93,10 +93,11 @@ use crate::theme;
 
 /// `Save…`'s tooltip: what it does, and the chord that does it here.
 fn save_tip(cx: &App) -> SharedString {
-    match keymap::chord_label(cx, &ActionShortcuts::SaveCurrentQuery) {
-        Some(chord) => format!("Save the query as a saved search ({chord})").into(),
-        None => "Save the query as a saved search".into(),
-    }
+    super::chrome::tooltip_with_chord(
+        "Save the query as a saved search",
+        &ActionShortcuts::SaveCurrentQuery,
+        cx,
+    )
 }
 
 /// Element ids, for tests.
@@ -933,6 +934,7 @@ impl Workspace {
         if let Some(find) = self.find.clone() {
             let shown = self.is_shown(DrawerView::Find);
             let note = self
+                .active_state()
                 .notes
                 .as_ref()
                 .and_then(|h| h.note.clone())

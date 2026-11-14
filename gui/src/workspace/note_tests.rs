@@ -30,7 +30,15 @@ fn disk(rt: &Runtime, v: &TestVault, p: &str) -> Option<String> {
 
 impl Started {
     fn dirty(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     }
 
     /// The note the Footer names.
@@ -46,6 +54,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.session.is_open_pending())
@@ -56,6 +65,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .unwrap()
@@ -341,7 +351,7 @@ fn closing_with_unsaved_edits_saves_them_first(cx: &mut TestAppContext) {
     assert!(!started.close(cx), "the close waits for the save");
     assert_eq!(started.flash(cx).as_deref(), Some("Saving a.md…"));
     assert_eq!(
-        cx.read(|cx| started.workspace.read(cx).closing),
+        cx.read(|cx| started.workspace.read(cx).closing.clone()),
         Closing::Flushing
     );
     drive(&rt, cx, |cx| started.is_closed(cx));
@@ -480,7 +490,7 @@ impl Drop for Unwritable {
 
 impl Started {
     fn closing(&self, cx: &TestAppContext) -> Closing {
-        cx.read(|cx| self.workspace.read(cx).closing)
+        cx.read(|cx| self.workspace.read(cx).closing.clone())
     }
 
     fn flash_is_error(&self, cx: &TestAppContext) -> bool {
@@ -496,6 +506,7 @@ impl Started {
         cx.read(|cx| {
             self.workspace
                 .read(cx)
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.is_switching())
@@ -676,9 +687,17 @@ fn a_lost_read_lets_saves_and_the_close_resume(cx: &mut TestAppContext) {
         panic!("the aborted read reports a JoinError");
     };
     started.workspace.update(cx, |w, cx| {
-        let _read = w.notes.as_mut().unwrap().session.begin_open(path("b.md"));
-        w.editor.update(cx, |view, _| view.input_blocked = true);
-        w.switch_read(Err(error), cx);
+        let _read = w
+            .active_state_mut()
+            .notes
+            .as_mut()
+            .unwrap()
+            .session
+            .begin_open(path("b.md"));
+        w.active_state_mut()
+            .editor
+            .update(cx, |view, _| view.input_blocked = true);
+        w.switch_read(w.layout.active_group(), Err(error), cx);
     });
     assert!(!started.open_pending(cx));
     assert!(started.flash_is_error(cx));
@@ -744,6 +763,7 @@ fn the_workspace_editor_completes_wikilinks_from_its_vault(cx: &mut TestAppConte
             started
                 .workspace
                 .read(cx)
+                .active_state()
                 .editor
                 .read(cx)
                 .autocomplete_state()
@@ -965,4 +985,144 @@ fn the_app_level_close_window_saves_and_leaves_the_app(cx: &mut TestAppContext) 
     drive(&rt, cx, |cx| started.is_closed(cx));
     assert_eq!(started.quits(cx), 0, "the app stays");
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+}
+
+// ── groups ───────────────────────────────────────────────────────────────
+
+/// A switch remembers the group that started it: the flush it ran lands in
+/// that group even when another one became active meanwhile.
+#[gpui_kit::test]
+fn a_flush_result_applies_to_the_group_that_started_it(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout_tree::{Axis, Focus, Leaf};
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    started.type_text("X", cx);
+    assert!(started.dirty(cx));
+
+    let (first, second) = cx.update(|cx| {
+        started.workspace.update(cx, |w, cx| {
+            let first = w.layout.active_group();
+            let second = w
+                .layout
+                .region_mut()
+                .split_group(first, Axis::Horizontal)
+                .expect("the first group splits");
+            let settings = v.settings.clone();
+            w.add_group_for_test(second, Some(settings), cx);
+            // The switch starts in the first group, its flush still running.
+            w.open_note_in(first, path("b.md"), cx);
+            // Another group becomes the active one before the flush lands.
+            assert!(w.layout.region_mut().set_active_group(second));
+            assert!(w.layout.focus(Focus::Leaf(Leaf::Editor)));
+            (first, second)
+        })
+    });
+
+    let first_note = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.state(first)
+                .and_then(|s| s.notes.as_ref())
+                .and_then(|h| h.note.clone())
+        })
+    };
+    drive(&rt, cx, |cx| first_note(cx) == Some(path("b.md")));
+
+    assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
+    cx.read(|cx| {
+        let w = started.workspace.read(cx);
+        assert_eq!(w.layout.active_group(), second);
+        let other = w.state(second).expect("the second group has a state");
+        assert_eq!(other.notes.as_ref().and_then(|h| h.note.clone()), None);
+        assert_eq!(other.editor.read(cx).editor.get_text(), "");
+        let own = w.state(first).expect("the first group has a state");
+        assert_eq!(own.editor.read(cx).editor.get_text(), "beta");
+    });
+}
+
+/// The "close again discards" guard compares each group's text with the
+/// warning's, not one sum of revisions: a group taken away after the
+/// warning (its tab's close was already writing it) lowers a sum that new
+/// edits elsewhere can raise back to the same number. Those new edits are
+/// not discarded: the close warns again.
+#[gpui_kit::test]
+fn the_discard_guard_is_not_fooled_by_revisions_that_sum_equal(cx: &mut TestAppContext) {
+    use super::file_ops::FileOpRequest;
+    use kimun_notes::logic::layout_tree::GroupId;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
+    let first = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    // The first group's note is deleted: an empty group, whose text can
+    // never be written.
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.request_file_op(FileOpRequest::Delete(path("a.md")), window, cx)
+        })
+    })
+    .unwrap();
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).file_task.is_none())
+    });
+    // A second tab on b.md, shown.
+    cx.update(|cx| {
+        started
+            .workspace
+            .update(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx))
+    });
+    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    let second = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    let editor_of = |group: GroupId, cx: &TestAppContext| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .state(group)
+                .unwrap()
+                .editor
+                .clone()
+        })
+    };
+    let revision = |group: GroupId, cx: &TestAppContext| {
+        let editor = editor_of(group, cx);
+        cx.read(|cx| editor.read(cx).editor.content_revision().get())
+    };
+    let type_in = |group: GroupId, text: &str, cx: &mut TestAppContext| {
+        let editor = editor_of(group, cx);
+        cx.update(|cx| {
+            editor.update(cx, |view, cx| {
+                view.editor.insert_at_cursor(text);
+                cx.notify();
+            })
+        });
+    };
+    type_in(first, "scratch", cx);
+
+    // The second tab's close starts writing it (its flush waits on the
+    // runtime); the window's close then warns about the first group.
+    started.press("ctrl-w", cx);
+    assert!(cx.read(|cx| started.workspace.read(cx).groups_closing.is_some()));
+    assert!(!started.close(cx));
+    assert!(matches!(started.closing(cx), Closing::Discard(_)));
+    let warned = revision(first, cx) + revision(second, cx);
+
+    // The tab goes; new text in the first group brings the sum back.
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).layout.region().tabs().len()) == 1
+    });
+    assert!(matches!(started.closing(cx), Closing::Discard(_)));
+    while revision(first, cx) < warned {
+        type_in(first, "x", cx);
+    }
+    assert_eq!(revision(first, cx), warned, "the sums are equal");
+
+    assert!(
+        !started.close(cx),
+        "new edits since the warning: warn again"
+    );
+    assert!(!started.is_closed(cx));
 }

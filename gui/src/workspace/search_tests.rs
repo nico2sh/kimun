@@ -160,8 +160,16 @@ fn previewed(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
 }
 
 fn on(s: &Started, p: &str, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
-        .is_some_and(|n| n.is_like(&path(p)))
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
+    .is_some_and(|n| n.is_like(&path(p)))
 }
 
 fn focused(s: &Started, id: &'static str, cx: &mut TestAppContext) -> bool {
@@ -176,6 +184,7 @@ fn needles(s: &Started, cx: &TestAppContext) -> Vec<String> {
     cx.read(|cx| {
         s.workspace
             .read(cx)
+            .active_state()
             .editor
             .read(cx)
             .editor
@@ -186,7 +195,15 @@ fn needles(s: &Started, cx: &TestAppContext) -> Vec<String> {
 }
 
 fn dirty(s: &Started, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).editor.read(cx).editor.is_dirty())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .is_dirty()
+    })
 }
 
 fn query_help(s: &Started, cx: &TestAppContext) -> bool {

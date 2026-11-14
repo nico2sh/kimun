@@ -66,6 +66,7 @@ use gpui_kit::{
     IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, Task, WeakEntity, Window, div,
 };
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::update::{
     self as rules, CheckReport, CheckStart, UpdateBackend, UpdateMachine, UpdateOffer, UpdatePhase,
@@ -785,7 +786,11 @@ impl Workspace {
         {
             return;
         }
-        let has_note = self.notes.as_ref().is_some_and(|h| h.note.is_some());
+        let has_note = self
+            .active_state()
+            .notes
+            .as_ref()
+            .is_some_and(|h| h.note.is_some());
         if !has_note || self.status.read_only {
             self.start_install(cx);
             return;
@@ -794,13 +799,16 @@ impl Workspace {
             self.refuse_install(block.reason(), cx);
             return;
         }
-        let Some(flush) = self.begin_note_flush(cx) else {
+        // The group flushed: the landing is its, whichever group is
+        // active by then.
+        let group = self.layout.active_group();
+        let Some(flush) = self.begin_note_flush_in(group, cx) else {
             self.refuse_install("another save of the note is still running", cx);
             return;
         };
         self.updates.flushing = Some(cx.spawn(async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
-            this.update(cx, |w, cx| w.update_note_flushed(flushed, cx))
+            this.update(cx, |w, cx| w.update_note_flushed(group, flushed, cx))
                 .ok();
         }));
         self.refresh_update_dialog(cx);
@@ -808,14 +816,15 @@ impl Workspace {
 
     fn update_note_flushed(
         &mut self,
+        group: GroupId,
         flushed: Result<FlushResult, JoinError>,
         cx: &mut Context<Self>,
     ) {
         self.updates.flushing = None;
-        let outcome = self.apply_flush(flushed, cx);
-        let problem = self.flush_failure(&outcome, cx);
-        self.restart_tick_unless_read_only();
-        self.block_input(false, cx);
+        let outcome = self.apply_flush(group, flushed, cx);
+        let problem = self.flush_failure_in(group, &outcome, cx);
+        self.restart_tick_unless_read_only_in(group);
+        self.block_input_in(group, false, cx);
         self.file_op_ended(cx);
         match problem {
             Some(problem) => {
@@ -895,7 +904,7 @@ impl Workspace {
     /// restart by hand. A quit that waits on a save is under way and keeps it;
     /// one that already ended the app took the flag ([`Workspace::end_app`]).
     fn restart_unless_underway(&mut self, version: &str, cx: &mut Context<Self>) {
-        let underway = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        let underway = self.window_closing();
         if self.updates.restart_pending && !underway {
             self.updates.restart_pending = false;
             self.flash(rules::installed_text(version), cx);
