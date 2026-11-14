@@ -214,7 +214,7 @@ use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
-use self::motion::MotionKey;
+use self::motion::{FocusTarget, MotionKey};
 use self::motion_box::{Clip, MotionBox as _};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
@@ -2965,15 +2965,22 @@ impl Workspace {
     /// its top edge, laid over it so focusing never shifts content. Subtle,
     /// but always there (design guides: state must be visible).
     fn focus_bar(&self, focus: Focus, cx: &gpui_kit::App) -> Option<impl IntoElement> {
-        (self.layout.focused() == focus).then(|| {
+        self.focus_bar_color(focus, cx).map(|color| {
             div()
                 .absolute()
                 .top_0()
                 .left_0()
                 .right_0()
                 .h_0p5()
-                .bg(theme::focus_border(&theme::current(cx)))
+                .bg(color)
         })
+    }
+
+    /// The color of the focus bar of `focus`: `None` while it shows no
+    /// focus at all, the accent while it has the keyboard, and the accent
+    /// at a part of its alpha while the focus moves (ADR-0060).
+    fn focus_bar_color(&self, focus: Focus, cx: &gpui_kit::App) -> Option<gpui_kit::Rgba> {
+        self.focus_accent(FocusTarget::Surface(focus), cx)
     }
 
     /// The rail's button: hides or shows the rail, tooltip naming the chord.
@@ -3032,23 +3039,13 @@ impl Workspace {
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&theme::current(cx));
-        let focused = self.layout.focused() == Focus::Rail;
         let views = self.rail_views();
         let (top, pinned) = views.split_at(views.len() - 1);
-        let cell = |i: usize, view: DrawerView, cx: &mut Context<Self>| {
-            self.render_rail_cell(
-                view,
-                self.is_shown(view),
-                focused && i == self.rail_cursor,
-                cx,
-            )
+        let cell = |view: DrawerView, cx: &mut Context<Self>| {
+            self.render_rail_cell(view, self.is_shown(view), cx)
         };
-        let top: Vec<AnyElement> = top
-            .iter()
-            .enumerate()
-            .map(|(i, v)| cell(i, *v, cx))
-            .collect();
-        let pinned = cell(views.len() - 1, pinned[0], cx);
+        let top: Vec<AnyElement> = top.iter().map(|v| cell(*v, cx)).collect();
+        let pinned = cell(pinned[0], cx);
         let horizontal = self.rail.horizontal();
         let presence = self.motion.borrow().presence(MotionKey::Rail);
         let leaving = !self.rail_wanted();
@@ -3175,21 +3172,41 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The color of the glyph of `view`'s rail cell: the accent while the
+    /// view is shown (`active`), else the muted color, mixed toward the
+    /// bright one while the keyboard cursor is on the cell (ADR-0060).
+    pub(crate) fn rail_glyph_color(
+        &self,
+        view: DrawerView,
+        active: bool,
+        cx: &App,
+    ) -> gpui_kit::Rgba {
+        let theme = theme::current(cx);
+        if active {
+            theme::focus_border(&theme)
+        } else {
+            self.focus_color(
+                theme::muted(&theme),
+                theme::bright(&theme),
+                FocusTarget::RailCursor(view),
+            )
+        }
+    }
+
+    /// The color of the cursor ring over `view`'s rail cell: `None` while it
+    /// shows no cursor at all, and the accent at a part of its alpha while
+    /// the cursor arrives or leaves.
+    pub(crate) fn rail_cursor_ring(&self, view: DrawerView, cx: &App) -> Option<gpui_kit::Rgba> {
+        self.focus_accent(FocusTarget::RailCursor(view), cx)
+    }
+
     fn render_rail_cell(
         &self,
         view: DrawerView,
         active: bool,
-        cursor: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let accent = theme::focus_border(&theme::current(cx));
-        let glyph = if active {
-            accent
-        } else if cursor {
-            theme::bright(&theme::current(cx))
-        } else {
-            theme::muted(&theme::current(cx))
-        };
+        let glyph = self.rail_glyph_color(view, active, cx);
         let hover = theme::hover_background(&theme::current(cx));
         let selected = theme::selected_background(&theme::current(cx));
         let name = view_registry::spec(view).name;
@@ -3215,14 +3232,14 @@ impl Workspace {
             .child(Icon::new(rail_icon(view)).size_5().text_color(glyph))
             // The keyboard cursor: a ring in the focus colour, distinct
             // from the pointer's hover fill.
-            .when(cursor, |cell| {
+            .when_some(self.rail_cursor_ring(view, cx), |cell, ring| {
                 cell.child(
                     div()
                         .absolute()
                         .inset_0()
                         .rounded_md()
                         .border_1()
-                        .border_color(accent),
+                        .border_color(ring),
                 )
             })
             .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
@@ -3841,6 +3858,8 @@ mod leader_tests;
 mod motion_cells_tests;
 #[cfg(test)]
 mod motion_chrome_tests;
+#[cfg(test)]
+mod motion_focus_tests;
 #[cfg(test)]
 mod motion_test_support;
 #[cfg(test)]
