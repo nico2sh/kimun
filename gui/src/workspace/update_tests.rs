@@ -28,12 +28,21 @@ use kimun_notes::settings::themes::Theme;
 use kimun_notes::update::InstallChannel;
 use tokio::runtime::Runtime;
 
+use kimun_notes::logic::message::AppMessage;
+use kimun_notes::server_client::sync::ServerUpdate;
+use kimun_notes::server_manage::{
+    ServerInstall, ServerUpdates, ServiceKind, Step, Unavailable, UpdateError,
+};
+
 use crate::bundle::relaunch::RecordingRelauncher;
 
 use super::modal::ModalKind;
 use super::note::Closing;
-use super::preferences::{CHECK_UPDATES_ID, Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID};
-use super::start_tests::{Started, drive, runtime, vault_start};
+use super::preferences::{
+    CHECK_UPDATES_ID, SERVER_OPEN_ID, SERVER_UPDATE_ID, SERVER_UPDATE_TEXT_ID, Section,
+    UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID,
+};
+use super::start_tests::{Started, drive, runtime, send, vault_start};
 use super::update::{
     ACTION_TOAST_LIFETIME, INSTALL_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED, UPDATE_CLOSE_ID,
     UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID, UPDATE_LATER_ID,
@@ -1327,4 +1336,270 @@ fn the_install_flush_lands_on_the_group_it_flushed(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
     });
+}
+
+// ---- The server's update (ADR-0059) -------------------------------------------
+
+const SERVER_URL: &str = "http://127.0.0.1:7573";
+
+/// A server management that answers from a script and records its calls.
+struct FakeServer {
+    /// What `available` answers.
+    availability: Result<(), Unavailable>,
+    /// What each `update` answers, in order.
+    updates: std::sync::Mutex<std::collections::VecDeque<Result<String, UpdateError>>>,
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl FakeServer {
+    fn new(
+        availability: Result<(), Unavailable>,
+        updates: Vec<Result<String, UpdateError>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            availability,
+            updates: std::sync::Mutex::new(updates.into()),
+            calls: Default::default(),
+        })
+    }
+
+    fn eligible(updates: Vec<Result<String, UpdateError>>) -> Arc<Self> {
+        Self::new(Ok(()), updates)
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn count(&self, what: &str) -> usize {
+        self.calls().iter().filter(|c| c.starts_with(what)).count()
+    }
+}
+
+impl ServerUpdates for FakeServer {
+    fn available(&self, server_url: &str) -> Result<ServerInstall, Unavailable> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("available {server_url}"));
+        self.availability.clone().map(|()| ServerInstall {
+            install_dir: "/x".into(),
+            service: ServiceKind::Systemd,
+        })
+    }
+
+    fn update(&self, server_url: &str, _: &dyn Fn(Step)) -> Result<String, UpdateError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("update {server_url}"));
+        self.updates
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("an update that the test did not script")
+    }
+}
+
+fn set_server_url(v: &TestVault, url: Option<&str>) {
+    let mut settings = v.settings.write().unwrap();
+    settings
+        .workspace_config
+        .as_mut()
+        .expect("the test config has a workspace config")
+        .global
+        .kimun_server_url = url.map(str::to_string);
+}
+
+/// The window on a vault with no server yet, the update check off; then the server URL set and
+/// `fake` installed as the window's server management. Nothing syncs: the URL comes after start.
+fn with_server(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    url: Option<&str>,
+    fake: &Arc<FakeServer>,
+) -> (TestVault, Started) {
+    let v = vault(rt);
+    set_update_check(&v, false);
+    let s = on_vault(cx, rt, &v, None);
+    set_server_url(&v, url);
+    let backend = fake.clone() as Arc<dyn ServerUpdates>;
+    s.up_on_window(cx, |w, _, _| w.set_server_backend(backend));
+    (v, s)
+}
+
+fn announce(s: &Started, version: &str, cx: &mut TestAppContext) {
+    send(
+        s,
+        AppMessage::ServerUpdate(Some(ServerUpdate::Newer(version.into()))),
+        cx,
+    );
+}
+
+fn has_flash(s: &Started, text: &str, error: bool, cx: &TestAppContext) -> bool {
+    s.up_flashes(cx)
+        .iter()
+        .any(|(t, e)| t == text && *e == error)
+}
+
+/// A server the app may update: the toast says the release and offers `Update now`, which runs
+/// the update and reports the new version.
+#[gpui_kit::test]
+fn an_updatable_server_is_offered_and_updated_from_the_toast(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::eligible(vec![Ok("9.9.9".into())]);
+    let (_v, s) = with_server(cx, &rt, Some(SERVER_URL), &fake);
+    announce(&s, "9.9.9", cx);
+    drive(&rt, cx, |_| fake.count("available") == 1);
+    cx.run_until_parked();
+    s.age_toasts(Duration::from_millis(500), cx);
+    assert!(has_flash(&s, "Kimün server 9.9.9 is available.", false, cx));
+    assert_eq!(s.up_action_label(cx).as_deref(), Some("Update now"));
+    assert_eq!(fake.count("update"), 0, "nothing runs until the click");
+
+    s.up_click(TOAST_ACTION_ID, cx);
+    drive(&rt, cx, |_| fake.count("update") == 1);
+    cx.run_until_parked();
+    assert_eq!(
+        fake.calls().last().unwrap(),
+        &format!("update {SERVER_URL}")
+    );
+    assert!(has_flash(
+        &s,
+        "Updating the Kimün server. This can take up to two minutes.",
+        false,
+        cx
+    ));
+    drive(&rt, cx, |cx| {
+        has_flash(&s, "Kimün server updated to 9.9.9.", false, cx)
+    });
+}
+
+/// A server the app may not update (remote, Docker, no marker): the toast keeps the old words and
+/// offers no button, and nothing is installed.
+#[gpui_kit::test]
+fn a_server_the_app_may_not_update_keeps_the_old_notice(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::new(Err(Unavailable::NotLocal), vec![]);
+    let (_v, s) = with_server(cx, &rt, Some("http://192.168.1.5:7573"), &fake);
+    announce(&s, "9.9.9", cx);
+    drive(&rt, cx, |_| fake.count("available") == 1);
+    cx.run_until_parked();
+    s.age_toasts(Duration::from_millis(500), cx);
+    assert!(has_flash(
+        &s,
+        "Kimün server 9.9.9 is available. Update it the way you installed it.",
+        false,
+        cx
+    ));
+    assert_eq!(s.up_actions(cx), 0, "no button");
+    assert_eq!(fake.count("update"), 0);
+}
+
+/// No server configured: nothing to update and nothing to ask.
+#[gpui_kit::test]
+fn with_no_server_configured_the_old_notice_is_shown_and_nothing_is_asked(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::eligible(vec![]);
+    let (_v, s) = with_server(cx, &rt, None, &fake);
+    announce(&s, "9.9.9", cx);
+    cx.run_until_parked();
+    assert!(has_flash(
+        &s,
+        "Kimün server 9.9.9 is available. Update it the way you installed it.",
+        false,
+        cx
+    ));
+    assert!(fake.calls().is_empty());
+}
+
+/// A failed update says why, and `Retry` runs it again.
+#[gpui_kit::test]
+fn a_failed_server_update_is_an_error_toast_with_retry(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::eligible(vec![
+        Err(UpdateError::Release("could not download x".into())),
+        Ok("9.9.9".into()),
+    ]);
+    let (_v, s) = with_server(cx, &rt, Some(SERVER_URL), &fake);
+    announce(&s, "9.9.9", cx);
+    drive(&rt, cx, |_| fake.count("available") == 1);
+    cx.run_until_parked();
+    s.age_toasts(Duration::from_millis(500), cx);
+    s.up_click(TOAST_ACTION_ID, cx);
+    let failure =
+        "Could not update the Kimün server: could not download x. The server was not changed.";
+    drive(&rt, cx, |cx| has_flash(&s, failure, true, cx));
+    s.age_toasts(Duration::from_millis(500), cx);
+    assert_eq!(s.up_action_label(cx).as_deref(), Some("Retry"));
+    s.up_click(TOAST_ACTION_ID, cx);
+    drive(&rt, cx, |cx| {
+        has_flash(&s, "Kimün server updated to 9.9.9.", false, cx)
+    });
+    assert_eq!(fake.count("update"), 2);
+}
+
+/// Preferences > Server: the update the app can install shows with its button, which runs it; and
+/// `Open server settings` opens the address in the field.
+#[gpui_kit::test]
+fn preferences_server_updates_and_opens_the_server_settings(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::eligible(vec![Ok("9.9.9".into())]);
+    let (_v, s) = with_server(cx, &rt, Some(SERVER_URL), &fake);
+    let opened = Rc::new(RefCell::new(Vec::<std::ffi::OsString>::new()));
+    let record = opened.clone();
+    s.up_on_window(cx, move |w, _, _| {
+        w.opener = Rc::new(move |what| {
+            record.borrow_mut().push(what.to_owned());
+            Ok(())
+        });
+    });
+    announce(&s, "9.9.9", cx);
+    drive(&rt, cx, |_| fake.count("available") == 1);
+    cx.run_until_parked();
+
+    s.pf_route(cx);
+    s.pf_loaded(&rt, cx);
+    s.pf_section(cx, Section::Server);
+    assert_eq!(
+        s.up_label(SERVER_UPDATE_TEXT_ID, cx).as_deref(),
+        Some("Kimün server 9.9.9 is available.")
+    );
+    assert!(!s.up_disabled(SERVER_UPDATE_ID, cx));
+
+    assert!(!s.up_disabled(SERVER_OPEN_ID, cx));
+    s.pf_click(SERVER_OPEN_ID, cx);
+    assert_eq!(*opened.borrow(), [std::ffi::OsString::from(SERVER_URL)]);
+
+    s.pf_click(SERVER_UPDATE_ID, cx);
+    drive(&rt, cx, |_| fake.count("update") == 1);
+    drive(&rt, cx, |cx| {
+        has_flash(&s, "Kimün server updated to 9.9.9.", false, cx)
+    });
+    assert!(
+        s.up_label(SERVER_UPDATE_TEXT_ID, cx).is_none(),
+        "the row goes once the server is updated"
+    );
+}
+
+/// With no server address the settings button has nothing to open.
+#[gpui_kit::test]
+fn open_server_settings_is_off_without_an_address(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let fake = FakeServer::eligible(vec![]);
+    let (_v, s) = with_server(cx, &rt, None, &fake);
+    s.pf_route(cx);
+    s.pf_loaded(&rt, cx);
+    s.pf_section(cx, Section::Server);
+    assert!(s.up_disabled(SERVER_OPEN_ID, cx));
+    assert!(
+        s.up_label(SERVER_UPDATE_TEXT_ID, cx).is_none(),
+        "no update row"
+    );
 }
