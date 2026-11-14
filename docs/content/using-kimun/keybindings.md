@@ -43,7 +43,7 @@ Press `Ctrl+B`, then the keys of a group. If you wait, a panel shows your choice
 | `l` links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
 | `o` open | `o f` files · `o q` find · `o t` tags · `o k` links · `o l` outline · `o c` settings |
 | `v` workspace | `v s` switch · `v r` rebuild index · `v t` theme · `v p` preferences |
-| `w` window | `w z` zen mode · `w l` and `w h` resize the drawer |
+| `w` window | `w z` zen mode · `w l` and `w h` grow and shrink the active view |
 | `t` text | `t b` bold · `t i` italic · `t s` strikethrough |
 | `m` this note | `m c` copy link · `m y` copy path · `m r` rename · `m i` pin or unpin |
 | `1` to `9` | Open a pinned note |

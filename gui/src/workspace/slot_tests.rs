@@ -1239,7 +1239,7 @@ fn grow_and_shrink_say_why_they_cannot_act(cx: &mut TestAppContext) {
             .read(cx)
             .palette_entries(Panel::Editor, cx)
             .iter()
-            .find(|e| e.label().to_lowercase().contains("grow drawer"))
+            .find(|e| e.label().to_lowercase().contains("grow active view"))
             .map(|e| e.blocked())
             .expect("the grow row is listed")
     };

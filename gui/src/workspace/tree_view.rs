@@ -71,6 +71,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use kimun_notes::logic::editor_region::GroupShape;
+use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::layout_tree::{
     Axis, Fit, Focus, GroupId, LayoutTree, Leaf, SlotId, TreeShape, UnitRect,
 };
@@ -79,7 +80,9 @@ use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
-use super::{Workspace, route, slot_id};
+use super::motion::{CellKey, FocusTarget, MotionKey, Siblings};
+use super::motion_box::{Clip, MotionBox as _};
+use super::{Workspace, route, slot_content_id, slot_gone_id, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
 
@@ -191,13 +194,99 @@ fn distribute(len: f64, cells: &[(f64, f64)]) -> (Vec<f64>, bool) {
 
 /// A split of the layout tree or of the shown tab's groups, as
 /// [`Workspace::render_split`] lays it out: its `axis`, the px it has, its
-/// children as (weight, minimum px along `axis`, child) in order, and the
-/// colour of the gap between drawn neighbours (`None`: window background).
+/// children in order, and the colour of the gap between drawn neighbours
+/// (`None`: window background).
 struct Split<'a, C> {
     axis: Axis,
     size: (f64, f64),
-    children: Vec<(f64, f64, &'a C)>,
+    children: Vec<SplitChild<'a, C>>,
+    /// The px that ghosts hold after the last child (see
+    /// [`SplitChild::ghost_before`]).
+    ghost_after: f64,
     line: Option<Rgba>,
+}
+
+/// One child of a [`Split`]: its weight, its minimum px along the split, and
+/// what it carries for motion.
+struct SplitChild<'a, C> {
+    weight: f64,
+    min: f64,
+    child: &'a C,
+    /// How the child moves. `None` for the editor's groups: they do not.
+    cell: Option<CellMotion>,
+    /// The px that cells removed from the tree still hold before this child:
+    /// a spacer of that size is drawn, so the children next to it grow into
+    /// its room over time.
+    ghost_before: f64,
+}
+
+/// What a cell of the layout tree carries for motion.
+#[derive(Clone, Copy)]
+struct CellMotion {
+    /// The weight key of the cell, and whether the cell is one leaf, to
+    /// remember what stands next to it and how many px it has (for a ghost).
+    key: CellKey,
+    leaf: bool,
+    /// Its px along the split once every motion has ended.
+    fin: f64,
+}
+
+/// The px a child is drawn in, and the px it has once every motion has
+/// ended (the same, when nothing moves).
+struct CellPx {
+    size: (f64, f64),
+    fin: (f64, f64),
+}
+
+impl<C> Split<'_, C> {
+    /// Hand the ghosts to the children they stand before. A ghost that
+    /// stands at the child count stands after the last child.
+    fn place_ghosts(&mut self, placed: impl IntoIterator<Item = (usize, f64)>) {
+        for (at, px) in placed {
+            match self.children.get_mut(at) {
+                Some(child) => child.ghost_before += px,
+                None => self.ghost_after += px,
+            }
+        }
+    }
+
+    /// The px that all ghosts of the split hold.
+    fn ghost_px(&self) -> f64 {
+        self.children
+            .iter()
+            .map(|child| child.ghost_before)
+            .sum::<f64>()
+            + self.ghost_after
+    }
+}
+
+/// What a slot remembers of itself to be drawn while it leaves, after the
+/// layout model dropped its view (ADR-0060): the view it last showed and
+/// the size it had, in px (width, height).
+#[derive(Clone)]
+struct SlotSnapshot {
+    view: DrawerView,
+    size: (f64, f64),
+}
+
+/// What a slot is drawn with while it opens or closes (ADR-0060).
+#[derive(Clone, Copy)]
+struct SlotPaint {
+    /// The size its content has at rest, in px (width, height).
+    pinned: (f64, f64),
+    /// How visible its content is, from 0 to 1.
+    content: f32,
+    /// The view it showed moved to another slot: a blank frame with ids of
+    /// its own closes, and the view is drawn once, where it went.
+    gone: bool,
+    /// Its content keeps `pinned` while its frame moves: the slot is opening
+    /// or leaving itself. At rest the content fills its cell, whatever
+    /// pixel the layout math gave: a fixed width from that math can be a
+    /// pixel off the cell's, and the frame then cuts the border.
+    pin: bool,
+    /// The model no longer shows it: it is drawn from what it last showed
+    /// and takes no input.
+    leaving: bool,
 }
 
 /// The two cells a divider sits between, as last drawn.
@@ -285,7 +374,7 @@ impl Render for DragGhost {
 /// boundary after `shape` itself.
 ///
 /// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
-fn last_leaf(shape: &TreeShape) -> Leaf {
+pub(super) fn last_leaf(shape: &TreeShape) -> Leaf {
     match shape {
         TreeShape::Leaf(leaf) => *leaf,
         TreeShape::Split { children, .. } => last_leaf(
@@ -365,18 +454,32 @@ impl Workspace {
         }
     }
 
-    /// The px the tree has: the window less the title bar (as last drawn)
-    /// and less the rail's thickness, taken from the width by a left or
-    /// right rail and from the height by a top or bottom one (ADR-0055 §4).
-    /// A hidden rail takes nothing.
+    /// The px the tree has once every motion has ended: the window less the
+    /// title bar (as last drawn) and less the rail's thickness, taken from
+    /// the width by a left or right rail and from the height by a top or
+    /// bottom one (ADR-0055 §4). A hidden rail takes nothing. What
+    /// [`Self::fit`] measures: the model's room.
     fn tree_area(&self, window: &Window) -> (f64, f64) {
-        let viewport = window.viewport_size();
-        let rem = f64::from(window.rem_size());
         let rail = if self.rail_hidden {
             0.0
         } else {
-            f64::from(RAIL_REMS) * rem
+            f64::from(RAIL_REMS) * f64::from(window.rem_size())
         };
+        self.area_beside_rail(window, rail)
+    }
+
+    /// [`Self::tree_area`] as drawn now: the rail takes the thickness its
+    /// frame has while it opens or closes (ADR-0060), so the sizes the
+    /// layout pass computes are the room the flex layout really gives.
+    fn drawn_tree_area(&self, window: &Window) -> (f64, f64) {
+        let frame = f64::from(self.motion.borrow().presence(MotionKey::Rail).frame);
+        let rail = f64::from(RAIL_REMS) * f64::from(window.rem_size()) * frame;
+        self.area_beside_rail(window, rail)
+    }
+
+    /// The window less the title bar and less a rail `rail` px thick.
+    fn area_beside_rail(&self, window: &Window, rail: f64) -> (f64, f64) {
+        let viewport = window.viewport_size();
         let (across, down) = if self.rail.horizontal() {
             (0.0, rail)
         } else {
@@ -536,19 +639,29 @@ impl Workspace {
         }
     }
 
-    /// The minimum (width, height) of what is visible in `shape`, in px,
-    /// gaps included.
-    fn min_px(&self, shape: &TreeShape, rem: f64) -> (f64, f64) {
+    /// The minimum (width, height) of what is present in `shape`, in px,
+    /// gaps included. `scaled`: each leaf counts as much of its minimum as
+    /// its frame has (a slot that opens needs its room as it grows), as the
+    /// cell is drawn now. Not `scaled`: each present leaf counts at its
+    /// full minimum, the ones that are leaving included. The final sizes use
+    /// it, so a leaving slot can make them a little wide for the length of
+    /// its exit.
+    fn min_px(&self, shape: &TreeShape, rem: f64, scaled: bool) -> (f64, f64) {
         match shape {
             TreeShape::Leaf(leaf) => {
                 let (w, h) = self.leaf_min(*leaf);
-                (w * rem, h * rem)
+                let factor = if scaled {
+                    self.shape_factor(shape)
+                } else {
+                    1.0
+                };
+                (w * rem * factor, h * rem * factor)
             }
             TreeShape::Split { axis, children } => {
                 let mins: Vec<(f64, f64)> = children
                     .iter()
-                    .filter(|(_, c)| self.shape_visible(c))
-                    .map(|(_, c)| self.min_px(c, rem))
+                    .filter(|(_, c)| self.shape_present(c))
+                    .map(|(_, c)| self.min_px(c, rem, scaled))
                     .collect();
                 let gaps = mins.len().saturating_sub(1) as f64 * GAP;
                 match axis {
@@ -579,8 +692,10 @@ impl Workspace {
         let tree = self
             .render_node(
                 &shape,
+                self.drawn_tree_area(window),
                 self.tree_area(window),
                 (false, false),
+                0,
                 rem,
                 window,
                 cx,
@@ -588,7 +703,7 @@ impl Workspace {
             // Every tree holds the editor region, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
             .unwrap_or_else(|| {
-                self.render_editor(self.tree_area(window), window, cx)
+                self.render_editor(self.drawn_tree_area(window), window, cx)
                     .into_any_element()
             });
         self.tree_frame().child(tree).into_any_element()
@@ -606,14 +721,16 @@ impl Workspace {
     ) -> AnyElement {
         let content = match leaf {
             Leaf::Editor => self
-                .render_editor(self.tree_area(window), window, cx)
+                .render_editor(self.drawn_tree_area(window), window, cx)
                 .into_any_element(),
             Leaf::Slot(_) => {
                 let slot = self
                     .render_node(
                         &TreeShape::Leaf(leaf),
+                        self.drawn_tree_area(window),
                         self.tree_area(window),
                         (false, false),
+                        0,
                         rem,
                         window,
                         cx,
@@ -633,14 +750,145 @@ impl Workspace {
         self.tree_frame().child(content).into_any_element()
     }
 
-    /// `shape`, drawn in `size` px, or `None` when nothing in it is
-    /// visible. `across` says whether a horizontal (vertical) split holds
-    /// it: only along those does a slot check its view's minimum.
+    /// The ghosts at nesting depth `depth` that stand among `ids` (the
+    /// weight keys of the drawn children of a split, in order), each as
+    /// (the index of the child it stood before, the px it still holds, its
+    /// axis). A ghost stood after the child that was before it, else before
+    /// the one that was after it. Where it stood must still be there: the two
+    /// neighbours side by side, or the edge it was at. Otherwise it is
+    /// another split, and there is no place for it. `axis` limits it to the
+    /// ghosts of a split along that axis, and a ghost that stood beside a key
+    /// of `skip` is left out.
+    fn ghosts_among(
+        &self,
+        depth: u8,
+        ids: &[CellKey],
+        axis: Option<Axis>,
+        skip: &[CellKey],
+    ) -> Vec<(usize, f64, Axis)> {
+        self.motion
+            .borrow()
+            .ghosts(depth)
+            .into_iter()
+            .filter(|ghost| {
+                ![ghost.siblings.prev, ghost.siblings.next]
+                    .into_iter()
+                    .flatten()
+                    .any(|near| skip.contains(&near))
+            })
+            .filter(|ghost| axis.is_none_or(|axis| ghost.siblings.axis == axis))
+            .filter_map(|ghost| {
+                let place = |key: CellKey| ids.iter().position(|shown| *shown == key);
+                let at = match (ghost.siblings.prev, ghost.siblings.next) {
+                    (Some(prev), Some(next)) => match (place(prev), place(next)) {
+                        (Some(before), Some(after)) if after == before + 1 => after,
+                        _ => return None,
+                    },
+                    (Some(prev), None) => match place(prev) {
+                        Some(before) if before + 1 == ids.len() => ids.len(),
+                        _ => return None,
+                    },
+                    (None, Some(next)) => match place(next) {
+                        Some(0) => 0,
+                        _ => return None,
+                    },
+                    (None, None) => return None,
+                };
+                let left = if ghost.from > 0.0 {
+                    f64::from(ghost.weight / ghost.from)
+                } else {
+                    0.0
+                };
+                Some((at, ghost.siblings.px * left, ghost.siblings.axis))
+            })
+            .collect()
+    }
+
+    /// `shape`, drawn in `size` px (see [`Self::render_node_cell`]). A split
+    /// of two that lost a child collapsed into the one that stayed, so the
+    /// removed cell has no split left to be drawn in. While it still decays,
+    /// the survivor is drawn in a split of its own with that ghost beside it:
+    /// the one cell stands where it stood, and grows into the room as the
+    /// ghost gives it back (ADR-0060).
+    #[allow(clippy::too_many_arguments)]
     fn render_node(
         &self,
         shape: &TreeShape,
         size: (f64, f64),
+        fin: (f64, f64),
         across: (bool, bool),
+        depth: u8,
+        rem: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let leaf = matches!(shape, TreeShape::Leaf(_));
+        let key = CellKey::of(shape, depth + 1);
+        // A split draws the ghosts that stood among its own children, and a
+        // ghost that stood beside the cell of its own key took its place.
+        let own: Vec<CellKey> = match shape {
+            TreeShape::Split { children, .. } => children
+                .iter()
+                .filter(|(_, child)| self.shape_present(child))
+                .map(|(_, child)| CellKey::of(child, depth + 1))
+                .collect(),
+            TreeShape::Leaf(_) => Vec::new(),
+        };
+        let collapsed = self.ghosts_among(depth + 1, &[key], None, &own);
+        // The ghosts of one axis: another axis is another split that closed.
+        let axis = collapsed.first().map(|(_, _, axis)| *axis);
+        let ghosts: Vec<(usize, f64)> = collapsed
+            .into_iter()
+            .filter(|(_, _, ghost_axis)| Some(*ghost_axis) == axis)
+            .map(|(at, px, _)| (at, px))
+            .collect();
+        let Some(axis) = axis.filter(|_| !ghosts.is_empty()) else {
+            return self.render_node_cell(shape, size, fin, across, depth, rem, window, cx);
+        };
+        let (min_w, min_h) = self.min_px(shape, rem, true);
+        let along = |(w, h): (f64, f64)| if axis == Axis::Horizontal { w } else { h };
+        let mut split = Split {
+            axis,
+            size,
+            children: vec![SplitChild {
+                weight: 1.0,
+                min: along((min_w, min_h)),
+                child: shape,
+                cell: Some(CellMotion {
+                    key,
+                    leaf,
+                    fin: along(fin),
+                }),
+                ghost_before: 0.0,
+            }],
+            ghost_after: 0.0,
+            line: None,
+        };
+        split.place_ghosts(ghosts);
+        Some(self.render_split(
+            split,
+            rem,
+            cx,
+            |child| DividerAt::Leaf(last_leaf(child)),
+            |child, cell, cx| {
+                self.render_node_cell(child, cell.size, cell.fin, across, depth, rem, window, cx)
+            },
+        ))
+    }
+
+    /// `shape`, drawn in `size` px, or `None` when nothing in it is
+    /// present. `fin` is the size it has once every motion has ended: a
+    /// slot lays its view out at `fin` and lets the frame clip it. `across`
+    /// says whether a horizontal (vertical) split holds it: only along those
+    /// does a slot check its view's minimum.
+    #[allow(clippy::too_many_arguments)]
+    fn render_node_cell(
+        &self,
+        shape: &TreeShape,
+        size: (f64, f64),
+        fin: (f64, f64),
+        across: (bool, bool),
+        depth: u8,
         rem: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -650,32 +898,111 @@ impl Workspace {
                 Some(self.render_editor(size, window, cx).into_any_element())
             }
             TreeShape::Leaf(Leaf::Slot(slot)) => {
-                if !self.leaf_visible(Leaf::Slot(*slot)) {
+                let leaf = Leaf::Slot(*slot);
+                if !self.leaf_present(leaf) {
                     return None;
                 }
-                let view = self.layout.shown(*slot)?;
+                let leaving = !self.leaf_visible(leaf);
+                let presence = self.motion.borrow().presence(MotionKey::Slot(*slot));
+                let content = presence.content;
+                let (view, pinned) = if leaving {
+                    let snapshot = self
+                        .motion
+                        .borrow()
+                        .recall::<SlotSnapshot>(MotionKey::Slot(*slot))?;
+                    (snapshot.view, snapshot.size)
+                } else {
+                    let view = self.layout.shown(*slot)?;
+                    // Only a slot that is itself opening keeps its final
+                    // size. One whose frame is whole follows its cell: a
+                    // neighbour closing makes its final size wider than
+                    // its cell until the neighbour is gone.
+                    let pinned = if presence.frame < 1.0 { fin } else { size };
+                    self.motion
+                        .borrow_mut()
+                        .remember(MotionKey::Slot(*slot), SlotSnapshot { view, size: pinned });
+                    (view, pinned)
+                };
                 let (w, h) = view_registry::spec(view).min;
-                let small =
-                    (across.0 && size.0 < w * rem - 0.5) || (across.1 && size.1 < h * rem - 0.5);
-                Some(self.render_slot(*slot, view, small, size.0, rem, cx))
+                // Judged at the size the content has: a slot still growing
+                // is not too small, and a leaving one never is.
+                let small = !leaving
+                    && ((across.0 && pinned.0 < w * rem - 0.5)
+                        || (across.1 && pinned.1 < h * rem - 0.5));
+                let paint = SlotPaint {
+                    pinned,
+                    content,
+                    pin: leaving || presence.frame < 1.0,
+                    leaving,
+                    gone: leaving && self.view_moved(*slot, view),
+                };
+                Some(self.render_slot(*slot, view, small, paint, rem, cx))
             }
             TreeShape::Split { axis, children } => {
                 let axis = *axis;
                 let visible: Vec<(usize, f64, &TreeShape)> = children
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, child))| self.shape_visible(child))
+                    .filter(|(_, (_, child))| self.shape_present(child))
                     .map(|(index, (weight, child))| (index, *weight, child))
                     .collect();
                 if visible.is_empty() {
                     return None;
                 }
-                let children = visible
+                // A child's share and minimum are scaled by how much of its
+                // frame it has (ADR-0060): the neighbours follow because
+                // their sizes come from these weights on every frame.
+                let along_min = |child: &TreeShape, scaled: bool| {
+                    let (w, h) = self.min_px(child, rem, scaled);
+                    if axis == Axis::Horizontal { w } else { h }
+                };
+                // The sizes once every motion has ended: a leaving child is
+                // gone, the others share the length at their full weights.
+                let resting: Vec<(f64, f64)> = visible
+                    .iter()
+                    .filter(|(_, _, child)| self.shape_visible(child))
+                    .map(|(_, weight, child)| (*weight, along_min(child, false)))
+                    .collect();
+                let length = if axis == Axis::Horizontal {
+                    size.0
+                } else {
+                    size.1
+                };
+                let gaps = resting.len().saturating_sub(1) as f64 * GAP;
+                let (mut rested, _) = distribute((length - gaps).max(0.0), &resting);
+                rested.reverse();
+                let mut finals: Vec<f64> = visible
+                    .iter()
+                    .map(|(_, _, child)| {
+                        if self.shape_visible(child) {
+                            rested.pop().unwrap_or(0.0)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                finals.reverse();
+                let children: Vec<SplitChild<TreeShape>> = visible
                     .iter()
                     .map(|(_, weight, child)| {
-                        let (w, h) = self.min_px(child, rem);
-                        let min = if axis == Axis::Horizontal { w } else { h };
-                        (*weight, min, *child)
+                        let factor = self.shape_factor(child);
+                        let key = CellKey::of(child, depth + 1);
+                        // The weight as it is drawn now: it moves toward the
+                        // model's over time (ADR-0060).
+                        let drawn = self.motion.borrow().value(key).map_or(*weight, f64::from);
+                        SplitChild {
+                            weight: drawn * factor,
+                            // The minimum is scaled leaf by leaf, as the
+                            // cell is drawn now.
+                            min: along_min(child, true),
+                            child: *child,
+                            cell: Some(CellMotion {
+                                key,
+                                leaf: matches!(child, TreeShape::Leaf(_)),
+                                fin: finals.pop().unwrap_or(0.0),
+                            }),
+                            ghost_before: 0.0,
+                        }
                     })
                     .collect();
                 let across = match axis {
@@ -686,18 +1013,60 @@ impl Workspace {
                 // the tree resizes between them across hidden siblings
                 // (`resize_after_visible`), so every seam is a divider. The
                 // seam is the window background between the leaves.
-                let split = Split {
+                // A child that is not drawn (hidden, collapsed) holds no room:
+                // if it is removed later it leaves no ghost, and the neighbours
+                // it once remembered are forgotten.
+                let TreeShape::Split { children: all, .. } = shape else {
+                    return None;
+                };
+                for (_, child) in all.iter().filter(|(_, c)| !self.shape_present(c)) {
+                    self.motion.borrow_mut().remember_siblings(
+                        CellKey::of(child, depth + 1),
+                        Siblings {
+                            prev: None,
+                            next: None,
+                            leaf: false,
+                            px: 0.0,
+                            axis,
+                        },
+                    );
+                }
+                // The ghosts of this split: each stood after the child that
+                // was before it, else before the one that was after it.
+                let ids: Vec<CellKey> = children
+                    .iter()
+                    .filter_map(|child| child.cell.map(|cell| cell.key))
+                    .collect();
+                let ghosts: Vec<(usize, f64)> = self
+                    .ghosts_among(depth + 1, &ids, Some(axis), &[])
+                    .into_iter()
+                    .map(|(at, px, _)| (at, px))
+                    .collect();
+                let mut split = Split {
                     axis,
                     size,
                     children,
+                    ghost_after: 0.0,
                     line: None,
                 };
+                split.place_ghosts(ghosts);
                 Some(self.render_split(
                     split,
                     rem,
                     cx,
                     |child| DividerAt::Leaf(last_leaf(child)),
-                    |child, size, cx| self.render_node(child, size, across, rem, window, cx),
+                    |child, cell, cx| {
+                        self.render_node(
+                            child,
+                            cell.size,
+                            cell.fin,
+                            across,
+                            depth + 1,
+                            rem,
+                            window,
+                            cx,
+                        )
+                    },
                 ))
             }
         }
@@ -718,12 +1087,14 @@ impl Workspace {
         rem: f64,
         cx: &mut Context<Self>,
         divider: impl Fn(&'a C) -> DividerAt,
-        mut render: impl FnMut(&'a C, (f64, f64), &mut Context<Self>) -> Option<AnyElement>,
+        mut render: impl FnMut(&'a C, CellPx, &mut Context<Self>) -> Option<AnyElement>,
     ) -> AnyElement {
+        let ghost_px = split.ghost_px();
         let Split {
             axis,
             size,
             children,
+            ghost_after,
             line,
         } = split;
         let (length, cross) = match axis {
@@ -731,28 +1102,59 @@ impl Workspace {
             Axis::Vertical => (size.1, size.0),
         };
         let gaps = children.len().saturating_sub(1) as f64 * GAP;
+        // The ghosts hold their px, and the children share what is left.
         let cells: Vec<(f64, f64)> = children
             .iter()
-            .map(|(weight, min, _)| (*weight, *min))
+            .map(|child| (child.weight, child.min))
             .collect();
-        let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
-        let drawn: Vec<(f64, Option<f64>, DividerAt, AnyElement)> = children
+        let (sizes, held) = distribute((length - gaps - ghost_px).max(0.0), &cells);
+        // What stands next to each child and how many px it has, kept for a
+        // ghost: if the child is removed from the tree, it decays from here.
+        let ids: Vec<Option<CellMotion>> = children.iter().map(|child| child.cell).collect();
+        for (index, cell) in ids.iter().enumerate() {
+            let Some(cell) = cell else { continue };
+            self.motion.borrow_mut().remember_siblings(
+                cell.key,
+                Siblings {
+                    prev: index
+                        .checked_sub(1)
+                        .and_then(|before| ids[before])
+                        .map(|before| before.key),
+                    next: ids.get(index + 1).copied().flatten().map(|next| next.key),
+                    leaf: cell.leaf,
+                    // The cell and the seam that went with it.
+                    px: sizes[index] + GAP,
+                    axis,
+                },
+            );
+        }
+        let drawn: Vec<(usize, f64, Option<f64>, f64, DividerAt, AnyElement)> = children
             .iter()
             .zip(&sizes)
-            .filter_map(|((weight, min, child), along)| {
-                let size = match axis {
-                    Axis::Horizontal => (*along, cross),
-                    Axis::Vertical => (cross, *along),
+            .enumerate()
+            .filter_map(|(index, (child, along))| {
+                let size_of = |along: f64| match axis {
+                    Axis::Horizontal => (along, cross),
+                    Axis::Vertical => (cross, along),
                 };
-                let element = render(child, size, cx)?;
+                let size = size_of(*along);
+                let fin = child.cell.map_or(size, |cell| size_of(cell.fin));
+                let element = render(child.child, CellPx { size, fin }, cx)?;
                 // Minimums are set only where they all fit.
-                let min = held.then_some(*min);
-                Some((*weight, min, divider(child), element))
+                let min = held.then_some(child.min);
+                Some((
+                    index,
+                    child.weight,
+                    min,
+                    child.ghost_before,
+                    divider(child.child),
+                    element,
+                ))
             })
             .collect();
         // The drawn children share the split by their weights: flex grow
         // factors summing below one would leave space unused.
-        let total: f64 = drawn.iter().map(|(weight, ..)| weight).sum();
+        let total: f64 = drawn.iter().map(|(_, weight, ..)| weight).sum();
         let cell = |weight: f64, min: Option<f64>| {
             div()
                 .flex()
@@ -771,8 +1173,29 @@ impl Workspace {
         // divider.
         let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
         let mut previous: Option<(usize, DividerAt, f64)> = None;
-        for (weight, min, at, element) in drawn {
+        // A ghost is an empty spacer of the px it still holds: it has no gap
+        // and no divider of its own, and the handle layer gets an empty one
+        // beside it so the two lists stay parallel.
+        let push_ghost =
+            |elements: &mut Vec<AnyElement>, handles: &mut Vec<AnyElement>, px_left: f64| {
+                if px_left <= 0.0 {
+                    return;
+                }
+                let spacer = || {
+                    div()
+                        .flex_none()
+                        .map(|spacer| match axis {
+                            Axis::Horizontal => spacer.w(px(px_left as f32)),
+                            Axis::Vertical => spacer.h(px(px_left as f32)),
+                        })
+                        .into_any_element()
+                };
+                elements.push(spacer());
+                handles.push(spacer());
+            };
+        for (_, weight, min, ghost_before, at, element) in drawn {
             let min_rems = min.unwrap_or(0.0) / rem;
+            push_ghost(&mut elements, &mut handles, ghost_before);
             if let Some((prev_element, prev_at, prev_min)) = previous {
                 elements.push(self.render_gap(axis, None, line, cx));
                 handles.push(self.render_gap(axis, Some(prev_at), None, cx));
@@ -782,6 +1205,7 @@ impl Workspace {
             elements.push(cell(weight, min).child(element).into_any_element());
             handles.push(cell(weight, min).into_any_element());
         }
+        push_ghost(&mut elements, &mut handles, ghost_after);
         if !pairs.is_empty() {
             elements.push(
                 div()
@@ -885,12 +1309,15 @@ impl Workspace {
         let per_group = f64::from(EDITOR_MIN_REMS) * rem;
         let children = children
             .iter()
-            .map(|(weight, child)| {
-                let min = match axis {
+            .map(|(weight, child)| SplitChild {
+                weight: *weight,
+                min: match axis {
                     Axis::Horizontal => child.widest_row() as f64 * per_group,
                     Axis::Vertical => 0.0,
-                };
-                (*weight, min, child)
+                },
+                child,
+                cell: None,
+                ghost_before: 0.0,
             })
             .collect();
         // Inside the editor Panel the seam is a hairline, not background.
@@ -898,6 +1325,7 @@ impl Workspace {
             axis,
             size,
             children,
+            ghost_after: 0.0,
             line: Some(theme::divider(&theme::current(cx))),
         };
         self.render_split(
@@ -905,7 +1333,7 @@ impl Workspace {
             rem,
             cx,
             |child| DividerAt::Group(child.last_group()),
-            |child, size, cx| Some(self.render_group_node(child, size, order, rem, cx)),
+            |child, cell, cx| Some(self.render_group_node(child, cell.size, order, rem, cx)),
         )
     }
 
@@ -953,8 +1381,8 @@ impl Workspace {
                     .child(document)
                     .children(self.group_zone_layer(at, group, cx)),
             )
-            .when(self.wears_target_marker(group), |el| {
-                el.child(self.render_target_marker(at, group, rem, cx))
+            .when_some(self.target_marker_color(group, cx), |el, color| {
+                el.child(self.render_target_marker(at, group, rem, color, cx))
             })
             .into_any_element()
     }
@@ -1092,6 +1520,9 @@ impl Workspace {
     pub(super) fn end_resize(&mut self, cx: &mut Context<Self>) {
         self.press_offset = 0.0;
         if std::mem::take(&mut self.resizing) {
+            // The last pointer move can arrive with the release between two
+            // frames: it draws in place, and the divider does not drift.
+            self.motion.borrow_mut().snap_next_frame();
             self.save_layout(cx);
             cx.notify();
         }
@@ -1205,16 +1636,89 @@ impl Workspace {
         }
     }
 
+    /// Whether `leaf` is drawn this frame: visible in the layout model, or a
+    /// slot whose frame is still closing (ADR-0060). Only the layout pass
+    /// asks this: focus, fit and resize read the model through
+    /// [`Self::leaf_visible`].
+    pub(super) fn leaf_present(&self, leaf: Leaf) -> bool {
+        match leaf {
+            Leaf::Editor => self.leaf_visible(leaf),
+            Leaf::Slot(slot) => self.leaf_visible(leaf) || self.slot_leaving(slot),
+        }
+    }
+
+    /// Whether `slot` has left the layout model but is still drawn while
+    /// its frame closes: from the view it last showed, or, when that view
+    /// moved to another slot ([`Self::view_moved`]), as a blank frame.
+    fn slot_leaving(&self, slot: SlotId) -> bool {
+        let motion = self.motion.borrow();
+        motion
+            .recall::<SlotSnapshot>(MotionKey::Slot(slot))
+            .is_some()
+            && !self.leaf_visible(Leaf::Slot(slot))
+            && motion.presence(MotionKey::Slot(slot)).frame > 0.0
+    }
+
+    /// Whether `view` is placed in a slot other than `slot` now: it moved.
+    /// One view is one element, so the frame it left is drawn blank. The
+    /// other slot need not show the view: it can be hidden or closed while
+    /// this frame closes, and the view must still not be drawn twice.
+    fn view_moved(&self, slot: SlotId, view: DrawerView) -> bool {
+        self.layout
+            .view_slot(&view)
+            .is_some_and(|home| home != slot)
+    }
+
+    /// Whether anything in `shape` is present: [`Self::shape_visible`] over
+    /// [`Self::leaf_present`].
+    fn shape_present(&self, shape: &TreeShape) -> bool {
+        match shape {
+            TreeShape::Leaf(leaf) => self.leaf_present(*leaf),
+            TreeShape::Split { children, .. } => {
+                children.iter().any(|(_, c)| self.shape_present(c))
+            }
+        }
+    }
+
+    /// How much of its frame `shape` has: the editor's is whole, a slot's
+    /// follows its frame presence, a split's is its fullest
+    /// child's.
+    fn shape_factor(&self, shape: &TreeShape) -> f64 {
+        match shape {
+            TreeShape::Leaf(Leaf::Editor) => 1.0,
+            TreeShape::Leaf(Leaf::Slot(slot)) => {
+                f64::from(self.motion.borrow().presence(MotionKey::Slot(*slot)).frame)
+            }
+            TreeShape::Split { children, .. } => children
+                .iter()
+                .filter(|(_, c)| self.shape_present(c))
+                .map(|(_, c)| self.shape_factor(c))
+                .fold(0.0, f64::max),
+        }
+    }
+
     /// The border of `focus`'s surface: the accent while it has the
     /// keyboard (it follows the rounded corners, as a bar would not), the
     /// hairline otherwise.
     pub(super) fn leaf_border(&self, focus: Focus, cx: &gpui_kit::App) -> Rgba {
         let theme = theme::current(cx);
-        if self.layout.focused() == focus {
-            theme::focus_border(&theme)
-        } else {
-            theme::divider(&theme)
-        }
+        self.focus_color(
+            theme::divider(&theme),
+            theme::focus_border(&theme),
+            FocusTarget::Surface(focus),
+        )
+    }
+
+    /// The color of the title of `slot`'s header: the accent while the slot
+    /// has the keyboard, the plain text color otherwise, and a mix of the
+    /// two while the focus moves (ADR-0060).
+    pub(super) fn slot_title_color(&self, slot: SlotId, cx: &gpui_kit::App) -> Rgba {
+        let theme = theme::current(cx);
+        self.focus_color(
+            theme::foreground(&theme),
+            theme::focus_border(&theme),
+            FocusTarget::Surface(Focus::Leaf(Leaf::Slot(slot))),
+        )
     }
 
     /// The surface of a leaf, inside the margin its root element keeps
@@ -1258,57 +1762,106 @@ impl Workspace {
     /// `slot`, showing `view`: its title over the view (FILES, or, for a
     /// view that needs a workspace while none is open, a line saying so;
     /// [`TOO_SMALL`] when `small`: under the view's minimum).
+    ///
+    /// While it opens or closes (`paint`, ADR-0060) the slot's frame takes
+    /// the animated cell and clips its content, which keeps the size it has
+    /// at rest and is as visible as its content presence. A
+    /// leaving slot is drawn from what it last showed and takes no input: no
+    /// focus, no click, no drop zones.
     fn render_slot(
         &self,
         slot: SlotId,
         view: DrawerView,
         small: bool,
-        width: f64,
+        paint: SlotPaint,
         rem: f64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let spec = view_registry::spec(view);
-        let context = SlotContext {
-            zoomed: self.layout.zoomed() == Some(Leaf::Slot(slot)),
-            width: view_width(width),
-            rem,
-        };
-        self.push_slot_context(view, context, cx);
-        div()
-            .id(slot_id(view))
+        let SlotPaint {
+            pinned,
+            content,
+            pin,
+            leaving,
+            gone,
+        } = paint;
+        if !leaving {
+            let context = SlotContext {
+                zoomed: self.layout.zoomed() == Some(Leaf::Slot(slot)),
+                width: view_width(pinned.0),
+                rem,
+            };
+            self.push_slot_context(view, context, cx);
+        }
+        let surface = Self::leaf_surface(
+            theme::panel_background(&theme::current(cx)),
+            self.leaf_border(Focus::Leaf(Leaf::Slot(slot)), cx),
+        )
+        .when(!leaving, |surface| {
+            surface.capture_any_mouse_down(cx.listener(
+                move |this, _: &MouseDownEvent, window, cx| this.focus_slot(slot, window, cx),
+            ))
+        })
+        .when(!gone, |surface| {
+            surface.child(self.render_slot_header(slot, view, cx))
+        })
+        // The body, under the header: while a view is dragged its
+        // zones lie over it (not the header, so a drag released
+        // where it started changes nothing).
+        .child(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(if gone {
+                    div().flex_1().into_any_element()
+                } else {
+                    self.render_slot_body(view, small, cx)
+                })
+                .when(!leaving, |body| body.children(self.zone_layer(slot, cx))),
+        );
+        let content = div()
+            .id(if gone {
+                SharedString::from(format!("slot-gone-content-{}", view.id()))
+            } else {
+                slot_content_id(view)
+            })
             .test_support()
-            .track_focus(&self.slot_handle(slot))
-            .role(Role::Group)
-            .aria_label(spec.name)
             .flex()
+            .p(LEAF_MARGIN)
+            .when(pin, |content| {
+                content
+                    .flex_none()
+                    .w(px(pinned.0 as f32))
+                    .h(px(pinned.1 as f32))
+            })
+            .when(!pin, |content| content.flex_1().min_w_0().min_h_0())
+            .faded(content)
+            .child(surface);
+        div()
+            .id(if gone {
+                slot_gone_id(view)
+            } else {
+                slot_id(view)
+            })
+            .test_support()
+            .when(!leaving, |frame| frame.track_focus(&self.slot_handle(slot)))
+            // A blank frame says nothing: the view is announced where it went.
+            .when(!gone, |frame| frame.role(Role::Group).aria_label(spec.name))
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .p(LEAF_MARGIN)
-            .child(
-                Self::leaf_surface(
-                    theme::panel_background(&theme::current(cx)),
-                    self.leaf_border(Focus::Leaf(Leaf::Slot(slot)), cx),
-                )
-                .capture_any_mouse_down(cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    this.focus_slot(slot, window, cx)
-                }))
-                .child(self.render_slot_header(slot, view, cx))
-                // The body, under the header: while a view is dragged its
-                // zones lie over it (not the header, so a drag released
-                // where it started changes nothing).
-                .child(
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .child(self.render_slot_body(view, small, cx))
-                        .children(self.zone_layer(slot, cx)),
-                ),
+            // The frame grows from the edge beside the window's.
+            .framed(
+                Clip::Always,
+                self.layout.slot_side(slot) == Side::Right,
+                |frame| frame,
             )
+            .child(content)
+            .covered_while(leaving)
             .into_any_element()
     }
 
@@ -1390,11 +1943,7 @@ impl Workspace {
             .bg(theme::slot_header_background(&theme))
             .border_b_1()
             .border_color(theme::divider(&theme))
-            .text_color(if focused {
-                theme::focus_border(&theme)
-            } else {
-                theme::foreground(&theme)
-            })
+            .text_color(self.slot_title_color(slot, cx))
             .child(title);
         // The strip is a drag source (ADR-0054 §8) through a wrapper whose
         // id is stable: the strip's own id follows the focus, and a press

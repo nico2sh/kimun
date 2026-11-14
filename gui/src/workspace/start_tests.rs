@@ -239,10 +239,24 @@ pub(super) fn open_started_with(
     settings: SharedSettings,
     vim: bool,
 ) -> Started {
+    // Layouts are drawn at rest at once, as in `open_shell`.
+    open_started_motion(cx, start, settings, vim, true)
+}
+
+/// [`open_started_with`] with reduced motion `reduce`: `false` lets layouts
+/// move over time, stepped with the executor clock.
+pub(super) fn open_started_motion(
+    cx: &mut TestAppContext,
+    start: Start,
+    settings: SharedSettings,
+    vim: bool,
+    reduce: bool,
+) -> Started {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+        cx.set_reduce_motion(reduce);
     });
     let layout =
         crate::shell_tree::restore(&GuiSettings::default(), crate::shell_tree::RESTORE_CAPS);

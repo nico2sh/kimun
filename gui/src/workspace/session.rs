@@ -457,6 +457,8 @@ impl Workspace {
         if !self.session.restoring {
             return;
         }
+        // What the restore brings is drawn in place, not moved in.
+        self.motion.borrow_mut().snap_next_frame();
         match landing {
             Some(Landing::Session(restored)) => self.land_on_record(restored, cx),
             Some(Landing::History(target)) => {
@@ -487,6 +489,7 @@ impl Workspace {
         if !self.session.restoring {
             return;
         }
+        self.motion.borrow_mut().snap_next_frame();
         let newest = self
             .session
             .history
@@ -588,6 +591,9 @@ impl Workspace {
     /// before must hold no note. False (nothing changes) when a new state
     /// cannot be made (no vault).
     pub(super) fn replace_region(&mut self, region: EditorRegion, cx: &mut Context<Self>) -> bool {
+        // A whole new region (a workspace switch, a restore): what it holds
+        // is drawn in place, and what the old one held does not leave.
+        self.motion.borrow_mut().snap_next_frame();
         let wanted = region.all_groups();
         let mut made = Vec::new();
         for _ in self.groups.len()..wanted.len() {
