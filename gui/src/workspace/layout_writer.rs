@@ -68,7 +68,7 @@ impl<J> Shared<J> {
 /// Writes jobs off the UI thread, the newest only: jobs that pile up while
 /// one is written collapse into one write of the newest. In tests the write
 /// is inline, so a test reads the file right after the submit;
-/// [`Self::threaded`] opts a test into the real thing. The layout's writes
+/// `threaded` opts a test into the real thing. The layout's writes
 /// and the session file's ([`super::session::SessionWriter`]) both go
 /// through one.
 pub(crate) struct LatestWriter<J> {
