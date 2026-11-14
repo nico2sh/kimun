@@ -568,7 +568,10 @@ impl Workspace {
             .enumerate()
             .map(|(at, (tab, gone))| {
                 let current = gone.is_none() && tab == shown;
-                self.render_tab(at, tab, current, gone, cx)
+                // Where it stands among the region's tabs, for what a
+                // label remembers of its place (a leaving label is not one).
+                let region_at = tabs.iter().position(|t| *t == tab).unwrap_or(at);
+                self.render_tab(at, region_at, tab, current, gone, cx)
             })
             .collect();
         let theme = theme::current(cx);
@@ -688,7 +691,12 @@ impl Workspace {
                 Some((snapshot.at, tab, snapshot.label))
             })
             .collect();
-        gone.sort_by_key(|(at, ..)| *at);
+        // By the place each had. Two that shared a place are inserted with
+        // the later one first, so the one that left earlier ends up first.
+        gone.sort_by_key(|(at, tab, _)| {
+            let left = motion.left_order(MotionKey::Tab(*tab));
+            (*at, std::cmp::Reverse(left))
+        });
         for (at, tab, label) in gone {
             order.insert(at.min(order.len()), (tab, Some(label)));
         }
@@ -734,6 +742,7 @@ impl Workspace {
     fn render_tab(
         &self,
         at: usize,
+        region_at: usize,
         tab: TabId,
         shown: bool,
         gone: Option<SharedString>,
@@ -748,7 +757,7 @@ impl Workspace {
                 MotionKey::Tab(tab),
                 LabelSnapshot {
                     label: label.clone(),
-                    at,
+                    at: region_at,
                 },
             );
         }

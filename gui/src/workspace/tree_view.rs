@@ -82,7 +82,7 @@ use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
 use super::motion::{MotionKey, slot_policy};
 use super::motion_box::MotionBox as _;
-use super::{Workspace, route, slot_content_id, slot_id};
+use super::{Workspace, route, slot_content_id, slot_gone_id, slot_id};
 use crate::motion::ResizePolicy;
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
@@ -223,6 +223,9 @@ struct SlotPaint {
     pinned: (f64, f64),
     /// How visible its content is, from 0 to 1.
     content: f32,
+    /// The view it showed moved to another slot: a blank frame with ids of
+    /// its own closes, and the view is drawn once, where it went.
+    gone: bool,
     /// Its content keeps `pinned` while its frame moves: the slot is opening
     /// or leaving itself. At rest the content fills its cell, whatever
     /// pixel the layout math gave: a fixed width from that math can be a
@@ -318,7 +321,7 @@ impl Render for DragGhost {
 /// boundary after `shape` itself.
 ///
 /// [`LayoutTree::resize_after_visible`]: kimun_notes::logic::layout_tree::LayoutTree::resize_after_visible
-fn last_leaf(shape: &TreeShape) -> Leaf {
+pub(super) fn last_leaf(shape: &TreeShape) -> Leaf {
     match shape {
         TreeShape::Leaf(leaf) => *leaf,
         TreeShape::Split { children, .. } => last_leaf(
@@ -583,19 +586,26 @@ impl Workspace {
         }
     }
 
-    /// The minimum (width, height) of what is visible in `shape`, in px,
-    /// gaps included.
-    fn min_px(&self, shape: &TreeShape, rem: f64) -> (f64, f64) {
+    /// The minimum (width, height) of what is present in `shape`, in px,
+    /// gaps included. `scaled`: each leaf counts as much of its minimum as
+    /// its frame has (a slot that opens needs its room as it grows), as the
+    /// cell is drawn now. Not `scaled`: the minimum once every motion ended.
+    fn min_px(&self, shape: &TreeShape, rem: f64, scaled: bool) -> (f64, f64) {
         match shape {
             TreeShape::Leaf(leaf) => {
                 let (w, h) = self.leaf_min(*leaf);
-                (w * rem, h * rem)
+                let factor = if scaled {
+                    self.shape_factor(shape)
+                } else {
+                    1.0
+                };
+                (w * rem * factor, h * rem * factor)
             }
             TreeShape::Split { axis, children } => {
                 let mins: Vec<(f64, f64)> = children
                     .iter()
                     .filter(|(_, c)| self.shape_present(c))
-                    .map(|(_, c)| self.min_px(c, rem))
+                    .map(|(_, c)| self.min_px(c, rem, scaled))
                     .collect();
                 let gaps = mins.len().saturating_sub(1) as f64 * GAP;
                 match axis {
@@ -629,6 +639,7 @@ impl Workspace {
                 self.drawn_tree_area(window),
                 self.tree_area(window),
                 (false, false),
+                0,
                 rem,
                 window,
                 cx,
@@ -663,6 +674,7 @@ impl Workspace {
                         self.drawn_tree_area(window),
                         self.tree_area(window),
                         (false, false),
+                        0,
                         rem,
                         window,
                         cx,
@@ -694,6 +706,7 @@ impl Workspace {
         size: (f64, f64),
         fin: (f64, f64),
         across: (bool, bool),
+        depth: u8,
         rem: f64,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -739,6 +752,7 @@ impl Workspace {
                     content,
                     pin: leaving || presence.frame < 1.0,
                     leaving,
+                    gone: leaving && self.view_moved(*slot, view),
                 };
                 Some(self.render_slot(*slot, view, small, paint, rem, cx))
             }
@@ -756,15 +770,23 @@ impl Workspace {
                 // A child's share and minimum are scaled by how much of its
                 // frame it has (ADR-0060): the neighbours follow because
                 // their sizes come from these weights on every frame.
-                let along_min = |child: &TreeShape| {
-                    let (w, h) = self.min_px(child, rem);
+                let along_min = |child: &TreeShape, scaled: bool| {
+                    let (w, h) = self.min_px(child, rem, scaled);
                     if axis == Axis::Horizontal { w } else { h }
                 };
                 let children = visible
                     .iter()
                     .map(|(_, weight, child)| {
                         let factor = self.shape_factor(child);
-                        (*weight * factor, along_min(child) * factor, *child)
+                        // The weight as it is drawn now: it moves toward the
+                        // model's over time (ADR-0060).
+                        let drawn = self
+                            .motion
+                            .borrow()
+                            .value(MotionKey::Weight(last_leaf(child), depth + 1))
+                            .map_or(*weight, f64::from);
+                        // The minimum is scaled leaf by leaf, as the cell is drawn now.
+                        (drawn * factor, along_min(child, true), *child)
                     })
                     .collect();
                 // The sizes once every motion has ended: a leaving child is
@@ -772,7 +794,7 @@ impl Workspace {
                 let resting: Vec<(f64, f64)> = visible
                     .iter()
                     .filter(|(_, _, child)| self.shape_visible(child))
-                    .map(|(_, weight, child)| (*weight, along_min(child)))
+                    .map(|(_, weight, child)| (*weight, along_min(child, false)))
                     .collect();
                 let length = if axis == Axis::Horizontal {
                     size.0
@@ -813,7 +835,7 @@ impl Workspace {
                     cx,
                     |child| DividerAt::Leaf(last_leaf(child)),
                     |child, size, fin, cx| {
-                        self.render_node(child, size, fin, across, rem, window, cx)
+                        self.render_node(child, size, fin, across, depth + 1, rem, window, cx)
                     },
                 ))
             }
@@ -1214,6 +1236,9 @@ impl Workspace {
     pub(super) fn end_resize(&mut self, cx: &mut Context<Self>) {
         self.press_offset = 0.0;
         if std::mem::take(&mut self.resizing) {
+            // The last pointer move can arrive with the release between two
+            // frames: it draws in place, and the divider does not drift.
+            self.motion.borrow_mut().snap_next_frame();
             self.save_layout(cx);
             cx.notify();
         }
@@ -1338,23 +1363,26 @@ impl Workspace {
         }
     }
 
-    /// Whether `slot` has left the layout model but is still drawn from the
-    /// view it last showed. Not when that view is shown in another slot now
-    /// (it was moved): one view is one element, drawn once, and the old
-    /// frame goes at once.
+    /// Whether `slot` has left the layout model but is still drawn while
+    /// its frame closes: from the view it last showed, or, when that view
+    /// moved to another slot ([`Self::view_moved`]), as a blank frame.
     fn slot_leaving(&self, slot: SlotId) -> bool {
         let motion = self.motion.borrow();
-        let Some(SlotSnapshot { view, .. }) = motion.recall::<SlotSnapshot>(MotionKey::Slot(slot))
-        else {
-            return false;
-        };
-        let moved = self
-            .layout
-            .view_slot(&view)
-            .is_some_and(|home| home != slot && self.layout.shown(home) == Some(view));
-        !self.leaf_visible(Leaf::Slot(slot))
+        motion
+            .recall::<SlotSnapshot>(MotionKey::Slot(slot))
+            .is_some()
+            && !self.leaf_visible(Leaf::Slot(slot))
             && motion.presence(MotionKey::Slot(slot)).frame > 0.0
-            && !moved
+    }
+
+    /// Whether `view` is placed in a slot other than `slot` now: it moved.
+    /// One view is one element, so the frame it left is drawn blank. The
+    /// other slot need not show the view: it can be hidden or closed while
+    /// this frame closes, and the view must still not be drawn twice.
+    fn view_moved(&self, slot: SlotId, view: DrawerView) -> bool {
+        self.layout
+            .view_slot(&view)
+            .is_some_and(|home| home != slot)
     }
 
     /// Whether anything in `shape` is present: [`Self::shape_visible`] over
@@ -1459,6 +1487,7 @@ impl Workspace {
             content,
             pin,
             leaving,
+            gone,
         } = paint;
         if !leaving {
             let context = SlotContext {
@@ -1477,7 +1506,9 @@ impl Workspace {
                 move |this, _: &MouseDownEvent, window, cx| this.focus_slot(slot, window, cx),
             ))
         })
-        .child(self.render_slot_header(slot, view, cx))
+        .when(!gone, |surface| {
+            surface.child(self.render_slot_header(slot, view, cx))
+        })
         // The body, under the header: while a view is dragged its
         // zones lie over it (not the header, so a drag released
         // where it started changes nothing).
@@ -1489,13 +1520,21 @@ impl Workspace {
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
-                .child(self.render_slot_body(view, small, cx))
+                .child(if gone {
+                    div().flex_1().into_any_element()
+                } else {
+                    self.render_slot_body(view, small, cx)
+                })
                 .when(!leaving, |body| body.children(self.zone_layer(slot, cx))),
         );
         let alpha = content;
         let pin = pin && slot_policy() == ResizePolicy::Pinned;
         let content = div()
-            .id(slot_content_id(view))
+            .id(if gone {
+                SharedString::from(format!("slot-gone-content-{}", view.id()))
+            } else {
+                slot_content_id(view)
+            })
             .test_support()
             .flex()
             .p(LEAF_MARGIN)
@@ -1509,11 +1548,15 @@ impl Workspace {
             .faded(alpha)
             .child(surface);
         div()
-            .id(slot_id(view))
+            .id(if gone {
+                slot_gone_id(view)
+            } else {
+                slot_id(view)
+            })
             .test_support()
             .when(!leaving, |frame| frame.track_focus(&self.slot_handle(slot)))
-            .role(Role::Group)
-            .aria_label(spec.name)
+            // A blank frame says nothing: the view is announced where it went.
+            .when(!gone, |frame| frame.role(Role::Group).aria_label(spec.name))
             .relative()
             .flex()
             .flex_1()

@@ -285,6 +285,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.replace_layout(tree);
+        // A new tree has new slots, which may reuse the old ids: no motion
+        // of the old one carries over (ADR-0060), and its slots draw in
+        // place, since a whole new layout has no old size to move from. A
+        // rollback ([`Workspace::try_layout`]) gives back the tree it
+        // replaced, with the same ids, so it forgets nothing.
+        self.motion.borrow_mut().forget(|key| {
+            matches!(
+                key,
+                super::motion::MotionKey::Slot(_) | super::motion::MotionKey::Weight(..)
+            )
+        });
+        self.motion.borrow_mut().snap_next_frame();
         // A preset that sets no rail leaves the position alone (ADR-0055 §2).
         if let Some(rail) = rail {
             self.rail = rail;
