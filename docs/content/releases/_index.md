@@ -35,6 +35,4 @@ Each archive holds the `kimun` program at its root. Put it in a folder on your `
 
 ## Check a download
 
-Every release has a file named `checksums-sha256.txt`. It lists the SHA-256 checksum (a fingerprint of the file) of each download, and `checksums-sha256.txt.minisig` is its signature. Download both from the [latest release](https://github.com/nico2sh/kimun/releases/latest). To check a file on Linux or macOS, run `sha256sum <file>` (or `shasum -a 256 <file>` on macOS) and compare the result with the line for that file name.
-
-The file names with a version, such as `kimun-gui-<version>-macos-arm64.dmg`, are on the same release page. A file with a version and the file without it are the same file.
+Each release has a file named `checksums-sha256.txt`. It lists a fingerprint (SHA-256) for each download. To check a file, run `sha256sum <file>` (or `shasum -a 256 <file>` on macOS) and compare the result with the line for that file. Download the checksum file from the [latest release](https://github.com/nico2sh/kimun/releases/latest).
