@@ -8,22 +8,13 @@ use gpui_kit::{AppContext as _, TestAppContext};
 use kimun_notes::logic::layout_tree::{Dir, Leaf};
 use kimun_notes::logic::nav::DrawerView;
 
+use super::motion_test_support::{editor_left, editor_width, slot_size, slot_width};
 use super::motion_tests::{frame, open_files_and_outline, resize, wait};
 use super::palette::PaletteRun;
 use super::presets::PresetCommand;
 use super::tests::Shell;
 use super::tree_view::DividerAt;
 use super::{slot_content_id, slot_gone_id, slot_id};
-
-/// The width of the slot showing `view`, `None` while it is not drawn.
-fn width(cx: &mut TestAppContext, shell: &Shell, view: DrawerView) -> Option<f32> {
-    cx.update_window(shell.handle, |_, window, _| {
-        window
-            .try_find(slot_id(view))
-            .map(|slot| f32::from(slot.bounds().size.width))
-    })
-    .unwrap()
-}
 
 fn files_slot(cx: &TestAppContext, shell: &Shell) -> kimun_notes::logic::layout_tree::SlotId {
     cx.read(|cx| shell.workspace.read(cx).layout.slots()[0])
@@ -32,7 +23,7 @@ fn files_slot(cx: &TestAppContext, shell: &Shell) -> kimun_notes::logic::layout_
 #[gpui_kit::test]
 fn a_keyboard_resize_moves_the_divider_over_time(cx: &mut TestAppContext) {
     let shell = open_files_and_outline(cx);
-    let before = width(cx, &shell, DrawerView::Files).expect("FILES is drawn");
+    let before = slot_width(cx, &shell, DrawerView::Files).expect("FILES is drawn");
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -42,17 +33,17 @@ fn a_keyboard_resize_moves_the_divider_over_time(cx: &mut TestAppContext) {
     })
     .unwrap();
     frame(cx, &shell);
-    let start = width(cx, &shell, DrawerView::Files).unwrap();
+    let start = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (start - before).abs() < 0.5,
         "at 0 ms: {start} against {before}"
     );
     wait(cx, 30);
     frame(cx, &shell);
-    let middle = width(cx, &shell, DrawerView::Files).unwrap();
+    let middle = slot_width(cx, &shell, DrawerView::Files).unwrap();
     wait(cx, 400);
     frame(cx, &shell);
-    let end = width(cx, &shell, DrawerView::Files).unwrap();
+    let end = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (end - before).abs() > 1.0,
         "the step moved the divider: {before} to {end}"
@@ -67,7 +58,7 @@ fn a_keyboard_resize_moves_the_divider_over_time(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_divider_drag_follows_the_pointer_on_every_frame(cx: &mut TestAppContext) {
     let shell = open_files_and_outline(cx);
-    let before = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -78,7 +69,7 @@ fn a_divider_drag_follows_the_pointer_on_every_frame(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    let after = width(cx, &shell, DrawerView::Files).unwrap();
+    let after = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         after > before + 20.0,
         "the drag was followed at once: {before} to {after}"
@@ -102,10 +93,10 @@ fn a_window_resize_moves_no_weight(cx: &mut TestAppContext) {
     frame(cx, &shell);
     resize(cx, &shell, 900.);
     frame(cx, &shell);
-    let at_once = width(cx, &shell, DrawerView::Files).unwrap();
+    let at_once = slot_width(cx, &shell, DrawerView::Files).unwrap();
     wait(cx, 400);
     frame(cx, &shell);
-    let rest = width(cx, &shell, DrawerView::Files).unwrap();
+    let rest = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (at_once - rest).abs() < 0.5,
         "{at_once} at once, {rest} at rest"
@@ -115,7 +106,7 @@ fn a_window_resize_moves_no_weight(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_new_column_does_not_make_its_neighbor_jump(cx: &mut TestAppContext) {
     let shell = open_files_and_outline(cx);
-    let before = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -125,15 +116,15 @@ fn a_new_column_does_not_make_its_neighbor_jump(cx: &mut TestAppContext) {
     })
     .unwrap();
     frame(cx, &shell);
-    let first = width(cx, &shell, DrawerView::Files).unwrap();
+    let first = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (first - before).abs() < 1.0,
         "FILES jumped: {before} to {first}"
     );
     wait(cx, 400);
     frame(cx, &shell);
-    let files = width(cx, &shell, DrawerView::Files).unwrap();
-    let find = width(cx, &shell, DrawerView::Find).expect("the new column is drawn");
+    let files = slot_width(cx, &shell, DrawerView::Files).unwrap();
+    let find = slot_width(cx, &shell, DrawerView::Find).expect("the new column is drawn");
     assert!(find > 1.0 && files > 1.0);
     // The sidebar grew to give FIND its minimum: the two columns are equal and
     // together 320 px, for the 230 px of FILES before.
@@ -145,14 +136,6 @@ fn a_new_column_does_not_make_its_neighbor_jump(cx: &mut TestAppContext) {
         (files + find - 320.0).abs() < 1.5,
         "{files} and {find} fill the room: 320 px, from {before}"
     );
-}
-
-/// The width of the editor panel.
-fn editor_width(cx: &mut TestAppContext, shell: &Shell) -> f32 {
-    cx.update_window(shell.handle, |_, window, _| {
-        f32::from(window.find("editor-panel").bounds().size.width)
-    })
-    .unwrap()
 }
 
 /// A second column beside FILES, at rest: FILES, then FIND, the editor and
@@ -178,7 +161,7 @@ fn closing_a_slot_gives_its_room_back_over_time(cx: &mut TestAppContext) {
     // room of FIND goes to the editor and OUTLINE: the editor grows into it.
     let shell = open_files_and_outline(cx);
     let find = two_columns(cx, &shell);
-    let files = width(cx, &shell, DrawerView::Files).unwrap();
+    let files = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let before = editor_width(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell
@@ -188,7 +171,7 @@ fn closing_a_slot_gives_its_room_back_over_time(cx: &mut TestAppContext) {
     .unwrap();
     frame(cx, &shell);
     assert_eq!(
-        width(cx, &shell, DrawerView::Find),
+        slot_width(cx, &shell, DrawerView::Find),
         None,
         "the closed slot is not drawn"
     );
@@ -211,7 +194,7 @@ fn closing_a_slot_gives_its_room_back_over_time(cx: &mut TestAppContext) {
         middle > before + 0.5 && middle < after - 0.5,
         "at 30 ms: {middle} between {before} and {after}"
     );
-    assert_eq!(width(cx, &shell, DrawerView::Files), Some(files));
+    assert_eq!(slot_width(cx, &shell, DrawerView::Files), Some(files));
 }
 
 #[gpui_kit::test]
@@ -236,10 +219,10 @@ fn applying_a_preset_is_drawn_at_once(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    let at_once = width(cx, &shell, DrawerView::Files).unwrap();
+    let at_once = slot_width(cx, &shell, DrawerView::Files).unwrap();
     wait(cx, 400);
     frame(cx, &shell);
-    let rest = width(cx, &shell, DrawerView::Files).unwrap();
+    let rest = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (at_once - rest).abs() < 0.5,
         "{at_once} at once, {rest} at rest"
@@ -324,7 +307,7 @@ fn a_moved_view_is_drawn_once(cx: &mut TestAppContext) {
 fn a_drag_release_does_not_move_the_divider(cx: &mut TestAppContext) {
     // The last pointer move and the release arrive between two frames.
     let shell = open_files_and_outline(cx);
-    let before = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -335,7 +318,7 @@ fn a_drag_release_does_not_move_the_divider(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    let after = width(cx, &shell, DrawerView::Files).unwrap();
+    let after = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         after > before + 20.0,
         "the drag was kept: {before} to {after}"
@@ -457,7 +440,7 @@ fn open_stacked_left(cx: &mut TestAppContext) -> Shell {
 #[gpui_kit::test]
 fn a_column_beside_a_nested_last_leaf_does_not_make_its_cell_jump(cx: &mut TestAppContext) {
     let shell = open_stacked_left(cx);
-    let before = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let find = cx.read(|cx| shell.workspace.read(cx).layout.slots()[1]);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -467,14 +450,14 @@ fn a_column_beside_a_nested_last_leaf_does_not_make_its_cell_jump(cx: &mut TestA
     })
     .unwrap();
     frame(cx, &shell);
-    let first = width(cx, &shell, DrawerView::Files).unwrap();
+    let first = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (first - before).abs() < 1.0,
         "the stack jumped: {before} to {first}"
     );
     wait(cx, 400);
     frame(cx, &shell);
-    let after = width(cx, &shell, DrawerView::Files).unwrap();
+    let after = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(after > 1.0, "the stack is drawn at rest: {after}");
 }
 
@@ -482,7 +465,7 @@ fn a_column_beside_a_nested_last_leaf_does_not_make_its_cell_jump(cx: &mut TestA
 /// that now holds it, keeps its width on the first frame.
 fn assert_no_jump_for(cx: &mut TestAppContext, dir: Dir) {
     let shell = open_files_and_outline(cx);
-    let before = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
@@ -492,7 +475,7 @@ fn assert_no_jump_for(cx: &mut TestAppContext, dir: Dir) {
     })
     .unwrap();
     frame(cx, &shell);
-    let first = width(cx, &shell, DrawerView::Files).unwrap();
+    let first = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (first - before).abs() < 1.0,
         "{dir:?}: FILES jumped from {before} to {first}"
@@ -530,7 +513,7 @@ fn a_failed_placement_does_not_cut_a_motion(cx: &mut TestAppContext) {
     frame(cx, &shell);
     wait(cx, 100);
     frame(cx, &shell);
-    let during = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing");
+    let during = slot_width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing");
     // A layout change that fails and is rolled back: the one rollback every
     // refused placement goes through.
     let refused = cx
@@ -542,7 +525,7 @@ fn a_failed_placement_does_not_cut_a_motion(cx: &mut TestAppContext) {
         .unwrap();
     assert!(refused.is_err());
     frame(cx, &shell);
-    let after = width(cx, &shell, DrawerView::Outline)
+    let after = slot_width(cx, &shell, DrawerView::Outline)
         .expect("OUTLINE is still closing after the refused placement");
     assert!(
         (after - during).abs() < 1.0,
@@ -575,7 +558,7 @@ fn a_view_moved_down_past_a_hidden_slot_animates_and_cuts_nothing(cx: &mut TestA
     frame(cx, &shell);
     wait(cx, 100);
     frame(cx, &shell);
-    let during = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
+    let during = slot_width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
     let slot = files_slot(cx, &shell);
     let moved = cx
         .update_window(shell.handle, |_, window, cx| {
@@ -587,8 +570,8 @@ fn a_view_moved_down_past_a_hidden_slot_animates_and_cuts_nothing(cx: &mut TestA
         .unwrap();
     assert!(moved, "the view went to a new slot");
     frame(cx, &shell);
-    let after =
-        width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing after the move");
+    let after = slot_width(cx, &shell, DrawerView::Outline)
+        .expect("OUTLINE is still closing after the move");
     assert!(
         (after - during).abs() < 1.0,
         "the rollback cut the motion: {during} to {after}"
@@ -621,7 +604,7 @@ fn a_drop_zone_probe_does_not_cut_a_motion(cx: &mut TestAppContext) {
     frame(cx, &shell);
     wait(cx, 100);
     frame(cx, &shell);
-    let during = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
+    let during = slot_width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
     let slot = files_slot(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, _| {
@@ -631,7 +614,7 @@ fn a_drop_zone_probe_does_not_cut_a_motion(cx: &mut TestAppContext) {
     })
     .unwrap();
     frame(cx, &shell);
-    let after = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing");
+    let after = slot_width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing");
     assert!(
         (after - during).abs() < 1.0,
         "the probe cut the motion: {during} to {after}"
@@ -824,8 +807,8 @@ fn a_ghost_is_not_drawn_in_a_split_that_took_the_place_of_its_own(cx: &mut TestA
          { weight = 0.5, editor = true },\n]\n");
     let shell = open_shell_motion(cx, 1600., &layout, "", false, LayoutStore::Off, false);
     frame(cx, &shell);
-    let files = width(cx, &shell, DrawerView::Files).unwrap();
-    let find = width(cx, &shell, DrawerView::Find).unwrap();
+    let files = slot_width(cx, &shell, DrawerView::Files).unwrap();
+    let find = slot_width(cx, &shell, DrawerView::Find).unwrap();
     let links = cx.read(|cx| {
         let w = shell.workspace.read(cx);
         w.layout.view_slot(&DrawerView::Links).unwrap()
@@ -841,8 +824,8 @@ fn a_ghost_is_not_drawn_in_a_split_that_took_the_place_of_its_own(cx: &mut TestA
         wait(cx, millis);
         frame(cx, &shell);
         let now = (
-            width(cx, &shell, DrawerView::Files).unwrap(),
-            width(cx, &shell, DrawerView::Find).unwrap(),
+            slot_width(cx, &shell, DrawerView::Files).unwrap(),
+            slot_width(cx, &shell, DrawerView::Find).unwrap(),
         );
         assert!(
             (now.0 - files).abs() < 1.5 && (now.1 - find).abs() < 1.5,
@@ -867,11 +850,11 @@ fn a_slot_that_was_not_drawn_leaves_no_ghost(cx: &mut TestAppContext) {
     super::motion_tests::resize(cx, &shell, 800.);
     frame(cx, &shell);
     assert_eq!(
-        width(cx, &shell, DrawerView::Links),
+        slot_width(cx, &shell, DrawerView::Links),
         None,
         "LINKS collapsed"
     );
-    let files = width(cx, &shell, DrawerView::Files).unwrap();
+    let files = slot_width(cx, &shell, DrawerView::Files).unwrap();
     let editor = editor_width(cx, &shell);
     let links = cx.read(|cx| {
         let w = shell.workspace.read(cx);
@@ -885,7 +868,7 @@ fn a_slot_that_was_not_drawn_leaves_no_ghost(cx: &mut TestAppContext) {
     .unwrap();
     frame(cx, &shell);
     let now = (
-        width(cx, &shell, DrawerView::Files).unwrap(),
+        slot_width(cx, &shell, DrawerView::Files).unwrap(),
         editor_width(cx, &shell),
     );
     assert!(
@@ -920,17 +903,6 @@ fn a_snapping_frame_drops_a_ghost_that_already_exists(cx: &mut TestAppContext) {
     );
 }
 
-/// The size of the slot showing `view`, as (width, height).
-fn size_of(cx: &mut TestAppContext, shell: &Shell, view: DrawerView) -> Option<(f32, f32)> {
-    cx.update_window(shell.handle, |_, window, _| {
-        window.try_find(slot_id(view)).map(|slot| {
-            let b = slot.bounds();
-            (f32::from(b.size.width), f32::from(b.size.height))
-        })
-    })
-    .unwrap()
-}
-
 /// Close the slot that shows `closing` in a window with `layout`, and
 /// return the size of the slot `staying` before, on the first frame after,
 /// at 30 ms, and at rest.
@@ -944,7 +916,7 @@ fn close_and_watch(
     use super::tests::{gui, open_shell_motion};
     let shell = open_shell_motion(cx, 1600., &gui(layout), "", false, LayoutStore::Off, false);
     frame(cx, &shell);
-    let before = size_of(cx, &shell, staying.clone()).unwrap();
+    let before = slot_size(cx, &shell, staying).unwrap();
     let slot = cx.read(|cx| shell.workspace.read(cx).layout.view_slot(&closing).unwrap());
     cx.update_window(shell.handle, |_, window, cx| {
         shell
@@ -954,17 +926,17 @@ fn close_and_watch(
     .unwrap();
     frame(cx, &shell);
     assert_eq!(
-        size_of(cx, &shell, closing),
+        slot_size(cx, &shell, closing),
         None,
         "the closed slot is not drawn"
     );
-    let first = size_of(cx, &shell, staying.clone()).unwrap();
+    let first = slot_size(cx, &shell, staying).unwrap();
     wait(cx, 30);
     frame(cx, &shell);
-    let middle = size_of(cx, &shell, staying.clone()).unwrap();
+    let middle = slot_size(cx, &shell, staying).unwrap();
     wait(cx, 400);
     frame(cx, &shell);
-    let rest = size_of(cx, &shell, staying).unwrap();
+    let rest = slot_size(cx, &shell, staying).unwrap();
     [before, first, middle, rest]
 }
 
@@ -1023,4 +995,37 @@ fn closing_one_of_two_stacked_slots_grows_the_survivor_over_time(cx: &mut TestAp
         "at 30 ms: {middle:?} between {before:?} and {rest:?}"
     );
     assert_eq!(first.0, rest.0, "the width does not move");
+}
+
+#[gpui_kit::test]
+fn a_ghost_holds_its_room_where_the_cell_stood(cx: &mut TestAppContext) {
+    // FILES, FIND, the editor, OUTLINE: FIND stood before the editor. On the
+    // frame after it closes, the editor still starts where it started, and it
+    // slides left as the room is given back.
+    let shell = open_files_and_outline(cx);
+    let find = two_columns(cx, &shell);
+    let before = editor_left(cx, &shell);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(find, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    let first = editor_left(cx, &shell);
+    wait(cx, 30);
+    frame(cx, &shell);
+    let middle = editor_left(cx, &shell);
+    wait(cx, 400);
+    frame(cx, &shell);
+    let rest = editor_left(cx, &shell);
+    assert!(
+        (first - before).abs() < 1.0,
+        "starts in place: {before} {first}"
+    );
+    assert!(rest < before - 50.0, "slides left: {before} to {rest}");
+    assert!(
+        middle < before - 0.5 && middle > rest + 0.5,
+        "at 30 ms: {middle}"
+    );
 }

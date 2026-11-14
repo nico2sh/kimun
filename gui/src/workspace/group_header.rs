@@ -171,7 +171,7 @@ impl Workspace {
             .into_iter()
             .find(|(g, _)| *g == group)
             .map(|(_, rect)| rect);
-        let strip = region.tabs().len() > 1 || self.dragged_group(cx).is_some();
+        let strip = self.strip_wanted(cx);
         let (left, right) = rect.map_or((false, false), |rect| marker_corners(rect, strip));
         // The Panel's corner (`rounded_md`) less its border: the curve of
         // the Panel's inner edge.

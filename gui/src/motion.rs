@@ -1,5 +1,5 @@
-//! The toolkit-free half of GUI motion (ADR-0060): the three named speeds,
-//! the reveal order, the snap rule and the resize policy. It names no GPUI
+//! The toolkit-free half of GUI motion (ADR-0060): the two named speeds,
+//! the reveal order and the snap rule. It names no GPUI
 //! type, so it is tested without a window. The GPUI half, with the kit's
 //! motion types, is `workspace::motion`.
 //!
@@ -16,10 +16,6 @@ pub enum Speed {
     /// A pane opening or closing.
     #[default]
     Standard,
-    /// A large rearrangement. No change uses it yet: a preset draws in
-    /// place.
-    #[allow(dead_code)]
-    Slow,
 }
 
 impl Speed {
@@ -27,7 +23,6 @@ impl Speed {
         match self {
             Speed::Quick => Duration::from_millis(120),
             Speed::Standard => Duration::from_millis(200),
-            Speed::Slow => Duration::from_millis(320),
         }
     }
 }
@@ -83,17 +78,6 @@ pub fn timing(speed: Speed, stage: Stage, opening: bool) -> Timing {
     }
 }
 
-/// How a leaf's content behaves while its frame changes size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResizePolicy {
-    /// Laid out once at the final size, clipped by the moving frame.
-    Pinned,
-    /// Follows the frame at every size. The editor group's policy, from
-    /// slice three.
-    #[allow(dead_code)]
-    Live,
-}
-
 /// What the renderer knows about this frame that decides a snap.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SnapFacts {
@@ -129,10 +113,9 @@ mod tests {
     }
 
     #[test]
-    fn speeds_are_120_200_and_320_ms() {
+    fn speeds_are_120_and_200_ms() {
         assert_eq!(Speed::Quick.duration(), Duration::from_millis(120));
         assert_eq!(Speed::Standard.duration(), Duration::from_millis(200));
-        assert_eq!(Speed::Slow.duration(), Duration::from_millis(320));
     }
 
     #[test]
@@ -159,7 +142,7 @@ mod tests {
 
     #[test]
     fn the_frame_always_has_the_larger_part() {
-        for speed in [Speed::Quick, Speed::Standard, Speed::Slow] {
+        for speed in [Speed::Quick, Speed::Standard] {
             for opening in [true, false] {
                 let frame = timing(speed, Stage::Frame, opening).duration;
                 let content = timing(speed, Stage::Content, opening).duration;

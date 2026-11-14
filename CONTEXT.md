@@ -420,12 +420,8 @@ The smooth change over time the GUI draws between two **layout** states (a slot 
 _Avoid_: animation (names the mechanism, not the user-facing behavior), transition (collides with the toast's enter and exit).
 
 **Motion speed**:
-One of three named durations a change picks: quick, standard or slow. A change names its kind, never a raw duration, and every speed shares one curve. Reduced motion (`[gui] reduce_motion`) makes every **motion** end at once.
+One of two named durations a change picks: quick or standard. A change names its kind, never a raw duration, and every speed shares one curve. Reduced motion (`[gui] reduce_motion`) makes every **motion** end at once.
 _Avoid_: duration, timing, easing (those are the numbers behind a speed).
-
-**Resize policy**:
-How a leaf's content behaves while its frame changes size, declared by the leaf. A slot is pinned: its content is laid out once at its final size and the moving frame clips it. An editor group is live: its content follows the frame at every size.
-_Avoid_: reflow mode, clip mode.
 
 **Reveal order**:
 The fixed staging of a leaf's **motion**. On enter the frame moves first and the content appears second. On exit the content fades first and the frame collapses second, so a closing pane never shows squeezed content.

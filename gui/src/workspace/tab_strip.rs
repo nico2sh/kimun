@@ -32,7 +32,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div, rems,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
@@ -46,7 +46,7 @@ use super::chrome;
 use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
 use super::motion::MotionKey;
-use super::motion_box::MotionBox as _;
+use super::motion_box::{Clip, MotionBox as _};
 use super::note_flush::FlushBlock;
 use super::session::Queued;
 use crate::theme;
@@ -84,11 +84,16 @@ const LABEL_MAX_REMS: f32 = 14.;
 /// A pill's height (and the plus button's size): a comfortable click
 /// target that keeps the strip about as tall as a slot header.
 const PILL_HEIGHT_REMS: f32 = 1.625;
-/// The strip's height in rems while it opens or closes: a pill, the
-/// padding above and below it, and the hairline under it (a pixel, a
-/// sixteenth of a rem at the default size). At rest the strip has its own
-/// height, whatever this is.
-const STRIP_REMS: f32 = PILL_HEIGHT_REMS + 0.5 + 0.0625;
+/// The padding above and below a pill, in rems.
+const STRIP_PADDING_REMS: f32 = 0.5;
+
+/// The strip's frame height in px while it opens or closes, `frame` being
+/// how open it is (0 to 1): a pill, the padding above and below it, and the
+/// hairline under it, which is one pixel at any size of the rem. At rest the
+/// strip has its own height, whatever this is.
+pub(super) fn strip_frame_px(rem: f32, frame: f32) -> f32 {
+    (rem * (PILL_HEIGHT_REMS + STRIP_PADDING_REMS) + 1.0) * frame
+}
 /// The trailing slot of a pill: the close button, the unsaved dot or
 /// nothing, always this size.
 const TRAIL_REMS: f32 = 1.125;
@@ -536,14 +541,21 @@ impl Workspace {
 
     // ---- Drawing -------------------------------------------------------------
 
+    /// Whether the model wants the strip: the region holds two tabs or more,
+    /// or a group is dragged (ADR-0058). The motion spec and the drawing code
+    /// both ask this, so they never disagree.
+    pub(super) fn strip_wanted(&self, cx: &App) -> bool {
+        self.layout.region().tabs().len() >= 2 || self.dragged_group(cx).is_some()
+    }
+
     /// The strip over the shown tab, or `None` while the region holds one
     /// tab and no group is dragged (ADR-0058). A row of pill buttons that
     /// scrolls sideways, and the round plus button after it, outside the
     /// scroll so it always shows.
-    pub(super) fn render_tab_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_tab_strip(&self, rem: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
-        let wanted = tabs.len() >= 2 || self.dragged_group(cx).is_some();
+        let wanted = self.strip_wanted(cx);
         let presence = self.motion.borrow().presence(MotionKey::TabStrip);
         // Still drawn while it closes (ADR-0060), from the tabs that remain.
         if !wanted && presence.frame <= 0.0 {
@@ -648,12 +660,12 @@ impl Workspace {
                 .test_support()
                 .role(Role::TabList)
                 .aria_label("Tabs")
-                .relative()
-                .flex()
                 .flex_col()
                 .flex_none()
                 .w_full()
-                .clipped_while(moving, |frame| frame.h(rems(STRIP_REMS * presence.frame)))
+                .framed(Clip::WhileMoving(moving), false, |frame| {
+                    frame.h(px(strip_frame_px(rem, presence.frame)))
+                })
                 .child(strip)
                 .covered_while(leaving)
                 .into_any_element(),
@@ -876,10 +888,8 @@ impl Workspace {
         div()
             .id(tab_box_id(at))
             .test_support()
-            .relative()
-            .flex()
             .flex_none()
-            .clipped_while(moving, |clip| {
+            .framed(Clip::WhileMoving(moving), false, |clip| {
                 clip.max_w(rems(LABEL_MAX_REMS * presence.frame))
             })
             .faded(content)

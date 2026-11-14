@@ -1,6 +1,7 @@
-//! The GPUI half of GUI motion (ADR-0060): the presence store. This file
-//! is the only one that names the kit's motion types
-//! (`gpui_kit::base::motion`), so a change in the kit reaches one place.
+//! The GPUI half of GUI motion (ADR-0060): the presence store, and the
+//! weights store in [`weights`]. This module is the only one that names the
+//! kit's motion types (`gpui_kit::base::motion`), so a change in the kit
+//! reaches one place.
 //! The speeds, the reveal order and the snap rule are the toolkit-free
 //! half, [`crate::motion`].
 //!
@@ -21,7 +22,8 @@
 //! 3. Where it draws, read `Motion::presence`. The frame value sizes it.
 //!    The content value fades what is inside.
 //! 4. Build it with [`MotionBox`](super::motion_box::MotionBox):
-//!    `faded`, `clipped_while` and `covered_while`. Keep its content
+//!    `faded`, `framed` (with the `Clip` rule it follows) and
+//!    `covered_while`. Keep its content
 //!    pinned to a size only while it moves. At rest it fills its box, to
 //!    the pixel.
 //! 5. If it must be drawn after the model dropped it, `Motion::remember` a
@@ -43,12 +45,12 @@
 //!   `install_layout`, and a `snap_next_frame` so the new ones draw in place.
 //!
 //! A cell that changes size, without opening or closing, is a weight: a
-//! `ValueSpec` with a `MotionKey::Weight` (the child's last leaf, its depth
-//! in the tree, and whether the cell is one leaf: a subtree cell and the
-//! leaf at its end are two keys, so a collapse that shifts depths cannot
-//! make one take the other's weight). The layout pass draws the weight as
-//! it moves. A
-//! cell that gets wrapped changes its last leaf, so its key: a spec lists
+//! `ValueSpec` with a `CellKey` (the child's last leaf, its depth in the
+//! tree, and whether the cell is one leaf: a subtree cell and the leaf at
+//! its end are two keys, so a collapse that shifts depths cannot make one
+//! take the other's weight). Weights live in their own store, `Weights`, and
+//! never share a key with a presence. The layout pass draws the weight as
+//! it moves. A cell that gets wrapped changes its last leaf, so its key: a spec lists
 //! `seed_from` keys, and a new key starts from the first that has a value.
 //! This covers wrapping only: a cell that a close unwraps adopts its weight
 //! at once.
@@ -57,7 +59,7 @@
 //!
 //! A slot that is removed from the tree leaves a ghost: its weight stays in
 //! the store and decays, and the layout pass draws a spacer that holds the
-//! px the cell last had (`Siblings`, `Motion::ghosts`) and gives them back,
+//! px the cell last had (`Siblings`, `Weights::ghosts`) and gives them back,
 //! so the cells next to it grow into its room over time. Only a leaf cell
 //! that left the tree leaves a ghost: not one that only changed its key
 //! (its split collapsed around it), and not one whose weight a wrapped cell
@@ -77,11 +79,15 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::base::motion::{Transition, TransitionState};
 use gpui_kit::{App, Context, Pixels, Size, Window};
 use kimun_notes::logic::editor_region::TabId;
-use kimun_notes::logic::layout_tree::{Axis, Leaf, RailPosition, SlotId, TreeShape};
+use kimun_notes::logic::layout_tree::{Leaf, RailPosition, SlotId, TreeShape};
 
 use super::Workspace;
-use super::tree_view::last_leaf;
-use crate::motion::{ResizePolicy, SnapFacts, Speed, Stage, must_snap, timing};
+mod weights;
+
+use weights::Weights;
+pub(super) use weights::{CellKey, Ghost, Siblings, ValueSpec};
+
+use crate::motion::{SnapFacts, Speed, Stage, must_snap, timing};
 
 /// What opens and closes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,10 +96,6 @@ pub(super) enum MotionKey {
     Rail,
     TabStrip,
     Tab(TabId),
-    /// The weight of a split child: the child whose last leaf is `Leaf`, at
-    /// nesting depth `u8` (a subtree and its own last leaf are two keys).
-    /// Owned by [`Motion::sample_values`], not by `sample_all`.
-    Weight(Leaf, u8, bool),
 }
 
 impl MotionKey {
@@ -129,52 +131,6 @@ pub(super) struct Spec {
     pub enter: Enter,
 }
 
-/// What one weight is asked to be in one frame (slice three): it moves from
-/// where it is to `target` over the `speed`.
-#[derive(Debug, Clone)]
-pub(super) struct ValueSpec {
-    pub key: MotionKey,
-    pub target: f32,
-    pub speed: Speed,
-    /// Keys a new `key` can start from: the weights of the leaves inside
-    /// the cell. A cell that gets wrapped changes its key, and must not jump.
-    pub seed_from: Vec<MotionKey>,
-}
-
-/// The weights next to a split child, as the layout pass last drew it: what a
-/// ghost needs to be put back where its cell stood (slot removal).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct Siblings {
-    /// The weight key of the child before it, and of the one after it.
-    pub prev: Option<MotionKey>,
-    pub next: Option<MotionKey>,
-    /// The cell is one leaf: only that kind of cell leaves a ghost. A subtree
-    /// cell that collapsed has no parent split left to be drawn in.
-    pub leaf: bool,
-    /// The px the cell had along its split when it was last drawn: the ghost
-    /// holds that much room and gives it back as it decays. The cell's
-    /// weight alone is not enough, as a view's minimum can hold a cell wider
-    /// than its weight share.
-    pub px: f64,
-    /// The axis of the split the cell stood in: a ghost is drawn only in a
-    /// split along the same axis, so a split that took the place of its own
-    /// (a collapse into a surviving split) does not get a spacer of the wrong
-    /// kind.
-    pub axis: Axis,
-}
-
-/// The weight a removed cell leaves behind while it decays to nothing, so
-/// the cells next to it grow into its room over time, not at once.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Ghost {
-    pub key: MotionKey,
-    pub siblings: Siblings,
-    /// Its weight now, and the weight it had when it began to decay: the
-    /// share of its room that is left is the first over the second.
-    pub weight: f32,
-    pub from: f32,
-}
-
 /// How much of itself a thing shows: its frame (0 gone, 1 full size) and
 /// its content (0 invisible, 1 opaque). They move one after the other, in
 /// the order of [`crate::motion::timing`].
@@ -190,15 +146,11 @@ struct Entry {
     content: TransitionState<f32>,
     /// What was sampled in the current frame.
     now: Presence,
-    /// A weight: where it is moving to, and where it is in this frame.
-    value: TransitionState<f32>,
-    value_now: Option<f32>,
-    /// A weight that is no longer asked for and decays to 0: a ghost, and
-    /// the weight it had when it began.
-    ghost: bool,
-    ghost_from: f32,
     /// The speed of the last sample: a lingering key leaves at it.
     speed: Speed,
+    /// When the entry was made: the one order that keys without an order of
+    /// their own can be put in, the same in every process.
+    born: u64,
     /// A lingering key that is no longer asked for: its place in the order
     /// in which keys began to leave. Cleared when it is asked for again.
     left: Option<u64>,
@@ -212,10 +164,13 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct Motion {
     entries: HashMap<MotionKey, Entry>,
+    weights: Weights,
     snap: bool,
     snap_next: bool,
     /// How many keys began to leave so far: what [`Entry::left`] counts.
     leaves: u64,
+    /// How many entries were made so far: what [`Entry::born`] counts.
+    births: u64,
     /// What the last frame had, to tell what changed: the window size, the
     /// zoomed leaf and the rail's edge.
     last_viewport: Option<Size<Pixels>>,
@@ -224,6 +179,18 @@ pub(super) struct Motion {
 }
 
 impl Motion {
+    /// The entry of `key`, made (and numbered) if it is new.
+    fn entry_mut(&mut self, key: MotionKey) -> &mut Entry {
+        let births = &mut self.births;
+        self.entries.entry(key).or_insert_with(|| {
+            *births += 1;
+            Entry {
+                born: *births,
+                ..Entry::default()
+            }
+        })
+    }
+
     /// What this frame knows that decides a snap, given the window size, the
     /// zoomed leaf, whether a divider is being dragged and the rail's edge.
     /// Remembers what changes for the next frame.
@@ -282,8 +249,8 @@ impl Motion {
             .map(|(key, entry)| (*key, entry.speed))
             .collect();
         // Keys that begin to leave in one frame have no order of their own:
-        // sort them, so the order is the same in every process.
-        leaving.sort_by_key(|(key, _)| format!("{key:?}"));
+        // they leave in the order they were made.
+        leaving.sort_by_key(|(key, _)| self.entries[key].born);
         for (key, speed) in leaving {
             let order = self.leaves;
             if let Some(entry) = self.entries.get_mut(&key)
@@ -294,118 +261,53 @@ impl Motion {
             }
             self.sample(key, false, speed, Enter::AtRest, window, cx);
         }
-        self.entries.retain(|key, entry| {
-            asked.contains(key)
-                || matches!(key, MotionKey::Weight(..))
-                || (key.lingers() && entry.now.frame > 0.0)
-        });
+        self.entries
+            .retain(|key, entry| asked.contains(key) || (key.lingers() && entry.now.frame > 0.0));
     }
 
-    /// Move every weight toward its target for this frame. A weight with no
-    /// state adopts its target, and so does every weight on a snapping
-    /// frame (a divider drag follows the pointer, a window resize reflows
-    /// at once). A weight that is not in `specs` is dropped, unless it is a
-    /// ghost: see below.
-    pub(super) fn sample_values(&mut self, specs: &[ValueSpec], window: &mut Window, cx: &mut App) {
-        let snap = self.snap;
-        let mut used_as_seed: HashSet<MotionKey> = HashSet::new();
-        for spec in specs {
-            // A key that is new starts where the key it replaces was.
-            let seed = (!snap && !self.entries.contains_key(&spec.key))
-                .then(|| {
-                    spec.seed_from.iter().find_map(|key| {
-                        let value = self.entries.get(key).and_then(|entry| entry.value_now)?;
-                        Some((*key, value))
-                    })
-                })
-                .flatten();
-            let entry = self.entries.entry(spec.key).or_default();
-            entry.ghost = false;
-            if snap {
-                entry.value = TransitionState::default();
-            }
-            entry.speed = spec.speed;
-            // On the clock of a slot's frame, so a column that opens and the
-            // cell it takes room from move together: the sum of their sizes
-            // does not overshoot.
-            let policy = Transition::new(timing(spec.speed, Stage::Frame, true).duration);
-            if let Some((key, from)) = seed {
-                used_as_seed.insert(key);
-                entry.value.sample(from, policy.clone(), window, cx);
-            }
-            entry.value_now = Some(entry.value.sample(spec.target, policy, window, cx).value);
-        }
-        let asked: HashSet<MotionKey> = specs.iter().map(|spec| spec.key).collect();
-        // The leaves that still stand in the tree: each has a cell asked for.
-        let standing: HashSet<Leaf> = specs
-            .iter()
-            .filter_map(|spec| match spec.key {
-                MotionKey::Weight(leaf, _, true) => Some(leaf),
-                _ => None,
-            })
-            .collect();
-        // A weight that is no longer asked for is a ghost, if it was a leaf
-        // cell that left the tree and no new key took its weight over (a
-        // leaf that is still there changed its key, it did not leave): it decays to 0, and the
-        // layout pass draws a spacer for it that gives its px back, so the
-        // cells next to it grow into its room. A snapping frame keeps no
-        // ghost, and drops the ones that exist.
-        let leaving: Vec<(MotionKey, Speed)> = self
-            .entries
-            .iter()
-            .filter(|(key, _)| matches!(key, MotionKey::Weight(..)))
-            .filter(|(key, _)| !asked.contains(key) && !used_as_seed.contains(key))
-            .filter(
-                |(key, _)| !matches!(key, MotionKey::Weight(leaf, ..) if standing.contains(leaf)),
-            )
-            .filter(|(_, entry)| entry.value_now.is_some_and(|value| value > 0.0))
-            .filter(|(key, _)| self.recall::<Siblings>(**key).is_some_and(|s| s.leaf))
-            .map(|(key, entry)| (*key, entry.speed))
-            .collect();
-        for (key, speed) in leaving.into_iter().filter(|_| !snap) {
-            let policy = Transition::new(timing(speed, Stage::Frame, true).duration);
-            if let Some(entry) = self.entries.get_mut(&key) {
-                if !entry.ghost {
-                    entry.ghost_from = entry.value_now.unwrap_or(0.0);
-                }
-                entry.ghost = true;
-                entry.value_now = Some(entry.value.sample(0.0, policy, window, cx).value);
-            }
-        }
-        self.entries.retain(|key, entry| {
-            !matches!(key, MotionKey::Weight(..))
-                || asked.contains(key)
-                || (entry.ghost && !snap && entry.value_now.is_some_and(|value| value > 0.0))
-        });
+    /// Move every weight toward its target for this frame (see
+    /// [`Weights::sample`]). A snapping frame adopts every target at once.
+    pub(super) fn sample_weights(
+        &mut self,
+        specs: &[ValueSpec],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.weights.sample(specs, self.snap, window, cx);
     }
 
     /// The ghosts at nesting depth `depth`: the weights of cells removed
     /// from the tree that are still decaying.
     pub(super) fn ghosts(&self, depth: u8) -> Vec<Ghost> {
-        let mut ghosts: Vec<Ghost> = self
-            .entries
-            .iter()
-            .filter(|(key, entry)| {
-                entry.ghost && matches!(key, MotionKey::Weight(_, at, _) if *at == depth)
-            })
-            .filter_map(|(key, entry)| {
-                let siblings = self.recall::<Siblings>(*key)?;
-                Some(Ghost {
-                    key: *key,
-                    siblings,
-                    weight: entry.value_now?,
-                    from: entry.ghost_from,
-                })
-            })
-            .collect();
-        // The same order in every process.
-        ghosts.sort_by_key(|ghost| format!("{:?}", ghost.key));
-        ghosts
+        self.weights.ghosts(depth)
     }
 
     /// What a weight was sampled to in this frame.
-    pub(super) fn value(&self, key: MotionKey) -> Option<f32> {
-        self.entries.get(&key)?.value_now
+    pub(super) fn value(&self, key: CellKey) -> Option<f32> {
+        self.weights.value(key)
+    }
+
+    /// Remember what stands next to the cell `key` and how many px it has,
+    /// for a ghost.
+    pub(super) fn remember_siblings(&mut self, key: CellKey, siblings: Siblings) {
+        self.weights.remember(key, siblings);
+    }
+
+    /// Whether the weights store holds the cell `key` already.
+    pub(super) fn holds_cell(&self, key: CellKey) -> bool {
+        self.weights.holds(key)
+    }
+
+    /// The cells the weights store holds, the ghosts included.
+    #[cfg(test)]
+    pub(super) fn cell_keys(&self) -> Vec<CellKey> {
+        self.weights.keys()
+    }
+
+    /// Forget every weight. For a wholesale change of the layout tree: the
+    /// new cells have nothing to move from.
+    pub(super) fn forget_weights(&mut self) {
+        self.weights.forget_all();
     }
 
     /// The presence of `key` toward `present`, for this frame. Asks for the
@@ -427,7 +329,7 @@ impl Motion {
         };
         let snap = self.snap;
         let fresh = !self.entries.contains_key(&key);
-        let entry = self.entries.entry(key).or_default();
+        let entry = self.entry_mut(key);
         entry.speed = speed;
         if snap {
             entry.frame = TransitionState::default();
@@ -479,7 +381,7 @@ impl Motion {
     /// (the slot's view and size, the label's text), so a new widget adds
     /// no field here.
     pub(super) fn remember<T: 'static>(&mut self, key: MotionKey, value: T) {
-        self.entries.entry(key).or_default().snapshot = Some(Box::new(value));
+        self.entry_mut(key).snapshot = Some(Box::new(value));
     }
 
     /// What was remembered for `key`: `None` when nothing was, or when it
@@ -502,12 +404,6 @@ impl Motion {
     }
 }
 
-/// How a slot's content behaves while its frame changes size: pinned, laid
-/// out once at the final size and clipped by the frame (ADR-0060).
-pub(super) const fn slot_policy() -> ResizePolicy {
-    ResizePolicy::Pinned
-}
-
 impl Workspace {
     /// Sample everything that opens and closes for this frame, before it is
     /// drawn: each thing is present while the layout model makes it
@@ -515,7 +411,10 @@ impl Workspace {
     /// never writes it.
     pub(super) fn motion_frame(&self, window: &mut Window, cx: &mut Context<Self>) {
         let specs = self.motion_specs(cx);
-        let weights = self.weight_specs();
+        let weights = {
+            let motion = self.motion.borrow();
+            self.weight_specs(|key| motion.holds_cell(key))
+        };
         let mut motion = self.motion.borrow_mut();
         let facts = motion.frame_facts(
             window.viewport_size(),
@@ -525,7 +424,7 @@ impl Workspace {
         );
         motion.begin_frame(facts);
         motion.sample_all(&specs, window, cx);
-        motion.sample_values(&weights, window, cx);
+        motion.sample_weights(&weights, window, cx);
     }
 
     /// The weight of every split child of the layout tree, each asked to be
@@ -533,7 +432,7 @@ impl Workspace {
     /// neighbor of a new column does not jump. A slot closed from the tree
     /// leaves a ghost instead (see the module doc). A zoomed layout draws
     /// one leaf and asks for nothing.
-    fn weight_specs(&self) -> Vec<ValueSpec> {
+    pub(super) fn weight_specs(&self, held: impl Fn(CellKey) -> bool) -> Vec<ValueSpec> {
         fn leaves(shape: &TreeShape, out: &mut Vec<Leaf>) {
             match shape {
                 TreeShape::Leaf(leaf) => out.push(*leaf),
@@ -544,18 +443,22 @@ impl Workspace {
                 }
             }
         }
-        fn walk(shape: &TreeShape, depth: u8, out: &mut Vec<ValueSpec>) {
+        fn walk(
+            shape: &TreeShape,
+            depth: u8,
+            held: &impl Fn(CellKey) -> bool,
+            out: &mut Vec<ValueSpec>,
+        ) {
             if let TreeShape::Split { children, .. } = shape {
                 for (weight, child) in children {
-                    let key = MotionKey::Weight(
-                        last_leaf(child),
-                        depth,
-                        matches!(child, TreeShape::Leaf(_)),
-                    );
+                    let key = CellKey::of(child, depth);
                     // A cell that gets wrapped changes its last leaf, so its
                     // key: it can start from the key of any leaf inside it.
+                    // A cell the store holds already starts from nothing.
                     let mut inside = Vec::new();
-                    leaves(child, &mut inside);
+                    if !held(key) {
+                        leaves(child, &mut inside);
+                    }
                     let is_leaf = matches!(child, TreeShape::Leaf(_));
                     let seed_from = inside
                         .into_iter()
@@ -564,9 +467,13 @@ impl Workspace {
                             // subtree cell it wraps. A leaf cell starts from
                             // a leaf cell only: one that stands where a
                             // subtree cell stood must not take its weight.
-                            let subtree =
-                                (!is_leaf).then_some(MotionKey::Weight(leaf, depth, false));
-                            std::iter::once(MotionKey::Weight(leaf, depth, true)).chain(subtree)
+                            let cell = |is_leaf| CellKey {
+                                leaf,
+                                depth,
+                                is_leaf,
+                            };
+                            let subtree = (!is_leaf).then_some(cell(false));
+                            std::iter::once(cell(true)).chain(subtree)
                         })
                         .filter(|seed| *seed != key)
                         .collect();
@@ -576,25 +483,31 @@ impl Workspace {
                         speed: Speed::Standard,
                         seed_from,
                     });
-                    walk(child, depth + 1, out);
+                    walk(child, depth + 1, held, out);
                 }
             }
         }
         let mut specs = Vec::new();
         if self.layout.zoomed().is_none() {
-            walk(&self.layout.shape(), 1, &mut specs);
+            walk(&self.layout.shape(), 1, &held, &mut specs);
         }
         specs
+    }
+
+    /// Whether the model wants the rail shown. The motion spec and the
+    /// drawing code both ask this, so they never disagree.
+    pub(super) fn rail_wanted(&self) -> bool {
+        !self.rail_hidden
     }
 
     /// What each thing is asked to do this frame, in the order it is
     /// sampled: a parent before what comes with it.
     fn motion_specs(&self, cx: &App) -> Vec<Spec> {
-        let strip = self.layout.region().tabs().len() >= 2 || self.dragged_group(cx).is_some();
+        let strip = self.strip_wanted(cx);
         let mut specs = vec![
             Spec {
                 key: MotionKey::Rail,
-                present: !self.rail_hidden,
+                present: self.rail_wanted(),
                 speed: Speed::Standard,
                 enter: Enter::AtRest,
             },

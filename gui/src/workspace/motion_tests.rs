@@ -16,7 +16,8 @@ use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::layout_tree::{RailPosition, SlotId};
 
 use super::LayoutStore;
-use super::motion::{Enter, Motion, MotionKey, Siblings, Spec, ValueSpec};
+use super::motion::{CellKey, Enter, Motion, MotionKey, Siblings, Spec, ValueSpec};
+use super::motion_test_support::slot_width;
 use super::tests::{Shell, gui, open_animated, open_shell_motion};
 use crate::motion::{SnapFacts, Speed};
 
@@ -174,16 +175,6 @@ pub(super) fn frame(cx: &mut TestAppContext, shell: &Shell) {
         .unwrap();
 }
 
-/// The width of the FILES slot's cell, `None` while it is not drawn.
-fn slot_width(cx: &mut TestAppContext, shell: &Shell) -> Option<f32> {
-    cx.update_window(shell.handle, |_, window, _| {
-        window
-            .try_find(slot_id(DrawerView::Files))
-            .map(|slot| f32::from(slot.bounds().size.width))
-    })
-    .unwrap()
-}
-
 fn content_width(cx: &mut TestAppContext, shell: &Shell) -> Option<f32> {
     cx.update_window(shell.handle, |_, window, _| {
         window
@@ -197,7 +188,7 @@ fn content_width(cx: &mut TestAppContext, shell: &Shell) -> Option<f32> {
 fn open_with_files(cx: &mut TestAppContext) -> (Shell, f32) {
     let shell = open_animated(cx);
     frame(cx, &shell);
-    let full = slot_width(cx, &shell).expect("the left slot shows FILES");
+    let full = slot_width(cx, &shell, DrawerView::Files).expect("the left slot shows FILES");
     (shell, full)
 }
 
@@ -207,7 +198,11 @@ fn close_left_and_rest(cx: &mut TestAppContext, shell: &Shell) {
     frame(cx, shell);
     wait(cx, 400);
     frame(cx, shell);
-    assert_eq!(slot_width(cx, shell), None, "the slot rests closed");
+    assert_eq!(
+        slot_width(cx, shell, DrawerView::Files),
+        None,
+        "the slot rests closed"
+    );
 }
 
 #[gpui_kit::test]
@@ -216,17 +211,17 @@ fn a_slot_opens_over_time_and_the_editor_follows(cx: &mut TestAppContext) {
     close_left_and_rest(cx, &shell);
     toggle_left(cx, &shell);
     frame(cx, &shell);
-    let start = slot_width(cx, &shell).expect("the opening slot is drawn");
+    let start = slot_width(cx, &shell, DrawerView::Files).expect("the opening slot is drawn");
     assert!(start < 1.0, "at 0 ms: {start}");
     // The frame moves in the first part of the motion and eases out: it is
     // well on its way, and not yet there, a little into it.
     wait(cx, 30);
     frame(cx, &shell);
-    let middle = slot_width(cx, &shell).unwrap();
+    let middle = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(middle > 1.0 && middle < full - 1.0, "at 30 ms: {middle}");
     wait(cx, 400);
     frame(cx, &shell);
-    let end = slot_width(cx, &shell).unwrap();
+    let end = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!((end - full).abs() < 0.5, "at rest: {end} against {full}");
 }
 
@@ -237,11 +232,12 @@ fn a_slot_closing_is_drawn_until_its_motion_ends(cx: &mut TestAppContext) {
     frame(cx, &shell);
     wait(cx, 100);
     frame(cx, &shell);
-    let middle = slot_width(cx, &shell).expect("the leaving slot is still drawn");
+    let middle =
+        slot_width(cx, &shell, DrawerView::Files).expect("the leaving slot is still drawn");
     assert!(middle > 0.0 && middle < full, "at 100 ms: {middle}");
     wait(cx, 400);
     frame(cx, &shell);
-    assert_eq!(slot_width(cx, &shell), None);
+    assert_eq!(slot_width(cx, &shell, DrawerView::Files), None);
 }
 
 #[gpui_kit::test]
@@ -266,7 +262,7 @@ fn the_model_changes_on_the_toggle_frame(cx: &mut TestAppContext) {
     });
     // Still drawn: the screen has not caught up, the model has.
     frame(cx, &shell);
-    assert!(slot_width(cx, &shell).is_some());
+    assert!(slot_width(cx, &shell, DrawerView::Files).is_some());
 }
 
 #[gpui_kit::test]
@@ -279,7 +275,7 @@ fn a_pinned_slot_keeps_its_content_width_while_it_opens(cx: &mut TestAppContext)
     frame(cx, &shell);
     let moving = content_width(cx, &shell).expect("the content is drawn");
     assert!(
-        slot_width(cx, &shell).unwrap() < full - 1.0,
+        slot_width(cx, &shell, DrawerView::Files).unwrap() < full - 1.0,
         "still opening"
     );
     wait(cx, 400);
@@ -334,7 +330,10 @@ fn a_leaving_slot_takes_no_click(cx: &mut TestAppContext) {
     // view, and the slot has already left the model.
     wait(cx, 40);
     frame(cx, &shell);
-    assert!(slot_width(cx, &shell).is_some(), "still leaving");
+    assert!(
+        slot_width(cx, &shell, DrawerView::Files).is_some(),
+        "still leaving"
+    );
     assert!(
         !move_chooser_opens(cx, &shell),
         "the leaving slot took a click"
@@ -372,12 +371,12 @@ fn a_reversed_toggle_does_not_jump(cx: &mut TestAppContext) {
     // The content fades first, then the frame closes: well into the close.
     wait(cx, 150);
     frame(cx, &shell);
-    let closing = slot_width(cx, &shell).expect("still closing");
+    let closing = slot_width(cx, &shell, DrawerView::Files).expect("still closing");
     assert!(closing < full - 1.0 && closing > 1.0, "{closing}");
     // Open it again on the very next frame: it grows from where it is.
     toggle_left(cx, &shell);
     frame(cx, &shell);
-    let reversed = slot_width(cx, &shell).unwrap();
+    let reversed = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (reversed - closing).abs() < 1.0,
         "{reversed} after {closing}"
@@ -385,7 +384,10 @@ fn a_reversed_toggle_does_not_jump(cx: &mut TestAppContext) {
     // And it keeps opening from there.
     wait(cx, 20);
     frame(cx, &shell);
-    assert!(slot_width(cx, &shell).unwrap() > reversed, "it grows");
+    assert!(
+        slot_width(cx, &shell, DrawerView::Files).unwrap() > reversed,
+        "it grows"
+    );
 }
 
 #[gpui_kit::test]
@@ -400,7 +402,11 @@ fn a_layout_is_drawn_in_place_on_the_first_frame(cx: &mut TestAppContext) {
          { weight = 0.8, editor = true },\n]\n");
     let shell = open_shell_motion(cx, 1000., &hidden, "", false, LayoutStore::Off, false);
     frame(cx, &shell);
-    assert_eq!(slot_width(cx, &shell), None, "a hidden slot is not drawn");
+    assert_eq!(
+        slot_width(cx, &shell, DrawerView::Files),
+        None,
+        "a hidden slot is not drawn"
+    );
 }
 
 #[gpui_kit::test]
@@ -412,15 +418,15 @@ fn a_window_resize_during_a_motion_ends_it(cx: &mut TestAppContext) {
     wait(cx, 30);
     frame(cx, &shell);
     assert!(
-        slot_width(cx, &shell).unwrap() < full - 1.0,
+        slot_width(cx, &shell, DrawerView::Files).unwrap() < full - 1.0,
         "still opening"
     );
     resize(cx, &shell, 900.);
     frame(cx, &shell);
-    let after = slot_width(cx, &shell).unwrap();
+    let after = slot_width(cx, &shell, DrawerView::Files).unwrap();
     wait(cx, 400);
     frame(cx, &shell);
-    let rest = slot_width(cx, &shell).unwrap();
+    let rest = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         (after - rest).abs() < 0.5,
         "{after} after the resize, {rest} at rest"
@@ -465,7 +471,7 @@ fn a_narrow_window_shows_no_motion_for_a_collapsed_slot(cx: &mut TestAppContext)
         wait(cx, millis);
         frame(cx, &shell);
         assert_eq!(
-            slot_width(cx, &shell),
+            slot_width(cx, &shell, DrawerView::Files),
             None,
             "a collapsed slot at {millis} ms"
         );
@@ -515,18 +521,18 @@ fn a_closing_frame_eases_out_and_does_not_slam_shut(cx: &mut TestAppContext) {
     // The content fades for the first 80 ms and the frame stays whole.
     wait(cx, 40);
     frame(cx, &shell);
-    assert!((slot_width(cx, &shell).unwrap() - full).abs() < 0.5);
+    assert!((slot_width(cx, &shell, DrawerView::Files).unwrap() - full).abs() < 0.5);
     // Then the frame closes: fast at first, soft at the end.
     wait(cx, 60);
     frame(cx, &shell);
-    let at_100 = slot_width(cx, &shell).unwrap();
+    let at_100 = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(
         at_100 > 0.4 * full && at_100 < 0.8 * full,
         "{at_100} at 100 ms"
     );
     wait(cx, 40);
     frame(cx, &shell);
-    let at_140 = slot_width(cx, &shell).unwrap();
+    let at_140 = slot_width(cx, &shell, DrawerView::Files).unwrap();
     assert!(at_140 < 0.3 * full, "{at_140} at 140 ms: nearly closed");
 }
 
@@ -760,14 +766,14 @@ impl Render for SpecProbe {
     }
 }
 
-struct SpecRig {
+pub(super) struct SpecRig {
     handle: AnyWindowHandle,
-    motion: Rc<RefCell<Motion>>,
+    pub(super) motion: Rc<RefCell<Motion>>,
     specs: Rc<RefCell<Vec<Spec>>>,
 }
 
 impl SpecRig {
-    fn new(cx: &mut TestAppContext) -> SpecRig {
+    pub(super) fn new(cx: &mut TestAppContext) -> SpecRig {
         let motion = Rc::new(RefCell::new(Motion::default()));
         let specs = Rc::new(RefCell::new(Vec::new()));
         let probe = SpecProbe {
@@ -787,14 +793,14 @@ impl SpecRig {
     }
 
     /// Draw one frame sampling `specs`.
-    fn frame(&self, cx: &mut TestAppContext, specs: Vec<Spec>) {
+    pub(super) fn frame(&self, cx: &mut TestAppContext, specs: Vec<Spec>) {
         *self.specs.borrow_mut() = specs;
         cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
     }
 }
 
-fn spec(key: MotionKey, present: bool, speed: Speed, enter: Enter) -> Spec {
+pub(super) fn spec(key: MotionKey, present: bool, speed: Speed, enter: Enter) -> Spec {
     Spec {
         key,
         present,
@@ -921,7 +927,7 @@ impl Render for ValueProbe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.motion
             .borrow_mut()
-            .sample_values(&self.values.borrow(), window, cx);
+            .sample_weights(&self.values.borrow(), window, cx);
         div()
     }
 }
@@ -959,12 +965,12 @@ impl ValueRig {
             .unwrap();
     }
 
-    fn value(&self, key: MotionKey) -> Option<f32> {
+    fn value(&self, key: CellKey) -> Option<f32> {
         self.motion.borrow().value(key)
     }
 }
 
-fn weight(key: MotionKey, target: f32) -> ValueSpec {
+fn weight(key: CellKey, target: f32) -> ValueSpec {
     ValueSpec {
         key,
         target,
@@ -975,7 +981,11 @@ fn weight(key: MotionKey, target: f32) -> ValueSpec {
 
 #[gpui_kit::test]
 fn a_weight_adopts_its_first_target(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     assert_eq!(rig.value(key), Some(0.6));
@@ -983,7 +993,11 @@ fn a_weight_adopts_its_first_target(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_weight_moves_over_the_standard_duration(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     rig.frame(cx, vec![weight(key, 0.3)]);
@@ -998,7 +1012,11 @@ fn a_weight_moves_over_the_standard_duration(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_snapping_frame_adopts_every_weight(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     rig.motion.borrow_mut().begin_frame(SnapFacts {
@@ -1011,18 +1029,30 @@ fn a_snapping_frame_adopts_every_weight(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn an_unspecified_weight_is_dropped(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
-    assert!(rig.motion.borrow().keys().contains(&key));
+    assert!(rig.motion.borrow().cell_keys().contains(&key));
     rig.frame(cx, vec![]);
-    assert!(rig.motion.borrow().keys().is_empty());
+    assert!(rig.motion.borrow().cell_keys().is_empty());
 }
 
 #[gpui_kit::test]
 fn a_subtree_and_its_last_leaf_have_separate_weights(cx: &mut TestAppContext) {
-    let outer = MotionKey::Weight(Leaf::Editor, 1, true);
-    let inner = MotionKey::Weight(Leaf::Editor, 2, true);
+    let outer = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let inner = CellKey {
+        leaf: Leaf::Editor,
+        depth: 2,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(outer, 0.2), weight(inner, 0.7)]);
     assert_eq!(rig.value(outer), Some(0.2));
@@ -1032,14 +1062,18 @@ fn a_subtree_and_its_last_leaf_have_separate_weights(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn weights_survive_the_sampling_of_things_that_open_and_close(cx: &mut TestAppContext) {
     // `sample_all` prunes what it does not own; the weights are not its own.
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     cx.update_window(rig.handle, |_, window, cx| {
         rig.motion.borrow_mut().sample_all(&[], window, cx)
     })
     .unwrap();
-    assert!(rig.motion.borrow().keys().contains(&key));
+    assert!(rig.motion.borrow().cell_keys().contains(&key));
 }
 
 #[gpui_kit::test]
@@ -1069,8 +1103,16 @@ fn a_lingering_key_gets_its_leaving_order(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_new_weight_key_starts_from_its_seed(cx: &mut TestAppContext) {
-    let old = MotionKey::Weight(Leaf::Editor, 1, true);
-    let new = MotionKey::Weight(Leaf::Editor, 2, true);
+    let old = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let new = CellKey {
+        leaf: Leaf::Editor,
+        depth: 2,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(old, 0.2)]);
     // The cell is wrapped: its new key starts where the old one was.
@@ -1104,6 +1146,53 @@ fn a_pending_snap_is_consumed_by_a_frame_that_snaps_anyway(cx: &mut TestAppConte
     assert_eq!(rig.frame(cx, false), 1.0, "starts a move, not a snap");
 }
 
+#[gpui_kit::test]
+fn a_weight_and_a_presence_live_in_two_stores(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let slot = MotionKey::Slot(left_slot(&shell, cx));
+    let cell = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(cell, 0.6)]);
+    cx.update_window(rig.handle, |_, window, cx| {
+        rig.motion.borrow_mut().sample_all(
+            &[spec(slot, true, Speed::Standard, Enter::AtRest)],
+            window,
+            cx,
+        )
+    })
+    .unwrap();
+    assert_eq!(rig.motion.borrow().keys(), vec![slot], "presence only");
+    assert_eq!(rig.motion.borrow().cell_keys(), vec![cell], "weights only");
+}
+
+#[gpui_kit::test]
+fn forget_weights_drops_every_weight_and_no_presence(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let slot = MotionKey::Slot(left_slot(&shell, cx));
+    let cell = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(cell, 0.6)]);
+    cx.update_window(rig.handle, |_, window, cx| {
+        rig.motion.borrow_mut().sample_all(
+            &[spec(slot, true, Speed::Standard, Enter::AtRest)],
+            window,
+            cx,
+        )
+    })
+    .unwrap();
+    rig.motion.borrow_mut().forget_weights();
+    assert!(rig.motion.borrow().cell_keys().is_empty());
+    assert_eq!(rig.motion.borrow().keys(), vec![slot]);
+}
+
 // ---- Ghosts: the weight a removed cell leaves behind (slot removal).
 
 fn leaf_siblings() -> Siblings {
@@ -1117,11 +1206,35 @@ fn leaf_siblings() -> Siblings {
 }
 
 #[gpui_kit::test]
-fn a_removed_leaf_weight_becomes_a_ghost_that_decays(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+fn a_ghost_keeps_the_siblings_that_were_remembered(cx: &mut TestAppContext) {
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.3)]);
-    rig.motion.borrow_mut().remember(key, leaf_siblings());
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(key, leaf_siblings());
+    rig.frame(cx, vec![]);
+    let ghosts = rig.motion.borrow().ghosts(1);
+    assert_eq!(ghosts.len(), 1);
+    assert_eq!(ghosts[0].siblings, leaf_siblings());
+}
+
+#[gpui_kit::test]
+fn a_removed_leaf_weight_becomes_a_ghost_that_decays(cx: &mut TestAppContext) {
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(key, leaf_siblings());
     // The cell is removed from the tree: its weight is no longer asked for.
     rig.frame(cx, vec![]);
     assert_eq!(rig.value(key), Some(0.3), "the ghost starts where it was");
@@ -1132,16 +1245,23 @@ fn a_removed_leaf_weight_becomes_a_ghost_that_decays(cx: &mut TestAppContext) {
     assert!(middle > 0.0 && middle < 0.3, "it decays: {middle}");
     wait(cx, 300);
     rig.frame(cx, vec![]);
-    assert!(rig.motion.borrow().keys().is_empty(), "and is gone at 0");
+    assert!(
+        rig.motion.borrow().cell_keys().is_empty(),
+        "and is gone at 0"
+    );
 }
 
 #[gpui_kit::test]
 fn a_removed_subtree_cell_is_not_a_ghost(cx: &mut TestAppContext) {
     // A cell that collapsed into another has no parent split to be drawn in.
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.3)]);
-    rig.motion.borrow_mut().remember(
+    rig.motion.borrow_mut().remember_siblings(
         key,
         Siblings {
             leaf: false,
@@ -1149,17 +1269,27 @@ fn a_removed_subtree_cell_is_not_a_ghost(cx: &mut TestAppContext) {
         },
     );
     rig.frame(cx, vec![]);
-    assert!(rig.motion.borrow().keys().is_empty());
+    assert!(rig.motion.borrow().cell_keys().is_empty());
 }
 
 #[gpui_kit::test]
 fn a_weight_used_as_a_seed_is_not_a_ghost(cx: &mut TestAppContext) {
     // A wrapped cell takes its old weight over: counting it twice would jump.
-    let old = MotionKey::Weight(Leaf::Editor, 1, true);
-    let new = MotionKey::Weight(Leaf::Editor, 2, true);
+    let old = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let new = CellKey {
+        leaf: Leaf::Editor,
+        depth: 2,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(old, 0.2)]);
-    rig.motion.borrow_mut().remember(old, leaf_siblings());
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(old, leaf_siblings());
     rig.frame(
         cx,
         vec![ValueSpec {
@@ -1173,26 +1303,44 @@ fn a_weight_used_as_a_seed_is_not_a_ghost(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_snapping_frame_drops_ghosts_at_once(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let key = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.3)]);
-    rig.motion.borrow_mut().remember(key, leaf_siblings());
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(key, leaf_siblings());
     rig.motion.borrow_mut().begin_frame(SnapFacts {
         viewport_changed: true,
         ..SnapFacts::default()
     });
     rig.frame(cx, vec![]);
-    assert!(rig.motion.borrow().keys().is_empty());
+    assert!(rig.motion.borrow().cell_keys().is_empty());
 }
 
 #[gpui_kit::test]
 fn ghosts_are_listed_by_depth(cx: &mut TestAppContext) {
-    let top = MotionKey::Weight(Leaf::Editor, 1, true);
-    let nested = MotionKey::Weight(Leaf::Editor, 2, true);
+    let top = CellKey {
+        leaf: Leaf::Editor,
+        depth: 1,
+        is_leaf: true,
+    };
+    let nested = CellKey {
+        leaf: Leaf::Editor,
+        depth: 2,
+        is_leaf: true,
+    };
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(top, 0.3), weight(nested, 0.6)]);
-    rig.motion.borrow_mut().remember(top, leaf_siblings());
-    rig.motion.borrow_mut().remember(nested, leaf_siblings());
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(top, leaf_siblings());
+    rig.motion
+        .borrow_mut()
+        .remember_siblings(nested, leaf_siblings());
     rig.frame(cx, vec![]);
     let at_one = rig.motion.borrow().ghosts(1);
     let at_two = rig.motion.borrow().ghosts(2);
@@ -1205,4 +1353,24 @@ fn ghosts_are_listed_by_depth(cx: &mut TestAppContext) {
     );
     assert_eq!(at_two.len(), 1);
     assert_eq!(at_two[0].key, nested);
+}
+
+#[gpui_kit::test]
+fn a_cell_the_store_holds_builds_no_seed_list(cx: &mut TestAppContext) {
+    // FILES over FIND beside the editor: the stack is a subtree cell, which
+    // can start from the weights of the leaves inside it. Once the store
+    // holds a cell, nothing can start from anything, so no list is built.
+    let shell = open_stacked(cx);
+    let (cold, held) = cx.read(|cx| {
+        let w = shell.workspace.read(cx);
+        (w.weight_specs(|_| false), w.weight_specs(|_| true))
+    });
+    assert!(
+        cold.iter().any(|spec| !spec.seed_from.is_empty()),
+        "a new subtree cell lists the keys it can start from"
+    );
+    assert!(
+        held.iter().all(|spec| spec.seed_from.is_empty()),
+        "a held cell lists none"
+    );
 }
