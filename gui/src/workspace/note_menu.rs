@@ -80,7 +80,7 @@ impl MenuItem {
             MenuItem::SplitRight => "Split right",
             MenuItem::SplitDown => "Split down",
             MenuItem::NewTab => "New tab",
-            MenuItem::CloseGroup => "Close group",
+            MenuItem::CloseGroup => "Close pane",
             MenuItem::CloseTab => "Close tab",
         }
     }

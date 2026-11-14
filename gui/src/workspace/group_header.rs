@@ -211,8 +211,8 @@ impl Workspace {
         let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
         let close = super::chrome::close_button(
             group_element(GROUP_CLOSE_ID, at),
-            "Close group",
-            super::chrome::tooltip_with_chord("Close group", &ActionShortcuts::CloseSlot, cx),
+            "Close pane",
+            super::chrome::tooltip_with_chord("Close pane", &ActionShortcuts::CloseSlot, cx),
             // The header's own click (activate the group) does not follow.
             cx.listener(move |this, _: &ClickEvent, _, cx| this.close_editor_group(group, cx)),
             cx,

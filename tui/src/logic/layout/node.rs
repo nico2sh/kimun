@@ -291,6 +291,49 @@ impl<L: Clone + PartialEq> Node<L> {
         }
     }
 
+    /// Add `new` at the outer edge of the whole tree along `axis`: after
+    /// the last child (before the first when `before`). A root split along
+    /// `axis` takes it as one more child, with the average child weight;
+    /// any other root becomes a two-way split with equal halves. The new
+    /// leaf spans the whole extent across `axis`.
+    pub(crate) fn add_at_edge(&mut self, axis: Axis, new: L, before: bool) {
+        if let Kind::Split {
+            axis: own,
+            children,
+        } = &mut self.kind
+            && *own == axis
+        {
+            let weight = children.iter().map(|c| c.weight).sum::<f64>() / children.len() as f64;
+            let child = Child {
+                weight,
+                node: Node::leaf(new),
+            };
+            if before {
+                children.insert(0, child);
+            } else {
+                children.push(child);
+            }
+            return;
+        }
+        // The empty split only holds the place while the old root is taken.
+        let old = Node {
+            kind: std::mem::replace(
+                &mut self.kind,
+                Kind::Split {
+                    axis,
+                    children: Vec::new(),
+                },
+            ),
+        };
+        let fresh = Node::leaf(new);
+        let pair = if before {
+            vec![(0.5, fresh), (0.5, old)]
+        } else {
+            vec![(0.5, old), (0.5, fresh)]
+        };
+        *self = Node::split(axis, pair);
+    }
+
     /// Put `b` where `a` is and `a` where `b` is, wherever either sits in
     /// this tree; every split and weight stays. A leaf that is absent is
     /// simply not found: with one of the two here, it is replaced by the

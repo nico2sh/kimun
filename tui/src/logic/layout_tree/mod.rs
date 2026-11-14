@@ -26,7 +26,7 @@ pub(crate) use crate::logic::layout::node::Node;
 pub use crate::logic::layout::{Axis, Dir, GroupId, Side, UnitRect};
 
 /// Tolerance for comparing unit-square coordinates.
-const EPS: f64 = 1e-4;
+pub(crate) const EPS: f64 = 1e-4;
 
 /// Length of the overlap of `[a0, a1]` and `[b0, b1]` (0 when disjoint).
 fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
@@ -47,7 +47,7 @@ fn within(outer: UnitRect, inner: UnitRect) -> UnitRect {
 /// `from`. Candidates lie wholly on that side and overlap `cur` across
 /// the axis. The nearest wins; ties go to the largest overlap, then the
 /// `remembered` one, then the top-left one.
-fn nearest<T: Copy + PartialEq>(
+pub(crate) fn nearest<T: Copy + PartialEq>(
     regions: &[(T, UnitRect)],
     from: T,
     cur: UnitRect,

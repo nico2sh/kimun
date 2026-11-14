@@ -913,7 +913,10 @@ fn layout_tree_defaults_hold_unique_chords() {
                 .map(|b| &b.action)
                 .collect();
             assert_eq!(holders, [action], "{p:?} {written}");
-            let everywhere = matches!(action, A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot);
+            let everywhere = matches!(
+                action,
+                A::SplitSlotRight | A::SplitSlotDown | A::CloseSlot | A::MoveViewToNeighbour(_)
+            );
             for panel in PANELS {
                 let want = (everywhere || panel != Panel::Editor).then_some(action);
                 assert_eq!(
@@ -1189,10 +1192,19 @@ fn linux_windows_resolution_table() {
             ),
             // Moving views: the rail's and the slots', never the editor's
             // (it keeps Alt+Shift+Arrow).
-            ("alt+shift+left", [None, None, to_left]),
-            ("alt+shift+right", [None, None, to_right]),
-            ("alt+shift+up", [None, None, view_up]),
-            ("alt+shift+down", [None, None, view_down]),
+            (
+                "alt+shift+left",
+                [to_left.clone(), to_left.clone(), to_left],
+            ),
+            (
+                "alt+shift+right",
+                [to_right.clone(), to_right.clone(), to_right],
+            ),
+            ("alt+shift+up", [view_up.clone(), view_up.clone(), view_up]),
+            (
+                "alt+shift+down",
+                [view_down.clone(), view_down.clone(), view_down],
+            ),
             // Split and close act on the focused leaf: a slot, or the
             // editor's active group (ADR-0058).
             (
@@ -1273,10 +1285,22 @@ fn macos_resolution_table() {
                 "ctrl+shift+tab",
                 [prev_tab.clone(), prev_tab.clone(), prev_tab],
             ),
-            ("cmd+alt+shift+left", [None, None, to_left]),
-            ("cmd+alt+shift+right", [None, None, to_right]),
-            ("cmd+alt+shift+up", [None, None, view_up]),
-            ("cmd+alt+shift+down", [None, None, view_down]),
+            (
+                "cmd+alt+shift+left",
+                [to_left.clone(), to_left.clone(), to_left],
+            ),
+            (
+                "cmd+alt+shift+right",
+                [to_right.clone(), to_right.clone(), to_right],
+            ),
+            (
+                "cmd+alt+shift+up",
+                [view_up.clone(), view_up.clone(), view_up],
+            ),
+            (
+                "cmd+alt+shift+down",
+                [view_down.clone(), view_down.clone(), view_down],
+            ),
             // Split and close act on the focused leaf: a slot, or the
             // editor's active group (ADR-0058).
             (
