@@ -139,12 +139,14 @@ enum CloseRefusal {
 }
 
 /// What a tab label remembers of itself to be drawn while it leaves, after
-/// the region dropped the tab (ADR-0060): its text and its place in the
-/// strip.
+/// the region dropped the tab (ADR-0060): its text, and the tabs that stood
+/// before and after it in the drawn strip. They place it among the rest even
+/// when other labels leave around it, which an index cannot.
 #[derive(Clone)]
 struct LabelSnapshot {
     label: SharedString,
-    at: usize,
+    prev: Option<TabId>,
+    next: Option<TabId>,
 }
 
 /// The element id of the label at `index` (its position in the strip).
@@ -563,15 +565,19 @@ impl Workspace {
         {
             self.tab_scroll.scroll_to_item(at);
         }
+        let order = drawn.clone();
         let labels: Vec<AnyElement> = drawn
             .into_iter()
             .enumerate()
             .map(|(at, (tab, gone))| {
                 let current = gone.is_none() && tab == shown;
-                // Where it stands among the region's tabs, for what a
-                // label remembers of its place (a leaving label is not one).
-                let region_at = tabs.iter().position(|t| *t == tab).unwrap_or(at);
-                self.render_tab(at, region_at, tab, current, gone, cx)
+                // The tabs on either side of it as drawn, for what a label
+                // remembers of its place (a leaving label is not remembered).
+                let neighbours = (
+                    at.checked_sub(1).map(|before| order[before].0),
+                    order.get(at + 1).map(|(next, _)| *next),
+                );
+                self.render_tab(at, neighbours, tab, current, gone, cx)
             })
             .collect();
         let theme = theme::current(cx);
@@ -677,7 +683,7 @@ impl Workspace {
             return order;
         }
         let motion = self.motion.borrow();
-        let mut gone: Vec<(usize, TabId, SharedString)> = motion
+        let mut gone: Vec<(TabId, LabelSnapshot)> = motion
             .keys()
             .into_iter()
             .filter_map(|key| match key {
@@ -688,17 +694,25 @@ impl Workspace {
             .filter(|tab| motion.presence(MotionKey::Tab(*tab)).frame > 0.0)
             .filter_map(|tab| {
                 let snapshot = motion.recall::<LabelSnapshot>(MotionKey::Tab(tab))?;
-                Some((snapshot.at, tab, snapshot.label))
+                Some((tab, snapshot))
             })
             .collect();
-        // By the place each had. Two that shared a place are inserted with
-        // the later one first, so the one that left earlier ends up first.
-        gone.sort_by_key(|(at, tab, _)| {
-            let left = motion.left_order(MotionKey::Tab(*tab));
-            (*at, std::cmp::Reverse(left))
-        });
-        for (at, tab, label) in gone {
-            order.insert(at.min(order.len()), (tab, Some(label)));
+        // The one that left first is placed first: a label that left later
+        // can then stand after it.
+        gone.sort_by_key(|(tab, _)| motion.left_order(MotionKey::Tab(*tab)));
+        for (tab, snapshot) in gone {
+            let position = |id: Option<TabId>| {
+                id.and_then(|id| order.iter().position(|(shown, _)| *shown == id))
+            };
+            // After the tab that stood before it, else before the one that
+            // stood after it, else at the start if nothing stood before it.
+            let at = match (position(snapshot.prev), position(snapshot.next)) {
+                (Some(before), _) => before + 1,
+                (None, Some(after)) => after,
+                (None, None) if snapshot.prev.is_none() => 0,
+                (None, None) => order.len(),
+            };
+            order.insert(at, (tab, Some(snapshot.label)));
         }
         order
     }
@@ -742,7 +756,7 @@ impl Workspace {
     fn render_tab(
         &self,
         at: usize,
-        region_at: usize,
+        neighbours: (Option<TabId>, Option<TabId>),
         tab: TabId,
         shown: bool,
         gone: Option<SharedString>,
@@ -757,7 +771,8 @@ impl Workspace {
                 MotionKey::Tab(tab),
                 LabelSnapshot {
                     label: label.clone(),
-                    at: region_at,
+                    prev: neighbours.0,
+                    next: neighbours.1,
                 },
             );
         }

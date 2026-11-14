@@ -349,8 +349,14 @@ fn a_moved_view_hidden_while_the_old_frame_closes_is_drawn_once(cx: &mut TestApp
     .unwrap();
     frame(cx, &shell);
     let (slots, contents) = count(cx, &shell, DrawerView::Files);
-    assert!(slots <= 1, "{slots} slot elements for FILES");
-    assert!(contents <= 1, "{contents} content elements for FILES");
+    assert_eq!(slots, 1, "one slot element for FILES");
+    assert_eq!(contents, 1, "one content element for FILES");
+    let gone = cx
+        .update_window(shell.handle, |_, window, _| {
+            window.try_find(slot_gone_id(DrawerView::Files)).is_some()
+        })
+        .unwrap();
+    assert!(gone, "and the old frame is blank, closing");
 }
 
 #[gpui_kit::test]
@@ -526,15 +532,31 @@ fn a_failed_placement_does_not_cut_a_motion(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_view_moved_down_into_a_new_slot_animates(cx: &mut TestAppContext) {
+fn a_view_moved_down_past_a_hidden_slot_animates_and_cuts_nothing(cx: &mut TestAppContext) {
     use super::LayoutStore;
     use super::tests::{gui, open_shell_motion};
-    // FILES and FIND share the left slot, so FILES can go to a new slot below.
+    use kimun_notes::logic::layout::Side;
+    // The left slot holds FILES and FIND, and a hidden slot lies below it:
+    // moving FILES down tries that slot first, is rolled back, and then goes
+    // to a new slot beside it. OUTLINE is closing when that happens.
     let layout = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
-         { weight = 0.2, views = [\"files\", \"find\"], shown = \"files\" },\n\
-         { weight = 0.8, editor = true },\n]\n");
-    let shell = open_shell_motion(cx, 1000., &layout, "", false, LayoutStore::Off, false);
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\", \"find\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"links\"] },\n] },\n\
+         { weight = 0.6, editor = true },\n\
+         { weight = 0.2, views = [\"outline\"], shown = \"outline\" },\n]\n");
+    let shell = open_shell_motion(cx, 1200., &layout, "", false, LayoutStore::Off, false);
     frame(cx, &shell);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.toggle_side(Side::Right, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    wait(cx, 100);
+    frame(cx, &shell);
+    let during = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
     let slot = files_slot(cx, &shell);
     let moved = cx
         .update_window(shell.handle, |_, window, cx| {
@@ -544,8 +566,14 @@ fn a_view_moved_down_into_a_new_slot_animates(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
-    assert!(moved, "the view went to a new slot below");
+    assert!(moved, "the view went to a new slot");
     frame(cx, &shell);
+    let after =
+        width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing after the move");
+    assert!(
+        (after - during).abs() < 1.0,
+        "the rollback cut the motion: {during} to {after}"
+    );
     let height = |cx: &mut TestAppContext| {
         cx.update_window(shell.handle, |_, window, _| {
             window
@@ -559,6 +587,36 @@ fn a_view_moved_down_into_a_new_slot_animates(cx: &mut TestAppContext) {
     frame(cx, &shell);
     let rest = height(cx).expect("and stays");
     assert!(start < rest - 5.0, "it opens over time: {start} to {rest}");
+}
+
+#[gpui_kit::test]
+fn a_drop_zone_probe_does_not_cut_a_motion(cx: &mut TestAppContext) {
+    use kimun_notes::logic::layout::Side;
+    let shell = open_files_and_outline(cx);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.toggle_side(Side::Right, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    wait(cx, 100);
+    frame(cx, &shell);
+    let during = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is closing");
+    let slot = files_slot(cx, &shell);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell.workspace.update(cx, |w, _| {
+            // The question a view drag asks of each zone: would it fit?
+            w.new_slot_fits(DrawerView::Find, Leaf::Slot(slot), Dir::Right, window);
+        })
+    })
+    .unwrap();
+    frame(cx, &shell);
+    let after = width(cx, &shell, DrawerView::Outline).expect("OUTLINE is still closing");
+    assert!(
+        (after - during).abs() < 1.0,
+        "the probe cut the motion: {during} to {after}"
+    );
 }
 
 // ---- One clock for a new column and its neighbor.
