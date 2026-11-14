@@ -155,13 +155,10 @@ fn editor_width(cx: &mut TestAppContext, shell: &Shell) -> f32 {
     .unwrap()
 }
 
-/// Closing a slot is instant in this slice: its room would have to stay
-/// reserved while its neighbors grow into it. This pins that, so a future
-/// change to it is a choice.
-#[gpui_kit::test]
-fn closing_a_slot_is_drawn_at_once(cx: &mut TestAppContext) {
-    let shell = open_files_and_outline(cx);
-    let slot = files_slot(cx, &shell);
+/// A second column beside FILES, at rest: FILES, then FIND, the editor and
+/// OUTLINE. Returns the slot of FIND.
+fn two_columns(cx: &mut TestAppContext, shell: &Shell) -> kimun_notes::logic::layout_tree::SlotId {
+    let slot = files_slot(cx, shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell.workspace.update(cx, |w, cx| {
             w.place_new_slot(DrawerView::Find, Leaf::Slot(slot), Dir::Right, window, cx)
@@ -169,10 +166,20 @@ fn closing_a_slot_is_drawn_at_once(cx: &mut TestAppContext) {
         })
     })
     .unwrap();
-    frame(cx, &shell);
+    frame(cx, shell);
     wait(cx, 400);
-    frame(cx, &shell);
-    let find = cx.read(|cx| shell.workspace.read(cx).layout.slots()[1]);
+    frame(cx, shell);
+    cx.read(|cx| shell.workspace.read(cx).layout.slots()[1])
+}
+
+#[gpui_kit::test]
+fn closing_a_slot_gives_its_room_back_over_time(cx: &mut TestAppContext) {
+    // FILES, FIND, the editor, OUTLINE. FILES is held at its minimum, so the
+    // room of FIND goes to the editor and OUTLINE: the editor grows into it.
+    let shell = open_files_and_outline(cx);
+    let find = two_columns(cx, &shell);
+    let files = width(cx, &shell, DrawerView::Files).unwrap();
+    let before = editor_width(cx, &shell);
     cx.update_window(shell.handle, |_, window, cx| {
         shell
             .workspace
@@ -183,16 +190,28 @@ fn closing_a_slot_is_drawn_at_once(cx: &mut TestAppContext) {
     assert_eq!(
         width(cx, &shell, DrawerView::Find),
         None,
-        "the closed slot is gone"
+        "the closed slot is not drawn"
     );
-    let at_once = editor_width(cx, &shell);
+    let first = editor_width(cx, &shell);
+    assert!(
+        (first - before).abs() < 1.0,
+        "the editor starts where it was: {before} to {first}"
+    );
+    wait(cx, 30);
+    frame(cx, &shell);
+    let middle = editor_width(cx, &shell);
     wait(cx, 400);
     frame(cx, &shell);
-    let rest = editor_width(cx, &shell);
+    let after = editor_width(cx, &shell);
     assert!(
-        (at_once - rest).abs() < 1.0,
-        "{at_once} at once, {rest} at rest"
+        after > before + 1.0,
+        "the editor takes the room: {before} to {after}"
     );
+    assert!(
+        middle > before + 0.5 && middle < after - 0.5,
+        "at 30 ms: {middle} between {before} and {after}"
+    );
+    assert_eq!(width(cx, &shell, DrawerView::Files), Some(files));
 }
 
 #[gpui_kit::test]
@@ -688,4 +707,320 @@ fn the_editor_edge_does_not_dip_in_a_wide_window(cx: &mut TestAppContext) {
     // A window wide enough that no minimum binds: only the clocks count.
     let (start, widths, end) = editor_widths_while_a_column_opens(cx, 1800.);
     assert_no_dip(start, &widths, end);
+}
+
+// ---- Ghosts: the room of a removed slot is given back over time.
+
+fn height_of(cx: &mut TestAppContext, shell: &Shell, view: DrawerView) -> Option<f32> {
+    cx.update_window(shell.handle, |_, window, _| {
+        window
+            .try_find(slot_id(view))
+            .map(|slot| f32::from(slot.bounds().size.height))
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn closing_a_stacked_slot_gives_its_height_back_over_time(cx: &mut TestAppContext) {
+    use super::LayoutStore;
+    use super::tests::{gui, open_shell_motion};
+    // FILES, FIND and LINKS stacked on the left: closing FIND leaves a split
+    // of two, which survives, so FIND's room can be given back over time.
+    let layout = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.2, split = \"vertical\", children = [\n\
+           { weight = 0.34, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.33, views = [\"find\"], shown = \"find\" },\n\
+           { weight = 0.33, views = [\"links\"], shown = \"links\" },\n] },\n\
+         { weight = 0.8, editor = true },\n]\n");
+    let shell = open_shell_motion(cx, 1200., &layout, "", false, LayoutStore::Off, false);
+    frame(cx, &shell);
+    let before = height_of(cx, &shell, DrawerView::Files).unwrap();
+    let find = cx.read(|cx| shell.workspace.read(cx).layout.slots()[1]);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(find, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    assert_eq!(
+        height_of(cx, &shell, DrawerView::Find),
+        None,
+        "FIND is not drawn"
+    );
+    let first = height_of(cx, &shell, DrawerView::Files).unwrap();
+    assert!(
+        (first - before).abs() < 1.5,
+        "FILES starts where it was: {before} to {first}"
+    );
+    wait(cx, 30);
+    frame(cx, &shell);
+    let middle = height_of(cx, &shell, DrawerView::Files).unwrap();
+    wait(cx, 400);
+    frame(cx, &shell);
+    let after = height_of(cx, &shell, DrawerView::Files).unwrap();
+    assert!(
+        after > before + 1.0,
+        "FILES takes the room: {before} to {after}"
+    );
+    assert!(
+        middle > before + 0.5 && middle < after - 0.5,
+        "at 30 ms: {middle} between {before} and {after}"
+    );
+}
+
+#[gpui_kit::test]
+fn closing_a_slot_under_a_row_grows_the_row_down_without_moving_its_width(cx: &mut TestAppContext) {
+    // FILES and FIND side by side over LINKS: closing LINKS leaves the row
+    // alone in the column. The row grows down, and its two cells keep their
+    // width on every frame (no stale ghost of FILES or FIND beside them).
+    let [before, first, middle, rest] = close_and_watch(
+        cx,
+        "[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.5, split = \"vertical\", children = [\n\
+           { weight = 0.7, split = \"horizontal\", children = [\n\
+             { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+             { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+           { weight = 0.3, views = [\"links\"], shown = \"links\" },\n] },\n\
+         { weight = 0.5, editor = true },\n]\n",
+        DrawerView::Links,
+        DrawerView::Files,
+    );
+    assert!(
+        (first.1 - before.1).abs() < 1.0,
+        "starts where it was: {before:?} {first:?}"
+    );
+    assert!(
+        rest.1 > before.1 + 1.0,
+        "grows down: {before:?} to {rest:?}"
+    );
+    assert!(
+        middle.1 > before.1 + 0.5 && middle.1 < rest.1 - 0.5,
+        "at 30 ms: {middle:?} between {before:?} and {rest:?}"
+    );
+    for now in [first, middle, rest] {
+        assert!(
+            (now.0 - before.0).abs() < 1.5,
+            "the width moved: {before:?} {now:?}"
+        );
+    }
+}
+
+// ---- Ghosts: only where they belong (review of the ghost cell).
+
+#[gpui_kit::test]
+fn a_ghost_is_not_drawn_in_a_split_that_took_the_place_of_its_own(cx: &mut TestAppContext) {
+    use super::LayoutStore;
+    use super::tests::{gui, open_shell_motion};
+    // FILES and FIND side by side over LINKS, in a column: closing LINKS
+    // leaves the row alone in the column. LINKS stood in a vertical split;
+    // its ghost has no place in the row, which is a horizontal one.
+    let layout = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.5, split = \"vertical\", children = [\n\
+           { weight = 0.7, split = \"horizontal\", children = [\n\
+             { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+             { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+           { weight = 0.3, views = [\"links\"], shown = \"links\" },\n] },\n\
+         { weight = 0.5, editor = true },\n]\n");
+    let shell = open_shell_motion(cx, 1600., &layout, "", false, LayoutStore::Off, false);
+    frame(cx, &shell);
+    let files = width(cx, &shell, DrawerView::Files).unwrap();
+    let find = width(cx, &shell, DrawerView::Find).unwrap();
+    let links = cx.read(|cx| {
+        let w = shell.workspace.read(cx);
+        w.layout.view_slot(&DrawerView::Links).unwrap()
+    });
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(links, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    for millis in [0, 30, 40, 60, 200] {
+        wait(cx, millis);
+        frame(cx, &shell);
+        let now = (
+            width(cx, &shell, DrawerView::Files).unwrap(),
+            width(cx, &shell, DrawerView::Find).unwrap(),
+        );
+        assert!(
+            (now.0 - files).abs() < 1.5 && (now.1 - find).abs() < 1.5,
+            "after {millis} ms the row is {now:?}, it was {files} and {find}"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn a_slot_that_was_not_drawn_leaves_no_ghost(cx: &mut TestAppContext) {
+    use super::LayoutStore;
+    use super::tests::{gui, open_shell_motion};
+    // LINKS collapses in a narrow window: it takes no room. Closing it must
+    // not make the others give room back that it never held.
+    let layout = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.1, views = [\"files\"], shown = \"files\" },\n\
+         { weight = 0.1, views = [\"find\"], shown = \"find\" },\n\
+         { weight = 0.1, views = [\"links\"], shown = \"links\" },\n\
+         { weight = 0.7, editor = true },\n]\n");
+    let shell = open_shell_motion(cx, 1000., &layout, "", false, LayoutStore::Off, false);
+    frame(cx, &shell);
+    super::motion_tests::resize(cx, &shell, 800.);
+    frame(cx, &shell);
+    assert_eq!(
+        width(cx, &shell, DrawerView::Links),
+        None,
+        "LINKS collapsed"
+    );
+    let files = width(cx, &shell, DrawerView::Files).unwrap();
+    let editor = editor_width(cx, &shell);
+    let links = cx.read(|cx| {
+        let w = shell.workspace.read(cx);
+        w.layout.view_slot(&DrawerView::Links).unwrap()
+    });
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(links, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    let now = (
+        width(cx, &shell, DrawerView::Files).unwrap(),
+        editor_width(cx, &shell),
+    );
+    assert!(
+        (now.0 - files).abs() < 1.5 && (now.1 - editor).abs() < 1.5,
+        "closing a cell that held no room moved the rest: {now:?}, was {files} and {editor}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_snapping_frame_drops_a_ghost_that_already_exists(cx: &mut TestAppContext) {
+    let shell = open_files_and_outline(cx);
+    let find = two_columns(cx, &shell);
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(find, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    wait(cx, 30);
+    frame(cx, &shell);
+    // The window is resized while the ghost is still there: it draws in place.
+    resize(cx, &shell, 1100.);
+    frame(cx, &shell);
+    let at_once = editor_width(cx, &shell);
+    wait(cx, 400);
+    frame(cx, &shell);
+    let rest = editor_width(cx, &shell);
+    assert!(
+        (at_once - rest).abs() < 1.0,
+        "{at_once} on the resize frame, {rest} at rest: the ghost was kept"
+    );
+}
+
+/// The size of the slot showing `view`, as (width, height).
+fn size_of(cx: &mut TestAppContext, shell: &Shell, view: DrawerView) -> Option<(f32, f32)> {
+    cx.update_window(shell.handle, |_, window, _| {
+        window.try_find(slot_id(view)).map(|slot| {
+            let b = slot.bounds();
+            (f32::from(b.size.width), f32::from(b.size.height))
+        })
+    })
+    .unwrap()
+}
+
+/// Close the slot that shows `closing` in a window with `layout`, and
+/// return the size of the slot `staying` before, on the first frame after,
+/// at 30 ms, and at rest.
+fn close_and_watch(
+    cx: &mut TestAppContext,
+    layout: &str,
+    closing: DrawerView,
+    staying: DrawerView,
+) -> [(f32, f32); 4] {
+    use super::LayoutStore;
+    use super::tests::{gui, open_shell_motion};
+    let shell = open_shell_motion(cx, 1600., &gui(layout), "", false, LayoutStore::Off, false);
+    frame(cx, &shell);
+    let before = size_of(cx, &shell, staying.clone()).unwrap();
+    let slot = cx.read(|cx| shell.workspace.read(cx).layout.view_slot(&closing).unwrap());
+    cx.update_window(shell.handle, |_, window, cx| {
+        shell
+            .workspace
+            .update(cx, |w, cx| w.close_slot(slot, window, cx))
+    })
+    .unwrap();
+    frame(cx, &shell);
+    assert_eq!(
+        size_of(cx, &shell, closing),
+        None,
+        "the closed slot is not drawn"
+    );
+    let first = size_of(cx, &shell, staying.clone()).unwrap();
+    wait(cx, 30);
+    frame(cx, &shell);
+    let middle = size_of(cx, &shell, staying.clone()).unwrap();
+    wait(cx, 400);
+    frame(cx, &shell);
+    let rest = size_of(cx, &shell, staying).unwrap();
+    [before, first, middle, rest]
+}
+
+#[gpui_kit::test]
+fn closing_one_of_two_columns_in_a_cell_grows_the_survivor_over_time(cx: &mut TestAppContext) {
+    // FILES and FIND side by side in one cell: closing FIND leaves FILES
+    // alone in the cell, and FILES grows into the width it gave up.
+    let [before, first, middle, rest] = close_and_watch(
+        cx,
+        "[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.4, split = \"horizontal\", children = [\n\
+           { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+         { weight = 0.6, editor = true },\n]\n",
+        DrawerView::Find,
+        DrawerView::Files,
+    );
+    assert!(
+        (first.0 - before.0).abs() < 1.0,
+        "starts where it was: {before:?} {first:?}"
+    );
+    assert!(
+        rest.0 > before.0 + 1.0,
+        "takes the room: {before:?} to {rest:?}"
+    );
+    assert!(
+        middle.0 > before.0 + 0.5 && middle.0 < rest.0 - 0.5,
+        "at 30 ms: {middle:?} between {before:?} and {rest:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn closing_one_of_two_stacked_slots_grows_the_survivor_over_time(cx: &mut TestAppContext) {
+    // FILES over FIND: closing FIND leaves FILES alone in the column, and
+    // FILES grows down into the height it gave up.
+    let [before, first, middle, rest] = close_and_watch(
+        cx,
+        "[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
+         { weight = 0.3, split = \"vertical\", children = [\n\
+           { weight = 0.5, views = [\"files\"], shown = \"files\" },\n\
+           { weight = 0.5, views = [\"find\"], shown = \"find\" },\n] },\n\
+         { weight = 0.7, editor = true },\n]\n",
+        DrawerView::Find,
+        DrawerView::Files,
+    );
+    assert!(
+        (first.1 - before.1).abs() < 1.0,
+        "starts where it was: {before:?} {first:?}"
+    );
+    assert!(
+        rest.1 > before.1 + 1.0,
+        "takes the room: {before:?} to {rest:?}"
+    );
+    assert!(
+        middle.1 > before.1 + 0.5 && middle.1 < rest.1 - 0.5,
+        "at 30 ms: {middle:?} between {before:?} and {rest:?}"
+    );
+    assert_eq!(first.0, rest.0, "the width does not move");
 }

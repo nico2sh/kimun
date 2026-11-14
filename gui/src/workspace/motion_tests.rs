@@ -16,7 +16,7 @@ use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::layout_tree::{RailPosition, SlotId};
 
 use super::LayoutStore;
-use super::motion::{Enter, Motion, MotionKey, Spec, ValueSpec};
+use super::motion::{Enter, Motion, MotionKey, Siblings, Spec, ValueSpec};
 use super::tests::{Shell, gui, open_animated, open_shell_motion};
 use crate::motion::{SnapFacts, Speed};
 
@@ -975,7 +975,7 @@ fn weight(key: MotionKey, target: f32) -> ValueSpec {
 
 #[gpui_kit::test]
 fn a_weight_adopts_its_first_target(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     assert_eq!(rig.value(key), Some(0.6));
@@ -983,7 +983,7 @@ fn a_weight_adopts_its_first_target(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_weight_moves_over_the_standard_duration(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     rig.frame(cx, vec![weight(key, 0.3)]);
@@ -998,7 +998,7 @@ fn a_weight_moves_over_the_standard_duration(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_snapping_frame_adopts_every_weight(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     rig.motion.borrow_mut().begin_frame(SnapFacts {
@@ -1011,7 +1011,7 @@ fn a_snapping_frame_adopts_every_weight(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn an_unspecified_weight_is_dropped(cx: &mut TestAppContext) {
-    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     assert!(rig.motion.borrow().keys().contains(&key));
@@ -1021,8 +1021,8 @@ fn an_unspecified_weight_is_dropped(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_subtree_and_its_last_leaf_have_separate_weights(cx: &mut TestAppContext) {
-    let outer = MotionKey::Weight(Leaf::Editor, 1);
-    let inner = MotionKey::Weight(Leaf::Editor, 2);
+    let outer = MotionKey::Weight(Leaf::Editor, 1, true);
+    let inner = MotionKey::Weight(Leaf::Editor, 2, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(outer, 0.2), weight(inner, 0.7)]);
     assert_eq!(rig.value(outer), Some(0.2));
@@ -1032,7 +1032,7 @@ fn a_subtree_and_its_last_leaf_have_separate_weights(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn weights_survive_the_sampling_of_things_that_open_and_close(cx: &mut TestAppContext) {
     // `sample_all` prunes what it does not own; the weights are not its own.
-    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(key, 0.6)]);
     cx.update_window(rig.handle, |_, window, cx| {
@@ -1069,8 +1069,8 @@ fn a_lingering_key_gets_its_leaving_order(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_new_weight_key_starts_from_its_seed(cx: &mut TestAppContext) {
-    let old = MotionKey::Weight(Leaf::Editor, 1);
-    let new = MotionKey::Weight(Leaf::Editor, 2);
+    let old = MotionKey::Weight(Leaf::Editor, 1, true);
+    let new = MotionKey::Weight(Leaf::Editor, 2, true);
     let rig = ValueRig::new(cx);
     rig.frame(cx, vec![weight(old, 0.2)]);
     // The cell is wrapped: its new key starts where the old one was.
@@ -1102,4 +1102,107 @@ fn a_pending_snap_is_consumed_by_a_frame_that_snaps_anyway(cx: &mut TestAppConte
     // The next frame is an ordinary one: a change moves.
     rig.motion.borrow_mut().begin_frame(SnapFacts::default());
     assert_eq!(rig.frame(cx, false), 1.0, "starts a move, not a snap");
+}
+
+// ---- Ghosts: the weight a removed cell leaves behind (slot removal).
+
+fn leaf_siblings() -> Siblings {
+    Siblings {
+        prev: None,
+        next: None,
+        leaf: true,
+        px: 100.0,
+        axis: kimun_notes::logic::layout_tree::Axis::Horizontal,
+    }
+}
+
+#[gpui_kit::test]
+fn a_removed_leaf_weight_becomes_a_ghost_that_decays(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    rig.motion.borrow_mut().remember(key, leaf_siblings());
+    // The cell is removed from the tree: its weight is no longer asked for.
+    rig.frame(cx, vec![]);
+    assert_eq!(rig.value(key), Some(0.3), "the ghost starts where it was");
+    assert_eq!(rig.motion.borrow().ghosts(1).len(), 1);
+    wait(cx, 40);
+    rig.frame(cx, vec![]);
+    let middle = rig.value(key).unwrap();
+    assert!(middle > 0.0 && middle < 0.3, "it decays: {middle}");
+    wait(cx, 300);
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty(), "and is gone at 0");
+}
+
+#[gpui_kit::test]
+fn a_removed_subtree_cell_is_not_a_ghost(cx: &mut TestAppContext) {
+    // A cell that collapsed into another has no parent split to be drawn in.
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    rig.motion.borrow_mut().remember(
+        key,
+        Siblings {
+            leaf: false,
+            ..leaf_siblings()
+        },
+    );
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_weight_used_as_a_seed_is_not_a_ghost(cx: &mut TestAppContext) {
+    // A wrapped cell takes its old weight over: counting it twice would jump.
+    let old = MotionKey::Weight(Leaf::Editor, 1, true);
+    let new = MotionKey::Weight(Leaf::Editor, 2, true);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(old, 0.2)]);
+    rig.motion.borrow_mut().remember(old, leaf_siblings());
+    rig.frame(
+        cx,
+        vec![ValueSpec {
+            seed_from: vec![old],
+            ..weight(new, 0.3)
+        }],
+    );
+    assert_eq!(rig.value(new), Some(0.2), "the new key took the seed");
+    assert!(rig.motion.borrow().ghosts(1).is_empty(), "the old key left");
+}
+
+#[gpui_kit::test]
+fn a_snapping_frame_drops_ghosts_at_once(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1, true);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    rig.motion.borrow_mut().remember(key, leaf_siblings());
+    rig.motion.borrow_mut().begin_frame(SnapFacts {
+        viewport_changed: true,
+        ..SnapFacts::default()
+    });
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty());
+}
+
+#[gpui_kit::test]
+fn ghosts_are_listed_by_depth(cx: &mut TestAppContext) {
+    let top = MotionKey::Weight(Leaf::Editor, 1, true);
+    let nested = MotionKey::Weight(Leaf::Editor, 2, true);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(top, 0.3), weight(nested, 0.6)]);
+    rig.motion.borrow_mut().remember(top, leaf_siblings());
+    rig.motion.borrow_mut().remember(nested, leaf_siblings());
+    rig.frame(cx, vec![]);
+    let at_one = rig.motion.borrow().ghosts(1);
+    let at_two = rig.motion.borrow().ghosts(2);
+    assert_eq!(at_one.len(), 1);
+    assert_eq!(at_one[0].key, top);
+    assert!((at_one[0].weight - 0.3).abs() < 1e-6);
+    assert!(
+        (at_one[0].from - 0.3).abs() < 1e-6,
+        "it began at its weight"
+    );
+    assert_eq!(at_two.len(), 1);
+    assert_eq!(at_two[0].key, nested);
 }

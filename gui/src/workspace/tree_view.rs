@@ -80,7 +80,7 @@ use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
-use super::motion::{MotionKey, slot_policy};
+use super::motion::{MotionKey, Siblings, slot_policy};
 use super::motion_box::MotionBox as _;
 use super::{Workspace, route, slot_content_id, slot_gone_id, slot_id};
 use crate::motion::ResizePolicy;
@@ -204,6 +204,15 @@ struct Split<'a, C> {
     /// Each child's final px along `axis`, once every motion has ended, in
     /// the order of `children`. Empty: the drawn px are the final ones.
     finals: Vec<f64>,
+    /// The weight key of each child, and whether it is one leaf, to
+    /// remember what stands next to it and how many px it has (for a ghost).
+    /// Empty for the editor's groups.
+    ids: Vec<(MotionKey, bool)>,
+    /// Cells removed from the tree that still decay to nothing, each as
+    /// (the index of the child it stood before, the px it still holds): a
+    /// spacer of that size is drawn for each, so the children next to it
+    /// grow into its room over time. Empty for the editor's groups.
+    ghosts: Vec<(usize, f64)>,
     line: Option<Rgba>,
 }
 
@@ -697,13 +706,136 @@ impl Workspace {
         self.tree_frame().child(content).into_any_element()
     }
 
+    /// The ghosts at nesting depth `depth` that stand among `ids` (the
+    /// weight keys of the drawn children of a split, in order), each as
+    /// (the index of the child it stood before, the px it still holds, its
+    /// axis). A ghost stood after the child that was before it, else before
+    /// the one that was after it. Where it stood must still be there: the two
+    /// neighbours side by side, or the edge it was at. Otherwise it is
+    /// another split, and there is no place for it. `axis` limits it to the
+    /// ghosts of a split along that axis, and a ghost that stood beside a key
+    /// of `skip` is left out.
+    fn ghosts_among(
+        &self,
+        depth: u8,
+        ids: &[(MotionKey, bool)],
+        axis: Option<Axis>,
+        skip: &[MotionKey],
+    ) -> Vec<(usize, f64, Axis)> {
+        self.motion
+            .borrow()
+            .ghosts(depth)
+            .into_iter()
+            .filter(|ghost| {
+                ![ghost.siblings.prev, ghost.siblings.next]
+                    .into_iter()
+                    .flatten()
+                    .any(|near| skip.contains(&near))
+            })
+            .filter(|ghost| axis.is_none_or(|axis| ghost.siblings.axis == axis))
+            .filter_map(|ghost| {
+                let place = |key: MotionKey| ids.iter().position(|(shown, _)| *shown == key);
+                let at = match (ghost.siblings.prev, ghost.siblings.next) {
+                    (Some(prev), Some(next)) => match (place(prev), place(next)) {
+                        (Some(before), Some(after)) if after == before + 1 => after,
+                        _ => return None,
+                    },
+                    (Some(prev), None) => match place(prev) {
+                        Some(before) if before + 1 == ids.len() => ids.len(),
+                        _ => return None,
+                    },
+                    (None, Some(next)) => match place(next) {
+                        Some(0) => 0,
+                        _ => return None,
+                    },
+                    (None, None) => return None,
+                };
+                let left = if ghost.from > 0.0 {
+                    f64::from(ghost.weight / ghost.from)
+                } else {
+                    0.0
+                };
+                Some((at, ghost.siblings.px * left, ghost.siblings.axis))
+            })
+            .collect()
+    }
+
+    /// `shape`, drawn in `size` px (see [`Self::render_node_cell`]). A split
+    /// of two that lost a child collapsed into the one that stayed, so the
+    /// removed cell has no split left to be drawn in. While it still decays,
+    /// the survivor is drawn in a split of its own with that ghost beside it:
+    /// the one cell stands where it stood, and grows into the room as the
+    /// ghost gives it back (ADR-0060).
+    #[allow(clippy::too_many_arguments)]
+    fn render_node(
+        &self,
+        shape: &TreeShape,
+        size: (f64, f64),
+        fin: (f64, f64),
+        across: (bool, bool),
+        depth: u8,
+        rem: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let leaf = matches!(shape, TreeShape::Leaf(_));
+        let key = MotionKey::Weight(last_leaf(shape), depth + 1, leaf);
+        // A split draws the ghosts that stood among its own children, and a
+        // ghost that stood beside the cell of its own key took its place.
+        let own: Vec<MotionKey> = match shape {
+            TreeShape::Split { children, .. } => children
+                .iter()
+                .filter(|(_, child)| self.shape_present(child))
+                .map(|(_, child)| {
+                    MotionKey::Weight(
+                        last_leaf(child),
+                        depth + 1,
+                        matches!(child, TreeShape::Leaf(_)),
+                    )
+                })
+                .collect(),
+            TreeShape::Leaf(_) => Vec::new(),
+        };
+        let collapsed = self.ghosts_among(depth + 1, &[(key, leaf)], None, &own);
+        // The ghosts of one axis: another axis is another split that closed.
+        let axis = collapsed.first().map(|(_, _, axis)| *axis);
+        let ghosts: Vec<(usize, f64)> = collapsed
+            .into_iter()
+            .filter(|(_, _, ghost_axis)| Some(*ghost_axis) == axis)
+            .map(|(at, px, _)| (at, px))
+            .collect();
+        let Some(axis) = axis.filter(|_| !ghosts.is_empty()) else {
+            return self.render_node_cell(shape, size, fin, across, depth, rem, window, cx);
+        };
+        let (min_w, min_h) = self.min_px(shape, rem, true);
+        let along = |(w, h): (f64, f64)| if axis == Axis::Horizontal { w } else { h };
+        let split = Split {
+            axis,
+            size,
+            children: vec![(1.0, along((min_w, min_h)), shape)],
+            finals: vec![along(fin)],
+            ids: vec![(key, leaf)],
+            ghosts,
+            line: None,
+        };
+        Some(self.render_split(
+            split,
+            rem,
+            cx,
+            |child| DividerAt::Leaf(last_leaf(child)),
+            |child, size, fin, cx| {
+                self.render_node_cell(child, size, fin, across, depth, rem, window, cx)
+            },
+        ))
+    }
+
     /// `shape`, drawn in `size` px, or `None` when nothing in it is
     /// present. `fin` is the size it has once every motion has ended: a
     /// slot lays its view out at `fin` and lets the frame clip it. `across`
     /// says whether a horizontal (vertical) split holds it: only along those
     /// does a slot check its view's minimum.
     #[allow(clippy::too_many_arguments)]
-    fn render_node(
+    fn render_node_cell(
         &self,
         shape: &TreeShape,
         size: (f64, f64),
@@ -786,7 +918,11 @@ impl Workspace {
                         let drawn = self
                             .motion
                             .borrow()
-                            .value(MotionKey::Weight(last_leaf(child), depth + 1))
+                            .value(MotionKey::Weight(
+                                last_leaf(child),
+                                depth + 1,
+                                matches!(child, TreeShape::Leaf(_)),
+                            ))
                             .map_or(*weight, f64::from);
                         // The minimum is scaled leaf by leaf, as the cell is drawn now.
                         (drawn * factor, along_min(child, true), *child)
@@ -825,11 +961,49 @@ impl Workspace {
                 // the tree resizes between them across hidden siblings
                 // (`resize_after_visible`), so every seam is a divider. The
                 // seam is the window background between the leaves.
+                // A child that is not drawn (hidden, collapsed) holds no room:
+                // if it is removed later it leaves no ghost, and the neighbours
+                // it once remembered are forgotten.
+                let TreeShape::Split { children: all, .. } = shape else {
+                    return None;
+                };
+                for (_, child) in all.iter().filter(|(_, c)| !self.shape_present(c)) {
+                    self.motion.borrow_mut().remember(
+                        MotionKey::Weight(
+                            last_leaf(child),
+                            depth + 1,
+                            matches!(child, TreeShape::Leaf(_)),
+                        ),
+                        Siblings {
+                            prev: None,
+                            next: None,
+                            leaf: false,
+                            px: 0.0,
+                            axis,
+                        },
+                    );
+                }
+                let ids: Vec<(MotionKey, bool)> = visible
+                    .iter()
+                    .map(|(_, _, child)| {
+                        let leaf = matches!(child, TreeShape::Leaf(_));
+                        (MotionKey::Weight(last_leaf(child), depth + 1, leaf), leaf)
+                    })
+                    .collect();
+                // The ghosts of this split: each stood after the child that
+                // was before it, else before the one that was after it.
+                let ghosts: Vec<(usize, f64)> = self
+                    .ghosts_among(depth + 1, &ids, Some(axis), &[])
+                    .into_iter()
+                    .map(|(at, px, _)| (at, px))
+                    .collect();
                 let split = Split {
                     axis,
                     size,
                     children,
                     finals,
+                    ids,
+                    ghosts,
                     line: None,
                 };
                 Some(self.render_split(
@@ -867,6 +1041,8 @@ impl Workspace {
             size,
             children,
             finals,
+            ids,
+            ghosts,
             line,
         } = split;
         let (length, cross) = match axis {
@@ -874,12 +1050,29 @@ impl Workspace {
             Axis::Vertical => (size.1, size.0),
         };
         let gaps = children.len().saturating_sub(1) as f64 * GAP;
+        // The ghosts hold their px, and the children share what is left.
+        let ghost_px: f64 = ghosts.iter().map(|(_, px)| px).sum();
         let cells: Vec<(f64, f64)> = children
             .iter()
             .map(|(weight, min, _)| (*weight, *min))
             .collect();
-        let (sizes, held) = distribute((length - gaps).max(0.0), &cells);
-        let drawn: Vec<(f64, Option<f64>, DividerAt, AnyElement)> = children
+        let (sizes, held) = distribute((length - gaps - ghost_px).max(0.0), &cells);
+        // What stands next to each child and how many px it has, kept for a
+        // ghost: if the child is removed from the tree, it decays from here.
+        for (index, (key, leaf)) in ids.iter().enumerate() {
+            self.motion.borrow_mut().remember(
+                *key,
+                Siblings {
+                    prev: index.checked_sub(1).map(|before| ids[before].0),
+                    next: ids.get(index + 1).map(|(next, _)| *next),
+                    leaf: *leaf,
+                    // The cell and the seam that went with it.
+                    px: sizes[index] + GAP,
+                    axis,
+                },
+            );
+        }
+        let drawn: Vec<(usize, f64, Option<f64>, DividerAt, AnyElement)> = children
             .iter()
             .zip(&sizes)
             .enumerate()
@@ -893,12 +1086,12 @@ impl Workspace {
                 let element = render(child, size, fin, cx)?;
                 // Minimums are set only where they all fit.
                 let min = held.then_some(*min);
-                Some((*weight, min, divider(child), element))
+                Some((index, *weight, min, divider(child), element))
             })
             .collect();
         // The drawn children share the split by their weights: flex grow
         // factors summing below one would leave space unused.
-        let total: f64 = drawn.iter().map(|(weight, ..)| weight).sum();
+        let total: f64 = drawn.iter().map(|(_, weight, ..)| weight).sum();
         let cell = |weight: f64, min: Option<f64>| {
             div()
                 .flex()
@@ -917,8 +1110,29 @@ impl Workspace {
         // divider.
         let mut pairs: Vec<(usize, usize, DividerAt, f64, f64)> = Vec::new();
         let mut previous: Option<(usize, DividerAt, f64)> = None;
-        for (weight, min, at, element) in drawn {
+        // A ghost is an empty spacer of the px it still holds: it has no gap
+        // and no divider of its own, and the handle layer gets an empty one
+        // beside it so the two lists stay parallel.
+        let push_ghosts = |elements: &mut Vec<AnyElement>,
+                           handles: &mut Vec<AnyElement>,
+                           range: &dyn Fn(usize) -> bool| {
+            for (_, px_left) in ghosts.iter().filter(|(at, _)| range(*at)) {
+                let spacer = || {
+                    div()
+                        .flex_none()
+                        .map(|spacer| match axis {
+                            Axis::Horizontal => spacer.w(px(*px_left as f32)),
+                            Axis::Vertical => spacer.h(px(*px_left as f32)),
+                        })
+                        .into_any_element()
+                };
+                elements.push(spacer());
+                handles.push(spacer());
+            }
+        };
+        for (index, weight, min, at, element) in drawn {
             let min_rems = min.unwrap_or(0.0) / rem;
+            push_ghosts(&mut elements, &mut handles, &|at| at == index);
             if let Some((prev_element, prev_at, prev_min)) = previous {
                 elements.push(self.render_gap(axis, None, line, cx));
                 handles.push(self.render_gap(axis, Some(prev_at), None, cx));
@@ -928,6 +1142,7 @@ impl Workspace {
             elements.push(cell(weight, min).child(element).into_any_element());
             handles.push(cell(weight, min).into_any_element());
         }
+        push_ghosts(&mut elements, &mut handles, &|at| at >= children.len());
         if !pairs.is_empty() {
             elements.push(
                 div()
@@ -1045,6 +1260,8 @@ impl Workspace {
             size,
             children,
             finals: Vec::new(),
+            ids: Vec::new(),
+            ghosts: Vec::new(),
             line: Some(theme::divider(&theme::current(cx))),
         };
         self.render_split(
