@@ -45,7 +45,6 @@ use super::Workspace;
 use super::chrome;
 use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
-use super::note::Closing;
 use super::note_flush::FlushBlock;
 use super::session::Queued;
 use crate::theme;
@@ -60,6 +59,12 @@ pub(crate) const TAB_NEW_DROP_ID: &str = "drop-tab-new";
 pub(crate) const TAB_UNSAVED_ID: &str = "tab-unsaved";
 /// A close button's id, with the tab's position.
 pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
+/// A trailing slot's id prefix, with the tab's position.
+const TAB_TRAIL_ID: &str = "tab-trail";
+/// A label's id prefix, with the tab's position.
+const TAB_LABEL_ID: &str = "tab-label";
+/// A label's drop zone's id prefix, with the tab's position.
+const TAB_DROP_ID: &str = "drop-tab";
 /// What a tab whose active group shows nothing is called.
 pub(crate) const EMPTY_LABEL: &str = "Empty";
 /// Why no group is added to a tab whose close is under way.
@@ -94,7 +99,7 @@ pub(crate) enum Trail {
 
 /// The element id of the trailing slot of the pill at `index`.
 pub(crate) fn tab_trail_id(index: usize) -> ElementId {
-    ElementId::NamedInteger("tab-trail".into(), index as u64)
+    chrome::indexed_id(TAB_TRAIL_ID, index)
 }
 
 /// What a running close takes away once its notes are written.
@@ -116,15 +121,23 @@ impl CloseTarget {
     }
 }
 
+/// How a close is refused while a note cannot be let go.
+enum CloseRefusal {
+    /// The window is closing: nothing is said.
+    Silent,
+    /// The flash that says why the close did not happen.
+    Say(String),
+}
+
 /// The element id of the label at `index` (its position in the strip).
 pub(crate) fn tab_label_id(index: usize) -> ElementId {
-    ElementId::NamedInteger("tab-label".into(), index as u64)
+    chrome::indexed_id(TAB_LABEL_ID, index)
 }
 
 /// The element id of the drop zone over the label at `index`, during a
 /// group's drag.
 pub(crate) fn tab_drop_id(index: usize) -> ElementId {
-    ElementId::NamedInteger("drop-tab".into(), index as u64)
+    chrome::indexed_id(TAB_DROP_ID, index)
 }
 
 /// What `group` shows, named as the Footer names it: the attachment in
@@ -176,7 +189,7 @@ impl Workspace {
     /// Nothing without a vault, or while the window closes. While a stored
     /// record restores, it waits for it ([`super::session`]).
     pub(crate) fn new_tab(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+        if self.window_closing() {
             return;
         }
         // A stored record still restoring would replace the tab: it waits.
@@ -295,6 +308,35 @@ impl Workspace {
         matches!(self.groups_closing, Some((CloseTarget::Tab(t), _)) if t == tab)
     }
 
+    /// How the close of `target` is refused when `block` keeps the note of
+    /// `group` from being let go.
+    fn close_refusal(
+        &self,
+        target: CloseTarget,
+        group: GroupId,
+        block: FlushBlock,
+    ) -> CloseRefusal {
+        let noun = target.noun();
+        match block {
+            FlushBlock::Closing => CloseRefusal::Silent,
+            FlushBlock::Opening => CloseRefusal::Say(match target {
+                CloseTarget::Tab(_) => {
+                    "A note in this tab is still opening. Try again in a moment.".to_string()
+                }
+                CloseTarget::Group(_) => {
+                    "The note in this pane is still opening. Try again in a moment.".to_string()
+                }
+            }),
+            FlushBlock::Held => CloseRefusal::Say(format!(
+                "Another operation on the note is still running. The {noun} stays open."
+            )),
+            FlushBlock::Unsaveable => CloseRefusal::Say(format!(
+                "{} The {noun} stays open.",
+                self.unsaveable_in(group)
+            )),
+        }
+    }
+
     /// Write the unsaved text of `groups` (all at once, as the window's
     /// close does), then take `target` away. Refused, with a flash, while
     /// one of their notes cannot be let go.
@@ -306,31 +348,15 @@ impl Workspace {
     ) {
         let noun = target.noun();
         let refusal = groups.iter().find_map(|group| {
-            self.flush_block_in(*group, cx).map(|block| match block {
-                FlushBlock::Closing => None,
-                FlushBlock::Opening => Some(match target {
-                    CloseTarget::Tab(_) => {
-                        "A note in this tab is still opening. Try again in a moment.".to_string()
-                    }
-                    CloseTarget::Group(_) => {
-                        "The note in this pane is still opening. Try again in a moment.".to_string()
-                    }
-                }),
-                FlushBlock::Held => Some(format!(
-                    "Another operation on the note is still running. The {noun} stays open."
-                )),
-                FlushBlock::Unsaveable => Some(format!(
-                    "{} The {noun} stays open.",
-                    self.unsaveable_in(*group)
-                )),
-            })
+            self.flush_block_in(*group, cx)
+                .map(|block| self.close_refusal(target, *group, block))
         });
         match refusal {
-            Some(Some(text)) => {
+            Some(CloseRefusal::Say(text)) => {
                 self.flash_error(text, cx);
                 return;
             }
-            Some(None) => return,
+            Some(CloseRefusal::Silent) => return,
             None => {}
         }
         let saving: Vec<GroupId> = groups
@@ -400,11 +426,7 @@ impl Workspace {
             for group in &touched {
                 self.restart_tick_unless_read_only_in(*group);
             }
-            let note = self
-                .state(group)
-                .and_then(|s| s.notes.as_ref())
-                .and_then(|h| h.note.clone())
-                .unwrap_or_else(VaultPath::root);
+            let note = self.note_name_in(group);
             self.flash_error(
                 format!(
                     "Couldn't save {note}: {problem}. The {} stays open.",
@@ -604,18 +626,14 @@ impl Workspace {
         let label = tab_label(self, tab, cx);
         let dirty = tab_dirty(self, tab, cx);
         let hover = theme::hover_background(&theme);
-        let spoken: SharedString = if dirty {
-            format!("{label}, unsaved").into()
-        } else {
-            label.clone()
-        };
+        let spoken = chrome::spoken_label(&label, dirty);
         let trail_content: Option<AnyElement> = match self.tab_trail(tab, shown, cx) {
             Trail::Close => {
                 let close_tip =
                     chrome::tooltip_with_chord("Close tab", &ActionShortcuts::CloseTab, cx);
                 Some(
                     chrome::close_button(
-                        ElementId::NamedInteger(TAB_CLOSE_ID.into(), at as u64),
+                        chrome::indexed_id(TAB_CLOSE_ID, at),
                         "Close tab",
                         close_tip,
                         cx.listener(move |this, _: &ClickEvent, _, cx| this.close_tab(tab, cx)),
@@ -627,11 +645,7 @@ impl Workspace {
                 )
             }
             Trail::Unsaved => Some(
-                chrome::unsaved_dot(
-                    ElementId::NamedInteger(TAB_UNSAVED_ID.into(), at as u64),
-                    cx,
-                )
-                .into_any_element(),
+                chrome::unsaved_dot(chrome::indexed_id(TAB_UNSAVED_ID, at), cx).into_any_element(),
             ),
             Trail::Nothing => None,
         };

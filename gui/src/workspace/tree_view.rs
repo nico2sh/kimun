@@ -920,7 +920,7 @@ impl Workspace {
         rem: f64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (document, _) = self.render_group_document(group, cx);
+        let document = self.render_group_document(group, cx);
         div()
             .id(group_element(GROUP_ID, at))
             .test_support()

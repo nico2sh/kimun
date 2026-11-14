@@ -406,7 +406,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        let Some(host) = self.state(group).and_then(|s| s.notes.as_ref()) else {
+        let Some(host) = self.host_in(group) else {
             return;
         };
         let target = host.note.clone();

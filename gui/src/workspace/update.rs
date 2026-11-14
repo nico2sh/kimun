@@ -904,7 +904,7 @@ impl Workspace {
     /// restart by hand. A quit that waits on a save is under way and keeps it;
     /// one that already ended the app took the flag ([`Workspace::end_app`]).
     fn restart_unless_underway(&mut self, version: &str, cx: &mut Context<Self>) {
-        let underway = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        let underway = self.window_closing();
         if self.updates.restart_pending && !underway {
             self.updates.restart_pending = false;
             self.flash(rules::installed_text(version), cx);

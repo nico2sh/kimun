@@ -1293,11 +1293,7 @@ impl Workspace {
         if let Some(problem) = problem {
             tracing::warn!("properties of {path} not opened: {problem}");
             self.flash_error(REFUSED, cx);
-        } else if self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
-            .is_some_and(|h| h.is_open_wanted())
-        {
+        } else if self.host_in(group).is_some_and(|h| h.is_open_wanted()) {
             // Another note was asked for meanwhile: it opens instead.
         } else if !modal::dialog_open(window, cx) {
             self.show_properties(path, None, window, cx);
@@ -1380,7 +1376,7 @@ impl Workspace {
         // The group holding the note, in any tab, is the one whose text
         // the write could meet.
         if let Some(holder) = self.group_holding(&path)
-            && let Some(host) = self.state(holder).and_then(|s| s.notes.as_ref())
+            && let Some(host) = self.host_in(holder)
         {
             let dirty = self.editor_dirty_in(holder, cx);
             if host.is_switching() || host.is_open_wanted() {

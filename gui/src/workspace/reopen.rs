@@ -201,7 +201,7 @@ impl Workspace {
                 let text = format!("{} They were not kept.", self.unsaveable_in(group));
                 self.flash_error(text, cx);
             }
-            if let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) {
+            if let Some(host) = self.host_in_mut(group) {
                 host.session.stop_autosave();
             }
             // Nothing typed now could be kept.
@@ -287,8 +287,7 @@ impl Workspace {
             self.block_input_in(any, false, cx);
         }
         let note = self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
+            .host_in(group)
             .and_then(|h| h.note.clone())
             .map_or_else(|| "the note".to_string(), |n| n.to_string());
         self.flash_error(

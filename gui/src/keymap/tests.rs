@@ -1190,8 +1190,7 @@ fn linux_windows_resolution_table() {
                 "ctrl+shift+tab",
                 [prev_tab.clone(), prev_tab.clone(), prev_tab],
             ),
-            // Moving views: the rail's and the slots', never the editor's
-            // (it keeps Alt+Shift+Arrow).
+            // Moving views and, in the editor, its active group.
             (
                 "alt+shift+left",
                 [to_left.clone(), to_left.clone(), to_left],

@@ -329,11 +329,9 @@ impl Workspace {
             .group_ids_active_first()
             .into_iter()
             .filter(|group| {
-                self.state(*group)
-                    .and_then(|s| s.notes.as_ref())
-                    .is_some_and(|h| {
-                        h.note.is_some() && h.session.affects_open_note(request.from())
-                    })
+                self.host_in(*group).is_some_and(|h| {
+                    h.note.is_some() && h.session.affects_open_note(request.from())
+                })
             })
             .collect();
         let mut flushes = Vec::new();
@@ -433,11 +431,7 @@ impl Workspace {
         let Some((group, problem)) = failure else {
             return true;
         };
-        let note = self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
-            .and_then(|h| h.note.clone())
-            .unwrap_or_else(VaultPath::root);
+        let note = self.note_name_in(group);
         self.file_op_failed(
             format!("Couldn't save {note}: {problem}. Nothing was {past}."),
             &touched,
@@ -539,12 +533,7 @@ impl Workspace {
         // reach it after all) gets its tick and its keyboard back.
         for group in &touched {
             let following = reads.iter().any(|(g, _)| g == group);
-            if !following
-                && self
-                    .state(*group)
-                    .and_then(|s| s.notes.as_ref())
-                    .is_some_and(|h| h.note.is_some())
-            {
+            if !following && self.host_in(*group).is_some_and(|h| h.note.is_some()) {
                 self.restart_tick_unless_read_only_in(*group);
                 self.block_input_in(*group, false, cx);
             }
@@ -571,7 +560,7 @@ impl Workspace {
         self.forget_note_menu_under(from, cx);
         let mut reads = Vec::new();
         for group in self.group_ids() {
-            let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
+            let Some(host) = self.host_in_mut(group) else {
                 continue;
             };
             let Some(new) = host
@@ -613,8 +602,7 @@ impl Workspace {
         let mut active_gone = false;
         for group in self.group_ids() {
             let holds = self
-                .state(group)
-                .and_then(|s| s.notes.as_ref())
+                .host_in(group)
                 .and_then(|h| h.note.as_ref())
                 .is_some_and(&gone);
             if holds {
@@ -768,8 +756,7 @@ impl Workspace {
         // would otherwise hold its note for good.
         for group in self.group_ids() {
             if self
-                .state(group)
-                .and_then(|s| s.notes.as_ref())
+                .host_in(group)
                 .is_some_and(|h| h.is_open_wanted() && !h.is_switching())
             {
                 self.switch(group, cx);

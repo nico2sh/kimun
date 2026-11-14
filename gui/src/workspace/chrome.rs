@@ -22,6 +22,29 @@ pub(crate) fn tooltip_with_chord(label: &str, action: &ActionShortcuts, cx: &App
     }
 }
 
+/// An element id made of a `prefix` and a position, for the `at`-th of a
+/// kind of element (a tab pill, a group). Tests look these up by the same
+/// `(prefix, at)` pair.
+pub(crate) fn indexed_id(prefix: &'static str, at: usize) -> ElementId {
+    ElementId::NamedInteger(prefix.into(), at as u64)
+}
+
+/// The title of a tab or group as a screen reader says it: `title`, then
+/// ", unsaved" when `dirty`.
+pub(crate) fn spoken_label(title: &SharedString, dirty: bool) -> SharedString {
+    if dirty {
+        format!("{title}, unsaved").into()
+    } else {
+        title.clone()
+    }
+}
+
+/// The left-press handler of a control inside a drag handle: a press here
+/// is the control's, not its parent's drag handle, so it stops there.
+pub(crate) fn stop_press(_: &gpui_kit::MouseDownEvent, _: &mut Window, cx: &mut App) {
+    cx.stop_propagation();
+}
+
 /// The close glyph: the kit's own close icon (its dialogs and toasts draw
 /// it), carried by the default bundle. Lucide's `x` is not bundled.
 pub(crate) const CLOSE_ICON: IconName = IconName::Close;
@@ -50,10 +73,7 @@ pub(crate) fn close_button(
         .hover(move |style| style.bg(hover))
         .child(Icon::new(CLOSE_ICON).size_3())
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        // A left press here is the button's, not its parent's drag handle.
-        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation()
-        })
+        .on_mouse_down(gpui_kit::MouseButton::Left, stop_press)
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
             on_close(event, window, cx);

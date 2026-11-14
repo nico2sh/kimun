@@ -2,31 +2,21 @@
 //! attachment it may show in place of the editor. The [`Workspace`] keeps
 //! one per group of the layout tree (`Workspace::groups`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::{AppContext as _, Context, Entity, Subscription, Task};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::autocomplete::VaultSuggestions;
-use kimun_notes::logic::layout_tree::{Focus, GroupId, Leaf};
+use kimun_notes::logic::layout_tree::{Focus, GroupId, LayoutTree, Leaf};
+use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::session::NoteSession;
 
 use super::Workspace;
 use super::attachment::AttachmentView;
 use super::note::NoteHost;
 use crate::editor_view::EditorView;
-
-/// The active group's state as a borrow of `self.groups` alone, so the
-/// caller can still use the workspace's other fields (`tx`, `closing`, ...)
-/// while it holds the note session.
-macro_rules! active_mut {
-    ($ws:ident) => {
-        $ws.groups
-            .get_mut(&$ws.layout.active_group())
-            .expect("the active group has a state")
-    };
-}
-pub(super) use active_mut;
 
 /// The per-group state: moved here from the workspace, field for field.
 pub(crate) struct GroupState {
@@ -86,12 +76,23 @@ impl Workspace {
 
     /// The state of the active group, mutable.
     pub(crate) fn active_state_mut(&mut self) -> &mut GroupState {
+        Self::active_in(&mut self.groups, &self.layout)
+    }
+
+    /// The active group's state, as a borrow of `groups` alone, so the
+    /// caller can still use the workspace's other fields (`tx`, `closing`,
+    /// ...) while it holds the note session. [`Self::active_state_mut`] is
+    /// this over the workspace's own fields.
+    pub(super) fn active_in<'a>(
+        groups: &'a mut HashMap<GroupId, GroupState>,
+        layout: &LayoutTree<DrawerView>,
+    ) -> &'a mut GroupState {
         debug_assert!(
-            self.groups.contains_key(&self.layout.active_group()),
+            groups.contains_key(&layout.active_group()),
             "groups out of step with the layout"
         );
-        self.groups
-            .get_mut(&self.layout.active_group())
+        groups
+            .get_mut(&layout.active_group())
             .expect("the active group has a state")
     }
 
@@ -133,11 +134,9 @@ impl Workspace {
         groups: Vec<GroupId>,
         pred: impl Fn(&NoteHost) -> bool,
     ) -> Option<GroupId> {
-        groups.into_iter().find(|group| {
-            self.state(*group)
-                .and_then(|s| s.notes.as_ref())
-                .is_some_and(&pred)
-        })
+        groups
+            .into_iter()
+            .find(|group| self.host_in(*group).is_some_and(&pred))
     }
 
     /// The state of `group`, if it has one.

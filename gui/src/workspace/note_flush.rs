@@ -50,7 +50,7 @@ impl Workspace {
 
     /// [`Self::flush_block`] for the note `group` holds.
     pub(super) fn flush_block_in(&self, group: GroupId, cx: &App) -> Option<FlushBlock> {
-        let host = self.state(group)?.notes.as_ref()?;
+        let host = self.host_in(group)?;
         if self.closing != Closing::Open {
             Some(FlushBlock::Closing)
         } else if self.note_held() {
@@ -101,7 +101,7 @@ impl Workspace {
     /// dropping the request would abort it. The caller gives the tick and
     /// the keyboard back.
     pub(super) fn give_back_flush_in(&mut self, group: GroupId, flush: FlushRequest) {
-        if let Some(host) = self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()) {
+        if let Some(host) = self.host_in_mut(group) {
             host.session.give_back_flush(flush);
         }
     }

@@ -47,7 +47,6 @@ use kimun_notes::util::git_status::GitSummary;
 use tokio::task::JoinError;
 
 use super::Workspace;
-use super::group::active_mut;
 use super::session::QueuedOpen;
 
 /// How long the "close again to discard" warning holds: a close within it
@@ -221,11 +220,7 @@ impl Workspace {
 
     /// [`Self::can_save`] for the note `group` holds.
     pub(super) fn can_save_in(&self, group: GroupId) -> bool {
-        !self.status.read_only
-            && self
-                .state(group)
-                .and_then(|s| s.notes.as_ref())
-                .is_some_and(|h| h.note.is_some())
+        !self.status.read_only && self.host_in(group).is_some_and(|h| h.note.is_some())
     }
 
     pub(super) fn editor_dirty(&self, cx: &App) -> bool {
@@ -282,18 +277,9 @@ impl Workspace {
         }
     }
 
-    /// Why the edits in the editor cannot be written, for a flash.
-    pub(super) fn unsaveable(&self) -> String {
-        self.unsaveable_in(self.layout.active_group())
-    }
-
-    /// [`Self::unsaveable`] for the editor of `group`.
+    /// Why the edits in the editor of `group` cannot be written, for a flash.
     pub(super) fn unsaveable_in(&self, group: GroupId) -> String {
-        match self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
-            .and_then(|h| h.note.as_ref())
-        {
+        match self.host_in(group).and_then(|h| h.note.as_ref()) {
             Some(note) if self.status.read_only => {
                 format!("Read-only: your edits to {note} can't be saved.")
             }
@@ -391,7 +377,7 @@ impl Workspace {
     /// Whether an open of `path` may start: it is a note and the window is
     /// not closing.
     fn may_open(&self, path: &VaultPath) -> bool {
-        path.is_note() && !matches!(self.closing, Closing::Requested | Closing::Flushing)
+        path.is_note() && !self.window_closing()
     }
 
     /// [`Self::open_note`] in the editor of `group`, active or not, with no
@@ -439,7 +425,7 @@ impl Workspace {
         }
         // The newest request wins: an attachment still being read is dropped.
         self.forget_attachment_request(group);
-        let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
+        let Some(host) = self.host_in_mut(group) else {
             return;
         };
         host.wanted = Some(path);
@@ -448,7 +434,7 @@ impl Workspace {
         // its tick stopped): the open waits for it to end
         // ([`Self::file_op_ended`]).
         let held = self.note_held();
-        let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut()) else {
+        let Some(host) = self.host_in_mut(group) else {
             return;
         };
         if !host.is_switching() && !held {
@@ -495,7 +481,7 @@ impl Workspace {
             .ok();
         }));
         if !can_save && dirty {
-            let text = format!("{} They were not kept.", self.unsaveable());
+            let text = format!("{} They were not kept.", self.unsaveable_in(group));
             self.flash_error(text, cx);
         }
     }
@@ -526,12 +512,7 @@ impl Workspace {
         }
         if let SaveOutcome::Saved(saved) = &outcome {
             self.files_note_saved(saved, cx);
-            if self
-                .state(group)
-                .and_then(|s| s.notes.as_ref())
-                .and_then(|h| h.note.as_ref())
-                == Some(&saved.path)
-            {
+            if self.host_in(group).and_then(|h| h.note.as_ref()) == Some(&saved.path) {
                 self.refresh_note_properties_in(group);
             }
         }
@@ -688,11 +669,7 @@ impl Workspace {
     fn after_switch(&mut self, group: GroupId, cx: &mut Context<Self>) {
         if self.closing == Closing::Requested {
             self.close_flush(cx);
-        } else if self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
-            .is_some_and(|h| h.wanted.is_some())
-        {
+        } else if self.host_in(group).is_some_and(|h| h.wanted.is_some()) {
             self.switch(group, cx);
         }
         // The first open settled (or failed): FILES may pick its folder;
@@ -729,7 +706,7 @@ impl Workspace {
             self.flash_error(format!("Couldn't open {name}: {}.", block.reason()), cx);
             return;
         }
-        if self.state(group).and_then(|s| s.notes.as_ref()).is_none() {
+        if self.host_in(group).is_none() {
             return;
         }
         if !can_save {
@@ -776,7 +753,7 @@ impl Workspace {
         let outcome = self.apply_flush(group, flushed, cx);
         let problem = self.flush_failure_in(group, &outcome, cx);
         self.block_input_in(group, false, cx);
-        let host = self.state(group).and_then(|s| s.notes.as_ref());
+        let host = self.host_in(group);
         let note_wanted = host.is_some_and(|h| h.is_open_wanted());
         if let Some(problem) = problem {
             let note = host
@@ -885,7 +862,7 @@ impl Workspace {
             return;
         };
         #[cfg(test)]
-        if let Some(host) = self.groups.get_mut(&group).and_then(|s| s.notes.as_mut()) {
+        if let Some(host) = self.host_in_mut(group) {
             host.tick_checks += 1;
         }
         if !self.can_save_in(group) {
@@ -912,11 +889,7 @@ impl Workspace {
 
     /// [`Self::save_note`] for the note `group` holds.
     fn save_note_in(&mut self, group: GroupId, cx: &mut Context<Self>) {
-        let Some(note) = self
-            .state(group)
-            .and_then(|s| s.notes.as_ref())
-            .and_then(|h| h.note.clone())
-        else {
+        let Some(note) = self.host_in(group).and_then(|h| h.note.clone()) else {
             return;
         };
         if self.status.read_only {
@@ -1017,8 +990,12 @@ impl Workspace {
     /// the open note may have been rewritten or gone with it. Re-read both
     /// counts, keeping the ones shown until they land.
     pub(crate) fn refresh_note_counts(&mut self) {
-        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref())
-            && let Some(note) = host.note.clone()
+        if let (Some(host), Some(tx)) = (
+            Self::active_in(&mut self.groups, &self.layout)
+                .notes
+                .as_mut(),
+            self.tx.as_ref(),
+        ) && let Some(note) = host.note.clone()
         {
             host.meta.refresh_backlinks(&note, tx);
             host.meta.refresh_properties(&note, tx);
@@ -1028,7 +1005,12 @@ impl Workspace {
     /// Re-read the workspace's git summary (throttled; a no-op with no
     /// repository to look at).
     pub(crate) fn refresh_git(&mut self) {
-        if let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.as_ref()) {
+        if let (Some(host), Some(tx)) = (
+            Self::active_in(&mut self.groups, &self.layout)
+                .notes
+                .as_mut(),
+            self.tx.as_ref(),
+        ) {
             host.meta.refresh_git(tx);
         }
     }
@@ -1057,7 +1039,12 @@ impl Workspace {
     /// paths by kind. Read off the UI thread; the toast arrives on the app
     /// channel.
     pub(crate) fn show_git_status(&mut self, cx: &mut Context<Self>) {
-        let (Some(host), Some(tx)) = (active_mut!(self).notes.as_mut(), self.tx.clone()) else {
+        let (Some(host), Some(tx)) = (
+            Self::active_in(&mut self.groups, &self.layout)
+                .notes
+                .as_mut(),
+            self.tx.clone(),
+        ) else {
             return;
         };
         // The one `git status` run answers both: the toast and the footer.
@@ -1095,7 +1082,7 @@ impl Workspace {
         let group = counted
             .and_then(|path| self.group_where(|h| h.note.as_ref() == Some(path)))
             .unwrap_or_else(|| self.layout.active_group());
-        if let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut())
+        if let Some(host) = self.host_in_mut(group)
             && let Some(note) = host.note.as_ref()
         {
             // Only the counts are routed here: nothing comes back.
@@ -1133,8 +1120,7 @@ impl Workspace {
                     continue;
                 }
                 let note = workspace
-                    .state(group)
-                    .and_then(|s| s.notes.as_ref())
+                    .host_in(group)
                     .and_then(|h| h.note.as_ref())
                     .map_or_else(|| "the editor".to_string(), ToString::to_string);
                 tracing::warn!("quitting with unsaved edits to {note}");
@@ -1163,7 +1149,7 @@ impl Workspace {
     /// quit: a window close arriving then must not downgrade a quit, or the flush
     /// would end with only the window gone and the app left in the dock.
     fn set_close_intent(&mut self, quit: bool) {
-        let under_way = matches!(self.closing, Closing::Requested | Closing::Flushing);
+        let under_way = self.window_closing();
         self.quit_on_close = if under_way {
             self.quit_on_close || quit
         } else {
@@ -1297,7 +1283,7 @@ impl Workspace {
         }
         for group in groups {
             if self.can_save_in(group)
-                && let Some(host) = self.state_mut(group).and_then(|s| s.notes.as_mut())
+                && let Some(host) = self.host_in_mut(group)
             {
                 host.session.stop_autosave();
             }
@@ -1308,6 +1294,19 @@ impl Workspace {
     /// The note session of `group`, if it has one.
     pub(super) fn host_in(&self, group: GroupId) -> Option<&NoteHost> {
         self.state(group).and_then(|s| s.notes.as_ref())
+    }
+
+    /// The note `group` has open, as a failure message names it: the vault
+    /// root when it has none.
+    pub(super) fn note_name_in(&self, group: GroupId) -> VaultPath {
+        self.host_in(group)
+            .and_then(|h| h.note.clone())
+            .unwrap_or_else(VaultPath::root)
+    }
+
+    /// The note session of `group`, mutable, if it has one.
+    pub(super) fn host_in_mut(&mut self, group: GroupId) -> Option<&mut NoteHost> {
+        self.state_mut(group).and_then(|s| s.notes.as_mut())
     }
 
     /// Stop the autosave tick of every group.
@@ -1458,10 +1457,7 @@ impl Workspace {
             .iter()
             .find_map(|(group, outcome)| flush_problem(outcome).map(|p| (*group, p)))
         {
-            let note = self
-                .host_in(group)
-                .and_then(|h| h.note.clone())
-                .unwrap_or_else(VaultPath::root);
+            let note = self.note_name_in(group);
             self.closing = Closing::Open;
             self.restart_ticks();
             self.arm_discard(cx);

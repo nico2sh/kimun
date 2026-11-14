@@ -864,18 +864,18 @@ fn structural_commands_wait_for_a_pending_restore(cx: &mut TestAppContext) {
     assert_eq!(shown, first, "the step ran last");
 }
 
-/// A move of the active group asked for during the restore waits for it
-/// and runs on the restored region: the shown tab's `c.md` over an empty
-/// group swaps with it.
+/// A move of the active group asked for during the restore does nothing: the
+/// layout on screen is not the one the restore lands, and a move would be
+/// written over the stored record. The restored record stays whole.
 #[gpui_kit::test]
-fn a_group_move_during_the_restore_waits_for_it(cx: &mut TestAppContext) {
+fn a_group_move_during_the_restore_is_dropped(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let record = two_tab_record();
     let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
     assert!(cx.read(|cx| win.workspace.read(cx).session_restoring()));
     win.with(cx, |w, cx| {
-        w.move_active_group(Dir::Down, cx);
+        assert!(w.move_active_group(Dir::Down, cx), "handled, not passed on");
     });
     drive(&rt, cx, |cx| {
         !win.indexing(cx)
@@ -887,9 +887,9 @@ fn a_group_move_during_the_restore_waits_for_it(cx: &mut TestAppContext) {
         win.notes_by_tab(cx),
         vec![
             vec![Some("a.md".to_string()), Some("b.md".to_string())],
-            vec![None, Some("c.md".to_string())],
+            vec![Some("c.md".to_string()), None],
         ],
-        "c.md went below the empty group"
+        "the restored record is whole"
     );
 }
 
