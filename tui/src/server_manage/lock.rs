@@ -15,10 +15,11 @@ const LOCK_FILE: &str = ".kimun-server.update.lock";
 /// An update takes minutes at most. A lock older than this was left by a crash.
 const STALE: Duration = Duration::from_secs(15 * 60);
 
-/// Held while an update runs. Dropping it releases the lock.
+/// Held while an update runs. Dropping it releases the lock, but only if the file is still ours.
 #[derive(Debug)]
 pub struct UpdateLock {
     path: PathBuf,
+    token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,16 @@ pub enum LockError {
     Io(String),
 }
 
+/// Text that no other holder writes: the process id and a counter.
+fn new_token() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 impl UpdateLock {
     /// Take the lock for the install folder `dir`.
     pub fn acquire(dir: &Path) -> Result<Self, LockError> {
@@ -37,6 +48,7 @@ impl UpdateLock {
 
     fn acquire_with_age_limit(dir: &Path, stale: Duration) -> Result<Self, LockError> {
         let path = dir.join(LOCK_FILE);
+        let token = new_token();
         for attempt in 0..2 {
             match std::fs::OpenOptions::new()
                 .write(true)
@@ -44,13 +56,19 @@ impl UpdateLock {
                 .open(&path)
             {
                 Ok(mut file) => {
-                    // The process id helps a person who looks at a stuck lock.
-                    let _ = writeln!(file, "{}", std::process::id());
-                    return Ok(Self { path });
+                    file.write_all(token.as_bytes())
+                        .map_err(|e| LockError::Io(e.to_string()))?;
+                    return Ok(Self { path, token });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     if attempt == 0 && is_stale(&path, stale) {
-                        system::remove_file(&path).map_err(|e| LockError::Io(e.to_string()))?;
+                        // Claim the stale file by renaming it away. A rename is atomic: of two
+                        // callers that both saw the stale file, one renames it and the other finds
+                        // nothing to rename. Only a caller that won may go on to create a new lock.
+                        let claimed = dir.join(format!("{LOCK_FILE}.{token}.stale"));
+                        if system::move_file(&path, &claimed).is_ok() {
+                            let _ = system::remove_file(&claimed);
+                        }
                         continue;
                     }
                     return Err(LockError::Busy);
@@ -72,7 +90,11 @@ fn is_stale(path: &Path, limit: Duration) -> bool {
 
 impl Drop for UpdateLock {
     fn drop(&mut self) {
-        let _ = system::remove_file(&self.path);
+        // A holder whose lock was taken over (it ran past the age limit) must not delete the new
+        // owner's lock.
+        if std::fs::read_to_string(&self.path).is_ok_and(|text| text == self.token) {
+            let _ = system::remove_file(&self.path);
+        }
     }
 }
 
@@ -102,6 +124,22 @@ mod tests {
             LockError::Busy
         );
         assert!(UpdateLock::acquire_with_age_limit(dir.path(), Duration::ZERO).is_ok());
+    }
+
+    #[test]
+    fn a_holder_that_lost_its_lock_does_not_delete_the_new_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = UpdateLock::acquire(dir.path()).unwrap();
+        // The first holder ran past the age limit, and a second took the lock over.
+        let second = UpdateLock::acquire_with_age_limit(dir.path(), Duration::ZERO).unwrap();
+        drop(first);
+        assert_eq!(
+            UpdateLock::acquire(dir.path()).unwrap_err(),
+            LockError::Busy,
+            "the second still holds it"
+        );
+        drop(second);
+        assert!(UpdateLock::acquire(dir.path()).is_ok());
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! The eligibility rules and the whole update flow, with a fake network, service and server.
 #![cfg(test)]
+// The fixtures run shell scripts as the server binary.
+#![cfg(unix)]
 
 use std::sync::Mutex;
 use std::time::Duration;

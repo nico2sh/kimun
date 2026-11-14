@@ -279,9 +279,8 @@ write_marker() {
     Linux) [ -f "$SYSTEMD_UNIT" ] && kind="systemd" ;;
     Darwin) [ -f "$LAUNCHD_PLIST" ] && kind="launchd" ;;
   esac
-  # The app needs an absolute folder, and TOML needs `\` and `"` escaped. The folder exists by now.
-  abs_dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" || err "could not resolve $INSTALL_DIR"
-  esc_dir="$(printf '%s' "$abs_dir" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+  # TOML needs `\` and `"` escaped. INSTALL_DIR is absolute (see main) and has no control characters.
+  esc_dir="$(printf '%s' "$INSTALL_DIR" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
   mkdir -p "$CONFIG_DIR" || err "could not create $CONFIG_DIR"
   cat > "$MARKER.new" <<EOF
 # Written by install-server.sh. The Kimün app reads it to know that it may update this server.
@@ -384,9 +383,17 @@ main() {
   PLATFORM="$(detect_platform)"
   info "Detected platform: $PLATFORM"
 
-  # An absolute install folder: the service file and the marker both need one.
-  mkdir -p "$INSTALL_DIR" || err "could not create install dir: $INSTALL_DIR"
-  INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)" || err "could not resolve install dir: $INSTALL_DIR"
+  # An absolute install folder: the service file and the marker both need one. Nothing is created
+  # here: a run that fails early leaves nothing behind.
+  case "$INSTALL_DIR" in
+    /*) ;;
+    *) INSTALL_DIR="$(pwd)/$INSTALL_DIR" ;;
+  esac
+  # A folder name with a control character (a newline, a tab) cannot go into the marker or the
+  # service file.
+  case "$INSTALL_DIR" in
+    *[![:print:]]*) err "the install folder has a control character in its name: choose another with KIMUN_SERVER_INSTALL_DIR" ;;
+  esac
 
   # Resolve the latest *stable* server release: from the manifest, else from the GitHub
   # API. The API's /releases/latest cannot be used: this repo publishes several tag

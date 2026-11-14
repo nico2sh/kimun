@@ -111,6 +111,7 @@ pub fn check_with(
     if !is_local_url(server_url) {
         return Err(Unavailable::NotLocal);
     }
+    let install = marker::load(config_dir).map_err(Unavailable::Marker)?;
     let service_port = service_port(config_dir);
     let url_port = port_of(server_url);
     if url_port != Some(service_port) {
@@ -119,7 +120,6 @@ pub fn check_with(
             service_port,
         });
     }
-    let install = marker::load(config_dir).map_err(Unavailable::Marker)?;
     let right_manager = match install.service {
         ServiceKind::Systemd => cfg!(target_os = "linux"),
         ServiceKind::Launchd => cfg!(target_os = "macos"),
