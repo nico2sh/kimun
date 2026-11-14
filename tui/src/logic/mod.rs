@@ -15,6 +15,7 @@ pub mod list;
 pub mod attachment;
 pub mod doc_meta;
 pub mod editor;
+pub mod editor_region;
 pub mod file_ops;
 pub mod files;
 pub mod follow;

@@ -121,6 +121,31 @@ mod tests {
         assert_eq!((icon.width(), icon.height()), (128, 128));
     }
 
+    /// The tab strip's close and plus glyphs are bundled: an icon the
+    /// source does not carry draws an empty button.
+    #[test]
+    fn every_tab_strip_icon_is_bundled() {
+        for icon in crate::workspace::TAB_STRIP_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
+    /// The group header's close button (ADR-0058), as the tab strip's.
+    #[test]
+    fn every_group_header_icon_is_bundled() {
+        for icon in crate::workspace::GROUP_HEADER_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
     /// Every FILES row icon resolves too.
     #[test]
     fn every_files_row_icon_is_bundled() {

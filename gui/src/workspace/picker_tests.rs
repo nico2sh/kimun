@@ -110,7 +110,15 @@ fn picker_selected(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
 }
 
 fn open_note(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
 }
 
 /// Whether the open note is `p`.
@@ -176,13 +184,22 @@ fn region(s: &Started, cx: &TestAppContext) -> Panel {
 }
 
 fn dirty(s: &Started, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).editor.read(cx).editor.is_dirty())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .editor
+            .read(cx)
+            .editor
+            .is_dirty()
+    })
 }
 
 fn switching(s: &Started, cx: &TestAppContext) -> bool {
     cx.read(|cx| {
         s.workspace
             .read(cx)
+            .active_state()
             .notes
             .as_ref()
             .is_some_and(|h| h.is_switching() || h.is_open_wanted())
@@ -814,7 +831,7 @@ fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
     // Hide the left slot first.
     let shown = cx.read(|cx| started.workspace.read(cx).side_drawn(Side::Left));
     if shown {
-        press(&started, "ctrl-t", cx);
+        press(&started, "alt-l", cx);
     }
     assert!(!cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
     press(&started, "ctrl-shift-b", cx);

@@ -1320,7 +1320,7 @@ fn assert_all_visible(shell: &Shell, views: &[DrawerView], cx: &gpui_kit::App) {
         let slot = w.layout.view_slot(view).expect("placed");
         assert!(w.leaf_visible(Leaf::Slot(slot)), "{view:?} is visible");
     }
-    assert!(w.leaf_visible(Leaf::Group(w.layout.active_group())));
+    assert!(w.leaf_visible(Leaf::Editor));
 }
 
 /// The user's report: FIND below FILES, then ASK right of FILES. The left
@@ -1448,7 +1448,7 @@ fn making_room_never_shrinks_the_editor_below_its_minimum(cx: &mut TestAppContex
             cx,
         );
         let w = shell.workspace.read(cx);
-        let group = Leaf::Group(w.layout.active_group());
+        let group = Leaf::Editor;
         let fit = w.fit(window);
         let width = fit
             .rects
@@ -1567,7 +1567,7 @@ fn a_drag_released_off_every_zone_is_forgotten_on_the_next_frame(cx: &mut TestAp
     let from = files_header(&shell, cx);
     let at = press_and_move(&shell, from, 40., cx);
     assert!(
-        shell.workspace.read_with(cx, |w, _| w.view_drag.is_some()),
+        shell.workspace.read_with(cx, |w, _| w.drag.is_some()),
         "the drag is recorded"
     );
     // Over the editor text: no zone there.
@@ -1578,7 +1578,7 @@ fn a_drag_released_off_every_zone_is_forgotten_on_the_next_frame(cx: &mut TestAp
     cx.update_window(shell.handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert!(
-        shell.workspace.read_with(cx, |w, _| w.view_drag.is_none()),
+        shell.workspace.read_with(cx, |w, _| w.drag.is_none()),
         "the dead drag is dropped"
     );
     assert_eq!(layout_now(&shell, cx), before);
@@ -1855,4 +1855,700 @@ fn the_outcome_of_filling_a_kept_empty_slot_needs_no_room(cx: &mut TestAppContex
         assert_eq!(outcome, DropOutcome::AtEdge(Side::Right));
     })
     .unwrap();
+}
+
+// --- Dragging an editor group by its header (ADR-0058) ---
+
+mod group_drag {
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Bounds, Pixels, TestAppContext, point, px};
+    use kimun_core::nfs::VaultPath;
+    use kimun_notes::logic::editor_region::{EditorRegion, GroupShape, TabId};
+    use kimun_notes::logic::layout::{Dir, Side};
+    use kimun_notes::logic::layout_tree::{Axis, Focus, GroupId, Leaf};
+    use kimun_notes::logic::nav::DrawerView;
+    use tokio::runtime::Runtime;
+
+    use super::super::drop_zones::{
+        DropTarget, GROUP_DRAG_CHIP_ID, Zone, group_zone_id, window_strip_id, zone_id,
+    };
+    use super::super::group_header::{GROUP_HEADER_ID, GROUP_ID, group_element};
+    use super::super::rail_cell_id;
+    use super::super::start_tests::{Started, drive, open_started, runtime, vault_start};
+    use super::super::tab_strip::{TAB_NEW_DROP_ID, TAB_STRIP_ID, tab_drop_id};
+    use super::{
+        EDGES, drag_onto, drawn, move_held, point_in, press_and_move, press_key, release, shell_of,
+    };
+    use crate::startup::FirstNote;
+    use crate::test_vault::{TestVault, test_vault};
+
+    const NOTES: &[(&str, &str)] = &[
+        ("a.md", "alpha"),
+        ("b.md", "beta"),
+        ("c.md", "gamma"),
+        ("d.md", "delta"),
+    ];
+
+    fn path(p: &str) -> VaultPath {
+        VaultPath::new(p)
+    }
+
+    /// A vault holding [`NOTES`], started on `a.md` in the first group.
+    fn started(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Started) {
+        let v = rt.block_on(test_vault(NOTES, &[]));
+        let started = open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("a.md"))),
+            v.settings.clone(),
+        );
+        drive(rt, cx, |cx| started.text(cx) == "alpha");
+        (v, started)
+    }
+
+    fn region(s: &Started, cx: &TestAppContext) -> EditorRegion {
+        cx.read(|cx| s.workspace.read(cx).layout.region().clone())
+    }
+
+    fn note_in(s: &Started, group: GroupId, cx: &TestAppContext) -> Option<VaultPath> {
+        cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .state(group)
+                .and_then(|st| st.notes.as_ref())
+                .and_then(|h| h.note.clone())
+        })
+    }
+
+    fn text_in(s: &Started, group: GroupId, cx: &TestAppContext) -> String {
+        cx.read(|cx| {
+            let editor = s.workspace.read(cx).state(group).unwrap().editor.clone();
+            editor.read(cx).editor.get_text()
+        })
+    }
+
+    fn dirty_in(s: &Started, group: GroupId, cx: &TestAppContext) -> bool {
+        cx.read(|cx| s.workspace.read(cx).editor_dirty_in(group, cx))
+    }
+
+    /// One state per group of the region, no more, no less.
+    fn assert_in_step(s: &Started, cx: &TestAppContext) {
+        cx.read(|cx| {
+            let w = s.workspace.read(cx);
+            let mut groups = w.layout.region().all_groups();
+            groups.sort_by_key(|g| format!("{g:?}"));
+            let mut states: Vec<GroupId> = w.groups.keys().copied().collect();
+            states.sort_by_key(|g| format!("{g:?}"));
+            assert_eq!(groups, states, "one state per group of the region");
+        });
+    }
+
+    /// Open `note` in a split right of the active group; returns the new
+    /// group, once its note shows.
+    fn split_with(s: &Started, rt: &Runtime, note: &str, cx: &mut TestAppContext) -> GroupId {
+        let p = path(note);
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note_in_split(p, Axis::Horizontal, cx))
+        });
+        let want = path(note);
+        drive(rt, cx, |cx| {
+            let g = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+            note_in(s, g, cx).as_ref() == Some(&want)
+        });
+        cx.read(|cx| s.workspace.read(cx).layout.active_group())
+    }
+
+    /// Open `note` in a new tab; returns the tab and its group.
+    fn new_tab_with(
+        s: &Started,
+        rt: &Runtime,
+        note: &str,
+        cx: &mut TestAppContext,
+    ) -> (TabId, GroupId) {
+        let p = path(note);
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note_in_new_tab(p, cx))
+        });
+        let want = path(note);
+        drive(rt, cx, |cx| {
+            let g = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+            note_in(s, g, cx).as_ref() == Some(&want)
+        });
+        cx.read(|cx| {
+            let r = s.workspace.read(cx).layout.region();
+            (r.shown(), r.active_group())
+        })
+    }
+
+    fn show_tab(s: &Started, tab: TabId, cx: &mut TestAppContext) {
+        cx.update(|cx| s.workspace.update(cx, |w, cx| w.show_tab(tab, cx)));
+        cx.run_until_parked();
+    }
+
+    /// Run the drop a release on `target` runs, with no pointer.
+    fn drop_group(
+        s: &Started,
+        group: GroupId,
+        target: DropTarget,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        let ws = s.workspace.clone();
+        let done = cx
+            .update_window(s.handle, |_, window, cx| {
+                ws.update(cx, |w, cx| w.drop_group(group, target, window, cx))
+            })
+            .unwrap();
+        cx.run_until_parked();
+        done
+    }
+
+    /// Where a press grabs the header of the group at `at`.
+    fn header(s: &Started, at: usize, cx: &mut TestAppContext) -> gpui_kit::Point<Pixels> {
+        point_in(
+            &shell_of(s),
+            group_element(GROUP_HEADER_ID, at),
+            Some(point(px(20.), px(8.))),
+            cx,
+        )
+    }
+
+    fn bounds(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> Option<Bounds<Pixels>> {
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id)
+                .filter(|e| e.visible())
+                .map(|e| e.bounds())
+        })
+        .unwrap()
+    }
+
+    fn label(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> Option<String> {
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id)
+                .filter(|e| e.visible())
+                .and_then(|e| e.label().map(str::to_string))
+        })
+        .unwrap()
+    }
+
+    fn all_zone_ids(groups: usize) -> Vec<gpui_kit::SharedString> {
+        (0..groups)
+            .flat_map(|at| Zone::ALL.map(|zone| group_zone_id(at, zone)))
+            .collect()
+    }
+
+    /// A header drag of a tab's group shows the strip although the region
+    /// holds one tab: the plus button takes the drop, the tab's own label
+    /// does not (the group is in it already). Released off every target,
+    /// the strip goes again.
+    #[gpui_kit::test]
+    fn dragging_a_header_shows_the_strip_even_with_one_tab(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "one tab: no strip");
+        let from = header(&s, 0, cx);
+        let at = press_and_move(&shell, from, 40., cx);
+        assert!(cx.update(|cx| cx.has_active_drag()), "a drag is live");
+        assert!(drawn(&shell, GROUP_DRAG_CHIP_ID, cx), "the ghost follows");
+        assert!(drawn(&shell, TAB_STRIP_ID, cx), "the strip shows");
+        assert!(
+            drawn(&shell, TAB_NEW_DROP_ID, cx),
+            "the plus takes the drop"
+        );
+        assert_eq!(
+            label(&s, TAB_NEW_DROP_ID, cx).as_deref(),
+            Some("Move to a new tab")
+        );
+        assert!(
+            !drawn(&shell, tab_drop_id(0), cx),
+            "its own tab is no target"
+        );
+        release(&shell, at, cx);
+        assert!(!cx.update(|cx| cx.has_active_drag()));
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "the strip goes again");
+        assert_eq!(region(&s, cx).tabs().len(), 1);
+    }
+
+    /// Released on an edge of another group, the dragged group goes on
+    /// that side of it, keeping its id, its note and its state; it becomes
+    /// the active group with the keyboard.
+    #[gpui_kit::test]
+    fn drop_on_a_group_edge_splits_it_with_the_dragged_note(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        let zone = group_zone_id(1, Zone::Edge(Dir::Down));
+        let at = drag_onto(&shell, from, zone.clone(), cx);
+        assert_eq!(label(&s, zone, cx).as_deref(), Some("Split below"));
+        release(&shell, at, cx);
+        assert!(!cx.update(|cx| cx.has_active_drag()));
+        let r = region(&s, cx);
+        assert_eq!(
+            r.shape(),
+            GroupShape::Split {
+                axis: Axis::Vertical,
+                children: vec![(0.5, GroupShape::Group(b)), (0.5, GroupShape::Group(a))],
+            }
+        );
+        assert_eq!(r.tabs().len(), 1);
+        assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
+        assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
+        assert_eq!(r.active_group(), a);
+        assert_eq!(
+            cx.read(|cx| s.workspace.read(cx).layout.focused()),
+            Focus::Leaf(Leaf::Editor)
+        );
+        assert_in_step(&s, cx);
+    }
+
+    /// Released on the centre of another group, the two groups trade
+    /// places (each keeps its note, its state and the other's size); the
+    /// dragged one is active.
+    #[gpui_kit::test]
+    fn drop_on_a_group_centre_swaps_the_two_notes(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, _| w.layout.region_mut().resize_after(a, 0.3))
+        });
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        let zone = group_zone_id(1, Zone::Centre);
+        let at = drag_onto(&shell, from, zone.clone(), cx);
+        assert_eq!(label(&s, zone, cx).as_deref(), Some("Swap notes"));
+        release(&shell, at, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.groups(r.shown()), vec![b, a]);
+        assert_eq!(
+            r.shape(),
+            GroupShape::Split {
+                axis: Axis::Horizontal,
+                children: vec![(0.3, GroupShape::Group(b)), (0.7, GroupShape::Group(a))],
+            }
+        );
+        assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
+        assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
+        assert_eq!(r.active_group(), a);
+        assert_in_step(&s, cx);
+    }
+
+    /// Released on another tab's label, the group moves into that tab as a
+    /// split right of its active group, and becomes that tab's active
+    /// group; the user stays on the tab the group left.
+    #[gpui_kit::test]
+    fn drop_on_a_tab_label_adds_a_split_right_of_that_tabs_active_group(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let first = region(&s, cx).shown();
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let (second, c) = new_tab_with(&s, &rt, "c.md", cx);
+        show_tab(&s, first, cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 1, cx);
+        let at = drag_onto(&shell, from, tab_drop_id(1), cx);
+        assert_eq!(
+            label(&s, tab_drop_id(1), cx).as_deref(),
+            Some("Move to this tab")
+        );
+        release(&shell, at, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.tabs(), vec![first, second]);
+        assert_eq!(r.groups(first), vec![a]);
+        assert_eq!(r.groups(second), vec![c, b]);
+        assert_eq!(
+            r.shape(),
+            GroupShape::Group(a),
+            "the user stays on the tab the group left"
+        );
+        assert_eq!(r.shown(), first);
+        assert_eq!(r.active_group(), a);
+        assert_eq!(r.active_group_of(second), Some(b));
+        assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
+        assert_eq!(s.text(cx), "alpha", "the shown group's note");
+        assert_in_step(&s, cx);
+    }
+
+    /// Released on the plus button, the group moves alone into a new tab
+    /// after the last one; the user stays on the tab it left.
+    #[gpui_kit::test]
+    fn drop_on_plus_moves_the_note_into_a_new_tab(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let first = region(&s, cx).shown();
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 1, cx);
+        let at = drag_onto(&shell, from, TAB_NEW_DROP_ID, cx);
+        release(&shell, at, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.tabs().len(), 2);
+        let new = r.tabs()[1];
+        assert_eq!(r.groups(first), vec![a]);
+        assert_eq!(r.groups(new), vec![b]);
+        assert_eq!(r.shown(), first);
+        assert_eq!(r.active_group(), a);
+        assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
+        assert!(drawn(&shell, TAB_STRIP_ID, cx), "two tabs: the strip stays");
+        assert_in_step(&s, cx);
+    }
+
+    /// The only group of a tab moves away whole: its tab closes with it
+    /// and no empty group is left anywhere. (A lone group draws no header,
+    /// so this runs the drop a release runs.) The only group of the only
+    /// tab has nowhere to go: the plus refuses it.
+    #[gpui_kit::test]
+    fn dropping_a_notes_only_group_leaves_no_empty_group_behind(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let first = region(&s, cx).shown();
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        // The only group of the only tab: nothing to do.
+        let before = region(&s, cx);
+        assert!(!drop_group(&s, a, DropTarget::NewTab, cx));
+        assert_eq!(region(&s, cx), before);
+
+        let (second, c) = new_tab_with(&s, &rt, "c.md", cx);
+        let d = split_with(&s, &rt, "d.md", cx);
+        show_tab(&s, first, cx);
+        // Into another tab: the shown tab it left closes, that tab shows.
+        assert!(drop_group(&s, a, DropTarget::Tab(second), cx));
+        let r = region(&s, cx);
+        assert_eq!(r.tabs(), vec![second]);
+        assert_eq!(r.groups(second), vec![c, d, a], "right of d, active there");
+        assert_eq!(r.shown(), second);
+        assert_eq!(r.active_group(), a);
+        assert_eq!(s.text(cx), "alpha");
+        for g in r.all_groups() {
+            assert!(note_in(&s, g, cx).is_some(), "{g:?} is not empty");
+        }
+        assert_in_step(&s, cx);
+
+        // Onto the plus, alone in its tab with another tab beside it: its
+        // tab closes, the new one holds it and shows.
+        assert!(drop_group(&s, a, DropTarget::NewTab, cx));
+        assert!(drop_group(
+            &s,
+            c,
+            DropTarget::Tab(region(&s, cx).tabs()[1]),
+            cx
+        ));
+        let r = region(&s, cx);
+        assert_eq!(r.tabs().len(), 2);
+        let lone = r.tabs()[0];
+        assert_eq!(r.groups(lone), vec![d]);
+        let only = r.tabs()[1];
+        assert_eq!(r.groups(only), vec![a, c]);
+        assert!(drop_group(&s, d, DropTarget::NewTab, cx));
+        let r = region(&s, cx);
+        assert_eq!(r.tabs().len(), 2);
+        assert!(!r.tabs().contains(&lone), "the emptied tab closed");
+        assert_eq!(r.groups(r.tabs()[1]), vec![d]);
+        assert_eq!(r.all_groups().len(), 3, "no group was added");
+        for g in r.all_groups() {
+            assert!(note_in(&s, g, cx).is_some(), "{g:?} is not empty");
+        }
+        assert_in_step(&s, cx);
+    }
+
+    /// Esc during a group drag ends it: the zones and the strip go, and
+    /// the release over what was a zone changes nothing. A release off
+    /// every target (over a slot) changes nothing either.
+    #[gpui_kit::test]
+    fn a_drag_cancelled_changes_nothing(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let before = region(&s, cx);
+        let zone = group_zone_id(1, Zone::Edge(Dir::Left));
+        let from = header(&s, 0, cx);
+        let at = drag_onto(&shell, from, zone.clone(), cx);
+        press_key(&shell, "escape", cx);
+        assert!(!cx.update(|cx| cx.has_active_drag()), "Esc ended the drag");
+        assert!(!drawn(&shell, zone, cx), "the zones are gone");
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "the strip is gone");
+        release(&shell, at, cx);
+        assert_eq!(region(&s, cx), before);
+
+        // Released on its own header: no target there.
+        let from = header(&s, 0, cx);
+        let at = press_and_move(&shell, from, 40., cx);
+        release(&shell, at, cx);
+        assert!(!cx.update(|cx| cx.has_active_drag()));
+        assert_eq!(region(&s, cx), before);
+        assert_in_step(&s, cx);
+    }
+
+    /// The two drop layers never share a pixel. A group drag draws only
+    /// the inner layer (each group's centre and edges, which tile its body)
+    /// and the strip's targets; a view drag only the outer one (the
+    /// window-edge strips) and the slot zones. Within the group drag no two
+    /// targets overlap.
+    #[gpui_kit::test]
+    fn zones_do_not_overlap_between_inner_and_outer_layers(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let strips = [Side::Left, Side::Right].map(window_strip_id);
+
+        // A group drag: the inner layer and the strip's targets.
+        let from = header(&s, 0, cx);
+        let at = press_and_move(&shell, from, 40., cx);
+        for strip in &strips {
+            assert!(!drawn(&shell, strip.clone(), cx), "{strip}: no outer strip");
+        }
+        assert!(
+            !drawn(&shell, zone_id(DrawerView::Files, Zone::Centre), cx),
+            "no slot zone"
+        );
+        let mut targets: Vec<(String, Bounds<Pixels>)> = Vec::new();
+        for id in all_zone_ids(2) {
+            if let Some(b) = bounds(&s, id.clone(), cx) {
+                targets.push((id.to_string(), b));
+            }
+        }
+        // The other group's five zones; none of its own.
+        assert_eq!(targets.len(), 5, "{targets:?}");
+        assert!(
+            targets
+                .iter()
+                .all(|(id, _)| id.starts_with("drop-group-1-"))
+        );
+        // They tile the other group's body.
+        let area = |b: &Bounds<Pixels>| f32::from(b.size.width) * f32::from(b.size.height);
+        let body: f32 = targets.iter().map(|(_, b)| area(b)).sum();
+        let group = bounds(&s, group_element(GROUP_ID, 1), cx).unwrap();
+        let header_h = bounds(&s, group_element(GROUP_HEADER_ID, 1), cx)
+            .unwrap()
+            .size
+            .height;
+        let expected = f32::from(group.size.width) * f32::from(group.size.height - header_h);
+        assert!(
+            (body - expected).abs() < expected * 0.01,
+            "{body} vs {expected}"
+        );
+        targets.push((
+            TAB_NEW_DROP_ID.into(),
+            bounds(&s, TAB_NEW_DROP_ID, cx).unwrap(),
+        ));
+        for (i, (a, ba)) in targets.iter().enumerate() {
+            for (b, bb) in &targets[i + 1..] {
+                let w = (f32::from(ba.right().min(bb.right()))
+                    - f32::from(ba.left().max(bb.left())))
+                .max(0.);
+                let h = (f32::from(ba.bottom().min(bb.bottom()))
+                    - f32::from(ba.top().max(bb.top())))
+                .max(0.);
+                assert!(w * h < 0.5, "{a} and {b} overlap: {ba:?} {bb:?}");
+            }
+        }
+        release(&shell, at, cx);
+
+        // A view drag: the outer layer, never an inner zone.
+        let from = point_in(&shell, rail_cell_id(DrawerView::Tags), None, cx);
+        let at = press_and_move(&shell, from, 40., cx);
+        assert!(
+            strips.iter().any(|strip| drawn(&shell, strip.clone(), cx)),
+            "an outer strip is drawn"
+        );
+        for id in all_zone_ids(2) {
+            assert!(!drawn(&shell, id.clone(), cx), "{id}: no inner zone");
+        }
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "no strip for a view");
+        release(&shell, at, cx);
+    }
+
+    /// A tab chord mid-drag changes the shown tab: the new tab's group
+    /// gets its zones (the outcomes follow the shown tab, they are not
+    /// kept from the drag's start), and a drop there moves the dragged
+    /// group into that tab beside it.
+    #[gpui_kit::test]
+    fn a_new_tab_mid_drag_gives_its_group_zones(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let first = region(&s, cx).shown();
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        press_and_move(&shell, from, 40., cx);
+        press_key(&shell, "ctrl-t", cx);
+        assert!(cx.update(|cx| cx.has_active_drag()), "the drag lives on");
+        let r = region(&s, cx);
+        assert_eq!(r.tabs().len(), 2);
+        let new_tab = r.shown();
+        assert_ne!(new_tab, first);
+        let [empty] = r.groups(new_tab)[..] else {
+            panic!("one group in the new tab");
+        };
+        for zone in Zone::ALL {
+            assert!(drawn(&shell, group_zone_id(0, zone), cx), "{zone:?}");
+        }
+        let target = point_in(&shell, group_zone_id(0, Zone::Edge(Dir::Right)), None, cx);
+        move_held(&shell, target, cx);
+        release(&shell, target, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.groups(new_tab), vec![empty, a]);
+        assert_eq!(r.groups(first), vec![b]);
+        assert_eq!(r.active_group(), a);
+        assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
+        assert_in_step(&s, cx);
+    }
+
+    /// The unsaved text of the dragged group moves with it: nothing is
+    /// written, its editor keeps the edit and its unsaved mark.
+    #[gpui_kit::test]
+    fn unsaved_text_moves_with_the_dragged_group(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        split_with(&s, &rt, "b.md", cx);
+        let editor = cx.read(|cx| s.workspace.read(cx).state(a).unwrap().editor.clone());
+        cx.update(|cx| {
+            editor.update(cx, |view, cx| {
+                view.editor.set_text(String::new());
+                view.editor.insert_at_cursor("alpha edited");
+                cx.notify();
+            })
+        });
+        assert!(dirty_in(&s, a, cx));
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        let at = drag_onto(&shell, from, TAB_NEW_DROP_ID, cx);
+        release(&shell, at, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.groups(r.tabs()[1]), vec![a], "the group moved");
+        assert_eq!(text_in(&s, a, cx), "alpha edited");
+        assert!(dirty_in(&s, a, cx), "still unsaved");
+        assert_eq!(
+            rt.block_on(v.vault.get_note_text(&path("a.md"))).unwrap(),
+            "alpha",
+            "nothing was written"
+        );
+        assert_eq!(
+            cx.read(|cx| s.workspace.read(cx).state(a).unwrap().editor.clone()),
+            editor,
+            "the same editor"
+        );
+    }
+
+    /// A group dropped on itself changes nothing: its own zones and its own
+    /// tab's label are not drawn and refuse the drop.
+    #[gpui_kit::test]
+    fn a_group_dropped_on_itself_changes_nothing(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        split_with(&s, &rt, "b.md", cx);
+        let before = region(&s, cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        press_and_move(&shell, from, 40., cx);
+        for zone in Zone::ALL {
+            assert!(!drawn(&shell, group_zone_id(0, zone), cx), "{zone:?}");
+        }
+        let own = point_in(&shell, group_element(GROUP_ID, 0), None, cx);
+        move_held(&shell, own, cx);
+        release(&shell, own, cx);
+        assert_eq!(region(&s, cx), before);
+        for zone in Zone::ALL {
+            assert!(!drop_group(&s, a, DropTarget::Group(a, zone), cx));
+        }
+        assert!(!drop_group(&s, a, DropTarget::Tab(before.shown()), cx));
+        assert_eq!(region(&s, cx), before);
+        assert_in_step(&s, cx);
+    }
+
+    /// `groups` holds one state per group of the region after every kind
+    /// of drop: edge, centre, label, plus.
+    #[gpui_kit::test]
+    fn groups_stay_in_step_after_every_drop(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let c = split_with(&s, &rt, "c.md", cx);
+        let states = |cx: &TestAppContext| cx.read(|cx| s.workspace.read(cx).groups.len());
+        for dir in EDGES {
+            assert!(drop_group(&s, c, DropTarget::Group(a, Zone::Edge(dir)), cx));
+            assert_in_step(&s, cx);
+            assert_eq!(states(cx), 3);
+        }
+        assert!(drop_group(&s, a, DropTarget::Group(b, Zone::Centre), cx));
+        assert_in_step(&s, cx);
+        assert!(drop_group(&s, b, DropTarget::NewTab, cx));
+        assert_in_step(&s, cx);
+        let tabs = region(&s, cx).tabs();
+        assert!(drop_group(&s, c, DropTarget::Tab(tabs[1]), cx));
+        assert_in_step(&s, cx);
+        assert_eq!(states(cx), 3);
+        for (g, note) in [(a, "a.md"), (b, "b.md"), (c, "c.md")] {
+            assert_eq!(note_in(&s, g, cx), Some(path(note)));
+        }
+    }
+
+    /// A group drag held while the region is replaced (a restore, a
+    /// workspace switch) ends: its group's id may name another group in
+    /// the new region, so nothing may drop it there.
+    #[gpui_kit::test]
+    fn replacing_the_region_ends_a_group_drag(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        press_and_move(&shell, from, 40., cx);
+        assert!(
+            cx.read(|cx| s.workspace.read(cx).dragged_group(cx))
+                .is_some()
+        );
+        let replaced = region(&s, cx);
+        cx.update(|cx| {
+            s.workspace.update(cx, |w, cx| {
+                assert!(w.replace_region(replaced, cx));
+            })
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.has_active_drag()), "the drag ended");
+        assert_eq!(cx.read(|cx| s.workspace.read(cx).dragged_group(cx)), None);
+        assert_in_step(&s, cx);
+    }
 }

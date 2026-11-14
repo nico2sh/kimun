@@ -1,6 +1,6 @@
 //! Layout **specs**: the authored, serializable form of a [`LayoutTree`]
 //! (ADR-0052 §5). A preset file holds named specs as nested TOML; a node is
-//! a split (`split` axis + `children`), an editor group (`editor = true`) or
+//! a split (`split` axis + `children`), the editor region (`editor = true`) or
 //! a slot (`views`, optional `shown`). Every child may carry a relative
 //! `weight` (default 1). The "research" preset:
 //!
@@ -18,7 +18,7 @@
 //! ```
 //!
 //! [`build`] validates a spec against the view registry and turns it into a
-//! tree; [`to_spec`] goes the other way. Specs never carry slot or group
+//! tree; [`to_spec`] goes the other way. Specs never carry slot
 //! ids: the builder numbers them itself, in reading order.
 
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{Axis, GroupId, LayoutTree, Leaf, Node, RailPosition, SlotId};
+use super::{Axis, LayoutTree, Leaf, Node, RailPosition, SlotId};
 use crate::logic::nav::DrawerView;
 use crate::logic::rag_caps::Caps;
 use crate::logic::view_registry;
@@ -77,7 +77,7 @@ pub enum NodeSpec {
     },
 }
 
-/// `editor = false` is not a node: reject it so it cannot pass for a group.
+/// `editor = false` is not a node: reject it so it cannot pass for the editor.
 fn must_be_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     if bool::deserialize(d)? {
         Ok(true)
@@ -112,7 +112,7 @@ pub struct PresetFile {
     pub rails: BTreeMap<String, RailPosition>,
 }
 
-/// Why a spec does not build. Every variant but [`SpecError::NoEditorGroup`]
+/// Why a spec does not build. Every variant but [`SpecError::NoEditorRegion`]
 /// carries the `path` of the offending node, `""` for the root, else like
 /// `children[1].children[0]`.
 #[derive(Debug, Clone, PartialEq)]
@@ -124,15 +124,16 @@ pub enum SpecError {
     /// A slot's `shown` is not one of its `views`.
     ShownNotInViews { path: String, shown: String },
     /// The tree has no `editor = true` leaf.
-    NoEditorGroup,
+    NoEditorRegion,
     /// A weight that is zero, negative, NaN or infinite.
     BadWeight { path: String, weight: f64 },
     /// A split whose children's weights add up to more than a finite
     /// number (each finite, e.g. `1e308` twice); `path` is the split.
     WeightSumOverflow { path: String },
     /// An `editor = true` leaf after the first (`path` is the later one):
-    /// a layout holds one editor group until group splitting exists.
-    MultipleEditorGroups { path: String },
+    /// a layout holds one editor region; its groups are split inside it,
+    /// not by the preset (ADR-0058).
+    MultipleEditorRegions { path: String },
     /// A split with fewer than two children.
     EmptySplit { path: String },
     /// A split axis other than `horizontal` / `vertical`.
@@ -148,10 +149,10 @@ impl SpecError {
             | SpecError::ShownNotInViews { path, .. }
             | SpecError::BadWeight { path, .. }
             | SpecError::WeightSumOverflow { path }
-            | SpecError::MultipleEditorGroups { path }
+            | SpecError::MultipleEditorRegions { path }
             | SpecError::EmptySplit { path }
             | SpecError::UnknownAxis { path, .. } => Some(path),
-            SpecError::NoEditorGroup => None,
+            SpecError::NoEditorRegion => None,
         }
     }
 }
@@ -181,8 +182,8 @@ impl fmt::Display for SpecError {
                 "Shown view \"{shown}\" in {} is not one of its views.",
                 at(path)
             ),
-            SpecError::NoEditorGroup => {
-                write!(f, "The layout has no editor group (`editor = true`).")
+            SpecError::NoEditorRegion => {
+                write!(f, "The layout has no editor region (`editor = true`).")
             }
             SpecError::BadWeight { path, weight } => write!(
                 f,
@@ -194,9 +195,9 @@ impl fmt::Display for SpecError {
                 "The weights of the split at {} add up to more than a finite number.",
                 if path.is_empty() { "the root" } else { path }
             ),
-            SpecError::MultipleEditorGroups { path } => write!(
+            SpecError::MultipleEditorRegions { path } => write!(
                 f,
-                "The editor group in {} is a second one; a layout holds one editor group until group splitting exists.",
+                "The editor region in {} is a second one; a layout holds one editor region (split the editor inside it instead).",
                 at(path)
             ),
             SpecError::EmptySplit { path } => write!(
@@ -422,7 +423,7 @@ fn node_problems(name: &str, node: &toml::Value, path: &str, out: &mut Vec<Strin
 /// Validate `spec` and build its tree. Views the registry says are
 /// unavailable with `caps` are skipped with a warning (a `shown` naming one
 /// is cleared); every other problem is an error, all of them collected. An
-/// editor-only tree, with no slot, is valid. Slot and group ids are
+/// editor-only tree, with no slot, is valid. Slot ids are
 /// assigned here, sequentially in reading order.
 pub fn build(
     spec: &ChildSpec,
@@ -435,11 +436,11 @@ pub fn build(
         seen: Vec::new(),
         slots: BTreeMap::new(),
         next_slot: 0,
-        next_group: 0,
+        has_editor: false,
     };
     let root = b.node(&spec.node, "");
-    if b.next_group == 0 {
-        b.errors.push(SpecError::NoEditorGroup);
+    if !b.has_editor {
+        b.errors.push(SpecError::NoEditorRegion);
     }
     match root {
         Some(root) if b.errors.is_empty() => {
@@ -461,7 +462,8 @@ struct Builder {
     seen: Vec<String>,
     slots: BTreeMap<SlotId, (Vec<DrawerView>, Option<DrawerView>)>,
     next_slot: u32,
-    next_group: u32,
+    /// Whether the editor leaf was built already.
+    has_editor: bool,
 }
 
 impl Builder {
@@ -470,15 +472,14 @@ impl Builder {
     fn node(&mut self, spec: &NodeSpec, path: &str) -> Option<Node<Leaf>> {
         match spec {
             NodeSpec::Editor { .. } => {
-                if self.next_group > 0 {
-                    self.errors.push(SpecError::MultipleEditorGroups {
+                if self.has_editor {
+                    self.errors.push(SpecError::MultipleEditorRegions {
                         path: path.to_string(),
                     });
                     return None;
                 }
-                let g = GroupId::new(self.next_group);
-                self.next_group += 1;
-                Some(Node::leaf(Leaf::Group(g)))
+                self.has_editor = true;
+                Some(Node::leaf(Leaf::Editor))
             }
             NodeSpec::Slot { views, shown } => self.slot(views, shown.as_deref(), path),
             NodeSpec::Split { split, children } => {
@@ -605,7 +606,7 @@ fn node_spec(tree: &LayoutTree<DrawerView>, node: &Node<Leaf>) -> NodeSpec {
         };
     }
     match node.as_leaf().expect("a node is a leaf or a split") {
-        Leaf::Group(_) => NodeSpec::Editor { editor: true },
+        Leaf::Editor => NodeSpec::Editor { editor: true },
         Leaf::Slot(s) => NodeSpec::Slot {
             views: tree
                 .slot_views(*s)

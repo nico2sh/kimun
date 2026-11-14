@@ -383,7 +383,16 @@ fn ctrl_s_mid_sequence_cancels_and_saves(cx: &mut TestAppContext) {
     };
     type_text(&shell, "X", cx);
     let dirty = |cx: &TestAppContext| {
-        cx.read(|cx| started.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     };
     assert!(dirty(cx));
     press(&shell, CHORD, cx);

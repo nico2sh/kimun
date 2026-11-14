@@ -9,7 +9,8 @@
 //!
 //! In tests the write is inline, so a test reads the file right after the
 //! key that changed the layout; `LayoutWriter::threaded` opts a test into
-//! the real thing.
+//! the real thing. The newest-only writer itself ([`LatestWriter`]) is
+//! shared with the session file's writer.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -45,78 +46,95 @@ impl Preset {
     }
 }
 
-#[derive(Default)]
-struct State {
-    /// The newest layout not written yet, and the preset record and rail
-    /// state it carries.
-    pending: Option<(LayoutTree<DrawerView>, Preset, RailState)>,
+/// The job waiting for the write thread, and whether one runs.
+struct State<J> {
+    /// The newest job not written yet.
+    pending: Option<J>,
     /// A write thread is running (and will see `pending`).
     busy: bool,
 }
 
-#[derive(Default)]
-struct Shared {
-    state: Mutex<State>,
+struct Shared<J> {
+    state: Mutex<State<J>>,
     idle: Condvar,
 }
 
-impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+impl<J> Shared<J> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, State<J>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-/// Saves the layout to `store`, the newest only.
-#[derive(Clone)]
-pub(crate) struct LayoutWriter {
-    store: LayoutStore,
-    shared: Arc<Shared>,
+/// Writes jobs off the UI thread, the newest only: jobs that pile up while
+/// one is written collapse into one write of the newest. In tests the write
+/// is inline, so a test reads the file right after the submit;
+/// `threaded` opts a test into the real thing. The layout's writes
+/// and the session file's ([`super::session::SessionWriter`]) both go
+/// through one.
+pub(crate) struct LatestWriter<J> {
+    shared: Arc<Shared<J>>,
+    write: Arc<dyn Fn(J) + Send + Sync>,
     inline: bool,
 }
 
-impl LayoutWriter {
-    pub(crate) fn new(store: LayoutStore) -> Self {
+impl<J> Clone for LatestWriter<J> {
+    fn clone(&self) -> Self {
         Self {
-            store,
-            shared: Arc::default(),
+            shared: self.shared.clone(),
+            write: self.write.clone(),
+            inline: self.inline,
+        }
+    }
+}
+
+impl<J: Send + 'static> LatestWriter<J> {
+    /// A writer that hands every job it writes to `write`.
+    pub(crate) fn new(write: impl Fn(J) + Send + Sync + 'static) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                state: Mutex::new(State {
+                    pending: None,
+                    busy: false,
+                }),
+                idle: Condvar::new(),
+            }),
+            write: Arc::new(write),
             inline: cfg!(test),
         }
     }
 
-    /// A writer that writes in the background even under test.
+    /// This writer, writing in the background even under test.
     #[cfg(test)]
-    pub(crate) fn threaded(store: LayoutStore) -> Self {
+    pub(crate) fn threaded(self) -> Self {
         Self {
             inline: false,
-            ..Self::new(store)
+            ..self
         }
     }
 
-    /// Save `layout`, recording `preset` as [`LayoutStore::save`] does. A
-    /// `Keep` never undoes a preset record still waiting to be written.
-    pub(crate) fn submit(
-        &self,
-        layout: LayoutTree<DrawerView>,
-        preset: PresetRecord<'_>,
-        rail: RailState,
-    ) {
+    /// Write `job`, replacing one still waiting.
+    pub(crate) fn submit(&self, job: J) {
+        self.submit_merged(job, |_, job| job);
+    }
+
+    /// Write `job`; a job still waiting is replaced by `merge(waiting,
+    /// job)`.
+    pub(crate) fn submit_merged(&self, job: J, merge: impl FnOnce(&J, J) -> J) {
         if self.inline {
-            write(&self.store, &layout, preset, rail);
+            (self.write)(job);
             return;
         }
-        let mut preset = Preset::from(preset);
         let mut state = self.shared.lock();
-        if preset == Preset::Keep
-            && let Some((_, waiting, _)) = &state.pending
-        {
-            preset = waiting.clone();
-        }
-        state.pending = Some((layout, preset, rail));
+        let job = match &state.pending {
+            Some(waiting) => merge(waiting, job),
+            None => job,
+        };
+        state.pending = Some(job);
         if state.busy {
             return;
         }
         state.busy = true;
-        let (store, shared) = (self.store.clone(), self.shared.clone());
+        let (shared, write) = (self.shared.clone(), self.write.clone());
         std::thread::spawn(move || {
             loop {
                 let job = {
@@ -130,12 +148,12 @@ impl LayoutWriter {
                         }
                     }
                 };
-                write(&store, &job.0, job.1.as_record(), job.2);
+                write(job);
             }
         });
     }
 
-    /// Wait until every layout submitted so far is written.
+    /// Wait until every job submitted so far is written.
     pub(crate) fn flush(&self) {
         let mut state = self.shared.lock();
         while state.busy {
@@ -145,6 +163,52 @@ impl LayoutWriter {
                 .wait(state)
                 .unwrap_or_else(|e| e.into_inner());
         }
+    }
+}
+
+/// A layout waiting to be written, with the preset record and rail state
+/// it carries.
+type LayoutJob = (LayoutTree<DrawerView>, Preset, RailState);
+
+/// Saves the layout to `store`, the newest only.
+#[derive(Clone)]
+pub(crate) struct LayoutWriter(LatestWriter<LayoutJob>);
+
+impl LayoutWriter {
+    pub(crate) fn new(store: LayoutStore) -> Self {
+        Self(LatestWriter::new(
+            move |(layout, preset, rail): LayoutJob| {
+                write(&store, &layout, preset.as_record(), rail)
+            },
+        ))
+    }
+
+    /// A writer that writes in the background even under test.
+    #[cfg(test)]
+    pub(crate) fn threaded(store: LayoutStore) -> Self {
+        Self(Self::new(store).0.threaded())
+    }
+
+    /// Save `layout`, recording `preset` as [`LayoutStore::save`] does. A
+    /// `Keep` never undoes a preset record still waiting to be written.
+    pub(crate) fn submit(
+        &self,
+        layout: LayoutTree<DrawerView>,
+        preset: PresetRecord<'_>,
+        rail: RailState,
+    ) {
+        self.0
+            .submit_merged((layout, Preset::from(preset), rail), |waiting, mut job| {
+                if job.1 == Preset::Keep {
+                    job.1 = waiting.1.clone();
+                }
+                job
+            });
+    }
+
+    /// Wait until every layout submitted so far is written.
+    pub(crate) fn flush(&self) {
+        self.0.flush();
     }
 }
 

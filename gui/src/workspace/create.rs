@@ -303,7 +303,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if modal::dialog_open(window, cx) || self.notes.is_none() {
+        if modal::dialog_open(window, cx) || self.active_state().notes.is_none() {
             return;
         }
         let status = cx.new(|_| OpStatus::default());
@@ -391,7 +391,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        if self.notes.is_none() {
+        if self.active_state().notes.is_none() {
             self.flash(NO_WORKSPACE, cx);
             return;
         }

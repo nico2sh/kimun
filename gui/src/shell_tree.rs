@@ -123,10 +123,7 @@ mod tests {
             assert_eq!(back.shown(n), tree.shown(o));
         }
         // Focus is not part of the layout: back on the editor.
-        assert_eq!(
-            back.focused(),
-            Focus::Leaf(Leaf::Group(back.active_group()))
-        );
+        assert_eq!(back.focused(), Focus::Leaf(Leaf::Editor));
         // Keys the layout does not own survive a write.
         let written = toml::to_string(&settings).unwrap();
         assert!(written.contains("kept = 1"), "{written}");

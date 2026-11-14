@@ -293,7 +293,15 @@ fn focused(s: &Started, id: &'static str, cx: &mut TestAppContext) -> bool {
 }
 
 fn open_note(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
 }
 
 fn disk(rt: &Runtime, v: &TestVault, p: &VaultPath) -> String {
@@ -770,7 +778,8 @@ fn open_note_survives_entering_ask(cx: &mut TestAppContext) {
     v.settings.write().unwrap().autosave_interval_secs = 1;
     started.workspace.update(cx, |w, _| {
         let tx = w.tx.clone().expect("the app channel");
-        w.notes
+        w.active_state_mut()
+            .notes
             .as_mut()
             .expect("a vault is open")
             .session

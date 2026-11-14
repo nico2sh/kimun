@@ -252,6 +252,51 @@ async fn close_flushes_the_buffer() {
     assert_eq!(disk(&f.vault, "n.md").await, "xhi");
 }
 
+/// One `NoteSession` per editor group over a shared vault: each keeps its own
+/// open note and buffer, and flushing one never touches the other's file.
+#[tokio::test]
+async fn two_sessions_over_one_vault_save_independently() {
+    let mut a = fixture("session-two-a").await;
+    a.vault
+        .create_note(&VaultPath::new("m.md"), "other")
+        .await
+        .unwrap();
+    let mut session_b = NoteSession::new(a.vault.clone(), a.settings.clone(), VaultPath::root());
+    let mut ed_b = Editor::new(false);
+
+    let opened_a = a
+        .session
+        .open(VaultPath::new("n.md"), Some(&mut a.ed), &a.tx)
+        .await;
+    assert_eq!(
+        opened_a.outcome,
+        OpenResult::Note(OpenOutcome::Opened(VaultPath::new("n.md")))
+    );
+    let opened_b = session_b
+        .open(VaultPath::new("m.md"), Some(&mut ed_b), &a.tx)
+        .await;
+    assert_eq!(
+        opened_b.outcome,
+        OpenResult::Note(OpenOutcome::Opened(VaultPath::new("m.md")))
+    );
+
+    type_x(&mut a.ed);
+    type_x(&mut ed_b);
+    assert!(matches!(
+        a.session.save_now(Some(&mut a.ed)).await,
+        SaveOutcome::Saved(_)
+    ));
+    assert!(matches!(
+        session_b.save_now(Some(&mut ed_b)).await,
+        SaveOutcome::Saved(_)
+    ));
+
+    assert_eq!(a.session.path(), &VaultPath::new("n.md"));
+    assert_eq!(session_b.path(), &VaultPath::new("m.md"));
+    assert_eq!(disk(&a.vault, "n.md").await, "xhi");
+    assert_eq!(disk(&a.vault, "m.md").await, "xother");
+}
+
 // ---- Opening -----------------------------------------------------------------
 
 #[tokio::test]
@@ -816,4 +861,33 @@ async fn retime_never_starts_a_stopped_tick() {
     assert!(!f.session.is_ticking());
     f.session.restart_autosave(&f.tx);
     assert_eq!(f.session.autosave_interval(), Some(120));
+}
+
+/// A flush given back unrun returns the background save it took over to
+/// the slot: the save is not aborted and finishes, and saves and flushes
+/// are allowed again.
+#[tokio::test]
+async fn a_flush_given_back_keeps_the_background_save_it_took_over() {
+    let mut f = on_note("session-give-back").await;
+    type_x(&mut f.ed);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let finished = Arc::new(AtomicBool::new(false));
+    let (wait, done) = (release.clone(), finished.clone());
+    f.session.autosave_task_mut().spawn(async move {
+        wait.notified().await;
+        done.store(true, Ordering::SeqCst);
+    });
+    let flush = f.session.prepare_flush(Some(&f.ed)).unwrap();
+    assert!(!f.session.is_autosave_in_flight(), "the flush holds it");
+    f.session.give_back_flush(flush);
+    assert!(f.session.is_autosave_in_flight(), "back in the slot");
+    release.notify_one();
+    for _ in 0..100 {
+        if finished.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(finished.load(Ordering::SeqCst), "the save ran to its end");
+    assert!(f.session.prepare_flush(Some(&f.ed)).is_ok());
 }

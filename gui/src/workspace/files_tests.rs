@@ -576,7 +576,7 @@ fn open_file_browser_reveals_the_notes_folder(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, "sub/a.md");
     // Hide the slot; the chord shows it again, focused.
-    started.press_key("ctrl-t", cx);
+    started.press_key("alt-l", cx);
     assert!(!started.shows(FILES_ID, cx));
     focus_files(&started, cx);
     assert!(started.shows(FILES_ID, cx));

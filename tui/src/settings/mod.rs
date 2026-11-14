@@ -30,6 +30,7 @@ pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::IndexFile;
 
 use self::history::HistoryFile;
+use self::session::SessionFile;
 use kimun_core::nfs::{VaultPath, pinned_notes};
 use kimun_core::system::{self, SystemPath};
 
@@ -38,6 +39,7 @@ pub mod config_migration;
 pub mod gui;
 pub mod history;
 pub mod icons;
+pub mod session;
 pub mod themes;
 pub mod workspace_config;
 
@@ -368,6 +370,16 @@ pub fn delete_artifacts(index: &IndexFile, history: &HistoryFile) -> Vec<String>
         leftovers.push(format!("  {history}\n    {e}"));
     } else {
         tracing::info!("removed history {}", history);
+    }
+    // The session file rides along with the history (same directory, same
+    // name), so every caller that deletes a workspace's artifacts clears it
+    // without a signature change.
+    let session = SessionFile::beside(history);
+    if let Err(e) = session.remove() {
+        tracing::warn!("failed to remove session {}: {}", session, e);
+        leftovers.push(format!("  {session}\n    {e}"));
+    } else {
+        tracing::info!("removed session {}", session);
     }
     leftovers
 }
@@ -1160,6 +1172,15 @@ impl AppSettings {
     /// `workspace_name`.
     pub fn history_for(&self, workspace_name: &str) -> HistoryFile {
         HistoryFile::in_dir(
+            &self.history_dir_resolved,
+            &self.file_key_for(workspace_name),
+        )
+    }
+
+    /// The named workspace's session file, beside its history and under the
+    /// same `file_key`, so a rename keeps it exactly as it keeps the history.
+    pub fn session_for(&self, workspace_name: &str) -> SessionFile {
+        SessionFile::in_dir(
             &self.history_dir_resolved,
             &self.file_key_for(workspace_name),
         )

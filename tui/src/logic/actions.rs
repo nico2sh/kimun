@@ -84,13 +84,18 @@ pub enum ActionShortcuts {
     /// query help is built into its search views.
     QuerySyntax,
     /// Split the focused slot side by side: a new slot opens right of
-    /// it (ADR-0052).
+    /// it (ADR-0052). With the editor focused (the desktop app), its
+    /// active group splits instead: an empty group opens right of it
+    /// (ADR-0058).
     SplitSlotRight,
     /// Split the focused slot into two stacked slots: a new slot
-    /// opens below it (ADR-0052).
+    /// opens below it (ADR-0052). With the editor focused (the desktop
+    /// app), an empty group opens below the active group (ADR-0058).
     SplitSlotDown,
     /// Close the focused slot; its views
-    /// join the neighbouring slot taking over its area (ADR-0052).
+    /// join the neighbouring slot taking over its area (ADR-0052). With
+    /// the editor focused (the desktop app), the active group closes, its
+    /// note saved first; a neighbour takes its space (ADR-0058).
     CloseSlot,
     /// Move the focused view to the nearest slot in that direction
     /// (ADR-0052 geometry). On disk it is one name per direction,
@@ -106,6 +111,17 @@ pub enum ActionShortcuts {
     /// Hide or show the desktop app's Activity rail (ADR-0055). The TUI's
     /// rail is fixed and binds no chord to it.
     ToggleRail,
+    /// Open a tab holding one empty editor group, after the last tab, and
+    /// show it (ADR-0058). The TUI has no tabs and binds no chord to it.
+    NewTab,
+    /// Close the shown tab, its notes written first; the last tab keeps one
+    /// empty group (ADR-0058). The TUI binds no chord to it.
+    CloseTab,
+    /// Show the next tab, wrapping (ADR-0058). The TUI binds no chord to it.
+    NextTab,
+    /// Show the previous tab, wrapping (ADR-0058). The TUI binds no chord
+    /// to it.
+    PrevTab,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -168,7 +184,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 54] = [
+    pub const ALL: [ActionShortcuts; 58] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -223,6 +239,10 @@ impl ActionShortcuts {
         ActionShortcuts::ToggleZoom,
         ActionShortcuts::OpenQueryInSidebar,
         ActionShortcuts::ToggleRail,
+        ActionShortcuts::NewTab,
+        ActionShortcuts::CloseTab,
+        ActionShortcuts::NextTab,
+        ActionShortcuts::PrevTab,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -242,7 +262,11 @@ impl ActionShortcuts {
             | A::SplitSlotDown
             | A::CloseSlot
             | A::ToggleRail
-            | A::ToggleZoom => ActionGroup::WindowAndPanels,
+            | A::ToggleZoom
+            | A::NewTab
+            | A::CloseTab
+            | A::NextTab
+            | A::PrevTab => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
             }
@@ -328,6 +352,10 @@ impl Display for ActionShortcuts {
             ActionShortcuts::ToggleZoom => "ToggleZoom".to_string(),
             ActionShortcuts::ToggleRail => "ToggleRail".to_string(),
             ActionShortcuts::OpenQueryInSidebar => "OpenQueryInSidebar".to_string(),
+            ActionShortcuts::NewTab => "NewTab".to_string(),
+            ActionShortcuts::CloseTab => "CloseTab".to_string(),
+            ActionShortcuts::NextTab => "NextTab".to_string(),
+            ActionShortcuts::PrevTab => "PrevTab".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -387,6 +415,10 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleZoom" => ActionShortcuts::ToggleZoom,
             "ToggleRail" => ActionShortcuts::ToggleRail,
             "OpenQueryInSidebar" => ActionShortcuts::OpenQueryInSidebar,
+            "NewTab" => ActionShortcuts::NewTab,
+            "CloseTab" => ActionShortcuts::CloseTab,
+            "NextTab" => ActionShortcuts::NextTab,
+            "PrevTab" => ActionShortcuts::PrevTab,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -453,9 +485,13 @@ mod tests {
             ActionShortcuts::ToggleZoom => 33,
             ActionShortcuts::OpenQueryInSidebar => 34,
             ActionShortcuts::ToggleRail => 35,
+            ActionShortcuts::NewTab => 36,
+            ActionShortcuts::CloseTab => 37,
+            ActionShortcuts::NextTab => 38,
+            ActionShortcuts::PrevTab => 39,
         }
     }
-    const VARIANTS: usize = 36;
+    const VARIANTS: usize = 40;
 
     #[test]
     fn all_lists_every_variant() {
@@ -503,6 +539,10 @@ mod tests {
             ActionShortcuts::ToggleZoom,
             ActionShortcuts::OpenQueryInSidebar,
             ActionShortcuts::ToggleRail,
+            ActionShortcuts::NewTab,
+            ActionShortcuts::CloseTab,
+            ActionShortcuts::NextTab,
+            ActionShortcuts::PrevTab,
         ]
         .iter()
         .map(ToString::to_string)
@@ -525,6 +565,10 @@ mod tests {
                 "ToggleZoom",
                 "OpenQueryInSidebar",
                 "ToggleRail",
+                "NewTab",
+                "CloseTab",
+                "NextTab",
+                "PrevTab",
             ]
         );
     }
@@ -587,6 +631,10 @@ mod tests {
                 ActionShortcuts::ToggleZoom,
                 ActionShortcuts::OpenQueryInSidebar,
                 ActionShortcuts::ToggleRail,
+                ActionShortcuts::NewTab,
+                ActionShortcuts::CloseTab,
+                ActionShortcuts::NextTab,
+                ActionShortcuts::PrevTab,
             ]
         );
         assert_eq!(

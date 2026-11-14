@@ -106,15 +106,19 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
     open_palette(&shell, cx);
     let rows = visible(&shell, cx);
     for row in [
-        "+window · split slot right (pick a view)",
-        "+window · split slot down (pick a view)",
-        "+window · close slot",
-        "+window · move view left (new slot if none)",
-        "+window · move view right (new slot if none)",
-        "+window · move view up (new slot if none)",
-        "+window · move view down (new slot if none)",
+        "+window · split right (slot: pick a view; editor: new pane)",
+        "+window · split down (slot: pick a view; editor: new pane)",
+        "+window · close slot or editor pane",
+        "+window · move view left (new slot if none; editor: move pane)",
+        "+window · move view right (new slot if none; editor: move pane)",
+        "+window · move view up (new slot if none; editor: move pane)",
+        "+window · move view down (new slot if none; editor: move pane)",
         "+window · toggle zoom",
         "+window · toggle rail",
+        "+window · new tab",
+        "+window · close tab",
+        "+window · next tab",
+        "+window · previous tab",
     ] {
         assert_eq!(
             rows.iter().filter(|r| *r == row).count(),
@@ -483,7 +487,16 @@ fn the_save_row_writes_the_open_note(cx: &mut TestAppContext) {
     };
     type_text(&shell, "X", cx);
     let dirty = |cx: &TestAppContext| {
-        cx.read(|cx| started.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     };
     assert!(dirty(cx));
     open_palette(&shell, cx);
@@ -687,4 +700,55 @@ fn enter_runs_the_first_row_after_the_query_changes(cx: &mut TestAppContext) {
     cx.read(|cx| {
         assert_eq!(shell.workspace.read(cx).modal, Some(ModalKind::ViewChooser));
     });
+}
+
+/// The tab rows (ADR-0058) carry the tab chords as their hints. With no
+/// workspace a tab cannot be opened or closed, and with one tab there is
+/// no next or previous one.
+#[gpui_kit::test]
+fn the_palette_lists_the_tab_commands_with_their_chords(cx: &mut TestAppContext) {
+    use kimun_notes::logic::actions::ActionShortcuts as A;
+    let shell = open_default(cx, "hello");
+    open_palette(&shell, cx);
+    let rows = cx.read(|cx| {
+        let palette = palette(&shell.workspace, cx).unwrap();
+        let palette = palette.read(cx);
+        [A::NewTab, A::CloseTab, A::NextTab, A::PrevTab].map(|action| {
+            palette
+                .entries()
+                .iter()
+                .find(|e| *e.run() == PaletteRun::Chord(action.clone()))
+                .map(|e| {
+                    (
+                        e.label().to_string(),
+                        e.hint().map(crate::keymap::format_chord),
+                        e.blocked(),
+                    )
+                })
+        })
+    });
+    let row = |label: &str, chord: &str, blocked| {
+        Some((
+            label.to_string(),
+            Some(super::start_tests::chords(chord)),
+            blocked,
+        ))
+    };
+    assert_eq!(
+        rows,
+        [
+            row("+window · new tab", "Ctrl+T", Some(NO_WORKSPACE)),
+            row("+window · close tab", "Ctrl+W", Some(NO_WORKSPACE)),
+            row(
+                "+window · next tab",
+                "Ctrl+Tab",
+                Some(super::palette::ONE_TAB)
+            ),
+            row(
+                "+window · previous tab",
+                "Ctrl+Shift+Tab",
+                Some(super::palette::ONE_TAB)
+            ),
+        ]
+    );
 }
