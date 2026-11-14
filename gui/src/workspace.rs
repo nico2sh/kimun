@@ -404,6 +404,12 @@ pub(crate) fn slot_id(view: DrawerView) -> SharedString {
     format!("slot-{}", view.id()).into()
 }
 
+/// The element id of the content a slot holds at its final size, inside
+/// the frame that opens and closes (ADR-0060).
+pub(crate) fn slot_content_id(view: DrawerView) -> SharedString {
+    format!("slot-content-{}", view.id()).into()
+}
+
 /// The element id of the editor Panel's empty state.
 pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 
@@ -435,6 +441,10 @@ pub(crate) struct Workspace {
     /// by the divider's leaf ([`tree_view`]), measured as the tree is laid
     /// out: what a drag turns the pointer into a share of.
     divider_cells: tree_view::DividerCells,
+    /// Each slot's presence, so a slot opens and closes over time
+    /// ([`motion`], ADR-0060). Shared so a test holding a window can reach
+    /// it. Presentation only: the layout tree never reads it.
+    motion: Rc<std::cell::RefCell<motion::SlotMotion>>,
     /// A divider drag is in progress (saved when it ends).
     resizing: bool,
     /// How far from its boundary the divider press landed (px along the
@@ -773,6 +783,7 @@ impl Workspace {
             collapsed: HashSet::new(),
             title_bar_height: Default::default(),
             divider_cells: Default::default(),
+            motion: Default::default(),
             resizing: false,
             press_offset: 0.0,
             rail_cursor,
@@ -2186,6 +2197,9 @@ impl Workspace {
     pub(super) fn replace_layout(&mut self, mut layout: LayoutTree<DrawerView>) {
         *layout.region_mut() = self.layout.region().clone();
         self.layout = layout;
+        // A new tree has new slots, which may reuse the old ids: no motion
+        // of the old one carries over (ADR-0060).
+        self.motion.borrow_mut().reset();
         debug_assert!(
             self.layout
                 .region()
@@ -3568,6 +3582,7 @@ impl Workspace {
             })
             .child({
                 self.refit(window, cx);
+                self.motion_frame(window, cx);
                 self.render_tree(window, cx)
             })
             .when(!self.rail_hidden && !self.rail_leads(), |body| {
@@ -3726,6 +3741,7 @@ mod layout_writer;
 mod leader;
 mod links;
 mod modal;
+mod motion;
 mod note;
 mod note_flush;
 mod note_menu;
@@ -3785,6 +3801,8 @@ mod footer_tests;
 mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
+#[cfg(test)]
+mod motion_tests;
 #[cfg(test)]
 mod note_menu_tests;
 #[cfg(test)]
