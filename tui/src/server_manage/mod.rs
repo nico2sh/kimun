@@ -10,20 +10,24 @@
 //! installed without a service) keeps the plain update notice.
 
 mod install;
+mod lock;
 mod marker;
+mod process;
 mod release;
 mod service;
+mod swap;
 mod target;
 
 use std::path::{Path, PathBuf};
 
 pub use install::{
-    HttpProbe, InstallError, Restart, Rollback, Step, Timing, VersionProbe, install_and_restart,
+    HttpProbe, InstallError, Reply, Restart, Rollback, Step, Timing, VersionProbe,
+    install_and_restart,
 };
 pub use marker::{MarkerProblem, ServerInstall, ServiceKind};
 pub use release::{Fetch, Network, SIGNING_KEY, ServerRelease};
 pub use service::{ServiceControl, SystemService, service_file};
-pub use target::is_local_url;
+pub use target::{is_local_url, port_of};
 
 /// Why the app does not offer to update the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +46,12 @@ pub enum Unavailable {
     ServiceFileMissing(PathBuf),
     /// The service is not running, so it is not the server that answers at the URL.
     ServiceNotRunning,
+    /// The URL names another port than the one this machine's service listens on, so the server
+    /// at the URL may not be the one the service runs (a container, for example).
+    NotThisServer {
+        url_port: Option<u16>,
+        service_port: u16,
+    },
 }
 
 impl std::fmt::Display for Unavailable {
@@ -57,8 +67,33 @@ impl std::fmt::Display for Unavailable {
             Self::BinaryMissing(p) => write!(f, "{} is missing", p.display()),
             Self::ServiceFileMissing(p) => write!(f, "{} is missing", p.display()),
             Self::ServiceNotRunning => write!(f, "the server's service is not running"),
+            Self::NotThisServer {
+                url_port,
+                service_port,
+            } => match url_port {
+                Some(p) => write!(
+                    f,
+                    "the address uses port {p}, but the service listens on port {service_port}"
+                ),
+                None => write!(
+                    f,
+                    "the address has no usable port, and the service listens on port {service_port}"
+                ),
+            },
         }
     }
+}
+
+/// The port the script's service listens on: `[server] port` of `server.toml` in `config_dir`, else
+/// the server's default. The service starts with no arguments, so this file is its configuration.
+fn service_port(config_dir: &Path) -> u16 {
+    const DEFAULT: u16 = 7573;
+    std::fs::read_to_string(config_dir.join("server.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("server")?.get("port")?.as_integer())
+        .and_then(|p| u16::try_from(p).ok())
+        .unwrap_or(DEFAULT)
 }
 
 /// Whether the app may update the server at `server_url`. Reads the marker in `config_dir`, looks
@@ -75,6 +110,14 @@ pub fn check_with(
     }
     if !is_local_url(server_url) {
         return Err(Unavailable::NotLocal);
+    }
+    let service_port = service_port(config_dir);
+    let url_port = port_of(server_url);
+    if url_port != Some(service_port) {
+        return Err(Unavailable::NotThisServer {
+            url_port,
+            service_port,
+        });
     }
     let install = marker::load(config_dir).map_err(Unavailable::Marker)?;
     let right_manager = match install.service {
@@ -215,7 +258,6 @@ pub fn update_with(
         install,
         &binary,
         &release.version,
-        current_version,
         &Restart {
             control: env.control,
             probe: env.probe,
@@ -225,6 +267,21 @@ pub fn update_with(
     )
     .map_err(UpdateError::Install)?;
     Ok(release.version)
+}
+
+/// The version the server reports now, asked a few times: one slow answer must not hide it. This
+/// only lets the update stop early, before a download. The authoritative floor is the installed
+/// binary's own version, checked again just before the swap.
+fn current_version_of(probe: &dyn VersionProbe) -> Option<String> {
+    for attempt in 0..3 {
+        if let Reply::Up(Some(version)) = probe.reply() {
+            return Some(version);
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    None
 }
 
 /// Update the local server at `server_url`: check that the app may, then do it. Returns the new
@@ -240,7 +297,7 @@ pub fn update_blocking(
         crate::update::release_platform().ok_or(UpdateError::Unavailable(Unavailable::Platform))?;
     let probe = HttpProbe::new(server_url);
     let control = SystemService::new(install.service);
-    let current = probe.version();
+    let current = current_version_of(&probe);
     let env = Environment {
         fetch: &Network,
         manifest: &|| {

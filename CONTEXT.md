@@ -577,7 +577,7 @@ A small file written by `install-server.sh` recording that the script installed 
 _Avoid_: install channel (that term names how the apps got onto the machine, not the server)
 
 **Server update**:
-Replacing the **Kimün server**'s binary on this machine and restarting its service, started by the user from the app. Offered only when a **Server install marker** is valid, the marker records a service, and the configured server URL points at this machine. A remote server, or one without a marker or a service, only gets the update notice. After the restart the app asks the server for its version. If the new version does not answer in time, the app puts the old binary back and restarts it.
+Replacing the **Kimün server**'s binary on this machine and restarting its service, started by the user from the app. Offered only when a **Server install marker** is valid, the marker records a service, and the configured server URL points at this machine. A remote server, or one without a marker or a service, only gets the update notice. Never installs a version that is not newer than the installed binary reports. After the restart the app waits until the new version answers steadily. If it does not, the app puts the old binary back and restarts it, and checks that the old server answers.
 _Avoid_: server self-update (the server does not update itself; the app does it), upgrade
 
 **Index observer**:

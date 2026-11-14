@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::marker::ServiceKind;
+use super::process::{SERVICE_TIMEOUT, run_bounded};
 
 /// The systemd unit's name. Must match `install-server.sh`.
 const UNIT: &str = "kimun-server.service";
@@ -45,7 +46,7 @@ impl SystemService {
 }
 
 fn run(cmd: &mut Command) -> Result<std::process::Output, String> {
-    cmd.output()
+    run_bounded(cmd, SERVICE_TIMEOUT)
         .map_err(|e| format!("could not run {:?}: {e}", cmd.get_program()))
 }
 

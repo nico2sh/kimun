@@ -22,6 +22,28 @@ pub fn is_local_url(url: &str) -> bool {
     }
 }
 
+/// The port of an `http://` or `https://` URL: the written one, else the scheme's default.
+pub fn port_of(url: &str) -> Option<u16> {
+    let url = url.trim();
+    let (default, rest) = if let Some(rest) = url.strip_prefix("http://") {
+        (80, rest)
+    } else {
+        (443, url.strip_prefix("https://")?)
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    let after_host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split_once(']')?.1
+    } else {
+        authority.find(':').map_or("", |i| &authority[i..])
+    };
+    match after_host.strip_prefix(':') {
+        None if after_host.is_empty() => Some(default),
+        Some(port) => port.parse().ok(),
+        None => None,
+    }
+}
+
 /// The host part of an `http://` or `https://` URL, without brackets, user info, or port.
 fn host_of(url: &str) -> Option<&str> {
     let rest = url
@@ -76,6 +98,20 @@ mod tests {
         assert!(!is_local_url("http://localhost@evil.example.com/"));
         assert!(!is_local_url("http://evil.example.com/localhost"));
         assert!(!is_local_url("http://evil.example.com?host=127.0.0.1"));
+    }
+
+    #[test]
+    fn the_port_is_the_written_one_or_the_schemes_default() {
+        assert_eq!(port_of("http://localhost:7573"), Some(7573));
+        assert_eq!(port_of("http://localhost:7573/x?y=1"), Some(7573));
+        assert_eq!(port_of("http://localhost"), Some(80));
+        assert_eq!(port_of("https://localhost/"), Some(443));
+        assert_eq!(port_of("http://[::1]:9"), Some(9));
+        assert_eq!(port_of("http://[::1]"), Some(80));
+        assert_eq!(port_of("http://u:p@127.0.0.1:81"), Some(81));
+        assert_eq!(port_of("http://localhost:notaport"), None);
+        assert_eq!(port_of("http://localhost:99999"), None);
+        assert_eq!(port_of("ftp://localhost:1"), None);
     }
 
     #[test]

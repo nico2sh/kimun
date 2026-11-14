@@ -56,6 +56,7 @@ fn machine() -> Machine {
         "#!/bin/sh\necho kimun-server 1.0.0\n",
     )
     .unwrap();
+    kimun_core::system::make_executable(&bin_dir.join("kimun-server")).unwrap();
     let unit = service_file(ServiceKind::Systemd, &home);
     std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
     std::fs::write(&unit, "[Unit]\n").unwrap();
@@ -185,15 +186,15 @@ struct Probe<'a> {
 }
 
 impl VersionProbe for Probe<'_> {
-    fn version(&self) -> Option<String> {
-        Some(
+    fn reply(&self) -> Reply {
+        Reply::Up(Some(
             if *self.service.restarts.lock().unwrap() >= 1 {
                 self.new
             } else {
                 "1.0.0"
             }
             .to_string(),
-        )
+        ))
     }
 }
 
@@ -202,6 +203,7 @@ fn fast() -> Timing {
         wait_new: Duration::from_millis(80),
         wait_old: Duration::from_millis(80),
         interval: Duration::from_millis(5),
+        steady: 3,
     }
 }
 
@@ -371,4 +373,64 @@ fn a_server_that_predates_version_reporting_can_still_be_updated() {
         restarts: Mutex::new(0),
     };
     assert!(run(&m, &release("2.0.0", false, false), None, &service).is_ok());
+}
+
+#[test]
+fn the_version_floor_is_the_installed_binary_not_the_probe() {
+    // The probe cannot say what runs (None), and the installed binary already is the release.
+    let m = machine();
+    std::fs::write(
+        m.bin_dir.join("kimun-server"),
+        "#!/bin/sh\necho kimun-server 2.0.0\n",
+    )
+    .unwrap();
+    let service = Service {
+        active: true,
+        restarts: Mutex::new(0),
+    };
+    let err = run(&m, &release("2.0.0", false, false), None, &service).unwrap_err();
+    assert!(
+        matches!(err, UpdateError::Install(InstallError::NotNewer { .. })),
+        "{err}"
+    );
+    assert_eq!(*service.restarts.lock().unwrap(), 0);
+}
+
+#[cfg(target_os = "linux")]
+mod service_port {
+    use super::*;
+
+    #[test]
+    fn a_url_on_another_port_than_the_service_is_not_this_server() {
+        let m = machine();
+        std::fs::write(m.config.join("server.toml"), "[server]\nport = 7600\n").unwrap();
+        assert_eq!(
+            check_on(&m, LOCAL, active),
+            Err(Unavailable::NotThisServer {
+                url_port: Some(7573),
+                service_port: 7600
+            })
+        );
+        assert!(check_on(&m, "http://127.0.0.1:7600", active).is_ok());
+    }
+
+    #[test]
+    fn with_no_server_toml_the_default_port_is_the_service_port() {
+        let m = machine();
+        assert!(check_on(&m, "http://localhost:7573", active).is_ok());
+        assert!(matches!(
+            check_on(&m, "http://localhost", active),
+            Err(Unavailable::NotThisServer {
+                url_port: Some(80),
+                service_port: 7573
+            })
+        ));
+    }
+
+    #[test]
+    fn a_server_toml_that_cannot_be_read_falls_back_to_the_default_port() {
+        let m = machine();
+        std::fs::write(m.config.join("server.toml"), "this is = not [toml").unwrap();
+        assert!(check_on(&m, LOCAL, active).is_ok());
+    }
 }
