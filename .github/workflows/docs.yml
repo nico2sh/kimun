@@ -39,7 +39,7 @@ concurrency:
 jobs:
   deploy:
     name: Build and Deploy Docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Skip a cancelled run, a failed release-plz run, and a manual dry run of the
     # release workflow (it publishes nothing, so there is nothing new to put on the
     # site). A *failed* tag build still deploys: publishing the release is not its
@@ -59,7 +59,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Zola
         uses: taiki-e/install-action@v2
@@ -104,10 +104,10 @@ jobs:
           fi
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/public/
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
