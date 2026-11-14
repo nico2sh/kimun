@@ -58,7 +58,7 @@ use std::time::Duration;
 use gpui_kit::{Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor_region::EditorRegion;
-use kimun_notes::logic::layout_tree::{Axis, GroupId};
+use kimun_notes::logic::layout_tree::{Axis, Dir, GroupId};
 use kimun_notes::logic::startup::RestoreTarget;
 use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
 
@@ -153,6 +153,8 @@ pub(crate) enum Queued {
     Split(Axis),
     /// [`Workspace::step_tab`].
     StepTab { forward: bool },
+    /// [`Workspace::move_active_group`].
+    MoveGroup(Dir),
     /// [`Workspace::close_editor_group`] on the active group (the only
     /// group there is while a restore is on its way).
     CloseGroup,
@@ -530,6 +532,9 @@ impl Workspace {
                 Queued::NewTab => self.new_tab(cx),
                 Queued::Split(axis) => self.split_active_group(axis, cx),
                 Queued::StepTab { forward } => self.step_tab(forward, cx),
+                Queued::MoveGroup(dir) => {
+                    self.move_active_group(dir, cx);
+                }
                 Queued::CloseGroup if !made_a_group => {}
                 Queued::CloseGroup => {
                     let active = self.layout.active_group();

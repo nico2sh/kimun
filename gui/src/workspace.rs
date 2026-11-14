@@ -247,6 +247,8 @@ const KEY_CONTEXT: &str = "KimunWorkspace";
 pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
 /// Why the split chord does nothing on the editor while zoomed.
 pub(crate) const ZOOMED_NO_GROUP_SPLIT: &str = "Leave zoom to split the editor";
+/// Why the move chord does nothing on the editor while zoomed.
+pub(crate) const ZOOMED_NO_GROUP_MOVE: &str = "Leave zoom to move the pane";
 
 /// Where the layout, and the settings the window changes, are persisted.
 #[derive(Clone)]
@@ -2385,6 +2387,34 @@ impl Workspace {
         self.focus_group(group, cx);
     }
 
+    /// `MoveViewToNeighbour(dir)` on the editor: move the active group
+    /// toward `dir` inside its tab ([`EditorRegion::move_group_dir`]): it
+    /// swaps places with the group that way, or with none goes to that
+    /// outer edge of the tab. It stays active and keeps the keyboard.
+    /// Always handled. Refused with a flash while zoomed (the move would
+    /// show nothing); nothing while the window closes; while a stored record
+    /// restores, it waits for it ([`session`]).
+    ///
+    /// [`EditorRegion::move_group_dir`]: kimun_notes::logic::editor_region::EditorRegion::move_group_dir
+    pub(crate) fn move_active_group(&mut self, dir: Dir, cx: &mut Context<Self>) -> bool {
+        if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+            return true;
+        }
+        if self.hold_while_restoring(session::Queued::MoveGroup(dir)) {
+            return true;
+        }
+        if self.layout.zoomed().is_some() {
+            self.flash(ZOOMED_NO_GROUP_MOVE, cx);
+            return true;
+        }
+        let active = self.layout.active_group();
+        if self.layout.region_mut().move_group_dir(active, dir) {
+            self.focus_group(active, cx);
+            cx.notify();
+        }
+        true
+    }
+
     /// `CloseSlot` on the focused leaf. On a slot, the slot closes
     /// ([`Self::close_focused_slot`]). On the editor region, the active
     /// group closes ([`Self::close_editor_group`]): its note written first,
@@ -2706,6 +2736,13 @@ impl Workspace {
                 } else {
                     self.move_view(*dir, window, cx)
                 };
+            }
+            // On the editor the chords move its active group instead of a
+            // view (ADR-0058).
+            ActionShortcuts::MoveViewToNeighbour(dir)
+                if self.layout.focused() == Focus::Leaf(Leaf::Editor) =>
+            {
+                return self.move_active_group(*dir, cx);
             }
             ActionShortcuts::MoveViewToNeighbour(dir @ (Dir::Left | Dir::Right)) => {
                 return self.move_view(*dir, window, cx);

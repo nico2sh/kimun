@@ -106,13 +106,13 @@ fn the_palette_lists_the_layout_tree_commands(cx: &mut TestAppContext) {
     open_palette(&shell, cx);
     let rows = visible(&shell, cx);
     for row in [
-        "+window · split right (slot: pick a view; editor: new group)",
-        "+window · split down (slot: pick a view; editor: new group)",
-        "+window · close slot or editor group",
-        "+window · move view left (new slot if none)",
-        "+window · move view right (new slot if none)",
-        "+window · move view up (new slot if none)",
-        "+window · move view down (new slot if none)",
+        "+window · split right (slot: pick a view; editor: new pane)",
+        "+window · split down (slot: pick a view; editor: new pane)",
+        "+window · close slot or editor pane",
+        "+window · move view left (new slot if none; editor: move pane)",
+        "+window · move view right (new slot if none; editor: move pane)",
+        "+window · move view up (new slot if none; editor: move pane)",
+        "+window · move view down (new slot if none; editor: move pane)",
         "+window · toggle zoom",
         "+window · toggle rail",
         "+window · new tab",

@@ -451,6 +451,84 @@ fn split_chord_on_a_slot_still_splits_the_slot(cx: &mut TestAppContext) {
     assert_eq!(started.slots(cx), slots);
 }
 
+const MOVE_LEFT: &str = "alt-shift-left";
+const MOVE_DOWN: &str = "alt-shift-down";
+
+/// On the editor the move chords move the active group: a neighbor that
+/// way swaps places with it (its note and editor go along), none moves it
+/// to that outer edge across the tab, a group already there stays. The
+/// moved group stays active and keeps the keyboard in the editor.
+#[gpui_kit::test]
+fn move_chords_on_the_editor_move_the_active_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    let first = started.active(cx);
+    started.press(SPLIT_RIGHT, cx);
+    let second = started.active(cx);
+    assert_eq!(started.groups(cx), vec![first, second]);
+
+    started.press(MOVE_LEFT, cx);
+    assert_eq!(started.groups(cx), vec![second, first], "swapped");
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.focus(cx), Focus::Leaf(Leaf::Editor));
+    assert_eq!(started.note_in(first, cx), Some(path("a.md")));
+    assert_eq!(started.text_in(first, cx), "alpha", "the note went along");
+
+    started.press(MOVE_LEFT, cx);
+    assert_eq!(
+        started.groups(cx),
+        vec![second, first],
+        "already at the edge"
+    );
+
+    // No group below: the active group goes to the bottom edge, full width.
+    started.press(MOVE_DOWN, cx);
+    let rects = started.rects(cx);
+    let (_, at) = rects.iter().find(|(g, _)| *g == second).unwrap();
+    assert!((at.width() - 1.0).abs() < 1e-6 && (at.bottom() - 1.0).abs() < 1e-6);
+    assert_eq!(started.active(cx), second);
+    assert_eq!(started.slots(cx), 2, "no slot changed");
+}
+
+/// While the editor is zoomed the chord moves nothing and says why.
+#[gpui_kit::test]
+fn move_chords_on_a_zoomed_editor_flash_and_move_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    started.press(SPLIT_RIGHT, cx);
+    let before = started.groups(cx);
+    started.press("ctrl-shift-m", cx);
+    assert_eq!(
+        cx.read(|cx| started.workspace.read(cx).layout.zoomed()),
+        Some(Leaf::Editor)
+    );
+    started.press(MOVE_LEFT, cx);
+    assert_eq!(started.groups(cx), before);
+    assert_eq!(
+        started.flash(cx).as_deref(),
+        Some(super::ZOOMED_NO_GROUP_MOVE)
+    );
+}
+
+/// A lone group has nowhere to go: the chord does nothing, and the keyboard
+/// stays in the editor.
+#[gpui_kit::test]
+fn move_chords_do_nothing_for_a_lone_group(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    let only = started.active(cx);
+    let rects = started.rects(cx);
+    for chord in [MOVE_LEFT, "alt-shift-right", "alt-shift-up", MOVE_DOWN] {
+        started.press(chord, cx);
+    }
+    assert_eq!(started.groups(cx), vec![only]);
+    assert_eq!(started.rects(cx), rects);
+    assert_eq!(started.focus(cx), Focus::Leaf(Leaf::Editor));
+}
+
 /// With one group nothing changes: no header, no group cell, no target
 /// marker even with the keyboard in a slot, and one editor drawn. A
 /// regression lock: one group looks as it did before splits.

@@ -10,7 +10,7 @@
 
 use gpui_kit::{AppContext as _, TestAppContext};
 use kimun_core::nfs::VaultPath;
-use kimun_notes::logic::layout_tree::{Axis, GroupId};
+use kimun_notes::logic::layout_tree::{Axis, Dir, GroupId};
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::settings::session::{
     AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionFile, SessionRecord, TabRecord,
@@ -862,6 +862,35 @@ fn structural_commands_wait_for_a_pending_restore(cx: &mut TestAppContext) {
         (region.shown(), region.tabs()[0])
     });
     assert_eq!(shown, first, "the step ran last");
+}
+
+/// A move of the active group asked for during the restore waits for it
+/// and runs on the restored region: the shown tab's `c.md` over an empty
+/// group swaps with it.
+#[gpui_kit::test]
+fn a_group_move_during_the_restore_waits_for_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let record = two_tab_record();
+    let (_v, win) = started(cx, &rt, &[], Some(&record), FirstNote::Restore);
+    assert!(cx.read(|cx| win.workspace.read(cx).session_restoring()));
+    win.with(cx, |w, cx| {
+        w.move_active_group(Dir::Down, cx);
+    });
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx)
+            && !cx.read(|cx| win.workspace.read(cx).session_restoring())
+            && win.all_idle(cx)
+    });
+    win.assert_states_in_step(cx);
+    assert_eq!(
+        win.notes_by_tab(cx),
+        vec![
+            vec![Some("a.md".to_string()), Some("b.md".to_string())],
+            vec![None, Some("c.md".to_string())],
+        ],
+        "c.md went below the empty group"
+    );
 }
 
 /// A group close asked for during the restore, with no held new tab or

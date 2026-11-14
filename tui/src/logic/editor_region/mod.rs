@@ -13,6 +13,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::logic::layout::node::Node;
 use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
+use crate::logic::layout_tree::{EPS, nearest};
 use crate::settings::session::{GroupTreeRecord, SessionRecord, TabRecord};
 
 /// Identifies one tab. Never reused within one region.
@@ -420,6 +421,45 @@ impl EditorRegion {
                 t.active = if t.active == a { b } else { a };
             }
         }
+        true
+    }
+
+    /// Move `group` toward `dir` inside its own tab. Another group that
+    /// way (the one directional focus would reach) swaps places with it,
+    /// each taking the other's size. With none that way, `group` moves to
+    /// that outer edge of the tab as a split across the whole tab, the
+    /// others sharing the rest. Either way `group` becomes its tab's active
+    /// group. False (nothing changes) for an unknown group and when
+    /// `group` already spans that edge in full, a lone group included.
+    pub fn move_group_dir(&mut self, group: GroupId, dir: Dir) -> bool {
+        let Some(tab) = self.group_tab(group) else {
+            return false;
+        };
+        let at = self.position(tab).expect("the tab exists");
+        let regions = self.tabs[at].root.layout(UnitRect::new(0.0, 0.0, 1.0, 1.0));
+        let Some(cur) = regions.iter().find(|(g, _)| *g == group).map(|(_, r)| *r) else {
+            return false;
+        };
+        if let Some(other) = nearest(&regions, group, cur, dir, &|_| false) {
+            self.swap_groups(group, other);
+            self.tabs[at].active = group;
+            return true;
+        }
+        let full = |extent: f64| extent >= 1.0 - EPS;
+        let spans = match dir {
+            Dir::Left => cur.x() <= EPS && full(cur.height()),
+            Dir::Right => full(cur.right()) && full(cur.height()),
+            Dir::Up => cur.y() <= EPS && full(cur.width()),
+            Dir::Down => full(cur.bottom()) && full(cur.width()),
+        };
+        if spans {
+            return false;
+        }
+        let (axis, before) = dir.split_axis();
+        let t = &mut self.tabs[at];
+        t.root.remove_leaf_to_neighbour(&group);
+        t.root.add_at_edge(axis, group, before);
+        t.active = group;
         true
     }
 

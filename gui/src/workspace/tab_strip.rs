@@ -111,7 +111,7 @@ impl CloseTarget {
     fn noun(self) -> &'static str {
         match self {
             CloseTarget::Tab(_) => "tab",
-            CloseTarget::Group(_) => "group",
+            CloseTarget::Group(_) => "pane",
         }
     }
 }
@@ -313,8 +313,7 @@ impl Workspace {
                         "A note in this tab is still opening. Try again in a moment.".to_string()
                     }
                     CloseTarget::Group(_) => {
-                        "The note in this group is still opening. Try again in a moment."
-                            .to_string()
+                        "The note in this pane is still opening. Try again in a moment.".to_string()
                     }
                 }),
                 FlushBlock::Held => Some(format!(

@@ -103,13 +103,21 @@ pub(crate) fn action_label(action: &ActionShortcuts) -> String {
         A::Leader => "Leader (start a sequence)".into(),
         // On a slot they split or close the slot; on the editor, its
         // active group (ADR-0058).
-        A::SplitSlotRight => "Split right (slot: pick a view; editor: new group)".into(),
-        A::SplitSlotDown => "Split down (slot: pick a view; editor: new group)".into(),
-        A::CloseSlot => "Close slot or editor group".into(),
-        A::MoveViewToNeighbour(Dir::Left) => "Move view left (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Right) => "Move view right (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Up) => "Move view up (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Down) => "Move view down (new slot if none)".into(),
+        A::SplitSlotRight => "Split right (slot: pick a view; editor: new pane)".into(),
+        A::SplitSlotDown => "Split down (slot: pick a view; editor: new pane)".into(),
+        A::CloseSlot => "Close slot or editor pane".into(),
+        A::MoveViewToNeighbour(Dir::Left) => {
+            "Move view left (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Right) => {
+            "Move view right (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Up) => {
+            "Move view up (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Down) => {
+            "Move view down (new slot if none; editor: move pane)".into()
+        }
         other => other.label(),
     }
 }

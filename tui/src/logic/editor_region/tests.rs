@@ -791,3 +791,130 @@ fn restore_keeps_a_tab_whose_notes_are_all_missing() {
     assert_eq!(back.active_group(), back.groups(tabs[0])[1]);
     assert_eq!(opened, vec![(back.groups(tabs[1])[0], note("kept.md"))]);
 }
+
+// ── Moving a group by direction ───────────────────────────────────────
+
+/// The rectangle of `group` in the shown tab.
+fn rect_of(r: &EditorRegion, group: GroupId) -> UnitRect {
+    r.regions()
+        .into_iter()
+        .find(|(g, _)| *g == group)
+        .unwrap()
+        .1
+}
+
+#[test]
+fn move_group_dir_swaps_with_the_neighbor_that_way() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let (a_at, b_at) = (rect_of(&r, a), rect_of(&r, b));
+    assert!(r.move_group_dir(a, Dir::Right));
+    assert_eq!(rect_of(&r, a), b_at, "a took b's place");
+    assert_eq!(rect_of(&r, b), a_at, "b took a's place");
+    assert_eq!(r.active_group(), a, "the moved group stays active");
+}
+
+#[test]
+fn move_group_dir_picks_the_neighbor_directional_focus_would() {
+    // a | (b over c): c moves left onto a, the only one there.
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let c = r.split_group(b, Axis::Vertical).unwrap();
+    let (a_at, c_at) = (rect_of(&r, a), rect_of(&r, c));
+    assert!(r.move_group_dir(c, Dir::Left));
+    assert_eq!(rect_of(&r, c), a_at);
+    assert_eq!(rect_of(&r, a), c_at);
+}
+
+#[test]
+fn move_group_dir_with_no_neighbor_moves_to_the_outer_edge() {
+    // a | (b over c): c goes right, past nothing: the right edge, full height.
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let c = r.split_group(b, Axis::Vertical).unwrap();
+    assert!(r.move_group_dir(c, Dir::Right));
+    let at = rect_of(&r, c);
+    assert!((at.height() - 1.0).abs() < 1e-6, "full height: {at:?}");
+    assert!((at.right() - 1.0).abs() < 1e-6, "on the right edge: {at:?}");
+    assert_eq!(r.groups(r.shown()).len(), 3, "no group lost or added");
+    assert_eq!(r.active_group(), c);
+    // a and b are still side by side, left of it, each full height now.
+    assert!(rect_of(&r, a).right() <= at.x() + 1e-6);
+    assert!((rect_of(&r, b).height() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn move_group_dir_down_with_no_neighbor_spans_the_whole_width() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    assert!(r.move_group_dir(a, Dir::Down));
+    let at = rect_of(&r, a);
+    assert!((at.width() - 1.0).abs() < 1e-6, "full width: {at:?}");
+    assert!(
+        (at.bottom() - 1.0).abs() < 1e-6,
+        "on the bottom edge: {at:?}"
+    );
+    assert!(rect_of(&r, b).bottom() <= at.y() + 1e-6, "b is above it");
+}
+
+#[test]
+fn move_group_dir_does_nothing_when_already_on_that_edge_in_full() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let before = r.clone();
+    assert!(
+        !r.move_group_dir(b, Dir::Right),
+        "b already spans the right edge"
+    );
+    assert!(!r.move_group_dir(a, Dir::Left));
+    assert_eq!(r, before);
+}
+
+#[test]
+fn move_group_dir_does_nothing_for_a_lone_group_and_an_unknown_one() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let before = r.clone();
+    for dir in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+        assert!(!r.move_group_dir(a, dir));
+    }
+    assert!(!r.move_group_dir(GroupId::new(99), Dir::Left));
+    assert_eq!(r, before);
+}
+
+#[test]
+fn move_group_dir_stays_in_the_groups_own_tab() {
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let b = r.split_group(a, Axis::Horizontal).unwrap();
+    let (tab2, c) = r.new_tab();
+    assert!(!r.move_group_dir(c, Dir::Left), "c is alone in its tab");
+    assert_eq!(r.groups(r.tabs()[0]), vec![a, b]);
+    assert_eq!(r.groups(tab2), vec![c]);
+}
+
+#[test]
+fn move_group_dir_to_the_left_or_top_edge_puts_the_group_first() {
+    // (a over b) | c: b goes left, to the left edge, full height.
+    let mut r = EditorRegion::new();
+    let a = r.active_group();
+    let c = r.split_group(a, Axis::Horizontal).unwrap();
+    let b = r.split_group(a, Axis::Vertical).unwrap();
+    assert!(r.move_group_dir(b, Dir::Left));
+    let at = rect_of(&r, b);
+    assert!(at.x() < 1e-6 && (at.height() - 1.0).abs() < 1e-6, "{at:?}");
+    assert!(rect_of(&r, a).x() >= at.right() - 1e-6, "a is right of it");
+    assert!(rect_of(&r, c).x() >= at.right() - 1e-6);
+    // Up: c over the others, full width.
+    assert!(r.move_group_dir(c, Dir::Up));
+    let top = rect_of(&r, c);
+    assert!(
+        top.y() < 1e-6 && (top.width() - 1.0).abs() < 1e-6,
+        "{top:?}"
+    );
+}
