@@ -24,7 +24,7 @@ use super::group_header::{
 };
 use super::modal::ModalKind;
 use super::note::NoteHost;
-use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use super::start_tests::{Started, chords, drive, open_started, runtime, send, vault_start};
 use super::tab_strip::{TAB_CLOSING, TAB_STRIP_ID};
 use super::tree_view::group_divider_id;
 use crate::shell_layout::EDITOR_MIN_REMS;
@@ -380,7 +380,7 @@ fn split_chord_on_a_group_adds_an_empty_group(cx: &mut TestAppContext) {
     );
     cx.read(|cx| {
         let hint = started.workspace.read(cx).chord_labels.no_note_hint.clone();
-        assert!(hint.contains("Ctrl+O"), "{hint}");
+        assert!(hint.contains(&chords("Ctrl+O")), "{hint}");
     });
     assert_eq!(started.tabs(cx).len(), 1);
     assert!(!started.drawn(TAB_STRIP_ID, cx));
