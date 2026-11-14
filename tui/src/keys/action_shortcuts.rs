@@ -16,7 +16,7 @@ use crate::logic::text_action::TextAction;
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 20] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 24] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -39,6 +39,11 @@ pub const TUI_UNBOUND: [ActionShortcuts; 20] = [
     ActionShortcuts::ToggleZoom,
     ActionShortcuts::OpenQueryInSidebar,
     ActionShortcuts::ToggleRail,
+    // The desktop app's tabs (ADR-0058); the TUI has none.
+    ActionShortcuts::NewTab,
+    ActionShortcuts::CloseTab,
+    ActionShortcuts::NextTab,
+    ActionShortcuts::PrevTab,
 ];
 
 /// The TUI help modal's heading for an [`ActionShortcuts`] variant. The
@@ -144,6 +149,10 @@ impl ActionShortcuts {
             ActionShortcuts::ToggleZoom => "Toggle zoom".into(),
             ActionShortcuts::ToggleRail => "Toggle rail".into(),
             ActionShortcuts::OpenQueryInSidebar => "Open query in sidebar".into(),
+            ActionShortcuts::NewTab => "New tab".into(),
+            ActionShortcuts::CloseTab => "Close tab".into(),
+            ActionShortcuts::NextTab => "Next tab".into(),
+            ActionShortcuts::PrevTab => "Previous tab".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),

@@ -47,6 +47,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{PropertyEntry, PropertyKind};
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppTx, OverlayData};
 use kimun_notes::logic::properties::{
     self as props, FormError, KIND_CHOICES, PropertyForm, PropertyWriteError, WritePlan,
@@ -1172,17 +1173,28 @@ impl Render for PropertiesDialog {
 // ---- The workspace's side ---------------------------------------------------------
 
 impl Workspace {
+    /// The group whose open note is `path`, in any tab, the active one
+    /// first (a note is open in one group).
+    fn group_holding(&self, path: &VaultPath) -> Option<GroupId> {
+        self.group_where_active_first(|h| h.note.as_ref().is_some_and(|note| note.is_like(path)))
+    }
+
     /// Whether something holds the open note so nothing else may write it:
     /// a file operation, a property write, the reload after one, or the
-    /// flush before the properties dialog opens, a vault change
+    /// flush before the properties dialog opens or a tab closes, a vault
+    /// change
     /// ([`reopen`](super::reopen)). The tick, the Save chord,
     /// opening another note and file operations wait while it does.
     pub(crate) fn note_held(&self) -> bool {
         self.file_task.is_some()
+            || self.groups_closing.is_some()
             || self.property_write.is_some()
             || self.note_reload.is_some()
             || self.properties_opening.is_some()
-            || self.attachment_flushing.is_some()
+            || self
+                .groups
+                .values()
+                .any(|s| s.attachment_flushing.is_some())
             || self.search_flush.is_some()
             || self.updates.flushing.is_some()
             || self.reopen_running()
@@ -1195,7 +1207,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.notes.as_ref().and_then(|h| h.note.clone()) {
+        match self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+        {
             Some(note) => self.open_properties(note, window, cx),
             None => self.flash(NO_NOTE, cx),
         }
@@ -1213,7 +1230,7 @@ impl Workspace {
         if modal::dialog_open(window, cx) || self.properties_opening.is_some() {
             return;
         }
-        if self.notes.is_none() {
+        if self.active_state().notes.is_none() {
             self.flash(NO_WORKSPACE, cx);
             return;
         }
@@ -1223,15 +1240,13 @@ impl Workspace {
             "Read-only: this vault has names that differ only by case, so nothing is written."
                 .to_string()
         });
-        let Some(host) = self.notes.as_ref() else {
-            return;
-        };
-        let touches = host.note.as_ref().is_some_and(|note| note.is_like(&path));
-        if !touches {
+        // The group holding the note, in any tab: its text is the one to
+        // write first.
+        let Some(group) = self.group_holding(&path) else {
             self.show_properties(path, locked, window, cx);
             return;
-        }
-        if let Some(block) = self.flush_block(cx) {
+        };
+        if let Some(block) = self.flush_block_in(group, cx) {
             tracing::warn!("properties of {path} not opened: {}", block.reason());
             self.flash_error(REFUSED, cx);
             return;
@@ -1244,7 +1259,7 @@ impl Workspace {
         }
         // No tick from here: the flush is the only write until the dialog
         // is up (or refused).
-        let Some(flush) = self.begin_note_flush(cx) else {
+        let Some(flush) = self.begin_note_flush_in(group, cx) else {
             tracing::warn!("properties of {path} not opened: a flush is outstanding");
             self.flash_error(REFUSED, cx);
             return;
@@ -1252,7 +1267,7 @@ impl Workspace {
         self.properties_opening = Some(cx.spawn_in(window, async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
             this.update_in(cx, |workspace, window, cx| {
-                workspace.properties_flushed(path, flushed, window, cx)
+                workspace.properties_flushed(group, path, flushed, window, cx)
             })
             .ok();
         }));
@@ -1264,20 +1279,21 @@ impl Workspace {
     /// keyboard).
     fn properties_flushed(
         &mut self,
+        group: GroupId,
         path: VaultPath,
         flushed: Result<kimun_notes::logic::session::FlushResult, JoinError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.properties_opening = None;
-        let outcome = self.apply_flush(flushed, cx);
-        let problem = self.flush_failure(&outcome, cx);
-        self.restart_tick_unless_read_only();
-        self.block_input(false, cx);
+        let outcome = self.apply_flush(group, flushed, cx);
+        let problem = self.flush_failure_in(group, &outcome, cx);
+        self.restart_tick_unless_read_only_in(group);
+        self.block_input_in(group, false, cx);
         if let Some(problem) = problem {
             tracing::warn!("properties of {path} not opened: {problem}");
             self.flash_error(REFUSED, cx);
-        } else if self.notes.as_ref().is_some_and(|h| h.is_open_wanted()) {
+        } else if self.host_in(group).is_some_and(|h| h.is_open_wanted()) {
             // Another note was asked for meanwhile: it opens instead.
         } else if !modal::dialog_open(window, cx) {
             self.show_properties(path, None, window, cx);
@@ -1354,11 +1370,15 @@ impl Workspace {
         if self.note_held() {
             return Err("Another change to the note is still being written.".into());
         }
-        let dirty = self.editor_dirty(cx);
-        let (Some(host), Some(tx)) = (self.notes.as_ref(), self.tx.clone()) else {
+        let (Some(host), Some(tx)) = (self.active_state().notes.as_ref(), self.tx.clone()) else {
             return Err(NO_WORKSPACE.into());
         };
-        if host.note.as_ref().is_some_and(|note| note.is_like(&path)) {
+        // The group holding the note, in any tab, is the one whose text
+        // the write could meet.
+        if let Some(holder) = self.group_holding(&path)
+            && let Some(host) = self.host_in(holder)
+        {
+            let dirty = self.editor_dirty_in(holder, cx);
             if host.is_switching() || host.is_open_wanted() {
                 return Err("The note is still opening. Try again in a moment.".into());
             }
@@ -1403,24 +1423,31 @@ impl Workspace {
     /// writes the old frontmatter back); unsaved typing wins and is kept,
     /// with a flash. Independent of the dialog, which may be gone.
     pub(crate) fn reload_from_disk(&mut self, path: VaultPath, cx: &mut Context<Self>) {
-        let Some(host) = self.notes.as_mut() else {
+        // The group whose session is on the note, in any tab.
+        let group = self
+            .group_where_active_first(|h| path.is_like(h.session.path()))
+            .unwrap_or_else(|| self.layout.active_group());
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
+        let Some(host) = state.notes.as_mut() else {
             return;
         };
         match host
             .session
-            .begin_reload(&path, Some(&self.editor.read(cx).editor))
+            .begin_reload(&path, Some(&state.editor.read(cx).editor))
         {
             ReloadStep::NotOpen => {}
             ReloadStep::KeptDirty => {
                 self.flash_error(KEPT_DIRTY, cx);
-                self.refresh_note_properties();
+                self.refresh_note_properties_in(group);
             }
             ReloadStep::Read(read) => {
                 // Keys typed now would be lost when the reload lands.
-                self.block_input(true, cx);
+                self.block_input_in(group, true, cx);
                 self.note_reload = Some(cx.spawn(async move |this, cx| {
                     let read = tokio::spawn(read.run()).await;
-                    this.update(cx, |workspace, cx| workspace.reloaded(read, cx))
+                    this.update(cx, |workspace, cx| workspace.reloaded(group, read, cx))
                         .ok();
                 }));
             }
@@ -1428,10 +1455,19 @@ impl Workspace {
     }
 
     /// The reload's read landed: load it clean, or say the buffer is stale.
-    fn reloaded(&mut self, read: Result<NoteRead, JoinError>, cx: &mut Context<Self>) {
+    fn reloaded(
+        &mut self,
+        group: GroupId,
+        read: Result<NoteRead, JoinError>,
+        cx: &mut Context<Self>,
+    ) {
         self.note_reload = None;
-        let outcome = match (read, self.notes.as_mut()) {
-            (Ok(read), Some(host)) => self.editor.update(cx, |view, cx| {
+        let Some(state) = self.groups.get_mut(&group) else {
+            self.file_op_ended(cx);
+            return;
+        };
+        let outcome = match (read, state.notes.as_mut()) {
+            (Ok(read), Some(host)) => state.editor.update(cx, |view, cx| {
                 let outcome = host.session.finish_reload(read, Some(&mut view.editor));
                 view.preedit = None;
                 cx.notify();
@@ -1443,13 +1479,15 @@ impl Workspace {
             }
             (_, None) => ReloadOutcome::NotOpen,
         };
-        self.block_input(false, cx);
+        self.block_input_in(group, false, cx);
         if outcome == ReloadOutcome::Failed {
             self.flash_error(RELOAD_FAILED, cx);
         }
         if outcome != ReloadOutcome::NotOpen {
-            self.refresh_note_properties();
-            self.outline_saved(cx);
+            self.refresh_note_properties_in(group);
+            if group == self.layout.active_group() {
+                self.outline_saved(cx);
+            }
         }
         self.file_op_ended(cx);
         cx.notify();

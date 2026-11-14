@@ -1321,3 +1321,11 @@ fn hiding_a_view_of_a_split_leaves_no_empty_slot() {
     assert_eq!(order.slots(Side::Left), vec![Some(DrawerView::Files)]);
     assert_eq!(order.empty_slot(Side::Left), None);
 }
+
+#[test]
+fn a_direction_maps_to_its_split_axis_and_side() {
+    assert_eq!(Dir::Up.split_axis(), (Axis::Vertical, true));
+    assert_eq!(Dir::Down.split_axis(), (Axis::Vertical, false));
+    assert_eq!(Dir::Left.split_axis(), (Axis::Horizontal, true));
+    assert_eq!(Dir::Right.split_axis(), (Axis::Horizontal, false));
+}

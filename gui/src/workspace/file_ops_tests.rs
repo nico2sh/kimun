@@ -17,12 +17,11 @@ use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::message::{AppMessage, FileOp};
 use tokio::runtime::Runtime;
 
-use super::file_dialogs::{
-    CONFIRM_ID, FileOpKind, MENU_ID, MoveDialog, RenameDialog, menu_item_id,
-};
+use super::file_dialogs::{CONFIRM_ID, FileOpKind, MoveDialog, RenameDialog};
 use super::file_ops::FileDialogView;
 use super::files::row_id;
 use super::modal::ModalKind;
+use super::note_menu::{MenuItem, NOTE_MENU_ID, menu_item_element_id};
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
@@ -73,22 +72,48 @@ impl Started {
     }
 
     fn is_dirty(&self, cx: &TestAppContext) -> bool {
-        cx.read(|cx| self.workspace.read(cx).editor.read(cx).editor.is_dirty())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .editor
+                .read(cx)
+                .editor
+                .is_dirty()
+        })
     }
 
     fn note_open(&self, cx: &TestAppContext) -> Option<VaultPath> {
-        cx.read(|cx| self.workspace.read(cx).notes.as_ref()?.note.clone())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .notes
+                .as_ref()?
+                .note
+                .clone()
+        })
     }
 
     fn session_at(&self, cx: &TestAppContext) -> VaultPath {
         cx.read(|cx| {
             let w = self.workspace.read(cx);
-            w.notes.as_ref().unwrap().session.path().clone()
+            w.active_state()
+                .notes
+                .as_ref()
+                .unwrap()
+                .session
+                .path()
+                .clone()
         })
     }
 
     fn footer_note(&self, cx: &TestAppContext) -> Option<VaultPath> {
         cx.read(|cx| self.workspace.read(cx).status.note.clone())
+    }
+
+    fn note_menu_open(&self, cx: &TestAppContext) -> bool {
+        cx.read(|cx| self.workspace.read(cx).note_menu.is_some())
     }
 
     fn modal(&self, cx: &TestAppContext) -> Option<ModalKind> {
@@ -243,8 +268,9 @@ fn renaming_the_dirty_open_note_keeps_its_edits(cx: &mut TestAppContext) {
     assert!(started.is_dirty(cx));
     // F2, then R: the note menu, then its rename dialog.
     started.hit("f2", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
     started.hit("r", cx);
+    assert!(!started.note_menu_open(cx));
     assert_eq!(started.modal(cx), Some(ModalKind::Rename));
     assert_eq!(started.rename_target(cx), path("a.md"));
     assert_eq!(started.rename_to(&rt, "b", cx), ValidationState::Available);
@@ -465,10 +491,11 @@ fn deleting_the_open_notes_folder_discards_it(cx: &mut TestAppContext) {
 
 // ── move ─────────────────────────────────────────────────────────────────
 
-/// Moving the open note: its edits go with it, the old place stays empty
-/// through later ticks, and FILES lists where it went.
+/// Moving the open note: its edits go with it, the editor follows it to
+/// its new place (nothing says it was moved), the old place stays empty
+/// through later ticks, and later saves land at the new place.
 #[gpui_kit::test]
-fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
+fn moving_the_open_note_follows_it(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("z/k.md", "k")], &[]));
@@ -493,11 +520,23 @@ fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
 
     assert_eq!(disk(&rt, &v, "z/a.md").as_deref(), Some("Xalpha"));
     assert!(!exists(&rt, &v, "a.md"));
-    assert_eq!(started.note_open(cx), None);
-    assert_eq!(started.placeholder(cx).as_deref(), Some("a.md was moved"));
     assert!(
-        started.files_dir(cx).is_like(&VaultPath::root()),
-        "FILES stays in the folder the note left"
+        started
+            .note_open(cx)
+            .is_some_and(|n| n.is_like(&path("z/a.md")))
+    );
+    assert!(started.session_at(cx).is_like(&path("z/a.md")));
+    assert!(
+        started
+            .footer_note(cx)
+            .is_some_and(|n| n.is_like(&path("z/a.md")))
+    );
+    assert_eq!(started.text(cx), "Xalpha");
+    assert!(!started.is_dirty(cx), "reloaded clean at the new place");
+    assert_eq!(started.placeholder(cx), None, "nothing says it was moved");
+    assert!(
+        cx.read(|cx| started.workspace.read(cx).note_gone.is_none()),
+        "no moved notice"
     );
     // The listing of the folder it left refreshes without it.
     drive(&rt, cx, |cx| {
@@ -505,6 +544,13 @@ fn moving_the_open_note_flushes_it_and_lets_it_go(cx: &mut TestAppContext) {
     });
     past_a_tick(&rt, cx);
     assert!(!exists(&rt, &v, "a.md"), "no tick recreates the old place");
+    // Later saves land at the new place.
+    settle(&started, cx);
+    started.typed("Y", cx);
+    started.hit("ctrl-s", cx);
+    drive(&rt, cx, |cx| !started.is_dirty(cx));
+    assert!(disk(&rt, &v, "z/a.md").unwrap().contains('Y'));
+    assert!(!exists(&rt, &v, "a.md"));
 }
 
 /// Moving a folder holding the open note: the note follows.
@@ -591,33 +637,38 @@ fn other_entries_leave_the_open_note_alone(cx: &mut TestAppContext) {
 
 // ── the menu and the modal slot ─────────────────────────────────────────
 
-/// Escape closes the note menu and gives the keyboard back to the note;
-/// only one modal is ever open.
+/// Escape closes the note menu and gives the keyboard back to the note. A
+/// dialog opening gives the menu way, and no menu opens over a dialog.
 #[gpui_kit::test]
-fn escape_closes_and_only_one_modal_opens(cx: &mut TestAppContext) {
+fn escape_closes_the_menu_and_a_dialog_gives_it_way(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
     started.hit("f2", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(MENU_ID).visible());
-        assert!(window.find(menu_item_id(FileOpKind::Delete)).visible());
+        assert!(window.find(NOTE_MENU_ID).visible());
+        assert!(
+            window
+                .find(menu_item_element_id(MenuItem::Note(FileOpKind::Delete)))
+                .visible()
+        );
     })
     .unwrap();
-    // Neither the palette nor another dialog opens over it.
-    started.hit("ctrl-shift-p", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
-    started.open_op_dialog(FileOpKind::Rename, "a.md", cx);
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
     started.hit("escape", cx);
-    settle(&started, cx);
-    assert!(!started.dialog_open(cx));
+    assert!(!started.note_menu_open(cx));
     assert!(started.editor_focused(cx));
 
-    // The rename dialog: Escape closes it too, and nothing changed.
+    // A dialog opening closes the menu; the dialog's close gives the
+    // keyboard back to the note.
+    started.hit("f2", cx);
     started.open_op_dialog(FileOpKind::Rename, "a.md", cx);
+    assert!(!started.note_menu_open(cx));
+    assert_eq!(started.modal(cx), Some(ModalKind::Rename));
+    // Under the dialog the chord opens no menu.
+    started.hit("f2", cx);
+    assert!(!started.note_menu_open(cx));
     started.hit("escape", cx);
     settle(&started, cx);
     assert!(!started.dialog_open(cx));
@@ -639,15 +690,15 @@ fn editor_right_click_opens_the_menu_without_a_selection(cx: &mut TestAppContext
     })
     .unwrap();
     cx.run_until_parked();
-    assert!(!started.dialog_open(cx), "a selection: no menu");
+    assert!(!started.note_menu_open(cx), "a selection: no menu");
     started.hit("right", cx);
     cx.update_window(started.handle, |_, window, cx| {
         window.right_click("editor", cx)
     })
     .unwrap();
     cx.run_until_parked();
-    assert!(started.dialog_open(cx));
-    assert_eq!(started.modal(cx), Some(ModalKind::FileOps));
+    assert!(started.note_menu_open(cx));
+    assert!(!started.dialog_open(cx), "the menu is no modal");
 }
 
 /// A FILES row's context menu offers rename, move and delete for its
@@ -712,4 +763,21 @@ fn the_palette_and_the_leader_open_the_same_dialogs(cx: &mut TestAppContext) {
     started.hit("escape", cx);
     settle(&started, cx);
     assert!(started.editor_focused(cx));
+}
+
+/// What a rename, move or delete of a path touches: the path itself and
+/// what lies below it, compared by components (case and a leading root do
+/// not matter), never a sibling that only shares its name as a prefix.
+#[test]
+fn path_at_or_below_is_the_path_itself_or_below_it() {
+    use super::file_ops::path_at_or_below;
+    let p = VaultPath::new;
+    assert!(path_at_or_below(&p("d/x.md"), &p("d/x.md")));
+    assert!(path_at_or_below(&p("D/X.md"), &p("/d/x.md")));
+    assert!(path_at_or_below(&p("d/x.md"), &p("d")));
+    assert!(path_at_or_below(&p("d/sub/y.md"), &p("/d")));
+    assert!(path_at_or_below(&p("d/x.md"), &VaultPath::root()));
+    assert!(!path_at_or_below(&p("dd/k.md"), &p("d")));
+    assert!(!path_at_or_below(&p("d"), &p("d/x.md")));
+    assert!(!path_at_or_below(&p("top.md"), &p("d")));
 }

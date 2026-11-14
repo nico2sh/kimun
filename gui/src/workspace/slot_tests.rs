@@ -250,7 +250,7 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
     );
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         let offered = shell.workspace.read(cx).side_chooser_views(cx);
         let offered = offered.expect("the chooser is open");
@@ -274,7 +274,7 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
     .unwrap();
     cx.update_window(shell.handle, |_, window, cx| {
         // Open again and pick the first row.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         assert!(shell.workspace.read(cx).side_chooser_views(cx).is_some());
         window.press("enter", cx);
     })
@@ -292,14 +292,14 @@ fn toggle_right_side_with_no_view_asks_which_to_show(cx: &mut TestAppContext) {
         assert_eq!(saved_placed(&path)[1], shown);
 
         // Again: hidden, the editor gets the width back.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         assert!(shell.shown_on(Side::Right, cx).is_empty());
         assert!(close(window.find("editor-panel").bounds().right(), 1000.));
         assert_eq!(shell.focused(cx), Panel::Editor);
 
         // Again: the remembered view comes back, no chooser.
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.render_frame(cx);
         assert!(shell.workspace.read(cx).side_chooser_views(cx).is_none());
         assert_eq!(shell.shown_on(Side::Right, cx), shown);
@@ -327,7 +327,7 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
         window.click(rail_cell_id(DrawerView::Tags), cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Tags]);
 
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(window.try_find(slot_id(DrawerView::Tags)).is_none());
         let rail = window.find("rail").bounds();
@@ -344,7 +344,7 @@ fn toggling_left_side_off_and_on_restores_the_shown_view(cx: &mut TestAppContext
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("visible"), "{written}");
 
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert!(window.try_find(slot_id(DrawerView::Tags)).is_some());
         assert!(window.try_find(slot_id(DrawerView::Files)).is_none());
@@ -427,7 +427,8 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
         assert!(shell.shown_on(Side::Right, cx).is_empty());
         assert_eq!(shell.focused(cx), Panel::Rail);
-        // The editor keeps Alt+Shift+Arrow: no move from there.
+        // From the editor the chord moves its group, not a view: a lone group
+        // has nowhere to go, so nothing changes.
         window.click("editor-panel", cx);
         window.press("alt-shift-right", cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
@@ -658,7 +659,7 @@ fn directional_focus_crosses_slots(cx: &mut TestAppContext) {
         let slots = shell.slots(cx);
         let (files_s, find_s, outline_s) = (slots[0], slots[1], slots[2]);
         let editor = shell.focus(cx);
-        assert!(matches!(editor, Focus::Leaf(Leaf::Group(_))));
+        assert!(matches!(editor, Focus::Leaf(Leaf::Editor)));
         let slot = |s| Focus::Leaf(Leaf::Slot(s));
         let files = slot_id(DrawerView::Files);
         let find = slot_id(DrawerView::Find);
@@ -688,9 +689,9 @@ fn directional_focus_crosses_slots(cx: &mut TestAppContext) {
         step("alt-right", slot(files_s), &files);
         step("alt-right", editor, &editor_id);
         // A side toggled off is skipped.
-        step("ctrl-shift-t", editor, &editor_id);
+        step("alt-r", editor, &editor_id);
         step("alt-right", editor, &editor_id);
-        step("ctrl-t", editor, &editor_id);
+        step("alt-l", editor, &editor_id);
         step("alt-left", Focus::Rail, &rail);
     })
     .unwrap();
@@ -950,7 +951,7 @@ fn toggling_a_side_without_a_slot_says_so(cx: &mut TestAppContext) {
     let shell = open_shell(cx, 1000., &gui(&layout), "", false, LayoutStore::Off);
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         assert_eq!(shell.flash(cx).as_deref(), Some("No slot on that side"));
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
     })
@@ -1295,7 +1296,7 @@ fn a_slot_not_drawn_has_no_divider_until_a_view_shows_there(cx: &mut TestAppCont
         window.render_frame(cx);
         assert!(window.try_find("divider-slot-0").is_some());
         assert!(window.try_find("divider-group-0").is_none());
-        window.press("ctrl-shift-t", cx);
+        window.press("alt-r", cx);
         window.press("enter", cx);
     })
     .unwrap();
@@ -1755,7 +1756,7 @@ fn focus_region_walks_nested_slots_and_reaches_the_rail(cx: &mut TestAppContext)
         let slots = shell.slots(cx);
         let (files_s, find_s, tags_s) = (slots[0], slots[1], slots[2]);
         let editor = shell.focus(cx);
-        assert!(matches!(editor, Focus::Leaf(Leaf::Group(_))));
+        assert!(matches!(editor, Focus::Leaf(Leaf::Editor)));
         let slot = |s| Focus::Leaf(Leaf::Slot(s));
         let files = slot_id(DrawerView::Files);
         let find = slot_id(DrawerView::Find);
@@ -1895,7 +1896,7 @@ fn editor_group_subtree_never_collapses(cx: &mut TestAppContext) {
             assert!(
                 fit.rects
                     .iter()
-                    .any(|(leaf, _)| matches!(leaf, Leaf::Group(_)))
+                    .any(|(leaf, _)| matches!(leaf, Leaf::Editor))
             );
         })
         .unwrap();
@@ -2047,7 +2048,7 @@ fn focus_skips_collapsed_slots(cx: &mut TestAppContext) {
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         let ws = shell.workspace.clone();
-        let group = Focus::Leaf(Leaf::Group(ws.read(cx).layout.active_group()));
+        let group = Focus::Leaf(Leaf::Editor);
         assert_eq!(shell.focus(cx), group, "focus left the collapsed slot");
         let moved = ws.update(cx, |ws, _| ws.focus_dir(Dir::Right));
         assert_eq!(moved, TreeFocusMove::AtEdge);

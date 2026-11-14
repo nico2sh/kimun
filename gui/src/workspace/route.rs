@@ -37,6 +37,8 @@ pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 pub(crate) const NEEDS_NOTE_FOCUS: &str = "Needs the note focused";
 /// The command arranges the view of the focused slot (or the rail's).
 pub(crate) const NEEDS_SLOT_FOCUS: &str = "Needs a slot focused";
+/// The command splits or closes the focused slot or editor group.
+pub(crate) const NEEDS_SLOT_OR_EDITOR_FOCUS: &str = "Needs a slot or the editor focused";
 /// Copying a row needs the list of a slot's view (LINKS, OUTLINE, FIND,
 /// TAGS) to have the keyboard.
 pub(crate) const NEEDS_LIST_FOCUS: &str = "Needs a slot list focused";
@@ -49,6 +51,7 @@ impl Workspace {
     /// note stays "this note" while it shows.
     pub(crate) fn route_facts(&self) -> RouteFacts {
         let note = self
+            .active_state()
             .notes
             .as_ref()
             .and_then(|h| h.note.clone())
@@ -68,7 +71,7 @@ impl Workspace {
         opener == Panel::Editor
             && self.empty.is_none()
             && self.note_empty_state().is_none()
-            && !self.editor.read(cx).editor.find_open()
+            && !self.active_state().editor.read(cx).editor.find_open()
     }
 
     /// Why `route` cannot run in this window now, or `None` when it can.
@@ -80,7 +83,7 @@ impl Workspace {
         opener: Panel,
         cx: &App,
     ) -> Option<&'static str> {
-        let has_vault = self.notes.is_some();
+        let has_vault = self.active_state().notes.is_some();
         match route {
             // SEM only while the server can search (the TUI's words why
             // not); the rail hides its cell then too.
@@ -103,7 +106,12 @@ impl Workspace {
             LeaderRoute::Yank { .. } => None,
             LeaderRoute::Text(_) if self.note_has_keyboard(opener, cx) => None,
             LeaderRoute::Text(_) => Some(NEEDS_NOTE_FOCUS),
-            LeaderRoute::Save => match self.notes.as_ref().and_then(|h| h.note.as_ref()) {
+            LeaderRoute::Save => match self
+                .active_state()
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.as_ref())
+            {
                 Some(_) => None,
                 None => Some(NO_NOTE),
             },
@@ -173,7 +181,7 @@ impl Workspace {
             // vault there is no open note, the route is `NoNoteOpen`).
             LeaderRoute::NoteDialog(..) => Some(NO_WORKSPACE),
             // Leader `g s`: the git summary of the workspace.
-            LeaderRoute::GitStatus if self.notes.is_some() => None,
+            LeaderRoute::GitStatus if self.active_state().notes.is_some() => None,
             LeaderRoute::GitStatus => Some(NO_WORKSPACE),
             // The other overlays are no leader leaf's route (the sort and
             // query-help recipes, the quick note: chords and buttons open
@@ -211,7 +219,7 @@ impl Workspace {
                 self.flash(label, cx);
             }
             LeaderRoute::Text(action) => {
-                self.editor.update(cx, |editor, cx| {
+                self.active_state().editor.update(cx, |editor, cx| {
                     editor.apply_text_action(action, window, cx)
                 });
             }

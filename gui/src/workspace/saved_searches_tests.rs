@@ -255,7 +255,7 @@ fn f3_lists_the_backlinks_entry_then_the_saved_searches(cx: &mut TestAppContext)
     press(&started, "f3", cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
-    let editor = cx.read(|cx| started.workspace.read(cx).editor.clone());
+    let editor = cx.read(|cx| started.workspace.read(cx).active_state().editor.clone());
     let back = cx
         .update_window(started.handle, |_, window, cx| {
             editor.read(cx).focus_handle(cx).is_focused(window)

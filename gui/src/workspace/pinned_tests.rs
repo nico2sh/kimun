@@ -141,7 +141,7 @@ fn stored(rt: &Runtime, v: &TestVault) -> Vec<String> {
 }
 
 fn editor_focused(s: &Started, cx: &mut TestAppContext) -> bool {
-    let editor = cx.read(|cx| s.workspace.read(cx).editor.clone());
+    let editor = cx.read(|cx| s.workspace.read(cx).active_state().editor.clone());
     cx.update_window(s.handle, |_, window, cx| {
         editor.read(cx).focus_handle(cx).is_focused(window)
     })

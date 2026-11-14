@@ -279,7 +279,15 @@ fn empty_text(s: &Started, cx: &TestAppContext) -> String {
 }
 
 fn open_note(s: &Started, cx: &TestAppContext) -> Option<VaultPath> {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
 }
 
 fn shown(workspace: &Entity<Workspace>, view: DrawerView, cx: &TestAppContext) -> bool {

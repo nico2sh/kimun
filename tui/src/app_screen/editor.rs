@@ -1494,7 +1494,8 @@ impl EditorScreen {
                     }
                 }
             }
-            AppMessage::Autosave => {
+            // One session here: its tick is a plain autosave.
+            AppMessage::Autosave | AppMessage::AutosaveOf(_) => {
                 self.spawn_autosave(tx);
             }
             AppMessage::NoteReloadFromDisk(path) => {

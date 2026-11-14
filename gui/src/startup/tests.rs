@@ -189,7 +189,7 @@ async fn run(v: &TestVault, restore: bool) -> Vec<AppMessage> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::time::timeout(
         Duration::from_secs(20),
-        index_and_restore(v.vault.clone(), v.settings.clone(), restore, tx),
+        index_and_restore(v.vault.clone(), v.settings.clone(), restore, None, tx),
     )
     .await
     .expect("indexing finishes");

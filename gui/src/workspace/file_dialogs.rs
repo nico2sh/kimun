@@ -1,7 +1,6 @@
-//! The **file-operation dialogs** (M6 G3): the note menu (`Rename…`,
-//! `Move…`, `Delete…`; from the editor's right-click also `Properties…`,
-//! M7a G2), the rename and move dialogs (kit `Dialog`), and the
-//! delete confirmation's body (kit `AlertDialog`). Each is a view the modal
+//! The **file-operation dialogs** (M6 G3): the rename and move dialogs (kit
+//! `Dialog`) and the delete confirmation's body (kit `AlertDialog`), which
+//! the note menu's items open ([`super::note_menu`]). Each is a view the modal
 //! host opens in its one slot ([`super::modal`]); none of them touches the
 //! vault beyond reading it (the availability checks, the directory list).
 //! The operation itself is the workspace's ([`Workspace::request_file_op`]),
@@ -25,27 +24,23 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::AlertDialog;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Rgba, Role,
-    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, Render, Rgba, Role, ScrollStrategy, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div, rems,
+    uniform_list,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops::{self, ValidationState};
-use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_ops::FileOpRequest;
-use crate::input;
 use crate::theme;
 
 /// Element ids, for tests.
-pub(crate) const MENU_ID: &str = "file-ops-menu";
 pub(crate) const RENAME_INPUT_ID: &str = "rename-input";
 pub(crate) const MOVE_FILTER_ID: &str = "move-filter";
 pub(crate) const MOVE_LIST_ID: &str = "move-list";
@@ -58,47 +53,15 @@ pub(crate) fn move_row_id(dir: &VaultPath) -> SharedString {
     format!("move-row:{dir}").into()
 }
 
-/// A menu item's element id (`file-ops-rename`).
-pub(crate) fn menu_item_id(kind: FileOpKind) -> &'static str {
-    match kind {
-        FileOpKind::Rename => "file-ops-rename",
-        FileOpKind::Move => "file-ops-move",
-        FileOpKind::Delete => "file-ops-delete",
-        FileOpKind::Properties => "file-ops-properties",
-    }
-}
-
-/// What the note menu offers.
+/// What the note menu's note items open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileOpKind {
     Rename,
     Move,
     Delete,
-    /// The note's properties dialog (the editor's menu only; not a file
-    /// operation, but the same menu offers it).
+    /// The note's properties dialog (not a file operation, but the same
+    /// menu offers it).
     Properties,
-}
-
-impl FileOpKind {
-    /// Every menu item, in order, with the key that picks each (the TUI
-    /// menu's R, M, D; P for properties). The F2 menu shows them without
-    /// the first.
-    const MENU: [(FileOpKind, &'static str, char); 4] = [
-        (FileOpKind::Properties, "Properties…", 'p'),
-        (FileOpKind::Rename, "Rename…", 'r'),
-        (FileOpKind::Move, "Move…", 'm'),
-        (FileOpKind::Delete, "Delete…", 'd'),
-    ];
-
-    /// The items a menu shows: with `Properties…` (the editor's right-click)
-    /// or the file operations alone (F2, unchanged).
-    fn menu(with_properties: bool) -> &'static [(FileOpKind, &'static str, char)] {
-        if with_properties {
-            &Self::MENU
-        } else {
-            &Self::MENU[1..]
-        }
-    }
 }
 
 /// An operation's progress as its dialog shows it: running (the confirm is
@@ -187,143 +150,6 @@ fn close(workspace: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
             workspace.dismiss_file_dialog(window, cx)
         })
         .ok();
-}
-
-// ---- The note menu -----------------------------------------------------------
-
-/// The note menu: what can be done to one entry. Picked with a click, the
-/// item's letter, or Up/Down and Enter.
-pub(crate) struct FileOpsMenu {
-    target: VaultPath,
-    /// The items shown ([`FileOpKind::menu`]).
-    items: &'static [(FileOpKind, &'static str, char)],
-    workspace: WeakEntity<Workspace>,
-    focus: FocusHandle,
-    selected: usize,
-}
-
-impl FileOpsMenu {
-    pub(crate) fn new(
-        target: VaultPath,
-        with_properties: bool,
-        workspace: WeakEntity<Workspace>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            target,
-            items: FileOpKind::menu(with_properties),
-            workspace,
-            focus: cx.focus_handle(),
-            selected: 0,
-        }
-    }
-
-    /// Run the item `kind`: this menu gives way to its dialog.
-    pub(crate) fn choose(&self, kind: FileOpKind, window: &mut Window, cx: &mut App) {
-        let target = self.target.clone();
-        self.workspace
-            .update(cx, |workspace, cx| {
-                workspace.choose_file_op(kind, target, window, cx)
-            })
-            .ok();
-    }
-
-    /// Run the selected item (Enter).
-    pub(crate) fn choose_selected(&self, window: &mut Window, cx: &mut App) {
-        self.choose(self.items[self.selected].0, window, cx);
-    }
-
-    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(KeyInput { key, mods }) = input::key_down_input(event) else {
-            return;
-        };
-        if mods != Mods::NONE && mods != Mods::SHIFT {
-            return;
-        }
-        match key {
-            Key::Up => self.selected = self.selected.saturating_sub(1),
-            Key::Down => self.selected = (self.selected + 1).min(self.items.len() - 1),
-            Key::Char(c) => {
-                let c = c.to_ascii_lowercase();
-                // Every other letter is swallowed: the menu is modal.
-                if let Some((kind, ..)) = self.items.iter().find(|(.., k)| *k == c) {
-                    cx.stop_propagation();
-                    self.choose(*kind, window, cx);
-                    return;
-                }
-            }
-            _ => return,
-        }
-        cx.stop_propagation();
-        cx.notify();
-    }
-}
-
-impl Focusable for FileOpsMenu {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for FileOpsMenu {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::current(cx);
-        let t = &*theme;
-        let rows = self
-            .items
-            .iter()
-            .enumerate()
-            .map(|(ix, (kind, label, key))| {
-                let kind = *kind;
-                let selected = ix == self.selected;
-                let hover = theme::hover_background(t);
-                let text = if kind == FileOpKind::Delete {
-                    theme::error(t)
-                } else {
-                    theme::foreground(t)
-                };
-                div()
-                    .id(menu_item_id(kind))
-                    .test_support()
-                    .role(Role::MenuItem)
-                    .aria_label(*label)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .when(selected, |row| row.bg(theme::selected_background(t)))
-                    .when(!selected, |row| row.hover(move |style| style.bg(hover)))
-                    // Delete stands apart from the harmless items, and the
-                    // file operations from the properties above them.
-                    .when(
-                        kind == FileOpKind::Delete || (kind == FileOpKind::Rename && ix > 0),
-                        |row| row.mt_1().border_t_1().border_color(theme::divider(t)),
-                    )
-                    .child(div().flex_1().text_sm().text_color(text).child(*label))
-                    .child(Kbd::new(input::keystroke(KeyInput::plain(Key::Char(
-                        key.to_ascii_uppercase(),
-                    )))))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.choose(kind, window, cx)
-                    }))
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        div()
-            .id(MENU_ID)
-            .test_support()
-            .role(Role::Menu)
-            .aria_label("File operations")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .children(rows)
-    }
 }
 
 // ---- Rename -------------------------------------------------------------------

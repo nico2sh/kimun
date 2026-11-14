@@ -219,7 +219,7 @@ impl Workspace {
     /// with the keyboard, in Normal mode with nothing pending, its find bar
     /// closed and its input open.
     fn space_leads(&self, cx: &gpui_kit::App) -> bool {
-        let view = self.editor.read(cx);
+        let view = self.active_state().editor.read(cx);
         self.focused_panel() == Panel::Editor
             && self.empty.is_none()
             && self.note_empty_state().is_none()
@@ -254,8 +254,8 @@ impl Workspace {
         if modal::dialog_open(window, cx) {
             return;
         }
-        // The sequence takes the keys; a view's drag under way ends.
-        self.end_view_drag(window, cx);
+        // The sequence takes the keys; a drag under way ends.
+        self.end_drag(window, cx);
         self.leader.engine.start();
         self.leader.gateway = gateway.into();
         self.restart_reveal(cx);

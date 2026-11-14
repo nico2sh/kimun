@@ -106,8 +106,9 @@ enum AppCommand {
 pub enum EditorEvent {
     /// Vim `:` — open the command palette.
     OpenPalette,
-    /// A right-press with no selection — open the note menu.
-    ContextMenu,
+    /// A right-press with no selection — open the note menu at `at`, the
+    /// pointer in window coordinates.
+    ContextMenu { at: Point<Pixels> },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -211,6 +212,9 @@ pub struct EditorView {
     /// A left press in this editor is being dragged. Drags that began
     /// elsewhere are not ours to turn into a selection.
     dragging: bool,
+    /// Where the last press landed, in window coordinates: the note menu a
+    /// right-press asks for opens there.
+    pressed_at: Point<Pixels>,
     /// The presses that may form a double-click (follow the link there).
     clicks: ClickRun,
     /// What time it is, for the double-click rule: the real clock. Tests freeze it:
@@ -282,6 +286,18 @@ impl EditorView {
             engine.set_redraw_callback(redraw_callback(tx.clone()));
         }
         self.tx = tx;
+    }
+
+    /// Whether the editor reports on `tx`'s channel (tests).
+    #[cfg(test)]
+    pub(crate) fn reports_on(&self, tx: &AppTx) -> bool {
+        self.tx.same_channel(tx)
+    }
+
+    /// Whether the editor completes `[[` and `#` from a vault (tests).
+    #[cfg(test)]
+    pub(crate) fn completes(&self) -> bool {
+        self.autocomplete.is_some()
     }
 
     /// Run the double-click rule on `clock` instead of the real one (tests).
@@ -464,6 +480,7 @@ impl EditorView {
             tx,
             scroll: ScrollAccumulator::default(),
             dragging: false,
+            pressed_at: Point::default(),
             clicks: ClickRun::default(),
             clock: Instant::now,
             preedit: None,
@@ -492,7 +509,9 @@ impl EditorView {
                 // Right-click with no selection opens the note menu, which
                 // the window owns. With a selection the editor copies it and
                 // asks for nothing.
-                EditorRequest::ContextMenu => cx.emit(EditorEvent::ContextMenu),
+                EditorRequest::ContextMenu => cx.emit(EditorEvent::ContextMenu {
+                    at: self.pressed_at,
+                }),
                 // Nothing (no popup) is anchored to the cursor to move yet.
                 EditorRequest::ViewportScrolled => {}
             }
@@ -548,11 +567,14 @@ impl EditorView {
     /// The workspace resolves the chords the editor lets bubble in this same
     /// context, so the two never disagree about whose a key is.
     pub(crate) fn key_ctx(&self) -> KeyCtx {
+        let vim = self.editor.is_vim() && !self.editor.find_open();
         KeyCtx {
             panel: Panel::Editor,
-            vim: self.editor.is_vim() && !self.editor.find_open(),
+            vim,
             query: false,
             browser: false,
+            vim_pending: vim && self.editor.pending_input_hint().is_some(),
+            vim_insert: vim && self.editor.modal_is_insert() == Some(true),
         }
     }
 
@@ -750,6 +772,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        self.pressed_at = event.position;
         // A press on the text (the popup's own rows never get here) dismisses
         // the popup.
         if let Some(engine) = self.autocomplete.as_mut() {

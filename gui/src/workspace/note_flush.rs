@@ -4,12 +4,13 @@
 //! its wording and what follows the flush; the shared steps are here:
 //!
 //! 1. [`Workspace::flush_block`]: may the note be let go at all?
-//! 2. [`Workspace::begin_note_flush`]: stop the tick, take the buffer,
+//! 2. [`Workspace::begin_note_flush_in`]: stop the tick, take the buffer,
 //!    block typing.
-//! 3. [`Workspace::flush_failure`]: after the flush landed, is everything
+//! 3. [`Workspace::flush_failure_in`]: after the flush landed, is everything
 //!    written?
 
 use gpui_kit::{App, Context};
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::session::{FlushRequest, SaveOutcome};
 
 use super::Workspace;
@@ -44,51 +45,78 @@ impl FlushBlock {
 impl Workspace {
     /// The first reason the open note cannot be flushed and let go, if any.
     pub(super) fn flush_block(&self, cx: &App) -> Option<FlushBlock> {
-        let host = self.notes.as_ref()?;
+        self.flush_block_in(self.layout.active_group(), cx)
+    }
+
+    /// [`Self::flush_block`] for the note `group` holds.
+    pub(super) fn flush_block_in(&self, group: GroupId, cx: &App) -> Option<FlushBlock> {
+        let host = self.host_in(group)?;
         if self.closing != Closing::Open {
             Some(FlushBlock::Closing)
         } else if self.note_held() {
             Some(FlushBlock::Held)
         } else if host.is_switching() || host.is_open_wanted() {
             Some(FlushBlock::Opening)
-        } else if host.note.is_some() && self.editor_dirty(cx) && !self.can_save() {
+        } else if host.note.is_some() && self.editor_dirty_in(group, cx) && !self.can_save_in(group)
+        {
             Some(FlushBlock::Unsaveable)
         } else {
             None
         }
     }
 
-    /// Start the one write of the open note before it is let go: no tick
-    /// from here, the buffer taken, typing blocked. `None` when another
-    /// flush still runs (the tick is back, unless the vault is read-only;
-    /// nothing else changed). The
-    /// caller runs the request, applies it ([`Self::apply_flush`]) and
-    /// unblocks typing.
-    pub(super) fn begin_note_flush(&mut self, cx: &mut Context<Self>) -> Option<FlushRequest> {
-        let host = self.notes.as_mut()?;
+    /// Start the one write of the note `group` holds before it is let go:
+    /// no tick from here, the buffer taken, typing blocked. `None` when
+    /// another flush still runs (the tick is back, unless the vault is
+    /// read-only; nothing else changed). The caller keeps `group`, runs the
+    /// request, applies it to that group ([`Self::apply_flush`]) and
+    /// unblocks its typing, whichever group is active by then.
+    pub(super) fn begin_note_flush_in(
+        &mut self,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> Option<FlushRequest> {
+        let state = self.groups.get_mut(&group)?;
+        let host = state.notes.as_mut()?;
         host.session.stop_autosave();
         match host
             .session
-            .prepare_flush(Some(&self.editor.read(cx).editor))
+            .prepare_flush(Some(&state.editor.read(cx).editor))
         {
             Ok(flush) => {
-                self.block_input(true, cx);
+                self.block_input_in(group, true, cx);
                 Some(flush)
             }
             Err(_) => {
                 // Never in a read-only vault, where the tick does not run.
-                self.restart_tick_unless_read_only();
+                self.restart_tick_unless_read_only_in(group);
                 None
             }
         }
     }
 
-    /// What is still unwritten after a flush landed: the flush's own
-    /// problem, else text typed since (nothing types while it runs, but a
-    /// buffer still dirty must not be run over).
-    pub(super) fn flush_failure(&self, outcome: &SaveOutcome, cx: &App) -> Option<String> {
+    /// Let go of a flush begun in `group` ([`Self::begin_note_flush_in`])
+    /// that will not run (a later group refused its own): the background
+    /// save it took over goes back to the group's session and finishes, as
+    /// dropping the request would abort it. The caller gives the tick and
+    /// the keyboard back.
+    pub(super) fn give_back_flush_in(&mut self, group: GroupId, flush: FlushRequest) {
+        if let Some(host) = self.host_in_mut(group) {
+            host.session.give_back_flush(flush);
+        }
+    }
+
+    /// What is still unwritten in `group` after its flush landed: the
+    /// flush's own problem, else text typed since (nothing types while it
+    /// runs, but a buffer still dirty must not be run over).
+    pub(super) fn flush_failure_in(
+        &self,
+        group: GroupId,
+        outcome: &SaveOutcome,
+        cx: &App,
+    ) -> Option<String> {
         flush_problem(outcome).or_else(|| {
-            self.editor_dirty(cx)
+            self.editor_dirty_in(group, cx)
                 .then(|| "the editor still has unsaved edits".to_string())
         })
     }

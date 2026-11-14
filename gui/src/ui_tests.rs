@@ -695,6 +695,15 @@ impl gpui_kit::Render for KeySpy {
 
 /// A vim editor showing `text` inside a [`KeySpy`].
 fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<KeySpy>) {
+    open_spy_with(cx, text, true)
+}
+
+/// [`open_spy`] over the vim editor (`vim`) or the plain one.
+fn open_spy_with(
+    cx: &mut TestAppContext,
+    text: &str,
+    vim: bool,
+) -> (AnyWindowHandle, Entity<KeySpy>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
@@ -712,7 +721,7 @@ fn open_spy(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<Key
             },
             cx,
             |window, cx| {
-                let editor = cx.new(|cx| EditorView::new(Some(text), true, cx));
+                let editor = cx.new(|cx| EditorView::new(Some(text), vim, cx));
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
                 cx.new(|_| KeySpy { editor, bubbled: 0 })
             },
@@ -1718,6 +1727,46 @@ fn replacing(view: &Entity<EditorView>, cx: &gpui_kit::App) -> bool {
         .is_some_and(|b| b.is_replacing())
 }
 
+/// Regression lock (final-review ruling): in vim Insert mode Ctrl-W is the
+/// editor's, never the tab close (it does not bubble), with or without a
+/// pending sequence in Normal mode before; back in Normal mode with nothing
+/// pending it bubbles (the tab close) again. The plain editor lets it
+/// bubble.
+#[gpui_kit::test]
+fn ctrl_w_in_vim_insert_mode_stays_in_the_editor(cx: &mut TestAppContext) {
+    let (handle, spy) = open_spy(cx, "one two");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let view = spy.read(cx).editor.clone();
+        window.press("A", cx);
+        assert_eq!(mode(&view, cx).as_deref(), Some("INSERT"));
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 0, "Insert: Ctrl-W is the editor's");
+        assert_eq!(mode(&view, cx).as_deref(), Some("INSERT"));
+        window.press("escape", cx);
+        assert_eq!(mode(&view, cx).as_deref(), Some("NORMAL"));
+        window.press("d", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 0, "Normal, `d` pending: vim's");
+        window.press("escape", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(
+            spy.read(cx).bubbled,
+            1,
+            "Normal, nothing pending: the close"
+        );
+    })
+    .unwrap();
+
+    let (handle, spy) = open_spy_with(cx, "one two", false);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 1, "plain editor: the close");
+    })
+    .unwrap();
+}
+
 /// The vim rule (ADR-0050 §6, narrowed): only the Ctrl+letters the vim engine
 /// reads (R, C, X, V) are vim's. Ctrl-F and Ctrl-H are the app's under vim too,
 /// and the Ctrl+Shift twins work as well.
@@ -1732,19 +1781,26 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         window.press("ctrl-r", cx);
         assert!(!bar_open(&view, cx));
         assert_eq!(spy.read(cx).bubbled, 0, "vim consumed Ctrl-R");
+        // Ctrl-Shift-T is bound to nothing (the new tab has no twin): the
+        // editor keeps it, nothing bubbles.
         window.press("ctrl-shift-t", cx);
-        assert_eq!(
-            spy.read(cx).bubbled,
-            1,
-            "the right side's chord passes the editor by"
-        );
-        // Ctrl-T has no vim twin, but vim reads no Ctrl-T: it passes too.
+        assert_eq!(spy.read(cx).bubbled, 0, "Ctrl-Shift-T is no app chord");
+        // Vim reads no Ctrl-T: the new tab's chord passes the editor by.
         window.press("ctrl-t", cx);
         assert_eq!(
             spy.read(cx).bubbled,
-            2,
-            "the left side's chord passes the editor by"
+            1,
+            "the new tab's chord passes the editor by"
         );
+        // Vim's Ctrl-W window prefix: with an operator pending the engine
+        // takes Ctrl-W (no tab closes); with nothing pending it bubbles.
+        window.press("d", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 1, "vim holds `d`: Ctrl-W is vim's");
+        window.press("escape", cx);
+        window.press("ctrl-w", cx);
+        assert_eq!(spy.read(cx).bubbled, 2, "nothing pending: the tab close");
+        assert_eq!(text(&view, cx), all, "the `d` deleted nothing");
         window.press("ctrl-f", cx);
         assert!(bar_open(&view, cx), "Ctrl-F is find under vim");
         assert!(!replacing(&view, cx));
@@ -1809,8 +1865,8 @@ fn the_macos_table_finds_on_cmd_f(cx: &mut TestAppContext) {
 }
 
 /// A chord bound to an app command the editor does not own (focus, the
-/// slot) is not the editor's to act on: Alt+Left no longer moves by word
-/// (ADR-0050 §4), Ctrl-T does not reach the editor.
+/// slot, the tabs) is not the editor's to act on: Alt+Left no longer moves
+/// by word (ADR-0050 §4), Ctrl-Tab and Ctrl-T do not reach the editor.
 #[gpui_kit::test]
 fn app_chords_pass_the_editor_by(cx: &mut TestAppContext) {
     let (handle, view) = open(cx, "foo bar");

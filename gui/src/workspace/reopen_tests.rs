@@ -183,7 +183,15 @@ pub(super) fn open_on_a(
 
 impl Started {
     pub(super) fn sw_open_note(&self, cx: &TestAppContext) -> Option<VaultPath> {
-        cx.read(|cx| self.workspace.read(cx).notes.as_ref()?.note.clone())
+        cx.read(|cx| {
+            self.workspace
+                .read(cx)
+                .active_state()
+                .notes
+                .as_ref()?
+                .note
+                .clone()
+        })
     }
 
     pub(super) fn sw_is_on(&self, p: &str, cx: &TestAppContext) -> bool {

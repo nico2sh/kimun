@@ -101,12 +101,23 @@ pub(crate) fn action_label(action: &ActionShortcuts) -> String {
         A::FocusEditor => "Next panel".into(),
         A::FocusSidebar => "Previous panel".into(),
         A::Leader => "Leader (start a sequence)".into(),
-        A::SplitSlotRight => "Split slot right (pick a view)".into(),
-        A::SplitSlotDown => "Split slot down (pick a view)".into(),
-        A::MoveViewToNeighbour(Dir::Left) => "Move view left (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Right) => "Move view right (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Up) => "Move view up (new slot if none)".into(),
-        A::MoveViewToNeighbour(Dir::Down) => "Move view down (new slot if none)".into(),
+        // On a slot they split or close the slot; on the editor, its
+        // active group (ADR-0058).
+        A::SplitSlotRight => "Split right (slot: pick a view; editor: new pane)".into(),
+        A::SplitSlotDown => "Split down (slot: pick a view; editor: new pane)".into(),
+        A::CloseSlot => "Close slot or editor pane".into(),
+        A::MoveViewToNeighbour(Dir::Left) => {
+            "Move view left (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Right) => {
+            "Move view right (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Up) => {
+            "Move view up (new slot if none; editor: move pane)".into()
+        }
+        A::MoveViewToNeighbour(Dir::Down) => {
+            "Move view down (new slot if none; editor: move pane)".into()
+        }
         other => other.label(),
     }
 }
@@ -433,7 +444,7 @@ impl Workspace {
     /// chords, the configured leader tree, which leaves have no surface yet.
     pub(crate) fn keyboard_help_rows(&self, opener: Panel, cx: &gpui_kit::App) -> Vec<HelpRow> {
         let keymap = keymap::active(cx);
-        let vim = self.editor.read(cx).editor.is_vim();
+        let vim = self.active_state().editor.read(cx).editor.is_vim();
         let mut rows: Vec<HelpRow> = ActionShortcuts::ALL
             .into_iter()
             .filter_map(|action| {
@@ -476,7 +487,7 @@ impl Workspace {
     /// Space in vim Normal mode when the editor runs vim.
     fn keyboard_help_gateway(&self, cx: &gpui_kit::App) -> SharedString {
         let chord = keymap::chord_label(cx, &ActionShortcuts::Leader);
-        let vim = self.editor.read(cx).editor.is_vim();
+        let vim = self.active_state().editor.read(cx).editor.is_vim();
         match (chord, vim) {
             (Some(chord), true) => format!("{chord}, or {SPACE_GATEWAY} in vim Normal mode").into(),
             (Some(chord), false) => chord.into(),

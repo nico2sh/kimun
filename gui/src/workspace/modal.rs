@@ -72,8 +72,6 @@ pub(crate) fn focus_view<V: Focusable>(view: Entity<V>) -> impl FnOnce(&mut Wind
 pub(crate) enum ModalKind {
     /// The command palette.
     Palette,
-    /// The note menu (rename, move, delete).
-    FileOps,
     /// The rename dialog.
     Rename,
     /// The move dialog.
@@ -187,7 +185,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.cancel_leader(cx);
-        self.end_view_drag(window, cx);
+        self.end_drag(window, cx);
+        // The note menu gives way, the keyboard back where it was first,
+        // so the dialog returns it there.
+        self.close_note_menu(window, cx);
         if let Slot::Own(kind) = slot {
             self.modal = Some(kind);
         }

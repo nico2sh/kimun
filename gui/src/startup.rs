@@ -5,9 +5,12 @@
 //! the messages [`index_and_restore`] sends.
 //!
 //! **The first note.** A note named on the command line opens at once (it
-//! needs no index). Otherwise the session is restored from the history, as
-//! the TUI does, once indexing has finished: only a vault that indexed is
-//! trusted to say a note is gone (see `logic::startup::restore_target`).
+//! needs no index). Otherwise, once indexing has finished, the window
+//! returns to where the workspace's session record left it (its tabs, their
+//! groups and notes); with no record, or one with no note left to open, the
+//! session is restored from the history, as the TUI does. Only a vault that
+//! indexed is trusted to say a note is gone (see
+//! `logic::startup::restore_target`).
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -17,9 +20,12 @@ use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::SystemPath;
+use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
-use kimun_notes::logic::startup::{VaultOpen, restore_target};
+use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
 use kimun_notes::settings::SharedSettings;
+use kimun_notes::settings::session::{GroupTreeRecord, SessionRecord};
 
 /// The application's name, as the window title shows it.
 pub(crate) const APP_NAME: &str = "kimün";
@@ -178,18 +184,47 @@ fn note_only(path: VaultPath, shown: &str) -> Result<VaultPath, String> {
     }
 }
 
-/// Bring the index in step with the vault, then, when `restore`, land on
-/// the newest note of the history. Reports on `tx` as the TUI's start screen
-/// does: `IndexingDone` (or `VaultConflict` for names that differ only by
-/// case), then a `FlashMessage` when the last note is gone, then an
-/// `OpenPath` for the note to land on (the vault root when the history has
-/// none). Run it on the tokio runtime.
+/// The arrangement a workspace's session record restores (ADR-0058): the
+/// region with its tabs and groups, the note each group opens, and the
+/// recorded notes that are gone (dropped from their groups).
+pub(crate) struct SessionRestore {
+    pub(crate) region: EditorRegion,
+    pub(crate) notes: Vec<(GroupId, VaultPath)>,
+    pub(crate) gone: Vec<VaultPath>,
+}
+
+/// Where a start that restores lands, once the vault indexed.
+pub(crate) enum Landing {
+    /// The session record, which still has a note to open.
+    Session(SessionRestore),
+    /// The history's newest note (the vault root when it has none), and
+    /// what to say when the last note is gone: the record had no note left
+    /// to open, or there was none. The window opens it.
+    History(RestoreTarget),
+}
+
+/// Bring the index in step with the vault, then land where the last session
+/// left off. Reports on `tx` as the TUI's start screen does: `IndexingDone`
+/// (or `VaultConflict` for names that differ only by case).
+///
+/// With `session` (the stored record), the answer is where to land, and
+/// nothing more is sent: that record when it still has a note to open
+/// ([`Landing::Session`]), else, when `history`, the history's newest note
+/// ([`Landing::History`]), else nothing. Without `session`, when `history`,
+/// the history's newest note is sent: a `FlashMessage` when the last note
+/// is gone, then an `OpenPath` for the note to land on (the vault root when
+/// the history has none). Run it on the tokio runtime.
+///
+/// A recorded note is gone only when the vault indexed and the filesystem
+/// says not found, as for the history ([`restore_target`]): a vault that
+/// could not be read would make every note look gone.
 pub(crate) async fn index_and_restore(
     vault: Arc<NoteVault>,
     settings: SharedSettings,
-    restore: bool,
+    history: bool,
+    session: Option<SessionRecord>,
     tx: AppTx,
-) {
+) -> Option<Landing> {
     let indexed = match vault.validate_and_init().await {
         Ok(report) => {
             tx.send(AppMessage::IndexingDone(Ok(report.duration))).ok();
@@ -206,14 +241,76 @@ pub(crate) async fn index_and_restore(
             false
         }
     };
-    if !restore {
-        return;
+    let Some(record) = session else {
+        if history {
+            let target = restore_target(&settings, Some(&vault), indexed).await;
+            send_history(target, &tx);
+        }
+        return None;
+    };
+    let restored = session_restore(&vault, &record, indexed).await;
+    if !restored.notes.is_empty() {
+        return Some(Landing::Session(restored));
     }
-    let target = restore_target(&settings, Some(&vault), indexed).await;
+    if !history {
+        return None;
+    }
+    Some(Landing::History(
+        restore_target(&settings, Some(&vault), indexed).await,
+    ))
+}
+
+/// Land on the history's `target`: say the last note is gone, then open
+/// the target, on `tx`.
+pub(crate) fn send_history(target: RestoreTarget, tx: &AppTx) {
     if let Some(gone) = target.gone {
         tx.send(AppMessage::FlashMessage(gone)).ok();
     }
     tx.send(AppMessage::open(target.path)).ok();
+}
+
+/// The region `record` restores, its notes checked against the vault when
+/// it is trusted (`vault_reachable`).
+async fn session_restore(
+    vault: &NoteVault,
+    record: &SessionRecord,
+    vault_reachable: bool,
+) -> SessionRestore {
+    let mut gone: Vec<VaultPath> = Vec::new();
+    if vault_reachable {
+        for note in record_notes(record) {
+            if note.is_note()
+                && vault
+                    .entry_kind(&note)
+                    .await
+                    .is_err_and(|e| e.is_not_found())
+            {
+                gone.push(note);
+            }
+        }
+    }
+    let (region, notes) =
+        EditorRegion::from_record(record, |note| !gone.iter().any(|g| g.is_like(note)));
+    SessionRestore {
+        region,
+        notes,
+        gone,
+    }
+}
+
+/// Every note `record` names, tab by tab, in reading order.
+fn record_notes(record: &SessionRecord) -> Vec<VaultPath> {
+    fn walk(tree: &GroupTreeRecord, out: &mut Vec<VaultPath>) {
+        match tree {
+            GroupTreeRecord::Leaf { note } => out.extend(note.iter().cloned()),
+            GroupTreeRecord::Split { children, .. } => {
+                children.iter().for_each(|child| walk(child, out))
+            }
+        }
+    }
+    let mut out = Vec::new();
+    record.tabs.iter().for_each(|tab| walk(&tab.tree, &mut out));
+    out
 }
 
 #[cfg(test)]
