@@ -423,6 +423,10 @@ _Avoid_: animation (names the mechanism, not the user-facing behavior), transiti
 One of two named durations a change picks: quick or standard. A change names its kind, never a raw duration, and every speed shares one curve. Reduced motion (`[gui] reduce_motion`) makes every **motion** end at once.
 _Avoid_: duration, timing, easing (those are the numbers behind a speed).
 
+**Focus amount**:
+How much a focus target shows the focus indicator, from 0 to 1. A focus target is a surface (a slot, the editor, the rail), the title or the target marker of an editor group, or the cursor over a rail cell. The layout model says what is focused at once. The amount catches up over the quick speed, and each signal mixes its two colors by it. A target that appears later starts from zero.
+_Avoid_: focus fade, highlight state.
+
 **Reveal order**:
 The fixed staging of a leaf's **motion**. On enter the frame moves first and the content appears second. On exit the content fades first and the frame collapses second, so a closing pane never shows squeezed content.
 _Avoid_: stagger, sequence.

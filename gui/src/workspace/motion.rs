@@ -15,7 +15,12 @@
 //!
 //! 1. Add a variant to [`MotionKey`]. Say in [`MotionKey::lingers`] whether
 //!    it moves out after the model dropped it (a label does, a slot does
-//!    not).
+//!    not). Say in [`MotionKey::staged`] whether it follows the reveal
+//!    order. A color that fades (the focus indicator) does not: it moves at
+//!    once, in both directions, and its amount is `Presence::frame`. A new
+//!    focus signal is not a key of its own: add a `FocusTarget` in
+//!    `motion/focus.rs`, one line in `Workspace::is_focused`, and draw its
+//!    color with `Workspace::focus_color`.
 //! 2. Add a [`Spec`] in `Workspace::motion_specs`: when the model shows it,
 //!    at which [`Speed`], and how it starts ([`Enter`]). Put a parent
 //!    before what comes with it.
@@ -82,8 +87,10 @@ use kimun_notes::logic::editor_region::TabId;
 use kimun_notes::logic::layout_tree::{Leaf, RailPosition, SlotId, TreeShape};
 
 use super::Workspace;
+mod focus;
 mod weights;
 
+pub(super) use focus::FocusTarget;
 use weights::Weights;
 pub(super) use weights::{CellKey, Ghost, Siblings, ValueSpec};
 
@@ -96,6 +103,11 @@ pub(super) enum MotionKey {
     Rail,
     TabStrip,
     Tab(TabId),
+    /// How much a focus target shows the focus indicator (0 to 1): a border,
+    /// a title, a bar, a marker, a cursor ring (see [`FocusTarget`]). The
+    /// model says what is focused at once, and this catches up. It is not
+    /// staged: see [`MotionKey::staged`].
+    Focus(FocusTarget),
 }
 
 impl MotionKey {
@@ -105,6 +117,16 @@ impl MotionKey {
     /// from the model, and the drawing code does not draw it.
     fn lingers(self) -> bool {
         matches!(self, MotionKey::Tab(_))
+    }
+
+    /// Whether the key moves in the reveal order: on enter the frame first
+    /// and the content second, on exit the content first and the frame
+    /// second. A key that is not staged (a focus amount, which is a color,
+    /// not a thing that opens) moves its frame and its content together
+    /// over the speed's whole duration, with no delay, in both directions.
+    /// Its amount is `Presence::frame`.
+    fn staged(self) -> bool {
+        !matches!(self, MotionKey::Focus(_))
     }
 }
 
@@ -335,7 +357,11 @@ impl Motion {
             entry.frame = TransitionState::default();
             entry.content = TransitionState::default();
         }
+        let staged = key.staged();
         let policy = |stage, opening| {
+            if !staged {
+                return Transition::new(speed.duration());
+            }
             let timing = timing(speed, stage, opening);
             Transition::new(timing.duration).delay(timing.delay)
         };
@@ -366,6 +392,12 @@ impl Motion {
     /// `None` while it is asked for.
     pub(super) fn left_order(&self, key: MotionKey) -> Option<u64> {
         self.entries.get(&key)?.left
+    }
+
+    /// What was sampled for `key` in this frame: `None` for a key the store
+    /// does not hold.
+    pub(super) fn try_presence(&self, key: MotionKey) -> Option<Presence> {
+        self.entries.get(&key).map(|entry| entry.now)
     }
 
     /// What was sampled for `key` in this frame: nothing for a key never
@@ -532,6 +564,14 @@ impl Workspace {
             speed: Speed::Standard,
             // A slot that is new after the first frame opens from nothing.
             // The ones a whole new layout brings snap (`install_layout`).
+            enter: Enter::FromZero,
+        }));
+        // The focus indicator of everything that can look focused: lit while
+        // the model focuses it, and a thing that is new fades in.
+        specs.extend(self.focus_targets().into_iter().map(|target| Spec {
+            key: MotionKey::Focus(target),
+            present: self.is_focused(target),
+            speed: Speed::Quick,
             enter: Enter::FromZero,
         }));
         specs

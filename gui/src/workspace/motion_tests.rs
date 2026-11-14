@@ -16,7 +16,7 @@ use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::layout_tree::{RailPosition, SlotId};
 
 use super::LayoutStore;
-use super::motion::{CellKey, Enter, Motion, MotionKey, Siblings, Spec, ValueSpec};
+use super::motion::{CellKey, Enter, FocusTarget, Motion, MotionKey, Siblings, Spec, ValueSpec};
 use super::motion_test_support::slot_width;
 use super::tests::{Shell, gui, open_animated, open_shell_motion};
 use crate::motion::{SnapFacts, Speed};
@@ -161,7 +161,7 @@ use kimun_notes::logic::nav::DrawerView;
 use super::tree_view::move_button_id;
 use super::{slot_content_id, slot_id};
 
-fn toggle_left(cx: &mut TestAppContext, shell: &Shell) {
+pub(super) fn toggle_left(cx: &mut TestAppContext, shell: &Shell) {
     cx.update_window(shell.handle, |_, window, cx| {
         shell
             .workspace
@@ -1373,4 +1373,47 @@ fn a_cell_the_store_holds_builds_no_seed_list(cx: &mut TestAppContext) {
         held.iter().all(|spec| spec.seed_from.is_empty()),
         "a held cell lists none"
     );
+}
+
+#[gpui_kit::test]
+fn an_unstaged_key_moves_with_no_delay_in_both_directions(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let focus = MotionKey::Focus(FocusTarget::Surface(Focus::Rail));
+    let slot = MotionKey::Slot(left_slot(&shell, cx));
+    let rig = SpecRig::new(cx);
+    let both = |present| {
+        vec![
+            spec(focus, present, Speed::Quick, Enter::AtRest),
+            spec(slot, present, Speed::Quick, Enter::AtRest),
+        ]
+    };
+    rig.frame(cx, both(true));
+    rig.frame(cx, both(false));
+    wait(cx, 30);
+    rig.frame(cx, both(false));
+    let going = rig.motion.borrow().presence(focus).frame;
+    assert!(
+        going > 0.0 && going < 1.0,
+        "an unstaged key leaves at once: {going}"
+    );
+    assert_eq!(
+        rig.motion.borrow().presence(slot).frame,
+        1.0,
+        "a staged slot waits for its content to fade first"
+    );
+    // And back: it comes in at once too.
+    rig.frame(cx, both(true));
+    wait(cx, 30);
+    rig.frame(cx, both(true));
+    let coming = rig.motion.borrow().presence(focus).frame;
+    assert!(coming > going, "coming back: {going} to {coming}");
+}
+
+#[gpui_kit::test]
+fn try_presence_is_none_for_a_key_never_sampled(cx: &mut TestAppContext) {
+    let key = MotionKey::Focus(FocusTarget::Surface(Focus::Rail));
+    let rig = SpecRig::new(cx);
+    assert_eq!(rig.motion.borrow().try_presence(key), None);
+    rig.frame(cx, vec![spec(key, true, Speed::Quick, Enter::AtRest)]);
+    assert!(rig.motion.borrow().try_presence(key).is_some());
 }

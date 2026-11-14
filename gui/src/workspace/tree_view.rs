@@ -80,7 +80,7 @@ use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
-use super::motion::{CellKey, MotionKey, Siblings};
+use super::motion::{CellKey, FocusTarget, MotionKey, Siblings};
 use super::motion_box::{Clip, MotionBox as _};
 use super::{Workspace, route, slot_content_id, slot_gone_id, slot_id};
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
@@ -1381,8 +1381,8 @@ impl Workspace {
                     .child(document)
                     .children(self.group_zone_layer(at, group, cx)),
             )
-            .when(self.wears_target_marker(group), |el| {
-                el.child(self.render_target_marker(at, group, rem, cx))
+            .when_some(self.target_marker_color(group, cx), |el, color| {
+                el.child(self.render_target_marker(at, group, rem, color, cx))
             })
             .into_any_element()
     }
@@ -1702,11 +1702,23 @@ impl Workspace {
     /// hairline otherwise.
     pub(super) fn leaf_border(&self, focus: Focus, cx: &gpui_kit::App) -> Rgba {
         let theme = theme::current(cx);
-        if self.layout.focused() == focus {
-            theme::focus_border(&theme)
-        } else {
-            theme::divider(&theme)
-        }
+        self.focus_color(
+            theme::divider(&theme),
+            theme::focus_border(&theme),
+            FocusTarget::Surface(focus),
+        )
+    }
+
+    /// The color of the title of `slot`'s header: the accent while the slot
+    /// has the keyboard, the plain text color otherwise, and a mix of the
+    /// two while the focus moves (ADR-0060).
+    pub(super) fn slot_title_color(&self, slot: SlotId, cx: &gpui_kit::App) -> Rgba {
+        let theme = theme::current(cx);
+        self.focus_color(
+            theme::foreground(&theme),
+            theme::focus_border(&theme),
+            FocusTarget::Surface(Focus::Leaf(Leaf::Slot(slot))),
+        )
     }
 
     /// The surface of a leaf, inside the margin its root element keeps
@@ -1931,11 +1943,7 @@ impl Workspace {
             .bg(theme::slot_header_background(&theme))
             .border_b_1()
             .border_color(theme::divider(&theme))
-            .text_color(if focused {
-                theme::focus_border(&theme)
-            } else {
-                theme::foreground(&theme)
-            })
+            .text_color(self.slot_title_color(slot, cx))
             .child(title);
         // The strip is a drag source (ADR-0054 §8) through a wrapper whose
         // id is stable: the strip's own id follows the focus, and a press

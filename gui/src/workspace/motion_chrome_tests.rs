@@ -233,7 +233,7 @@ use crate::test_vault::{TestVault, test_vault};
 
 /// A window on a vault with two notes, motion on, showing `a.md` in one
 /// tab. A tab command needs a vault.
-fn open_vault_shell(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Shell) {
+pub(super) fn open_vault_shell(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Shell) {
     let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("b.md", "beta")], &[]));
     let started = open_started_motion(
         cx,
@@ -251,7 +251,7 @@ fn open_vault_shell(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Shell)
     (v, shell)
 }
 
-fn new_tab(cx: &mut TestAppContext, shell: &Shell) {
+pub(super) fn new_tab(cx: &mut TestAppContext, shell: &Shell) {
     cx.update_window(shell.handle, |_, _, cx| {
         shell.workspace.update(cx, |w, cx| w.new_tab(cx))
     })
