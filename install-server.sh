@@ -2,7 +2,8 @@
 # Kimün server installer — downloads the latest stable kimun-server release,
 # verifies its checksum, and installs the binary into a user-writable directory.
 # Re-running the script updates an existing install (and restarts the service,
-# if one was set up).
+# if one was set up). It also writes ~/.config/kimun/server-install.toml, the marker
+# that tells the Kimün apps they may update this server (ADR-0059).
 #
 #   curl -fsSL https://kimun.2co.dev/install-server.sh | sh
 #   curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
@@ -39,6 +40,9 @@ INSTALL_DIR="${KIMUN_SERVER_INSTALL_DIR:-$HOME/.local/bin}"
 # (no XDG_CONFIG_HOME lookup).
 CONFIG_DIR="$HOME/.config/kimun"
 CONFIG_FILE="$CONFIG_DIR/server.toml"
+# The install marker: tells the Kimün app that this script installed the server here, so the
+# app may update it (ADR-0059). It records the install folder and the kind of service.
+MARKER="$CONFIG_DIR/server-install.toml"
 # Service working directory: the fastembed model cache is created relative to
 # the process cwd, and the generated SQLite store also lives here.
 STATE_DIR="$HOME/.local/share/kimun"
@@ -201,9 +205,21 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 EOF
+      # `enable --now` does not restart a unit that already runs, so an updated binary would
+      # sit on the disk while the old process kept serving. A running unit is restarted.
+      was_active=0
+      if systemctl --user is-active --quiet kimun-server.service >/dev/null 2>&1; then
+        was_active=1
+      fi
       systemctl --user daemon-reload
       systemctl --user enable --now kimun-server.service
-      info "Service enabled and started (systemctl --user status kimun-server)"
+      if [ "$was_active" -eq 1 ]; then
+        systemctl --user restart kimun-server.service \
+          || err "could not restart kimun-server.service: run systemctl --user restart kimun-server.service"
+        info "Service restarted (systemctl --user status kimun-server)"
+      else
+        info "Service enabled and started (systemctl --user status kimun-server)"
+      fi
       ;;
     Darwin)
       mkdir -p "$(dirname "$LAUNCHD_PLIST")" "$STATE_DIR"
@@ -243,6 +259,26 @@ restart_service_if_present() {
       info "Restarted kimun-server launchd agent"
       ;;
   esac
+}
+
+# --- install marker -----------------------------------------------------------
+# Written at the end of every install run, also when the binary was already current, so a
+# server that was installed before the marker existed gets one by running this script once.
+# The service kind is what exists now: a service set up by an earlier run counts.
+write_marker() {
+  kind="none"
+  case "$(uname -s)" in
+    Linux) [ -f "$SYSTEMD_UNIT" ] && kind="systemd" ;;
+    Darwin) [ -f "$LAUNCHD_PLIST" ] && kind="launchd" ;;
+  esac
+  mkdir -p "$CONFIG_DIR" || err "could not create $CONFIG_DIR"
+  cat > "$MARKER.new" <<EOF
+# Written by install-server.sh. The Kimün app reads it to know that it may update this server.
+installer = "install-server.sh"
+install_dir = "$INSTALL_DIR"
+service = "$kind"
+EOF
+  mv -f "$MARKER.new" "$MARKER" || err "could not write $MARKER"
 }
 
 # --- uninstall ----------------------------------------------------------------
@@ -290,6 +326,7 @@ uninstall() {
       ;;
   esac
   remove "$INSTALL_DIR/$BIN"
+  remove "$MARKER"
   if [ "$removed" = 0 ]; then
     info "Nothing to remove: no $BIN found in $INSTALL_DIR."
   else
@@ -439,6 +476,7 @@ main() {
   elif [ "$UPDATED" -eq 1 ]; then
     restart_service_if_present
   fi
+  write_marker
 
   # PATH check.
   case ":$PATH:" in

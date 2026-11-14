@@ -516,6 +516,9 @@ pub(crate) struct Workspace {
     /// The newer server release the server last reported, so the same news
     /// is told once.
     server_update: Option<kimun_notes::server_client::sync::ServerUpdate>,
+    /// The server's update: how it is managed here, and the work under way
+    /// ([`server`]).
+    pub(crate) server_host: server::ServerHost,
     /// The vault the running server sync belongs to; `server_update` is
     /// forgotten only when this changes.
     rag_sync_root: Option<std::path::PathBuf>,
@@ -806,6 +809,7 @@ impl Workspace {
             _views_events: Vec::new(),
             rag_status: RagStatus::Disabled,
             server_update: None,
+            server_host: server::ServerHost::new(server::default_backend()),
             rag_sync_root: None,
             rag_caps: Caps::default(),
             rag_sync: TaskSlot::default(),
