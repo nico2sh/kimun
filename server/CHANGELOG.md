@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.0...kimun_server-v0.6.1) - 2026-11-14
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.5.1...kimun_server-v0.6.0) - 2026-11-12
 
 ### Added
