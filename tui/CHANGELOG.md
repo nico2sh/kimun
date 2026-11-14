@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.12...kimun-notes-v0.25.0) - 2026-11-14
+
+### Added
+
+- [**breaking**] move editor panes with the keyboard in the desktop app
+- EditorRegion to_record and from_record; refuse non-positive split weights
+- SessionFile beside HistoryFile for the tab and split arrangement
+- move, swap and new-tab moves of editor groups; no group change while zoomed
+- split and close editor groups, group header, target marker, zoom
+- region shape, widest row and neighbour close for editor groups
+- tab strip, tab chords and rebound side and focus chords
+- one-copy open rules, open in new tab and in a split
+- EditorRegion model for tabs and groups
+- zone highlighting for views in sidebar
+
+### Fixed
+
+- close the stale-target, move, delete and restore data paths
+- never overwrite a session file that does not load; keep the stored arrangement after a command-line launch until a structural change
+- keep the stored arrangement on command-line starts and during a slow restore
+- zoom follows the active group; clip the target marker to the rounded panel
+- small refactos on duplications
+- better logic for view swapping
+
+### Other
+
+- Merge origin/main into editor-tabs-splits
+- move split views with arrows
+- Merge pull request #247 from nico2sh/worktree-docs-update
+- remove leftovers and the unused icon constants
+- autosave per group tick and a dirty-flagged session record
+- one helper each for the flush fan-out, the group scan and the direction mapping
+- updated readme
+- Merge branch 'views-mgmt' into editor-tabs-splits
+- one editor leaf in the layout tree, groups live in the editor region
+- two note sessions coexist over one vault
+- close slots with context menu
+
 ## [0.24.12](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.24.11...kimun-notes-v0.24.12) - 2026-11-12
 
 ### Added
