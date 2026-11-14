@@ -6,6 +6,8 @@ sort_by = "weight"
 
 # Using Kimün
 
-This section covers the Terminal UI, the [desktop app](@/using-kimun/desktop-app.md), the CLI, search, and themes. It also explains how to connect an AI tool through the [CLI skill](@/using-kimun/ai-skills.md) or the [MCP Server](@/using-kimun/ai-mcp-server.md). To add semantic search and question answering, use the [Kimün server](@/using-kimun/server.md). If you are new, read the TUI page first. The other pages are reference material.
+This section shows you how to use the [desktop app](@/using-kimun/desktop-app.md) and the [terminal app](@/using-kimun/tui.md). It also covers [search](@/using-kimun/search.md), the [journal](@/using-kimun/journal.md), [themes](@/using-kimun/themes.md), and the [command line](@/using-kimun/cli.md).
 
-Start here: [Terminal UI](@/using-kimun/tui.md)
+If you are new, start with the app that you installed. The other pages are for reference.
+
+Start here: [Desktop app](@/using-kimun/desktop-app.md)

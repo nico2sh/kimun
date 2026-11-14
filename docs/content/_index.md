@@ -3,43 +3,27 @@ title = "Kimün"
 sort_by = "weight"
 +++
 
-# Introduction
+# Kimün
 
-Kimün is a note-taking app for the terminal.
+Kimün is a note-taking app. It has a desktop app and a terminal app. Both use the same notes.
 
-![Kimün TUI screenshot](img/screenshot-tui.png)
+![The Kimün desktop app with the file list, the search panel, a note, and Ask](img/gui-views.png)
 
-- Notes are plain `.md` files in a directory that you own. You can open them with any editor and sync them with any tool.
-- A local SQLite index answers full-text and structured queries (by name, section, path, label, and links).
-- Everything stays on your machine. Kimün has no cloud service, no account, and no tracking. If you stop using Kimün, your notes stay as they are.
+- Your notes are plain Markdown files in a folder that you own. You can open them with any other app.
+- Search is fast and understands names, tags, links, and properties.
+- Everything stays on your computer. There is no account, no cloud, and no tracking.
 
-## Quick Start
+## Get started
 
-[Install Kimün](@/getting-started/installation.md), then run the terminal UI:
+1. [Install Kimün](@/getting-started/installation.md).
+2. Start the desktop app, or type `kimun` in a terminal.
+3. Follow the setup. Pick the folder for your notes.
+4. Press `Ctrl+K` to search. Type `[[` in a note to link to another note.
 
-```sh
-kimun
-```
+## Where to go next
 
-To see the command-line interface, run:
-
-```sh
-kimun --help
-```
-
-## Where Your Data Lives
-
-Your workspace directory holds only your `.md` files.
-
-Kimün stores its own files in your configuration directory, separate from your notes:
-
-- Linux and macOS: `~/.config/kimun/`
-- Windows: `%USERPROFILE%\kimun\`
-
-This directory contains:
-
-- `config.toml`: your configuration, including your workspaces
-- `<workspace>.kimuncache`: the search index of each workspace (Kimün can rebuild it, so you can delete it)
-- `history/<workspace>.txt`: the history of recently opened notes of each workspace
-
-You can change the cache and history locations. See [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+- [Desktop app](@/using-kimun/desktop-app.md) or [terminal app](@/using-kimun/tui.md): how the screens work.
+- [Search](@/using-kimun/search.md): find notes by tag, link, or property.
+- [Journal](@/using-kimun/journal.md): write one note for each day.
+- [Keybindings](@/using-kimun/keybindings.md): all keyboard shortcuts.
+- [Themes](@/using-kimun/themes.md): change the colors.
