@@ -19,7 +19,10 @@
 //!    startup ([`Workspace::enter`]): indexed in the background, the session
 //!    restored, the drawer views rebuilt over it, the server sync restarted
 //!    when one is configured, the window title renamed. The layout, the
-//!    theme, the keymap and the focus handles stay.
+//!    theme, the keymap and the focus handles stay. The tabs and groups do
+//!    not: the old workspace's are written to its session file first, the
+//!    region starts again from one empty group, and the new workspace's
+//!    session file restores its own ([`super::session`]).
 //!
 //! **No stale messages.** Each vault entry gets its own app channel: the
 //! listener of the old one is dropped with the messages still queued on it,
@@ -42,6 +45,8 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{AppContext as _, Context, Window};
 use kimun_core::NoteVault;
 use kimun_notes::logic::ask_flow::AskFlow;
+use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
 use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
@@ -78,12 +83,15 @@ impl Workspace {
         if self.closing != Closing::Open {
             return Some(FlushBlock::Closing.reason());
         }
-        match self.flush_block(cx) {
-            // Edits that can never be written do not hold the window on a
-            // vault (a read-only one would keep it there for good).
-            None | Some(FlushBlock::Unsaveable) => None,
-            Some(block) => Some(block.reason()),
-        }
+        // Every group's note: edits that can never be written do not hold
+        // the window on a vault (a read-only one would keep it there for
+        // good).
+        self.group_ids_active_first().into_iter().find_map(|group| {
+            match self.flush_block_in(group, cx) {
+                None | Some(FlushBlock::Unsaveable) => None,
+                Some(block) => Some(block.reason()),
+            }
+        })
     }
 
     /// `WorkspaceSwitched(name)`, the workspace switcher: enter `name`
@@ -163,33 +171,45 @@ impl Workspace {
         let (Some(settings), Some(handle)) = (self.settings.clone(), self.window) else {
             return;
         };
-        let flush = if self.can_save() {
-            // No tick from here: the flush is the note's last write.
-            match self.begin_note_flush(cx) {
-                Some(flush) => Some(flush),
-                None => {
-                    self.flash_error(
-                        "Couldn't change the workspace: another save is still running.",
-                        cx,
-                    );
-                    return;
+        // Every group's note is flushed (all at once); edits that can
+        // never be written are said and not kept, as a note switch does.
+        let mut flushes = Vec::new();
+        for group in self.group_ids_active_first() {
+            if self.can_save_in(group) {
+                // No tick from here: the flush is the note's last write.
+                match self.begin_note_flush_in(group, cx) {
+                    Some(flush) => flushes.push((group, flush)),
+                    None => {
+                        for (begun, flush) in flushes {
+                            self.give_back_flush_in(begun, flush);
+                            self.restart_tick_unless_read_only_in(begun);
+                        }
+                        for any in self.group_ids() {
+                            self.block_input_in(any, false, cx);
+                        }
+                        self.flash_error(
+                            "Couldn't change the workspace: another save is still running.",
+                            cx,
+                        );
+                        return;
+                    }
                 }
+                continue;
             }
-        } else {
-            if self.notes.is_some() && self.editor_dirty(cx) {
-                let text = format!("{} They were not kept.", self.unsaveable());
+            let has_notes = self.state(group).is_some_and(|s| s.notes.is_some());
+            if has_notes && self.editor_dirty_in(group, cx) {
+                let text = format!("{} They were not kept.", self.unsaveable_in(group));
                 self.flash_error(text, cx);
             }
-            if let Some(host) = self.notes.as_mut() {
+            if let Some(host) = self.host_in_mut(group) {
                 host.session.stop_autosave();
             }
             // Nothing typed now could be kept.
-            self.block_input(true, cx);
-            None
-        };
+            self.block_input_in(group, true, cx);
+        }
         self.reopening = Some(cx.spawn(async move |this, cx| {
-            if let Some(flush) = flush {
-                let flushed = tokio::spawn(flush.run()).await;
+            if !flushes.is_empty() {
+                let flushed = super::file_ops::run_all(flushes).await;
                 let go = this
                     .update(cx, |workspace, cx| workspace.reopen_flushed(flushed, cx))
                     .unwrap_or(false);
@@ -235,26 +255,39 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The flush before a vault change ended: go on (true), or stay on this
-    /// vault with its note, its edits and its tick, and say why.
+    /// The flushes before a vault change ended: go on (true), or stay on
+    /// this vault with every note, its edits and its tick, and say why.
     fn reopen_flushed(
         &mut self,
-        flushed: Result<FlushResult, JoinError>,
+        flushed: Vec<(GroupId, Result<FlushResult, JoinError>)>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outcome = self.apply_flush(flushed, cx);
-        let Some(problem) = self.flush_failure(&outcome, cx) else {
+        let groups: Vec<GroupId> = flushed.iter().map(|(group, _)| *group).collect();
+        let mut failure = None;
+        for (group, result) in flushed {
+            let outcome = self.apply_flush(group, result, cx);
+            if failure.is_none()
+                && let Some(problem) = self.flush_failure_in(group, &outcome, cx)
+            {
+                failure = Some((group, problem));
+            }
+        }
+        let Some((group, problem)) = failure else {
             // Typing stays blocked until the new vault is in.
             return true;
         };
         self.reopening = None;
         self.reopen_again = false;
         self.switch_to = None;
-        self.block_input(false, cx);
-        self.restart_tick_unless_read_only();
+        for flushed in groups {
+            self.restart_tick_unless_read_only_in(flushed);
+        }
+        // Typing comes back everywhere, the groups that wrote nothing too.
+        for any in self.group_ids() {
+            self.block_input_in(any, false, cx);
+        }
         let note = self
-            .notes
-            .as_ref()
+            .host_in(group)
             .and_then(|h| h.note.clone())
             .map_or_else(|| "the note".to_string(), |n| n.to_string());
         self.flash_error(
@@ -274,7 +307,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The old workspace's arrangement, under the old workspace, before
+        // anything of it goes; the next starts from one empty group and
+        // its own record.
+        self.write_session_now();
         self.leave_vault(window, cx);
+        self.replace_region(EditorRegion::new(), cx);
         // The editor engine the settings name now (the setup or the
         // preferences may have changed it): a fresh, empty one of that kind.
         if let Some(settings) = self.settings.as_ref() {
@@ -284,7 +322,9 @@ impl Workspace {
                     .unwrap_or_else(|e| e.into_inner())
                     .editor_backend,
             );
-            self.editor.update(cx, |view, cx| view.set_vim(vim, cx));
+            for state in self.groups.values() {
+                state.editor.update(cx, |view, cx| view.set_vim(vim, cx));
+            }
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.set_channel(tx, rx, cx);
@@ -313,25 +353,39 @@ impl Workspace {
             window.close_all_dialogs(cx);
         }
         self.reset_modal_state(cx);
+        // A group's drag: its group is about to go.
+        self.end_group_drag(window, cx);
         self.file_status = None;
         // The old workspace's git state is not the next one's.
         self.status.git = None;
         self.cancel_leader(cx);
-        // The open note (already flushed): no tick, no path, an empty clean
-        // buffer, no search emphasis or find bar from the old text.
-        self.release_note(cx);
-        self.editor.update(cx, |view, cx| {
-            view.editor.close_find();
-            view.editor.set_search_needles(Vec::new());
-            // The old vault's notes and tags are not the next one's.
-            view.set_suggestions(None);
-            cx.notify();
-        });
-        if let Some(host) = self.notes.as_mut() {
-            host.session.stop_autosave();
-            host.session.abort_autosave();
+        // Every group's note (already flushed): no tick, no path, an empty
+        // clean buffer, no search emphasis or find bar from the old text.
+        // The groups stay, empty, for the next vault.
+        for group in self.group_ids() {
+            self.release_note_in(group, cx);
+            let Some(state) = self.state_mut(group) else {
+                continue;
+            };
+            state.editor.update(cx, |view, cx| {
+                view.editor.close_find();
+                view.editor.set_search_needles(Vec::new());
+                // The old vault's notes and tags are not the next one's.
+                view.set_suggestions(None);
+                cx.notify();
+            });
+            if let Some(host) = state.notes.as_mut() {
+                host.session.stop_autosave();
+                host.session.abort_autosave();
+            }
+            state.notes = None;
+            state.attachment_loading = None;
+            state.attachment_flushing = None;
+            state.attachment_wanted = None;
+            // The attachment view, with its subscription.
+            state.attachment = None;
+            state._attachment_events = None;
         }
-        self.notes = None;
         // Every task over the old vault: dropped, so none lands here.
         self.reopening = None;
         self.reopen_again = false;
@@ -344,15 +398,9 @@ impl Workspace {
         self.properties_opening = None;
         self.property_write = None;
         self.note_reload = None;
-        self.attachment_loading = None;
-        self.attachment_flushing = None;
-        self.attachment_wanted = None;
         self.ask_client_task = None;
         self.ask_saving = None;
-        // The attachment view and the views over the vault, with their
-        // subscriptions.
-        self.attachment = None;
-        self._attachment_events = None;
+        // The views over the vault, with their subscriptions.
         self.files = None;
         self._files_events = None;
         self.links = None;
@@ -377,6 +425,8 @@ impl Workspace {
         self.note_gone = None;
         self.restore_pending = false;
         self.first_open_pending = false;
+        // Nothing more is recorded for the old workspace.
+        self.end_session();
         self.status = Status::default();
         self.closing = Closing::Open;
     }

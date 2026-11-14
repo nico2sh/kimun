@@ -140,6 +140,19 @@ pub enum Dir {
     Down,
 }
 
+impl Dir {
+    /// The split this direction makes beside a leaf: the axis it divides
+    /// and whether the new leaf goes before (left or above) the target.
+    pub fn split_axis(self) -> (Axis, bool) {
+        match self {
+            Dir::Up => (Axis::Vertical, true),
+            Dir::Down => (Axis::Vertical, false),
+            Dir::Left => (Axis::Horizontal, true),
+            Dir::Right => (Axis::Horizontal, false),
+        }
+    }
+}
+
 /// What [`PanelLayout::focus_dir`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusMove {

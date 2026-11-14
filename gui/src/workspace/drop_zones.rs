@@ -1,4 +1,7 @@
-//! Dropping a view on a slot zone or a window-edge strip (ADR-0054 §8).
+//! Dropping a view on a slot zone or a window-edge strip (ADR-0054 §8),
+//! and an editor group on another group, a tab label or the plus button
+//! (ADR-0058, [`super::group_drop`]).
+//!
 //! A drag of a slot header or a rail entry carries a [`ViewDrag`]; while it
 //! is live each drawn slot overlays its body with a [`Workspace::zone_layer`]
 //! (a centre and four edges) and the editor Panel adds a strip at its left
@@ -10,17 +13,27 @@
 //! ([`Workspace::close_if_vacated`]), the keyboard follows the view, the
 //! layout is saved. Esc, a modal or the leader opening ends the drag with
 //! nothing changed; while zoomed no zone is drawn.
+//!
+//! A drag of a group header carries a [`GroupDrag`] instead, through the
+//! same machinery (the live drag, the outcomes, the zone look, the hover
+//! label, Esc): its zones are the **inner layer**, the centre and four
+//! edges of every other group of the shown tab, and the tab strip's labels
+//! and plus button. The window-edge strips are the **outer layer**, and
+//! they belong to a view's drag alone: a drag draws one layer or the other,
+//! never both, so every pixel is one target. Within each layer the zones
+//! tile their cell (a slot's or a group's body) without overlapping.
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, DragMoveEvent, Entity, InteractiveElement as _,
-    IntoElement, KeystrokeEvent, ParentElement as _, Pixels, Point, Render, Rgba, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    px, relative,
+    AnyElement, App, AppContext as _, Context, DragMoveEvent, ElementId, Entity,
+    InteractiveElement as _, IntoElement, KeystrokeEvent, ParentElement as _, Pixels, Point,
+    Render, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    WeakEntity, Window, div, px, relative,
 };
+use kimun_notes::logic::editor_region::TabId;
 use kimun_notes::logic::input::Key;
 use kimun_notes::logic::layout::{Dir, Side};
-use kimun_notes::logic::layout_tree::{Leaf, SlotId};
+use kimun_notes::logic::layout_tree::{GroupId, Leaf, SlotId};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 use kimun_notes::settings::themes::Theme;
@@ -58,6 +71,20 @@ pub(crate) struct ViewDrag {
     pub from: DragFrom,
 }
 
+/// The payload of a group header's drag: the editor group being moved,
+/// with its note and its state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GroupDrag {
+    pub group: GroupId,
+}
+
+/// What a live drag carries: a view, or an editor group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dragged {
+    View(ViewDrag),
+    Group(GroupDrag),
+}
+
 /// Where a [`ViewDrag`] started. A slot header's drag swaps with the view
 /// it lands on; a rail entry's drag replaces it, the replaced view going
 /// back to the rail unplaced.
@@ -72,17 +99,31 @@ pub(crate) fn drag_chip_id(view: DrawerView) -> SharedString {
     format!("drag-chip-{}", view.id()).into()
 }
 
-/// The element id of `zone` of the slot showing `view`
-/// (`drop-outline-centre`, `drop-outline-down`).
-pub(crate) fn zone_id(view: DrawerView, zone: Zone) -> SharedString {
-    let zone = match zone {
+/// The element id of the ghost a group header's drag shows.
+pub(crate) const GROUP_DRAG_CHIP_ID: &str = "drag-chip-group";
+
+/// What a zone's element id calls it.
+fn zone_name(zone: Zone) -> &'static str {
+    match zone {
         Zone::Centre => "centre",
         Zone::Edge(Dir::Up) => "up",
         Zone::Edge(Dir::Down) => "down",
         Zone::Edge(Dir::Left) => "left",
         Zone::Edge(Dir::Right) => "right",
-    };
-    format!("drop-{}-{zone}", view.id()).into()
+    }
+}
+
+/// The element id of `zone` of the slot showing `view`
+/// (`drop-outline-centre`, `drop-outline-down`).
+pub(crate) fn zone_id(view: DrawerView, zone: Zone) -> SharedString {
+    format!("drop-{}-{}", view.id(), zone_name(zone)).into()
+}
+
+/// The element id of `zone` of the group at `at` in the shown tab
+/// (`drop-group-1-centre`), as [`super::group_header::group_element`]
+/// counts groups.
+pub(crate) fn group_zone_id(at: usize, zone: Zone) -> SharedString {
+    format!("drop-group-{at}-{}", zone_name(zone)).into()
 }
 
 /// The element id of the window-edge strip of `side` (`drop-window-left`).
@@ -101,21 +142,35 @@ pub(crate) fn window_strip_id(side: Side) -> SharedString {
 /// `DRAG_THRESHOLD` (2 px, `elements/div.rs` of the pinned `gpui-pre-0.3.11`)
 /// from the press; a click that wobbles less than that is still a click.
 pub(crate) struct DragChip {
-    view: DrawerView,
+    id: SharedString,
+    title: SharedString,
 }
 
 impl DragChip {
+    /// The ghost of a view's drag: the view's title.
     pub(crate) fn new(view: DrawerView) -> Self {
-        Self { view }
+        Self {
+            id: drag_chip_id(view),
+            title: view_registry::spec(view).title.into(),
+        }
+    }
+
+    /// The ghost of a group header's drag: the group's title, as its
+    /// header shows it.
+    pub(crate) fn group(title: SharedString) -> Self {
+        Self {
+            id: GROUP_DRAG_CHIP_ID.into(),
+            title,
+        }
     }
 }
 
 impl Render for DragChip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
-        let title: SharedString = view_registry::spec(self.view).title.into();
+        let title = self.title.clone();
         div()
-            .id(drag_chip_id(self.view))
+            .id(self.id.clone())
             .test_support()
             .role(Role::Group)
             .aria_label(title.clone())
@@ -140,16 +195,34 @@ pub(crate) enum DropTarget {
     Slot(SlotId, Zone),
     /// The strip at a window edge: that side's first slot, else a new one.
     Window(Side),
+    /// A zone of an editor group of the shown tab (the inner layer): its
+    /// centre swaps the two groups, an edge puts the dragged group on that
+    /// side of it.
+    Group(GroupId, Zone),
+    /// A tab's label: the dragged group joins that tab.
+    Tab(TabId),
+    /// The tab strip's plus button: the dragged group goes to a new tab.
+    NewTab,
 }
 
 impl DropTarget {
-    /// Where a drop here places the view.
-    pub(crate) fn placement(self) -> Placement {
+    /// Where a drop of a view here places it; `None` for a target of a
+    /// group's drag.
+    pub(crate) fn placement(self) -> Option<Placement> {
         match self {
-            DropTarget::Slot(slot, Zone::Centre) => Placement::Into(slot),
-            DropTarget::Slot(slot, Zone::Edge(dir)) => Placement::Beside(slot, dir),
-            DropTarget::Window(side) => Placement::AtEdge(side),
+            DropTarget::Slot(slot, Zone::Centre) => Some(Placement::Into(slot)),
+            DropTarget::Slot(slot, Zone::Edge(dir)) => Some(Placement::Beside(slot, dir)),
+            DropTarget::Window(side) => Some(Placement::AtEdge(side)),
+            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab => None,
         }
+    }
+
+    /// Whether this target takes a group's drag (else a view's).
+    fn takes_group(self) -> bool {
+        matches!(
+            self,
+            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab
+        )
     }
 }
 
@@ -173,11 +246,11 @@ impl Zone {
     ];
 }
 
-/// The drag of a view under way: the view, and the ghost GPUI holds for as
-/// long as the drag lives (GPUI exposes no accessor for the payload, and a
-/// divider's drag is a drag too).
-pub(crate) struct LiveViewDrag {
-    drag: ViewDrag,
+/// The drag of a view or a group under way: what it carries, and the
+/// ghost GPUI holds for as long as the drag lives (GPUI exposes no accessor
+/// for the payload, and a divider's drag is a drag too).
+pub(crate) struct LiveDrag {
+    drag: Dragged,
     chip: WeakEntity<DragChip>,
 }
 
@@ -221,6 +294,14 @@ pub(crate) enum DropOutcome {
     /// The window has no room for the new slot: the drop changes nothing
     /// and says so.
     NoRoom(DrawerView),
+    /// The dragged group and this one trade places.
+    SwapGroups,
+    /// The dragged group goes on that side of this one.
+    SplitGroup(Dir),
+    /// The dragged group joins this tab.
+    IntoTab,
+    /// The dragged group goes to a new tab.
+    IntoNewTab,
 }
 
 impl DropOutcome {
@@ -258,6 +339,16 @@ impl DropOutcome {
             DropOutcome::NewSlot(dir) => new_slot_label(dir).into(),
             DropOutcome::AtEdge(side) => window_strip_label(side).into(),
             DropOutcome::NoRoom(view) => format!("No room for {} here", name(view)),
+            DropOutcome::SwapGroups => "Swap notes".into(),
+            DropOutcome::SplitGroup(dir) => match dir {
+                Dir::Up => "Split above",
+                Dir::Down => "Split below",
+                Dir::Left => "Split to the left",
+                Dir::Right => "Split to the right",
+            }
+            .into(),
+            DropOutcome::IntoTab => "Move to this tab".into(),
+            DropOutcome::IntoNewTab => "Move to a new tab".into(),
         }
     }
 }
@@ -274,29 +365,57 @@ impl Workspace {
         let this = cx.entity().downgrade();
         move |drag, _, _, cx| {
             let chip = cx.new(|_| DragChip::new(drag.view));
-            let live = LiveViewDrag {
-                drag: *drag,
-                chip: chip.downgrade(),
-            };
-            this.update(cx, |this, cx| {
-                this.view_drag = Some(live);
-                cx.notify();
-            })
-            .ok();
+            Self::remember_drag(&this, Dragged::View(*drag), &chip, cx);
             chip
         }
     }
 
-    /// The view being dragged, while its drag lives: GPUI drops the ghost
-    /// when the drag ends (released, cancelled).
-    pub(crate) fn dragged_view(&self, cx: &App) -> Option<DrawerView> {
-        self.live_drag(cx).map(|drag| drag.view)
+    /// The `on_drag` constructor of a group header: the ghost, titled
+    /// `title`, remembered so the zones know a group is being dragged.
+    pub(super) fn group_drag_ghost(
+        &self,
+        title: SharedString,
+        cx: &Context<Self>,
+    ) -> impl Fn(&GroupDrag, Point<Pixels>, &mut Window, &mut App) -> Entity<DragChip> + use<> {
+        let this = cx.entity().downgrade();
+        move |drag, _, _, cx| {
+            let chip = cx.new(|_| DragChip::group(title.clone()));
+            Self::remember_drag(&this, Dragged::Group(*drag), &chip, cx);
+            chip
+        }
+    }
+
+    /// Remember the drag just started, with its ghost.
+    fn remember_drag(
+        this: &WeakEntity<Self>,
+        drag: Dragged,
+        chip: &Entity<DragChip>,
+        cx: &mut App,
+    ) {
+        let live = LiveDrag {
+            drag,
+            chip: chip.downgrade(),
+        };
+        this.update(cx, |this, cx| {
+            this.drag = Some(live);
+            this.forget_note_menu(cx);
+            cx.notify();
+        })
+        .ok();
+    }
+
+    /// The group being dragged by its header, while its drag lives.
+    pub(crate) fn dragged_group(&self, cx: &App) -> Option<GroupId> {
+        match self.live_drag(cx)? {
+            Dragged::Group(drag) => Some(drag.group),
+            Dragged::View(_) => None,
+        }
     }
 
     /// The drag under way, while it lives: GPUI drops the ghost when the
     /// drag ends (released, cancelled).
-    fn live_drag(&self, cx: &App) -> Option<ViewDrag> {
-        let live = self.view_drag.as_ref()?;
+    fn live_drag(&self, cx: &App) -> Option<Dragged> {
+        let live = self.drag.as_ref()?;
         (cx.has_active_drag() && live.chip.upgrade().is_some()).then_some(live.drag)
     }
 
@@ -310,21 +429,34 @@ impl Workspace {
             self.hovered_zone = None;
             return;
         };
-        // The layout cannot change while the drag lives (a drop ends it), so
-        // the outcomes are worked out once per drag and window size, not
-        // every frame.
-        // The window may change size mid-drag, and with it the room.
+        // The slots cannot change while a view's drag lives (a drop ends
+        // it), so its outcomes are worked out once per drag and window
+        // size, not every frame: each one measures the room. The window may
+        // change size mid-drag, and with it the room.
+        // A group's outcomes measure nothing, and a tab chord mid-drag
+        // (Ctrl+T, Ctrl+Tab) changes the shown tab and its groups: they are
+        // worked out every frame.
         let key = (drag, window.viewport_size());
-        if self.drop_outcomes_for == Some(key) {
+        if matches!(drag, Dragged::View(_)) && self.drop_outcomes_for == Some(key) {
             return;
         }
         self.drop_outcomes.clear();
         self.drop_outcomes_for = Some(key);
-        let ViewDrag { view, from } = drag;
-        for target in self.drop_targets() {
-            if self.drop_target_allowed(view, target) {
-                let outcome = self.drop_outcome(view, from, target, window);
-                self.drop_outcomes.insert(target, outcome);
+        match drag {
+            Dragged::View(ViewDrag { view, from }) => {
+                for target in self.drop_targets() {
+                    if self.drop_target_allowed(view, target) {
+                        let outcome = self.drop_outcome(view, from, target, window);
+                        self.drop_outcomes.insert(target, outcome);
+                    }
+                }
+            }
+            Dragged::Group(GroupDrag { group }) => {
+                for target in self.group_drop_targets() {
+                    if let Some(outcome) = self.group_drop_outcome(group, target) {
+                        self.drop_outcomes.insert(target, outcome);
+                    }
+                }
             }
         }
     }
@@ -345,10 +477,10 @@ impl Workspace {
 
     /// Where a drop of `view` on `target` places it: a rail drag replaces
     /// the view a slot shows where a header drag swaps with it.
-    fn resolved_placement(&self, from: DragFrom, target: DropTarget) -> Placement {
-        match (from, target.placement()) {
-            (DragFrom::Rail, Placement::Into(slot)) => Placement::Replace(slot),
-            (_, placement) => placement,
+    fn resolved_placement(&self, from: DragFrom, target: DropTarget) -> Option<Placement> {
+        match (from, target.placement()?) {
+            (DragFrom::Rail, Placement::Into(slot)) => Some(Placement::Replace(slot)),
+            (_, placement) => Some(placement),
         }
     }
 
@@ -361,7 +493,11 @@ impl Workspace {
         target: DropTarget,
         window: &Window,
     ) -> DropOutcome {
-        match self.resolved_placement(from, target) {
+        let Some(placement) = self.resolved_placement(from, target) else {
+            // Not a view's target ([`Self::drop_target_allowed`] says so).
+            return DropOutcome::Show;
+        };
+        match placement {
             Placement::Into(slot) => self
                 .swap_partner(view, slot)
                 .map_or(DropOutcome::Show, DropOutcome::Swap),
@@ -382,10 +518,7 @@ impl Workspace {
                 DropOutcome::AtEdge(side)
             }
             Placement::AtEdge(side) => {
-                let fits = self.layout.edge_group(side).is_none_or(|group| {
-                    self.new_slot_fits(view, Leaf::Group(group), side.dir(), window)
-                });
-                if fits {
+                if self.new_slot_fits(view, Leaf::Editor, side.dir(), window) {
                     DropOutcome::AtEdge(side)
                 } else {
                     DropOutcome::NoRoom(view)
@@ -394,50 +527,71 @@ impl Workspace {
         }
     }
 
-    /// Forget a view's drag that is over. A release off every zone runs no
-    /// `on_drop`, so [`Self::view_drag`] would keep a dead ghost; nothing
-    /// reads it past [`Self::dragged_view`]'s liveness check, but a stale
+    /// Forget a drag that is over. A release off every zone runs no
+    /// `on_drop`, so [`Self::drag`] would keep a dead ghost; nothing
+    /// reads it past [`Self::live_drag`]'s liveness check, but a stale
     /// `Some` is state that no longer describes anything. Drawing calls
     /// this first.
-    pub(super) fn prune_view_drag(&mut self, cx: &App) {
-        if self.view_drag.is_some() && self.dragged_view(cx).is_none() {
-            self.view_drag = None;
+    pub(super) fn prune_drag(&mut self, cx: &App) {
+        if self.drag.is_some() && self.live_drag(cx).is_none() {
+            self.drag = None;
         }
     }
 
-    /// The view the zones are drawn for: a view's drag, not while zoomed
-    /// (the other slots are off screen). No modal check: a modal opening
-    /// ends the drag ([`Self::end_view_drag`]), a dialog's overlay keeps a
-    /// drag from starting under it, and a drop checks for an open dialog
-    /// itself; `self.modal` can outlive a dialog the kit closed.
-    fn zones_for(&self, cx: &App) -> Option<ViewDrag> {
+    /// The drag the zones are drawn for, not while zoomed (the other slots
+    /// and groups are off screen). No modal check: a modal opening ends
+    /// the drag ([`Self::end_drag`]), a dialog's overlay keeps a drag from
+    /// starting under it, and a drop checks for an open dialog itself;
+    /// `self.modal` can outlive a dialog the kit closed.
+    pub(super) fn zones_for(&self, cx: &App) -> Option<Dragged> {
         self.live_drag(cx)
             .filter(|_| self.layout.zoomed().is_none())
     }
 
-    /// End a view's drag, if one is live, with nothing dropped; its zones
-    /// go. A modal or the leader arming calls it: either takes the keys,
-    /// and a modal would cover the zones. True when a drag ended.
-    pub(super) fn end_view_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.dragged_view(cx).is_none() {
+    /// The view whose drag the zones are drawn for (the outer layer and
+    /// the slot zones), if a view is dragged.
+    fn view_zones_for(&self, cx: &App) -> Option<ViewDrag> {
+        match self.zones_for(cx)? {
+            Dragged::View(drag) => Some(drag),
+            Dragged::Group(_) => None,
+        }
+    }
+
+    /// End a view's or a group's drag, if one is live, with nothing
+    /// dropped; its zones go. A modal or the leader arming calls it: either
+    /// takes the keys, and a modal would cover the zones. True when a drag
+    /// ended.
+    pub(super) fn end_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.live_drag(cx).is_none() {
             return false;
         }
-        self.view_drag = None;
+        self.drag = None;
         cx.stop_active_drag(window);
         cx.notify();
         true
     }
 
-    /// Esc during a view's drag ends it, and is spent on that. True when
-    /// it did.
-    pub(super) fn escape_ends_view_drag(
+    /// End a group's drag, if one is held, with nothing dropped: the
+    /// region is being replaced, and the group's id may name another group
+    /// after it ([`Workspace::replace_region`]). A view's drag goes on.
+    pub(super) fn end_group_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.drag.as_ref().map(|l| l.drag), Some(Dragged::Group(_))) {
+            return;
+        }
+        self.drag = None;
+        cx.stop_active_drag(window);
+        cx.notify();
+    }
+
+    /// Esc during a drag ends it, and is spent on that. True when it did.
+    pub(super) fn escape_ends_drag(
         &mut self,
         event: &KeystrokeEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let esc = input::key_input(&event.keystroke).is_some_and(|key| key.key == Key::Esc);
-        if !esc || !self.end_view_drag(window, cx) {
+        if !esc || !self.end_drag(window, cx) {
             return false;
         }
         cx.stop_propagation();
@@ -449,8 +603,26 @@ impl Workspace {
     /// where the drop would change nothing is left out. `None` while no
     /// view is dragged.
     pub(super) fn zone_layer(&self, slot: SlotId, cx: &mut Context<Self>) -> Option<gpui_kit::Div> {
-        self.zones_for(cx)?;
+        self.view_zones_for(cx)?;
         let shown = self.layout.shown(slot)?;
+        Some(self.zone_grid(
+            |zone| DropTarget::Slot(slot, zone),
+            |zone| zone_id(shown, zone),
+            cx,
+        ))
+    }
+
+    /// The five zones over a body (a slot's, a group's): the centre and
+    /// four edges, each edge a quarter of the body deep (at least
+    /// [`EDGE_ZONE_MIN`]), `target` naming what each is and `id` its
+    /// element id; and the label of the one under the drag, at the body's
+    /// centre.
+    pub(super) fn zone_grid(
+        &self,
+        target: impl Fn(Zone) -> DropTarget,
+        id: impl Fn(Zone) -> SharedString,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
         let quarter = relative(0.25);
         // Each zone fills a cell of a grid that tiles the body: the left and
         // right edges run its full height, the top and bottom edges and the
@@ -458,9 +630,8 @@ impl Workspace {
         // one pointer position is one zone. A zone that is not drawn leaves
         // its cell empty, keeping the others where they are.
         let mut cell = |zone: Zone| {
-            let target = DropTarget::Slot(slot, zone);
             let el = self
-                .drop_zone(zone_id(shown, zone), target, cx)
+                .drop_zone(id(zone), target(zone), cx)
                 .map(|el| el.inset_0().test_support().into_any_element());
             div().relative().children(el)
         };
@@ -502,7 +673,7 @@ impl Workspace {
         // The labels lie over every zone, at the centre of the body, so no
         // zone's border crosses one and a narrow zone does not clip it.
         let tags = Zone::ALL.into_iter().filter_map(|zone| {
-            let chip = self.zone_tag(DropTarget::Slot(slot, zone), cx)?;
+            let chip = self.zone_tag(target(zone), cx)?;
             Some(
                 div()
                     .absolute()
@@ -514,7 +685,7 @@ impl Workspace {
                     .into_any_element(),
             )
         });
-        Some(div().absolute().inset_0().child(grid).children(tags))
+        div().absolute().inset_0().child(grid).children(tags)
     }
 
     /// The window-edge strips over the editor Panel while a view is
@@ -522,7 +693,9 @@ impl Workspace {
     /// that side's kept-empty slot, else making a column beside the editor. Empty while no view is
     /// dragged; a strip where the drop would change nothing is left out.
     pub(super) fn window_strips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        if self.zones_for(cx).is_none() {
+        // The outer layer is a view's alone: a group's drag draws the inner
+        // one, so the two never share a pixel.
+        if self.view_zones_for(cx).is_none() {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -584,12 +757,13 @@ impl Workspace {
     }
 
     /// One zone, unplaced (the caller places it and registers it for
-    /// tests, last): invisible until the drag of `dragged` is over
-    /// it, then filled with the focus colour. `None` when dropping there
+    /// tests, last): a dashed outline while the drag lives, filled with the
+    /// focus colour while the drag is over it. `None` when dropping there
     /// would change nothing, so it neither highlights nor takes the drop.
-    fn drop_zone(
+    /// A view's zone takes a [`ViewDrag`], a group's a [`GroupDrag`].
+    pub(super) fn drop_zone(
         &self,
-        id: SharedString,
+        id: impl Into<ElementId>,
         target: DropTarget,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<gpui_kit::Div>> {
@@ -620,31 +794,43 @@ impl Workspace {
             .border_color(rest_border)
             .cursor_grabbing();
         zone.style().border_style = Some(gpui_kit::BorderStyle::Dashed);
-        Some(
-            zone.on_drag_move::<ViewDrag>(cx.listener(
-                move |this, event: &DragMoveEvent<ViewDrag>, _, cx| {
-                    let over = event.bounds.contains(&event.event.position);
-                    let hovered = if over {
-                        Some(target)
-                    } else if this.hovered_zone == Some(target) {
-                        None
-                    } else {
-                        return;
-                    };
-                    if this.hovered_zone != hovered {
-                        this.hovered_zone = hovered;
-                        cx.notify();
-                    }
-                },
-            ))
-            .drag_over::<ViewDrag>(move |mut style, _, _, _| {
-                // Under the drag: a solid, stronger border and the fill.
-                style.border_style = Some(gpui_kit::BorderStyle::Solid);
-                style.bg(fill).border_2().border_color(accent)
-            })
-            .on_drop(cx.listener(move |this, drag: &ViewDrag, window, cx| {
-                this.drop_dragged(drag.view, drag.from, target, window, cx)
-            })),
+        Some(if target.takes_group() {
+            Self::zone_listeners::<GroupDrag>(zone, target, fill, accent, cx)
+        } else {
+            Self::zone_listeners::<ViewDrag>(zone, target, fill, accent, cx)
+        })
+    }
+
+    /// `zone`'s listeners for a drag carrying `P`: it notes the drag over
+    /// it (its label shows), highlights under it, and takes its release.
+    fn zone_listeners<P: DropPayload>(
+        zone: Stateful<gpui_kit::Div>,
+        target: DropTarget,
+        fill: Rgba,
+        accent: Rgba,
+        cx: &mut Context<Self>,
+    ) -> Stateful<gpui_kit::Div> {
+        zone.on_drag_move::<P>(cx.listener(move |this, event: &DragMoveEvent<P>, _, cx| {
+            let over = event.bounds.contains(&event.event.position);
+            let hovered = if over {
+                Some(target)
+            } else if this.hovered_zone == Some(target) {
+                None
+            } else {
+                return;
+            };
+            if this.hovered_zone != hovered {
+                this.hovered_zone = hovered;
+                cx.notify();
+            }
+        }))
+        .drag_over::<P>(move |mut style, _, _, _| {
+            // Under the drag: a solid, stronger border and the fill.
+            style.border_style = Some(gpui_kit::BorderStyle::Solid);
+            style.bg(fill).border_2().border_color(accent)
+        })
+        .on_drop(
+            cx.listener(move |this, drag: &P, window, cx| drag.dropped(this, target, window, cx)),
         )
     }
 
@@ -658,19 +844,35 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.view_drag = None;
+        self.drag = None;
         if modal::dialog_open(window, cx) {
             return;
         }
         self.drop_view(view, from, target, window, cx);
     }
 
+    /// A release of a group's drag on a zone: drop the group there, unless
+    /// a modal opened over the drag.
+    fn drop_dragged_group(
+        &mut self,
+        group: GroupId,
+        target: DropTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drag = None;
+        if modal::dialog_open(window, cx) {
+            return;
+        }
+        self.drop_group(group, target, window, cx);
+    }
+
     /// The slot a window-edge strip fills: the first slot outside the
-    /// editor groups on that side, when it is kept empty (the last slot of
+    /// editor region on that side, when it is kept empty (the last slot of
     /// a side stays after its view left, drawing nothing). A side with a
     /// drawn slot has none: the strip makes a column beside the editor
-    /// there ([`Self::spawn_at`]). Not relative to the active group, so the
-    /// strip means the same whatever has focus.
+    /// region there ([`Self::spawn_at`]). Not relative to the active group,
+    /// so the strip means the same whatever has focus.
     pub(super) fn window_edge_slot(&self, side: Side) -> Option<SlotId> {
         self.layout
             .edge_slots(side)
@@ -715,6 +917,8 @@ impl Workspace {
                 }
             }
             DropTarget::Window(side) => !self.window_edge_is_view_alone(side, view),
+            // A group's targets.
+            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab => false,
         }
     }
 
@@ -722,10 +926,10 @@ impl Workspace {
     /// shown there staying placed, hidden ([`Self::move_into`]); an edge
     /// puts it in a new slot on that side of the slot ([`Self::spawn_beside`]);
     /// a window-edge strip does the first for that side's kept-empty slot
-    /// ([`Self::window_edge_slot`]), else makes a column beside the
-    /// outermost editor group on that side ([`Self::spawn_at`]). A drop
-    /// that makes a slot makes room for it; with no room, nothing changes
-    /// and a flash says so on release (the zone said so before, in red:
+    /// ([`Self::window_edge_slot`]), else makes a column at that edge of the
+    /// whole editor region ([`Self::spawn_at`]). A drop that makes a slot
+    /// makes room for it; with no room, nothing changes and a flash says so
+    /// on release (the zone said so before, in red:
     /// [`DropOutcome::NoRoom`]). A drag from the rail ([`DragFrom::Rail`])
     /// replaces the view a slot shows instead of swapping
     /// ([`Self::replace_into`]). False, nothing changed, when
@@ -741,7 +945,44 @@ impl Workspace {
         if !self.drop_target_allowed(view, target) {
             return false;
         }
-        let placement = self.resolved_placement(from, target);
+        let Some(placement) = self.resolved_placement(from, target) else {
+            return false;
+        };
         self.place(view, placement, window, cx)
+    }
+}
+
+/// What a drag carries, as a zone's release hands it on.
+trait DropPayload: 'static {
+    fn dropped(
+        &self,
+        workspace: &mut Workspace,
+        target: DropTarget,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    );
+}
+
+impl DropPayload for ViewDrag {
+    fn dropped(
+        &self,
+        workspace: &mut Workspace,
+        target: DropTarget,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        workspace.drop_dragged(self.view, self.from, target, window, cx)
+    }
+}
+
+impl DropPayload for GroupDrag {
+    fn dropped(
+        &self,
+        workspace: &mut Workspace,
+        target: DropTarget,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        workspace.drop_dragged_group(self.group, target, window, cx)
     }
 }

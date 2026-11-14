@@ -1,6 +1,6 @@
 //! **File operations** in the window (M6 G3): rename, move and delete a
-//! note, folder or attachment, from the note menu (the `FileOperations`
-//! chord, the editor's right-click without a selection), a FILES row's
+//! note, folder or attachment, from the note menu ([`super::note_menu`]:
+//! the `FileOperations` chord, the editor's right-click), a FILES row's
 //! context menu, or the leader and the palette. The dialogs are
 //! [`super::file_dialogs`]; every change on disk is core's, through
 //! `logic::file_ops`. This file owns what happens around the open note.
@@ -14,13 +14,15 @@
 //! disk, the dialog stays open saying why, and the tick and the input come
 //! back. Only then does core run the operation. After it:
 //!
-//! - **Followed.** A rename of the note, or a rename or move of a folder
-//!   holding it: the session retargets to where the note went (the same
-//!   place under the new folder, `file_ops::relocated`) and reloads it clean
-//!   from there (a note rename may rewrite its self-links). The editor stays;
-//!   the Footer, the FILES marker and the counts follow.
-//! - **Gone.** A delete of the note or of a folder holding it, a move of the
-//!   note itself, or a reload that fails after a rename: the tick and any
+//! - **Followed.** A rename or move of the note, or of a folder holding it:
+//!   the session retargets to where the note went (the same place under the
+//!   new folder, `file_ops::relocated`) and reloads it clean from there (a
+//!   note rename may rewrite its self-links). The editor stays; the Footer,
+//!   the FILES marker and the counts follow. Every group holding the note
+//!   follows it, in any tab (ADR-0058).
+//! - **Gone.** A delete of the note or of a folder holding it, or a reload
+//!   that fails after a rename or move: the group stays where it is, empty
+//!   (ADR-0058). The tick and any
 //!   background save are stopped, the buffer is discarded *without* saving
 //!   (the file is gone or elsewhere; a save would recreate it), the editor
 //!   Panel says what happened, and FILES shows where it was (or went).
@@ -36,23 +38,23 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{App, AppContext as _, ClickEvent, Context, ParentElement as _, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::file_ops::{self, relocated};
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::FileOp;
 use kimun_notes::logic::nav::DrawerView;
-use kimun_notes::logic::session::{FlushResult, NoteRead, ReadRequest, RenameOutcome};
+use kimun_notes::logic::session::{
+    FlushRequest, FlushResult, NoteRead, ReadRequest, RenameOutcome,
+};
 use tokio::task::JoinError;
 
 use super::Workspace;
 use super::file_dialogs::{
-    DeleteBody, FileOpKind, FileOpsMenu, MoveDialog, OpStatus, RenameDialog, confirm_delete,
+    DeleteBody, FileOpKind, MoveDialog, OpStatus, RenameDialog, confirm_delete,
 };
 use super::modal::{self, ModalKind, Slot};
 use super::note_flush::FlushBlock;
-use super::route::NO_NOTE;
 use crate::startup::EmptyState;
 use crate::tasks;
 
-/// The note menu's width, in rems.
-const MENU_REMS: f32 = 18.;
 /// The rename and move dialogs' width, in rems.
 const DIALOG_REMS: f32 = 30.;
 
@@ -96,10 +98,57 @@ impl FileOpRequest {
 #[derive(Clone)]
 #[cfg(test)]
 pub(crate) enum FileDialogView {
-    Menu,
     Rename(gpui_kit::WeakEntity<RenameDialog>),
     Move(gpui_kit::WeakEntity<MoveDialog>),
     Delete,
+}
+
+/// Spawn every future of `items` first (so they run side by side), then
+/// await them in the order given; each result keeps its group. A panicked
+/// or cancelled job comes back as its `JoinError`, never dropped.
+pub(super) async fn run_all_of<T, F>(
+    items: impl IntoIterator<Item = (GroupId, F)>,
+) -> Vec<(GroupId, Result<T, JoinError>)>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    let running: Vec<_> = items
+        .into_iter()
+        .map(|(group, job)| (group, tokio::spawn(job)))
+        .collect();
+    let mut results = Vec::with_capacity(running.len());
+    for (group, run) in running {
+        results.push((group, run.await));
+    }
+    results
+}
+
+/// Run `flushes` side by side; each result with its group.
+pub(super) async fn run_all(
+    flushes: Vec<(GroupId, FlushRequest)>,
+) -> Vec<(GroupId, Result<FlushResult, JoinError>)> {
+    run_all_of(
+        flushes
+            .into_iter()
+            .map(|(group, flush)| (group, flush.run())),
+    )
+    .await
+}
+
+/// Run `reads` side by side; each result with its group.
+async fn run_all_reads(
+    reads: Vec<(GroupId, ReadRequest)>,
+) -> Vec<(GroupId, Result<NoteRead, JoinError>)> {
+    run_all_of(reads.into_iter().map(|(group, read)| (group, read.run()))).await
+}
+
+/// Whether `note` is `base` itself or lies below it (`base` a folder
+/// holding it): what a rename, move or delete of `base` touches. Compared
+/// by components (core's `is_like` / `is_ancestor_of`), so case and
+/// absolute / relative spellings do not matter.
+pub(super) fn path_at_or_below(note: &VaultPath, base: &VaultPath) -> bool {
+    note.is_like(base) || base.is_ancestor_of(note)
 }
 
 /// An entry's name as the dialogs and the editor Panel say it.
@@ -108,70 +157,6 @@ fn name_of(path: &VaultPath) -> String {
 }
 
 impl Workspace {
-    /// The `FileOperations` chord: the note menu for the open note, or say
-    /// there is none.
-    pub(crate) fn file_ops_chord(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.notes.as_ref().and_then(|h| h.note.clone()) {
-            Some(note) => self.open_file_ops_menu(note, false, window, cx),
-            None => self.flash(NO_NOTE, cx),
-        }
-    }
-
-    /// Open the note menu for `target` in the modal slot, with
-    /// `Properties…` first when `with_properties` (the editor's right-click).
-    /// Refused while a modal is open, and without a vault.
-    pub(crate) fn open_file_ops_menu(
-        &mut self,
-        target: VaultPath,
-        with_properties: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if modal::dialog_open(window, cx) || self.notes.is_none() {
-            return;
-        }
-        let workspace = cx.entity().downgrade();
-        let title = name_of(&target);
-        let menu = cx.new(|cx| FileOpsMenu::new(target, with_properties, workspace, cx));
-        #[cfg(test)]
-        {
-            self.file_dialog = Some(FileDialogView::Menu);
-        }
-        self.show_modal(
-            Slot::Own(ModalKind::FileOps),
-            MENU_REMS,
-            modal::focus_view(menu.clone()),
-            move |dialog, _, _| {
-                let chooser = menu.clone();
-                dialog
-                    .title(title.clone())
-                    // Enter picks the selected item; the item's dialog
-                    // replaces this one, so the kit must not close anything
-                    // itself.
-                    .on_ok(move |_, window, cx| {
-                        chooser.update(cx, |menu, cx| menu.choose_selected(window, cx));
-                        false
-                    })
-                    .child(menu.clone())
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// An item of the note menu was picked: the menu gives way to its
-    /// dialog.
-    pub(crate) fn choose_file_op(
-        &mut self,
-        kind: FileOpKind,
-        target: VaultPath,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_modal(window, cx);
-        self.open_file_dialog(kind, target, window, cx);
-    }
-
     /// Open the rename, move or delete dialog for `target`. Refused while a
     /// modal is open, and without a vault.
     pub(crate) fn open_file_dialog(
@@ -334,32 +319,54 @@ impl Workspace {
             self.set_file_status(false, Some(held), cx);
             return;
         }
-        let Some(host) = self.notes.as_ref() else {
+        let Some(host) = self.active_state().notes.as_ref() else {
             return;
         };
         let vault = host.session.vault().clone();
-        let touches = host.note.is_some() && host.session.affects_open_note(request.from());
-        let mut flush = None;
-        if touches {
-            let refusal = self.flush_block(cx).map(|block| match block {
+        // Every group whose note the operation names, or a folder holding it
+        // (the open notes it touches), the active one first.
+        let touched: Vec<GroupId> = self
+            .group_ids_active_first()
+            .into_iter()
+            .filter(|group| {
+                self.host_in(*group).is_some_and(|h| {
+                    h.note.is_some() && h.session.affects_open_note(request.from())
+                })
+            })
+            .collect();
+        let mut flushes = Vec::new();
+        if let Some(refusal) = touched.iter().find_map(|group| {
+            self.flush_block_in(*group, cx).map(|block| match block {
                 FlushBlock::Opening => "The note is still opening. Try again in a moment.".into(),
                 FlushBlock::Closing => "The window is closing.".to_string(),
                 // Checked above; kept so the match is whole.
-                FlushBlock::Held => held,
+                FlushBlock::Held => held.clone(),
                 FlushBlock::Unsaveable => {
-                    format!("{} Nothing was {}.", self.unsaveable(), request.past())
+                    format!(
+                        "{} Nothing was {}.",
+                        self.unsaveable_in(*group),
+                        request.past()
+                    )
                 }
-            });
-            if let Some(refusal) = refusal {
-                self.set_file_status(false, Some(refusal), cx);
-                return;
-            }
+            })
+        }) {
+            self.set_file_status(false, Some(refusal), cx);
+            return;
+        }
+        for group in &touched {
             // No tick from here on: the next write would bake in a path the
             // operation is about to rename or delete.
-            match self.begin_note_flush(cx) {
-                Some(request) => flush = Some(request),
+            match self.begin_note_flush_in(*group, cx) {
+                Some(request) => flushes.push((*group, request)),
                 None => {
-                    // The tick is back already (`begin_note_flush`).
+                    // The tick is back already (`begin_note_flush_in`); the
+                    // groups begun before it get theirs and their input
+                    // back, their flushes given back unrun.
+                    for (begun, flush) in flushes {
+                        self.give_back_flush_in(begun, flush);
+                        self.restart_tick_unless_read_only_in(begun);
+                        self.block_input_in(begun, false, cx);
+                    }
                     let text = format!(
                         "Another save is still running. Nothing was {}.",
                         request.past()
@@ -371,8 +378,8 @@ impl Workspace {
         }
         self.set_file_status(true, None, cx);
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
-            if let Some(flush) = flush {
-                let flushed = tokio::spawn(flush.run()).await;
+            if !flushes.is_empty() {
+                let flushed = run_all(flushes).await;
                 let past = request.past();
                 let go = this
                     .update_in(cx, |workspace, window, cx| {
@@ -385,14 +392,13 @@ impl Workspace {
             }
             let run = request.clone();
             let result = tasks::joined(tokio::spawn(async move { run.run(&vault).await })).await;
-            let read = this
+            let reads = this
                 .update_in(cx, |workspace, window, cx| {
-                    workspace.file_op_finished(result, touches, window, cx)
+                    workspace.file_op_finished(result, touched, window, cx)
                 })
-                .ok()
-                .flatten();
-            if let Some(read) = read {
-                let read = tokio::spawn(read.run()).await;
+                .unwrap_or_default();
+            if !reads.is_empty() {
+                let read = run_all_reads(reads).await;
                 this.update_in(cx, |workspace, window, cx| {
                     workspace.file_op_retargeted(read, window, cx)
                 })
@@ -402,29 +408,33 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The flush before an operation on the open note ended: go on when
-    /// everything is written, else refuse the operation (the note keeps its
-    /// edits, its tick and the keyboard).
+    /// The flushes before an operation on open notes ended: go on when
+    /// everything is written, else refuse the operation (each note keeps
+    /// its edits, its tick and the keyboard).
     fn file_op_flushed(
         &mut self,
-        flushed: Result<FlushResult, JoinError>,
+        flushed: Vec<(GroupId, Result<FlushResult, JoinError>)>,
         past: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let outcome = self.apply_flush(flushed, cx);
-        let problem = self.flush_failure(&outcome, cx);
-        let Some(problem) = problem else {
+        let touched: Vec<GroupId> = flushed.iter().map(|(group, _)| *group).collect();
+        let mut failure = None;
+        for (group, result) in flushed {
+            let outcome = self.apply_flush(group, result, cx);
+            if failure.is_none()
+                && let Some(problem) = self.flush_failure_in(group, &outcome, cx)
+            {
+                failure = Some((group, problem));
+            }
+        }
+        let Some((group, problem)) = failure else {
             return true;
         };
-        let note = self
-            .notes
-            .as_ref()
-            .and_then(|h| h.note.clone())
-            .unwrap_or_else(VaultPath::root);
+        let note = self.note_name_in(group);
         self.file_op_failed(
             format!("Couldn't save {note}: {problem}. Nothing was {past}."),
-            true,
+            &touched,
             window,
             cx,
         );
@@ -432,18 +442,18 @@ impl Workspace {
     }
 
     /// The operation was refused or failed: nothing changed on disk. The
-    /// open note gets its tick and its keyboard back (`touched`), the
+    /// open notes it `touched` get their tick and their keyboard back, the
     /// dialog says why (a flash when it is gone).
     fn file_op_failed(
         &mut self,
         error: String,
-        touched: bool,
+        touched: &[GroupId],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if touched {
-            self.restart_tick_unless_read_only();
-            self.block_input(false, cx);
+        for group in touched {
+            self.restart_tick_unless_read_only_in(*group);
+            self.block_input_in(*group, false, cx);
         }
         self.file_task = None;
         if modal::dialog_open(window, cx) {
@@ -455,21 +465,21 @@ impl Workspace {
     }
 
     /// Core ran the operation. On success the dialog closes, the history
-    /// and FILES follow, and the open note is followed, discarded or left
-    /// alone (module docs). Returns the read of the note's new path when it
-    /// is followed: the operation is not over until it lands.
+    /// and FILES follow, and every open note is followed, discarded or left
+    /// alone (module docs). Returns the reads of the notes followed to new
+    /// paths: the operation is not over until they land.
     fn file_op_finished(
         &mut self,
         result: Result<FileOp, String>,
-        touched: bool,
+        touched: Vec<GroupId>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<ReadRequest> {
+    ) -> Vec<(GroupId, ReadRequest)> {
         let op = match result {
             Ok(op) => op,
             Err(error) => {
-                self.file_op_failed(error, touched, window, cx);
-                return None;
+                self.file_op_failed(error, &touched, window, cx);
+                return Vec::new();
             }
         };
         self.history_follows(&op);
@@ -480,66 +490,164 @@ impl Workspace {
         self.file_status = None;
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
-        let open = self.notes.as_ref().and_then(|h| h.note.clone());
-        let Some(open) = open.filter(|_| touched) else {
+        let active = self.layout.active_group();
+        if !touched.contains(&active) {
             self.refresh_note_counts();
+        }
+        if touched.is_empty() {
             self.file_task = None;
             self.file_op_ended(cx);
-            return None;
+            return Vec::new();
+        }
+        let open = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone())
+            .filter(|_| touched.contains(&active));
+        let (reads, active_gone) = match &op {
+            // The note renamed or moved, or a folder holding it: it follows,
+            // in every group holding it.
+            FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
+                (self.note_moved(from, to, cx), false)
+            }
+            FileOp::Deleted(path) => (Vec::new(), self.note_deleted(path, cx)),
+            _ => (Vec::new(), false),
         };
-        let followed = match &op {
-            // The note renamed, or a folder holding it renamed or moved.
-            FileOp::Renamed { from, to } => relocated(&open, from, to),
-            FileOp::Moved { from, to } if !from.is_like(&open) => relocated(&open, from, to),
-            _ => None,
-        };
-        if let Some(new) = followed
-            && let Some(host) = self.notes.as_mut()
-        {
-            let at = host.session.path().clone();
-            if let Some(read) = host.session.begin_rename(&at, &new) {
-                return Some(read);
+        if let Some(open) = open.filter(|_| active_gone) {
+            let (title, detail, dir) = match &op {
+                FileOp::Deleted(path) => (
+                    format!("{} was deleted", name_of(&open)),
+                    "FILES shows the folder it was in.".to_string(),
+                    path.get_parent_path().0,
+                ),
+                _ => (
+                    format!("{} is no longer there", name_of(&open)),
+                    String::new(),
+                    open.get_parent_path().0,
+                ),
+            };
+            self.say_note_gone(title, detail, dir, window, cx);
+        }
+        // A touched note neither followed nor gone (the operation did not
+        // reach it after all) gets its tick and its keyboard back.
+        for group in &touched {
+            let following = reads.iter().any(|(g, _)| g == group);
+            if !following && self.host_in(*group).is_some_and(|h| h.note.is_some()) {
+                self.restart_tick_unless_read_only_in(*group);
+                self.block_input_in(*group, false, cx);
             }
         }
-        let (title, detail, dir) = match &op {
-            // FILES stays in the folder the note left, as the TUI does.
-            FileOp::Moved { from, to } => (
-                format!("{} was moved", name_of(&open)),
-                format!("It is now {to}."),
-                from.get_parent_path().0,
-            ),
-            FileOp::Deleted(path) => (
-                format!("{} was deleted", name_of(&open)),
-                "FILES shows the folder it was in.".to_string(),
-                path.get_parent_path().0,
-            ),
-            _ => (
-                format!("{} is no longer there", name_of(&open)),
-                String::new(),
-                open.get_parent_path().0,
-            ),
-        };
-        self.note_gone(title, detail, dir, window, cx);
-        self.file_task = None;
-        self.file_op_ended(cx);
-        None
+        if reads.is_empty() {
+            self.file_task = None;
+            self.file_op_ended(cx);
+        }
+        reads
     }
 
-    /// The followed note was read at its new path: load it clean there, or
-    /// give it up when it would not read.
+    /// The notes at or below `from` were renamed or moved to `to`: every
+    /// group holding one follows it to where it went ([`relocated`]) once
+    /// its read lands ([`Self::file_op_retargeted`]). Returns those reads;
+    /// no group changes until then. A background save still aimed at the
+    /// old path is aborted.
+    pub(crate) fn note_moved(
+        &mut self,
+        from: &VaultPath,
+        to: &VaultPath,
+        cx: &mut Context<Self>,
+    ) -> Vec<(GroupId, ReadRequest)> {
+        // A note menu on the old path would act on a stale one.
+        self.forget_note_menu_under(from, cx);
+        let mut reads = Vec::new();
+        for group in self.group_ids() {
+            let Some(host) = self.host_in_mut(group) else {
+                continue;
+            };
+            let Some(new) = host
+                .note
+                .as_ref()
+                .and_then(|note| relocated(note, from, to))
+            else {
+                continue;
+            };
+            let at = host.session.path().clone();
+            // `begin_rename` refuses only a path other than the session's
+            // own, and `at` is exactly that.
+            let read = host
+                .session
+                .begin_rename(&at, &new)
+                .expect("a rename of the session's own path always begins");
+            reads.push((group, read));
+        }
+        reads
+    }
+
+    /// The note at `path`, or every note below it, was deleted: each group
+    /// holding one becomes an empty group in its place (no save: the file
+    /// is gone). Whether the active group was one of them; the caller
+    /// says so in the editor Panel.
+    pub(crate) fn note_deleted(&mut self, path: &VaultPath, cx: &mut Context<Self>) -> bool {
+        self.forget_note_menu_under(path, cx);
+        self.empty_groups_where(|note| path_at_or_below(note, path), cx)
+    }
+
+    /// Empty every group whose note matches `gone` ([`Self::empty_group`]);
+    /// whether the active group was one of them.
+    fn empty_groups_where(
+        &mut self,
+        gone: impl Fn(&VaultPath) -> bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let active = self.layout.active_group();
+        let mut active_gone = false;
+        for group in self.group_ids() {
+            let holds = self
+                .host_in(group)
+                .and_then(|h| h.note.as_ref())
+                .is_some_and(&gone);
+            if holds {
+                self.empty_group(group, cx);
+                active_gone |= group == active;
+            }
+        }
+        active_gone
+    }
+
+    /// The followed notes were read at their new paths: each loads clean
+    /// there, or is given up when it would not read.
     fn file_op_retargeted(
         &mut self,
+        reads: Vec<(GroupId, Result<NoteRead, JoinError>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (group, read) in reads {
+            self.retarget(group, read, window, cx);
+        }
+        self.file_task = None;
+        self.file_op_ended(cx);
+        cx.notify();
+    }
+
+    /// [`Self::file_op_retargeted`] for one group.
+    fn retarget(
+        &mut self,
+        group: GroupId,
         read: Result<NoteRead, JoinError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let read_only = self.status.read_only;
-        let (Some(tx), Some(host)) = (self.tx.clone(), self.notes.as_mut()) else {
+        let active = group == self.layout.active_group();
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
+        let (Some(tx), Some(host)) = (self.tx.clone(), state.notes.as_mut()) else {
             return;
         };
         let old = host.note.clone().unwrap_or_else(VaultPath::root);
         let outcome = match read {
-            Ok(read) => self.editor.update(cx, |view, cx| {
+            Ok(read) => state.editor.update(cx, |view, cx| {
                 let outcome = host
                     .session
                     .finish_rename(read, Some(&mut view.editor), &tx);
@@ -561,32 +669,35 @@ impl Workspace {
                 }
                 host.note = Some(path.clone());
                 host.meta.load_note_counts(&path, &tx);
-                self.status.note = Some(path.clone());
-                self.block_input(false, cx);
-                self.files_note_opened(&path, cx);
-                self.refresh_views(cx);
+                self.block_input_in(group, false, cx);
+                if active {
+                    self.status.note = Some(path.clone());
+                    self.files_note_opened(&path, cx);
+                    self.refresh_views(cx);
+                }
             }
             RenameOutcome::ReloadFailed { parent } => {
-                self.note_gone(
-                    format!("{} couldn't be reopened", name_of(&old)),
-                    "It was renamed, but would not read from its new place.".to_string(),
-                    parent,
-                    window,
-                    cx,
-                );
+                self.empty_group(group, cx);
+                if active {
+                    self.say_note_gone(
+                        format!("{} couldn't be reopened", name_of(&old)),
+                        "It was renamed, but would not read from its new place.".to_string(),
+                        parent,
+                        window,
+                        cx,
+                    );
+                }
             }
             // `begin_rename` matched the open note.
             RenameOutcome::NotOpen => {}
         }
-        self.file_task = None;
-        self.file_op_ended(cx);
-        cx.notify();
     }
 
-    /// The open note went away under an operation: stop every writer,
-    /// discard the buffer without saving it (the file is gone or elsewhere),
-    /// say so in the editor Panel, and give FILES the keyboard on `dir`.
-    fn note_gone(
+    /// The active group's note went away under an operation (its group is
+    /// already empty, [`Self::empty_group`]): say so in that group (only
+    /// there: another empty group says "No note open"), and give FILES the
+    /// keyboard on `dir`.
+    fn say_note_gone(
         &mut self,
         title: String,
         detail: String,
@@ -594,25 +705,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(host) = self.notes.as_mut() {
-            host.session.stop_autosave();
-            host.session.abort_autosave();
-            host.session.set_path(VaultPath::root());
-            host.note = None;
-        }
-        self.editor.update(cx, |view, cx| {
-            view.editor.set_text(String::new());
-            view.editor.mark_saved(String::new());
-            view.preedit = None;
-            view.input_blocked = false;
-            cx.notify();
-        });
-        self.status.note = None;
-        self.note_gone = Some(EmptyState {
-            title,
-            detail,
-            failed: false,
-        });
+        let group = self.layout.active_group();
+        self.note_gone = Some((
+            group,
+            EmptyState {
+                title,
+                detail,
+                failed: false,
+            },
+        ));
         if let Some(files) = self.files.clone() {
             files.update(cx, |pane, cx| {
                 pane.set_open_note(None, cx);
@@ -644,18 +745,22 @@ impl Workspace {
     }
 
     /// An operation ended (a file operation, a property write, the reload
-    /// after it): an open that waited for it goes now, unless another one
-    /// still holds the note.
+    /// after it): an open that waited for it goes now, in whichever group
+    /// asked for it, unless another one still holds the notes.
     pub(super) fn file_op_ended(&mut self, cx: &mut Context<Self>) {
         if self.note_held() {
             cx.notify();
             return;
         }
-        if let Some(host) = self.notes.as_ref()
-            && host.is_open_wanted()
-            && !host.is_switching()
-        {
-            self.switch(cx);
+        // Every group's: an open parked in a group that is not active
+        // would otherwise hold its note for good.
+        for group in self.group_ids() {
+            if self
+                .host_in(group)
+                .is_some_and(|h| h.is_open_wanted() && !h.is_switching())
+            {
+                self.switch(group, cx);
+            }
         }
         cx.notify();
     }

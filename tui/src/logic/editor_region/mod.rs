@@ -1,0 +1,633 @@
+//! The GUI's **editor region** (ADR-0058): a row of **tabs**, each a
+//! workspace of **editor groups** laid out as a `Node` tree. Toolkit-free.
+//!
+//! Rules: a tab always holds at least one group and the region at least one
+//! tab. Closing the last group of a tab closes the tab; closing the last
+//! group of the last tab keeps that group and reports
+//! [`CloseOutcome::Emptied`]. Group ids come from one monotonic counter
+//! shared by all tabs and are never reused within one region. A region
+//! built from a record ([`EditorRegion::from_record`]) numbers its tabs and
+//! groups afresh, so an id of one region may name something else in another.
+
+use kimun_core::nfs::VaultPath;
+
+use crate::logic::layout::node::Node;
+use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
+use crate::logic::layout_tree::{EPS, nearest};
+use crate::settings::session::{GroupTreeRecord, SessionRecord, TabRecord};
+
+/// Identifies one tab. Never reused within one region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(u32);
+
+/// What [`EditorRegion::close_group`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    /// The group closed; its tab remains.
+    Group,
+    /// It was the last group of its tab, so the tab closed too.
+    Tab(TabId),
+    /// It was the last group of the last tab: the group stays, to be shown
+    /// empty.
+    Emptied,
+}
+
+/// A read-only picture of a tab's arrangement, for a frontend that draws
+/// it: each split with its axis and its children's weights (normalized per
+/// split), each group by id, in reading order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupShape {
+    Group(GroupId),
+    Split {
+        axis: Axis,
+        children: Vec<(f64, GroupShape)>,
+    },
+}
+
+impl GroupShape {
+    fn of(node: &Node<GroupId>) -> GroupShape {
+        match node.split_children() {
+            Some((axis, children)) => GroupShape::Split {
+                axis,
+                children: children
+                    .into_iter()
+                    .map(|(w, child)| (w, GroupShape::of(child)))
+                    .collect(),
+            },
+            None => GroupShape::Group(*node.as_leaf().expect("a node is a leaf or a split")),
+        }
+    }
+
+    /// The most groups that sit side by side along one row: a side-by-side
+    /// split adds its children's rows, a stacked one takes the widest.
+    /// One for a lone group.
+    pub fn widest_row(&self) -> usize {
+        match self {
+            GroupShape::Group(_) => 1,
+            GroupShape::Split {
+                axis: Axis::Horizontal,
+                children,
+            } => children.iter().map(|(_, c)| c.widest_row()).sum(),
+            GroupShape::Split {
+                axis: Axis::Vertical,
+                children,
+            } => children
+                .iter()
+                .map(|(_, c)| c.widest_row())
+                .max()
+                .unwrap_or(1),
+        }
+    }
+
+    /// The last group in reading order: in every split under it, it is in
+    /// the last child, so [`EditorRegion::resize_after`] on it moves the
+    /// boundary after this shape.
+    pub fn last_group(&self) -> GroupId {
+        match self {
+            GroupShape::Group(g) => *g,
+            GroupShape::Split { children, .. } => children
+                .last()
+                .expect("a split holds at least two children")
+                .1
+                .last_group(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Tab {
+    id: TabId,
+    root: Node<GroupId>,
+    active: GroupId,
+}
+
+/// The tabs, which one is shown, and the groups of each.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorRegion {
+    tabs: Vec<Tab>,
+    shown: TabId,
+    next_tab: u32,
+    next_group: u32,
+}
+
+impl Default for EditorRegion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EditorRegion {
+    /// One tab holding one group.
+    pub fn new() -> Self {
+        let first = Tab {
+            id: TabId(0),
+            root: Node::leaf(GroupId::new(0)),
+            active: GroupId::new(0),
+        };
+        Self {
+            shown: first.id,
+            tabs: vec![first],
+            next_tab: 1,
+            next_group: 1,
+        }
+    }
+
+    fn tab(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|t| t.id == id)
+    }
+
+    fn position(&self, id: TabId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    fn shown_tab(&self) -> &Tab {
+        self.tab(self.shown).expect("the shown tab exists")
+    }
+
+    fn fresh_group(&mut self) -> GroupId {
+        let g = GroupId::new(self.next_group);
+        self.next_group += 1;
+        g
+    }
+
+    fn fresh_tab(&mut self) -> TabId {
+        let t = TabId(self.next_tab);
+        self.next_tab += 1;
+        t
+    }
+
+    // ── Tabs ──────────────────────────────────────────────────────────
+
+    /// Every tab in order.
+    pub fn tabs(&self) -> Vec<TabId> {
+        self.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// The tab on display.
+    pub fn shown(&self) -> TabId {
+        self.shown
+    }
+
+    /// Show `tab`. False (nothing changes) when it does not exist.
+    pub fn show(&mut self, tab: TabId) -> bool {
+        if self.position(tab).is_none() {
+            return false;
+        }
+        self.shown = tab;
+        true
+    }
+
+    fn step(&mut self, delta: usize) {
+        let at = self.position(self.shown).expect("the shown tab exists");
+        self.shown = self.tabs[(at + delta) % self.tabs.len()].id;
+    }
+
+    /// Show the next tab, wrapping to the first.
+    pub fn next_tab(&mut self) {
+        self.step(1);
+    }
+
+    /// Show the previous tab, wrapping to the last.
+    pub fn prev_tab(&mut self) {
+        self.step(self.tabs.len() - 1);
+    }
+
+    /// Open a tab with one new group after the last tab, and show it.
+    pub fn new_tab(&mut self) -> (TabId, GroupId) {
+        let (id, group) = (self.fresh_tab(), self.fresh_group());
+        self.tabs.push(Tab {
+            id,
+            root: Node::leaf(group),
+            active: group,
+        });
+        self.shown = id;
+        (id, group)
+    }
+
+    /// Close `tab`, returning the groups it held in reading order. `None`
+    /// (nothing changes) for the last tab or an unknown one. Closing the
+    /// shown tab shows the one that takes its place (the next, else the
+    /// previous).
+    pub fn close_tab(&mut self, tab: TabId) -> Option<Vec<GroupId>> {
+        if self.tabs.len() == 1 {
+            return None;
+        }
+        let at = self.position(tab)?;
+        let closed = self.tabs.remove(at);
+        if self.shown == tab {
+            self.shown = self.tabs[at.min(self.tabs.len() - 1)].id;
+        }
+        Some(closed.root.leaves().into_iter().copied().collect())
+    }
+
+    /// Move `tab` to position `to` (clamped to the last). The shown tab is
+    /// unchanged. Ignored for an unknown tab.
+    pub fn move_tab(&mut self, tab: TabId, to: usize) {
+        let Some(at) = self.position(tab) else {
+            return;
+        };
+        let moved = self.tabs.remove(at);
+        self.tabs.insert(to.min(self.tabs.len()), moved);
+    }
+
+    // ── Groups ────────────────────────────────────────────────────────
+
+    /// The groups of `tab` in reading order; empty for an unknown tab.
+    pub fn groups(&self, tab: TabId) -> Vec<GroupId> {
+        self.tab(tab)
+            .map(|t| t.root.leaves().into_iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Every group of every tab, tab by tab.
+    pub fn all_groups(&self) -> Vec<GroupId> {
+        self.tabs
+            .iter()
+            .flat_map(|t| t.root.leaves().into_iter().copied())
+            .collect()
+    }
+
+    /// The shown tab's active group: the one owning save and the footer.
+    pub fn active_group(&self) -> GroupId {
+        self.shown_tab().active
+    }
+
+    /// The active group of `tab`, shown or not; `None` for an unknown tab.
+    pub fn active_group_of(&self, tab: TabId) -> Option<GroupId> {
+        self.tab(tab).map(|t| t.active)
+    }
+
+    /// The tab holding `group`.
+    pub fn group_tab(&self, group: GroupId) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|t| t.root.contains(&group))
+            .map(|t| t.id)
+    }
+
+    /// Make `group` the active group of its tab and show that tab. False
+    /// (nothing changes) for an unknown group.
+    pub fn set_active_group(&mut self, group: GroupId) -> bool {
+        let Some(tab) = self.group_tab(group) else {
+            return false;
+        };
+        let at = self.position(tab).expect("the tab exists");
+        self.tabs[at].active = group;
+        self.shown = tab;
+        true
+    }
+
+    /// Split `group` along `axis`; the new group comes right after it, in
+    /// the same tab. The active group is unchanged. `None` for an unknown
+    /// group.
+    pub fn split_group(&mut self, group: GroupId, axis: Axis) -> Option<GroupId> {
+        let tab = self.group_tab(group)?;
+        let new = self.fresh_group();
+        let at = self.position(tab).expect("the tab exists");
+        self.tabs[at].root.split_leaf(&group, axis, new);
+        Some(new)
+    }
+
+    /// Close `group`. `None` for an unknown group. Its neighbour takes its
+    /// area: the group (or branch) before it in its split, the one after it
+    /// when it is first; every other group keeps its size. When the active
+    /// group of its tab closes, the group before it (or the first) becomes
+    /// active.
+    pub fn close_group(&mut self, group: GroupId) -> Option<CloseOutcome> {
+        let tab = self.group_tab(group)?;
+        let at = self.position(tab).expect("the tab exists");
+        if self.tabs[at].root.leaves().len() == 1 {
+            return Some(if self.close_tab(tab).is_some() {
+                CloseOutcome::Tab(tab)
+            } else {
+                CloseOutcome::Emptied
+            });
+        }
+        self.remove_from(at, group);
+        Some(CloseOutcome::Group)
+    }
+
+    /// Take `group` out of the tab at index `at` (which holds others),
+    /// moving that tab's active group off it if needed.
+    fn remove_from(&mut self, at: usize, group: GroupId) {
+        let t = &mut self.tabs[at];
+        let pos = t
+            .root
+            .leaves()
+            .into_iter()
+            .position(|g| *g == group)
+            .expect("the group is in the tab");
+        t.root.remove_leaf_to_neighbour(&group);
+        if t.active == group {
+            let left = t.root.leaves();
+            t.active = *left[pos.saturating_sub(1).min(left.len() - 1)];
+        }
+    }
+
+    // ── Geometry ──────────────────────────────────────────────────────
+
+    /// The shown tab's groups with their rectangles in the unit square.
+    pub fn regions(&self) -> Vec<(GroupId, UnitRect)> {
+        self.shown_tab()
+            .root
+            .layout(UnitRect::new(0.0, 0.0, 1.0, 1.0))
+    }
+
+    /// The shown tab's arrangement, for drawing it.
+    pub fn shape(&self) -> GroupShape {
+        GroupShape::of(&self.shown_tab().root)
+    }
+
+    /// The most groups side by side in one row of the shown tab
+    /// ([`GroupShape::widest_row`]): what the region's minimum width is a
+    /// multiple of, so a tab with groups side by side asks for more room.
+    pub fn widest_row(&self) -> usize {
+        self.shape().widest_row()
+    }
+
+    /// Move the boundary after `group`'s branch so it takes `share` of the
+    /// pair (see `Node::resize_after`). False when there is none.
+    pub fn resize_after(&mut self, group: GroupId, share: f64) -> bool {
+        let Some(tab) = self.group_tab(group) else {
+            return false;
+        };
+        let at = self.position(tab).expect("the tab exists");
+        self.tabs[at].root.resize_after(&group, share)
+    }
+
+    // ── Moving groups ─────────────────────────────────────────────────
+
+    /// Move `group` (keeping its id) into `target` as a new split on the
+    /// right of the target tab's active group, where it becomes active. If
+    /// it was alone in its tab, that tab closes; and if that was the shown
+    /// tab, `target` is shown. False (nothing changes) for an unknown group
+    /// or tab, or when `group` is already in `target`.
+    pub fn move_group_to_tab(&mut self, group: GroupId, target: TabId) -> bool {
+        let Some(from) = self.group_tab(group) else {
+            return false;
+        };
+        if from == target || self.position(target).is_none() {
+            return false;
+        }
+        if self.detach(group, from) {
+            self.shown = target;
+        }
+        let at = self.position(target).expect("checked above");
+        let t = &mut self.tabs[at];
+        let after = t.active;
+        t.root.split_leaf(&after, Axis::Horizontal, group);
+        t.active = group;
+        true
+    }
+
+    /// Move `group` (keeping its id) next to `target`, on its `dir` side,
+    /// in whichever tab `target` is: the two share `target`'s area. The
+    /// moved group becomes the active group of that tab. If it was alone in
+    /// its tab, that tab closes; and if that was the shown tab, `target`'s
+    /// tab is shown. False (nothing changes) when `group` is `target` or
+    /// either is unknown.
+    pub fn move_group_beside(&mut self, group: GroupId, target: GroupId, dir: Dir) -> bool {
+        if group == target || self.group_tab(target).is_none() {
+            return false;
+        }
+        let Some(from) = self.group_tab(group) else {
+            return false;
+        };
+        let closed_shown = self.detach(group, from);
+        let tab = self.group_tab(target).expect("checked above");
+        let at = self.position(tab).expect("the tab exists");
+        let (axis, before) = dir.split_axis();
+        let t = &mut self.tabs[at];
+        t.root.split_leaf_at(&target, axis, group, before, None);
+        t.active = group;
+        if closed_shown {
+            self.shown = tab;
+        }
+        true
+    }
+
+    /// Swap the places of `a` and `b`, in one tab or across two: each takes
+    /// the other's place and size, the tree is otherwise unchanged. A tab
+    /// whose active group left takes the group that came in as active; the
+    /// shown tab is unchanged. False (nothing changes) when `a` is `b` or
+    /// either is unknown.
+    pub fn swap_groups(&mut self, a: GroupId, b: GroupId) -> bool {
+        if a == b || self.group_tab(a).is_none() || self.group_tab(b).is_none() {
+            return false;
+        }
+        for t in &mut self.tabs {
+            t.root.swap_leaves(&a, &b);
+            if !t.root.contains(&t.active) {
+                t.active = if t.active == a { b } else { a };
+            }
+        }
+        true
+    }
+
+    /// Move `group` toward `dir` inside its own tab. Another group that
+    /// way (the one directional focus would reach) swaps places with it,
+    /// each taking the other's size. With none that way, `group` moves to
+    /// that outer edge of the tab as a split across the whole tab, the
+    /// others sharing the rest. Either way `group` becomes its tab's active
+    /// group. False (nothing changes) for an unknown group and when
+    /// `group` already spans that edge in full, a lone group included.
+    pub fn move_group_dir(&mut self, group: GroupId, dir: Dir) -> bool {
+        let Some(tab) = self.group_tab(group) else {
+            return false;
+        };
+        let at = self.position(tab).expect("the tab exists");
+        let regions = self.tabs[at].root.layout(UnitRect::new(0.0, 0.0, 1.0, 1.0));
+        let Some(cur) = regions.iter().find(|(g, _)| *g == group).map(|(_, r)| *r) else {
+            return false;
+        };
+        if let Some(other) = nearest(&regions, group, cur, dir, &|_| false) {
+            self.swap_groups(group, other);
+            self.tabs[at].active = group;
+            return true;
+        }
+        let full = |extent: f64| extent >= 1.0 - EPS;
+        let spans = match dir {
+            Dir::Left => cur.x() <= EPS && full(cur.height()),
+            Dir::Right => full(cur.right()) && full(cur.height()),
+            Dir::Up => cur.y() <= EPS && full(cur.width()),
+            Dir::Down => full(cur.bottom()) && full(cur.width()),
+        };
+        if spans {
+            return false;
+        }
+        let (axis, before) = dir.split_axis();
+        let t = &mut self.tabs[at];
+        t.root.remove_leaf_to_neighbour(&group);
+        t.root.add_at_edge(axis, group, before);
+        t.active = group;
+        true
+    }
+
+    /// Move `group` (keeping its id) into a new tab after the last one,
+    /// alone there and active. If it was alone in its tab, that tab closes;
+    /// and if that was the shown tab, the new tab is shown (else the shown
+    /// tab stays). `None` (nothing changes) for an unknown group, and for
+    /// the only group of the only tab: the move would change nothing.
+    pub fn move_group_to_new_tab(&mut self, group: GroupId) -> Option<TabId> {
+        let from = self.group_tab(group)?;
+        if self.tabs.len() == 1 && self.groups(from).len() == 1 {
+            return None;
+        }
+        let closed_shown = self.detach(group, from);
+        let id = self.fresh_tab();
+        self.tabs.push(Tab {
+            id,
+            root: Node::leaf(group),
+            active: group,
+        });
+        if closed_shown {
+            self.shown = id;
+        }
+        Some(id)
+    }
+
+    /// Take `group` out of `from` for a move: when it is alone there, the
+    /// tab closes (the caller makes sure another tab remains or follows);
+    /// otherwise its neighbour takes its area. True when the tab closed
+    /// and it was the shown one: the caller shows where the group went.
+    fn detach(&mut self, group: GroupId, from: TabId) -> bool {
+        let at = self.position(from).expect("the tab exists");
+        if self.tabs[at].root.leaves().len() == 1 {
+            self.tabs.remove(at);
+            self.shown == from
+        } else {
+            self.remove_from(at, group);
+            false
+        }
+    }
+}
+
+// ── Record and restore ────────────────────────────────────────────────
+
+impl EditorRegion {
+    /// The region as a session record (ADR-0058): every tab in order with
+    /// its splits, their axes and weights (normalized per split), the note
+    /// of each group as `note_of` says (`None` for an empty group), each
+    /// tab's active group and the shown tab.
+    pub fn to_record(&self, note_of: impl Fn(GroupId) -> Option<VaultPath>) -> SessionRecord {
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|t| TabRecord {
+                tree: tree_record(&t.root, &note_of),
+                active: t
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .position(|g| *g == t.active)
+                    .expect("a tab's active group is its own"),
+            })
+            .collect();
+        SessionRecord::new(
+            tabs,
+            self.position(self.shown).expect("the shown tab exists"),
+        )
+    }
+
+    /// The region `record` describes, with fresh ids, and the note each
+    /// group opens, in reading order. A group whose note is missing
+    /// (`exists` says no, or the path is no note at all, such as an empty
+    /// one) stays in its place, empty. A note recorded in two groups opens
+    /// in the first only: a note is open in at most one group. The recorded
+    /// shown tab, each tab's active group, the splits and their weights come
+    /// back. A record that leaves no note to open is a fresh start: one tab
+    /// with one empty group.
+    pub fn from_record(
+        record: &SessionRecord,
+        exists: impl Fn(&VaultPath) -> bool,
+    ) -> (EditorRegion, Vec<(GroupId, VaultPath)>) {
+        let mut region = EditorRegion {
+            tabs: Vec::with_capacity(record.tabs.len()),
+            shown: TabId(0),
+            next_tab: 0,
+            next_group: 0,
+        };
+        let mut notes = Vec::new();
+        for (at, tab) in record.tabs.iter().enumerate() {
+            let root = region.build(&tab.tree, &exists, &mut notes);
+            let leaves: Vec<GroupId> = root.leaves().into_iter().copied().collect();
+            let id = region.fresh_tab();
+            region.tabs.push(Tab {
+                id,
+                active: leaves[tab.active.min(leaves.len() - 1)],
+                root,
+            });
+            if at == record.shown {
+                region.shown = id;
+            }
+        }
+        if notes.is_empty() {
+            return (EditorRegion::new(), notes);
+        }
+        if region.position(region.shown).is_none() {
+            region.shown = region.tabs[0].id;
+        }
+        (region, notes)
+    }
+
+    /// The node `tree` describes, its groups numbered on; each note that
+    /// opens goes to `notes`.
+    fn build(
+        &mut self,
+        tree: &GroupTreeRecord,
+        exists: &impl Fn(&VaultPath) -> bool,
+        notes: &mut Vec<(GroupId, VaultPath)>,
+    ) -> Node<GroupId> {
+        match tree {
+            GroupTreeRecord::Leaf { note } => {
+                let group = self.fresh_group();
+                if let Some(note) = note
+                    && note.is_note()
+                    && !notes.iter().any(|(_, held)| held.is_like(note))
+                    && exists(note)
+                {
+                    notes.push((group, note.clone()));
+                }
+                Node::leaf(group)
+            }
+            GroupTreeRecord::Split {
+                axis,
+                weights,
+                children,
+            } => {
+                let children = weights
+                    .iter()
+                    .zip(children)
+                    .map(|(w, child)| (*w, self.build(child, exists, notes)))
+                    .collect();
+                Node::split((*axis).into(), children)
+            }
+        }
+    }
+}
+
+/// [`EditorRegion::to_record`] of one node.
+fn tree_record(
+    node: &Node<GroupId>,
+    note_of: &impl Fn(GroupId) -> Option<VaultPath>,
+) -> GroupTreeRecord {
+    match node.split_children() {
+        Some((axis, children)) => {
+            let (weights, children) = children
+                .into_iter()
+                .map(|(w, child)| (w, tree_record(child, note_of)))
+                .unzip();
+            GroupTreeRecord::Split {
+                axis: axis.into(),
+                weights,
+                children,
+            }
+        }
+        None => GroupTreeRecord::Leaf {
+            note: note_of(*node.as_leaf().expect("a node is a leaf or a split")),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests;

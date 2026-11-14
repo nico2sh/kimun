@@ -1267,6 +1267,7 @@ impl Workspace {
     fn opening_first(&self) -> bool {
         self.first_open_pending
             || self
+                .active_state()
                 .notes
                 .as_ref()
                 .is_some_and(|h| h.is_switching() || h.is_open_wanted())
@@ -1289,7 +1290,8 @@ impl Workspace {
 
     /// The folder of the note in the editor, or the root.
     pub(super) fn open_note_dir(&self) -> VaultPath {
-        self.notes
+        self.active_state()
+            .notes
             .as_ref()
             .and_then(|h| h.note.as_ref())
             .map_or_else(VaultPath::root, |note| note.get_parent_path().0)

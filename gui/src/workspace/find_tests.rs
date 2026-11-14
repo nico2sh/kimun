@@ -175,8 +175,16 @@ fn shown(s: &Started, view: DrawerView, cx: &TestAppContext) -> bool {
 }
 
 fn on(s: &Started, p: &str, cx: &TestAppContext) -> bool {
-    cx.read(|cx| s.workspace.read(cx).notes.as_ref()?.note.clone())
-        .is_some_and(|n| n.is_like(&path(p)))
+    cx.read(|cx| {
+        s.workspace
+            .read(cx)
+            .active_state()
+            .notes
+            .as_ref()?
+            .note
+            .clone()
+    })
+    .is_some_and(|n| n.is_like(&path(p)))
 }
 
 fn focused(s: &Started, id: &'static str, cx: &mut TestAppContext) -> bool {
@@ -200,6 +208,7 @@ fn needles(s: &Started, cx: &TestAppContext) -> Vec<String> {
     cx.read(|cx| {
         s.workspace
             .read(cx)
+            .active_state()
             .editor
             .read(cx)
             .editor

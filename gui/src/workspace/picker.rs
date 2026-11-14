@@ -120,13 +120,11 @@ const SEARCH_STACKED_LIST_SHARE: f32 = 0.4;
 /// does it.
 fn to_find_tooltip(cx: &gpui_kit::App) -> SharedString {
     let title = kimun_notes::logic::view_registry::spec(DrawerView::Find).title;
-    match crate::keymap::chord_label(
-        cx,
+    super::chrome::tooltip_with_chord(
+        &format!("Open in {title}"),
         &kimun_notes::logic::actions::ActionShortcuts::OpenQueryInSidebar,
-    ) {
-        Some(chord) => format!("Open in {title} ({chord})").into(),
-        None => format!("Open in {title}").into(),
-    }
+        cx,
+    )
 }
 
 /// The search browser's body height, in rems, in a window whose usable
@@ -929,7 +927,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if modal::dialog_open(window, cx) || self.notes.is_none() {
+        if modal::dialog_open(window, cx) || self.active_state().notes.is_none() {
             return;
         }
         let title = format!("{} notes match \"{target}\"", results.len());
@@ -1003,7 +1001,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Entity<NotePicker<R>>> {
         let tx = self.tx.clone()?;
-        let vault = self.notes.as_ref().map(|host| host.session.vault().clone());
+        let vault = self
+            .active_state()
+            .notes
+            .as_ref()
+            .map(|host| host.session.vault().clone());
         let workspace = cx.entity().downgrade();
         let picker = cx.new(|cx| {
             NotePicker::new(

@@ -361,11 +361,11 @@ fn a_hidden_rail_is_out_of_the_focus_cycle_and_directional_focus(cx: &mut TestAp
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         for _ in 0..6 {
-            window.press("ctrl-tab", cx);
+            window.press("alt-e", cx);
             assert_ne!(focus(&shell, cx), Focus::Rail);
         }
         for _ in 0..6 {
-            window.press("ctrl-shift-tab", cx);
+            window.press("alt-f", cx);
             assert_ne!(focus(&shell, cx), Focus::Rail);
         }
         // Left from the left-most leaf is the edge, not the hidden rail.
@@ -406,10 +406,9 @@ fn hiding_with_the_rail_focused_and_no_slot_before_moves_focus_to_the_editor(
         window.render_frame(cx);
         window.click("rail", cx);
         window.press(TOGGLE_RAIL, cx);
-        let group = shell.workspace.read(cx).layout.active_group();
         assert_eq!(
             focus(&shell, cx),
-            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Group(group))
+            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Editor)
         );
     })
     .unwrap();
@@ -498,7 +497,7 @@ fn the_side_toggle_chords_still_work_with_the_rail_hidden(cx: &mut TestAppContex
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(left_shown(&shell, cx), [Some(DrawerView::Files)]);
-        window.press("ctrl-t", cx);
+        window.press("alt-l", cx);
         window.render_frame(cx);
         assert_eq!(left_shown(&shell, cx), [None]);
         assert!(hidden(&shell, cx));
@@ -612,7 +611,7 @@ fn hiding_the_rail_while_zoomed_keeps_the_zoom(cx: &mut TestAppContext) {
         window.click("editor-panel", cx);
         assert!(matches!(
             focus(&shell, cx),
-            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Group(_))
+            Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Editor)
         ));
         window.press("ctrl-shift-m", cx);
         let zoomed = shell.workspace.read(cx).layout.zoomed().expect("zoomed");
