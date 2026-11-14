@@ -80,10 +80,9 @@ use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
-use super::motion::{MotionKey, Siblings, slot_policy};
-use super::motion_box::MotionBox as _;
+use super::motion::{CellKey, MotionKey, Siblings};
+use super::motion_box::{Clip, MotionBox as _};
 use super::{Workspace, route, slot_content_id, slot_gone_id, slot_id};
-use crate::motion::ResizePolicy;
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
 use crate::theme;
 
@@ -195,25 +194,70 @@ fn distribute(len: f64, cells: &[(f64, f64)]) -> (Vec<f64>, bool) {
 
 /// A split of the layout tree or of the shown tab's groups, as
 /// [`Workspace::render_split`] lays it out: its `axis`, the px it has, its
-/// children as (weight, minimum px along `axis`, child) in order, and the
-/// colour of the gap between drawn neighbours (`None`: window background).
+/// children in order, and the colour of the gap between drawn neighbours
+/// (`None`: window background).
 struct Split<'a, C> {
     axis: Axis,
     size: (f64, f64),
-    children: Vec<(f64, f64, &'a C)>,
-    /// Each child's final px along `axis`, once every motion has ended, in
-    /// the order of `children`. Empty: the drawn px are the final ones.
-    finals: Vec<f64>,
-    /// The weight key of each child, and whether it is one leaf, to
-    /// remember what stands next to it and how many px it has (for a ghost).
-    /// Empty for the editor's groups.
-    ids: Vec<(MotionKey, bool)>,
-    /// Cells removed from the tree that still decay to nothing, each as
-    /// (the index of the child it stood before, the px it still holds): a
-    /// spacer of that size is drawn for each, so the children next to it
-    /// grow into its room over time. Empty for the editor's groups.
-    ghosts: Vec<(usize, f64)>,
+    children: Vec<SplitChild<'a, C>>,
+    /// The px that ghosts hold after the last child (see
+    /// [`SplitChild::ghost_before`]).
+    ghost_after: f64,
     line: Option<Rgba>,
+}
+
+/// One child of a [`Split`]: its weight, its minimum px along the split, and
+/// what it carries for motion.
+struct SplitChild<'a, C> {
+    weight: f64,
+    min: f64,
+    child: &'a C,
+    /// How the child moves. `None` for the editor's groups: they do not.
+    cell: Option<CellMotion>,
+    /// The px that cells removed from the tree still hold before this child:
+    /// a spacer of that size is drawn, so the children next to it grow into
+    /// its room over time.
+    ghost_before: f64,
+}
+
+/// What a cell of the layout tree carries for motion.
+#[derive(Clone, Copy)]
+struct CellMotion {
+    /// The weight key of the cell, and whether the cell is one leaf, to
+    /// remember what stands next to it and how many px it has (for a ghost).
+    key: CellKey,
+    leaf: bool,
+    /// Its px along the split once every motion has ended.
+    fin: f64,
+}
+
+/// The px a child is drawn in, and the px it has once every motion has
+/// ended (the same, when nothing moves).
+struct CellPx {
+    size: (f64, f64),
+    fin: (f64, f64),
+}
+
+impl<C> Split<'_, C> {
+    /// Hand the ghosts to the children they stand before. A ghost that
+    /// stands at the child count stands after the last child.
+    fn place_ghosts(&mut self, placed: impl IntoIterator<Item = (usize, f64)>) {
+        for (at, px) in placed {
+            match self.children.get_mut(at) {
+                Some(child) => child.ghost_before += px,
+                None => self.ghost_after += px,
+            }
+        }
+    }
+
+    /// The px that all ghosts of the split hold.
+    fn ghost_px(&self) -> f64 {
+        self.children
+            .iter()
+            .map(|child| child.ghost_before)
+            .sum::<f64>()
+            + self.ghost_after
+    }
 }
 
 /// What a slot remembers of itself to be drawn while it leaves, after the
@@ -718,9 +762,9 @@ impl Workspace {
     fn ghosts_among(
         &self,
         depth: u8,
-        ids: &[(MotionKey, bool)],
+        ids: &[CellKey],
         axis: Option<Axis>,
-        skip: &[MotionKey],
+        skip: &[CellKey],
     ) -> Vec<(usize, f64, Axis)> {
         self.motion
             .borrow()
@@ -734,7 +778,7 @@ impl Workspace {
             })
             .filter(|ghost| axis.is_none_or(|axis| ghost.siblings.axis == axis))
             .filter_map(|ghost| {
-                let place = |key: MotionKey| ids.iter().position(|(shown, _)| *shown == key);
+                let place = |key: CellKey| ids.iter().position(|shown| *shown == key);
                 let at = match (ghost.siblings.prev, ghost.siblings.next) {
                     (Some(prev), Some(next)) => match (place(prev), place(next)) {
                         (Some(before), Some(after)) if after == before + 1 => after,
@@ -779,24 +823,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let leaf = matches!(shape, TreeShape::Leaf(_));
-        let key = MotionKey::Weight(last_leaf(shape), depth + 1, leaf);
+        let key = CellKey::of(shape, depth + 1);
         // A split draws the ghosts that stood among its own children, and a
         // ghost that stood beside the cell of its own key took its place.
-        let own: Vec<MotionKey> = match shape {
+        let own: Vec<CellKey> = match shape {
             TreeShape::Split { children, .. } => children
                 .iter()
                 .filter(|(_, child)| self.shape_present(child))
-                .map(|(_, child)| {
-                    MotionKey::Weight(
-                        last_leaf(child),
-                        depth + 1,
-                        matches!(child, TreeShape::Leaf(_)),
-                    )
-                })
+                .map(|(_, child)| CellKey::of(child, depth + 1))
                 .collect(),
             TreeShape::Leaf(_) => Vec::new(),
         };
-        let collapsed = self.ghosts_among(depth + 1, &[(key, leaf)], None, &own);
+        let collapsed = self.ghosts_among(depth + 1, &[key], None, &own);
         // The ghosts of one axis: another axis is another split that closed.
         let axis = collapsed.first().map(|(_, _, axis)| *axis);
         let ghosts: Vec<(usize, f64)> = collapsed
@@ -809,22 +847,31 @@ impl Workspace {
         };
         let (min_w, min_h) = self.min_px(shape, rem, true);
         let along = |(w, h): (f64, f64)| if axis == Axis::Horizontal { w } else { h };
-        let split = Split {
+        let mut split = Split {
             axis,
             size,
-            children: vec![(1.0, along((min_w, min_h)), shape)],
-            finals: vec![along(fin)],
-            ids: vec![(key, leaf)],
-            ghosts,
+            children: vec![SplitChild {
+                weight: 1.0,
+                min: along((min_w, min_h)),
+                child: shape,
+                cell: Some(CellMotion {
+                    key,
+                    leaf,
+                    fin: along(fin),
+                }),
+                ghost_before: 0.0,
+            }],
+            ghost_after: 0.0,
             line: None,
         };
+        split.place_ghosts(ghosts);
         Some(self.render_split(
             split,
             rem,
             cx,
             |child| DividerAt::Leaf(last_leaf(child)),
-            |child, size, fin, cx| {
-                self.render_node_cell(child, size, fin, across, depth, rem, window, cx)
+            |child, cell, cx| {
+                self.render_node_cell(child, cell.size, cell.fin, across, depth, rem, window, cx)
             },
         ))
     }
@@ -909,25 +956,6 @@ impl Workspace {
                     let (w, h) = self.min_px(child, rem, scaled);
                     if axis == Axis::Horizontal { w } else { h }
                 };
-                let children = visible
-                    .iter()
-                    .map(|(_, weight, child)| {
-                        let factor = self.shape_factor(child);
-                        // The weight as it is drawn now: it moves toward the
-                        // model's over time (ADR-0060).
-                        let drawn = self
-                            .motion
-                            .borrow()
-                            .value(MotionKey::Weight(
-                                last_leaf(child),
-                                depth + 1,
-                                matches!(child, TreeShape::Leaf(_)),
-                            ))
-                            .map_or(*weight, f64::from);
-                        // The minimum is scaled leaf by leaf, as the cell is drawn now.
-                        (drawn * factor, along_min(child, true), *child)
-                    })
-                    .collect();
                 // The sizes once every motion has ended: a leaving child is
                 // gone, the others share the length at their full weights.
                 let resting: Vec<(f64, f64)> = visible
@@ -943,13 +971,37 @@ impl Workspace {
                 let gaps = resting.len().saturating_sub(1) as f64 * GAP;
                 let (mut rested, _) = distribute((length - gaps).max(0.0), &resting);
                 rested.reverse();
-                let finals = visible
+                let mut finals: Vec<f64> = visible
                     .iter()
                     .map(|(_, _, child)| {
                         if self.shape_visible(child) {
                             rested.pop().unwrap_or(0.0)
                         } else {
                             0.0
+                        }
+                    })
+                    .collect();
+                finals.reverse();
+                let children: Vec<SplitChild<TreeShape>> = visible
+                    .iter()
+                    .map(|(_, weight, child)| {
+                        let factor = self.shape_factor(child);
+                        let key = CellKey::of(child, depth + 1);
+                        // The weight as it is drawn now: it moves toward the
+                        // model's over time (ADR-0060).
+                        let drawn = self.motion.borrow().value(key).map_or(*weight, f64::from);
+                        SplitChild {
+                            weight: drawn * factor,
+                            // The minimum is scaled leaf by leaf, as the
+                            // cell is drawn now.
+                            min: along_min(child, true),
+                            child: *child,
+                            cell: Some(CellMotion {
+                                key,
+                                leaf: matches!(child, TreeShape::Leaf(_)),
+                                fin: finals.pop().unwrap_or(0.0),
+                            }),
+                            ghost_before: 0.0,
                         }
                     })
                     .collect();
@@ -968,12 +1020,8 @@ impl Workspace {
                     return None;
                 };
                 for (_, child) in all.iter().filter(|(_, c)| !self.shape_present(c)) {
-                    self.motion.borrow_mut().remember(
-                        MotionKey::Weight(
-                            last_leaf(child),
-                            depth + 1,
-                            matches!(child, TreeShape::Leaf(_)),
-                        ),
+                    self.motion.borrow_mut().remember_siblings(
+                        CellKey::of(child, depth + 1),
                         Siblings {
                             prev: None,
                             next: None,
@@ -983,36 +1031,41 @@ impl Workspace {
                         },
                     );
                 }
-                let ids: Vec<(MotionKey, bool)> = visible
-                    .iter()
-                    .map(|(_, _, child)| {
-                        let leaf = matches!(child, TreeShape::Leaf(_));
-                        (MotionKey::Weight(last_leaf(child), depth + 1, leaf), leaf)
-                    })
-                    .collect();
                 // The ghosts of this split: each stood after the child that
                 // was before it, else before the one that was after it.
+                let ids: Vec<CellKey> = children
+                    .iter()
+                    .filter_map(|child| child.cell.map(|cell| cell.key))
+                    .collect();
                 let ghosts: Vec<(usize, f64)> = self
                     .ghosts_among(depth + 1, &ids, Some(axis), &[])
                     .into_iter()
                     .map(|(at, px, _)| (at, px))
                     .collect();
-                let split = Split {
+                let mut split = Split {
                     axis,
                     size,
                     children,
-                    finals,
-                    ids,
-                    ghosts,
+                    ghost_after: 0.0,
                     line: None,
                 };
+                split.place_ghosts(ghosts);
                 Some(self.render_split(
                     split,
                     rem,
                     cx,
                     |child| DividerAt::Leaf(last_leaf(child)),
-                    |child, size, fin, cx| {
-                        self.render_node(child, size, fin, across, depth + 1, rem, window, cx)
+                    |child, cell, cx| {
+                        self.render_node(
+                            child,
+                            cell.size,
+                            cell.fin,
+                            across,
+                            depth + 1,
+                            rem,
+                            window,
+                            cx,
+                        )
                     },
                 ))
             }
@@ -1034,15 +1087,14 @@ impl Workspace {
         rem: f64,
         cx: &mut Context<Self>,
         divider: impl Fn(&'a C) -> DividerAt,
-        mut render: impl FnMut(&'a C, (f64, f64), (f64, f64), &mut Context<Self>) -> Option<AnyElement>,
+        mut render: impl FnMut(&'a C, CellPx, &mut Context<Self>) -> Option<AnyElement>,
     ) -> AnyElement {
+        let ghost_px = split.ghost_px();
         let Split {
             axis,
             size,
             children,
-            finals,
-            ids,
-            ghosts,
+            ghost_after,
             line,
         } = split;
         let (length, cross) = match axis {
@@ -1051,42 +1103,53 @@ impl Workspace {
         };
         let gaps = children.len().saturating_sub(1) as f64 * GAP;
         // The ghosts hold their px, and the children share what is left.
-        let ghost_px: f64 = ghosts.iter().map(|(_, px)| px).sum();
         let cells: Vec<(f64, f64)> = children
             .iter()
-            .map(|(weight, min, _)| (*weight, *min))
+            .map(|child| (child.weight, child.min))
             .collect();
         let (sizes, held) = distribute((length - gaps - ghost_px).max(0.0), &cells);
         // What stands next to each child and how many px it has, kept for a
         // ghost: if the child is removed from the tree, it decays from here.
-        for (index, (key, leaf)) in ids.iter().enumerate() {
-            self.motion.borrow_mut().remember(
-                *key,
+        let ids: Vec<Option<CellMotion>> = children.iter().map(|child| child.cell).collect();
+        for (index, cell) in ids.iter().enumerate() {
+            let Some(cell) = cell else { continue };
+            self.motion.borrow_mut().remember_siblings(
+                cell.key,
                 Siblings {
-                    prev: index.checked_sub(1).map(|before| ids[before].0),
-                    next: ids.get(index + 1).map(|(next, _)| *next),
-                    leaf: *leaf,
+                    prev: index
+                        .checked_sub(1)
+                        .and_then(|before| ids[before])
+                        .map(|before| before.key),
+                    next: ids.get(index + 1).copied().flatten().map(|next| next.key),
+                    leaf: cell.leaf,
                     // The cell and the seam that went with it.
                     px: sizes[index] + GAP,
                     axis,
                 },
             );
         }
-        let drawn: Vec<(usize, f64, Option<f64>, DividerAt, AnyElement)> = children
+        let drawn: Vec<(usize, f64, Option<f64>, f64, DividerAt, AnyElement)> = children
             .iter()
             .zip(&sizes)
             .enumerate()
-            .filter_map(|(index, ((weight, min, child), along))| {
+            .filter_map(|(index, (child, along))| {
                 let size_of = |along: f64| match axis {
                     Axis::Horizontal => (along, cross),
                     Axis::Vertical => (cross, along),
                 };
                 let size = size_of(*along);
-                let fin = finals.get(index).map_or(size, |fin| size_of(*fin));
-                let element = render(child, size, fin, cx)?;
+                let fin = child.cell.map_or(size, |cell| size_of(cell.fin));
+                let element = render(child.child, CellPx { size, fin }, cx)?;
                 // Minimums are set only where they all fit.
-                let min = held.then_some(*min);
-                Some((index, *weight, min, divider(child), element))
+                let min = held.then_some(child.min);
+                Some((
+                    index,
+                    child.weight,
+                    min,
+                    child.ghost_before,
+                    divider(child.child),
+                    element,
+                ))
             })
             .collect();
         // The drawn children share the split by their weights: flex grow
@@ -1113,26 +1176,26 @@ impl Workspace {
         // A ghost is an empty spacer of the px it still holds: it has no gap
         // and no divider of its own, and the handle layer gets an empty one
         // beside it so the two lists stay parallel.
-        let push_ghosts = |elements: &mut Vec<AnyElement>,
-                           handles: &mut Vec<AnyElement>,
-                           range: &dyn Fn(usize) -> bool| {
-            for (_, px_left) in ghosts.iter().filter(|(at, _)| range(*at)) {
+        let push_ghost =
+            |elements: &mut Vec<AnyElement>, handles: &mut Vec<AnyElement>, px_left: f64| {
+                if px_left <= 0.0 {
+                    return;
+                }
                 let spacer = || {
                     div()
                         .flex_none()
                         .map(|spacer| match axis {
-                            Axis::Horizontal => spacer.w(px(*px_left as f32)),
-                            Axis::Vertical => spacer.h(px(*px_left as f32)),
+                            Axis::Horizontal => spacer.w(px(px_left as f32)),
+                            Axis::Vertical => spacer.h(px(px_left as f32)),
                         })
                         .into_any_element()
                 };
                 elements.push(spacer());
                 handles.push(spacer());
-            }
-        };
-        for (index, weight, min, at, element) in drawn {
+            };
+        for (_, weight, min, ghost_before, at, element) in drawn {
             let min_rems = min.unwrap_or(0.0) / rem;
-            push_ghosts(&mut elements, &mut handles, &|at| at == index);
+            push_ghost(&mut elements, &mut handles, ghost_before);
             if let Some((prev_element, prev_at, prev_min)) = previous {
                 elements.push(self.render_gap(axis, None, line, cx));
                 handles.push(self.render_gap(axis, Some(prev_at), None, cx));
@@ -1142,7 +1205,7 @@ impl Workspace {
             elements.push(cell(weight, min).child(element).into_any_element());
             handles.push(cell(weight, min).into_any_element());
         }
-        push_ghosts(&mut elements, &mut handles, &|at| at >= children.len());
+        push_ghost(&mut elements, &mut handles, ghost_after);
         if !pairs.is_empty() {
             elements.push(
                 div()
@@ -1246,12 +1309,15 @@ impl Workspace {
         let per_group = f64::from(EDITOR_MIN_REMS) * rem;
         let children = children
             .iter()
-            .map(|(weight, child)| {
-                let min = match axis {
+            .map(|(weight, child)| SplitChild {
+                weight: *weight,
+                min: match axis {
                     Axis::Horizontal => child.widest_row() as f64 * per_group,
                     Axis::Vertical => 0.0,
-                };
-                (*weight, min, child)
+                },
+                child,
+                cell: None,
+                ghost_before: 0.0,
             })
             .collect();
         // Inside the editor Panel the seam is a hairline, not background.
@@ -1259,9 +1325,7 @@ impl Workspace {
             axis,
             size,
             children,
-            finals: Vec::new(),
-            ids: Vec::new(),
-            ghosts: Vec::new(),
+            ghost_after: 0.0,
             line: Some(theme::divider(&theme::current(cx))),
         };
         self.render_split(
@@ -1269,7 +1333,7 @@ impl Workspace {
             rem,
             cx,
             |child| DividerAt::Group(child.last_group()),
-            |child, size, _, cx| Some(self.render_group_node(child, size, order, rem, cx)),
+            |child, cell, cx| Some(self.render_group_node(child, cell.size, order, rem, cx)),
         )
     }
 
@@ -1689,7 +1753,7 @@ impl Workspace {
     ///
     /// While it opens or closes (`paint`, ADR-0060) the slot's frame takes
     /// the animated cell and clips its content, which keeps the size it has
-    /// at rest ([`slot_policy`]) and is as visible as its content presence. A
+    /// at rest and is as visible as its content presence. A
     /// leaving slot is drawn from what it last showed and takes no input: no
     /// focus, no click, no drop zones.
     fn render_slot(
@@ -1747,8 +1811,6 @@ impl Workspace {
                 })
                 .when(!leaving, |body| body.children(self.zone_layer(slot, cx))),
         );
-        let alpha = content;
-        let pin = pin && slot_policy() == ResizePolicy::Pinned;
         let content = div()
             .id(if gone {
                 SharedString::from(format!("slot-gone-content-{}", view.id()))
@@ -1765,7 +1827,7 @@ impl Workspace {
                     .h(px(pinned.1 as f32))
             })
             .when(!pin, |content| content.flex_1().min_w_0().min_h_0())
-            .faded(alpha)
+            .faded(content)
             .child(surface);
         div()
             .id(if gone {
@@ -1777,16 +1839,15 @@ impl Workspace {
             .when(!leaving, |frame| frame.track_focus(&self.slot_handle(slot)))
             // A blank frame says nothing: the view is announced where it went.
             .when(!gone, |frame| frame.role(Role::Group).aria_label(spec.name))
-            .relative()
-            .flex()
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .overflow_hidden()
             // The frame grows from the edge beside the window's.
-            .when(self.layout.slot_side(slot) == Side::Right, |frame| {
-                frame.justify_end()
-            })
+            .framed(
+                Clip::Always,
+                self.layout.slot_side(slot) == Side::Right,
+                |frame| frame,
+            )
             .child(content)
             .covered_while(leaving)
             .into_any_element()

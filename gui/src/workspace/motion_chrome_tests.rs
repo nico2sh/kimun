@@ -800,3 +800,50 @@ fn labels_closed_apart_keep_the_order_of_the_rest(cx: &mut TestAppContext) {
         .collect();
     assert_eq!(during, before, "each label keeps its place while two leave");
 }
+
+#[gpui_kit::test]
+fn keys_that_leave_together_leave_in_the_order_they_began(cx: &mut TestAppContext) {
+    use super::motion::{Enter, MotionKey};
+    use super::motion_tests::{SpecRig, spec};
+    use crate::motion::Speed;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, shell) = open_four_note_tabs(cx, &rt);
+    let tabs = cx.read(|cx| shell.workspace.read(cx).layout.region().tabs().to_vec());
+    // The later tab began first: whatever their ids say, that is the order.
+    let (first, second) = (MotionKey::Tab(tabs[3]), MotionKey::Tab(tabs[1]));
+    let rig = SpecRig::new(cx);
+    rig.frame(
+        cx,
+        vec![
+            spec(first, true, Speed::Quick, Enter::AtRest),
+            spec(second, true, Speed::Quick, Enter::AtRest),
+        ],
+    );
+    rig.frame(cx, vec![]);
+    let motion = rig.motion.borrow();
+    assert!(
+        motion.left_order(first) < motion.left_order(second),
+        "{:?} before {:?}",
+        motion.left_order(first),
+        motion.left_order(second)
+    );
+}
+
+#[test]
+fn the_strip_frame_counts_its_hairline_in_pixels_at_any_rem() {
+    use super::tab_strip::strip_frame_px;
+    // A pill, the padding above and below it, and a hairline of one pixel.
+    for rem in [12.0_f32, 16.0, 20.0, 24.0] {
+        let natural = rem * (1.625 + 0.5) + 1.0;
+        assert!(
+            (strip_frame_px(rem, 1.0) - natural).abs() < 1e-3,
+            "rem {rem}"
+        );
+        assert!(
+            (strip_frame_px(rem, 0.5) - natural / 2.0).abs() < 1e-3,
+            "rem {rem}"
+        );
+        assert_eq!(strip_frame_px(rem, 0.0), 0.0);
+    }
+}

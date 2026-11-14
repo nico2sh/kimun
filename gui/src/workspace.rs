@@ -215,7 +215,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
 use self::motion::MotionKey;
-use self::motion_box::MotionBox as _;
+use self::motion_box::{Clip, MotionBox as _};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -3051,7 +3051,7 @@ impl Workspace {
         let pinned = cell(views.len() - 1, pinned[0], cx);
         let horizontal = self.rail.horizontal();
         let presence = self.motion.borrow().presence(MotionKey::Rail);
-        let leaving = self.rail_hidden;
+        let leaving = !self.rail_wanted();
         let content = presence.content;
         let rail = div()
             .id("rail-content")
@@ -3102,15 +3102,15 @@ impl Workspace {
             .when(!leaving, |frame| frame.track_focus(&self.rail_focus))
             .role(Role::TabList)
             .aria_label("Activity rail")
-            .relative()
-            .flex()
             .flex_none()
-            .overflow_hidden()
-            .when(horizontal, |frame| frame.flex_col().w_full().h(thickness))
-            .when(!horizontal, |frame| frame.h_full().w(thickness))
-            .when(
+            .framed(
+                Clip::Always,
                 matches!(self.rail, RailPosition::Right | RailPosition::Bottom),
-                |frame| frame.justify_end(),
+                |frame| {
+                    frame
+                        .when(horizontal, |frame| frame.flex_col().w_full().h(thickness))
+                        .when(!horizontal, |frame| frame.h_full().w(thickness))
+                },
             )
             .child(rail)
             .covered_while(leaving)
@@ -3393,7 +3393,7 @@ impl Workspace {
                 .children(if zoomed {
                     None
                 } else {
-                    self.render_tab_strip(cx)
+                    self.render_tab_strip(f32::from(window.rem_size()), cx)
                 })
                 .child(document)
                 .child(self.render_footer(editor_shown, window, cx)),
@@ -3591,7 +3591,7 @@ impl Workspace {
         self.refit(window, cx);
         self.motion_frame(window, cx);
         let rail_drawn =
-            !self.rail_hidden || self.motion.borrow().presence(MotionKey::Rail).frame > 0.0;
+            self.rail_wanted() || self.motion.borrow().presence(MotionKey::Rail).frame > 0.0;
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
@@ -3841,6 +3841,8 @@ mod leader_tests;
 mod motion_cells_tests;
 #[cfg(test)]
 mod motion_chrome_tests;
+#[cfg(test)]
+mod motion_test_support;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]
