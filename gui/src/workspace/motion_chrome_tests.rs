@@ -686,3 +686,38 @@ fn a_closed_label_still_leaves_with_its_own_text(cx: &mut TestAppContext) {
         "the leaving label keeps the text of the tab it was"
     );
 }
+
+#[gpui_kit::test]
+fn two_closed_labels_leave_in_order(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, shell) = open_three_tabs(cx, &rt);
+    new_tab(cx, &shell);
+    frame(cx, &shell);
+    wait(cx, 400);
+    frame(cx, &shell);
+    assert_eq!(tab_count(cx, &shell), 4);
+    // Close the second tab, then, 60 ms later, the one that took its place.
+    close_tab_at(cx, &shell, 1);
+    frame(cx, &shell);
+    wait(cx, 60);
+    frame(cx, &shell);
+    close_tab_at(cx, &shell, 1);
+    frame(cx, &shell);
+    // At 100 ms both labels are leaving, side by side at the same place.
+    // The first to go is further along, so it is the narrower one, and it
+    // comes first. The last tab is whole.
+    wait(cx, 40);
+    frame(cx, &shell);
+    let widths: Vec<f32> = (0..4)
+        .map(|at| box_width(cx, &shell, at).expect("four labels are drawn"))
+        .collect();
+    assert!(
+        widths[1] < widths[2] - 1.0,
+        "the first label to leave comes first: {widths:?}"
+    );
+    assert!(
+        (widths[2] - widths[3]).abs() < 1.0 || widths[2] <= widths[3] + 1.0,
+        "the second is not wider than a whole tab: {widths:?}"
+    );
+}

@@ -406,6 +406,13 @@ pub(crate) fn slot_id(view: DrawerView) -> SharedString {
     format!("slot-{}", view.id()).into()
 }
 
+/// The element id of the frame a slot leaves behind when its view moved to
+/// another slot (ADR-0060): blank, it closes over time while the view opens
+/// in its new place, so the view is drawn once.
+pub(crate) fn slot_gone_id(view: DrawerView) -> SharedString {
+    format!("slot-gone-{}", view.id()).into()
+}
+
 /// The element id of the content a slot holds at its final size, inside
 /// the frame that opens and closes (ADR-0060).
 pub(crate) fn slot_content_id(view: DrawerView) -> SharedString {
@@ -2203,11 +2210,6 @@ impl Workspace {
     pub(super) fn replace_layout(&mut self, mut layout: LayoutTree<DrawerView>) {
         *layout.region_mut() = self.layout.region().clone();
         self.layout = layout;
-        // A new tree has new slots, which may reuse the old ids: no motion
-        // of the old one carries over (ADR-0060).
-        self.motion
-            .borrow_mut()
-            .forget(|key| matches!(key, motion::MotionKey::Slot(_)));
         debug_assert!(
             self.layout
                 .region()
@@ -3835,6 +3837,8 @@ mod footer_tests;
 mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
+#[cfg(test)]
+mod motion_cells_tests;
 #[cfg(test)]
 mod motion_chrome_tests;
 #[cfg(test)]

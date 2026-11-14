@@ -1,7 +1,9 @@
-//! The three pieces everything that opens and closes draws with (ADR-0060):
-//! the content fade, the clip while the frame moves, and the cover over a
-//! leaving element. The rail, the tab strip, a tab label and a slot all use
-//! them, so a fix to one is a fix to all.
+//! The three pieces what opens and closes draws with (ADR-0060): the
+//! content fade, the clip while the frame moves, and the cover over a
+//! leaving element. The strip and a tab label use all three. The rail and a
+//! slot use the fade and the cover. Their frames clip at all times and size
+//! themselves, so they do not use `clipped_while`. A fix to one of the
+//! pieces is a fix to every widget that uses it.
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{InteractiveElement as _, ParentElement, Styled, div};

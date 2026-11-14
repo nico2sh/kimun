@@ -16,7 +16,7 @@ use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::layout_tree::{RailPosition, SlotId};
 
 use super::LayoutStore;
-use super::motion::{Enter, Motion, MotionKey, Spec};
+use super::motion::{Enter, Motion, MotionKey, Spec, ValueSpec};
 use super::tests::{Shell, gui, open_animated, open_shell_motion};
 use crate::motion::{SnapFacts, Speed};
 
@@ -536,7 +536,7 @@ use super::palette::PaletteRun;
 use super::presets::PresetCommand;
 
 /// FILES left, the editor, OUTLINE right, both shown, with motion on.
-fn open_files_and_outline(cx: &mut TestAppContext) -> Shell {
+pub(super) fn open_files_and_outline(cx: &mut TestAppContext) -> Shell {
     let layout = gui("[gui.layout]\nsplit = \"horizontal\"\nchildren = [\n\
          { weight = 0.2, views = [\"files\"], shown = \"files\" },\n\
          { weight = 0.6, editor = true },\n\
@@ -602,7 +602,15 @@ fn a_moved_view_is_not_drawn_in_its_old_slot_too(cx: &mut TestAppContext) {
         let w = shell.workspace.read(cx);
         assert_eq!(w.layout.view_slot(&DrawerView::Files), Some(right));
         assert_eq!(w.layout.shown(right), Some(DrawerView::Files));
-        assert!(!w.leaf_present(Leaf::Slot(left)), "FILES drawn twice");
+        // The old slot closes over time, as a blank frame (the view is
+        // drawn once, in its new slot).
+        assert!(w.leaf_present(Leaf::Slot(left)), "the old frame closes");
+    });
+    wait(cx, 400);
+    frame(cx, &shell);
+    cx.read(|cx| {
+        let w = shell.workspace.read(cx);
+        assert!(!w.leaf_present(Leaf::Slot(left)), "and is gone after");
     });
 }
 
@@ -899,4 +907,182 @@ fn forget_drops_what_the_predicate_names(cx: &mut TestAppContext) {
         .borrow_mut()
         .forget(|key| matches!(key, MotionKey::Slot(_)));
     assert_eq!(rig.motion.borrow().keys(), vec![tab]);
+}
+
+// ---- Weights: a cell that changes size (slice three).
+
+/// A view that samples a list of value specs in its render.
+struct ValueProbe {
+    motion: Rc<RefCell<Motion>>,
+    values: Rc<RefCell<Vec<ValueSpec>>>,
+}
+
+impl Render for ValueProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.motion
+            .borrow_mut()
+            .sample_values(&self.values.borrow(), window, cx);
+        div()
+    }
+}
+
+struct ValueRig {
+    handle: AnyWindowHandle,
+    motion: Rc<RefCell<Motion>>,
+    values: Rc<RefCell<Vec<ValueSpec>>>,
+}
+
+impl ValueRig {
+    fn new(cx: &mut TestAppContext) -> ValueRig {
+        let motion = Rc::new(RefCell::new(Motion::default()));
+        let values = Rc::new(RefCell::new(Vec::new()));
+        let probe = ValueProbe {
+            motion: motion.clone(),
+            values: values.clone(),
+        };
+        let (handle, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| probe))
+            })
+            .expect("open the probe window");
+        ValueRig {
+            handle,
+            motion,
+            values,
+        }
+    }
+
+    /// Draw one frame sampling `values`.
+    fn frame(&self, cx: &mut TestAppContext, values: Vec<ValueSpec>) {
+        *self.values.borrow_mut() = values;
+        cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
+    fn value(&self, key: MotionKey) -> Option<f32> {
+        self.motion.borrow().value(key)
+    }
+}
+
+fn weight(key: MotionKey, target: f32) -> ValueSpec {
+    ValueSpec {
+        key,
+        target,
+        speed: Speed::Standard,
+        seed_from: Vec::new(),
+    }
+}
+
+#[gpui_kit::test]
+fn a_weight_adopts_its_first_target(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.6)]);
+    assert_eq!(rig.value(key), Some(0.6));
+}
+
+#[gpui_kit::test]
+fn a_weight_moves_over_the_standard_duration(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.6)]);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    wait(cx, 100);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    let middle = rig.value(key).unwrap();
+    assert!(middle > 0.3 && middle < 0.6, "after 100 ms: {middle}");
+    wait(cx, 300);
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    assert_eq!(rig.value(key), Some(0.3));
+}
+
+#[gpui_kit::test]
+fn a_snapping_frame_adopts_every_weight(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.6)]);
+    rig.motion.borrow_mut().begin_frame(SnapFacts {
+        divider_drag: true,
+        ..SnapFacts::default()
+    });
+    rig.frame(cx, vec![weight(key, 0.3)]);
+    assert_eq!(rig.value(key), Some(0.3));
+}
+
+#[gpui_kit::test]
+fn an_unspecified_weight_is_dropped(cx: &mut TestAppContext) {
+    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.6)]);
+    assert!(rig.motion.borrow().keys().contains(&key));
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_subtree_and_its_last_leaf_have_separate_weights(cx: &mut TestAppContext) {
+    let outer = MotionKey::Weight(Leaf::Editor, 1);
+    let inner = MotionKey::Weight(Leaf::Editor, 2);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(outer, 0.2), weight(inner, 0.7)]);
+    assert_eq!(rig.value(outer), Some(0.2));
+    assert_eq!(rig.value(inner), Some(0.7));
+}
+
+#[gpui_kit::test]
+fn weights_survive_the_sampling_of_things_that_open_and_close(cx: &mut TestAppContext) {
+    // `sample_all` prunes what it does not own; the weights are not its own.
+    let key = MotionKey::Weight(Leaf::Editor, 1);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(key, 0.6)]);
+    cx.update_window(rig.handle, |_, window, cx| {
+        rig.motion.borrow_mut().sample_all(&[], window, cx)
+    })
+    .unwrap();
+    assert!(rig.motion.borrow().keys().contains(&key));
+}
+
+#[gpui_kit::test]
+fn a_lingering_key_gets_its_leaving_order(cx: &mut TestAppContext) {
+    use kimun_notes::logic::editor_region::EditorRegion;
+    let mut region = EditorRegion::new();
+    let a = MotionKey::Tab(region.tabs()[0]);
+    let b = MotionKey::Tab(region.new_tab().0);
+    let c = MotionKey::Tab(region.new_tab().0);
+    let rig = SpecRig::new(cx);
+    let present = |key| spec(key, true, Speed::Quick, Enter::AtRest);
+    rig.frame(cx, vec![present(a), present(b), present(c)]);
+    assert_eq!(rig.motion.borrow().left_order(a), None, "asked for");
+    // A leaves, then B.
+    rig.frame(cx, vec![present(b), present(c)]);
+    rig.frame(cx, vec![present(c)]);
+    let (left_a, left_b) = {
+        let motion = rig.motion.borrow();
+        (motion.left_order(a), motion.left_order(b))
+    };
+    assert!(left_a.is_some() && left_b.is_some());
+    assert!(left_a < left_b, "A left before B: {left_a:?} {left_b:?}");
+    // B is asked for again: it no longer leaves.
+    rig.frame(cx, vec![present(b), present(c)]);
+    assert_eq!(rig.motion.borrow().left_order(b), None);
+}
+
+#[gpui_kit::test]
+fn a_new_weight_key_starts_from_its_seed(cx: &mut TestAppContext) {
+    let old = MotionKey::Weight(Leaf::Editor, 1);
+    let new = MotionKey::Weight(Leaf::Editor, 2);
+    let rig = ValueRig::new(cx);
+    rig.frame(cx, vec![weight(old, 0.2)]);
+    // The cell is wrapped: its new key starts where the old one was.
+    rig.frame(
+        cx,
+        vec![ValueSpec {
+            seed_from: vec![old],
+            ..weight(new, 0.3)
+        }],
+    );
+    assert_eq!(rig.value(new), Some(0.2), "starts from the seed");
+    wait(cx, 300);
+    rig.frame(cx, vec![weight(new, 0.3)]);
+    assert_eq!(rig.value(new), Some(0.3), "and moves to its target");
 }

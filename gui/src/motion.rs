@@ -16,8 +16,8 @@ pub enum Speed {
     /// A pane opening or closing.
     #[default]
     Standard,
-    /// A large rearrangement, such as applying a preset. Used from slice
-    /// three.
+    /// A large rearrangement. No change uses it yet: a preset draws in
+    /// place.
     #[allow(dead_code)]
     Slow,
 }
