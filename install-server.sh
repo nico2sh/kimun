@@ -192,6 +192,8 @@ setup_service() {
     Linux)
       have systemctl || err "--service requires systemd (systemctl not found)"
       mkdir -p "$(dirname "$SYSTEMD_UNIT")" "$STATE_DIR"
+      old_unit=""
+      [ -f "$SYSTEMD_UNIT" ] && old_unit="$(cat "$SYSTEMD_UNIT")"
       cat > "$SYSTEMD_UNIT" <<EOF
 [Unit]
 Description=Kimün RAG server
@@ -205,18 +207,24 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 EOF
-      # `enable --now` does not restart a unit that already runs, so an updated binary would
-      # sit on the disk while the old process kept serving. A running unit is restarted.
+      # `enable --now` does not restart a unit that already runs, so a new binary (or a changed
+      # unit) would sit on the disk while the old process kept serving. A running unit is restarted
+      # when either changed, and left alone when neither did.
       was_active=0
       if systemctl --user is-active --quiet kimun-server.service >/dev/null 2>&1; then
         was_active=1
       fi
+      changed=0
+      [ "$UPDATED" -eq 1 ] && changed=1
+      [ "$old_unit" = "$(cat "$SYSTEMD_UNIT")" ] || changed=1
       systemctl --user daemon-reload
       systemctl --user enable --now kimun-server.service
-      if [ "$was_active" -eq 1 ]; then
+      if [ "$was_active" -eq 1 ] && [ "$changed" -eq 1 ]; then
         systemctl --user restart kimun-server.service \
           || err "could not restart kimun-server.service: run systemctl --user restart kimun-server.service"
         info "Service restarted (systemctl --user status kimun-server)"
+      elif [ "$was_active" -eq 1 ]; then
+        info "Service already running the current server (systemctl --user status kimun-server)"
       else
         info "Service enabled and started (systemctl --user status kimun-server)"
       fi
@@ -271,11 +279,14 @@ write_marker() {
     Linux) [ -f "$SYSTEMD_UNIT" ] && kind="systemd" ;;
     Darwin) [ -f "$LAUNCHD_PLIST" ] && kind="launchd" ;;
   esac
+  # The app needs an absolute folder, and TOML needs `\` and `"` escaped. The folder exists by now.
+  abs_dir="$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" || err "could not resolve $INSTALL_DIR"
+  esc_dir="$(printf '%s' "$abs_dir" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
   mkdir -p "$CONFIG_DIR" || err "could not create $CONFIG_DIR"
   cat > "$MARKER.new" <<EOF
 # Written by install-server.sh. The Kimün app reads it to know that it may update this server.
 installer = "install-server.sh"
-install_dir = "$INSTALL_DIR"
+install_dir = "$esc_dir"
 service = "$kind"
 EOF
   mv -f "$MARKER.new" "$MARKER" || err "could not write $MARKER"
@@ -372,6 +383,10 @@ main() {
   fi
   PLATFORM="$(detect_platform)"
   info "Detected platform: $PLATFORM"
+
+  # An absolute install folder: the service file and the marker both need one.
+  mkdir -p "$INSTALL_DIR" || err "could not create install dir: $INSTALL_DIR"
+  INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)" || err "could not resolve install dir: $INSTALL_DIR"
 
   # Resolve the latest *stable* server release: from the manifest, else from the GitHub
   # API. The API's /releases/latest cannot be used: this repo publishes several tag

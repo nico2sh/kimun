@@ -113,6 +113,18 @@ echo "$out" | grep -q "already installed" || fail "the re-run did not see the in
 [ -f "$marker" ] || fail "a re-run on a current install did not write the marker"
 ok "marker: a re-run on a current install writes it"
 
+# 1d. The marker holds an absolute folder, escaped for TOML, also for a relative or odd one.
+h="$work/h1d"; mkdir -p "$h"
+odd='we"ird\dir'
+out="$(cd "$h" && env HOME="$h" KIMUN_SERVER_INSTALL_DIR="$odd" KIMUN_MANIFEST_URL="file://$work/latest.json" \
+  KIMUN_RELEASES_API="file://$work/no-such-api.json" sh "$bare" 2>&1)" || fail "install into an odd relative folder failed: $out"
+if command -v python3 >/dev/null; then
+  got="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["install_dir"])' "$h/.config/kimun/server-install.toml" 2>&1)" \
+    || fail "the marker is not valid TOML: $got"
+  [ "$got" = "$h/$odd" ] || fail "the marker holds $got, not the absolute folder $h/$odd"
+  ok "marker: an odd relative install folder is stored absolute and escaped"
+fi
+
 # 2. Its sha256 is the one enforced.
 sed "s/\"sha256\": \"[0-9a-f]*\"/\"sha256\": \"$(printf '0%.0s' $(seq 64))\"/" "$work/latest.json" >"$work/bad.json"
 h="$work/h2"; mkdir -p "$h"
@@ -273,13 +285,29 @@ if [ "$(uname -s)" = Linux ]; then
   grep -q '^service = "systemd"$' "$h/.config/kimun/server-install.toml" || fail "the marker should say systemd"
   ok "--service: a new service is enabled and started, the marker says systemd"
 
+  # Nothing changed (same binary, same unit): a running service is left alone.
   : >"$h/systemctl.log"
   out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 2>&1)" || fail "--service re-run on a running service failed: $out"
-  grep -q "restart kimun-server.service" "$h/systemctl.log" || fail "a running service was not restarted: $(cat "$h/systemctl.log")"
-  ok "--service: a service that was running is restarted"
+  grep -q "restart kimun-server.service" "$h/systemctl.log" && fail "an unchanged running service was restarted: $(cat "$h/systemctl.log")"
+  ok "--service: a running service with nothing new is left alone"
 
+  # A new binary (simulated by removing the installed one): the running service is restarted.
+  rm -f "$h/bin/kimun-server"
   : >"$h/systemctl.log"
-  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 SYSTEMCTL_FAIL_RESTART=1 2>&1)" && fail "a failed restart was reported as success"
+  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 2>&1)" || fail "--service update on a running service failed: $out"
+  grep -q "restart kimun-server.service" "$h/systemctl.log" || fail "a running service was not restarted after an update: $(cat "$h/systemctl.log")"
+  ok "--service: a running service is restarted when the binary changed"
+
+  # A changed unit (the install folder moved): restarted too, though the binary is current there.
+  mkdir -p "$h/other"; cp "$h/bin/kimun-server" "$h/other/kimun-server"
+  : >"$h/systemctl.log"
+  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 KIMUN_SERVER_INSTALL_DIR="$h/other" 2>&1)" || fail "--service with a moved folder failed: $out"
+  grep -q "restart kimun-server.service" "$h/systemctl.log" || fail "a changed unit did not restart the running service"
+  ok "--service: a running service is restarted when its unit changed"
+
+  rm -f "$h/other/kimun-server"
+  : >"$h/systemctl.log"
+  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 SYSTEMCTL_FAIL_RESTART=1 KIMUN_SERVER_INSTALL_DIR="$h/other" 2>&1)" && fail "a failed restart was reported as success"
   echo "$out" | grep -q "could not restart" || fail "a failed restart said: $out"
   ok "--service: a failed restart is an error, not silence"
 

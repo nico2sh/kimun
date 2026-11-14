@@ -21,9 +21,9 @@ pub const SIGNING_KEY: &str = "RWS64g2Q9vGQfwr3tC6fK3UgWdkKkLfz5KLmcTZhewdMmCHHk
 /// The manifest layout this build understands.
 const SCHEMA: u32 = 1;
 /// The largest archive the app downloads. A bound against a rogue redirect.
-const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
 /// The largest binary the app unpacks from an archive.
-const MAX_BINARY: u64 = 1024 * 1024 * 1024;
+const MAX_BINARY: u64 = 512 * 1024 * 1024;
 /// The largest checksums file or signature the app reads.
 const MAX_SMALL: u64 = 1024 * 1024;
 
@@ -172,6 +172,11 @@ pub fn verify_archive(
 
 /// The server binary inside a `.tar.gz` archive.
 pub fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, String> {
+    extract_binary_capped(archive, MAX_BINARY)
+}
+
+/// [`extract_binary`] with a size limit. A binary over the limit is an error, never a cut-off file.
+fn extract_binary_capped(archive: &[u8], cap: u64) -> Result<Vec<u8>, String> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     let entries = tar
         .entries()
@@ -191,9 +196,15 @@ pub fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, String> {
         }
         let mut bytes = Vec::new();
         entry
-            .take(MAX_BINARY)
+            .take(cap + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| format!("the archive cannot be unpacked: {e}"))?;
+        if bytes.len() as u64 > cap {
+            return Err(format!(
+                "{BINARY} in the archive is larger than {} MB",
+                cap / (1024 * 1024)
+            ));
+        }
         if bytes.is_empty() {
             return Err(format!("{BINARY} in the archive is empty"));
         }
@@ -204,6 +215,7 @@ pub fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Where the release files come from. A fake in tests, the network in the app.
 pub trait Fetch: Send + Sync {
+    /// The body at `url`. A body larger than `max` bytes is an error, never a cut-off body.
     fn get(&self, url: &str, max: u64) -> Result<Vec<u8>, String>;
 }
 
@@ -224,9 +236,15 @@ impl Fetch for Network {
         let mut bytes = Vec::new();
         response
             .into_reader()
-            .take(max)
+            .take(max + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| format!("could not read {url}: {e}"))?;
+        if bytes.len() as u64 > max {
+            return Err(format!(
+                "{url} is larger than {} MB",
+                max.div_ceil(1024 * 1024)
+            ));
+        }
         Ok(bytes)
     }
 }
@@ -383,6 +401,14 @@ mod tests {
             ("kimun-server-0.5.1/kimun-server", b"binary2"),
         ]);
         assert_eq!(extract_binary(&nested).unwrap(), b"binary2");
+    }
+
+    #[test]
+    fn a_binary_over_the_size_limit_is_an_error_not_a_cut_off_file() {
+        let archive = make_archive(&[("./kimun-server", &[7u8; 100])]);
+        assert!(extract_binary_capped(&archive, 100).is_ok());
+        let err = extract_binary_capped(&archive, 99).unwrap_err();
+        assert!(err.contains("larger than"), "{err}");
     }
 
     #[test]
