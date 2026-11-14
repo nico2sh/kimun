@@ -80,7 +80,8 @@ use kimun_notes::logic::view_registry;
 
 use super::drop_zones::{DragFrom, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
-use super::motion::slot_policy;
+use super::motion::{MotionKey, slot_policy};
+use super::motion_box::MotionBox as _;
 use super::{Workspace, route, slot_content_id, slot_id};
 use crate::motion::ResizePolicy;
 use crate::shell_layout::{EDITOR_MIN_REMS, RAIL_REMS, SLOT_MIN_REMS};
@@ -204,6 +205,15 @@ struct Split<'a, C> {
     /// the order of `children`. Empty: the drawn px are the final ones.
     finals: Vec<f64>,
     line: Option<Rgba>,
+}
+
+/// What a slot remembers of itself to be drawn while it leaves, after the
+/// layout model dropped its view (ADR-0060): the view it last showed and
+/// the size it had, in px (width, height).
+#[derive(Clone)]
+struct SlotSnapshot {
+    view: DrawerView,
+    size: (f64, f64),
 }
 
 /// What a slot is drawn with while it opens or closes (ADR-0060).
@@ -388,18 +398,32 @@ impl Workspace {
         }
     }
 
-    /// The px the tree has: the window less the title bar (as last drawn)
-    /// and less the rail's thickness, taken from the width by a left or
-    /// right rail and from the height by a top or bottom one (ADR-0055 §4).
-    /// A hidden rail takes nothing.
+    /// The px the tree has once every motion has ended: the window less the
+    /// title bar (as last drawn) and less the rail's thickness, taken from
+    /// the width by a left or right rail and from the height by a top or
+    /// bottom one (ADR-0055 §4). A hidden rail takes nothing. What
+    /// [`Self::fit`] measures: the model's room.
     fn tree_area(&self, window: &Window) -> (f64, f64) {
-        let viewport = window.viewport_size();
-        let rem = f64::from(window.rem_size());
         let rail = if self.rail_hidden {
             0.0
         } else {
-            f64::from(RAIL_REMS) * rem
+            f64::from(RAIL_REMS) * f64::from(window.rem_size())
         };
+        self.area_beside_rail(window, rail)
+    }
+
+    /// [`Self::tree_area`] as drawn now: the rail takes the thickness its
+    /// frame has while it opens or closes (ADR-0060), so the sizes the
+    /// layout pass computes are the room the flex layout really gives.
+    fn drawn_tree_area(&self, window: &Window) -> (f64, f64) {
+        let frame = f64::from(self.motion.borrow().presence(MotionKey::Rail).frame);
+        let rail = f64::from(RAIL_REMS) * f64::from(window.rem_size()) * frame;
+        self.area_beside_rail(window, rail)
+    }
+
+    /// The window less the title bar and less a rail `rail` px thick.
+    fn area_beside_rail(&self, window: &Window, rail: f64) -> (f64, f64) {
+        let viewport = window.viewport_size();
         let (across, down) = if self.rail.horizontal() {
             (0.0, rail)
         } else {
@@ -602,7 +626,7 @@ impl Workspace {
         let tree = self
             .render_node(
                 &shape,
-                self.tree_area(window),
+                self.drawn_tree_area(window),
                 self.tree_area(window),
                 (false, false),
                 rem,
@@ -612,7 +636,7 @@ impl Workspace {
             // Every tree holds the editor region, which is always drawn; a
             // root left empty would be a model bug, so draw the editor.
             .unwrap_or_else(|| {
-                self.render_editor(self.tree_area(window), window, cx)
+                self.render_editor(self.drawn_tree_area(window), window, cx)
                     .into_any_element()
             });
         self.tree_frame().child(tree).into_any_element()
@@ -630,13 +654,13 @@ impl Workspace {
     ) -> AnyElement {
         let content = match leaf {
             Leaf::Editor => self
-                .render_editor(self.tree_area(window), window, cx)
+                .render_editor(self.drawn_tree_area(window), window, cx)
                 .into_any_element(),
             Leaf::Slot(_) => {
                 let slot = self
                     .render_node(
                         &TreeShape::Leaf(leaf),
-                        self.tree_area(window),
+                        self.drawn_tree_area(window),
                         self.tree_area(window),
                         (false, false),
                         rem,
@@ -684,10 +708,14 @@ impl Workspace {
                     return None;
                 }
                 let leaving = !self.leaf_visible(leaf);
-                let presence = self.motion.borrow().presence(*slot);
+                let presence = self.motion.borrow().presence(MotionKey::Slot(*slot));
                 let content = presence.content;
                 let (view, pinned) = if leaving {
-                    self.motion.borrow().last(*slot)?
+                    let snapshot = self
+                        .motion
+                        .borrow()
+                        .recall::<SlotSnapshot>(MotionKey::Slot(*slot))?;
+                    (snapshot.view, snapshot.size)
                 } else {
                     let view = self.layout.shown(*slot)?;
                     // Only a slot that is itself opening keeps its final
@@ -695,7 +723,9 @@ impl Workspace {
                     // neighbour closing makes its final size wider than
                     // its cell until the neighbour is gone.
                     let pinned = if presence.frame < 1.0 { fin } else { size };
-                    self.motion.borrow_mut().remember(*slot, view, pinned);
+                    self.motion
+                        .borrow_mut()
+                        .remember(MotionKey::Slot(*slot), SlotSnapshot { view, size: pinned });
                     (view, pinned)
                 };
                 let (w, h) = view_registry::spec(view).min;
@@ -1314,14 +1344,17 @@ impl Workspace {
     /// frame goes at once.
     fn slot_leaving(&self, slot: SlotId) -> bool {
         let motion = self.motion.borrow();
-        let Some((view, _)) = motion.last(slot) else {
+        let Some(SlotSnapshot { view, .. }) = motion.recall::<SlotSnapshot>(MotionKey::Slot(slot))
+        else {
             return false;
         };
         let moved = self
             .layout
             .view_slot(&view)
             .is_some_and(|home| home != slot && self.layout.shown(home) == Some(view));
-        !self.leaf_visible(Leaf::Slot(slot)) && motion.presence(slot).frame > 0.0 && !moved
+        !self.leaf_visible(Leaf::Slot(slot))
+            && motion.presence(MotionKey::Slot(slot)).frame > 0.0
+            && !moved
     }
 
     /// Whether anything in `shape` is present: [`Self::shape_visible`] over
@@ -1342,7 +1375,7 @@ impl Workspace {
         match shape {
             TreeShape::Leaf(Leaf::Editor) => 1.0,
             TreeShape::Leaf(Leaf::Slot(slot)) => {
-                f64::from(self.motion.borrow().presence(*slot).frame)
+                f64::from(self.motion.borrow().presence(MotionKey::Slot(*slot)).frame)
             }
             TreeShape::Split { children, .. } => children
                 .iter()
@@ -1473,7 +1506,7 @@ impl Workspace {
                     .h(px(pinned.1 as f32))
             })
             .when(!pin, |content| content.flex_1().min_w_0().min_h_0())
-            .when(alpha < 1.0, |content| content.opacity(alpha))
+            .faded(alpha)
             .child(surface);
         div()
             .id(slot_id(view))
@@ -1492,10 +1525,7 @@ impl Workspace {
                 frame.justify_end()
             })
             .child(content)
-            // Over a leaving slot: nothing under it takes the pointer.
-            .when(leaving, |frame| {
-                frame.child(div().absolute().top_0().left_0().size_full().occlude())
-            })
+            .covered_while(leaving)
             .into_any_element()
     }
 

@@ -214,6 +214,8 @@ use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
+use self::motion::MotionKey;
+use self::motion_box::MotionBox as _;
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -444,7 +446,7 @@ pub(crate) struct Workspace {
     /// Each slot's presence, so a slot opens and closes over time
     /// ([`motion`], ADR-0060). Shared so a test holding a window can reach
     /// it. Presentation only: the layout tree never reads it.
-    motion: Rc<std::cell::RefCell<motion::SlotMotion>>,
+    motion: Rc<std::cell::RefCell<motion::Motion>>,
     /// A divider drag is in progress (saved when it ends).
     resizing: bool,
     /// How far from its boundary the divider press landed (px along the
@@ -603,6 +605,9 @@ pub(crate) struct Workspace {
     groups_closing: Option<(tab_strip::CloseTarget, Task<()>)>,
     /// The tab strip's sideways scroll ([`tab_strip`]).
     tab_scroll: ScrollHandle,
+    /// The shown tab's label was still entering at the last frame, so the
+    /// strip asks for the scroll to it once more ([`Self::needs_tab_scroll`]).
+    tab_scroll_moving: std::cell::Cell<bool>,
     /// The tab whose pill the pointer is over: it shows its close button
     /// ([`tab_strip`]).
     tab_hover: Option<kimun_notes::logic::editor_region::TabId>,
@@ -855,6 +860,7 @@ impl Workspace {
             file_task: None,
             groups_closing: None,
             tab_scroll: ScrollHandle::new(),
+            tab_scroll_moving: Default::default(),
             tab_hover: None,
             note_gone: None,
             picker: None,
@@ -2199,7 +2205,9 @@ impl Workspace {
         self.layout = layout;
         // A new tree has new slots, which may reuse the old ids: no motion
         // of the old one carries over (ADR-0060).
-        self.motion.borrow_mut().reset();
+        self.motion
+            .borrow_mut()
+            .forget(|key| matches!(key, motion::MotionKey::Slot(_)));
         debug_assert!(
             self.layout
                 .region()
@@ -3040,12 +3048,12 @@ impl Workspace {
             .collect();
         let pinned = cell(views.len() - 1, pinned[0], cx);
         let horizontal = self.rail.horizontal();
-        div()
-            .id("rail")
+        let presence = self.motion.borrow().presence(MotionKey::Rail);
+        let leaving = self.rail_hidden;
+        let content = presence.content;
+        let rail = div()
+            .id("rail-content")
             .test_support()
-            .track_focus(&self.rail_focus)
-            .role(Role::TabList)
-            .aria_label("Activity rail")
             .flex()
             .flex_none()
             .gap_1()
@@ -3081,6 +3089,29 @@ impl Workspace {
             .child(pinned)
             // Last, so it paints over a highlighted cell.
             .children(self.focus_bar(Focus::Rail, cx))
+            .faded(content);
+        // The frame opens and closes and clips the rail, which keeps its
+        // thickness (both in rems, so at rest they are one size). It grows
+        // from the window's edge.
+        let thickness = rems(RAIL_REMS * presence.frame);
+        div()
+            .id("rail")
+            .test_support()
+            .when(!leaving, |frame| frame.track_focus(&self.rail_focus))
+            .role(Role::TabList)
+            .aria_label("Activity rail")
+            .relative()
+            .flex()
+            .flex_none()
+            .overflow_hidden()
+            .when(horizontal, |frame| frame.flex_col().w_full().h(thickness))
+            .when(!horizontal, |frame| frame.h_full().w(thickness))
+            .when(
+                matches!(self.rail, RailPosition::Right | RailPosition::Bottom),
+                |frame| frame.justify_end(),
+            )
+            .child(rail)
+            .covered_while(leaving)
     }
 
     /// The rail's button for `side` (the pointer's way to the toggle chords,
@@ -3553,6 +3584,12 @@ impl Workspace {
                 .child(view)
                 .into_any_element();
         }
+        // Fitted and sampled before anything is drawn: the rail and the
+        // tree both read the presence of this frame.
+        self.refit(window, cx);
+        self.motion_frame(window, cx);
+        let rail_drawn =
+            !self.rail_hidden || self.motion.borrow().presence(MotionKey::Rail).frame > 0.0;
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
@@ -3577,15 +3614,11 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .bg(theme::background(&theme::current(cx)))
-            .when(!self.rail_hidden && self.rail_leads(), |body| {
+            .when(rail_drawn && self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
-            .child({
-                self.refit(window, cx);
-                self.motion_frame(window, cx);
-                self.render_tree(window, cx)
-            })
-            .when(!self.rail_hidden && !self.rail_leads(), |body| {
+            .child(self.render_tree(window, cx))
+            .when(rail_drawn && !self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
             // Inside the workspace's key context: a key the menu does not
@@ -3742,6 +3775,7 @@ mod leader;
 mod links;
 mod modal;
 mod motion;
+mod motion_box;
 mod note;
 mod note_flush;
 mod note_menu;
@@ -3801,6 +3835,8 @@ mod footer_tests;
 mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
+#[cfg(test)]
+mod motion_chrome_tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]

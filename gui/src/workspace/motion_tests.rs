@@ -13,36 +13,42 @@ use gpui_kit::{
     WindowOptions, div,
 };
 use kimun_notes::logic::layout::Side;
-use kimun_notes::logic::layout_tree::SlotId;
+use kimun_notes::logic::layout_tree::{RailPosition, SlotId};
 
 use super::LayoutStore;
-use super::motion::SlotMotion;
+use super::motion::{Enter, Motion, MotionKey, Spec};
 use super::tests::{Shell, gui, open_animated, open_shell_motion};
-use crate::motion::SnapFacts;
+use crate::motion::{SnapFacts, Speed};
 
 fn left_slot(shell: &Shell, cx: &TestAppContext) -> SlotId {
     cx.read(|cx| shell.workspace.read(cx).side_slots(Side::Left)[0])
 }
 
-fn wait(cx: &mut TestAppContext, millis: u64) {
+pub(super) fn wait(cx: &mut TestAppContext, millis: u64) {
     cx.executor().advance_clock(Duration::from_millis(millis));
 }
 
 /// A view that samples one slot's presence in its render, as the layout
 /// pass does: the kit asks for the next frame only during a draw.
 struct Probe {
-    motion: Rc<RefCell<SlotMotion>>,
-    slot: SlotId,
+    motion: Rc<RefCell<Motion>>,
+    key: MotionKey,
+    enter: Enter,
+    speed: Speed,
     present: Rc<Cell<bool>>,
     out: Rc<Cell<f32>>,
 }
 
 impl Render for Probe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let value = self
-            .motion
-            .borrow_mut()
-            .sample(self.slot, self.present.get(), window, cx);
+        let value = self.motion.borrow_mut().sample(
+            self.key,
+            self.present.get(),
+            self.speed,
+            self.enter,
+            window,
+            cx,
+        );
         self.out.set(value.frame);
         div()
     }
@@ -50,7 +56,7 @@ impl Render for Probe {
 
 struct Rig {
     handle: AnyWindowHandle,
-    motion: Rc<RefCell<SlotMotion>>,
+    motion: Rc<RefCell<Motion>>,
     present: Rc<Cell<bool>>,
     out: Rc<Cell<f32>>,
 }
@@ -59,12 +65,31 @@ impl Rig {
     fn new(cx: &mut TestAppContext, present: bool) -> Rig {
         let shell = open_animated(cx);
         let slot = left_slot(&shell, cx);
-        let motion = Rc::new(RefCell::new(SlotMotion::default()));
+        Rig::keyed(
+            cx,
+            MotionKey::Slot(slot),
+            present,
+            Enter::AtRest,
+            Speed::Standard,
+        )
+    }
+
+    /// A rig sampling `key`, in a window of its own.
+    fn keyed(
+        cx: &mut TestAppContext,
+        key: MotionKey,
+        present: bool,
+        enter: Enter,
+        speed: Speed,
+    ) -> Rig {
+        let motion = Rc::new(RefCell::new(Motion::default()));
         let present = Rc::new(Cell::new(present));
         let out = Rc::new(Cell::new(f32::NAN));
         let probe = Probe {
             motion: motion.clone(),
-            slot,
+            key,
+            enter,
+            speed,
             present: present.clone(),
             out: out.clone(),
         };
@@ -144,7 +169,7 @@ fn toggle_left(cx: &mut TestAppContext, shell: &Shell) {
     .unwrap();
 }
 
-fn frame(cx: &mut TestAppContext, shell: &Shell) {
+pub(super) fn frame(cx: &mut TestAppContext, shell: &Shell) {
     cx.update_window(shell.handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
 }
@@ -326,7 +351,7 @@ use gpui_kit::{px, size};
 
 use super::tests::HEIGHT;
 
-fn resize(cx: &mut TestAppContext, shell: &Shell, width: f32) {
+pub(super) fn resize(cx: &mut TestAppContext, shell: &Shell, width: f32) {
     cx.simulate_window_resize(shell.handle, size(px(width), px(HEIGHT)));
 }
 
@@ -451,19 +476,35 @@ fn a_narrow_window_shows_no_motion_for_a_collapsed_slot(cx: &mut TestAppContext)
 fn the_frame_facts_name_what_changed() {
     let a = size(px(1000.), px(480.));
     let b = size(px(900.), px(480.));
-    let mut motion = SlotMotion::default();
-    let first = motion.frame_facts(a, None, false);
+    let left = RailPosition::Left;
+    let mut motion = Motion::default();
+    let first = motion.frame_facts(a, None, false, left);
     assert!(first.first_frame && !first.viewport_changed && !first.zoom_changed);
-    let rest = motion.frame_facts(a, None, false);
+    let rest = motion.frame_facts(a, None, false, left);
     assert_eq!(rest, SnapFacts::default());
-    assert!(motion.frame_facts(b, None, false).viewport_changed);
+    assert!(motion.frame_facts(b, None, false, left).viewport_changed);
     assert!(
         motion
-            .frame_facts(b, Some(Leaf::Editor), false)
+            .frame_facts(b, Some(Leaf::Editor), false, left)
             .zoom_changed
     );
-    assert!(motion.frame_facts(b, Some(Leaf::Editor), true).divider_drag);
-    assert!(motion.frame_facts(b, None, false).zoom_changed);
+    assert!(
+        motion
+            .frame_facts(b, Some(Leaf::Editor), true, left)
+            .divider_drag
+    );
+    assert!(motion.frame_facts(b, None, false, left).zoom_changed);
+    assert!(
+        motion
+            .frame_facts(b, None, false, RailPosition::Right)
+            .rail_moved,
+        "a changed rail position is a fact"
+    );
+    assert!(
+        !motion
+            .frame_facts(b, None, false, RailPosition::Right)
+            .rail_moved
+    );
 }
 
 #[gpui_kit::test]
@@ -642,4 +683,220 @@ fn a_resting_slot_fills_its_cell_exactly_at_any_scale(cx: &mut TestAppContext) {
             .unwrap();
         }
     }
+}
+
+// ---- Keys beyond slots (slice two).
+
+fn first_tab(shell: &Shell, cx: &TestAppContext) -> kimun_notes::logic::editor_region::TabId {
+    cx.read(|cx| shell.workspace.read(cx).layout.region().tabs()[0])
+}
+
+#[gpui_kit::test]
+fn a_new_key_can_start_from_zero(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let tab = MotionKey::Tab(first_tab(&shell, cx));
+    let rig = Rig::keyed(cx, tab, true, Enter::FromZero, Speed::Quick);
+    assert_eq!(rig.frame(cx, true), 0.0, "a new key starts from 0");
+    wait(cx, 60);
+    let middle = rig.frame(cx, true);
+    assert!(middle > 0.0 && middle < 1.0, "after 60 ms: {middle}");
+    wait(cx, 200);
+    assert_eq!(rig.frame(cx, true), 1.0);
+    let rest = Rig::keyed(cx, tab, true, Enter::AtRest, Speed::Quick);
+    assert_eq!(
+        rest.frame(cx, true),
+        1.0,
+        "at rest a new key adopts its target"
+    );
+}
+
+#[gpui_kit::test]
+fn a_snapping_frame_ignores_from_zero(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let tab = MotionKey::Tab(first_tab(&shell, cx));
+    let rig = Rig::keyed(cx, tab, true, Enter::FromZero, Speed::Quick);
+    rig.motion.borrow_mut().begin_frame(SnapFacts {
+        viewport_changed: true,
+        ..SnapFacts::default()
+    });
+    assert_eq!(rig.frame(cx, true), 1.0);
+}
+
+#[gpui_kit::test]
+fn snap_next_frame_snaps_once(cx: &mut TestAppContext) {
+    let rig = Rig::keyed(cx, MotionKey::Rail, false, Enter::AtRest, Speed::Standard);
+    assert_eq!(rig.frame(cx, false), 0.0);
+    rig.motion.borrow_mut().snap_next_frame();
+    rig.motion.borrow_mut().begin_frame(SnapFacts::default());
+    assert_eq!(rig.frame(cx, true), 1.0, "adopted at once");
+    rig.motion.borrow_mut().begin_frame(SnapFacts::default());
+    assert_eq!(rig.frame(cx, false), 1.0, "the next change moves again");
+    wait(cx, 300);
+    assert!(rig.frame(cx, false) < 1.0);
+}
+
+// ---- The generic store and one sampling call (consolidation).
+
+/// A view that samples a list of specs in its render, with one call.
+struct SpecProbe {
+    motion: Rc<RefCell<Motion>>,
+    specs: Rc<RefCell<Vec<Spec>>>,
+}
+
+impl Render for SpecProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.motion
+            .borrow_mut()
+            .sample_all(&self.specs.borrow(), window, cx);
+        div()
+    }
+}
+
+struct SpecRig {
+    handle: AnyWindowHandle,
+    motion: Rc<RefCell<Motion>>,
+    specs: Rc<RefCell<Vec<Spec>>>,
+}
+
+impl SpecRig {
+    fn new(cx: &mut TestAppContext) -> SpecRig {
+        let motion = Rc::new(RefCell::new(Motion::default()));
+        let specs = Rc::new(RefCell::new(Vec::new()));
+        let probe = SpecProbe {
+            motion: motion.clone(),
+            specs: specs.clone(),
+        };
+        let (handle, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| probe))
+            })
+            .expect("open the probe window");
+        SpecRig {
+            handle,
+            motion,
+            specs,
+        }
+    }
+
+    /// Draw one frame sampling `specs`.
+    fn frame(&self, cx: &mut TestAppContext, specs: Vec<Spec>) {
+        *self.specs.borrow_mut() = specs;
+        cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+}
+
+fn spec(key: MotionKey, present: bool, speed: Speed, enter: Enter) -> Spec {
+    Spec {
+        key,
+        present,
+        speed,
+        enter,
+    }
+}
+
+#[test]
+fn a_snapshot_round_trips_by_type() {
+    let mut motion = Motion::default();
+    motion.remember(MotionKey::Rail, 7_u32);
+    assert_eq!(motion.recall::<u32>(MotionKey::Rail), Some(7));
+    assert_eq!(
+        motion.recall::<String>(MotionKey::Rail),
+        None,
+        "another type"
+    );
+    assert_eq!(
+        motion.recall::<u32>(MotionKey::TabStrip),
+        None,
+        "another key"
+    );
+}
+
+#[gpui_kit::test]
+fn an_unspecified_lingering_key_leaves_and_is_dropped(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let tab = MotionKey::Tab(first_tab(&shell, cx));
+    let rig = SpecRig::new(cx);
+    rig.frame(cx, vec![spec(tab, true, Speed::Quick, Enter::AtRest)]);
+    assert_eq!(rig.motion.borrow().presence(tab).frame, 1.0);
+    rig.frame(cx, vec![]);
+    wait(cx, 60);
+    rig.frame(cx, vec![]);
+    let frame = rig.motion.borrow().presence(tab).frame;
+    assert!(frame > 0.0 && frame < 1.0, "leaving: {frame}");
+    assert!(rig.motion.borrow().keys().contains(&tab), "still held");
+    wait(cx, 300);
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty(), "gone with its frame");
+}
+
+#[gpui_kit::test]
+fn an_unspecified_slot_is_dropped_at_once(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let slot = MotionKey::Slot(left_slot(&shell, cx));
+    let rig = SpecRig::new(cx);
+    rig.frame(cx, vec![spec(slot, true, Speed::Standard, Enter::AtRest)]);
+    assert!(rig.motion.borrow().keys().contains(&slot));
+    rig.frame(cx, vec![]);
+    assert!(rig.motion.borrow().keys().is_empty());
+}
+
+#[gpui_kit::test]
+fn after_parent_starts_from_zero_only_when_the_parent_rests(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let tab = MotionKey::Tab(first_tab(&shell, cx));
+    let label = spec(
+        tab,
+        true,
+        Speed::Quick,
+        Enter::AfterParent(MotionKey::TabStrip),
+    );
+    // The strip is at rest (shown) and the label is new: it starts from 0.
+    let rig = SpecRig::new(cx);
+    rig.frame(
+        cx,
+        vec![spec(
+            MotionKey::TabStrip,
+            true,
+            Speed::Standard,
+            Enter::AtRest,
+        )],
+    );
+    rig.frame(
+        cx,
+        vec![
+            spec(MotionKey::TabStrip, true, Speed::Standard, Enter::AtRest),
+            label.clone(),
+        ],
+    );
+    assert_eq!(rig.motion.borrow().presence(tab).frame, 0.0);
+    // The strip is not at rest (hidden): the label adopts its target.
+    let rig = SpecRig::new(cx);
+    rig.frame(
+        cx,
+        vec![
+            spec(MotionKey::TabStrip, false, Speed::Standard, Enter::AtRest),
+            label,
+        ],
+    );
+    assert_eq!(rig.motion.borrow().presence(tab).frame, 1.0);
+}
+
+#[gpui_kit::test]
+fn forget_drops_what_the_predicate_names(cx: &mut TestAppContext) {
+    let shell = open_animated(cx);
+    let slot = MotionKey::Slot(left_slot(&shell, cx));
+    let tab = MotionKey::Tab(first_tab(&shell, cx));
+    let rig = SpecRig::new(cx);
+    rig.frame(
+        cx,
+        vec![
+            spec(slot, true, Speed::Standard, Enter::AtRest),
+            spec(tab, true, Speed::Quick, Enter::AtRest),
+        ],
+    );
+    rig.motion
+        .borrow_mut()
+        .forget(|key| matches!(key, MotionKey::Slot(_)));
+    assert_eq!(rig.motion.borrow().keys(), vec![tab]);
 }
