@@ -32,7 +32,7 @@ jobs:
             platform: macos-arm64
             binary: kimun-server
           - name: Linux Build
-            os: ubuntu-latest
+            os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x64
             binary: kimun-server
@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Setup Rust toolchain
       - name: Install Rust
@@ -74,7 +74,7 @@ jobs:
         shell: bash
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.platform }}
           path: dist
@@ -83,16 +83,16 @@ jobs:
   # Docker. buildx picks dist/<TARGETARCH>/kimun-server per platform.
   docker:
     needs: [build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download linux binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dist-linux-*
           path: downloaded
@@ -140,7 +140,7 @@ jobs:
 
   create-release:
     needs: [build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
@@ -149,10 +149,10 @@ jobs:
         id: extract_version
         run: echo "version=${GITHUB_REF_NAME#kimun_server-v}" >> $GITHUB_OUTPUT
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 
