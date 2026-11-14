@@ -32,7 +32,6 @@ use kimun_notes::logic::layout_tree::GroupId;
 use super::Workspace;
 use super::drop_zones::{Dragged, DropOutcome, DropTarget, Zone, group_zone_id};
 use super::modal;
-use super::note::Closing;
 
 impl Workspace {
     /// Every target a group's drag may have, in drawing order: the five
@@ -78,10 +77,7 @@ impl Workspace {
     /// button for the only group of the only tab. A slot's zones and the
     /// window-edge strips are a view's.
     pub(crate) fn group_drop_allowed(&self, group: GroupId, target: DropTarget) -> bool {
-        if self.layout.zoomed().is_some()
-            || self.groups_closing.is_some()
-            || matches!(self.closing, Closing::Requested | Closing::Flushing)
-        {
+        if self.layout.zoomed().is_some() || self.arrangement_locked() {
             return false;
         }
         let region = self.layout.region();

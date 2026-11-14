@@ -63,7 +63,7 @@ pub(crate) const ICONS: [gpui_kit::assets::IconName; 1] = [super::chrome::CLOSE_
 
 /// `prefix` with the group's position in the shown tab (reading order).
 pub(crate) fn group_element(prefix: &'static str, at: usize) -> ElementId {
-    ElementId::NamedInteger(prefix.into(), at as u64)
+    super::chrome::indexed_id(prefix, at)
 }
 
 /// Which top corners of a group at `rect` (in the region's unit square)
@@ -109,10 +109,7 @@ impl Workspace {
             .xsmall()
             .label("⋯")
             .tooltip("Note menu")
-            // A press here is the button's, not the header's drag handle.
-            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation()
-            })
+            .on_mouse_down(gpui_kit::MouseButton::Left, super::chrome::stop_press)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 if this.layout.active_group() != group {
@@ -203,11 +200,7 @@ impl Workspace {
         let dirty = self.editor_dirty_in(group, cx);
         let keyboard = group == self.layout.active_group()
             && self.layout.focused() == Focus::Leaf(Leaf::Editor);
-        let spoken: SharedString = if dirty {
-            format!("{title}, unsaved").into()
-        } else {
-            title.clone()
-        };
+        let spoken = super::chrome::spoken_label(&title, dirty);
         let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
         let close = super::chrome::close_button(
             group_element(GROUP_CLOSE_ID, at),

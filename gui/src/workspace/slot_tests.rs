@@ -427,7 +427,8 @@ fn views_move_between_slots_and_persist(cx: &mut TestAppContext) {
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);
         assert!(shell.shown_on(Side::Right, cx).is_empty());
         assert_eq!(shell.focused(cx), Panel::Rail);
-        // The editor keeps Alt+Shift+Arrow: no move from there.
+        // From the editor the chord moves its group, not a view: a lone group
+        // has nowhere to go, so nothing changes.
         window.click("editor-panel", cx);
         window.press("alt-shift-right", cx);
         assert_eq!(shell.shown_on(Side::Left, cx), [DrawerView::Files]);

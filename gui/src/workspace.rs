@@ -246,7 +246,7 @@ const KEY_CONTEXT: &str = "KimunWorkspace";
 /// Why a slot does not close: it is the last on its side of the editor.
 pub(crate) const LAST_ON_SIDE: &str = "This is the last slot on this side";
 /// Why the split chord does nothing on the editor while zoomed.
-pub(crate) const ZOOMED_NO_GROUP_SPLIT: &str = "Leave zoom to split the editor";
+pub(crate) const ZOOMED_NO_GROUP_SPLIT: &str = "Leave zoom to split the pane";
 /// Why the move chord does nothing on the editor while zoomed.
 pub(crate) const ZOOMED_NO_GROUP_MOVE: &str = "Leave zoom to move the pane";
 
@@ -2361,7 +2361,7 @@ impl Workspace {
     /// closes. While a stored record restores, it waits for it
     /// ([`session`]).
     fn split_active_group(&mut self, axis: TreeAxis, cx: &mut Context<Self>) {
-        if matches!(self.closing, Closing::Requested | Closing::Flushing) {
+        if self.window_closing() {
             return;
         }
         // The restore would replace the new group: the split waits.
@@ -2387,20 +2387,31 @@ impl Workspace {
         self.focus_group(group, cx);
     }
 
+    /// Whether the window is closing (asked to, or writing its notes first):
+    /// nothing may change what it is about to write.
+    pub(crate) fn window_closing(&self) -> bool {
+        matches!(self.closing, Closing::Requested | Closing::Flushing)
+    }
+
+    /// Whether groups may not be moved: the window is closing, or a group
+    /// or tab close is writing its notes ([`Self::groups_closing`]).
+    pub(crate) fn arrangement_locked(&self) -> bool {
+        self.window_closing() || self.groups_closing.is_some()
+    }
+
     /// `MoveViewToNeighbour(dir)` on the editor: move the active group
     /// toward `dir` inside its tab ([`EditorRegion::move_group_dir`]): it
     /// swaps places with the group that way, or with none goes to that
     /// outer edge of the tab. It stays active and keeps the keyboard.
     /// Always handled. Refused with a flash while zoomed (the move would
-    /// show nothing); nothing while the window closes; while a stored record
-    /// restores, it waits for it ([`session`]).
+    /// show nothing); nothing while the window closes or a close writes its
+    /// notes ([`Self::arrangement_locked`]); nothing while a stored record
+    /// restores either: the layout on screen is not the one it will land, and
+    /// the move would be written over the stored record.
     ///
     /// [`EditorRegion::move_group_dir`]: kimun_notes::logic::editor_region::EditorRegion::move_group_dir
     pub(crate) fn move_active_group(&mut self, dir: Dir, cx: &mut Context<Self>) -> bool {
-        if matches!(self.closing, Closing::Requested | Closing::Flushing) {
-            return true;
-        }
-        if self.hold_while_restoring(session::Queued::MoveGroup(dir)) {
+        if self.arrangement_locked() || self.session_restoring() {
             return true;
         }
         if self.layout.zoomed().is_some() {
@@ -3190,7 +3201,7 @@ impl Workspace {
     /// [`Self::note_empty_state`] for `group`: only the group whose note
     /// went away says so, and only the active group waits for the restore.
     pub(crate) fn note_empty_state_in(&self, group: GroupId) -> Option<EmptyState> {
-        let host = self.state(group)?.notes.as_ref()?;
+        let host = self.host_in(group)?;
         if host.note.is_some() {
             return None;
         }
@@ -3222,15 +3233,15 @@ impl Workspace {
     }
 
     /// What `group` shows: its attachment view, else why there is no note
-    /// (the window's own empty state first), else its editor. Whether the
-    /// editor is what shows.
+    /// (the window's own empty state first), else its editor
+    /// ([`Self::group_editor_shown`] says which).
     pub(super) fn render_group_document(
         &self,
         group: GroupId,
         cx: &mut Context<Self>,
-    ) -> (AnyElement, bool) {
+    ) -> AnyElement {
         let Some(state) = self.state(group) else {
-            return (div().flex_1().into_any_element(), false);
+            return div().flex_1().into_any_element();
         };
         let attachment = state.attachment.clone().filter(|_| self.empty.is_none());
         let empty = match &attachment {
@@ -3240,8 +3251,7 @@ impl Workspace {
                 .or_else(|| self.note_empty_state_in(group)),
             Some(_) => None,
         };
-        let editor_shown = empty.is_none() && attachment.is_none();
-        let document = match (&empty, attachment) {
+        match (&empty, attachment) {
             // The editor is not drawn: its focus handle sits on the empty
             // state, so the keyboard still reaches the window's chords (F5
             // away from a workspace that would not open, the leader, the
@@ -3261,8 +3271,7 @@ impl Workspace {
                 .min_h_0()
                 .child(state.editor.clone())
                 .into_any_element(),
-        };
-        (document, editor_shown)
+        }
     }
 
     /// The editor Panel, `size` px (its layout cell): the tab strip, the
@@ -3280,14 +3289,12 @@ impl Workspace {
         let region = self.layout.region();
         let several = !zoomed && region.groups(region.shown()).len() > 1;
         let active = self.layout.active_group();
-        let (document, editor_shown) = if several {
-            (
-                self.render_groups(size, f64::from(window.rem_size()), cx),
-                self.group_editor_shown(active),
-            )
+        let document = if several {
+            self.render_groups(size, f64::from(window.rem_size()), cx)
         } else {
             self.render_group_document(active, cx)
         };
+        let editor_shown = self.group_editor_shown(active);
         // The which-key docks over the bottom of the document, right above
         // the Footer, so showing it never reflows the note.
         let document = div()
