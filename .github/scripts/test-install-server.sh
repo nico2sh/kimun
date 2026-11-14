@@ -118,12 +118,23 @@ h="$work/h1d"; mkdir -p "$h"
 odd='we"ird\dir'
 out="$(cd "$h" && env HOME="$h" KIMUN_SERVER_INSTALL_DIR="$odd" KIMUN_MANIFEST_URL="file://$work/latest.json" \
   KIMUN_RELEASES_API="file://$work/no-such-api.json" sh "$bare" 2>&1)" || fail "install into an odd relative folder failed: $out"
-if command -v python3 >/dev/null; then
+if python3 -c 'import tomllib' 2>/dev/null; then
   got="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["install_dir"])' "$h/.config/kimun/server-install.toml" 2>&1)" \
     || fail "the marker is not valid TOML: $got"
   [ "$got" = "$h/$odd" ] || fail "the marker holds $got, not the absolute folder $h/$odd"
   ok "marker: an odd relative install folder is stored absolute and escaped"
 fi
+
+# 1e. A folder name with a control character is refused, and a run that fails creates no folder.
+h="$work/h1e"; mkdir -p "$h"
+nl="$(printf 'a\nb')"
+if out="$(env HOME="$h" KIMUN_SERVER_INSTALL_DIR="$h/$nl" KIMUN_MANIFEST_URL="file://$work/latest.json" \
+    KIMUN_RELEASES_API="file://$work/no-such-api.json" sh "$bare" 2>&1)"; then fail "a folder with a newline was accepted"; fi
+echo "$out" | grep -q "control character" || fail "a folder with a newline said: $out"
+out="$(env HOME="$h" KIMUN_SERVER_INSTALL_DIR="$h/late" KIMUN_MANIFEST_URL="file://$work/no-manifest.json" \
+  KIMUN_RELEASES_API="file://$work/no-such-api.json" sh "$bare" 2>&1)" && fail "an install with no release source succeeded"
+[ ! -e "$h/late" ] || fail "a failed run created the install folder"
+ok "install folder: control characters are refused, and a failed run creates nothing"
 
 # 2. Its sha256 is the one enforced.
 sed "s/\"sha256\": \"[0-9a-f]*\"/\"sha256\": \"$(printf '0%.0s' $(seq 64))\"/" "$work/latest.json" >"$work/bad.json"

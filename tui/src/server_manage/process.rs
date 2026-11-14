@@ -5,6 +5,7 @@
 
 use std::io;
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// How long a service-manager command may take.
@@ -14,15 +15,21 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Run `cmd` with no input and captured output. When it does not finish within `timeout`, the
 /// program is killed and the error has kind [`io::ErrorKind::TimedOut`].
+///
+/// The output is read while the program runs, so a program that writes more than a pipe holds does
+/// not block. The readers are bounded too: a program that leaves a child holding the pipe open
+/// cannot hold this call.
 pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
+    let stdout = reader(child.stdout.take());
+    let stderr = reader(child.stderr.take());
     let start = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
         if start.elapsed() >= timeout {
             let _ = child.kill();
@@ -33,10 +40,55 @@ pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
+    };
+    // The program has exited. Its output is complete unless a grandchild keeps the pipe open.
+    let drain = Duration::from_secs(2);
+    Ok(Output {
+        status,
+        stdout: stdout.finish(drain),
+        stderr: stderr.finish(drain),
+    })
+}
+
+/// What a reader thread has read so far, and a signal for when it reached the end.
+struct Reader {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Reader {
+    /// The output, after waiting up to `wait` for the end of the stream. When a grandchild holds the
+    /// pipe open, what was read by then is returned.
+    fn finish(self, wait: Duration) -> Vec<u8> {
+        let _ = self.done.recv_timeout(wait);
+        self.bytes.lock().map(|b| b.clone()).unwrap_or_default()
     }
 }
 
-#[cfg(all(test, unix))]
+/// Read `pipe` on a thread, keeping what it reads as it reads.
+fn reader<R: io::Read + Send + 'static>(pipe: Option<R>) -> Reader {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let (tx, done) = mpsc::channel();
+    let sink = Arc::clone(&bytes);
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut all) = sink.lock() {
+                    all.extend_from_slice(&chunk[..n]);
+                }
+            }
+        }
+        let _ = tx.send(());
+    });
+    Reader { bytes, done }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 
@@ -56,6 +108,32 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "it did not wait for the program"
+        );
+    }
+
+    #[test]
+    fn a_program_with_a_lot_of_output_does_not_block() {
+        // More than a pipe holds: it must not be mistaken for a hang.
+        let out = run_bounded(
+            Command::new("sh").args(["-c", "head -c 300000 /dev/zero"]),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(out.stdout.len(), 300_000);
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_pipe_does_not_hold_the_call() {
+        let start = Instant::now();
+        let out = run_bounded(
+            Command::new("sh").args(["-c", "sleep 30 & echo done"]),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("done"));
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "it waited for the grandchild"
         );
     }
 

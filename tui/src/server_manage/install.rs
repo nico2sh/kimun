@@ -123,6 +123,8 @@ pub enum InstallError {
     Lock(String),
     /// The installed binary does not report its version, so "newer" cannot be decided.
     InstalledVersionUnknown,
+    /// A version is not a plain `X.Y.Z`, so "newer" cannot be decided.
+    VersionUnreadable(String),
     /// The release is not newer than the installed binary. This is the version floor.
     NotNewer { installed: String, release: String },
     /// The new binary does not run, or does not report the version it should. Nothing changed.
@@ -141,6 +143,10 @@ impl std::fmt::Display for InstallError {
             Self::InstalledVersionUnknown => write!(
                 f,
                 "the installed server does not report its version, so the app cannot tell if the release is newer. Nothing was changed"
+            ),
+            Self::VersionUnreadable(v) => write!(
+                f,
+                "the version {v:?} is not a plain X.Y.Z number, so the app cannot tell if it is newer. Nothing was changed"
             ),
             Self::NotNewer { installed, release } => write!(
                 f,
@@ -228,7 +234,7 @@ fn wait_for_new(restart: &Restart, new_version: &str) -> Result<(), String> {
 
 /// Put the old binary back and restart. The old server must answer again: with its own version, or
 /// with no version when it predates version reporting.
-fn roll_back(swap: &Swap, old_version: &str, restart: &Restart) -> Rollback {
+fn roll_back(swap: &Swap, old_version: &str, legacy: bool, restart: &Restart) -> Rollback {
     if let Err(e) = swap.roll_back() {
         return Rollback::Failed(e);
     }
@@ -237,7 +243,9 @@ fn roll_back(swap: &Swap, old_version: &str, restart: &Restart) -> Rollback {
     }
     let t = &restart.timing;
     let back = wait_until(restart.probe, t.wait_old, t.interval, 1, |r| {
-        matches!(r, Reply::Up(None)) || matches!(r, Reply::Up(Some(v)) if v == old_version)
+        // An answer with no version counts only when the server answered that way before the update.
+        (legacy && matches!(r, Reply::Up(None)))
+            || matches!(r, Reply::Up(Some(v)) if v == old_version)
     });
     if back {
         Rollback::Restored
@@ -268,12 +276,21 @@ pub fn install_and_restart(
     let installed = swap
         .installed_version()
         .ok_or(InstallError::InstalledVersionUnknown)?;
+    for v in [new_version, installed.as_str()] {
+        if crate::update::parse_version(v).is_none() {
+            return Err(InstallError::VersionUnreadable(v.to_string()));
+        }
+    }
     if !crate::update::is_newer(new_version, &installed) {
         return Err(InstallError::NotNewer {
             installed,
             release: new_version.to_string(),
         });
     }
+
+    // A server that predates version reporting answers without a version. Only then may a rollback
+    // accept an answer without a version.
+    let legacy = matches!(restart.probe.reply(), Reply::Up(None));
 
     swap.stage(binary, new_version)
         .map_err(InstallError::NewBinaryUnusable)?;
@@ -291,13 +308,15 @@ pub fn install_and_restart(
         }
         Err(reason) => {
             progress(Step::RollingBack);
-            let rollback = roll_back(&swap, &installed, restart);
+            let rollback = roll_back(&swap, &installed, legacy, restart);
             Err(InstallError::NotRunning { reason, rollback })
         }
     }
 }
 
+// The fixtures run shell scripts as the server binary.
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::Path;
     use std::sync::Mutex;
@@ -684,6 +703,41 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn an_answer_without_a_version_is_not_the_old_server_unless_it_answered_so_before() {
+        // Down before the update, "up with no version" after the rollback: some other process.
+        let f = fixture();
+        let service = FakeService::default();
+        let probe = FakeProbe {
+            service: &service,
+            answers: Box::new(|n| if n == 0 { Reply::Down } else { Reply::Up(None) }),
+        };
+        let err = run(&f, &script("2.0.0"), &service, &probe).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InstallError::NotRunning {
+                    rollback: Rollback::Failed(_),
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_version_that_is_not_plain_is_named_not_called_old() {
+        let f = fixture();
+        std::fs::write(
+            f.install.binary(),
+            "#!/bin/sh\necho kimun-server 1.0.0-rc.1\n",
+        )
+        .unwrap();
+        let service = FakeService::default();
+        let err = run(&f, &script("2.0.0"), &service, &healthy(&service)).unwrap_err();
+        assert_eq!(err, InstallError::VersionUnreadable("1.0.0-rc.1".into()));
     }
 
     #[test]
