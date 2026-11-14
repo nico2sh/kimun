@@ -46,6 +46,19 @@ else
   ok "the installers pin the key in release-signing.pub"
 fi
 
+# The Rust side of the server update (tui/src/server_manage) names the same key, the same systemd
+# unit and the same launchd label as this installer. A drift would make the app restart something
+# else, or reject every release. Rust cannot read files outside its crate in a packaged build, so
+# the check lives here.
+rs=tui/src/server_manage
+[ "$(sed -n 's/^pub const SIGNING_KEY: &str = "\(.*\)";$/\1/p' $rs/release.rs)" = "$(sed -n 2p release-signing.pub)" ] \
+  || fail "SIGNING_KEY in $rs/release.rs is not the key in release-signing.pub"
+unit="$(sed -n 's/^const UNIT: &str = "\(.*\)";$/\1/p' $rs/service.rs)"
+label="$(sed -n 's/^const LAUNCHD_LABEL: &str = "\(.*\)";$/\1/p' $rs/service.rs)"
+grep -q "^SYSTEMD_UNIT=\"\$HOME/.config/systemd/user/$unit\"$" install-server.sh || fail "the app names a different systemd unit than install-server.sh: $unit"
+grep -q "^LAUNCHD_LABEL=\"$label\"$" install-server.sh || fail "the app names a different launchd label than install-server.sh: $label"
+ok "the app (server_manage) and install-server.sh agree on the key, the unit and the label"
+
 # The tests below use fake, unsigned releases, so they run an unpinned copy of the installer. The
 # signature tests (12) write their own key into a copy of it.
 bare="$work/install-server.sh"
@@ -84,6 +97,21 @@ out="$(run "$h" "file://$work/latest.json" 2>&1)" || fail "install from the mani
 echo "$out" | grep -q "Latest version: $v" || fail "version not taken from the manifest: $out"
 echo "$out" | grep -qi "warning" && fail "manifest install warned: $out"
 ok "manifest: the version, the url and the checksum come from it, no API call"
+
+# 1b. The install marker: written by every run, with no service when none was set up.
+marker="$h/.config/kimun/server-install.toml"
+[ -f "$marker" ] || fail "no install marker written"
+grep -q "^install_dir = \"$h/bin\"$" "$marker" || fail "the marker names the wrong install_dir: $(cat "$marker")"
+grep -q '^service = "none"$' "$marker" || fail "the marker should say service = none: $(cat "$marker")"
+ok "marker: written with the install folder and no service"
+
+# 1c. A server that was installed before the marker existed gets one by running the script
+# again, even though the binary is already current.
+rm -f "$marker"
+out="$(run "$h" "file://$work/latest.json" 2>&1)" || fail "re-run on a current install failed: $out"
+echo "$out" | grep -q "already installed" || fail "the re-run did not see the install as current: $out"
+[ -f "$marker" ] || fail "a re-run on a current install did not write the marker"
+ok "marker: a re-run on a current install writes it"
 
 # 2. Its sha256 is the one enforced.
 sed "s/\"sha256\": \"[0-9a-f]*\"/\"sha256\": \"$(printf '0%.0s' $(seq 64))\"/" "$work/latest.json" >"$work/bad.json"
@@ -184,6 +212,7 @@ cat >"$sb/systemctl" <<'STUB'
 #!/bin/sh
 case "$*" in *is-active*) [ -n "${SYSTEMCTL_ACTIVE:-}" ]; exit ;; esac
 echo "systemctl $*" >>"$SYSTEMCTL_LOG"
+case "$*" in *restart*) [ -z "${SYSTEMCTL_FAIL_RESTART:-}" ]; exit ;; esac
 [ -z "${SYSTEMCTL_FAIL:-}" ]
 STUB
 chmod +x "$sb/systemctl"
@@ -227,5 +256,38 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 if sh "$bare" --uninstall --service >/dev/null 2>&1; then fail "--uninstall --service was accepted"; fi
 ok "server --uninstall cannot be combined with --service"
+
+# 14. --service: the service is restarted when it was running (the bug: `enable --now` leaves a
+# running unit alone, so the old server kept serving), and the marker names the service kind.
+if [ "$(uname -s)" = Linux ]; then
+  run_service() { # HOME [extra env ...]
+    local h="$1"; shift
+    env PATH="$sb:$PATH" HOME="$h" SYSTEMCTL_LOG="$h/systemctl.log" KIMUN_SERVER_INSTALL_DIR="$h/bin" \
+      KIMUN_MANIFEST_URL="file://$work/latest.json" KIMUN_RELEASES_API="file://$work/no-such-api.json" \
+      "$@" sh "$bare" --service
+  }
+  h="$work/s1"; mkdir -p "$h"
+  out="$(run_service "$h" 2>&1)" || fail "first --service install failed: $out"
+  grep -q "enable --now kimun-server.service" "$h/systemctl.log" || fail "the service was not enabled: $(cat "$h/systemctl.log")"
+  grep -q "restart kimun-server.service" "$h/systemctl.log" && fail "a new service was restarted as well as started"
+  grep -q '^service = "systemd"$' "$h/.config/kimun/server-install.toml" || fail "the marker should say systemd"
+  ok "--service: a new service is enabled and started, the marker says systemd"
+
+  : >"$h/systemctl.log"
+  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 2>&1)" || fail "--service re-run on a running service failed: $out"
+  grep -q "restart kimun-server.service" "$h/systemctl.log" || fail "a running service was not restarted: $(cat "$h/systemctl.log")"
+  ok "--service: a service that was running is restarted"
+
+  : >"$h/systemctl.log"
+  out="$(run_service "$h" SYSTEMCTL_ACTIVE=1 SYSTEMCTL_FAIL_RESTART=1 2>&1)" && fail "a failed restart was reported as success"
+  echo "$out" | grep -q "could not restart" || fail "a failed restart said: $out"
+  ok "--service: a failed restart is an error, not silence"
+
+  # Without --service an updated binary still restarts an existing unit (unchanged behavior).
+  # And uninstall removes the marker.
+  out="$(uninstall_server "$h" KIMUN_SERVER_INSTALL_DIR="$h/bin" 2>&1)" || fail "uninstall after --service failed: $out"
+  [ ! -e "$h/.config/kimun/server-install.toml" ] || fail "uninstall left the marker"
+  ok "server --uninstall removes the install marker"
+fi
 
 echo "install-server.sh behaves"

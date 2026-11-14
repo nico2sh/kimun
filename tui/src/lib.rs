@@ -16,6 +16,7 @@ pub mod rag;
 // `crate::` outside their own subtree (enforced in .github/workflows/check.yml).
 pub mod ropetext;
 pub mod server_client;
+pub mod server_manage;
 pub mod settings;
 pub mod update;
 pub mod util;

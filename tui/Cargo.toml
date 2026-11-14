@@ -75,6 +75,9 @@ reqwest = { version = "0.12", default-features = false, features = [
 ureq = "2"
 sha2 = "0.10"
 self-replace = "1"
+minisign-verify = "0.3.0"
+tar = "0.4.46"
+flate2 = "1.1.11"
 
 # `src/app/ctrl_h.rs` only: `tcgetattr`, to read the tty's erase character.
 # The Backspace-vs-Ctrl-H tie cannot be broken from the byte stream, and this
@@ -95,6 +98,7 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 # Pins what the editor paints, cell by cell — see tests/editor_render_snapshots.rs.
 insta = "1"
+minisign = "0.10.0"
 
 [[bench]]
 name = "editor_parse"

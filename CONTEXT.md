@@ -572,6 +572,14 @@ _Avoid_: embeddings store (it stores vectors it did not make), db/backend (imple
 The component inside Kimün that owns every dealing with the **Kimün server** — connection and capability probing, the push of note changes, and **reconciliation**. The capability probe distinguishes three reachable states — **unconfigured**, *semantic-only*, and full — and the client gates each surface on it: no pushes or **reconciliation** against an unconfigured server. Lives outside core (`tui/src/server_client`, a former workspace crate) so core stays free of network concerns; core feeds it only through the **index observer**.
 _Avoid_: RAG client (see **Kimün server** on RAG), rag bridge, sync manager (too generic).
 
+**Server install marker**:
+A small file written by `install-server.sh` recording that the script installed the **Kimün server** on this machine, the folder holding its binary, and whether the script also set up a service. It is the only proof the app accepts that it may update the server. Absent for Docker, Cargo, remote, and pre-marker installs, and treated as stale when the binary or the service file it names is missing.
+_Avoid_: install channel (that term names how the apps got onto the machine, not the server)
+
+**Server update**:
+Replacing the **Kimün server**'s binary on this machine and restarting its service, started by the user from the app. Offered only when a **Server install marker** is valid, the marker records a service, and the configured server URL points at this machine. A remote server, or one without a marker or a service, only gets the update notice. After the restart the app asks the server for its version. If the new version does not answer in time, the app puts the old binary back and restarts it.
+_Avoid_: server self-update (the server does not update itself; the app does it), upgrade
+
 **Index observer**:
 The core seam that reports a note change — a path, its content hash, and whether it was upserted or deleted — the moment the **NoteIndex** records it. Generic and consumer-agnostic: core knows nothing of who listens, and the event never carries chunk text. The **Server client** is its first consumer, folding each observation into a dirty set it later drains.
 _Avoid_: change feed (implies a pull/stream), sync hook (names one consumer), listener (too generic).

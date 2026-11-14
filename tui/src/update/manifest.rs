@@ -119,7 +119,7 @@ fn resolve(
     fallback()
 }
 
-fn fetch_manifest() -> Result<String, UpdateError> {
+pub(super) fn fetch_manifest() -> Result<String, UpdateError> {
     Ok(ureq::get(MANIFEST_URL)
         .set("User-Agent", super::USER_AGENT)
         .timeout(FETCH_TIMEOUT)
