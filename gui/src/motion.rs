@@ -9,12 +9,12 @@ use std::time::Duration;
 
 /// The kind of change a motion belongs to. A call site names a speed and
 /// never passes a raw duration. Every speed shares one curve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Speed {
-    /// Small things, such as a tab appearing. Used from slice two.
-    #[allow(dead_code)]
+    /// Small things, such as a tab appearing.
     Quick,
     /// A pane opening or closing.
+    #[default]
     Standard,
     /// A large rearrangement, such as applying a preset. Used from slice
     /// three.
@@ -105,12 +105,18 @@ pub struct SnapFacts {
     pub divider_drag: bool,
     /// Zoom started or ended since the last frame.
     pub zoom_changed: bool,
+    /// The rail moved to another edge since the last frame.
+    pub rail_moved: bool,
 }
 
 /// Whether this frame draws the new state at once. Reduced motion is not
 /// here: the kit adopts the end state by itself.
 pub fn must_snap(facts: SnapFacts) -> bool {
-    facts.first_frame || facts.viewport_changed || facts.divider_drag || facts.zoom_changed
+    facts.first_frame
+        || facts.viewport_changed
+        || facts.divider_drag
+        || facts.zoom_changed
+        || facts.rail_moved
 }
 
 #[cfg(test)]
@@ -160,6 +166,14 @@ mod tests {
                 assert!(frame > content, "{speed:?}, opening: {opening}");
             }
         }
+    }
+
+    #[test]
+    fn a_rail_move_snaps() {
+        assert!(must_snap(SnapFacts {
+            rail_moved: true,
+            ..SnapFacts::default()
+        }));
     }
 
     #[test]
