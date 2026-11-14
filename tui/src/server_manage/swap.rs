@@ -118,7 +118,7 @@ impl Swap {
         let _ = system::remove_file(&self.backup);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn paths(&self) -> (&Path, &Path, &Path) {
         (&self.bin, &self.staged, &self.backup)
     }
