@@ -1,70 +1,66 @@
 +++
 title = "Keybindings"
-weight = 11
+weight = 14
 +++
 
 # Keybindings
 
-This page lists all default key bindings. To change a binding, see [Configuration → Key Bindings](@/getting-started/configuration.md#key-bindings).
+These are the shortcuts of the terminal app. In the app, press `F1` for help and `Ctrl+B ?` for the full list with your own changes. The [desktop app](@/using-kimun/desktop-app.md#shortcuts) has its own shortcuts.
 
-In the app, `F1` opens help and `Ctrl+B ?` shows this cheatsheet with your custom bindings applied.
+## Main shortcuts
 
-A `[key_bindings]` section in your configuration replaces the entire keymap. It does not merge with the defaults. Any action that you do not list is unbound. Only `Quit` is restored automatically. To change one key, copy the full table below into your configuration and edit the lines that you want. For details, see [Configuration → Key Bindings](@/getting-started/configuration.md#overrides-replace-the-defaults).
-
-## Defaults
-
-| Action | Default |
-| ------ | ------- |
+| What it does | Shortcut |
+|---|---|
 | Quit | `Ctrl+Q` |
-| Leader (command sequences) | `Ctrl+B` |
+| Leader key (start a command sequence) | `Ctrl+B` |
 | Command palette | `Ctrl+P` |
-| Preferences | `F4` / `Ctrl+,` |
-| Query search (telescope) | `Ctrl+K` |
-| Open note (fuzzy finder) | `Ctrl+O` |
-| Toggle drawer | `Ctrl+T` |
-| Open file browser (FILES view) | `Ctrl+E` |
-| Find in buffer | `Ctrl+F` |
-| Replace in buffer | `Tab` from the find bar (no default chord) |
-| Follow link | `Ctrl+Enter` (modern terminals) / `Ctrl+N` |
-| New journal entry | `Ctrl+J` |
+| Preferences | `F4` or `Ctrl+,` |
+| Search content | `Ctrl+K` |
+| Find a note by name | `Ctrl+O` |
+| Show or hide the drawer | `Ctrl+T` |
+| Show the file list | `Ctrl+E` |
+| Find in the note | `Ctrl+F` |
+| Follow a link | `Ctrl+Enter` or `Ctrl+N` |
+| Today's journal | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
-| Save current query | `Ctrl+D` |
+| Save a search | `Ctrl+D` |
 | Saved searches | `F3` |
-| Sort dialog | `Ctrl+R` |
-| File operations | `F2` |
+| Change the sort order | `Ctrl+R` |
+| Rename, move, or delete a note | `F2` |
 | Switch workspace | `F5` |
-| Focus right / left | `Ctrl+L` / `Ctrl+H` |
-| Bold / Italic / Strikethrough | `Ctrl+B t b` / `t i` / `t s` (see below¹) |
-| Help | `F1` (cheatsheet: `Ctrl+B ?`). Over FIND or the `Ctrl+K` search, it shows the query syntax |
+| Move focus right or left | `Ctrl+L` or `Ctrl+H` |
+| Bold, italic, strikethrough | `Ctrl+B t b`, `Ctrl+B t i`, `Ctrl+B t s` |
+| Help | `F1` |
 
-¹ Formatting has no `Ctrl` chord by design. `Ctrl+I` and `Tab` send the same byte (`0x09`) on every terminal without the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). For this reason, `Ctrl+I` cannot work everywhere. If `Ctrl+B` and `Ctrl+S` formatted text while `Ctrl+I` indented, the keys would be inconsistent. All three actions are in the `+text` group of the leader, which works in every terminal.
+## Command sequences
 
-You can still bind a chord to these actions, except `Ctrl+B`, which is the leader key by default:
+Press `Ctrl+B`, then the keys of a group. If you wait, a panel shows your choices.
+
+| Group | Keys |
+|---|---|
+| `f` find | `f f` notes · `f g` search · `f t` tags · `f b` backlinks · `f r` recent · `f s` saved searches · `f h` headings · `f p` pinned notes |
+| `n` note | `n n` new · `n d` today's journal · `n r` rename · `n m` move · `n p` properties · `n D` delete |
+| `l` links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
+| `o` open | `o f` files · `o q` find · `o t` tags · `o k` links · `o l` outline · `o c` settings |
+| `v` workspace | `v s` switch · `v r` rebuild index · `v t` theme · `v p` preferences |
+| `w` window | `w z` zen mode · `w l` and `w h` resize the drawer |
+| `t` text | `t b` bold · `t i` italic · `t s` strikethrough |
+| `m` this note | `m c` copy link · `m y` copy path · `m r` rename · `m i` pin or unpin |
+| `1` to `9` | Open a pinned note |
+| `p` | Command palette |
+| `?` | Help |
+
+## Change a shortcut
+
+Add a `[key_bindings]` section to `config.toml`. It replaces the whole list of defaults, so list every shortcut that you want to keep. Only `Quit` comes back by itself.
 
 ```toml
 [key_bindings]
-TextEditor-Bold = ["ctrl&S"]
+Quit = ["ctrl&Q"]
+SearchNotes = ["ctrl&K"]
+OpenNote = ["ctrl&O"]
+NewJournal = ["ctrl&J"]
+QuickNote = ["ctrl&W"]
 ```
 
-Remember that a `[key_bindings]` section [replaces the whole keymap](@/getting-started/configuration.md#overrides-replace-the-defaults).
-
-## The Leader Tree
-
-All other commands are behind the leader. Press `Ctrl+B`, then a short sequence. If you pause in the middle of a sequence, the which-key panel shows the next keys.
-
-| Group | Keys | Examples |
-| ----- | ---- | -------- |
-| `f` +find | `f f` files · `f g` grep/query · `f t` tags · `f b` backlinks · `f r` recent · `f s` saved searches · `f h` headings · `f p` pinned notes |
-| `n` +note | `n n` new · `n d` daily · `n t` from template · `n r` rename · `n p` properties · `n m` move · `n D` delete |
-| `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
-| `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
-| `g` +git | `g s` status · `g p` sync/push · `g l` log · `g d` diff *(log/diff/sync are display-only stubs)* |
-| `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v p` preferences |
-| `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
-| `t` +text | `t b` bold · `t i` italic · `t s` strikethrough |
-| `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename · `m i` pin / unpin |
-| `p` | command palette |
-| `?` | help / cheatsheet |
-| `1`–`9` | open pinned note 1–9 |
-
-The [TUI guide](@/using-kimun/tui.md#the-leader-key) explains how the leader works. [Leader Tree Overrides](@/getting-started/configuration.md#leader-tree-overrides) explains how to remap the whole tree.
+Bold, italic, and strikethrough have no `Ctrl` shortcut. Most terminals cannot tell `Ctrl+I` from `Tab`. You can bind your own, for example `TextEditor-Bold = ["ctrl&S"]`.

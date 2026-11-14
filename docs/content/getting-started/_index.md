@@ -6,8 +6,8 @@ sort_by = "weight"
 
 # Getting Started
 
-This section explains how to install Kimün, how to point it at a notes folder, and the main configuration.
+This section shows you how to install Kimün, choose a notes folder, and change the main settings.
 
-To try Kimün without your own notes, use the `example/` directory of the repository. It has sample notes and a ready-made `config.toml`.
+To try Kimün with sample notes, open the `example/` folder of the repository as your notes folder.
 
 Start here: [Installation](@/getting-started/installation.md)

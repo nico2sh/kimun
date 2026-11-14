@@ -1,166 +1,60 @@
 +++
 title = "Themes"
-weight = 14
+weight = 15
 +++
 
 # Themes
 
-Kimün ships with 67 built-in themes. You can write your own theme as a small TOML file.
+Kimün has 67 built-in themes. You can also make your own.
 
-To pick a theme, open the theme picker with `Ctrl+B v t` (or `t` in the CFG drawer). Type to filter the list by name. When you move the selection, the app changes style at once. Enter saves the choice, and Esc reverts it. You can also set the theme in your configuration:
+## Pick a theme
+
+In the terminal app, press `Ctrl+B v t`. In the desktop app, press `Ctrl+Shift+B v t`. Type to filter the list. The colors change as you move through the list. Click `Apply` or press `Enter` to keep a theme. Click `Cancel` or press `Esc` to go back.
+
+![The theme picker in the desktop app](/img/gui-theme-picker.png)
+
+You can also set the theme in `config.toml`:
 
 ```toml
 theme = "Nord"
 ```
 
-## Built-in Themes
+## Built-in themes
 
-| Family | Dark | Light |
-|---|---|---|
-| Gruvbox | Gruvbox Dark *(default)* | Gruvbox Light |
-| Catppuccin | Catppuccin Mocha, Catppuccin Macchiato, Catppuccin Frappé | Catppuccin Latte |
-| Tokyo Night | Tokyo Night, Tokyo Night Storm, Tokyo Night Moon | Tokyo Night Day |
-| Solarized | Solarized Dark | Solarized Light |
-| Dracula | Dracula | Alucard *(Dracula's official light variant)* |
-| One | One Dark | One Light |
-| Everforest | Everforest Dark | Everforest Light |
-| Rosé Pine | Rosé Pine, Rosé Pine Moon | Rosé Pine Dawn |
-| Kanagawa | Kanagawa Wave, Kanagawa Dragon | Kanagawa Lotus |
-| Nord | Nord | — |
-| Monokai | Monokai | — |
-| GitHub | GitHub Dark, GitHub Dark Dimmed | GitHub Light |
-| Ayu | Ayu Dark, Ayu Mirage | Ayu Light |
-| Material | Material, Material Palenight, Material Ocean | — |
-| Night Owl | Night Owl | Night Owl Light |
-| Nightfox | Nightfox, Carbonfox | Dayfox |
-| Oxocarbon | Oxocarbon Dark | Oxocarbon Light |
-| Flexoki | Flexoki Dark | Flexoki Light |
-| Selenized | Selenized Dark | Selenized Light |
-| Modus | Modus Vivendi | Modus Operandi |
-| Melange | Melange Dark | Melange Light |
-| Tomorrow | Tomorrow Night | Tomorrow |
-| PaperColor | PaperColor Dark | PaperColor Light |
-| Edge | Edge Dark | Edge Light |
-| VS Code | VS Code Dark+ | VS Code Light+ |
-| Others | Zenburn, Cobalt2, Synthwave '84, Everblush, Sonokai, Vesper, Iceberg | Quiet Light |
-| ANSI | *uses your terminal's 16-color palette, light or dark* | |
+The default is Gruvbox Dark. These theme families are included. Most have both a dark and a light theme:
 
-### Color depth
+Gruvbox, Catppuccin, Tokyo Night, Solarized, Dracula, One, Everforest, Rosé Pine, Kanagawa, Nord, Monokai, GitHub, Ayu, Material, Night Owl, Nightfox, Oxocarbon, Flexoki, Selenized, Modus, Melange, Tomorrow, PaperColor, Edge, VS Code, Zenburn, Cobalt2, Synthwave '84, Everblush, Sonokai, Vesper, Iceberg, and Quiet Light.
 
-Themes adapt to what your terminal supports. A theme uses truecolor where the terminal has it. Otherwise it uses 256 colors, or the 16 ANSI slots on basic terminals. On a 16-color terminal, every theme behaves like the ANSI theme and follows the palette of your terminal.
+The `ANSI` theme uses the colors of your terminal. Use it if you want Kimün to match your terminal.
 
-Kimün reads the `COLORTERM` and `TERM` environment variables to find out what your terminal supports. PowerShell and cmd on Windows set neither, so there Kimün uses truecolor whenever the console accepts it. To force fewer colors, set `TERM`, for example `TERM=xterm-256color` for 256 colors.
+On a terminal with few colors, every theme looks like the `ANSI` theme.
 
-## Creating a Custom Theme
+## Make your own theme
 
-### Theme File Location
-
-Put custom theme files in the `themes/` subdirectory of your Kimün configuration directory:
+Save a `.toml` file in the `themes/` folder next to your `config.toml`:
 
 - Linux and macOS: `~/.config/kimun/themes/`
 - Windows: `%USERPROFILE%\kimun\themes\`
 
-Each file must have a `.toml` extension. The filename does not matter. The display name of the theme comes from the `name` field inside the file.
-
-### Theme File Format
-
-A theme file is a TOML file with a `name` field and up to 27 color roles. Only `name` and the core roles that you want to change are required. Kimün derives each role that you omit from a related role. For example, `bg_hard` and `bg_soft` derive from `bg`, `focus_border` derives from `green`, and `selection_fg` derives from `fg_bright`. A minimal theme can be a few lines long.
+Only `name` is required. Kimün picks the other colors from the ones that you give.
 
 ```toml
 name = "My Theme"
 
-# Backgrounds
-bg            = "#1e1e2e"   # main/editor background
-bg_hard       = "#11111b"   # modals and input fields (harder contrast)
-bg_soft       = "#24243a"   # alternating rows, horizontal rules
-bg_panel      = "#181825"   # drawer / panel background
-selection_bg  = "#313244"   # selected row background
-
-# Text
-fg            = "#cdd6f4"   # primary text
-fg_bright     = "#f5f7ff"   # titles, headings
-fg_secondary  = "#a6adc8"   # filenames, metadata, hints
-gray          = "#6c7086"   # placeholders, separators, disabled
-selection_fg  = "#f5f7ff"   # text on selected rows
-
-# Chrome
-border_dim    = "#45475a"   # unfocused borders
-focus_border  = "#a6e3a1"   # focused borders (the green frame)
-accent        = "#89b4fa"   # title bars, active markers
-cursor        = "#f5e0dc"   # block cursor in text fields
-
-# Accent palette (query highlighting, status, markdown)
-red           = "#f38ba8"   # errors, query negation
-green         = "#a6e3a1"   # success, quoted query terms
-yellow        = "#f9e2af"   # warnings, field keys, keycaps
-blue          = "#89b4fa"   # wikilink targets
-purple        = "#cba6f7"   # numbers and dates
-aqua          = "#94e2d5"   # tags, group labels
-orange        = "#fab387"   # operators, strong accents
-
-# Semantic
-color_directory    = "#89dceb"  # directory rows in the file list
-color_journal_date = "#94e2d5"  # journal date annotations
-color_search_match = "#a6e3a1"  # highlighted search matches
-color_tag          = "#fab387"  # #hashtag spans in the editor
-blockquote_bar     = "#585b70"  # the ▏ bar replacing > markers
-code_bg            = "#181825"  # fenced/indented code-block background
-color_replace_preview = "#3e3450"  # background behind replace-preview text
+bg           = "#1e1e2e"   # background
+fg           = "#cdd6f4"   # text
+fg_bright    = "#f5f7ff"   # headings
+accent       = "#89b4fa"   # title bars and active items
+selection_bg = "#313244"   # selected row
+red          = "#f38ba8"
+green        = "#a6e3a1"
+yellow       = "#f9e2af"
+blue         = "#89b4fa"
+purple       = "#cba6f7"
+aqua         = "#94e2d5"
+orange       = "#fab387"
 ```
 
-`color_replace_preview` is a background color, so use a muted shade and not an accent color. It marks the text that the replace preview shows in place of a match. That text is not in the note yet. The color must be clearly different from `selection_bg` and `code_bg`. If you omit it, Kimün uses `accent`, which makes a very loud highlight.
+You can write a color as `"#1e1e2e"`, `"#abc"`, `"rgb(30, 30, 46)"`, or `"ansi:4"`.
 
-### Color Formats
-
-A color can have one of these formats:
-
-| Format | Example | Notes |
-|---|---|---|
-| 6-digit hex | `"#1e1e2e"` | |
-| 3-digit hex (shorthand) | `"#abc"` | Expands to `#aabbcc` |
-| RGB function | `"rgb(30, 30, 46)"` | |
-| ANSI index | `"ansi:4"` | 0-255 |
-| Terminal default | `"reset"` | Uses the default fg or bg of the terminal |
-
-### Activating a Custom Theme
-
-After you save the file, start Kimün, or restart it. Your theme appears in the theme picker (`Ctrl+B v t`) with the built-in themes. You can also set it in `config.toml`:
-
-```toml
-theme = "My Theme"
-```
-
-The name must match the `name` field in your `.toml` file exactly.
-
-### Overriding the Default Theme
-
-If you save a file named `default.toml` in the themes directory, Kimün loads it as an additional theme. It does not replace the built-in default. To make it the active theme, set the top-level `theme` key to its `name`, as shown above.
-
-## Example: Ayu Dark Theme (minimal)
-
-Kimün derives every role that the file does not list:
-
-```toml
-name = "Ayu Dark"
-
-bg           = "#0a0e14"
-bg_panel     = "#0d1017"
-selection_bg = "#273747"
-fg           = "#b3b1ad"
-fg_secondary = "#6c7380"
-gray         = "#4d5566"
-border_dim   = "#11151c"
-accent       = "#e6b450"
-
-red    = "#d95757"
-green  = "#7fd962"
-yellow = "#e6b450"
-blue   = "#39bae6"
-purple = "#d2a6ff"
-aqua   = "#95e6cb"
-orange = "#ff8f40"
-```
-
-Save this file as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your configuration.
-
-Theme files are plain TOML, so you can share a theme by copying its file. For other configuration, see [Configuration](@/getting-started/configuration.md).
+Your theme then appears in the theme picker. To use it, pick it, or set `theme = "My Theme"` in `config.toml`.
