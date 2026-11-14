@@ -116,18 +116,25 @@ fn parse(raw: &str) -> Result<ServerInstall, MarkerProblem> {
 mod tests {
     use super::*;
 
+    /// An absolute folder on every platform (`/home/u/..` is not absolute on Windows).
+    fn folder() -> PathBuf {
+        std::env::temp_dir().join("kimun-bin")
+    }
+
     fn text(service: &str) -> String {
+        // A TOML literal string (single quotes) takes a Windows path as it is.
         format!(
-            "installer = \"install-server.sh\"\ninstall_dir = \"/home/u/.local/bin\"\nservice = \"{service}\"\n"
+            "installer = \"install-server.sh\"\ninstall_dir = '{}'\nservice = \"{service}\"\n",
+            folder().display()
         )
     }
 
     #[test]
     fn a_systemd_marker_names_the_folder_and_the_service() {
         let m = parse(&text("systemd")).unwrap();
-        assert_eq!(m.install_dir, PathBuf::from("/home/u/.local/bin"));
+        assert_eq!(m.install_dir, folder());
         assert_eq!(m.service, ServiceKind::Systemd);
-        assert_eq!(m.binary(), PathBuf::from("/home/u/.local/bin/kimun-server"));
+        assert_eq!(m.binary(), folder().join("kimun-server"));
         assert_eq!(
             parse(&text("launchd")).unwrap().service,
             ServiceKind::Launchd
