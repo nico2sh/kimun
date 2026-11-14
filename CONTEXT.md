@@ -413,6 +413,24 @@ _Avoid_: key event (crossterm's type), keystroke.
 A **GUI** Preferences setting that takes effect and is written to `config.toml` the moment it changes — theme, fonts, scale, editor backend, autosave, sorting. Heavy changes (switching a workspace, reindex, the server URL) are explicit actions with confirmation instead. The TUI keeps its explicit Save.
 _Avoid_: auto-save (that is the note **autosave**), live setting.
 
+### GUI motion
+
+**Motion**:
+The smooth change over time the GUI draws between two **layout** states (a slot opening, a tab appearing, a group moving). Only presentation: the layout, the focus and the saved session change at once, and the screen catches up. Direct manipulation (a divider drag, a window resize) and the first frame after a restore never use it. A change that arrives mid-**motion** starts a new one from what is on screen, never queues and never waits.
+_Avoid_: animation (names the mechanism, not the user-facing behavior), transition (collides with the toast's enter and exit).
+
+**Motion speed**:
+One of three named durations a change picks: quick, standard or slow. A change names its kind, never a raw duration, and every speed shares one curve. Reduced motion (`[gui] reduce_motion`) makes every **motion** end at once.
+_Avoid_: duration, timing, easing (those are the numbers behind a speed).
+
+**Resize policy**:
+How a leaf's content behaves while its frame changes size, declared by the leaf. A slot is pinned: its content is laid out once at its final size and the moving frame clips it. An editor group is live: its content follows the frame at every size.
+_Avoid_: reflow mode, clip mode.
+
+**Reveal order**:
+The fixed staging of a leaf's **motion**. On enter the frame moves first and the content appears second. On exit the content fades first and the frame collapses second, so a closing pane never shows squeezed content.
+_Avoid_: stagger, sequence.
+
 ### Ask
 
 **Ask workspace**:
