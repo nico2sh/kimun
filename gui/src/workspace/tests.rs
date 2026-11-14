@@ -95,6 +95,9 @@ pub(super) fn gui(toml: &str) -> GuiSettings {
 
 /// A shell `width` px wide, its layout read from `gui`, persisting to
 /// `store`, the editor (plain unless `vim`) showing `text`.
+///
+/// Reduced motion is on, so every layout is drawn in its end state at
+/// once; [`open_shell_motion`] leaves motion on.
 pub(super) fn open_shell(
     cx: &mut TestAppContext,
     width: f32,
@@ -103,10 +106,38 @@ pub(super) fn open_shell(
     vim: bool,
     store: LayoutStore,
 ) -> Shell {
+    open_shell_motion(cx, width, gui, text, vim, store, true)
+}
+
+/// [`open_default`] with motion on: layouts move over time, stepped with
+/// the executor clock.
+pub(super) fn open_animated(cx: &mut TestAppContext) -> Shell {
+    open_shell_motion(
+        cx,
+        1000.,
+        &GuiSettings::default(),
+        "",
+        false,
+        LayoutStore::Off,
+        false,
+    )
+}
+
+/// [`open_shell`] with reduced motion `reduce`.
+pub(super) fn open_shell_motion(
+    cx: &mut TestAppContext,
+    width: f32,
+    gui: &GuiSettings,
+    text: &str,
+    vim: bool,
+    store: LayoutStore,
+    reduce: bool,
+) -> Shell {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+        cx.set_reduce_motion(reduce);
     });
     let layout = shell_tree::restore(gui, shell_tree::RESTORE_CAPS);
     let text = text.to_string();

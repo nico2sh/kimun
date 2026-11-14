@@ -16,7 +16,7 @@ fake-update = ["kimun-notes/scripted-updates"]
 [dependencies]
 kimun-notes = { path = "../tui" }
 kimun_core = { path = "../core" }
-gpui-kit = "0.9.0"
+gpui-kit = "0.9.1"
 open = "5"
 tokio = { workspace = true }
 toml = { workspace = true }
@@ -37,11 +37,11 @@ winresource = "0.1"
 [dev-dependencies]
 kimun-notes = { path = "../tui", features = ["scripted-updates"] }
 async-trait = "0.1"
-gpui-kit = { version = "0.9.0", features = ["test-support"] }
+gpui-kit = { version = "0.9.1", features = ["test-support"] }
 tempfile = "3"
 
 # A real text system for the UI font's tests (`ui_font`): Linux's
 # cosmic-text backend, built without system fonts. Already in the tree
 # through `gpui-pre-linux`; the same pinned version.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-gpui-pre-wgpu = "=0.3.11"
+gpui-pre-wgpu = "=0.3.12"
