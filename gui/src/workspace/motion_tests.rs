@@ -1086,3 +1086,20 @@ fn a_new_weight_key_starts_from_its_seed(cx: &mut TestAppContext) {
     rig.frame(cx, vec![weight(new, 0.3)]);
     assert_eq!(rig.value(new), Some(0.3), "and moves to its target");
 }
+
+#[gpui_kit::test]
+fn a_pending_snap_is_consumed_by_a_frame_that_snaps_anyway(cx: &mut TestAppContext) {
+    let rig = Rig::keyed(cx, MotionKey::Rail, false, Enter::AtRest, Speed::Standard);
+    assert_eq!(rig.frame(cx, false), 0.0);
+    // The frame snaps on its facts and a snap is also pending: one frame
+    // uses both up.
+    rig.motion.borrow_mut().snap_next_frame();
+    rig.motion.borrow_mut().begin_frame(SnapFacts {
+        viewport_changed: true,
+        ..SnapFacts::default()
+    });
+    assert_eq!(rig.frame(cx, true), 1.0, "adopted at once");
+    // The next frame is an ordinary one: a change moves.
+    rig.motion.borrow_mut().begin_frame(SnapFacts::default());
+    assert_eq!(rig.frame(cx, false), 1.0, "starts a move, not a snap");
+}

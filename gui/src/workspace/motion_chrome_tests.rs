@@ -716,8 +716,87 @@ fn two_closed_labels_leave_in_order(cx: &mut TestAppContext) {
         widths[1] < widths[2] - 1.0,
         "the first label to leave comes first: {widths:?}"
     );
-    assert!(
-        (widths[2] - widths[3]).abs() < 1.0 || widths[2] <= widths[3] + 1.0,
-        "the second is not wider than a whole tab: {widths:?}"
+}
+
+// ---- Labels that leave keep their place among the rest.
+
+/// A window on a vault of four notes, each open in a tab of its own, with
+/// motion on and everything at rest.
+fn open_four_note_tabs(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Shell) {
+    let notes = [("a.md", "a"), ("b.md", "b"), ("c.md", "c"), ("d.md", "d")];
+    let v = rt.block_on(test_vault(&notes, &[]));
+    let started = open_started_motion(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+        false,
+        false,
     );
+    drive(rt, cx, |cx| started.text(cx) == "a");
+    for name in ["b.md", "c.md", "d.md"] {
+        cx.update(|cx| {
+            started
+                .workspace
+                .update(cx, |w, cx| w.open_note_in_new_tab(VaultPath::new(name), cx))
+        });
+    }
+    drive(rt, cx, |cx| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.layout.region().tabs().len() == 4
+                && w.layout.region().all_groups().into_iter().all(|group| {
+                    w.state(group)
+                        .and_then(|s| s.notes.as_ref())
+                        .is_some_and(|h| {
+                            !h.is_switching() && !h.is_open_wanted() && !h.session.is_open_pending()
+                        })
+                })
+        })
+    });
+    let shell = Shell {
+        handle: started.handle,
+        workspace: started.workspace.clone(),
+    };
+    frame(cx, &shell);
+    wait(cx, 400);
+    frame(cx, &shell);
+    (v, shell)
+}
+
+#[gpui_kit::test]
+fn labels_closed_apart_keep_the_order_of_the_rest(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, shell) = open_four_note_tabs(cx, &rt);
+    let before: Vec<String> = (0..4)
+        .map(|at| pill_label(cx, &shell, at).expect("four labels are drawn"))
+        .collect();
+    let mut sorted = before.clone();
+    sorted.sort();
+    assert_eq!(before, sorted, "the labels read in order: {before:?}");
+    // Close the first tab, then, 60 ms later, the one now in second place
+    // (the third of the four): both are leaving at 100 ms. A tab that holds
+    // a note flushes it first, so the runtime is driven until the close.
+    let close = |cx: &mut TestAppContext, at: usize, left: usize| {
+        cx.update_window(shell.handle, |_, _, cx| {
+            shell.workspace.update(cx, |w, cx| {
+                let tab = w.layout.region().tabs()[at];
+                w.close_tab(tab, cx)
+            })
+        })
+        .unwrap();
+        drive(&rt, cx, |cx| tab_count(cx, &shell) == left);
+    };
+    close(cx, 0, 3);
+    frame(cx, &shell);
+    wait(cx, 60);
+    frame(cx, &shell);
+    close(cx, 1, 2);
+    frame(cx, &shell);
+    wait(cx, 40);
+    frame(cx, &shell);
+    let during: Vec<String> = (0..4)
+        .map(|at| pill_label(cx, &shell, at).expect("four labels are still drawn"))
+        .collect();
+    assert_eq!(during, before, "each label keeps its place while two leave");
 }

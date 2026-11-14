@@ -589,7 +589,10 @@ impl Workspace {
     /// The minimum (width, height) of what is present in `shape`, in px,
     /// gaps included. `scaled`: each leaf counts as much of its minimum as
     /// its frame has (a slot that opens needs its room as it grows), as the
-    /// cell is drawn now. Not `scaled`: the minimum once every motion ended.
+    /// cell is drawn now. Not `scaled`: each present leaf counts at its
+    /// full minimum, the ones that are leaving included. The final sizes use
+    /// it, so a leaving slot can make them a little wide for the length of
+    /// its exit.
     fn min_px(&self, shape: &TreeShape, rem: f64, scaled: bool) -> (f64, f64) {
         match shape {
             TreeShape::Leaf(leaf) => {

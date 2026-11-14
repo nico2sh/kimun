@@ -47,6 +47,8 @@
 //! depth in the tree). The layout pass draws the weight as it moves. A
 //! cell that gets wrapped changes its last leaf, so its key: a spec lists
 //! `seed_from` keys, and a new key starts from the first that has a value.
+//! This covers wrapping only: a cell that a close unwraps adopts its weight
+//! at once, as closing a slot is instant.
 //! A slot that appears after the first frame enters from nothing
 //! (`Enter::FromZero`). A slot that is removed from the tree is not drawn
 //! while it closes: that needs a ghost cell, and is not done. A keyboard
@@ -197,7 +199,10 @@ impl Motion {
     /// Start a frame. A snapping frame resets everything, so each key
     /// adopts its target at its next sample.
     pub(super) fn begin_frame(&mut self, facts: SnapFacts) {
-        self.snap = must_snap(facts) || std::mem::take(&mut self.snap_next);
+        // Taken first: a frame that snaps on its facts uses a pending snap up
+        // too, and does not leave it for a later, ordinary frame.
+        let pending = std::mem::take(&mut self.snap_next);
+        self.snap = must_snap(facts) || pending;
     }
 
     /// Snap the next frame whatever its facts say: a restore landed, and
