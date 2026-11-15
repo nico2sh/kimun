@@ -101,12 +101,24 @@ pub struct ShapedRow {
 }
 
 /// Everything a cached row depends on besides its runs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct RowKey {
     fonts: EditorFonts,
     font_size: Pixels,
     cell_width: u32,
     theme: std::sync::Arc<Theme>,
+}
+
+// Compared on every prepaint of every editor group. The theme is the same
+// `Arc` from one frame to the next, so a pointer check settles the common
+// case; only a changed pointer pays the field-by-field comparison.
+impl PartialEq for RowKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.font_size == other.font_size
+            && self.cell_width == other.cell_width
+            && self.fonts == other.fonts
+            && (std::sync::Arc::ptr_eq(&self.theme, &other.theme) || self.theme == other.theme)
+    }
 }
 
 /// The view's cache of shaped rows.

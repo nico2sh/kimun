@@ -214,11 +214,11 @@ impl ConfigView {
             return;
         };
         let job = blocking(move || {
-            settings
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_theme()
-                .name
+            // Copy under the lock, read the themes folder after releasing
+            // it: a held read guard would block the UI thread's writes
+            // (every divider drag saves the layout) for the whole scan.
+            let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+            snapshot.get_theme().name
         });
         let key = configured.clone();
         let task = cx.spawn(async move |this, cx| {
