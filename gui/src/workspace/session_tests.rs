@@ -20,7 +20,9 @@ use tokio::runtime::Runtime;
 use super::drop_zones::{DropTarget, Zone};
 use super::reopen_tests::{open, pair, set_current};
 use super::session::SESSION_DEBOUNCE;
-use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
+use super::start_tests::{
+    Started, drive, open_started, open_started_motion, runtime, send, vault_start,
+};
 use super::{LayoutStore, Workspace};
 use crate::startup::{FirstNote, Start};
 use crate::test_vault::{NAME, TestVault, test_vault};
@@ -1279,4 +1281,45 @@ fn every_structural_change_reaches_the_file(cx: &mut TestAppContext) {
         "a group closed",
     );
     win.assert_states_in_step(cx);
+}
+
+// ── Motion ────────────────────────────────────────────────────────────────
+
+/// A restore lands after the first frame: what it brings is drawn in place,
+/// not moved in (ADR-0060, slice two). The strip, with two restored tabs,
+/// has the height at the first frame after the landing that it has at rest.
+#[gpui_kit::test]
+fn a_restored_session_is_drawn_in_place(cx: &mut TestAppContext) {
+    use super::motion_chrome_tests::strip_height_of;
+    use super::motion_tests::{frame, wait};
+    use super::tests::Shell;
+
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(NOTES, &["d.md"]));
+    session_of(&v).save(&two_tab_record()).unwrap();
+    let started = open_started_motion(
+        cx,
+        vault_start(&v, FirstNote::Restore),
+        v.settings.clone(),
+        false,
+        false,
+    );
+    let win = Win(started);
+    drive(&rt, cx, |cx| {
+        !win.indexing(cx) && win.all_idle(cx) && win.notes_by_tab(cx).len() == 2
+    });
+    let shell = Shell {
+        handle: win.handle,
+        workspace: win.workspace.clone(),
+    };
+    frame(cx, &shell);
+    let first = strip_height_of(cx, &shell).expect("the strip is drawn");
+    wait(cx, 400);
+    frame(cx, &shell);
+    let rest = strip_height_of(cx, &shell).unwrap();
+    assert!(
+        (first - rest).abs() < 0.5,
+        "{first} on landing, {rest} at rest"
+    );
 }

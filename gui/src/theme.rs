@@ -583,6 +583,20 @@ pub fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// `from` moved toward `to` by `amount`, in a straight line through every
+/// channel, alpha included. The amount is held between 0 and 1. A color that
+/// fades in or out (the focus indicator) is a mix of its two ends.
+pub fn fade_between(from: Rgba, to: Rgba, amount: f32) -> Rgba {
+    let t = amount.clamp(0.0, 1.0);
+    let m = |x: f32, y: f32| x + (y - x) * t;
+    Rgba {
+        r: m(from.r, to.r),
+        g: m(from.g, to.g),
+        b: m(from.b, to.b),
+        a: m(from.a, to.a),
+    }
+}
+
 /// The theme the window is drawn in, shared by every view: they read it
 /// when they render ([`current`]) instead of keeping a copy, so a theme
 /// change is one [`set_current`] and no view can be left on the old one.
@@ -615,6 +629,45 @@ pub(crate) fn observe<T: 'static>(cx: &mut gpui_kit::Context<T>) -> gpui_kit::Su
 
 #[cfg(test)]
 mod tests {
+    use gpui_kit::Rgba;
+
+    fn colour(r: f32, g: f32, b: f32, a: f32) -> Rgba {
+        Rgba { r, g, b, a }
+    }
+
+    #[test]
+    fn fade_between_returns_each_end_at_the_limits() {
+        let (from, to) = (colour(0.1, 0.2, 0.3, 1.0), colour(0.9, 0.8, 0.7, 0.5));
+        assert_eq!(super::fade_between(from, to, 0.0), from);
+        assert_eq!(super::fade_between(from, to, 1.0), to);
+    }
+
+    #[test]
+    fn fade_between_is_halfway_at_one_half() {
+        let black = colour(0.0, 0.0, 0.0, 1.0);
+        let white = colour(1.0, 1.0, 1.0, 1.0);
+        assert_eq!(
+            super::fade_between(black, white, 0.5),
+            colour(0.5, 0.5, 0.5, 1.0)
+        );
+    }
+
+    #[test]
+    fn fade_between_limits_the_amount() {
+        let (from, to) = (colour(0.1, 0.2, 0.3, 1.0), colour(0.9, 0.8, 0.7, 1.0));
+        assert_eq!(super::fade_between(from, to, -1.0), from);
+        assert_eq!(super::fade_between(from, to, 2.0), to);
+    }
+
+    #[test]
+    fn fade_between_moves_alpha_too() {
+        let color = colour(0.2, 0.4, 0.6, 0.8);
+        let clear = Rgba { a: 0.0, ..color };
+        let half = super::fade_between(clear, color, 0.5);
+        assert_eq!((half.r, half.g, half.b), (0.2, 0.4, 0.6));
+        assert!((half.a - 0.4).abs() < 1e-6);
+    }
+
     use super::*;
 
     /// The dialog surface reads the kit's per-component tokens, not its

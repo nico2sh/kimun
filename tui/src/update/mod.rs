@@ -20,6 +20,7 @@ mod provider;
 mod state;
 
 pub use channel::InstallChannel;
+pub(crate) use platform::platform as release_platform;
 pub use platform::{Product, bundle_asset_name};
 pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
@@ -38,6 +39,12 @@ pub use state::UpdateState;
 /// adjust those.
 fn provider() -> impl ReleaseProvider {
     manifest::ManifestProvider
+}
+
+/// The raw text of the release manifest, for a reader of another series than the app's
+/// (the server's update in [`crate::server_manage`]). One place fetches it.
+pub(crate) fn fetch_manifest_body() -> Result<String, UpdateError> {
+    manifest::fetch_manifest()
 }
 
 /// Human-facing releases page for the active provider (shown when self-update
@@ -208,7 +215,7 @@ pub fn dismiss(config_dir: &Path, version: &str) -> std::io::Result<()> {
 
 /// Compare two `X.Y.Z` versions: is `candidate` strictly newer than `current`?
 /// Unparseable input compares as not-newer (fail safe — never nudge on garbage).
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
     match (parse_version(candidate), parse_version(current)) {
         (Some(c), Some(cur)) => c > cur,
         _ => false,
@@ -218,7 +225,7 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// Parse a plain `X.Y.Z` version into a comparable tuple. Returns `None` for
 /// anything with a pre-release/build suffix or non-numeric parts — release tags
 /// considered here are always plain stable triples.
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut parts = v.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
