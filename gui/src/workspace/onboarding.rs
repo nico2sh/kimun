@@ -1080,18 +1080,18 @@ impl OnboardingView {
                                 div()
                                     .text_base()
                                     .text_color(theme::bright(t))
-                                    .child("Your notes as plain Markdown files, on your own disk."),
+                                    .child("Store your notes as plain Markdown files, locally."),
                             ),
                     ),
             )
             .child(para(
                 "This setup walks you through the essentials: where your notes live, how \
-                 the app looks and which editor drives it.",
+                 the app looks and how the editor works.",
                 t,
             ))
             .child(para(
-                "Nothing is applied until you finish the summary. You can run this setup \
-                 again from the command palette (\u{201c}guided setup\u{201d}).",
+                "Nothing is applied until you finish the summary. And if you have second thoughts, \
+                 you can run this setup again from the command palette (\u{201c}guided setup\u{201d}).",
                 t,
             ))
             .into_any_element()
@@ -1171,8 +1171,8 @@ impl OnboardingView {
             .flex_col()
             .gap_4()
             .child(para(
-                "A workspace is where your notes live: one folder on disk, holding plain \
-                 Markdown files. kimün indexes it for search and links.",
+                "A workspace is where your notes live: a folder on disk, holding plain \
+                 Markdown files. Kimün indexes it for search and links.",
                 t,
             ))
             .child(
@@ -1346,7 +1346,7 @@ impl OnboardingView {
             .flex_col()
             .gap_4()
             .child(para(
-                "kimün can check GitHub for a newer release on startup and show a small \
+                "Kimün can check GitHub for a newer release on startup and show a small \
                  notice. Nothing is sent: it only reads the public list of releases. The \
                  terminal and desktop apps both check.",
                 t,

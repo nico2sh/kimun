@@ -26,6 +26,21 @@ fn tint(base: &ThemeColor, top: &ThemeColor) -> ThemeColor {
 }
 
 impl Theme {
+    /// Set the optional roles a theme chooses for itself: `(role, color)`
+    /// pairs, the role one of `heading`, `link`, `focus` or `border`.
+    fn tuned(mut self, roles: &[(&str, &str)]) -> Theme {
+        for (role, color) in roles {
+            match *role {
+                "heading" => self.heading = Some(hex(color)),
+                "link" => self.link = Some(hex(color)),
+                "focus" => self.focus_border = hex(color),
+                "border" => self.border = Some(hex(color)),
+                other => panic!("unknown theme role {other}"),
+            }
+        }
+        self
+    }
+
     fn from_palette(name: &str, p: Palette) -> Theme {
         let c: Vec<ThemeColor> = p.iter().map(|s| hex(s)).collect();
         let replace = tint(&c[0], &c[11]);
@@ -50,7 +65,7 @@ impl Theme {
             gray: c[15].clone(),
             selection_fg: c[6].clone(),
             border_dim: c[16].clone(),
-            focus_border: c[8].clone(),
+            focus_border: c[17].clone(),
             accent: c[17].clone(),
             color_directory: c[10].clone(),
             color_journal_date: c[12].clone(),
@@ -59,12 +74,20 @@ impl Theme {
             blockquote_bar: c[17].clone(),
             code_bg: c[3].clone(),
             color_replace_preview: replace,
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
     /// The themes defined in this module, in presentation order.
     pub(super) fn extra_builtins() -> Vec<Theme> {
         vec![
+            Theme::kimun_dark(),
+            Theme::kimun_light(),
             Theme::github_dark(),
             Theme::github_dark_dimmed(),
             Theme::github_light(),
@@ -114,6 +137,28 @@ impl Theme {
         ]
     }
 
+    pub fn kimun_dark() -> Self {
+        Self::from_palette(
+            "Kimün Dark",
+            [
+                "#1e1316", "#150d0f", "#2b1c20", "#241519", "#4a2a31", "#efe4e6", "#ffffff",
+                "#f2707f", "#8fcf9a", "#ffcb61", "#77bef0", "#c5a3e8", "#6fd3c4", "#f7a068",
+                "#a8979b", "#7a6a6e", "#3d2a2f", "#ea5b6f",
+            ],
+        )
+    }
+
+    pub fn kimun_light() -> Self {
+        Self::from_palette(
+            "Kimün Light",
+            [
+                "#fbf6f4", "#ffffff", "#f1e6e4", "#f6eeec", "#f1d9dd", "#2a1519", "#32070e",
+                "#c4283f", "#2f7d4a", "#9a6a00", "#1f6fa8", "#7a4bb0", "#12796f", "#b85a14",
+                "#6e5a5f", "#8f7d82", "#e3d3d2", "#c93a52",
+            ],
+        )
+    }
+
     pub fn github_dark() -> Self {
         Self::from_palette(
             "GitHub Dark",
@@ -156,8 +201,8 @@ impl Theme {
                 "#a5adcb", "#6e738d", "#494d64", "#c6a0f6",
             ],
         )
+        .tuned(&[("heading", "#f5a97f")])
     }
-
     pub fn catppuccin_frappe() -> Self {
         Self::from_palette(
             "Catppuccin Frappé",
@@ -167,8 +212,8 @@ impl Theme {
                 "#a5adce", "#737994", "#51576d", "#ca9ee6",
             ],
         )
+        .tuned(&[("heading", "#ef9f76")])
     }
-
     pub fn ayu_dark() -> Self {
         Self::from_palette(
             "Ayu Dark",
@@ -178,8 +223,8 @@ impl Theme {
                 "#8a9199", "#565b66", "#1b1f2b", "#e6b450",
             ],
         )
+        .tuned(&[("heading", "#59c2ff")])
     }
-
     pub fn ayu_mirage() -> Self {
         Self::from_palette(
             "Ayu Mirage",
@@ -189,8 +234,8 @@ impl Theme {
                 "#9a9a9a", "#707a8c", "#33394a", "#ffcc66",
             ],
         )
+        .tuned(&[("heading", "#73d0ff")])
     }
-
     pub fn ayu_light() -> Self {
         Self::from_palette(
             "Ayu Light",
@@ -200,8 +245,12 @@ impl Theme {
                 "#787b80", "#abb0b6", "#d9d8d7", "#ff9940",
             ],
         )
+        .tuned(&[
+            ("heading", "#ba5700"),
+            ("link", "#ba5700"),
+            ("focus", "#ba5700"),
+        ])
     }
-
     pub fn material() -> Self {
         Self::from_palette(
             "Material",
@@ -211,8 +260,8 @@ impl Theme {
                 "#90a4ae", "#546e7a", "#37474f", "#80cbc4",
             ],
         )
+        .tuned(&[("heading", "#82aaff")])
     }
-
     pub fn material_palenight() -> Self {
         Self::from_palette(
             "Material Palenight",
@@ -222,8 +271,12 @@ impl Theme {
                 "#959dcb", "#676e95", "#3a3f58", "#ab47bc",
             ],
         )
+        .tuned(&[
+            ("heading", "#c37bcf"),
+            ("link", "#c37bcf"),
+            ("focus", "#c37bcf"),
+        ])
     }
-
     pub fn material_ocean() -> Self {
         Self::from_palette(
             "Material Ocean",
@@ -266,8 +319,8 @@ impl Theme {
                 "#828bb8", "#636da6", "#3b4261", "#82aaff",
             ],
         )
+        .tuned(&[("heading", "#ff966c")])
     }
-
     pub fn tokyo_night_day() -> Self {
         Self::from_palette(
             "Tokyo Night Day",
@@ -277,8 +330,8 @@ impl Theme {
                 "#6172b0", "#848cb5", "#a8aecb", "#2e7de9",
             ],
         )
+        .tuned(&[("heading", "#007197")])
     }
-
     pub fn nightfox() -> Self {
         Self::from_palette(
             "Nightfox",
@@ -310,8 +363,8 @@ impl Theme {
                 "#643f61", "#824d5b", "#d3c7bb", "#2848a9",
             ],
         )
+        .tuned(&[("heading", "#6e33ce")])
     }
-
     pub fn rose_pine_moon() -> Self {
         Self::from_palette(
             "Rosé Pine Moon",
@@ -321,8 +374,8 @@ impl Theme {
                 "#908caa", "#6e6a86", "#44415a", "#c4a7e7",
             ],
         )
+        .tuned(&[("heading", "#f6c177")])
     }
-
     pub fn kanagawa_dragon() -> Self {
         Self::from_palette(
             "Kanagawa Dragon",
@@ -332,8 +385,8 @@ impl Theme {
                 "#a6a69c", "#737c73", "#393836", "#8ba4b0",
             ],
         )
+        .tuned(&[("heading", "#c4b28a")])
     }
-
     pub fn zenburn() -> Self {
         Self::from_palette(
             "Zenburn",
@@ -343,8 +396,8 @@ impl Theme {
                 "#9f9f8f", "#7f7f7f", "#5f5f5f", "#f0dfaf",
             ],
         )
+        .tuned(&[("heading", "#8cd0d3")])
     }
-
     pub fn cobalt2() -> Self {
         Self::from_palette(
             "Cobalt2",
@@ -354,8 +407,8 @@ impl Theme {
                 "#adb7c9", "#6b8199", "#234d70", "#ffc600",
             ],
         )
+        .tuned(&[("heading", "#fb94ff")])
     }
-
     pub fn synthwave_84() -> Self {
         Self::from_palette(
             "Synthwave '84",
@@ -497,8 +550,8 @@ impl Theme {
                 "#c1a78e", "#867462", "#4d453e", "#ebc06d",
             ],
         )
+        .tuned(&[("heading", "#89b3b6")])
     }
-
     pub fn melange_light() -> Self {
         Self::from_palette(
             "Melange Light",
@@ -519,8 +572,8 @@ impl Theme {
                 "#969896", "#6b7078", "#373b41", "#81a2be",
             ],
         )
+        .tuned(&[("heading", "#de935f")])
     }
-
     pub fn tomorrow() -> Self {
         Self::from_palette(
             "Tomorrow",
@@ -563,8 +616,8 @@ impl Theme {
                 "#a0a0a0", "#6b6b6b", "#282828", "#ffc799",
             ],
         )
+        .tuned(&[("heading", "#8fb4d8")])
     }
-
     pub fn iceberg() -> Self {
         Self::from_palette(
             "Iceberg",
@@ -574,8 +627,8 @@ impl Theme {
                 "#6b7089", "#444b71", "#2e3244", "#84a0c6",
             ],
         )
+        .tuned(&[("heading", "#e2a478")])
     }
-
     pub fn edge_dark() -> Self {
         Self::from_palette(
             "Edge Dark",
@@ -633,6 +686,43 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "duplicate built-in theme name");
+    }
+
+    fn luminance(c: &ThemeColor) -> f64 {
+        let ThemeColor::Rgb(r, g, b) = c else {
+            return 0.0;
+        };
+        let lin = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(*r) + 0.7152 * lin(*g) + 0.0722 * lin(*b)
+    }
+
+    fn contrast(a: &ThemeColor, b: &ThemeColor) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn heading_link_and_focus_colors_read_on_every_background() {
+        for t in Theme::builtins() {
+            if !matches!(t.bg, ThemeColor::Rgb(..)) {
+                continue;
+            }
+            for (role, c) in [
+                ("heading", t.heading_color()),
+                ("link", t.link_color()),
+                ("focus_border", &t.focus_border),
+            ] {
+                let ratio = contrast(c, &t.bg);
+                assert!(ratio >= 3.0, "{}: {role} contrast {ratio:.2}", t.name);
+            }
+        }
     }
 
     #[test]

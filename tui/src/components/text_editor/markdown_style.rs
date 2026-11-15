@@ -38,18 +38,20 @@ pub(super) fn role_style(role: Role, theme: &Theme) -> Style {
                 .fg(theme.fg_secondary.to_ratatui())
                 .add_modifier(Modifier::CROSSED_OUT),
             ElementKind::InlineCode => Style::default()
-                .fg(theme.aqua.to_ratatui())
+                .fg(theme.code_color().to_ratatui())
                 .bg(theme.bg_soft.to_ratatui()),
             ElementKind::Link => Style::default()
-                .fg(theme.accent.to_ratatui())
+                .fg(theme.link_color().to_ratatui())
                 .add_modifier(Modifier::UNDERLINED),
             ElementKind::Image => Style::default()
-                .fg(theme.accent.to_ratatui())
+                .fg(theme.link_color().to_ratatui())
                 .add_modifier(Modifier::ITALIC),
-            // H1/H2 bright + bold, H3 yellow + bold.
-            ElementKind::HeadingH1 | ElementKind::HeadingH2 => Style::default()
-                .fg(theme.fg_bright.to_ratatui())
+            // H1 heading colour + bold, H2 heading colour at normal weight,
+            // H3 yellow + bold.
+            ElementKind::HeadingH1 => Style::default()
+                .fg(theme.heading_color().to_ratatui())
                 .add_modifier(Modifier::BOLD),
+            ElementKind::HeadingH2 => Style::default().fg(theme.heading_color().to_ratatui()),
             ElementKind::HeadingH3 => Style::default()
                 .fg(theme.yellow.to_ratatui())
                 .add_modifier(Modifier::BOLD),
