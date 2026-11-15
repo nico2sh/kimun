@@ -222,8 +222,8 @@ impl EditorElement {
         let font_size = editor_font::font_size(cx);
         let line_height = px((f32::from(font_size) * LINE_HEIGHT).round());
         let text_system = window.text_system().clone();
-        let (cells, font_family) = self.view.update(cx, |view, _| {
-            let fonts = view.editor_fonts(&inputs, &text_system);
+        let (cells, font_family) = self.view.update(cx, |view, view_cx| {
+            let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
             let cells = CellMetrics::from_text_system(
                 &text_system,
                 &fonts.face(false, false),
@@ -388,7 +388,7 @@ impl Element for EditorElement {
         let origin = bounds.origin;
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
-            let fonts = view.editor_fonts(&inputs, &text_system);
+            let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
             let base_font = fonts.face(false, false);
             let cells =
                 CellMetrics::from_text_system(&text_system, &base_font, font_size, line_height);
