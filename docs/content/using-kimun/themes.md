@@ -43,7 +43,7 @@ name = "My Theme"
 
 bg           = "#1e1e2e"   # background
 fg           = "#cdd6f4"   # text
-fg_bright    = "#f5f7ff"   # headings
+fg_bright    = "#f5f7ff"   # bright text, such as titles
 accent       = "#89b4fa"   # title bars and active items
 selection_bg = "#313244"   # selected row
 red          = "#f38ba8"
@@ -57,16 +57,26 @@ orange       = "#fab387"
 
 You can write a color as `"#1e1e2e"`, `"#abc"`, `"rgb(30, 30, 46)"`, or `"ansi:4"`.
 
-You can also set these optional keys. If you leave one out, Kimün uses a default:
+You can also set these optional keys. Each key has a default, so you set only the ones that you want to change:
 
 ```toml
-focus_border = "#89b4fa"   # focused panel edge, default: accent
-border       = "#45475a"   # panel edge at rest, default: border_dim
-header       = "#a6e3a1"   # tint of a panel header in the desktop app
-selected     = "#cba6f7"   # tint behind a chosen item in the desktop app
-heading      = "#f9e2af"   # level 1 and 2 headings, default: accent
-link         = "#89dceb"   # links and images, default: accent
-code         = "#94e2d5"   # inline code, default: aqua
+focus_border = "#89b4fa"   # edge of the focused panel
+border       = "#45475a"   # edge of a panel that is not focused
+header       = "#a6e3a1"   # tint of a panel header (desktop app)
+selected     = "#cba6f7"   # tint behind a chosen item (desktop app)
+heading      = "#f9e2af"   # level 1 and 2 headings in the editor
+link         = "#89dceb"   # links and images in the editor
+code         = "#94e2d5"   # inline code in the editor
 ```
+
+The defaults are:
+
+- `focus_border`, `heading`, and `link` use `accent`.
+- `border` uses `border_dim`. You can set `border_dim` too.
+- `header` is a faint tint of the text color.
+- `selected` uses the color of `focus_border`.
+- `code` uses `aqua`.
+
+Make sure that `accent`, `heading`, `link`, and `focus_border` are easy to read on your background. These colors draw text and edges in the app.
 
 Your theme then appears in the theme picker. To use it, pick it, or set `theme = "My Theme"` in `config.toml`.
