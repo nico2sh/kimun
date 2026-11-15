@@ -214,6 +214,8 @@ use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use self::drop_zones::{DragFrom, Dragged, LiveDrag, ViewDrag};
+use self::motion::{FocusTarget, MotionKey};
+use self::motion_box::{Clip, MotionBox as _};
 use self::placement::Placement;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::input;
@@ -404,6 +406,19 @@ pub(crate) fn slot_id(view: DrawerView) -> SharedString {
     format!("slot-{}", view.id()).into()
 }
 
+/// The element id of the frame a slot leaves behind when its view moved to
+/// another slot (ADR-0060): blank, it closes over time while the view opens
+/// in its new place, so the view is drawn once.
+pub(crate) fn slot_gone_id(view: DrawerView) -> SharedString {
+    format!("slot-gone-{}", view.id()).into()
+}
+
+/// The element id of the content a slot holds at its final size, inside
+/// the frame that opens and closes (ADR-0060).
+pub(crate) fn slot_content_id(view: DrawerView) -> SharedString {
+    format!("slot-content-{}", view.id()).into()
+}
+
 /// The element id of the editor Panel's empty state.
 pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
 
@@ -435,6 +450,10 @@ pub(crate) struct Workspace {
     /// by the divider's leaf ([`tree_view`]), measured as the tree is laid
     /// out: what a drag turns the pointer into a share of.
     divider_cells: tree_view::DividerCells,
+    /// Each slot's presence, so a slot opens and closes over time
+    /// ([`motion`], ADR-0060). Shared so a test holding a window can reach
+    /// it. Presentation only: the layout tree never reads it.
+    motion: Rc<std::cell::RefCell<motion::Motion>>,
     /// A divider drag is in progress (saved when it ends).
     resizing: bool,
     /// How far from its boundary the divider press landed (px along the
@@ -523,6 +542,9 @@ pub(crate) struct Workspace {
     /// The newer server release the server last reported, so the same news
     /// is told once.
     server_update: Option<kimun_notes::server_client::sync::ServerUpdate>,
+    /// The server's update: how it is managed here, and the work under way
+    /// ([`server`]).
+    pub(crate) server_host: server::ServerHost,
     /// The vault the running server sync belongs to; `server_update` is
     /// forgotten only when this changes.
     rag_sync_root: Option<std::path::PathBuf>,
@@ -590,6 +612,9 @@ pub(crate) struct Workspace {
     groups_closing: Option<(tab_strip::CloseTarget, Task<()>)>,
     /// The tab strip's sideways scroll ([`tab_strip`]).
     tab_scroll: ScrollHandle,
+    /// The shown tab's label was still entering at the last frame, so the
+    /// strip asks for the scroll to it once more ([`Self::needs_tab_scroll`]).
+    tab_scroll_moving: std::cell::Cell<bool>,
     /// The tab whose pill the pointer is over: it shows its close button
     /// ([`tab_strip`]).
     tab_hover: Option<kimun_notes::logic::editor_region::TabId>,
@@ -770,6 +795,7 @@ impl Workspace {
             collapsed: HashSet::new(),
             title_bar_height: Default::default(),
             divider_cells: Default::default(),
+            motion: Default::default(),
             resizing: false,
             press_offset: 0.0,
             rail_cursor,
@@ -812,6 +838,7 @@ impl Workspace {
             _views_events: Vec::new(),
             rag_status: RagStatus::Disabled,
             server_update: None,
+            server_host: server::ServerHost::new(server::default_backend()),
             rag_sync_root: None,
             rag_caps: Caps::default(),
             rag_sync: TaskSlot::default(),
@@ -840,6 +867,7 @@ impl Workspace {
             file_task: None,
             groups_closing: None,
             tab_scroll: ScrollHandle::new(),
+            tab_scroll_moving: Default::default(),
             tab_hover: None,
             note_gone: None,
             picker: None,
@@ -2937,15 +2965,22 @@ impl Workspace {
     /// its top edge, laid over it so focusing never shifts content. Subtle,
     /// but always there (design guides: state must be visible).
     fn focus_bar(&self, focus: Focus, cx: &gpui_kit::App) -> Option<impl IntoElement> {
-        (self.layout.focused() == focus).then(|| {
+        self.focus_bar_color(focus, cx).map(|color| {
             div()
                 .absolute()
                 .top_0()
                 .left_0()
                 .right_0()
                 .h_0p5()
-                .bg(theme::focus_border(&theme::current(cx)))
+                .bg(color)
         })
+    }
+
+    /// The color of the focus bar of `focus`: `None` while it shows no
+    /// focus at all, the accent while it has the keyboard, and the accent
+    /// at a part of its alpha while the focus moves (ADR-0060).
+    fn focus_bar_color(&self, focus: Focus, cx: &gpui_kit::App) -> Option<gpui_kit::Rgba> {
+        self.focus_accent(FocusTarget::Surface(focus), cx)
     }
 
     /// The rail's button: hides or shows the rail, tooltip naming the chord.
@@ -3004,30 +3039,20 @@ impl Workspace {
 
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel_bg = theme::panel_background(&theme::current(cx));
-        let focused = self.layout.focused() == Focus::Rail;
         let views = self.rail_views();
         let (top, pinned) = views.split_at(views.len() - 1);
-        let cell = |i: usize, view: DrawerView, cx: &mut Context<Self>| {
-            self.render_rail_cell(
-                view,
-                self.is_shown(view),
-                focused && i == self.rail_cursor,
-                cx,
-            )
+        let cell = |view: DrawerView, cx: &mut Context<Self>| {
+            self.render_rail_cell(view, self.is_shown(view), cx)
         };
-        let top: Vec<AnyElement> = top
-            .iter()
-            .enumerate()
-            .map(|(i, v)| cell(i, *v, cx))
-            .collect();
-        let pinned = cell(views.len() - 1, pinned[0], cx);
+        let top: Vec<AnyElement> = top.iter().map(|v| cell(*v, cx)).collect();
+        let pinned = cell(pinned[0], cx);
         let horizontal = self.rail.horizontal();
-        div()
-            .id("rail")
+        let presence = self.motion.borrow().presence(MotionKey::Rail);
+        let leaving = !self.rail_wanted();
+        let content = presence.content;
+        let rail = div()
+            .id("rail-content")
             .test_support()
-            .track_focus(&self.rail_focus)
-            .role(Role::TabList)
-            .aria_label("Activity rail")
             .flex()
             .flex_none()
             .gap_1()
@@ -3063,6 +3088,29 @@ impl Workspace {
             .child(pinned)
             // Last, so it paints over a highlighted cell.
             .children(self.focus_bar(Focus::Rail, cx))
+            .faded(content);
+        // The frame opens and closes and clips the rail, which keeps its
+        // thickness (both in rems, so at rest they are one size). It grows
+        // from the window's edge.
+        let thickness = rems(RAIL_REMS * presence.frame);
+        div()
+            .id("rail")
+            .test_support()
+            .when(!leaving, |frame| frame.track_focus(&self.rail_focus))
+            .role(Role::TabList)
+            .aria_label("Activity rail")
+            .flex_none()
+            .framed(
+                Clip::Always,
+                matches!(self.rail, RailPosition::Right | RailPosition::Bottom),
+                |frame| {
+                    frame
+                        .when(horizontal, |frame| frame.flex_col().w_full().h(thickness))
+                        .when(!horizontal, |frame| frame.h_full().w(thickness))
+                },
+            )
+            .child(rail)
+            .covered_while(leaving)
     }
 
     /// The rail's button for `side` (the pointer's way to the toggle chords,
@@ -3124,21 +3172,41 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The color of the glyph of `view`'s rail cell: the accent while the
+    /// view is shown (`active`), else the muted color, mixed toward the
+    /// bright one while the keyboard cursor is on the cell (ADR-0060).
+    pub(crate) fn rail_glyph_color(
+        &self,
+        view: DrawerView,
+        active: bool,
+        cx: &App,
+    ) -> gpui_kit::Rgba {
+        let theme = theme::current(cx);
+        if active {
+            theme::focus_border(&theme)
+        } else {
+            self.focus_color(
+                theme::muted(&theme),
+                theme::bright(&theme),
+                FocusTarget::RailCursor(view),
+            )
+        }
+    }
+
+    /// The color of the cursor ring over `view`'s rail cell: `None` while it
+    /// shows no cursor at all, and the accent at a part of its alpha while
+    /// the cursor arrives or leaves.
+    pub(crate) fn rail_cursor_ring(&self, view: DrawerView, cx: &App) -> Option<gpui_kit::Rgba> {
+        self.focus_accent(FocusTarget::RailCursor(view), cx)
+    }
+
     fn render_rail_cell(
         &self,
         view: DrawerView,
         active: bool,
-        cursor: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let accent = theme::focus_border(&theme::current(cx));
-        let glyph = if active {
-            accent
-        } else if cursor {
-            theme::bright(&theme::current(cx))
-        } else {
-            theme::muted(&theme::current(cx))
-        };
+        let glyph = self.rail_glyph_color(view, active, cx);
         let hover = theme::hover_background(&theme::current(cx));
         let selected = theme::selected_background(&theme::current(cx));
         let name = view_registry::spec(view).name;
@@ -3164,14 +3232,14 @@ impl Workspace {
             .child(Icon::new(rail_icon(view)).size_5().text_color(glyph))
             // The keyboard cursor: a ring in the focus colour, distinct
             // from the pointer's hover fill.
-            .when(cursor, |cell| {
+            .when_some(self.rail_cursor_ring(view, cx), |cell, ring| {
                 cell.child(
                     div()
                         .absolute()
                         .inset_0()
                         .rounded_md()
                         .border_1()
-                        .border_color(accent),
+                        .border_color(ring),
                 )
             })
             .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
@@ -3342,7 +3410,7 @@ impl Workspace {
                 .children(if zoomed {
                     None
                 } else {
-                    self.render_tab_strip(cx)
+                    self.render_tab_strip(f32::from(window.rem_size()), cx)
                 })
                 .child(document)
                 .child(self.render_footer(editor_shown, window, cx)),
@@ -3535,6 +3603,12 @@ impl Workspace {
                 .child(view)
                 .into_any_element();
         }
+        // Fitted and sampled before anything is drawn: the rail and the
+        // tree both read the presence of this frame.
+        self.refit(window, cx);
+        self.motion_frame(window, cx);
+        let rail_drawn =
+            self.rail_wanted() || self.motion.borrow().presence(MotionKey::Rail).frame > 0.0;
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
@@ -3559,14 +3633,11 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .bg(theme::background(&theme::current(cx)))
-            .when(!self.rail_hidden && self.rail_leads(), |body| {
+            .when(rail_drawn && self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
-            .child({
-                self.refit(window, cx);
-                self.render_tree(window, cx)
-            })
-            .when(!self.rail_hidden && !self.rail_leads(), |body| {
+            .child(self.render_tree(window, cx))
+            .when(rail_drawn && !self.rail_leads(), |body| {
                 body.child(self.render_rail(cx))
             })
             // Inside the workspace's key context: a key the menu does not
@@ -3722,6 +3793,8 @@ mod layout_writer;
 mod leader;
 mod links;
 mod modal;
+mod motion;
+mod motion_box;
 mod note;
 mod note_flush;
 mod note_menu;
@@ -3781,6 +3854,16 @@ mod footer_tests;
 mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
+#[cfg(test)]
+mod motion_cells_tests;
+#[cfg(test)]
+mod motion_chrome_tests;
+#[cfg(test)]
+mod motion_focus_tests;
+#[cfg(test)]
+mod motion_test_support;
+#[cfg(test)]
+mod motion_tests;
 #[cfg(test)]
 mod note_menu_tests;
 #[cfg(test)]

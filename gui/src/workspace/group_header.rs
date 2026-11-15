@@ -26,13 +26,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, div, px, rems,
+    ParentElement, Rgba, Role, SharedString, StatefulInteractiveElement, Styled, div, px, rems,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::layout_tree::{Focus, GroupId, Leaf, UnitRect};
+use kimun_notes::logic::layout_tree::{GroupId, UnitRect};
 
 use super::Workspace;
 use super::drop_zones::GroupDrag;
+use super::motion::FocusTarget;
 use super::tab_strip::{EMPTY_LABEL, group_name};
 use super::tree_view::{LEAF_BORDER, LEAF_RADIUS_REMS};
 use crate::theme;
@@ -141,15 +142,24 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Whether `group` wears the target marker: it is the active group of
-    /// a shown tab with two or more groups, and the keyboard is outside the
-    /// editor.
-    pub(crate) fn wears_target_marker(&self, group: GroupId) -> bool {
-        let region = self.layout.region();
-        group == region.active_group()
-            && region.groups(region.shown()).len() > 1
-            && self.layout.zoomed().is_none()
-            && self.layout.focused() != Focus::Leaf(Leaf::Editor)
+    /// The color of the target marker over `group`: `None` while it shows no
+    /// focus at all, the accent while `group` wears the marker, and the
+    /// accent at a part of its alpha while the marker fades in or out
+    /// (ADR-0060).
+    pub(crate) fn target_marker_color(&self, group: GroupId, cx: &App) -> Option<Rgba> {
+        self.focus_accent(FocusTarget::Marker(group), cx)
+    }
+
+    /// The color of the title in the header of `group`: the accent while it
+    /// is the active group and the editor has the keyboard, the plain text
+    /// color otherwise, and a mix of the two while the focus moves.
+    pub(crate) fn group_title_color(&self, group: GroupId, cx: &App) -> Rgba {
+        let theme = theme::current(cx);
+        self.focus_color(
+            theme::foreground(&theme),
+            theme::focus_border(&theme),
+            FocusTarget::Title(group),
+        )
     }
 
     /// The target marker over `group`, at `at` in the shown tab: a line in
@@ -163,6 +173,7 @@ impl Workspace {
         at: usize,
         group: GroupId,
         rem: f64,
+        color: Rgba,
         cx: &App,
     ) -> AnyElement {
         let region = self.layout.region();
@@ -171,7 +182,7 @@ impl Workspace {
             .into_iter()
             .find(|(g, _)| *g == group)
             .map(|(_, rect)| rect);
-        let strip = region.tabs().len() > 1 || self.dragged_group(cx).is_some();
+        let strip = self.strip_wanted(cx);
         let (left, right) = rect.map_or((false, false), |rect| marker_corners(rect, strip));
         // The Panel's corner (`rounded_md`) less its border: the curve of
         // the Panel's inner edge.
@@ -182,7 +193,7 @@ impl Workspace {
             .absolute()
             .inset_0()
             .border_t_2()
-            .border_color(theme::focus_border(&theme::current(cx)))
+            .border_color(color)
             .when(left, |el| el.rounded_tl(radius))
             .when(right, |el| el.rounded_tr(radius))
             .into_any_element()
@@ -198,8 +209,6 @@ impl Workspace {
         let theme = theme::current(cx);
         let title = group_title(self, group, cx);
         let dirty = self.editor_dirty_in(group, cx);
-        let keyboard = group == self.layout.active_group()
-            && self.layout.focused() == Focus::Leaf(Leaf::Editor);
         let spoken = super::chrome::spoken_label(&title, dirty);
         let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
         let close = super::chrome::close_button(
@@ -233,11 +242,7 @@ impl Workspace {
             .bg(theme::slot_header_background(&theme))
             .border_b_1()
             .border_color(theme::divider(&theme))
-            .text_color(if keyboard {
-                theme::focus_border(&theme)
-            } else {
-                theme::foreground(&theme)
-            })
+            .text_color(self.group_title_color(group, cx))
             .cursor_grab()
             .on_drag(
                 GroupDrag { group },

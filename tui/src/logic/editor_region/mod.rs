@@ -431,6 +431,7 @@ impl EditorRegion {
     /// others sharing the rest. Either way `group` becomes its tab's active
     /// group. False (nothing changes) for an unknown group and when
     /// `group` already spans that edge in full, a lone group included.
+    /// The desktop app binds this to Alt+Shift+arrows.
     pub fn move_group_dir(&mut self, group: GroupId, dir: Dir) -> bool {
         let Some(tab) = self.group_tab(group) else {
             return false;

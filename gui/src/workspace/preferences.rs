@@ -157,6 +157,11 @@ pub(crate) const BACKENDS_ID: &str = "preferences-backends";
 pub(crate) const BACKEND_KEPT_ID: &str = "preferences-backend-kept";
 pub(crate) const SERVER_ID: &str = "preferences-server";
 pub(crate) const SERVER_ERROR_ID: &str = "preferences-server-error";
+/// The button that opens the server's own settings page in the browser.
+pub(crate) const SERVER_OPEN_ID: &str = "preferences-server-open";
+/// The server's update: the line that names the release, and its button.
+pub(crate) const SERVER_UPDATE_TEXT_ID: &str = "preferences-server-update-text";
+pub(crate) const SERVER_UPDATE_ID: &str = "preferences-server-update";
 const THEME_LIST_ID: &str = "preferences-theme-list";
 
 /// Below this window width (in rems) the section list becomes a row of
@@ -272,6 +277,11 @@ pub(crate) enum PreferencesEvent {
     RunSetup { theme: Theme },
     /// Display's `Check now`: check for an update now (the view stays).
     CheckForUpdates,
+    /// Server's `Open server settings`: open this address (the draft's, saved or
+    /// not) in the browser.
+    OpenServerSettings(String),
+    /// Server's `Update server`: update the server on this machine.
+    UpdateServer,
 }
 
 /// The "Discard your changes?" question, while it is asked.
@@ -400,6 +410,8 @@ pub(crate) struct PreferencesView {
     font_items: Rc<Vec<FontChoice>>,
     server_input: Entity<InputState>,
     server_error: Option<SharedString>,
+    /// What the window knows about an update of the server ([`super::server`]).
+    server_update: super::server::ServerUpdateRow,
     /// The inline problem line.
     message: Option<SharedString>,
     confirm: Option<Discard>,
@@ -507,6 +519,7 @@ impl PreferencesView {
             font_items,
             server_input,
             server_error: None,
+            server_update: super::server::ServerUpdateRow::default(),
             message: None,
             confirm: None,
             saving: None,
@@ -571,6 +584,18 @@ impl PreferencesView {
     #[cfg(test)]
     pub(crate) fn message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    /// The window tells what it knows about an update of the server.
+    pub(crate) fn set_server_update(
+        &mut self,
+        row: super::server::ServerUpdateRow,
+        cx: &mut Context<Self>,
+    ) {
+        if self.server_update != row {
+            self.server_update = row;
+            cx.notify();
+        }
     }
 
     /// The server field's problem.
@@ -1996,7 +2021,7 @@ impl PreferencesView {
             .into_any_element()
     }
 
-    fn render_server(&self, cx: &gpui_kit::App) -> AnyElement {
+    fn render_server(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
         let input = Input::new(&self.server_input)
@@ -2040,6 +2065,79 @@ impl PreferencesView {
                  restarts; the open note is saved first.",
                 t,
             ))
+            .child(self.render_server_open(cx))
+            .when(
+                self.server_update != super::server::ServerUpdateRow::None,
+                |col| col.child(self.render_server_update(t, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// `Open server settings`: the server's own page, at the address in the field. Off while the
+    /// field is empty or wrong, because there is no address to open.
+    fn render_server_open(&self, cx: &mut Context<Self>) -> AnyElement {
+        let url = self.model.as_ref().and_then(|m| m.server_url.clone());
+        let enabled = url.is_some() && self.server_error.is_none();
+        div()
+            .mt_1()
+            .child(
+                Button::new(SERVER_OPEN_ID)
+                    .small()
+                    .outline()
+                    .label("Open server settings")
+                    .disabled(!enabled)
+                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                        if let Some(url) = url.clone() {
+                            cx.emit(PreferencesEvent::OpenServerSettings(url));
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The update the app can install on this machine: what is available, and the button.
+    fn render_server_update(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use super::server::ServerUpdateRow;
+        let (text, label, busy) = match &self.server_update {
+            ServerUpdateRow::Available(Some(v)) => (
+                format!("Kimün server {v} is available."),
+                "Update server",
+                false,
+            ),
+            ServerUpdateRow::Available(None) => (
+                "A newer Kimün server is available.".to_string(),
+                "Update server",
+                false,
+            ),
+            ServerUpdateRow::Updating => {
+                ("Updating the Kimün server…".to_string(), "Updating…", true)
+            }
+            ServerUpdateRow::None => return div().into_any_element(),
+        };
+        h_row()
+            .mt_1()
+            .gap_3()
+            .items_center()
+            .child(
+                div()
+                    .id(SERVER_UPDATE_TEXT_ID)
+                    .test_support()
+                    .role(Role::Label)
+                    .aria_label(text.clone())
+                    .text_sm()
+                    .text_color(theme::foreground(t))
+                    .child(text),
+            )
+            .child(
+                Button::new(SERVER_UPDATE_ID)
+                    .small()
+                    .outline()
+                    .label(label)
+                    .disabled(busy)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(PreferencesEvent::UpdateServer)
+                    })),
+            )
             .into_any_element()
     }
 
@@ -2286,6 +2384,7 @@ impl Workspace {
             self._preferences_events =
                 Some(cx.subscribe_in(&view, window, Self::on_preferences_event));
             self.preferences = Some(view);
+            self.push_server_row(cx);
         }
         self.apply_focus(window, cx);
         cx.notify();
@@ -2367,6 +2466,8 @@ impl Workspace {
                 self.open_onboarding(window, cx);
             }
             PreferencesEvent::CheckForUpdates => self.check_updates_now(cx),
+            PreferencesEvent::OpenServerSettings(url) => self.open_server_settings(url, cx),
+            PreferencesEvent::UpdateServer => self.update_server(cx),
         }
     }
 

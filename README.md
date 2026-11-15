@@ -45,6 +45,7 @@ Kimün is in heavy development. A new version can break your configuration file 
 
 2. Start the desktop app from your application menu, or type `kimun` in a terminal.
 3. Follow the setup guide and choose a folder for your notes.
+4. Optional: install the Kimün server for search by meaning and Ask. See [Semantic search and Ask](#semantic-search-and-ask-optional).
 
 Then you can write:
 
@@ -128,6 +129,10 @@ curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
 ```
 
 Then open Preferences, go to Server, and enter `http://localhost:7573`. The first start downloads a model of a few hundred MB, so wait a minute. The [server README](server/README.md) has the Docker and Cargo installs, and the settings.
+
+The script works on Linux and on macOS with Apple silicon. On Windows, run the server with Docker, or inside WSL2 with the same command. There is no Windows install script.
+
+To update the server, run the same command again. The desktop app also offers an `Update now` button when you installed the server with `--service` on the same computer.
 
 ---
 

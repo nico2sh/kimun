@@ -32,7 +32,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div, rems,
+    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
@@ -45,6 +45,8 @@ use super::Workspace;
 use super::chrome;
 use super::drop_zones::DropTarget;
 use super::file_ops::run_all;
+use super::motion::MotionKey;
+use super::motion_box::{Clip, MotionBox as _};
 use super::note_flush::FlushBlock;
 use super::session::Queued;
 use crate::theme;
@@ -63,6 +65,8 @@ pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
 const TAB_TRAIL_ID: &str = "tab-trail";
 /// A label's id prefix, with the tab's position.
 const TAB_LABEL_ID: &str = "tab-label";
+/// The prefix of the clip box ids ([`tab_box_id`]).
+const TAB_BOX_ID: &str = "tab-box";
 /// A label's drop zone's id prefix, with the tab's position.
 const TAB_DROP_ID: &str = "drop-tab";
 /// What a tab whose active group shows nothing is called.
@@ -80,6 +84,16 @@ const LABEL_MAX_REMS: f32 = 14.;
 /// A pill's height (and the plus button's size): a comfortable click
 /// target that keeps the strip about as tall as a slot header.
 const PILL_HEIGHT_REMS: f32 = 1.625;
+/// The padding above and below a pill, in rems.
+const STRIP_PADDING_REMS: f32 = 0.5;
+
+/// The strip's frame height in px while it opens or closes, `frame` being
+/// how open it is (0 to 1): a pill, the padding above and below it, and the
+/// hairline under it, which is one pixel at any size of the rem. At rest the
+/// strip has its own height, whatever this is.
+pub(super) fn strip_frame_px(rem: f32, frame: f32) -> f32 {
+    (rem * (PILL_HEIGHT_REMS + STRIP_PADDING_REMS) + 1.0) * frame
+}
 /// The trailing slot of a pill: the close button, the unsaved dot or
 /// nothing, always this size.
 const TRAIL_REMS: f32 = 1.125;
@@ -129,9 +143,26 @@ enum CloseRefusal {
     Say(String),
 }
 
+/// What a tab label remembers of itself to be drawn while it leaves, after
+/// the region dropped the tab (ADR-0060): its text, and the tabs that stood
+/// before and after it in the drawn strip. They place it among the rest even
+/// when other labels leave around it, which an index cannot.
+#[derive(Clone)]
+struct LabelSnapshot {
+    label: SharedString,
+    prev: Option<TabId>,
+    next: Option<TabId>,
+}
+
 /// The element id of the label at `index` (its position in the strip).
 pub(crate) fn tab_label_id(index: usize) -> ElementId {
     chrome::indexed_id(TAB_LABEL_ID, index)
+}
+
+/// The element id of the box that clips the label at `index` while it
+/// enters or leaves (ADR-0060): its bounds are the visible part of the pill.
+pub(crate) fn tab_box_id(index: usize) -> ElementId {
+    chrome::indexed_id(TAB_BOX_ID, index)
 }
 
 /// The element id of the drop zone over the label at `index`, during a
@@ -510,21 +541,56 @@ impl Workspace {
 
     // ---- Drawing -------------------------------------------------------------
 
+    /// Whether the model wants the strip: the region holds two tabs or more,
+    /// or a group is dragged (ADR-0058). The motion spec and the drawing code
+    /// both ask this, so they never disagree.
+    pub(super) fn strip_wanted(&self, cx: &App) -> bool {
+        self.layout.region().tabs().len() >= 2 || self.dragged_group(cx).is_some()
+    }
+
     /// The strip over the shown tab, or `None` while the region holds one
     /// tab and no group is dragged (ADR-0058). A row of pill buttons that
     /// scrolls sideways, and the round plus button after it, outside the
     /// scroll so it always shows.
-    pub(super) fn render_tab_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_tab_strip(&self, rem: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
-        if tabs.len() < 2 && self.dragged_group(cx).is_none() {
+        let wanted = self.strip_wanted(cx);
+        let presence = self.motion.borrow().presence(MotionKey::TabStrip);
+        // Still drawn while it closes (ADR-0060), from the tabs that remain.
+        if !wanted && presence.frame <= 0.0 {
             return None;
         }
+        let leaving = !wanted;
         let shown = region.shown();
-        let labels: Vec<AnyElement> = tabs
-            .iter()
+        let drawn = self.drawn_tabs(&tabs, leaving);
+        // The shown label enters from nothing: the scroll that brings it
+        // into view is asked for again while it grows, and once more when it
+        // stopped, since the one made when the tab opened aimed at an empty
+        // box.
+        let entering = self.motion.borrow().presence(MotionKey::Tab(shown));
+        let moving = entering.frame < 1.0 || entering.content < 1.0;
+        if self.needs_tab_scroll(moving)
+            && let Some(at) = drawn
+                .iter()
+                .position(|(t, gone)| gone.is_none() && *t == shown)
+        {
+            self.tab_scroll.scroll_to_item(at);
+        }
+        let order = drawn.clone();
+        let labels: Vec<AnyElement> = drawn
+            .into_iter()
             .enumerate()
-            .map(|(at, tab)| self.render_tab(at, *tab, *tab == shown, cx))
+            .map(|(at, (tab, gone))| {
+                let current = gone.is_none() && tab == shown;
+                // The tabs on either side of it as drawn, for what a label
+                // remembers of its place (a leaving label is not remembered).
+                let neighbours = (
+                    at.checked_sub(1).map(|before| order[before].0),
+                    order.get(at + 1).map(|(next, _)| *next),
+                );
+                self.render_tab(at, neighbours, tab, current, gone, cx)
+            })
             .collect();
         let theme = theme::current(cx);
         let hover = theme::hover_background(&theme);
@@ -553,40 +619,114 @@ impl Workspace {
                 self.drop_zone(TAB_NEW_DROP_ID, DropTarget::NewTab, cx)
                     .map(|zone| zone.inset_0().rounded_full().test_support()),
             );
+        let content = presence.content;
+        let strip = div()
+            .id("tab-strip-content")
+            .test_support()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .w_full()
+            .px_1()
+            .py_1()
+            .bg(theme::panel_background(&theme))
+            .border_b_1()
+            .border_color(theme::divider(&theme))
+            .child(
+                div()
+                    .id(TAB_LABELS_ID)
+                    .test_support()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.tab_scroll)
+                    .children(labels),
+            )
+            .child(new_tab)
+            .faded(content);
+        // The frame opens and closes and clips the strip, which keeps its
+        // own height. At rest the frame has no height of its own: it is
+        // the strip, to the pixel.
+        let moving = leaving || presence.frame < 1.0;
         Some(
             div()
                 .id(TAB_STRIP_ID)
                 .test_support()
                 .role(Role::TabList)
                 .aria_label("Tabs")
-                .flex()
-                .flex_row()
+                .flex_col()
                 .flex_none()
-                .items_center()
-                .gap_1()
                 .w_full()
-                .px_1()
-                .py_1()
-                .bg(theme::panel_background(&theme))
-                .border_b_1()
-                .border_color(theme::divider(&theme))
-                .child(
-                    div()
-                        .id(TAB_LABELS_ID)
-                        .test_support()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_x_scroll()
-                        .track_scroll(&self.tab_scroll)
-                        .children(labels),
-                )
-                .child(new_tab)
+                .framed(Clip::WhileMoving(moving), false, |frame| {
+                    frame.h(px(strip_frame_px(rem, presence.frame)))
+                })
+                .child(strip)
+                .covered_while(leaving)
                 .into_any_element(),
         )
+    }
+
+    /// Whether the strip asks for the scroll to the shown label this frame:
+    /// while the label moves (`moving`) and once more on the first frame
+    /// after it stopped, whatever the frames in between were. The scroll
+    /// made when the label began to enter aimed at a box with no width.
+    fn needs_tab_scroll(&self, moving: bool) -> bool {
+        let was = self.tab_scroll_moving.replace(moving);
+        moving || was
+    }
+
+    /// The tabs to draw, in order: the region's, and the ones that are gone
+    /// but still leaving, at the place they had, each with the label it had
+    /// (`Some`). None leave while the strip itself closes.
+    fn drawn_tabs(
+        &self,
+        tabs: &[TabId],
+        strip_leaving: bool,
+    ) -> Vec<(TabId, Option<SharedString>)> {
+        let mut order: Vec<(TabId, Option<SharedString>)> =
+            tabs.iter().map(|tab| (*tab, None)).collect();
+        if strip_leaving {
+            return order;
+        }
+        let motion = self.motion.borrow();
+        let mut gone: Vec<(TabId, LabelSnapshot)> = motion
+            .keys()
+            .into_iter()
+            .filter_map(|key| match key {
+                MotionKey::Tab(tab) => Some(tab),
+                _ => None,
+            })
+            .filter(|tab| !tabs.contains(tab))
+            .filter(|tab| motion.presence(MotionKey::Tab(*tab)).frame > 0.0)
+            .filter_map(|tab| {
+                let snapshot = motion.recall::<LabelSnapshot>(MotionKey::Tab(tab))?;
+                Some((tab, snapshot))
+            })
+            .collect();
+        // The one that left first is placed first: a label that left later
+        // can then stand after it.
+        gone.sort_by_key(|(tab, _)| motion.left_order(MotionKey::Tab(*tab)));
+        for (tab, snapshot) in gone {
+            let position = |id: Option<TabId>| {
+                id.and_then(|id| order.iter().position(|(shown, _)| *shown == id))
+            };
+            // After the tab that stood before it, else before the one that
+            // stood after it, else at the start if nothing stood before it.
+            let at = match (position(snapshot.prev), position(snapshot.next)) {
+                (Some(before), _) => before + 1,
+                (None, Some(after)) => after,
+                (None, None) if snapshot.prev.is_none() => 0,
+                (None, None) => order.len(),
+            };
+            order.insert(at, (tab, Some(snapshot.label)));
+        }
+        order
     }
 
     /// What the trailing slot of `tab`'s pill holds (see [`Trail`]).
@@ -621,13 +761,43 @@ impl Workspace {
     /// hover fill under the pointer. One trailing slot of a fixed size
     /// holds the close button, the unsaved dot or nothing, so a pill never
     /// changes width as the pointer moves.
-    fn render_tab(&self, at: usize, tab: TabId, shown: bool, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// A tab that is gone but still leaving (`gone`, with the label it had,
+    /// ADR-0060) is drawn from that label with no listener, no unsaved dot
+    /// and no close button. A pill enters and leaves inside a clip box.
+    fn render_tab(
+        &self,
+        at: usize,
+        neighbours: (Option<TabId>, Option<TabId>),
+        tab: TabId,
+        shown: bool,
+        gone: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme::current(cx);
-        let label = tab_label(self, tab, cx);
-        let dirty = tab_dirty(self, tab, cx);
+        let leaving = gone.is_some();
+        let label = gone.unwrap_or_else(|| tab_label(self, tab, cx));
+        if !leaving {
+            // What the label draws when this tab is gone and it leaves.
+            self.motion.borrow_mut().remember(
+                MotionKey::Tab(tab),
+                LabelSnapshot {
+                    label: label.clone(),
+                    prev: neighbours.0,
+                    next: neighbours.1,
+                },
+            );
+        }
+        let dirty = !leaving && tab_dirty(self, tab, cx);
         let hover = theme::hover_background(&theme);
         let spoken = chrome::spoken_label(&label, dirty);
-        let trail_content: Option<AnyElement> = match self.tab_trail(tab, shown, cx) {
+        let presence = self.motion.borrow().presence(MotionKey::Tab(tab));
+        let trail_kind = if leaving {
+            Trail::Nothing
+        } else {
+            self.tab_trail(tab, shown, cx)
+        };
+        let trail_content: Option<AnyElement> = match trail_kind {
             Trail::Close => {
                 let close_tip =
                     chrome::tooltip_with_chord("Close tab", &ActionShortcuts::CloseTab, cx);
@@ -658,7 +828,7 @@ impl Workspace {
             .justify_center()
             .size(rems(TRAIL_REMS))
             .children(trail_content);
-        div()
+        let pill = div()
             .id(tab_label_id(at))
             .test_support()
             .role(Role::Tab)
@@ -686,14 +856,16 @@ impl Workspace {
                 pill.text_color(theme::muted(&theme))
                     .hover(move |style| style.bg(hover))
             })
-            .on_hover(
-                cx.listener(move |this, hovered: &bool, _: &mut Window, cx| {
-                    this.hover_tab(tab, *hovered, cx)
-                }),
-            )
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _: &mut Window, cx| this.show_tab(tab, cx)),
-            )
+            .when(!leaving, |pill| {
+                pill.on_hover(
+                    cx.listener(move |this, hovered: &bool, _: &mut Window, cx| {
+                        this.hover_tab(tab, *hovered, cx)
+                    }),
+                )
+                .on_click(cx.listener(
+                    move |this, _: &ClickEvent, _: &mut Window, cx| this.show_tab(tab, cx),
+                ))
+            })
             .child(
                 div()
                     .min_w_0()
@@ -706,8 +878,23 @@ impl Workspace {
             // covers the whole pill and follows its round ends.
             .children(
                 self.drop_zone(tab_drop_id(at), DropTarget::Tab(tab), cx)
+                    .filter(|_| !leaving)
                     .map(|zone| zone.inset_0().rounded_full().test_support()),
-            )
+            );
+        // The box clips the pill while it enters or leaves, and holds its
+        // natural width at rest, to the pixel.
+        let moving = leaving || presence.frame < 1.0;
+        let content = presence.content;
+        div()
+            .id(tab_box_id(at))
+            .test_support()
+            .flex_none()
+            .framed(Clip::WhileMoving(moving), false, |clip| {
+                clip.max_w(rems(LABEL_MAX_REMS * presence.frame))
+            })
+            .faded(content)
+            .child(pill)
+            .covered_while(leaving)
             .into_any_element()
     }
 }
