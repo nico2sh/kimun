@@ -152,7 +152,7 @@ To send a fix or an improvement:
 
 Kimün uses these projects and libraries, and took ideas from them:
 
-- UI: [Ratatui](https://github.com/ratatui/ratatui).
+- UI: [Ratatui](https://github.com/ratatui/ratatui) and [GPUI Kit](https://gpui-kit.com/).
 - Search: [Nucleo](https://github.com/helix-editor/nucleo) for fuzzy matching, and [ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for directory walking.
 - Editor integration: [nvim-rs](https://github.com/KillTheMule/nvim-rs) for Neovim synchronization.
 - Inspiration: [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/), and [QOwnNotes](https://www.qownnotes.org/).
