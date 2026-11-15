@@ -139,7 +139,10 @@ impl ThemePicker {
         });
         let load = cx.spawn(async move |this, cx| {
             let choices = blocking(move || {
-                ThemeChoices::new(&settings.read().unwrap_or_else(|e| e.into_inner()))
+                // Copy under the lock, scan the themes folder after
+                // releasing it, so a layout save never waits on the disk.
+                let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
+                ThemeChoices::new(&snapshot)
             })
             .await;
             this.update(cx, |picker, cx| picker.loaded(choices, cx))
