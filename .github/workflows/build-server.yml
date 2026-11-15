@@ -147,7 +147,7 @@ jobs:
     steps:
       - name: Extract version
         id: extract_version
-        run: echo "version=${GITHUB_REF_NAME#kimun_server-v}" >> $GITHUB_OUTPUT
+        run: echo "version=${GITHUB_REF_NAME#kimun_server-v}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
 

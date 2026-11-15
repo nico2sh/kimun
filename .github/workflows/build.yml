@@ -84,10 +84,7 @@ jobs:
       # The desktop app (GPUI) links these on Linux.
       - name: Install GPUI system libraries
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+        uses: ./.github/actions/linux-libs
 
       # Setup Rust toolchain
       - name: Install Rust
@@ -205,9 +202,9 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=${INPUT_VERSION:-0.0.0-dryrun}" >> $GITHUB_OUTPUT
+            echo "version=${INPUT_VERSION:-0.0.0-dryrun}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> $GITHUB_OUTPUT
+            echo "version=${GITHUB_REF_NAME#kimun-notes-v}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/checkout@v6
