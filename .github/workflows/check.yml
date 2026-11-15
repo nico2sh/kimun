@@ -1,12 +1,9 @@
 # Test workflow: Run tests on every platform Kimun ships for, plus a
 # compile-check for the one release target that has no runner to test on.
-# Triggered on pushes to main, pull requests, and manual dispatch
+# Triggered on pull requests and manual dispatch. There is no push trigger:
+# the main ruleset requires the `Checks pass` job and an up-to-date branch, so
+# the merged tree is the one that was tested here.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
   # No `paths-ignore` here: a required check that never starts leaves a docs-only
   # PR waiting forever. The `changes` job below skips the heavy jobs for those
   # PRs instead, and the `gate` job still reports.
@@ -19,15 +16,14 @@ env:
 
 name: test
 
-# On PRs, cancel an in-progress run when a new commit is pushed. On main,
-# group by ref so successive pushes don't stomp on each other.
+# Cancel an in-progress run when a new commit is pushed to the same PR.
 concurrency:
   group: check-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Does the PR change anything besides docs/ and Markdown files? Pushes and
-  # manual runs always count as code (push has its own `paths-ignore`).
+  # Does the PR change anything besides docs/ and Markdown files? A manual run
+  # always counts as code.
   changes:
     name: Changed files
     runs-on: ubuntu-24.04
