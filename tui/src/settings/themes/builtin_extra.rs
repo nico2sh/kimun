@@ -65,6 +65,8 @@ impl Theme {
     /// The themes defined in this module, in presentation order.
     pub(super) fn extra_builtins() -> Vec<Theme> {
         vec![
+            Theme::kimun_dark(),
+            Theme::kimun_light(),
             Theme::github_dark(),
             Theme::github_dark_dimmed(),
             Theme::github_light(),
@@ -112,6 +114,28 @@ impl Theme {
             Theme::vscode_dark_plus(),
             Theme::vscode_light_plus(),
         ]
+    }
+
+    pub fn kimun_dark() -> Self {
+        Self::from_palette(
+            "Kimün Dark",
+            [
+                "#1e1316", "#150d0f", "#2b1c20", "#241519", "#4a2a31", "#efe4e6", "#ffffff",
+                "#f2707f", "#8fcf9a", "#ffcb61", "#77bef0", "#c5a3e8", "#6fd3c4", "#f7a068",
+                "#a8979b", "#7a6a6e", "#3d2a2f", "#ea5b6f",
+            ],
+        )
+    }
+
+    pub fn kimun_light() -> Self {
+        Self::from_palette(
+            "Kimün Light",
+            [
+                "#fbf6f4", "#ffffff", "#f1e6e4", "#f6eeec", "#f1d9dd", "#2a1519", "#32070e",
+                "#c4283f", "#2f7d4a", "#9a6a00", "#1f6fa8", "#7a4bb0", "#12796f", "#b85a14",
+                "#6e5a5f", "#8f7d82", "#e3d3d2", "#c93a52",
+            ],
+        )
     }
 
     pub fn github_dark() -> Self {
