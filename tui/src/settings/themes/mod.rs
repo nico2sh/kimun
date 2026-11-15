@@ -338,24 +338,24 @@ pub struct Theme {
 
 /// Deserialization shadow of [`Theme`].
 ///
-/// Newer roles are optional so theme TOML files written before they existed
-/// still parse; missing roles are derived from the closest sibling role (or a
-/// chromatic ANSI slot for the accent palette, which adapts to the user's
+/// Only `name` is required. Every other role is optional: a missing role is
+/// derived from the closest sibling role, or from a blend of `bg` and `fg`
+/// when both are truecolor, or from an ANSI slot (which adapts to the user's
 /// terminal palette) in [`From<ThemeToml>`].
 #[derive(Deserialize)]
 struct ThemeToml {
     name: String,
-    bg: ThemeColor,
+    bg: Option<ThemeColor>,
     bg_hard: Option<ThemeColor>,
     bg_soft: Option<ThemeColor>,
-    bg_panel: ThemeColor,
-    selection_bg: ThemeColor,
-    fg: ThemeColor,
+    bg_panel: Option<ThemeColor>,
+    selection_bg: Option<ThemeColor>,
+    fg: Option<ThemeColor>,
     fg_bright: Option<ThemeColor>,
-    fg_secondary: ThemeColor,
-    gray: ThemeColor,
-    selection_fg: ThemeColor,
-    border_dim: ThemeColor,
+    fg_secondary: Option<ThemeColor>,
+    gray: Option<ThemeColor>,
+    selection_fg: Option<ThemeColor>,
+    border_dim: Option<ThemeColor>,
     focus_border: Option<ThemeColor>,
     border: Option<ThemeColor>,
     header: Option<ThemeColor>,
@@ -363,7 +363,7 @@ struct ThemeToml {
     heading: Option<ThemeColor>,
     link: Option<ThemeColor>,
     code: Option<ThemeColor>,
-    accent: ThemeColor,
+    accent: Option<ThemeColor>,
     cursor: Option<ThemeColor>,
     red: Option<ThemeColor>,
     green: Option<ThemeColor>,
@@ -372,58 +372,96 @@ struct ThemeToml {
     purple: Option<ThemeColor>,
     aqua: Option<ThemeColor>,
     orange: Option<ThemeColor>,
-    color_directory: ThemeColor,
-    color_journal_date: ThemeColor,
-    color_search_match: ThemeColor,
+    color_directory: Option<ThemeColor>,
+    color_journal_date: Option<ThemeColor>,
+    color_search_match: Option<ThemeColor>,
     color_tag: Option<ThemeColor>,
     blockquote_bar: Option<ThemeColor>,
     code_bg: Option<ThemeColor>,
     color_replace_preview: Option<ThemeColor>,
 }
 
+/// `a` moved toward `b` by `t` (0 to 1). Only two truecolor values blend; any
+/// other pair gives `None`, so the caller falls back to an ANSI slot.
+fn blend(a: &ThemeColor, b: &ThemeColor, t: f32) -> Option<ThemeColor> {
+    match (a, b) {
+        (ThemeColor::Rgb(ar, ag, ab), ThemeColor::Rgb(br, bg, bb)) => {
+            let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+            Some(ThemeColor::Rgb(m(*ar, *br), m(*ag, *bg), m(*ab, *bb)))
+        }
+        _ => None,
+    }
+}
+
 impl From<ThemeToml> for Theme {
     fn from(t: ThemeToml) -> Self {
+        // The base pair. A bare theme leaves both to the terminal.
+        let bg = t.bg.unwrap_or(ThemeColor::Reset);
+        let fg = t.fg.unwrap_or(ThemeColor::Reset);
+        // A role between the page and the text: a blend when both are
+        // truecolor, else the ANSI slot that suits the role.
+        let between =
+            |toward_fg: f32, fallback: ThemeColor| blend(&bg, &fg, toward_fg).unwrap_or(fallback);
+
         let orange = t.orange.unwrap_or(ThemeColor::Ansi(208));
+        let green = t.green.unwrap_or(ThemeColor::Ansi(10));
+        let blue = t.blue.unwrap_or(ThemeColor::Ansi(12));
+        let aqua = t.aqua.unwrap_or(ThemeColor::Ansi(14));
+        let accent = t.accent.unwrap_or_else(|| blue.clone());
+
+        let bg_panel = t.bg_panel.unwrap_or_else(|| bg.clone());
+        let selection_bg = t
+            .selection_bg
+            .unwrap_or_else(|| between(0.18, ThemeColor::Ansi(4)));
+        // Selected text and bright text stand in for each other, then for `fg`.
+        let selection_fg = t
+            .selection_fg
+            .or_else(|| t.fg_bright.clone())
+            .unwrap_or_else(|| fg.clone());
         Theme {
             name: t.name,
-            bg_hard: t.bg_hard.unwrap_or_else(|| t.bg_panel.clone()),
-            bg_soft: t.bg_soft.unwrap_or_else(|| t.selection_bg.clone()),
-            fg_bright: t.fg_bright.unwrap_or_else(|| t.selection_fg.clone()),
-            cursor: t.cursor.unwrap_or_else(|| t.fg.clone()),
+            bg_hard: t.bg_hard.unwrap_or_else(|| bg_panel.clone()),
+            bg_soft: t.bg_soft.unwrap_or_else(|| selection_bg.clone()),
+            fg_bright: t.fg_bright.unwrap_or_else(|| selection_fg.clone()),
+            cursor: t.cursor.unwrap_or_else(|| fg.clone()),
             red: t.red.unwrap_or(ThemeColor::Ansi(9)),
-            green: t.green.unwrap_or(ThemeColor::Ansi(10)),
             yellow: t.yellow.unwrap_or(ThemeColor::Ansi(11)),
-            blue: t.blue.unwrap_or(ThemeColor::Ansi(12)),
             purple: t.purple.unwrap_or(ThemeColor::Ansi(13)),
-            aqua: t.aqua.unwrap_or(ThemeColor::Ansi(14)),
             color_tag: t.color_tag.unwrap_or_else(|| orange.clone()),
-            blockquote_bar: t.blockquote_bar.unwrap_or_else(|| t.accent.clone()),
-            code_bg: t.code_bg.unwrap_or_else(|| t.bg_panel.clone()),
+            blockquote_bar: t.blockquote_bar.unwrap_or_else(|| accent.clone()),
+            code_bg: t.code_bg.unwrap_or_else(|| bg_panel.clone()),
             // Themes written before the replace preview existed fall back to
             // the accent colour, which is chromatic in every builtin — so the
             // preview still reads as "not committed text" rather than
             // silently collapsing into the selection or the code box.
-            color_replace_preview: t.color_replace_preview.unwrap_or_else(|| t.accent.clone()),
-            orange,
-            bg: t.bg,
-            bg_panel: t.bg_panel,
-            selection_bg: t.selection_bg,
-            fg: t.fg,
-            fg_secondary: t.fg_secondary,
-            gray: t.gray,
-            selection_fg: t.selection_fg,
-            border_dim: t.border_dim,
-            focus_border: t.focus_border.unwrap_or_else(|| t.accent.clone()),
+            color_replace_preview: t.color_replace_preview.unwrap_or_else(|| accent.clone()),
+            fg_secondary: t
+                .fg_secondary
+                .unwrap_or_else(|| between(0.6, ThemeColor::Ansi(7))),
+            gray: t.gray.unwrap_or_else(|| between(0.4, ThemeColor::Ansi(8))),
+            border_dim: t
+                .border_dim
+                .unwrap_or_else(|| between(0.2, ThemeColor::Ansi(8))),
+            focus_border: t.focus_border.unwrap_or_else(|| accent.clone()),
+            color_directory: t.color_directory.unwrap_or_else(|| blue.clone()),
+            color_journal_date: t.color_journal_date.unwrap_or_else(|| aqua.clone()),
+            color_search_match: t.color_search_match.unwrap_or_else(|| green.clone()),
             border: t.border,
             header: t.header,
             selected: t.selected,
             heading: t.heading,
             link: t.link,
             code: t.code,
-            accent: t.accent,
-            color_directory: t.color_directory,
-            color_journal_date: t.color_journal_date,
-            color_search_match: t.color_search_match,
+            orange,
+            green,
+            blue,
+            aqua,
+            accent,
+            bg,
+            bg_panel,
+            selection_bg,
+            fg,
+            selection_fg,
         }
     }
 }
@@ -955,6 +993,68 @@ mod tests {
         assert_eq!(back, themed);
         assert_eq!(back.resting_border(), &ThemeColor::Rgb(1, 2, 3));
         assert_eq!(plain.resting_border(), &plain.border_dim);
+    }
+
+    #[test]
+    fn a_theme_with_only_a_name_loads_and_follows_the_terminal() {
+        let t: Theme = toml::from_str("name = \"Bare\"").unwrap();
+        assert_eq!(t.name, "Bare");
+        assert_eq!(t.bg, ThemeColor::Reset);
+        assert_eq!(t.fg, ThemeColor::Reset);
+        assert_eq!(t.accent, ThemeColor::Ansi(12));
+        assert_eq!(t.focus_border, ThemeColor::Ansi(12));
+        assert_eq!(t.border_dim, ThemeColor::Ansi(8));
+        assert_eq!(t.selection_bg, ThemeColor::Ansi(4));
+    }
+
+    #[test]
+    fn the_documented_example_loads() {
+        let t: Theme = toml::from_str(
+            r##"
+            name = "My Theme"
+            bg           = "#1e1e2e"
+            fg           = "#cdd6f4"
+            fg_bright    = "#f5f7ff"
+            accent       = "#89b4fa"
+            selection_bg = "#313244"
+            red          = "#f38ba8"
+            green        = "#a6e3a1"
+            yellow       = "#f9e2af"
+            blue         = "#89b4fa"
+            purple       = "#cba6f7"
+            aqua         = "#94e2d5"
+            orange       = "#fab387"
+            "##,
+        )
+        .unwrap();
+        assert_eq!(t.bg_panel, t.bg);
+        assert_eq!(t.focus_border, t.accent);
+        assert_eq!(t.color_directory, t.blue);
+        assert_eq!(t.color_journal_date, t.aqua);
+        assert_eq!(t.color_search_match, t.green);
+        assert_eq!(t.selection_fg, t.fg_bright);
+        assert!(matches!(t.border_dim, ThemeColor::Rgb(..)));
+        assert!(matches!(t.gray, ThemeColor::Rgb(..)));
+        assert!(matches!(t.fg_secondary, ThemeColor::Rgb(..)));
+    }
+
+    #[test]
+    fn derived_roles_blend_the_page_toward_the_text() {
+        let t: Theme =
+            toml::from_str("name = \"B\"\nbg = \"#000000\"\nfg = \"#ffffff\"\n").unwrap();
+        assert_eq!(t.border_dim, ThemeColor::Rgb(51, 51, 51));
+        assert_eq!(t.gray, ThemeColor::Rgb(102, 102, 102));
+        assert_eq!(t.fg_secondary, ThemeColor::Rgb(153, 153, 153));
+        assert_eq!(t.selection_bg, ThemeColor::Rgb(46, 46, 46));
+    }
+
+    #[test]
+    fn an_explicit_role_beats_its_derived_value() {
+        let t: Theme = toml::from_str(
+            "name = \"E\"\nbg = \"#000000\"\nfg = \"#ffffff\"\nborder_dim = \"#123456\"\n",
+        )
+        .unwrap();
+        assert_eq!(t.border_dim, ThemeColor::Rgb(0x12, 0x34, 0x56));
     }
 
     #[test]
