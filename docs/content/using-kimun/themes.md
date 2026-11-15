@@ -57,4 +57,13 @@ orange       = "#fab387"
 
 You can write a color as `"#1e1e2e"`, `"#abc"`, `"rgb(30, 30, 46)"`, or `"ansi:4"`.
 
+You can also set these optional keys. If you leave one out, Kimün uses a default:
+
+```toml
+focus_border = "#89b4fa"   # focused panel edge, default: accent
+border       = "#45475a"   # panel edge at rest, default: border_dim
+header       = "#a6e3a1"   # tint of a panel header in the desktop app
+selected     = "#cba6f7"   # tint behind a chosen item in the desktop app
+```
+
 Your theme then appears in the theme picker. To use it, pick it, or set `theme = "My Theme"` in `config.toml`.

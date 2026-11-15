@@ -176,6 +176,9 @@ impl Theme {
             &mut self.color_replace_preview,
         ]
         .into_iter()
+        .chain(self.border.iter_mut())
+        .chain(self.header.iter_mut())
+        .chain(self.selected.iter_mut())
     }
 }
 

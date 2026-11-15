@@ -266,6 +266,20 @@ pub struct Theme {
     pub border_dim: ThemeColor,
     /// Border color when the pane has keyboard focus.
     pub focus_border: ThemeColor,
+    /// Optional override of the resting border. Unset, the resting border is
+    /// `border_dim`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border: Option<ThemeColor>,
+
+    // ── Surfaces (GUI) ───────────────────────────────────────────────────────
+    /// Optional tint of a slot's header strip in the GUI. Unset, the strip is
+    /// a faint tint of the text color.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<ThemeColor>,
+    /// Optional tint behind a chosen item in the GUI (the rail's shown view).
+    /// Unset, the tint is `focus_border`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<ThemeColor>,
 
     // ── Accent ───────────────────────────────────────────────────────────────
     /// Primary accent: title bars, active markers, cursor highlights.
@@ -332,6 +346,9 @@ struct ThemeToml {
     selection_fg: ThemeColor,
     border_dim: ThemeColor,
     focus_border: Option<ThemeColor>,
+    border: Option<ThemeColor>,
+    header: Option<ThemeColor>,
+    selected: Option<ThemeColor>,
     accent: ThemeColor,
     cursor: Option<ThemeColor>,
     red: Option<ThemeColor>,
@@ -383,6 +400,9 @@ impl From<ThemeToml> for Theme {
             selection_fg: t.selection_fg,
             border_dim: t.border_dim,
             focus_border: t.focus_border.unwrap_or_else(|| t.accent.clone()),
+            border: t.border,
+            header: t.header,
+            selected: t.selected,
             accent: t.accent,
             color_directory: t.color_directory,
             color_journal_date: t.color_journal_date,
@@ -398,12 +418,18 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The border color of an unfocused pane: the `border` override when the
+    /// theme sets one, else `border_dim`.
+    pub fn resting_border(&self) -> &ThemeColor {
+        self.border.as_ref().unwrap_or(&self.border_dim)
+    }
+
     /// Returns the appropriate border style depending on focus state.
     pub fn border_style(&self, focused: bool) -> Style {
         if focused {
             Style::default().fg(self.focus_border.to_ratatui())
         } else {
-            Style::default().fg(self.border_dim.to_ratatui())
+            Style::default().fg(self.resting_border().to_ratatui())
         }
     }
 
@@ -880,6 +906,23 @@ mod tests {
         assert_eq!(t.orange, ThemeColor::Ansi(208));
         // color_tag tracks the orange accent when absent.
         assert_eq!(t.color_tag, t.orange);
+    }
+
+    #[test]
+    fn optional_surface_roles_default_to_none_and_round_trip() {
+        let plain = Theme::gruvbox_dark();
+        assert!(plain.border.is_none() && plain.header.is_none() && plain.selected.is_none());
+        let toml_plain = toml::to_string_pretty(&plain).unwrap();
+        assert!(!toml_plain.contains("header"));
+
+        let mut themed = plain.clone();
+        themed.border = Some(ThemeColor::Rgb(1, 2, 3));
+        themed.header = Some(ThemeColor::Rgb(4, 5, 6));
+        let text = toml::to_string_pretty(&themed).unwrap();
+        let back: Theme = toml::from_str(&text).unwrap();
+        assert_eq!(back, themed);
+        assert_eq!(back.resting_border(), &ThemeColor::Rgb(1, 2, 3));
+        assert_eq!(plain.resting_border(), &plain.border_dim);
     }
 
     #[test]

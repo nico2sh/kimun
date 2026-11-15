@@ -68,6 +68,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#fabd2f").unwrap(),
             code_bg: ThemeColor::from_string("#32302f").unwrap(),
             color_replace_preview: ThemeColor::from_string("#4c3a4a").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -102,6 +105,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#d79921").unwrap(),
             code_bg: ThemeColor::from_string("#f2e5bc").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e8d5e0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -136,6 +142,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#cba6f7").unwrap(),
             code_bg: ThemeColor::from_string("#181825").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3e3450").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -170,6 +179,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#8839ef").unwrap(),
             code_bg: ThemeColor::from_string("#e6e9ef").unwrap(),
             color_replace_preview: ThemeColor::from_string("#dcd0e8").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -204,6 +216,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#7aa2f7").unwrap(),
             code_bg: ThemeColor::from_string("#16161e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a2b4d").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -238,6 +253,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#bb9af7").unwrap(),
             code_bg: ThemeColor::from_string("#1f2335").unwrap(),
             color_replace_preview: ThemeColor::from_string("#43356b").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -272,6 +290,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
             code_bg: ThemeColor::from_string("#073642").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3b3a5e").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -306,6 +327,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
             code_bg: ThemeColor::from_string("#eee8d5").unwrap(),
             color_replace_preview: ThemeColor::from_string("#ddd6e8").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -340,6 +364,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#88c0d0").unwrap(),
             code_bg: ThemeColor::from_string("#3b4252").unwrap(),
             color_replace_preview: ThemeColor::from_string("#4a3f52").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -374,6 +401,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#bd93f9").unwrap(),
             code_bg: ThemeColor::from_string("#21222c").unwrap(),
             color_replace_preview: ThemeColor::from_string("#453a5e").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -409,6 +439,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#644ac9").unwrap(),
             code_bg: ThemeColor::from_string("#f2eeda").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e4dcf0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -443,6 +476,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#61afef").unwrap(),
             code_bg: ThemeColor::from_string("#21252b").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a2f4a").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -477,6 +513,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#4078f2").unwrap(),
             code_bg: ThemeColor::from_string("#f0f0f1").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e3dcf0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -511,6 +550,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#f92672").unwrap(),
             code_bg: ThemeColor::from_string("#1e1f1c").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3d3350").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -545,6 +587,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#a7c080").unwrap(),
             code_bg: ThemeColor::from_string("#232a2e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3d3548").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -579,6 +624,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#8da101").unwrap(),
             code_bg: ThemeColor::from_string("#f4f0d9").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e6dcea").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -613,6 +661,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#c4a7e7").unwrap(),
             code_bg: ThemeColor::from_string("#1f1d2e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#403a5c").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -649,6 +700,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#907aa9").unwrap(),
             code_bg: ThemeColor::from_string("#fffaf3").unwrap(),
             color_replace_preview: ThemeColor::from_string("#eadff0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -683,6 +737,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#7e9cd8").unwrap(),
             code_bg: ThemeColor::from_string("#16161d").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a3450").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -718,6 +775,9 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#4d699b").unwrap(),
             code_bg: ThemeColor::from_string("#e5ddb0").unwrap(),
             color_replace_preview: ThemeColor::from_string("#ded3e0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 
@@ -760,6 +820,9 @@ impl Theme {
             // editor background and render no box at all.
             code_bg: ThemeColor::Ansi(8),
             color_replace_preview: ThemeColor::Ansi(5), // magenta
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 }
