@@ -1,0 +1,95 @@
+# Cache warm workflow: build, without running any gate, so that main holds the
+# Rust caches the pull request runs restore.
+#
+# A pull request run can only restore caches saved by its own branch or by
+# main. check.yml no longer runs on pushes to main (the ruleset makes the pull
+# request run the gate), so without this workflow main would hold no cache for
+# the `test-*` and `check-*` keys, and the first run of every new PR would
+# start from a cold build. Nothing here can fail a merge: it is not a required
+# check, and a failed build only means the cache is older.
+#
+# Keep the `shared-key` values and the build commands in step with check.yml.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+name: cache-warm
+
+# A run in progress finishes, so that quick merges cannot cancel every build
+# before it saves its cache. GitHub keeps only the newest waiting run.
+concurrency:
+  group: cache-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: Warm (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+            key: test-ubuntu-24.04
+          - name: macOS ARM
+            os: macos-latest
+            key: test-macos-latest
+          - name: Windows
+            os: windows-latest
+            key: test-windows-latest
+          - name: Linux ARM
+            os: ubuntu-24.04-arm
+            key: check-aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-libs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.key }}
+
+      # The Linux ARM job in check.yml only runs `cargo check` for its target.
+      - name: Check (Linux ARM)
+        if: matrix.target
+        run: cargo check --workspace --target ${{ matrix.target }}
+
+      - name: Install cargo-nextest
+        if: '!matrix.target'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # The test profile, as `Run tests` in check.yml builds it.
+      - name: Build the tests
+        if: '!matrix.target'
+        run: cargo nextest run --workspace --no-run
+
+      # The profiles the Linux gates build: clippy (dev) and the bench profile.
+      - name: Clippy
+        if: runner.os == 'Linux' && !matrix.target
+        run: cargo clippy --workspace --all-targets
+
+      - name: Check benches
+        if: runner.os == 'Linux' && !matrix.target
+        run: cargo check --profile bench --workspace --all-targets
