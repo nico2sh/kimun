@@ -64,6 +64,9 @@ focus_border = "#89b4fa"   # focused panel edge, default: accent
 border       = "#45475a"   # panel edge at rest, default: border_dim
 header       = "#a6e3a1"   # tint of a panel header in the desktop app
 selected     = "#cba6f7"   # tint behind a chosen item in the desktop app
+heading      = "#f9e2af"   # level 1 and 2 headings, default: accent
+link         = "#89dceb"   # links and images, default: accent
+code         = "#94e2d5"   # inline code, default: aqua
 ```
 
 Your theme then appears in the theme picker. To use it, pick it, or set `theme = "My Theme"` in `config.toml`.

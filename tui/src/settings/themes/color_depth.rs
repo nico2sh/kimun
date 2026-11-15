@@ -179,6 +179,9 @@ impl Theme {
         .chain(self.border.iter_mut())
         .chain(self.header.iter_mut())
         .chain(self.selected.iter_mut())
+        .chain(self.heading.iter_mut())
+        .chain(self.link.iter_mut())
+        .chain(self.code.iter_mut())
     }
 }
 

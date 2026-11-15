@@ -497,21 +497,22 @@ fn role_style(role: Role, theme: &Theme) -> CellStyle {
                 s.strike = true;
             }
             ElementKind::InlineCode => {
-                s.fg = fg_of(&theme.aqua, theme);
+                s.fg = fg_of(theme.code_color(), theme);
                 s.bg = bg_of(&theme.bg_soft, theme);
             }
             ElementKind::Link => {
-                s.fg = fg_of(&theme.accent, theme);
+                s.fg = fg_of(theme.link_color(), theme);
                 s.underline = true;
             }
             ElementKind::Image => {
-                s.fg = fg_of(&theme.accent, theme);
+                s.fg = fg_of(theme.link_color(), theme);
                 s.italic = true;
             }
-            ElementKind::HeadingH1 | ElementKind::HeadingH2 => {
-                s.fg = fg_of(&theme.fg_bright, theme);
+            ElementKind::HeadingH1 => {
+                s.fg = fg_of(theme.heading_color(), theme);
                 s.bold = true;
             }
+            ElementKind::HeadingH2 => s.fg = fg_of(theme.heading_color(), theme),
             ElementKind::HeadingH3 => {
                 s.fg = fg_of(&theme.yellow, theme);
                 s.bold = true;
@@ -1004,6 +1005,28 @@ mod tests {
             ..Theme::default()
         };
         assert_ne!(selected_background(&t), selected_background(&plain));
+    }
+
+    #[test]
+    fn editor_roles_default_to_accent_and_aqua_and_take_overrides() {
+        let plain = rgb_theme();
+        let heading = |t: &Theme, kind| run_style(&run(Role::Element(kind), 0), t);
+        assert_eq!(
+            heading(&plain, ElementKind::HeadingH1).fg,
+            fg_of(&plain.accent, &plain)
+        );
+        assert!(heading(&plain, ElementKind::HeadingH1).bold);
+        assert!(!heading(&plain, ElementKind::HeadingH2).bold);
+        let t = Theme {
+            heading: Some(ThemeColor::Rgb(1, 2, 3)),
+            link: Some(ThemeColor::Rgb(4, 5, 6)),
+            code: Some(ThemeColor::Rgb(7, 8, 9)),
+            ..rgb_theme()
+        };
+        assert_eq!(heading(&t, ElementKind::HeadingH2).fg, rgba((1, 2, 3)));
+        assert_eq!(heading(&t, ElementKind::Link).fg, rgba((4, 5, 6)));
+        assert_eq!(heading(&t, ElementKind::Image).fg, rgba((4, 5, 6)));
+        assert_eq!(heading(&t, ElementKind::InlineCode).fg, rgba((7, 8, 9)));
     }
 
     // ---- run_style ----
