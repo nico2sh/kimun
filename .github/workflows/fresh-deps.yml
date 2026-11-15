@@ -19,17 +19,14 @@ concurrency:
 jobs:
   fresh-deps:
     name: Build against newest deps
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install GPUI system libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+        uses: ./.github/actions/linux-libs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

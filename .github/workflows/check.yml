@@ -1,17 +1,14 @@
 # Test workflow: Run tests on every platform Kimun ships for, plus a
 # compile-check for the one release target that has no runner to test on.
-# Triggered on pushes to main, pull requests, and manual dispatch
+# Triggered on pull requests and manual dispatch. There is no push trigger:
+# the main ruleset requires the `Checks pass` job and an up-to-date branch, so
+# the merged tree is the one that was tested here.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
+  # No `paths-ignore` here: a required check that never starts leaves a docs-only
+  # PR waiting forever. The `changes` job below skips the heavy jobs for those
+  # PRs instead, and the `gate` job still reports.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
   workflow_dispatch:
 
 env:
@@ -19,15 +16,94 @@ env:
 
 name: test
 
-# On PRs, cancel an in-progress run when a new commit is pushed. On main,
-# group by ref so successive pushes don't stomp on each other.
+# Cancel an in-progress run when a new commit is pushed to the same PR.
 concurrency:
   group: check-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Does the PR change anything besides docs/ and Markdown files? A manual run
+  # always counts as code.
+  changes:
+    name: Changed files
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Checkout repository
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Look for non-documentation changes
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qvE '^docs/|\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::only documentation changed: the build and test jobs are skipped"
+          fi
+
+  # The one check to require on main. It always runs and fails when any job it
+  # waits on failed or was cancelled; a skipped job (a docs-only PR, or the
+  # matrix a release PR does not need) passes. Requiring the matrix jobs by name
+  # would not work: a matrix job skipped by `if:` reports under the unexpanded
+  # name `Test (${{ matrix.name }})` and the requirement would wait forever.
+  gate:
+    name: Checks pass
+    if: always()
+    needs: [changes, release-pr, test, check]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Make sure that no job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*) exit 1 ;;
+          esac
+
+  # A release PR (opened by release-plz, branch release-plz-*) is rewritten on
+  # every merge to main and changes only versions, the lockfile, the changelog
+  # and release notes. The code it holds already passed the full matrix on main,
+  # so it gets one cheap job: the lockfile must still resolve and the workspace
+  # must still compile. `github.head_ref` is empty outside pull requests, so
+  # pushes and manual runs always take the full matrix.
+  release-pr:
+    name: Release PR (lockfile and compile)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux system libraries
+        uses: ./.github/actions/linux-libs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-ubuntu-24.04
+
+      - name: Check
+        run: cargo check --workspace --locked
+
   test:
     name: Test (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Every platform reports. A Windows-only failure must not hide whether
@@ -45,7 +121,7 @@ jobs:
           # case-insensitive-filesystem paths (`CASE_INSENSITIVE_FS` in
           # core/src/nfs) that Linux never exercises.
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-24.04
             lint: true
           - name: macOS ARM
             os: macos-latest
@@ -56,14 +132,16 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Install GPUI system libraries
+      # One apt run for the whole job: the GPUI libraries, plus what the lint
+      # steps need (desktop-file-validate, and minisign for the installer and
+      # signing tests).
+      - name: Install Linux system libraries
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+        uses: ./.github/actions/linux-libs
+        with:
+          extra: desktop-file-utils minisign
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,10 +198,7 @@ jobs:
       # yet, so nothing else would notice a malformed one.
       - name: Desktop entry is valid
         if: matrix.lint
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
-          desktop-file-validate assets/packaging/linux/kimun.desktop
+        run: desktop-file-validate assets/packaging/linux/kimun.desktop
 
       # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
       # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
@@ -154,12 +229,6 @@ jobs:
       - name: macOS packaging tests
         if: matrix.lint
         run: bash .github/scripts/test-macos-packaging.sh
-
-      # minisign: the installer tests check signatures with a throwaway key, and the
-      # signing script is tested with it.
-      - name: Install minisign
-        if: matrix.lint
-        run: sudo apt-get update && sudo apt-get install -y minisign
 
       # install.sh against a fake release served from a directory: both apps,
       # the Linux launcher files, the marker, a bad checksum, the options.
@@ -241,6 +310,8 @@ jobs:
   # would only spend minutes to re-derive a subset of that answer.
   check:
     name: Check (${{ matrix.name }})
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -255,14 +326,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Install GPUI system libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+      - name: Install Linux system libraries
+        uses: ./.github/actions/linux-libs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
