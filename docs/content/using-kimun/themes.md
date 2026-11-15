@@ -36,7 +36,9 @@ Save a `.toml` file in the `themes/` folder next to your `config.toml`:
 - Linux and macOS: `~/.config/kimun/themes/`
 - Windows: `%USERPROFILE%\kimun\themes\`
 
-Only `name` is required. Kimün picks the other colors from the ones that you give.
+Only `name` is required. Kimün picks the other colors from the ones that you give. A theme with only a name uses the colors of your terminal.
+
+If you give `bg` and `fg` as `#` colors, Kimün blends them to make the dim text, the selected row, and the borders. If you leave out `accent`, Kimün uses `blue`. Write a key yourself to replace any of these colors.
 
 ```toml
 name = "My Theme"
