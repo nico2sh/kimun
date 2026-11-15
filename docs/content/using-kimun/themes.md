@@ -5,7 +5,7 @@ weight = 15
 
 # Themes
 
-Kimün has 67 built-in themes. You can also make your own.
+Kimün has 69 built-in themes. You can also make your own.
 
 ## Pick a theme
 
@@ -23,7 +23,7 @@ theme = "Nord"
 
 The default is Gruvbox Dark. These theme families are included. Most have both a dark and a light theme:
 
-Gruvbox, Catppuccin, Tokyo Night, Solarized, Dracula, One, Everforest, Rosé Pine, Kanagawa, Nord, Monokai, GitHub, Ayu, Material, Night Owl, Nightfox, Oxocarbon, Flexoki, Selenized, Modus, Melange, Tomorrow, PaperColor, Edge, VS Code, Zenburn, Cobalt2, Synthwave '84, Everblush, Sonokai, Vesper, Iceberg, and Quiet Light.
+Gruvbox, Catppuccin, Tokyo Night, Solarized, Dracula, One, Everforest, Rosé Pine, Kanagawa, Nord, Monokai, GitHub, Ayu, Material, Night Owl, Nightfox, Oxocarbon, Flexoki, Selenized, Modus, Melange, Tomorrow, PaperColor, Edge, VS Code, Zenburn, Cobalt2, Synthwave '84, Everblush, Sonokai, Vesper, Iceberg, Quiet Light, and Kimün.
 
 The `ANSI` theme uses the colors of your terminal. Use it if you want Kimün to match your terminal.
 
