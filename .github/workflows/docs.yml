@@ -1,16 +1,15 @@
 # Docs workflow: Build and deploy Zola documentation to GitHub Pages
 # Triggered on:
 #   - pushes to main that touch docs/ (content changes)
-#   - successful release-plz runs (so the sidebar release pill fetched at build
-#     time via Zola load_data is refreshed against the new GitHub API latest
-#     release). workflow_run always runs in the default-branch context, so the
-#     github-pages environment's branch protection allows it — unlike a release
-#     event, which runs under the tag ref and gets rejected.
-#   - release and release-server runs (the tag builds), successful or not: latest.json
-#     names the newest stable release that has its files, and a release is only
-#     published once build.yml / build-server.yml have attached them. The
-#     release-plz run is too early for that (it ends at the tag, when the
-#     release is still a draft), so the manifest must be rebuilt after the build.
+#   - release and release-server runs (the tag builds), successful or not:
+#     latest.json and the sidebar release pill (fetched at build time via Zola
+#     load_data) name the newest stable release that has its files, and a release
+#     is only published once build.yml / build-server.yml have attached them.
+#     A release-plz run is no trigger: it runs on every push to main and ends
+#     at the tag, when the release is still a draft, so a deploy then would
+#     change nothing. workflow_run always runs in the default-branch context, so
+#     the github-pages environment's branch protection allows it — unlike a
+#     release event, which runs under the tag ref and gets rejected.
 #   - manual dispatch
 on:
   push:
@@ -20,7 +19,7 @@ on:
   workflow_run:
     # No `branches:` filter: a tag build's head branch is the tag, not main. The
     # job's `if:` below keeps out failures and manual dry runs instead.
-    workflows: ["release-plz", "release", "release-server"]
+    workflows: ["release", "release-server"]
     types: [completed]
   workflow_dispatch:
 
@@ -39,18 +38,18 @@ concurrency:
 jobs:
   deploy:
     name: Build and Deploy Docs
-    runs-on: ubuntu-latest
-    # Skip a cancelled run, a failed release-plz run, and a manual dry run of the
-    # release workflow (it publishes nothing, so there is nothing new to put on the
-    # site). A *failed* tag build still deploys: publishing the release is not its
-    # last step (the Homebrew tap update comes after), so a late failure must not
-    # leave latest.json naming the previous release. latest.json is built from what
-    # is published, so deploying after a build that published nothing is harmless.
+    runs-on: ubuntu-24.04
+    # Skip a cancelled run and a manual dry run of the release workflow (it
+    # publishes nothing, so there is nothing new to put on the site). A *failed*
+    # tag build still deploys: publishing the release is not its last step (the
+    # Homebrew tap update comes after), so a late failure must not leave
+    # latest.json naming the previous release. latest.json is built from what is
+    # published, so deploying after a build that published nothing is harmless.
     if: >-
       ${{ github.event_name != 'workflow_run' || (
         github.event.workflow_run.event != 'workflow_dispatch' && (
           github.event.workflow_run.conclusion == 'success' ||
-          (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.name != 'release-plz')
+          github.event.workflow_run.conclusion == 'failure'
         )
       ) }}
     environment:
@@ -59,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Zola
         uses: taiki-e/install-action@v2
@@ -104,10 +103,10 @@ jobs:
           fi
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/public/
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

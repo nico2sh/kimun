@@ -1,0 +1,24 @@
+name: Install Linux system libraries
+description: >-
+  One apt-get update and one install for the libraries the desktop app (GPUI)
+  links on Linux, plus any extra packages a job needs. Run it after checkout,
+  on Linux runners only.
+
+inputs:
+  extra:
+    description: Extra apt packages, separated by spaces
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install apt packages
+      shell: bash
+      env:
+        EXTRA: ${{ inputs.extra }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
+          libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+          $EXTRA
