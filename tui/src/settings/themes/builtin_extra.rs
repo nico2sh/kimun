@@ -62,6 +62,9 @@ impl Theme {
             border: None,
             header: None,
             selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 

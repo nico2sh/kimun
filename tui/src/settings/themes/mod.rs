@@ -281,6 +281,17 @@ pub struct Theme {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<ThemeColor>,
 
+    // ── Editor highlighting ──────────────────────────────────────────────────
+    /// Optional color of level 1 and level 2 headings. Unset, `accent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heading: Option<ThemeColor>,
+    /// Optional color of links and images. Unset, `accent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<ThemeColor>,
+    /// Optional color of inline code. Unset, `aqua`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<ThemeColor>,
+
     // ── Accent ───────────────────────────────────────────────────────────────
     /// Primary accent: title bars, active markers, cursor highlights.
     pub accent: ThemeColor,
@@ -349,6 +360,9 @@ struct ThemeToml {
     border: Option<ThemeColor>,
     header: Option<ThemeColor>,
     selected: Option<ThemeColor>,
+    heading: Option<ThemeColor>,
+    link: Option<ThemeColor>,
+    code: Option<ThemeColor>,
     accent: ThemeColor,
     cursor: Option<ThemeColor>,
     red: Option<ThemeColor>,
@@ -403,6 +417,9 @@ impl From<ThemeToml> for Theme {
             border: t.border,
             header: t.header,
             selected: t.selected,
+            heading: t.heading,
+            link: t.link,
+            code: t.code,
             accent: t.accent,
             color_directory: t.color_directory,
             color_journal_date: t.color_journal_date,
@@ -422,6 +439,21 @@ impl Theme {
     /// theme sets one, else `border_dim`.
     pub fn resting_border(&self) -> &ThemeColor {
         self.border.as_ref().unwrap_or(&self.border_dim)
+    }
+
+    /// Color of level 1 and 2 headings: `heading`, else `accent`.
+    pub fn heading_color(&self) -> &ThemeColor {
+        self.heading.as_ref().unwrap_or(&self.accent)
+    }
+
+    /// Color of links and images: `link`, else `accent`.
+    pub fn link_color(&self) -> &ThemeColor {
+        self.link.as_ref().unwrap_or(&self.accent)
+    }
+
+    /// Color of inline code: `code`, else `aqua`.
+    pub fn code_color(&self) -> &ThemeColor {
+        self.code.as_ref().unwrap_or(&self.aqua)
     }
 
     /// Returns the appropriate border style depending on focus state.
