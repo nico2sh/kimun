@@ -993,7 +993,10 @@ mod tests {
             header: Some(ThemeColor::Rgb(0, 255, 0)),
             ..Theme::default()
         };
-        assert_ne!(slot_header_background(&green), slot_header_background(&plain));
+        assert_ne!(
+            slot_header_background(&green),
+            slot_header_background(&plain)
+        );
         assert!(slot_header_background(&green).g > slot_header_background(&green).r);
     }
 
@@ -1009,7 +1012,12 @@ mod tests {
 
     #[test]
     fn editor_roles_default_to_accent_and_aqua_and_take_overrides() {
-        let plain = rgb_theme();
+        let plain = Theme {
+            heading: None,
+            link: None,
+            code: None,
+            ..rgb_theme()
+        };
         let heading = |t: &Theme, kind| run_style(&run(Role::Element(kind), 0), t);
         assert_eq!(
             heading(&plain, ElementKind::HeadingH1).fg,
