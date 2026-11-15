@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.1...kimun-notes-v0.25.2) - 2026-11-15
+
+### Fixed
+
+- fix tests in the CI
+- fixed themes for optional keys
+
+### Other
+
+- themes updated to new format
+- theme titles colors
+- more flexibility on ui themes
+- accent color
+- kimun dark and light themes
+- Update README.md
+
 ## [0.25.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.0...kimun-notes-v0.25.1) - 2026-11-14
 
 ### Other

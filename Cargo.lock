@@ -5044,7 +5044,7 @@ dependencies = [
 
 [[package]]
 name = "kimun-notes"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "arboard",
  "async-trait",
