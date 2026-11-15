@@ -198,7 +198,7 @@ pub fn caution(theme: &Theme) -> Rgba {
 
 /// The hairline that separates docked chrome (the find bar) from the text.
 pub fn divider(theme: &Theme) -> Rgba {
-    to_gpui(&theme.border_dim, Token::Foreground, theme)
+    to_gpui(theme.resting_border(), Token::Foreground, theme)
 }
 
 // ---- The shell (rail, slot, focus) ----------------------------------------
@@ -219,8 +219,11 @@ const SLOT_HEADER_MIX: f32 = 0.05;
 /// sits slightly off the view below it in light and dark themes alike.
 pub fn slot_header_background(theme: &Theme) -> Rgba {
     let panel = resolve(&theme.bg_panel, Token::Background, theme);
-    let (_, fg) = base(theme);
-    rgba(mix(panel, fg, SLOT_HEADER_MIX))
+    let tint = match theme.header.as_ref().and_then(explicit) {
+        Some(c) => c,
+        None => base(theme).1,
+    };
+    rgba(mix(panel, tint, SLOT_HEADER_MIX))
 }
 
 /// The focused panel's edge and the active rail view's marker: the TUI's
@@ -255,7 +258,11 @@ const SELECTED_MIX: f32 = 0.2;
 /// the focus colour, so it reads as chosen, not as hovered.
 pub fn selected_background(theme: &Theme) -> Rgba {
     let panel = resolve(&theme.bg_panel, Token::Background, theme);
-    let accent = resolve(&theme.focus_border, Token::Foreground, theme);
+    let accent = resolve(
+        theme.selected.as_ref().unwrap_or(&theme.focus_border),
+        Token::Foreground,
+        theme,
+    );
     rgba(mix(panel, accent, SELECTED_MIX))
 }
 
@@ -490,21 +497,22 @@ fn role_style(role: Role, theme: &Theme) -> CellStyle {
                 s.strike = true;
             }
             ElementKind::InlineCode => {
-                s.fg = fg_of(&theme.aqua, theme);
+                s.fg = fg_of(theme.code_color(), theme);
                 s.bg = bg_of(&theme.bg_soft, theme);
             }
             ElementKind::Link => {
-                s.fg = fg_of(&theme.accent, theme);
+                s.fg = fg_of(theme.link_color(), theme);
                 s.underline = true;
             }
             ElementKind::Image => {
-                s.fg = fg_of(&theme.accent, theme);
+                s.fg = fg_of(theme.link_color(), theme);
                 s.italic = true;
             }
-            ElementKind::HeadingH1 | ElementKind::HeadingH2 => {
-                s.fg = fg_of(&theme.fg_bright, theme);
+            ElementKind::HeadingH1 => {
+                s.fg = fg_of(theme.heading_color(), theme);
                 s.bold = true;
             }
+            ElementKind::HeadingH2 => s.fg = fg_of(theme.heading_color(), theme),
             ElementKind::HeadingH3 => {
                 s.fg = fg_of(&theme.yellow, theme);
                 s.bold = true;
@@ -960,6 +968,73 @@ mod tests {
             assert_ne!(selected_background(&t), panel_background(&t));
             assert_ne!(selected_background(&t), hover_background(&t));
         }
+    }
+
+    #[test]
+    fn unset_roles_keep_the_derived_surfaces() {
+        let t = Theme::default();
+        assert_eq!(divider(&t), to_gpui(&t.border_dim, Token::Foreground, &t));
+        assert!(t.border.is_none() && t.header.is_none() && t.selected.is_none());
+    }
+
+    #[test]
+    fn a_border_override_replaces_the_divider() {
+        let t = Theme {
+            border: Some(ThemeColor::Rgb(1, 2, 3)),
+            ..Theme::default()
+        };
+        assert_eq!(divider(&t), rgba((1, 2, 3)));
+    }
+
+    #[test]
+    fn a_header_override_tints_the_slot_header() {
+        let plain = Theme::default();
+        let green = Theme {
+            header: Some(ThemeColor::Rgb(0, 255, 0)),
+            ..Theme::default()
+        };
+        assert_ne!(
+            slot_header_background(&green),
+            slot_header_background(&plain)
+        );
+        assert!(slot_header_background(&green).g > slot_header_background(&green).r);
+    }
+
+    #[test]
+    fn a_selected_override_replaces_the_focus_tint() {
+        let plain = Theme::default();
+        let t = Theme {
+            selected: Some(ThemeColor::Rgb(0, 0, 255)),
+            ..Theme::default()
+        };
+        assert_ne!(selected_background(&t), selected_background(&plain));
+    }
+
+    #[test]
+    fn editor_roles_default_to_accent_and_aqua_and_take_overrides() {
+        let plain = Theme {
+            heading: None,
+            link: None,
+            code: None,
+            ..rgb_theme()
+        };
+        let heading = |t: &Theme, kind| run_style(&run(Role::Element(kind), 0), t);
+        assert_eq!(
+            heading(&plain, ElementKind::HeadingH1).fg,
+            fg_of(&plain.accent, &plain)
+        );
+        assert!(heading(&plain, ElementKind::HeadingH1).bold);
+        assert!(!heading(&plain, ElementKind::HeadingH2).bold);
+        let t = Theme {
+            heading: Some(ThemeColor::Rgb(1, 2, 3)),
+            link: Some(ThemeColor::Rgb(4, 5, 6)),
+            code: Some(ThemeColor::Rgb(7, 8, 9)),
+            ..rgb_theme()
+        };
+        assert_eq!(heading(&t, ElementKind::HeadingH2).fg, rgba((1, 2, 3)));
+        assert_eq!(heading(&t, ElementKind::Link).fg, rgba((4, 5, 6)));
+        assert_eq!(heading(&t, ElementKind::Image).fg, rgba((4, 5, 6)));
+        assert_eq!(heading(&t, ElementKind::InlineCode).fg, rgba((7, 8, 9)));
     }
 
     // ---- run_style ----

@@ -189,7 +189,7 @@ impl Component for AttachmentView {
                 let block = Block::default()
                     .borders(Borders::TOP)
                     .title(title)
-                    .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
+                    .border_style(Style::default().fg(theme.resting_border().to_ratatui()))
                     .title_style(Style::default().fg(theme.gray.to_ratatui()));
                 let inner = block.inner(body);
                 f.render_widget(block, body);

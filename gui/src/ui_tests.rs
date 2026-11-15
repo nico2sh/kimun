@@ -892,9 +892,11 @@ fn headings_and_emphasis_paint_in_their_roles_with_bold_drawn(cx: &mut TestAppCo
         let h2 = painted_row(&view, 1, cx);
         assert_eq!(h2.text(), "## Heading two");
         assert_eq!(piece(&h2, "## ").style.fg, fg(&t.gray, &t));
+        // H2 keeps the heading colour at normal weight (H1 is bold; the unit
+        // tests in `theme.rs` cover it, as the caret reveals row 0 here).
         let title = piece(&h2, "Heading two").style;
-        assert!(title.bold);
-        assert_eq!(title.fg, fg(&t.fg_bright, &t));
+        assert!(!title.bold);
+        assert_eq!(title.fg, fg(t.heading_color(), &t));
         // H4-H6 paint as H3 (the logic has three heading kinds).
         let h6 = painted_row(&view, 5, cx);
         assert_eq!(piece(&h6, "Heading six").style.fg, fg(&t.yellow, &t));

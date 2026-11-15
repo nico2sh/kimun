@@ -59,7 +59,7 @@ impl Theme {
             gray: ThemeColor::from_string("#7c6f64").unwrap(),
             selection_fg: ThemeColor::from_string("#fbf1c7").unwrap(),
             border_dim: ThemeColor::from_string("#504945").unwrap(),
-            focus_border: ThemeColor::from_string("#b8bb26").unwrap(),
+            focus_border: ThemeColor::from_string("#fabd2f").unwrap(),
             accent: ThemeColor::from_string("#fabd2f").unwrap(),
             color_directory: ThemeColor::from_string("#83a598").unwrap(),
             color_journal_date: ThemeColor::from_string("#8ec07c").unwrap(),
@@ -68,6 +68,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#fabd2f").unwrap(),
             code_bg: ThemeColor::from_string("#32302f").unwrap(),
             color_replace_preview: ThemeColor::from_string("#4c3a4a").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#d3869b").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -93,7 +99,7 @@ impl Theme {
             gray: ThemeColor::from_string("#a89984").unwrap(),
             selection_fg: ThemeColor::from_string("#282828").unwrap(),
             border_dim: ThemeColor::from_string("#d5c4a1").unwrap(),
-            focus_border: ThemeColor::from_string("#79740e").unwrap(),
+            focus_border: ThemeColor::from_string("#af3a03").unwrap(),
             accent: ThemeColor::from_string("#d79921").unwrap(),
             color_directory: ThemeColor::from_string("#458588").unwrap(),
             color_journal_date: ThemeColor::from_string("#689d6a").unwrap(),
@@ -102,6 +108,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#d79921").unwrap(),
             code_bg: ThemeColor::from_string("#f2e5bc").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e8d5e0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#af3a03").unwrap()),
+            link: Some(ThemeColor::from_string("#076678").unwrap()),
+            code: None,
         }
     }
 
@@ -127,7 +139,7 @@ impl Theme {
             gray: ThemeColor::from_string("#6c7086").unwrap(),
             selection_fg: ThemeColor::from_string("#cdd6f4").unwrap(),
             border_dim: ThemeColor::from_string("#45475a").unwrap(),
-            focus_border: ThemeColor::from_string("#a6e3a1").unwrap(),
+            focus_border: ThemeColor::from_string("#cba6f7").unwrap(),
             accent: ThemeColor::from_string("#cba6f7").unwrap(),
             color_directory: ThemeColor::from_string("#89dceb").unwrap(),
             color_journal_date: ThemeColor::from_string("#94e2d5").unwrap(),
@@ -136,6 +148,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#cba6f7").unwrap(),
             code_bg: ThemeColor::from_string("#181825").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3e3450").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#fab387").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -161,7 +179,7 @@ impl Theme {
             gray: ThemeColor::from_string("#9ca0b0").unwrap(),
             selection_fg: ThemeColor::from_string("#4c4f69").unwrap(),
             border_dim: ThemeColor::from_string("#ccd0da").unwrap(),
-            focus_border: ThemeColor::from_string("#40a02b").unwrap(),
+            focus_border: ThemeColor::from_string("#8839ef").unwrap(),
             accent: ThemeColor::from_string("#8839ef").unwrap(),
             color_directory: ThemeColor::from_string("#04a5e5").unwrap(),
             color_journal_date: ThemeColor::from_string("#179299").unwrap(),
@@ -170,6 +188,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#8839ef").unwrap(),
             code_bg: ThemeColor::from_string("#e6e9ef").unwrap(),
             color_replace_preview: ThemeColor::from_string("#dcd0e8").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#1e66f5").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -195,7 +219,7 @@ impl Theme {
             gray: ThemeColor::from_string("#565f89").unwrap(),
             selection_fg: ThemeColor::from_string("#c0caf5").unwrap(),
             border_dim: ThemeColor::from_string("#3b4261").unwrap(),
-            focus_border: ThemeColor::from_string("#9ece6a").unwrap(),
+            focus_border: ThemeColor::from_string("#7aa2f7").unwrap(),
             accent: ThemeColor::from_string("#7aa2f7").unwrap(),
             color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
@@ -204,6 +228,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#7aa2f7").unwrap(),
             code_bg: ThemeColor::from_string("#16161e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a2b4d").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#ff9e64").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -229,7 +259,7 @@ impl Theme {
             gray: ThemeColor::from_string("#565f89").unwrap(),
             selection_fg: ThemeColor::from_string("#c0caf5").unwrap(),
             border_dim: ThemeColor::from_string("#3b4261").unwrap(),
-            focus_border: ThemeColor::from_string("#9ece6a").unwrap(),
+            focus_border: ThemeColor::from_string("#bb9af7").unwrap(),
             accent: ThemeColor::from_string("#bb9af7").unwrap(),
             color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
@@ -238,6 +268,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#bb9af7").unwrap(),
             code_bg: ThemeColor::from_string("#1f2335").unwrap(),
             color_replace_preview: ThemeColor::from_string("#43356b").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#ff9e64").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -263,7 +299,7 @@ impl Theme {
             gray: ThemeColor::from_string("#586e75").unwrap(),
             selection_fg: ThemeColor::from_string("#eee8d5").unwrap(),
             border_dim: ThemeColor::from_string("#073642").unwrap(),
-            focus_border: ThemeColor::from_string("#859900").unwrap(),
+            focus_border: ThemeColor::from_string("#268bd2").unwrap(),
             accent: ThemeColor::from_string("#268bd2").unwrap(),
             color_directory: ThemeColor::from_string("#2aa198").unwrap(),
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
@@ -272,6 +308,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
             code_bg: ThemeColor::from_string("#073642").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3b3a5e").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -297,7 +339,7 @@ impl Theme {
             gray: ThemeColor::from_string("#93a1a1").unwrap(),
             selection_fg: ThemeColor::from_string("#073642").unwrap(),
             border_dim: ThemeColor::from_string("#eee8d5").unwrap(),
-            focus_border: ThemeColor::from_string("#859900").unwrap(),
+            focus_border: ThemeColor::from_string("#268bd2").unwrap(),
             accent: ThemeColor::from_string("#268bd2").unwrap(),
             color_directory: ThemeColor::from_string("#2aa198").unwrap(),
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
@@ -306,6 +348,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
             code_bg: ThemeColor::from_string("#eee8d5").unwrap(),
             color_replace_preview: ThemeColor::from_string("#ddd6e8").unwrap(),
+            border: Some(ThemeColor::from_string("#93a1a1").unwrap()),
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -331,7 +379,7 @@ impl Theme {
             gray: ThemeColor::from_string("#4c566a").unwrap(),
             selection_fg: ThemeColor::from_string("#eceff4").unwrap(),
             border_dim: ThemeColor::from_string("#434c5e").unwrap(),
-            focus_border: ThemeColor::from_string("#a3be8c").unwrap(),
+            focus_border: ThemeColor::from_string("#88c0d0").unwrap(),
             accent: ThemeColor::from_string("#88c0d0").unwrap(),
             color_directory: ThemeColor::from_string("#81a1c1").unwrap(),
             color_journal_date: ThemeColor::from_string("#8fbcbb").unwrap(),
@@ -340,6 +388,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#88c0d0").unwrap(),
             code_bg: ThemeColor::from_string("#3b4252").unwrap(),
             color_replace_preview: ThemeColor::from_string("#4a3f52").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -365,7 +419,7 @@ impl Theme {
             gray: ThemeColor::from_string("#6272a4").unwrap(),
             selection_fg: ThemeColor::from_string("#f8f8f2").unwrap(),
             border_dim: ThemeColor::from_string("#44475a").unwrap(),
-            focus_border: ThemeColor::from_string("#50fa7b").unwrap(),
+            focus_border: ThemeColor::from_string("#bd93f9").unwrap(),
             accent: ThemeColor::from_string("#bd93f9").unwrap(),
             color_directory: ThemeColor::from_string("#8be9fd").unwrap(),
             color_journal_date: ThemeColor::from_string("#50fa7b").unwrap(),
@@ -374,6 +428,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#bd93f9").unwrap(),
             code_bg: ThemeColor::from_string("#21222c").unwrap(),
             color_replace_preview: ThemeColor::from_string("#453a5e").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -400,7 +460,7 @@ impl Theme {
             gray: ThemeColor::from_string("#a8a27f").unwrap(),
             selection_fg: ThemeColor::from_string("#1f1f1f").unwrap(),
             border_dim: ThemeColor::from_string("#e2deca").unwrap(),
-            focus_border: ThemeColor::from_string("#14710a").unwrap(),
+            focus_border: ThemeColor::from_string("#644ac9").unwrap(),
             accent: ThemeColor::from_string("#644ac9").unwrap(),
             color_directory: ThemeColor::from_string("#036a96").unwrap(),
             color_journal_date: ThemeColor::from_string("#14710a").unwrap(),
@@ -409,6 +469,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#644ac9").unwrap(),
             code_bg: ThemeColor::from_string("#f2eeda").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e4dcf0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -434,7 +500,7 @@ impl Theme {
             gray: ThemeColor::from_string("#5c6370").unwrap(),
             selection_fg: ThemeColor::from_string("#abb2bf").unwrap(),
             border_dim: ThemeColor::from_string("#3e4451").unwrap(),
-            focus_border: ThemeColor::from_string("#98c379").unwrap(),
+            focus_border: ThemeColor::from_string("#61afef").unwrap(),
             accent: ThemeColor::from_string("#61afef").unwrap(),
             color_directory: ThemeColor::from_string("#56b6c2").unwrap(),
             color_journal_date: ThemeColor::from_string("#98c379").unwrap(),
@@ -443,6 +509,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#61afef").unwrap(),
             code_bg: ThemeColor::from_string("#21252b").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a2f4a").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#d19a66").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -468,7 +540,7 @@ impl Theme {
             gray: ThemeColor::from_string("#a0a1a7").unwrap(),
             selection_fg: ThemeColor::from_string("#383a42").unwrap(),
             border_dim: ThemeColor::from_string("#dbdbdc").unwrap(),
-            focus_border: ThemeColor::from_string("#50a14f").unwrap(),
+            focus_border: ThemeColor::from_string("#4078f2").unwrap(),
             accent: ThemeColor::from_string("#4078f2").unwrap(),
             color_directory: ThemeColor::from_string("#0184bc").unwrap(),
             color_journal_date: ThemeColor::from_string("#50a14f").unwrap(),
@@ -477,6 +549,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#4078f2").unwrap(),
             code_bg: ThemeColor::from_string("#f0f0f1").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e3dcf0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -502,7 +580,7 @@ impl Theme {
             gray: ThemeColor::from_string("#75715e").unwrap(),
             selection_fg: ThemeColor::from_string("#f8f8f2").unwrap(),
             border_dim: ThemeColor::from_string("#49483e").unwrap(),
-            focus_border: ThemeColor::from_string("#a6e22e").unwrap(),
+            focus_border: ThemeColor::from_string("#f92672").unwrap(),
             accent: ThemeColor::from_string("#f92672").unwrap(),
             color_directory: ThemeColor::from_string("#66d9ef").unwrap(),
             color_journal_date: ThemeColor::from_string("#a6e22e").unwrap(),
@@ -511,6 +589,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#f92672").unwrap(),
             code_bg: ThemeColor::from_string("#1e1f1c").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3d3350").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -545,6 +629,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#a7c080").unwrap(),
             code_bg: ThemeColor::from_string("#232a2e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3d3548").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -570,7 +660,7 @@ impl Theme {
             gray: ThemeColor::from_string("#a6b0a0").unwrap(),
             selection_fg: ThemeColor::from_string("#5c6a72").unwrap(),
             border_dim: ThemeColor::from_string("#e0dcc7").unwrap(),
-            focus_border: ThemeColor::from_string("#8da101").unwrap(),
+            focus_border: ThemeColor::from_string("#697801").unwrap(),
             accent: ThemeColor::from_string("#8da101").unwrap(),
             color_directory: ThemeColor::from_string("#3a94c5").unwrap(),
             color_journal_date: ThemeColor::from_string("#35a77c").unwrap(),
@@ -579,6 +669,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#8da101").unwrap(),
             code_bg: ThemeColor::from_string("#f4f0d9").unwrap(),
             color_replace_preview: ThemeColor::from_string("#e6dcea").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#697801").unwrap()),
+            link: Some(ThemeColor::from_string("#697801").unwrap()),
+            code: None,
         }
     }
 
@@ -604,7 +700,7 @@ impl Theme {
             gray: ThemeColor::from_string("#6e6a86").unwrap(),
             selection_fg: ThemeColor::from_string("#e0def4").unwrap(),
             border_dim: ThemeColor::from_string("#26233a").unwrap(),
-            focus_border: ThemeColor::from_string("#31748f").unwrap(),
+            focus_border: ThemeColor::from_string("#c4a7e7").unwrap(),
             accent: ThemeColor::from_string("#c4a7e7").unwrap(),
             color_directory: ThemeColor::from_string("#9ccfd8").unwrap(),
             color_journal_date: ThemeColor::from_string("#31748f").unwrap(),
@@ -613,6 +709,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#c4a7e7").unwrap(),
             code_bg: ThemeColor::from_string("#1f1d2e").unwrap(),
             color_replace_preview: ThemeColor::from_string("#403a5c").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#f6c177").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -640,7 +742,7 @@ impl Theme {
             gray: ThemeColor::from_string("#9893a5").unwrap(),
             selection_fg: ThemeColor::from_string("#575279").unwrap(),
             border_dim: ThemeColor::from_string("#f2e9e1").unwrap(),
-            focus_border: ThemeColor::from_string("#286983").unwrap(),
+            focus_border: ThemeColor::from_string("#907aa9").unwrap(),
             accent: ThemeColor::from_string("#907aa9").unwrap(),
             color_directory: ThemeColor::from_string("#56949f").unwrap(),
             color_journal_date: ThemeColor::from_string("#286983").unwrap(),
@@ -649,6 +751,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#907aa9").unwrap(),
             code_bg: ThemeColor::from_string("#fffaf3").unwrap(),
             color_replace_preview: ThemeColor::from_string("#eadff0").unwrap(),
+            border: Some(ThemeColor::from_string("#9893a5").unwrap()),
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#286983").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -674,7 +782,7 @@ impl Theme {
             gray: ThemeColor::from_string("#727169").unwrap(),
             selection_fg: ThemeColor::from_string("#dcd7ba").unwrap(),
             border_dim: ThemeColor::from_string("#54546d").unwrap(),
-            focus_border: ThemeColor::from_string("#98bb6c").unwrap(),
+            focus_border: ThemeColor::from_string("#7e9cd8").unwrap(),
             accent: ThemeColor::from_string("#7e9cd8").unwrap(),
             color_directory: ThemeColor::from_string("#7fb4ca").unwrap(),
             color_journal_date: ThemeColor::from_string("#7aa89f").unwrap(),
@@ -683,6 +791,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#7e9cd8").unwrap(),
             code_bg: ThemeColor::from_string("#16161d").unwrap(),
             color_replace_preview: ThemeColor::from_string("#3a3450").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 
@@ -709,7 +823,7 @@ impl Theme {
             gray: ThemeColor::from_string("#8a8980").unwrap(),
             selection_fg: ThemeColor::from_string("#545464").unwrap(),
             border_dim: ThemeColor::from_string("#d5cea3").unwrap(),
-            focus_border: ThemeColor::from_string("#6f894e").unwrap(),
+            focus_border: ThemeColor::from_string("#4d699b").unwrap(),
             accent: ThemeColor::from_string("#4d699b").unwrap(),
             color_directory: ThemeColor::from_string("#4e8ca2").unwrap(),
             color_journal_date: ThemeColor::from_string("#597b75").unwrap(),
@@ -718,6 +832,12 @@ impl Theme {
             blockquote_bar: ThemeColor::from_string("#4d699b").unwrap(),
             code_bg: ThemeColor::from_string("#e5ddb0").unwrap(),
             color_replace_preview: ThemeColor::from_string("#ded3e0").unwrap(),
+            border: None,
+            header: None,
+            selected: None,
+            heading: Some(ThemeColor::from_string("#c84053").unwrap()),
+            link: None,
+            code: None,
         }
     }
 
@@ -760,6 +880,12 @@ impl Theme {
             // editor background and render no box at all.
             code_bg: ThemeColor::Ansi(8),
             color_replace_preview: ThemeColor::Ansi(5), // magenta
+            border: None,
+            header: None,
+            selected: None,
+            heading: None,
+            link: None,
+            code: None,
         }
     }
 }
