@@ -59,6 +59,9 @@ impl Theme {
             blockquote_bar: c[17].clone(),
             code_bg: c[3].clone(),
             color_replace_preview: replace,
+            border: None,
+            header: None,
+            selected: None,
         }
     }
 

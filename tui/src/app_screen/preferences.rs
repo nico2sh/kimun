@@ -892,7 +892,7 @@ impl AppScreen for PreferencesScreen {
         let header = Block::default()
             .title("Preferences")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
+            .border_style(Style::default().fg(theme.resting_border().to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
