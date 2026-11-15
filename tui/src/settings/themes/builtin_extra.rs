@@ -50,7 +50,7 @@ impl Theme {
             gray: c[15].clone(),
             selection_fg: c[6].clone(),
             border_dim: c[16].clone(),
-            focus_border: c[8].clone(),
+            focus_border: c[17].clone(),
             accent: c[17].clone(),
             color_directory: c[10].clone(),
             color_journal_date: c[12].clone(),
