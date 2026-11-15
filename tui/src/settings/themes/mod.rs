@@ -331,7 +331,7 @@ struct ThemeToml {
     gray: ThemeColor,
     selection_fg: ThemeColor,
     border_dim: ThemeColor,
-    focus_border: ThemeColor,
+    focus_border: Option<ThemeColor>,
     accent: ThemeColor,
     cursor: Option<ThemeColor>,
     red: Option<ThemeColor>,
@@ -382,7 +382,7 @@ impl From<ThemeToml> for Theme {
             gray: t.gray,
             selection_fg: t.selection_fg,
             border_dim: t.border_dim,
-            focus_border: t.focus_border,
+            focus_border: t.focus_border.unwrap_or_else(|| t.accent.clone()),
             accent: t.accent,
             color_directory: t.color_directory,
             color_journal_date: t.color_journal_date,
@@ -683,7 +683,7 @@ mod tests {
         assert!(toml_string.contains("name = \"Gruvbox Dark\""));
         assert!(toml_string.contains("bg = \"#282828\""));
         assert!(toml_string.contains("bg_panel = \"#32302f\""));
-        assert!(toml_string.contains("focus_border = \"#b8bb26\""));
+        assert!(toml_string.contains("focus_border = \"#fabd2f\""));
         assert!(toml_string.contains("color_journal_date = \"#8ec07c\""));
     }
 
