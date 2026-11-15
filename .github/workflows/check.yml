@@ -26,8 +26,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A release PR (opened by release-plz, branch release-plz-*) is rewritten on
+  # every merge to main and changes only versions, the lockfile, the changelog
+  # and release notes. The code it holds already passed the full matrix on main,
+  # so it gets one cheap job: the lockfile must still resolve and the workspace
+  # must still compile. `github.head_ref` is empty outside pull requests, so
+  # pushes and manual runs always take the full matrix. A job skipped by `if:`
+  # counts as passing for a required check.
+  release-pr:
+    name: Release PR (lockfile and compile)
+    if: startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux system libraries
+        uses: ./.github/actions/linux-libs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-ubuntu-24.04
+
+      - name: Check
+        run: cargo check --workspace --locked
+
   test:
     name: Test (${{ matrix.name }})
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Every platform reports. A Windows-only failure must not hide whether
@@ -58,12 +87,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install GPUI system libraries
+      # One apt run for the whole job: the GPUI libraries, plus what the lint
+      # steps need (desktop-file-validate, and minisign for the installer and
+      # signing tests).
+      - name: Install Linux system libraries
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+        uses: ./.github/actions/linux-libs
+        with:
+          extra: desktop-file-utils minisign
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,10 +151,7 @@ jobs:
       # yet, so nothing else would notice a malformed one.
       - name: Desktop entry is valid
         if: matrix.lint
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y desktop-file-utils
-          desktop-file-validate assets/packaging/linux/kimun.desktop
+        run: desktop-file-validate assets/packaging/linux/kimun.desktop
 
       # Filesystem operations live in `kimun_core::nfs` (vault-scoped) or
       # `kimun_core::system` (host-scoped) — CLAUDE.md states the rule, this
@@ -154,12 +182,6 @@ jobs:
       - name: macOS packaging tests
         if: matrix.lint
         run: bash .github/scripts/test-macos-packaging.sh
-
-      # minisign: the installer tests check signatures with a throwaway key, and the
-      # signing script is tested with it.
-      - name: Install minisign
-        if: matrix.lint
-        run: sudo apt-get update && sudo apt-get install -y minisign
 
       # install.sh against a fake release served from a directory: both apps,
       # the Linux launcher files, the marker, a bad checksum, the options.
@@ -241,6 +263,7 @@ jobs:
   # would only spend minutes to re-derive a subset of that answer.
   check:
     name: Check (${{ matrix.name }})
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -257,12 +280,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install GPUI system libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libwayland-dev libfontconfig-dev \
-            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+      - name: Install Linux system libraries
+        uses: ./.github/actions/linux-libs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
