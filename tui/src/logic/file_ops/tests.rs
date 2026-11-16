@@ -354,3 +354,74 @@ async fn open_journal_announces_only_a_fresh_entry_then_opens_it() {
     );
     assert!(rx.try_recv().is_err());
 }
+
+// ---- new note / new directory ---------------------------------------------
+
+#[test]
+fn new_entry_base_prefers_browser_then_note_dir_then_root() {
+    assert_eq!(
+        new_entry_base(Some(&p("/a/b")), Some(&p("/x/note.md"))),
+        p("/a/b")
+    );
+    assert_eq!(new_entry_base(None, Some(&p("/x/y/note.md"))), p("/x/y"));
+    assert_eq!(new_entry_base(None, None), VaultPath::root());
+}
+
+#[test]
+fn new_note_target_resolves_against_the_base_and_explains_refusals() {
+    assert_eq!(
+        new_note_target(&p("/a"), "Sub/Idea"),
+        Ok(p("/a/sub/idea.md"))
+    );
+    assert!(new_note_target(&p("/a"), "").is_err());
+    assert!(new_note_target(&p("/a"), "bad?").unwrap_err().contains('?'));
+}
+
+#[test]
+fn new_directory_target_resolves_against_the_base() {
+    assert_eq!(new_directory_target(&p("/a"), "Sub/"), Ok(p("/a/sub")));
+    assert!(new_directory_target(&p("/a"), "x.md").is_err());
+}
+
+#[tokio::test]
+async fn create_new_note_makes_missing_directories() {
+    let vault = vault("new-note-nested").await;
+    let path = new_note_target(&VaultPath::root(), "projects/rust/plan").unwrap();
+    let outcome = create_new_note(&vault, &path, Some("# Plan".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        NoteOutcome {
+            path: path.clone(),
+            created: true
+        }
+    );
+    assert!(vault.exists(&path).await);
+}
+
+#[tokio::test]
+async fn create_new_note_refuses_an_existing_note_and_leaves_it_alone() {
+    let vault = vault("new-note-exists").await;
+    note(&vault, "idea.md", "original").await;
+    let err = create_new_note(&vault, &p("idea.md"), Some("other".to_string()))
+        .await
+        .unwrap_err();
+    assert_eq!(err, "A note with that name already exists");
+    let text = vault.load_note(&p("idea.md")).await.unwrap().raw_text;
+    assert_eq!(text, "original");
+}
+
+#[tokio::test]
+async fn create_directory_reports_created_and_refuses_a_duplicate() {
+    let vault = vault("new-dir").await;
+    let path = new_directory_target(&VaultPath::root(), "a/b").unwrap();
+    assert!(matches!(
+        create_directory(&vault, &path).await,
+        Ok(FileOp::Created(created)) if created == path
+    ));
+    assert!(matches!(
+        create_directory(&vault, &path).await,
+        Err(e) if e == "A directory with that name already exists"
+    ));
+}
