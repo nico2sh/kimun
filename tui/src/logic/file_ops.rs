@@ -18,6 +18,7 @@
 //!   itself or inside it (move). New frontends use these.
 
 use kimun_core::NoteVault;
+use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 
 use crate::logic::list::{ListRow, fuzzy_rank};
@@ -259,9 +260,31 @@ pub fn new_directory_target(base: &VaultPath, input: &str) -> Result<VaultPath, 
 
 /// The reason alone, without the path core's error also names (the dialog
 /// already shows what was typed).
-fn invalid_name_message(e: &kimun_core::error::FSError) -> String {
+fn invalid_name_message(e: &FSError) -> String {
     match e {
-        kimun_core::error::FSError::InvalidPath { message, .. } => message.clone(),
+        FSError::InvalidPath { message, .. } => message.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A create failure in words for the dialog. `exists` is the message for the
+/// entry itself being taken; a parent that is a file (so the directories
+/// leading to the new entry cannot be made) is the other collision a typed
+/// path can hit. Shared by [`create_new_note`] and [`create_directory`].
+fn create_failure(e: VaultError, taken: &str, is_taken: impl Fn(&VaultError) -> bool) -> String {
+    use std::io::ErrorKind;
+    if is_taken(&e) {
+        return taken.to_string();
+    }
+    match e {
+        VaultError::FSError(FSError::ReadFileError(io))
+            if matches!(
+                io.kind(),
+                ErrorKind::AlreadyExists | ErrorKind::NotADirectory
+            ) =>
+        {
+            "A file with the same name as one of the parent directories already exists".to_string()
+        }
         other => other.to_string(),
     }
 }
@@ -282,11 +305,10 @@ pub async fn create_new_note(
             path: path.clone(),
             created: true,
         })
-        .map_err(|e| match e {
-            kimun_core::error::VaultError::NoteExists { .. } => {
-                "A note with that name already exists".to_string()
-            }
-            other => other.to_string(),
+        .map_err(|e| {
+            create_failure(e, "A note with that name already exists", |e| {
+                matches!(e, VaultError::NoteExists { .. })
+            })
         })
 }
 
@@ -298,11 +320,10 @@ pub async fn create_directory(vault: &NoteVault, path: &VaultPath) -> Result<Fil
         .create_directory(path)
         .await
         .map(|_| FileOp::Created(path.clone()))
-        .map_err(|e| match e {
-            kimun_core::error::VaultError::DirectoryExists { .. } => {
-                "A directory with that name already exists".to_string()
-            }
-            other => other.to_string(),
+        .map_err(|e| {
+            create_failure(e, "A directory with that name already exists", |e| {
+                matches!(e, VaultError::DirectoryExists { .. })
+            })
         })
 }
 
