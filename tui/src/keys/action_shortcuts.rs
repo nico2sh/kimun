@@ -15,7 +15,10 @@ use crate::logic::text_action::TextAction;
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 23] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 24] = [
+    // Alt chords are not delivered consistently across terminals; the leader
+    // (`n f`) and Ctrl+N's menu reach it.
+    ActionShortcuts::NewDirectory,
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.

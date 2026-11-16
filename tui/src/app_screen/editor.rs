@@ -915,6 +915,14 @@ impl EditorScreen {
         .ok();
     }
 
+    /// Open the note-or-directory menu on [`Self::new_entry_base`].
+    fn request_new_menu(&self, tx: &AppTx) {
+        tx.send(AppMessage::FileOp(FileOp::ShowNewMenu {
+            base: self.new_entry_base(),
+        }))
+        .ok();
+    }
+
     /// Open the new-directory dialog on [`Self::new_entry_base`].
     fn request_new_directory(&self, tx: &AppTx) {
         tx.send(AppMessage::FileOp(FileOp::ShowNewDirectory {
@@ -931,7 +939,7 @@ impl EditorScreen {
             EditorOp::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
-            EditorOp::NewNote => self.request_new_note(None, tx),
+            EditorOp::NewNote => self.request_new_menu(tx),
             EditorOp::NewDirectory => self.request_new_directory(tx),
             EditorOp::SaveNote => self.spawn_autosave(tx),
             EditorOp::ShowFileOps => {

@@ -641,8 +641,6 @@ mod tests {
         let bindings = crate::settings::AppSettings::default().key_bindings;
         let base = kimun_core::nfs::VaultPath::new("/notes");
         let mut d = ActiveDialog::new_menu(base.clone(), &bindings);
-        draw_and_find(&mut d, "ctrl&N");
-        draw_and_find(&mut d, "alt&N");
         assert!(has(&click_text(&mut d, "[N]"), |e| matches!(
             e,
             AppMessage::FileOp(FileOp::ShowNewNote { base: b, initial: None }) if *b == base

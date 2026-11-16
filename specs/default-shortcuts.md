@@ -24,8 +24,8 @@ Status: implemented. Applies to both frontends.
 
 | Action | TUI | GUI | Change |
 |---|---|---|---|
-| New note | Ctrl+N | P+N | none |
-| New directory | `Ctrl+B n d` (alias Alt+N) | P+Shift+N | TUI: the leader is the real default; Alt+N stays as an alias |
+| New note | Ctrl+N (menu: note or directory) | P+N | none |
+| New directory | `Ctrl+B n f` | P+Shift+N | TUI: Alt+N dropped, not delivered consistently across terminals |
 | Save now | Ctrl+S | P+S | TUI: new |
 | Open note | Ctrl+O | P+O | none |
 | Search notes | Ctrl+K | P+K, P+Shift+F | GUI: alias added |
