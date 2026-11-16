@@ -59,4 +59,4 @@ To change a shortcut, add a `[key_bindings]` section to `config.toml`. This sect
 
 If you choose `nvim`, Kimün runs your installed Neovim in the background. Your `init.lua` and your plugins work. If Neovim does not start, Kimün uses the normal editor. If Neovim is not on your `PATH`, set `nvim_path = "/path/to/nvim"`.
 
-With Neovim, a mouse click does not move the cursor. Use `Ctrl+N` to follow a link.
+With Neovim, a mouse click does not move the cursor. Use `Ctrl+U` to follow a link.

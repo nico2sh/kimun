@@ -1261,12 +1261,12 @@ fn grow_and_shrink_say_why_they_cannot_act(cx: &mut TestAppContext) {
         assert_eq!(grow_row(cx), Some(FOCUS_TO_RESIZE));
         // Zoomed.
         window.press("alt-right", cx);
-        window.press("ctrl-shift-m", cx);
+        window.press("alt-m", cx);
         window.render_frame(cx);
         leader(window, "l", cx);
         assert_eq!(shell.flash(cx).as_deref(), Some(ZOOMED_NO_RESIZE));
         assert_eq!(grow_row(cx), Some(ZOOMED_NO_RESIZE));
-        window.press("ctrl-shift-m", cx);
+        window.press("alt-m", cx);
         window.render_frame(cx);
         assert_eq!(grow_row(cx), None);
         // Shrunk to the floor: the step says so.
@@ -2026,8 +2026,7 @@ fn slot_minimum_is_the_largest_shown_view_minimum(cx: &mut TestAppContext) {
 }
 
 /// A collapsed slot is no focus target: the keyboard leaves it when it
-/// collapses, and neither the directional moves nor the focus cycle reach
-/// it.
+/// collapses, and the directional moves do not reach it.
 #[gpui_kit::test]
 fn focus_skips_collapsed_slots(cx: &mut TestAppContext) {
     let shell = open_shell(
@@ -2053,9 +2052,6 @@ fn focus_skips_collapsed_slots(cx: &mut TestAppContext) {
         let moved = ws.update(cx, |ws, _| ws.focus_dir(Dir::Right));
         assert_eq!(moved, TreeFocusMove::AtEdge);
         assert_eq!(shell.focus(cx), group);
-        // Rail, FILES, editor: OUTLINE is not in the cycle.
-        let next = ws.update(cx, |ws, _| ws.cycle_focus(true));
-        assert_eq!(next, Some(Focus::Rail));
     })
     .unwrap();
     cx.update_window(shell.handle, |_, window, cx| {

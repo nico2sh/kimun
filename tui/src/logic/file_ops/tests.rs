@@ -354,3 +354,153 @@ async fn open_journal_announces_only_a_fresh_entry_then_opens_it() {
     );
     assert!(rx.try_recv().is_err());
 }
+
+// ---- new note / new directory ---------------------------------------------
+
+#[test]
+fn new_entry_base_prefers_browser_then_note_dir_then_root() {
+    assert_eq!(
+        new_entry_base(Some(&p("/a/b")), Some(&p("/x/note.md"))),
+        p("/a/b")
+    );
+    assert_eq!(new_entry_base(None, Some(&p("/x/y/note.md"))), p("/x/y"));
+    assert_eq!(new_entry_base(None, None), VaultPath::root());
+}
+
+#[test]
+fn new_entry_base_is_absolute_even_for_relative_paths() {
+    let note = VaultPath::new("d/e/note.md");
+    assert!(!note.is_absolute(), "precondition");
+    assert_eq!(new_entry_base(None, Some(&note)), p("/d/e"));
+    assert!(new_entry_base(Some(&VaultPath::new("rel")), None).is_absolute());
+}
+
+#[test]
+fn new_note_target_resolves_against_the_base_and_explains_refusals() {
+    assert_eq!(
+        new_note_target(&p("/a"), "Sub/Idea"),
+        Ok(p("/a/sub/idea.md"))
+    );
+    assert!(new_note_target(&p("/a"), "").is_err());
+    assert!(new_note_target(&p("/a"), "bad?").unwrap_err().contains('?'));
+}
+
+#[test]
+fn new_directory_target_resolves_against_the_base() {
+    assert_eq!(new_directory_target(&p("/a"), "Sub/"), Ok(p("/a/sub")));
+    assert!(new_directory_target(&p("/a"), "x.md").is_err());
+}
+
+#[tokio::test]
+async fn create_new_note_makes_missing_directories() {
+    let vault = vault("new-note-nested").await;
+    let path = new_note_target(&VaultPath::root(), "projects/rust/plan").unwrap();
+    let outcome = create_new_note(&vault, &path, Some("# Plan".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        NoteOutcome {
+            path: path.clone(),
+            created: true
+        }
+    );
+    assert!(vault.exists(&path).await);
+}
+
+#[tokio::test]
+async fn create_new_note_refuses_an_existing_note_and_leaves_it_alone() {
+    let vault = vault("new-note-exists").await;
+    note(&vault, "idea.md", "original").await;
+    let err = create_new_note(&vault, &p("idea.md"), Some("other".to_string()))
+        .await
+        .unwrap_err();
+    assert_eq!(err, "A note with that name already exists");
+    let text = vault.load_note(&p("idea.md")).await.unwrap().raw_text;
+    assert_eq!(text, "original");
+}
+
+#[tokio::test]
+async fn create_directory_reports_created_and_refuses_a_duplicate() {
+    let vault = vault("new-dir").await;
+    let path = new_directory_target(&VaultPath::root(), "a/b").unwrap();
+    assert!(matches!(
+        create_directory(&vault, &path).await,
+        Ok(FileOp::Created(created)) if created == path
+    ));
+    assert!(matches!(
+        create_directory(&vault, &path).await,
+        Err(e) if e == "A directory with that name already exists"
+    ));
+}
+
+#[tokio::test]
+async fn create_new_note_under_a_file_is_an_error_not_a_panic() {
+    let vault = vault("new-note-under-file").await;
+    attachment(&vault, "pic.png").await;
+    let path = new_note_target(&VaultPath::root(), "pic.png/idea").unwrap();
+    let err = create_new_note(&vault, &path, None).await.unwrap_err();
+    assert_eq!(
+        err,
+        "A file with the same name as one of the parent directories already exists"
+    );
+    assert!(!vault.exists(&path).await);
+}
+
+#[tokio::test]
+async fn new_entry_kind_resolves_and_creates_each_kind() {
+    let vault = vault("new-entry-kind").await;
+    let base = VaultPath::root();
+
+    let note_path = NewEntryKind::Note.target(&base, "Ideas/One").unwrap();
+    assert_eq!(note_path, p("/ideas/one.md"));
+    let made = NewEntryKind::Note
+        .create(&vault, &note_path, Some("# One".to_string()))
+        .await
+        .unwrap();
+    assert!(matches!(&made, NewEntry::Note(o) if o.path == note_path && o.created));
+
+    let dir_path = NewEntryKind::Directory.target(&base, "Archive").unwrap();
+    assert_eq!(dir_path, p("/archive"));
+    // Content never lands in a directory.
+    let made = NewEntryKind::Directory
+        .create(&vault, &dir_path, Some("ignored".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(made, NewEntry::Directory(dir_path.clone()));
+    assert!(vault.exists(&dir_path).await);
+
+    assert!(NewEntryKind::Note.target(&base, "x/").is_err());
+    assert_eq!(NewEntryKind::Note.title(), "New note");
+    assert_eq!(NewEntryKind::Directory.field_label(), "DIRECTORY NAME");
+}
+
+#[tokio::test]
+async fn announcing_a_directory_reports_created_without_opening() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    NewEntry::Directory(p("/archive")).announce(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppMessage::FileOp(FileOp::Created(path))) if path == p("/archive")
+    ));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn new_note_initial_text_is_relative_to_the_browsed_directory() {
+    assert_eq!(
+        new_note_initial_text(&p("/a"), &p("/a/sub/idea.md")),
+        "sub/idea"
+    );
+    assert_eq!(
+        new_note_initial_text(&VaultPath::root(), &p("/idea.md")),
+        "idea"
+    );
+    // Outside the browsed directory: from the vault root.
+    assert_eq!(new_note_initial_text(&p("/a"), &p("/b/idea.md")), "/b/idea");
+    // And it resolves back to the note the row offered.
+    let base = p("/a");
+    let path = p("/a/sub/idea.md");
+    let text = new_note_initial_text(&base, &path);
+    assert_eq!(new_note_target(&base, &text), Ok(path));
+}

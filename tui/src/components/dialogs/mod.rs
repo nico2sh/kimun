@@ -5,6 +5,8 @@ pub use help_dialog::HelpDialog;
 pub use info_dialog::InfoDialog;
 pub use modal_shell::ModalShell;
 pub use move_dialog::MoveDialog;
+pub use new_entry_dialog::NewEntryDialog;
+pub use new_menu::NewMenuDialog;
 pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use properties_dialog::PropertiesDialog;
 pub use quick_note_modal::QuickNoteModal;
@@ -94,11 +96,14 @@ macro_rules! impl_dialog {
 
 pub mod create_note_dialog;
 pub mod delete_dialog;
+pub mod directory_picker;
 pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod info_dialog;
 pub mod modal_shell;
 pub mod move_dialog;
+pub mod new_entry_dialog;
+pub mod new_menu;
 pub mod pinned_notes_dialog;
 pub mod properties_dialog;
 pub mod quick_note_modal;
@@ -115,6 +120,8 @@ pub enum ActiveDialog {
     Rename(RenameDialog),
     Move(MoveDialog),
     CreateNote(CreateNoteDialog),
+    NewEntry(NewEntryDialog),
+    NewMenu(NewMenuDialog),
     Help(HelpDialog),
     QuickNote(QuickNoteModal),
     WorkspaceSwitcher(WorkspaceSwitcherModal),
@@ -136,6 +143,8 @@ impl ActiveDialog {
             ActiveDialog::Rename(d) => d,
             ActiveDialog::Move(d) => d,
             ActiveDialog::CreateNote(d) => d,
+            ActiveDialog::NewEntry(d) => d,
+            ActiveDialog::NewMenu(d) => d,
             ActiveDialog::Help(d) => d,
             ActiveDialog::QuickNote(d) => d,
             ActiveDialog::WorkspaceSwitcher(d) => d,
@@ -280,6 +289,27 @@ impl ActiveDialog {
         ActiveDialog::Rename(RenameDialog::new(path, vault))
     }
 
+    /// The new note / new directory dialog for names typed into `base`,
+    /// with `initial` typed in already.
+    pub fn new_entry(
+        kind: crate::logic::file_ops::NewEntryKind,
+        base: kimun_core::nfs::VaultPath,
+        initial: Option<String>,
+        vault: Arc<NoteVault>,
+        tx: &AppTx,
+    ) -> Self {
+        ActiveDialog::NewEntry(NewEntryDialog::new(kind, base, initial, vault, tx))
+    }
+
+    /// The menu behind FILES' `[+]` chip: a new note or a new directory in
+    /// `base`.
+    pub fn new_menu(
+        base: kimun_core::nfs::VaultPath,
+        key_bindings: &crate::keys::KeyBindings,
+    ) -> Self {
+        ActiveDialog::NewMenu(NewMenuDialog::new(base, key_bindings))
+    }
+
     pub fn move_to(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
         ActiveDialog::Move(MoveDialog::new(path, vault, tx))
     }
@@ -324,6 +354,18 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
+            OverlayData::NewEntryDirectories(directories) => {
+                if let ActiveDialog::NewEntry(d) = self {
+                    d.on_directories(directories.clone());
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::NewEntryValidation { target, available } => {
+                if let ActiveDialog::NewEntry(d) = self {
+                    d.on_validation(target, *available);
+                }
+                OverlayMsg::Consumed
+            }
             OverlayData::PropertyKeysLoaded(keys) => {
                 match self {
                     ActiveDialog::Sort(d) => d.set_keys(keys.clone()),
@@ -344,28 +386,9 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            OverlayData::MoveDirectoriesLoaded(paths) => {
+            OverlayData::MoveDirectoriesLoaded(directories) => {
                 if let ActiveDialog::Move(d) = self {
-                    d.all_dirs = paths.clone();
-                    d.filtered = None;
-                    d.load_task = None;
-                    if d.list_state.selected().is_none() && !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    }
-                    d.spawn_validation(tx);
-                }
-                OverlayMsg::Consumed
-            }
-            OverlayData::MoveFilterResults(paths) => {
-                if let ActiveDialog::Move(d) = self {
-                    d.filter_task = None;
-                    d.filtered = Some(paths.clone());
-                    if !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    } else {
-                        d.list_state.select(None);
-                    }
-                    d.spawn_validation(tx);
+                    d.on_directories(directories.clone(), tx);
                 }
                 OverlayMsg::Consumed
             }
@@ -437,6 +460,81 @@ pub(super) fn render_separator(f: &mut Frame, rect: Rect, gray: Color, bg: Color
         .border_style(Style::default().fg(gray))
         .style(Style::default().bg(bg))
         .render(rect, f.buffer_mut());
+}
+
+/// The bordered name input with the validation glyph beside it (⏳ / ✓ / ✗),
+/// across the 3 rows of `rect`. The shape the rename and new-entry dialogs
+/// share.
+pub(super) fn render_name_field(
+    f: &mut Frame,
+    rect: Rect,
+    input: &mut crate::components::single_line_input::SingleLineInput,
+    state: ValidationState,
+    theme: &Theme,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let bg = theme.bg_panel.to_ratatui();
+    let fg = theme.fg.to_ratatui();
+    let gray = theme.gray.to_ratatui();
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(1),    // input field
+            Constraint::Length(3), // validation indicator
+        ])
+        .split(rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(gray))
+        .style(Style::default().bg(bg));
+    let inner = block.inner(chunks[0]);
+    f.render_widget(block, chunks[0]);
+    input.render(f, inner, Style::default().fg(fg).bg(bg), 0, true);
+
+    let (glyph, style) = match state {
+        ValidationState::Idle => ("   ", Style::default()),
+        ValidationState::Pending => (" \u{231b} ", Style::default().fg(gray)),
+        ValidationState::Available => (" \u{2713} ", Style::default().fg(theme.green.to_ratatui())),
+        ValidationState::Taken => (" \u{2717} ", Style::default().fg(theme.red.to_ratatui())),
+    };
+    let glyph_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(chunks[1]);
+    f.render_widget(Paragraph::new(glyph).style(style.bg(bg)), glyph_rows[1]);
+}
+
+/// The one-line status under a name input: `Checking...`, `Available` or
+/// `Already exists` (nothing while idle).
+pub(super) fn render_validation_status(
+    f: &mut Frame,
+    rect: Rect,
+    state: ValidationState,
+    theme: &Theme,
+) {
+    let bg = theme.bg_panel.to_ratatui();
+    let (text, style) = match state {
+        ValidationState::Idle => ("", Style::default().bg(bg)),
+        ValidationState::Pending => (
+            "  Checking...",
+            Style::default().fg(theme.gray.to_ratatui()).bg(bg),
+        ),
+        ValidationState::Available => (
+            "  Available",
+            Style::default().fg(theme.green.to_ratatui()).bg(bg),
+        ),
+        ValidationState::Taken => (
+            "  Already exists",
+            Style::default().fg(theme.red.to_ratatui()).bg(bg),
+        ),
+    };
+    f.render_widget(Paragraph::new(text).style(style), rect);
 }
 
 /// Renders `  Error: {msg}` in the theme's error color on the panel background.
@@ -535,6 +633,57 @@ mod tests {
         events.iter().any(pred)
     }
 
+    /// The `[+]` menu draws both actions with the chords in effect, and a
+    /// click on each asks for its dialog on the menu's directory.
+    #[test]
+    fn new_menu_actions_are_clickable() {
+        use crate::logic::message::FileOp;
+        let bindings = crate::settings::AppSettings::default().key_bindings;
+        let base = kimun_core::nfs::VaultPath::new("/notes");
+        let mut d = ActiveDialog::new_menu(base.clone(), &bindings);
+        draw_and_find(&mut d, "ctrl&N");
+        draw_and_find(&mut d, "alt&N");
+        assert!(has(&click_text(&mut d, "[N]"), |e| matches!(
+            e,
+            AppMessage::FileOp(FileOp::ShowNewNote { base: b, initial: None }) if *b == base
+        )));
+        assert!(has(&click_text(&mut d, "[D]"), |e| matches!(
+            e,
+            AppMessage::FileOp(FileOp::ShowNewDirectory { base: b }) if *b == base
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc]")));
+    }
+
+    /// The new-entry dialog draws in both states (the directory shown, then
+    /// the choice open under it) and its chips and directory line are
+    /// clickable.
+    #[tokio::test]
+    async fn new_entry_directory_choice_opens_and_closes_by_click() {
+        use crate::logic::file_ops::NewEntryKind;
+        let vault = crate::test_support::temp_vault("new-entry-click").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut d = ActiveDialog::new_entry(
+            NewEntryKind::Note,
+            kimun_core::nfs::VaultPath::new("/a"),
+            None,
+            vault,
+            &tx,
+        );
+        draw_and_find(&mut d, "(Tab to change)");
+        draw_and_find(&mut d, "[Tab] Directory");
+
+        click_text(&mut d, "[Tab]");
+        draw_and_find(&mut d, "[Enter] Choose");
+        draw_and_find(&mut d, "(loading...)");
+
+        click_text(&mut d, "[Esc]");
+        draw_and_find(&mut d, "(Tab to change)");
+
+        // The directory line itself opens the choice too.
+        click_text(&mut d, "DIRECTORY");
+        draw_and_find(&mut d, "[Enter] Choose");
+    }
+
     #[test]
     fn menu_actions_are_clickable() {
         use crate::logic::message::FileOp;
@@ -577,17 +726,23 @@ mod tests {
         let vault = crate::test_support::temp_vault("dlg-move-click").await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
-        m.all_dirs = vec![
-            kimun_core::nfs::VaultPath::root(),
-            kimun_core::nfs::VaultPath::new("projects"),
-        ];
-        m.list_state.select(Some(0));
+        m.picker.set_directories(
+            Ok(vec![
+                kimun_core::nfs::VaultPath::root(),
+                kimun_core::nfs::VaultPath::new("projects"),
+            ]),
+            &kimun_core::nfs::VaultPath::root(),
+        );
         let mut d = ActiveDialog::Move(m);
         click_text(&mut d, "projects");
         let ActiveDialog::Move(m) = &d else {
             unreachable!()
         };
-        assert_eq!(m.list_state.selected(), Some(1), "click selects the row");
+        assert_eq!(
+            m.picker.highlighted(),
+            Some(&kimun_core::nfs::VaultPath::new("projects")),
+            "click selects the row"
+        );
         assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
     }
 
@@ -598,8 +753,10 @@ mod tests {
         let vault = crate::test_support::temp_vault("dlg-move-enter").await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
-        m.all_dirs = vec![kimun_core::nfs::VaultPath::new("projects")];
-        m.list_state.select(Some(0));
+        m.picker.set_directories(
+            Ok(vec![kimun_core::nfs::VaultPath::new("projects")]),
+            &kimun_core::nfs::VaultPath::root(),
+        );
         assert_eq!(m.dest_validation, ValidationState::Idle);
         let mut d = ActiveDialog::Move(m);
         let (col, row) = draw_and_find(&mut d, "[Enter] Move here");

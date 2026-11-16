@@ -332,8 +332,8 @@ fn typing_runs_the_query_search(cx: &mut TestAppContext) {
 }
 
 /// A typed query leads with `Create:` (in the open note's folder) but the
-/// selection starts on the best result; Up then Enter makes the note and
-/// opens it.
+/// selection starts on the best result; Up then Enter asks for the new note
+/// dialog with that name, whose Enter makes the note and opens it.
 #[gpui_kit::test]
 fn a_typed_query_offers_create_below_the_selection(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -357,6 +357,14 @@ fn a_typed_query_offers_create_below_the_selection(cx: &mut TestAppContext) {
         selected(&started, cx),
         Some(FileListEntry::CreateNote { .. })
     ));
+    press(&started, "enter", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::NewNote));
+    assert_eq!(
+        disk(&rt, &v, "w/beta.md"),
+        None,
+        "not made until it confirms"
+    );
     press(&started, "enter", cx);
     drive(&rt, cx, |cx| on(&started, "w/beta.md", cx));
     assert_eq!(disk(&rt, &v, "w/beta.md").as_deref(), Some(""));

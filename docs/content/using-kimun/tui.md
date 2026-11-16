@@ -35,7 +35,8 @@ Most commands also start with `Ctrl+B`. This is the leader key. Press it, then o
 
 ```
 Ctrl+B f f    find a note by name
-Ctrl+B n d    open today's journal
+Ctrl+B n n    make a new note
+Ctrl+B n j    open today's journal
 Ctrl+B v t    pick a theme
 ```
 
@@ -44,15 +45,24 @@ If you wait after `Ctrl+B`, a panel shows the keys that you can press next. See 
 ## The drawer
 
 - FILES shows your folders and notes. Type to filter. Press `Enter` to open a note. Right-click a note, or press `F2`, to rename, move, or delete it. Press `Ctrl+R` to change the sort order.
-- FIND is a live [search](@/using-kimun/search.md). Type a query and the results update. Press `Enter` to see more of a result. Press `Ctrl+Enter` or `Ctrl+N` to open it.
+- FIND is a live [search](@/using-kimun/search.md). Type a query and the results update. Press `Enter` to see more of a result. Press `Ctrl+Enter` or `Ctrl+U` to open it.
 - TAGS lists every `#tag` and how many notes use it. Press `Enter` to find the notes.
 - LINKS shows the notes that link to this note (backlinks), the notes that this note links to (outgoing), and notes that mention it without a link (unlinked).
 - OUTLINE shows the headings of the note. Press `Enter` to jump to one.
 - CFG shows your main settings. Press `t` to pick a theme or `p` to open Preferences.
 
+## New notes and directories
+
+- Press `Ctrl+N` to make a note. Type its name and press `Enter`. The note goes in the folder that FILES shows, or in the folder of the open note. A name with slashes, such as `projects/ideas`, makes the folders for you. Start the name with `/` to begin at the top of the vault.
+- Click `[+]` in the FILES header for a small menu with both choices. It shows their keys. Press `N` for a note or `D` for a directory.
+- The dialog shows the directory under the title. Press `Tab` to choose another one: type to filter the list, use `Up` and `Down`, and press `Enter` to pick. `Tab` or `Esc` takes you back to the name.
+- Press `Ctrl+B n d` to make a directory. It works the same way. `Alt+N` does the same where your terminal sends it.
+- The dialog shows where the entry will go and tells you if the name is already taken or is not allowed.
+- If you type a name in the FILES filter or in `Ctrl+O` and nothing matches, pick `Create: …` to open the same dialog with that name filled in.
+
 ## Find notes fast
 
-- `Ctrl+O` finds a note by name. If no note matches, it offers to create one.
+- `Ctrl+O` finds a note by name. If no note matches, it offers to create one, and asks you to confirm the name.
 - `Ctrl+K` searches the content of all notes, with a preview.
 - `Ctrl+E` jumps to FIND.
 
@@ -61,7 +71,7 @@ If you wait after `Ctrl+B`, a panel shows the keys that you can press next. See 
 The editor shows Markdown with style, such as bold headings and colored links. You edit plain text. The line with the cursor shows the Markdown marks.
 
 - Type `[[` to link to a note. Type `#` to add a tag. Press `Tab` or `Enter` to accept a suggestion.
-- Double-click a `[[link]]` or a `#tag` to follow it. You can also press `Ctrl+Enter` or `Ctrl+N`. If no note matches the link, Kimün offers to create it.
+- Double-click a `[[link]]` or a `#tag` to follow it. You can also press `Ctrl+Enter` or `Ctrl+U`. If no note matches the link, Kimün offers to create it.
 - Press `Ctrl+B t b` for bold, `Ctrl+B t i` for italic, and `Ctrl+B t s` for strikethrough.
 - Paste an image with `Ctrl+V`. Kimün saves it in `/assets/` and adds the link.
 - Paste a web address over selected text to make a link.
@@ -82,7 +92,7 @@ Press `Ctrl+D` in a search to save it under a name. Press `F3` to see your saved
 
 ## Pinned notes
 
-You can pin up to nine notes. Press `Ctrl+B m i` to pin or unpin the open note. Press `Ctrl+B 1` to `Ctrl+B 9` to open a pinned note.
+You can pin up to nine notes. Press `Ctrl+B m p` to pin or unpin the open note. Press `Ctrl+B 1` to `Ctrl+B 9` to open a pinned note.
 
 ## Quick note and journal
 

@@ -13,12 +13,11 @@ pub enum PickerOpen {
     /// Open this path (TUI: `AppMessage::OpenPath`, carrying the browser's
     /// emphasis needles).
     Open(VaultPath),
-    /// The `Create: <q>` row: materialise the note through core
-    /// ([`file_ops::create_note`](crate::logic::file_ops::create_note) with no
-    /// content = `load_or_create_note`, so an existing note is just loaded),
-    /// then announce and open it
-    /// ([`NoteOutcome::announce_and_open`](crate::logic::file_ops::NoteOutcome::announce_and_open)).
-    /// On failure the picker stays open and shows the error.
+    /// The `Create: <q>` row for a name no listed note has: ask for the new
+    /// note dialog holding that name (`FileOp::ShowNewNote`), where the note
+    /// is made on purpose. A name a listed note already has is
+    /// [`PickerOpen::Open`] instead
+    /// ([`FileListEntry::resolve_create_among`]).
     Create(VaultPath),
 }
 

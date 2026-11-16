@@ -17,7 +17,7 @@ use kimun_notes::logic::message::AppMessage;
 use tokio::runtime::Runtime;
 
 use super::modal::ModalKind;
-use super::picker::{NotePicker, PICKER_ERROR_ID, picker_row_id};
+use super::picker::{NotePicker, picker_row_id};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
@@ -262,10 +262,11 @@ fn the_finder_filters_and_opens_saving_the_open_note_first(cx: &mut TestAppConte
     assert!(focused(&started, "editor", cx));
 }
 
-/// `Create:` makes the note through core in the open note's folder and
-/// opens it; FILES lists it.
+/// `Create:` does not make the note: the finder gives way to the new note
+/// dialog holding the name it offered (in the open note's folder), and the
+/// dialog's Enter makes the note and opens it; FILES lists it.
 #[gpui_kit::test]
-fn the_create_row_makes_the_note_and_opens_it(cx: &mut TestAppContext) {
+fn the_create_row_opens_the_dialog_which_makes_the_note(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = started_on(cx, &rt, &[("d/a.md", "alpha")], "d/a.md");
@@ -276,6 +277,19 @@ fn the_create_row_makes_the_note_and_opens_it(cx: &mut TestAppContext) {
         .strip_prefix("Create: ")
         .expect("the create row leads");
     assert!(path(create).is_like(&path("d/fresh.md")), "{rows:?}");
+    press(&started, "enter", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::NewNote));
+    let target = cx.read(|cx| {
+        let dialog = started.workspace.read(cx).new_entry.clone().unwrap();
+        dialog.upgrade().unwrap().read(cx).target().cloned()
+    });
+    assert_eq!(target, Some(Ok(path("/d/fresh.md"))));
+    assert!(
+        !exists(&rt, &v, "d/fresh.md"),
+        "nothing made until it confirms"
+    );
+
     press(&started, "enter", cx);
     drive(&rt, cx, |cx| on(&started, "d/fresh.md", cx));
     assert_eq!(disk(&rt, &v, "d/fresh.md").as_deref(), Some(""));
@@ -295,8 +309,8 @@ fn the_create_row_makes_the_note_and_opens_it(cx: &mut TestAppContext) {
     });
 }
 
-/// `Create:` for a name that is taken opens the note that is there; it is
-/// never overwritten.
+/// `Create:` for a name a listed note has opens the note that is there: it
+/// is never overwritten, and no dialog asks to make it again.
 #[gpui_kit::test]
 fn the_create_row_never_overwrites(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -312,35 +326,8 @@ fn the_create_row_never_overwrites(cx: &mut TestAppContext) {
     press(&started, "enter", cx);
     drive(&rt, cx, |cx| started.text(cx) == "beta");
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
-}
-
-/// A create core refuses stays in the picker, which stays open; the next
-/// keystroke clears it.
-#[cfg(unix)]
-#[gpui_kit::test]
-fn a_failed_create_stays_in_the_picker(cx: &mut TestAppContext) {
-    use std::os::unix::fs::PermissionsExt;
-    let rt = runtime();
-    let _guard = rt.enter();
-    let (v, started) = started_on(cx, &rt, &[("d/a.md", "alpha")], "d/a.md");
-    let dir = v.workspace.as_path().join("d");
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    press(&started, "ctrl-o", cx);
-    type_in(&started, "fresh", cx);
-    picker_rows(&started, &rt, cx);
-    press(&started, "enter", cx);
-    let view = picker(&started, cx);
-    drive(&rt, cx, |cx| cx.read(|cx| view.read(cx).error().is_some()));
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
-    assert!(started.shows(PICKER_ERROR_ID, cx));
-    assert!(!exists(&rt, &v, "d/fresh.md"));
-    assert!(on(&started, "d/a.md", cx));
-    type_in(&started, "r", cx);
-    assert_eq!(
-        cx.read(|cx| view.read(cx).error().map(str::to_string)),
-        None
-    );
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None, "no dialog");
 }
 
 /// Escape closes the finder and gives the keyboard back to its opener: the
@@ -821,10 +808,10 @@ fn a_quick_note_still_reports_after_a_file_op_closed_it(cx: &mut TestAppContext)
 
 // ── leader `n n`─────────────────────────────────────────────────────────
 
-/// Leader `n n` shows FILES (its slot was hidden) with the filter holding
-/// the keyboard: typing a name offers `Create:`.
+/// Leader `n n` opens the new note dialog (its name field holds the
+/// keyboard), whether or not FILES is shown; it used to focus FILES' filter.
 #[gpui_kit::test]
-fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
+fn leader_n_n_opens_the_new_note_dialog(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
@@ -836,8 +823,13 @@ fn leader_n_n_focuses_the_files_filter(cx: &mut TestAppContext) {
     assert!(!cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
     press(&started, "ctrl-shift-b", cx);
     type_in(&started, "nn", cx);
-    assert!(cx.read(|cx| { started.workspace.read(cx).side_drawn(Side::Left) }));
-    assert_eq!(region(&started, cx), Panel::Drawer(Side::Left));
-    assert!(files_filter_focused(&started, cx));
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::NewNote));
     assert_eq!(started.text(cx), "alpha", "nn typed nothing into the note");
+    // The folder is the open note's: FILES was hidden.
+    type_in(&started, "fresh", cx);
+    press(&started, "enter", cx);
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| started.workspace.read(cx).status.note.clone())
+            .is_some_and(|n| n.is_like(&path("fresh.md")))
+    });
 }

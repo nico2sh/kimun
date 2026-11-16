@@ -16,12 +16,17 @@ use crate::components::file_list::FileListEntry;
 use crate::components::search_list::{KeyReaction, SearchList, SearchMouse};
 use crate::components::sortable::SortableList;
 use crate::keys::KeyBindings;
-use crate::logic::files::{Activation, FilesModel, spawn_create_and_open};
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::logic::file_ops;
+use crate::logic::files::{Activation, FilesModel};
 use crate::logic::message::{AppMessage, AppTx, FileOp, SortTarget};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
+
+/// The header's chip for the new note / directory menu.
+const NEW_CHIP: &str = "[+]";
 
 /// The FILES drawer view: a [`FilesModel`] (directory, marker, sort, the
 /// listing and its rules) whose listing is a [`SearchList`] — the filter
@@ -35,6 +40,9 @@ pub struct SidebarComponent {
     breadcrumb_cells: Vec<(Rect, VaultPath)>,
     /// The sort chip (`Name ↑`) on the search box border from the last render.
     sort_chip: crate::components::clickable::BorderChip,
+    /// The `[+]` chip on the header: a menu of what can be made here.
+    new_chip: crate::components::clickable::BorderChip,
+    show_new_chip: bool,
     /// Whether to draw the sort chip at all — off where the host cannot open
     /// the sort dialog (Browse).
     show_sort_chip: bool,
@@ -82,6 +90,8 @@ impl SidebarComponent {
             breadcrumb_cells: Vec::new(),
             sort_chip: Default::default(),
             show_sort_chip: true,
+            new_chip: Default::default(),
+            show_new_chip: true,
             key_bindings,
         }
     }
@@ -135,6 +145,11 @@ impl SidebarComponent {
         self.model.refresh_if_showing(dir, tx);
     }
 
+    /// See [`FilesModel::reveal`].
+    pub fn reveal(&mut self, path: &VaultPath, tx: &AppTx) {
+        self.model.reveal(path, tx);
+    }
+
     /// See [`FilesModel::set_open_note`].
     pub fn set_open_note(&mut self, path: Option<VaultPath>) {
         self.model.set_open_note(path);
@@ -154,6 +169,12 @@ impl SidebarComponent {
     /// host that cannot open the sort dialog.
     pub fn set_sort_chip(&mut self, show: bool) {
         self.show_sort_chip = show;
+    }
+
+    /// Draw (and accept clicks on) the `[+]` chip: on by default; off for a
+    /// host with no dialogs to open (Browse).
+    pub fn set_new_chip(&mut self, show: bool) {
+        self.show_new_chip = show;
     }
 
     /// Seed the directory the sidebar will show before its first `navigate`;
@@ -201,8 +222,16 @@ impl SidebarComponent {
             return;
         };
         match activation {
+            // The row only offers a name: confirming it goes through the
+            // new-note dialog, the one place a note is made on purpose.
             Activation::Create(path) => {
-                spawn_create_and_open(Arc::clone(self.model.vault()), path, tx.clone());
+                let base = self.current_dir().clone();
+                let initial = file_ops::new_note_initial_text(&base, &path);
+                tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
+                    base,
+                    initial: Some(initial),
+                }))
+                .ok();
             }
             Activation::OpenAttachment(path) => {
                 tx.send(AppMessage::OpenAttachment(path)).ok();
@@ -248,6 +277,14 @@ impl Component for SidebarComponent {
             ) && let Some(dir) = self.breadcrumb_at(mouse.column, mouse.row)
             {
                 tx.send(AppMessage::open(dir.clone())).ok();
+                return EventState::Consumed;
+            }
+            // A click on the `[+]` chip opens the new note / directory menu.
+            if self.new_chip.hit(mouse) {
+                tx.send(AppMessage::FileOp(FileOp::ShowNewMenu {
+                    base: self.model.current_dir().clone(),
+                }))
+                .ok();
                 return EventState::Consumed;
             }
             // A click on the sort chip opens the sort dialog.
@@ -345,11 +382,31 @@ impl Component for SidebarComponent {
 
         let border_style = theme.border_style(focused);
 
-        let header = Block::default()
-            .title(format!("─ Files · {} ", self.model.current_dir()))
+        let header_title = format!("─ Files · {} ", self.model.current_dir());
+        let mut header = Block::default()
+            .title(header_title.clone())
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        // The `[+]` chip sits at the right end of the title edge, when the
+        // title leaves it room (a long path would run under it).
+        let chip = ratatui::text::Line::from(ratatui::text::Span::styled(NEW_CHIP, theme.action()));
+        let room = usize::from(rows[0].width.saturating_sub(2));
+        if self.show_new_chip
+            && unicode_width::UnicodeWidthStr::width(header_title.as_str())
+                + 1
+                + unicode_width::UnicodeWidthStr::width(NEW_CHIP)
+                <= room
+        {
+            header = self.new_chip.place(
+                header,
+                rows[0],
+                crate::components::clickable::Edge::Top,
+                chip,
+            );
+        } else {
+            self.new_chip.hide();
+        }
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
 
@@ -440,6 +497,41 @@ impl Component for SidebarComponent {
             // scroll from anywhere within the sidebar, not just over the list.
             list.set_list_rect(list_inner);
             list.set_panel_rect(rect);
+        }
+        self.render_empty_hint(f, list_inner, theme);
+    }
+}
+
+impl SidebarComponent {
+    /// A folder with nothing in it (bar the `..` row) says how to make a
+    /// note, so an empty vault does not read as broken.
+    fn render_empty_hint(&self, f: &mut Frame, list_inner: Rect, theme: &Theme) {
+        let Some(core) = self.model.core() else {
+            return;
+        };
+        if core.is_loading()
+            || !core.query().is_empty()
+            || !core
+                .visible_rows()
+                .iter()
+                .all(|row| matches!(row, FileListEntry::Up { .. }))
+        {
+            return;
+        }
+        let text = match self.key_bindings.first_combo_for(&ActionShortcuts::NewNote) {
+            Some(chord) => format!("  Empty. {chord} makes a note."),
+            None => "  Empty. [+] makes a note.".to_string(),
+        };
+        let y = list_inner.y + core.visible_len() as u16;
+        if y < list_inner.bottom() {
+            f.render_widget(
+                Paragraph::new(text).style(
+                    Style::default()
+                        .fg(theme.gray.to_ratatui())
+                        .bg(theme.bg_panel.to_ratatui()),
+                ),
+                Rect::new(list_inner.x, y, list_inner.width, 1),
+            );
         }
     }
 }
@@ -631,6 +723,130 @@ mod tests {
                 .any(|e| matches!(e, AppMessage::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
         );
+    }
+
+    fn draw(sidebar: &mut SidebarComponent, width: u16) -> ratatui::buffer::Buffer {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal
+            .draw(|f| sidebar.render(f, f.area(), &theme, true))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The header carries a `[+]` chip; a click on it asks for the new
+    /// note / directory menu on the directory shown.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plus_chip_asks_for_the_new_menu() {
+        let mut sidebar = sidebar_with_notes("sidebar-plus", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        sidebar.navigate(VaultPath::root(), &tx);
+        let buffer = draw(&mut sidebar, 60);
+        let (col, row) = crate::test_support::find_text(&buffer, "[+]").expect("the chip is drawn");
+        while rx.try_recv().is_ok() {}
+
+        let state = sidebar.handle_input(&mouse_down_at(col + 1, row), &tx);
+        assert_eq!(state, EventState::Consumed);
+        match rx.try_recv() {
+            Ok(AppMessage::FileOp(FileOp::ShowNewMenu { base })) => {
+                assert_eq!(base, VaultPath::root())
+            }
+            other => panic!("expected ShowNewMenu, got {other:?}"),
+        }
+    }
+
+    /// An empty folder says how to make a note; one with notes does not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_folder_hints_at_the_new_note_key() {
+        let vault = temp_vault("sidebar-empty").await;
+        vault.validate_and_init().await.unwrap();
+        // The root holds the test vault's index file: use an empty folder.
+        let empty = VaultPath::new("/empty");
+        vault.create_directory(&empty).await.unwrap();
+        let settings = AppSettings::default();
+        let mut sidebar = SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        );
+        let (tx, _rx) = unbounded_channel();
+        sidebar.navigate(empty, &tx);
+        for _ in 0..50 {
+            sidebar.poll_for_test();
+            if !sidebar.is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let buffer = draw(&mut sidebar, 60);
+        assert!(crate::test_support::find_text(&buffer, "ctrl&N makes a note").is_some());
+
+        let mut full = sidebar_with_notes("sidebar-not-empty", &["alpha"]).await;
+        full.navigate(VaultPath::root(), &tx);
+        for _ in 0..50 {
+            full.poll_for_test();
+            if !full.is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let buffer = draw(&mut full, 60);
+        assert!(crate::test_support::find_text(&buffer, "makes a note").is_none());
+    }
+
+    /// A header title too long to leave the chip room hides the chip rather
+    /// than run under it; so does a host that cannot open dialogs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plus_chip_hides_when_there_is_no_room_or_no_host() {
+        let mut sidebar = sidebar_with_notes("sidebar-plus-hide", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        let deep = VaultPath::new("/a-rather-long-directory-name/and-another-long-one");
+        sidebar.navigate(deep, &tx);
+        let buffer = draw(&mut sidebar, 40);
+        assert!(crate::test_support::find_text(&buffer, "[+]").is_none());
+
+        sidebar.navigate(VaultPath::root(), &tx);
+        assert!(crate::test_support::find_text(&draw(&mut sidebar, 60), "[+]").is_some());
+        sidebar.set_new_chip(false);
+        let buffer = draw(&mut sidebar, 60);
+        assert!(crate::test_support::find_text(&buffer, "[+]").is_none());
+        while rx.try_recv().is_ok() {}
+        sidebar.handle_input(&mouse_down_at(57, 0), &tx);
+        assert!(
+            !matches!(
+                rx.try_recv(),
+                Ok(AppMessage::FileOp(FileOp::ShowNewMenu { .. }))
+            ),
+            "a hidden chip is not clickable"
+        );
+    }
+
+    /// Choosing the `Create: …` row does not make the note: it asks for the
+    /// new-note dialog, with the typed name and the browsed directory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activating_the_create_row_asks_for_the_new_note_dialog() {
+        let mut sidebar = sidebar_with_notes("sidebar-create-row", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        while rx.try_recv().is_ok() {}
+
+        sidebar
+            .model
+            .list_mut()
+            .expect("a list after navigating")
+            .set_query("Brand New");
+        sidebar.activate_selected_entry(&tx);
+
+        match rx.try_recv() {
+            Ok(AppMessage::FileOp(FileOp::ShowNewNote { base, initial })) => {
+                assert_eq!(base, VaultPath::root());
+                assert_eq!(initial.as_deref(), Some("brand new"));
+            }
+            other => panic!("expected ShowNewNote, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "nothing else: no note was made");
     }
 
     /// Scroll wheel anywhere in the sidebar bounds scrolls the file list — even

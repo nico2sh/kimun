@@ -18,7 +18,7 @@
 //! A double-click needs no modifier bit and no terminal cooperation beyond the
 //! mouse reporting kimün already requires, so it behaves the same everywhere.
 //! Nothing is lost by not having a chord: the bound `FollowLink` shortcut
-//! (Ctrl-N by default) follows from the keyboard, and the footer advertises it
+//! (Ctrl-U by default) follows from the keyboard, and the footer advertises it
 //! whenever the cursor sits on a link.
 //!
 //! This module is the rule for what counts as one gesture.

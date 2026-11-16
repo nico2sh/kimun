@@ -326,7 +326,7 @@ impl crate::components::Component for PinnedNotesDialog {
 
         if self.loaded && self.rows.is_empty() {
             f.render_widget(
-                Paragraph::new("  No pinned notes yet — leader m i pins the open note")
+                Paragraph::new("  No pinned notes yet — leader m p pins the open note")
                     .style(Style::default().fg(gray).bg(bg)),
                 Rect {
                     x: body.x,

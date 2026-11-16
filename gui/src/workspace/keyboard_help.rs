@@ -92,14 +92,14 @@ const LIST_REMS: f32 = 24.;
 const ROW_REMS: f32 = 2.;
 
 /// What the desktop app calls an action where the TUI's own label would
-/// mislead (the TUI's directional focus is the window's panel cycle here).
+/// mislead (the TUI labels focus by direction, the desktop app by target).
 pub(crate) fn action_label(action: &ActionShortcuts) -> String {
     use ActionShortcuts as A;
     match action {
         A::ToggleSidebar => "Toggle left side".into(),
         A::ToggleRightDrawer => "Toggle right side".into(),
-        A::FocusEditor => "Next panel".into(),
-        A::FocusSidebar => "Previous panel".into(),
+        A::FocusEditor => "Focus editor".into(),
+        A::FocusSidebar => "Focus sidebar".into(),
         A::Leader => "Leader (start a sequence)".into(),
         // On a slot they split or close the slot; on the editor, its
         // active group (ADR-0058).

@@ -17,7 +17,7 @@
 //! New also need the server (the leader gates them so).
 //!
 //! **Sources, beside or instead.** The toggle (or `s` on the turn list,
-//! leader `a s`, a citation) opens the selected turn's sources: the
+//! leader `a o`, a citation) opens the selected turn's sources: the
 //! [`super::ask_sources`] list and its reader. In a wide slot (zoomed, or
 //! [`WIDE_REMS`] and up) they are a pane at the view's right, the Thread
 //! beside them. In a narrow slot they replace the Thread (drill-in): a
@@ -384,7 +384,7 @@ impl AskView {
     }
 
     /// Expand the sources part, its list to get the keyboard when the view
-    /// does (leader `a s`).
+    /// does (leader `a o`).
     pub(crate) fn open_sources(&mut self, cx: &mut Context<Self>) {
         self.sources_open = true;
         self.want = Want::Sources;
@@ -1298,7 +1298,7 @@ pub(crate) enum AskThen {
     /// Regenerate the selected turn (leader `a r`).
     Regenerate,
     /// Read the selected turn's top source, the sources part expanded and
-    /// its list given the keyboard (leader `a s`).
+    /// its list given the keyboard (leader `a o`).
     Source,
 }
 
@@ -1424,7 +1424,7 @@ impl Workspace {
             }
             AskThen::Regenerate => view.update(cx, |view, cx| view.regenerate(cx)),
             AskThen::Source => {
-                // The TUI's `a s`: the part on the selected turn, its top
+                // The TUI's `a o`: the part on the selected turn, its top
                 // source in the reader, its list with the keyboard.
                 self.sync_sources(window, cx);
                 if let Some(sources) = self.ask_sources.clone() {

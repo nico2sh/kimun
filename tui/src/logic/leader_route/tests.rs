@@ -31,6 +31,7 @@ fn with_note(action: LeaderAction, note: &VaultPath) -> LeaderRoute {
         A::FindHeadings => R::Drawer(DrawerView::Outline),
         A::FindPinned => R::Overlay(OverlayOpen::PinnedNotes),
         A::NoteNew => R::NewNote,
+        A::NoteNewDirectory => R::NewDirectory,
         A::NoteDaily => R::OpenJournal,
         A::NoteFromTemplate => R::Soon("templates — coming soon"),
         A::NoteRename => R::NoteDialog(NoteDialog::Rename, note.clone()),

@@ -170,6 +170,21 @@ impl FileListEntry {
         }
     }
 
+    /// A `Create: …` row offers a name; when `rows` already list a note by
+    /// that name, choosing it must open that note, never ask to make it
+    /// again. That note's row stands in for it; any other row is itself.
+    /// Only the rows a listing holds are known (a note it has not listed
+    /// yet is refused by the new note dialog, which says the name is taken).
+    pub fn resolve_create_among(&self, rows: &[FileListEntry]) -> FileListEntry {
+        let Self::CreateNote { path, .. } = self else {
+            return self.clone();
+        };
+        rows.iter()
+            .find(|row| matches!(row, Self::Note { path: p, .. } if p.is_like(path)))
+            .cloned()
+            .unwrap_or_else(|| self.clone())
+    }
+
     /// What activating this row does. `Up` and directories navigate, notes
     /// open, attachments open as attachments, `Create: …` creates then opens.
     pub fn activation(&self) -> Activation {
@@ -229,7 +244,8 @@ pub enum Activation {
     /// Show / hand off this attachment.
     OpenAttachment(VaultPath),
     /// Create this note through core, then open it
-    /// ([`spawn_create_and_open`]).
+    /// ([`spawn_create_and_open`]). Only hosts without dialogs (Browse) do;
+    /// the others confirm the name in the new-note dialog first.
     Create(VaultPath),
 }
 
@@ -373,6 +389,8 @@ pub struct FilesModel<L = ListCore<FileListEntry>> {
     property_sort: PropertySort,
     /// "Group directories first" for the active listing; see `sort`.
     group_dirs: bool,
+    /// An entry to select once the listing holds it ([`FilesModel::reveal`]).
+    pending_reveal: Option<VaultPath>,
 }
 
 impl FilesModel {
@@ -410,6 +428,7 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
             sort: (default_sort_field, default_sort_order),
             property_sort: PropertySort::default(),
             group_dirs: settings.group_directories,
+            pending_reveal: None,
         }
     }
 
@@ -548,6 +567,7 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
             polled.changed |= self.on_property_sort_values(&key, values);
         }
         self.stamp_open_marker();
+        polled.changed |= self.apply_pending_reveal();
         polled
     }
 
@@ -560,6 +580,51 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
         if dir.is_like(&self.current_dir) {
             self.build_listing(tx);
         }
+    }
+
+    /// Show the directory holding `path` and select `path`'s row once it
+    /// has loaded — how a freshly made entry is pointed out. Rebuilds the
+    /// listing even when it already shows that directory (the entry is new,
+    /// and a fresh listing drops any filter, so the row is visible). A path
+    /// the listing never holds (removed meanwhile) selects nothing.
+    pub fn reveal(&mut self, path: &VaultPath, tx: &AppTx) {
+        let parent = path.get_parent_path().0;
+        if parent.is_like(&self.current_dir) {
+            self.build_listing(tx);
+        } else {
+            self.navigate(parent, tx);
+        }
+        // After the load starts, so a listing always exists to settle it.
+        self.pending_reveal = Some(path.clone());
+    }
+
+    /// Whether [`reveal`](Self::reveal) still waits for its row.
+    pub fn reveal_pending(&self) -> bool {
+        self.pending_reveal.is_some()
+    }
+
+    /// Select the row [`reveal`](Self::reveal) is waiting for as soon as the
+    /// listing holds it; give up once the load has finished without it.
+    fn apply_pending_reveal(&mut self) -> bool {
+        let Some(target) = self.pending_reveal.clone() else {
+            return false;
+        };
+        let Some(core) = self.core_mut() else {
+            self.pending_reveal = None;
+            return false;
+        };
+        let position = core
+            .visible_rows()
+            .iter()
+            .position(|row| row.path().is_like(&target));
+        let selected = position.is_some();
+        match position {
+            Some(position) => core.select(position),
+            None if core.is_loading() => return false,
+            None => {}
+        }
+        self.pending_reveal = None;
+        selected
     }
 
     /// Set (or clear) the note the editor currently has open, then re-stamp the
@@ -754,7 +819,9 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     /// What activating the selected row asks for; `None` with no listing or
     /// no selection. The host performs it.
     pub fn activate(&self) -> Option<Activation> {
-        self.core()?.selected_row().map(FileListEntry::activation)
+        let core = self.core()?;
+        core.selected_row()
+            .map(|row| row.resolve_create_among(core.rows()).activation())
     }
 
     /// The property-sort cache, for tests that pin when a fetch happens.
@@ -1163,6 +1230,132 @@ mod tests {
         let before = model.core().unwrap().is_loading();
         model.refresh_if_showing(&VaultPath::new("sub"), &tx);
         assert_eq!(model.core().unwrap().is_loading(), before);
+    }
+
+    /// A `Create: …` row for a name a listed note already has opens that
+    /// note instead: nothing asks to make it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_create_row_for_a_listed_note_opens_it() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        // `alpha` is a note of the temp vault; typing its name offers `Create:`.
+        model.core_mut().unwrap().set_query("alpha");
+        select(&mut model, |r| {
+            matches!(r, FileListEntry::CreateNote { .. })
+        });
+        assert!(
+            matches!(
+                model.activate(),
+                Some(Activation::Open(p)) if p.is_like(&VaultPath::note_path_from("alpha"))
+            ),
+            "{:?}",
+            model.activate()
+        );
+
+        // A name no note has still asks to be created.
+        model.core_mut().unwrap().set_query("brand-new");
+        select(&mut model, |r| {
+            matches!(r, FileListEntry::CreateNote { .. })
+        });
+        assert!(matches!(model.activate(), Some(Activation::Create(_))));
+    }
+
+    #[test]
+    fn resolve_create_among_leaves_other_rows_alone() {
+        let note = FileListEntry::Note {
+            path: VaultPath::note_path_from("a"),
+            title: "A".to_string(),
+            filename: "a.md".to_string(),
+            journal_date: None,
+            is_open: false,
+        };
+        let create = FileListEntry::CreateNote {
+            filename: "/a.md".to_string(),
+            path: VaultPath::new("/a.md"),
+        };
+        assert!(matches!(
+            create.resolve_create_among(std::slice::from_ref(&note)),
+            FileListEntry::Note { .. }
+        ));
+        assert!(matches!(
+            note.resolve_create_among(std::slice::from_ref(&create)),
+            FileListEntry::Note { .. }
+        ));
+        assert!(matches!(
+            create.resolve_create_among(&[]),
+            FileListEntry::CreateNote { .. }
+        ));
+        // A note of another name is not it.
+        let other = FileListEntry::Note {
+            path: VaultPath::note_path_from("zzz"),
+            title: "Z".to_string(),
+            filename: "zzz.md".to_string(),
+            journal_date: None,
+            is_open: false,
+        };
+        assert!(matches!(
+            create.resolve_create_among(&[other]),
+            FileListEntry::CreateNote { .. }
+        ));
+    }
+
+    /// A freshly made directory is pointed out: the listing shows its parent
+    /// (rebuilt, so a typed filter is gone) and selects its row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_selects_the_new_entry_in_the_shown_directory() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        model.core_mut().unwrap().set_query("zzz");
+
+        let fresh = VaultPath::new("fresh");
+        model.vault().create_directory(&fresh).await.unwrap();
+        model.reveal(&fresh, &tx);
+        poll_to_idle(&mut model).await;
+
+        assert_eq!(model.core().unwrap().query(), "", "the filter is gone");
+        assert!(
+            matches!(
+                model.core().unwrap().selected_row(),
+                Some(FileListEntry::Directory { path, .. }) if path.is_like(&fresh)
+            ),
+            "selected: {:?}",
+            model.core().unwrap().selected_row()
+        );
+    }
+
+    /// Revealing a nested entry moves the listing to the directory holding it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_navigates_to_the_entrys_parent() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        let nested = VaultPath::new("sub/deep");
+        model.vault().create_directory(&nested).await.unwrap();
+        model.reveal(&nested, &tx);
+        poll_to_idle(&mut model).await;
+
+        assert!(model.current_dir().is_like(&VaultPath::new("sub")));
+        assert!(matches!(
+            model.core().unwrap().selected_row(),
+            Some(FileListEntry::Directory { path, .. }) if path.is_like(&nested)
+        ));
+    }
+
+    /// An entry the listing never holds is given up on, selecting nothing and
+    /// leaving no request behind to fire on a later listing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_of_a_missing_entry_is_dropped() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        model.reveal(&VaultPath::new("never-made"), &tx);
+        poll_to_idle(&mut model).await;
+        assert!(model.pending_reveal.is_none());
     }
 
     /// In a subdirectory the `Up` row survives any filter text, and the

@@ -195,6 +195,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::ask_flow::AskFlow;
+use kimun_notes::logic::file_ops::NewEntryKind;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
@@ -625,6 +626,8 @@ pub(crate) struct Workspace {
     pub(crate) picker: Option<WeakEntity<picker::NotePicker>>,
     /// The quick note in the modal slot, while it is open ([`create`]).
     pub(crate) quick_note: Option<WeakEntity<create::QuickNoteDialog>>,
+    /// The new note / directory dialog while it is up.
+    pub(crate) new_entry: Option<WeakEntity<new_entry::NewEntryDialog>>,
     /// The progress of the create dialog's or the quick note's note.
     note_status: Option<Entity<file_dialogs::OpStatus>>,
     /// A note being made from a modal (`Create:`, the create dialog, the
@@ -872,6 +875,7 @@ impl Workspace {
             note_gone: None,
             picker: None,
             quick_note: None,
+            new_entry: None,
             note_status: None,
             note_task: None,
             properties: None,
@@ -1194,6 +1198,18 @@ impl Workspace {
             // dialog on a free path, holding the answer.
             AppMessage::FileOp(FileOp::ShowCreateWithContent { path, content }) => {
                 self.offer_saved_answer(path, content, cx)
+            }
+            // A request for the new note / directory dialog (FILES' and the
+            // finder's `Create:` rows), not a result.
+            AppMessage::FileOp(FileOp::ShowNewNote { base, initial }) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_new_entry(NewEntryKind::Note, base, initial, window, cx)
+                });
+            }
+            AppMessage::FileOp(FileOp::ShowNewDirectory { base }) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_new_entry(NewEntryKind::Directory, base, None, window, cx)
+                });
             }
             // A request to show the properties dialog, not a result.
             AppMessage::FileOp(FileOp::ShowProperties(path)) => {
@@ -2592,33 +2608,6 @@ impl Workspace {
             .focus_dir_in(dir, &|leaf| drawn.contains(&leaf), rail)
     }
 
-    /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail (unless
-    /// it is hidden) and the visible leaves in reading order, wrapping.
-    fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
-        // A hidden rail takes no keyboard focus (ADR-0055 §9).
-        let mut order = if self.rail_hidden {
-            Vec::new()
-        } else {
-            vec![Focus::Rail]
-        };
-        order.extend(
-            self.layout
-                .regions()
-                .into_iter()
-                .map(|(leaf, _)| leaf)
-                .filter(|leaf| self.leaf_visible(*leaf))
-                .map(Focus::Leaf),
-        );
-        let at = order.iter().position(|f| *f == self.layout.focused())?;
-        let n = order.len();
-        let next = if forward {
-            (at + 1) % n
-        } else {
-            (at + n - 1) % n
-        };
-        Some(order[next])
-    }
-
     /// The context `panel` resolves chords in; the editor's own (vim, an
     /// open find bar) when it is the editor. A query is typed there when
     /// FIND has the keyboard (the search browser, a modal, says so itself:
@@ -2827,6 +2816,12 @@ impl Workspace {
             // when no view is focused. Elsewhere the chord goes on.
             ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
+            ActionShortcuts::NewNote => {
+                self.open_new_entry_here(NewEntryKind::Note, None, window, cx)
+            }
+            ActionShortcuts::NewDirectory => {
+                self.open_new_entry_here(NewEntryKind::Directory, None, window, cx)
+            }
             ActionShortcuts::QuickNote => {
                 self.toggle_modal(ModalKind::QuickNote, Self::open_quick_note, window, cx)
             }
@@ -2902,11 +2897,14 @@ impl Workspace {
             ActionShortcuts::CloseTab => self.close_shown_tab(cx),
             ActionShortcuts::NextTab => self.step_tab(true, cx),
             ActionShortcuts::PrevTab => self.step_tab(false, cx),
-            ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
-                if let Some(next) = self.cycle_focus(*action == ActionShortcuts::FocusEditor) {
-                    self.layout.focus(next);
-                    self.apply_focus(window, cx);
-                }
+            // The targets: the editor, or the rail (hidden: nothing to focus).
+            ActionShortcuts::FocusEditor => {
+                self.layout.focus(Focus::Leaf(Leaf::Editor));
+                self.apply_focus(window, cx);
+            }
+            ActionShortcuts::FocusSidebar if !self.rail_hidden => {
+                self.layout.focus(Focus::Rail);
+                self.apply_focus(window, cx);
             }
             _ => return false,
         }
@@ -3775,6 +3773,7 @@ mod chevron;
 mod chrome;
 mod config;
 mod create;
+mod directory_choice;
 mod drawer_list;
 mod drop_zones;
 mod file_dialogs;
@@ -3795,6 +3794,9 @@ mod links;
 mod modal;
 mod motion;
 mod motion_box;
+mod new_entry;
+#[cfg(test)]
+mod new_entry_tests;
 mod note;
 mod note_flush;
 mod note_menu;

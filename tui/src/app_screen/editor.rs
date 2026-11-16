@@ -39,6 +39,7 @@ use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::logic::editor::request::EditorRequest;
+use crate::logic::file_ops::{self, NewEntryKind};
 use crate::logic::leader_route::{
     self, AskStep, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
 };
@@ -895,6 +896,33 @@ impl EditorScreen {
         }
     }
 
+    /// The directory a new note or directory goes into: the one FILES shows
+    /// while it is open, else the open note's directory, else the root.
+    fn new_entry_base(&self) -> VaultPath {
+        let browsed = self
+            .drawer_open_on(DrawerView::Files)
+            .then(|| self.panels.sidebar().current_dir());
+        let note = self.session.path();
+        file_ops::new_entry_base(browsed, (!note.is_root_or_empty()).then_some(note))
+    }
+
+    /// Open the new-note dialog on [`Self::new_entry_base`].
+    fn request_new_note(&self, initial: Option<String>, tx: &AppTx) {
+        tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
+            base: self.new_entry_base(),
+            initial,
+        }))
+        .ok();
+    }
+
+    /// Open the new-directory dialog on [`Self::new_entry_base`].
+    fn request_new_directory(&self, tx: &AppTx) {
+        tx.send(AppMessage::FileOp(FileOp::ShowNewDirectory {
+            base: self.new_entry_base(),
+        }))
+        .ok();
+    }
+
     fn run_op(&mut self, op: EditorOp, tx: &AppTx) {
         match op {
             EditorOp::ToggleDrawer => self.toggle_drawer(tx),
@@ -903,6 +931,9 @@ impl EditorScreen {
             EditorOp::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
+            EditorOp::NewNote => self.request_new_note(None, tx),
+            EditorOp::NewDirectory => self.request_new_directory(tx),
+            EditorOp::SaveNote => self.spawn_autosave(tx),
             EditorOp::ShowFileOps => {
                 tx.send(AppMessage::FileOp(FileOp::ShowMenu(
                     self.session.path().clone(),
@@ -1218,6 +1249,31 @@ impl EditorScreen {
                     tx,
                 )));
             }
+            FileOp::ShowNewNote { base, initial } => {
+                self.present_overlay(Box::new(ActiveDialog::new_entry(
+                    NewEntryKind::Note,
+                    base,
+                    initial,
+                    self.vault.clone(),
+                    tx,
+                )));
+            }
+            FileOp::ShowNewMenu { base } => {
+                let menu = {
+                    let s = self.settings.read().unwrap();
+                    ActiveDialog::new_menu(base, &s.key_bindings)
+                };
+                self.present_overlay(Box::new(menu));
+            }
+            FileOp::ShowNewDirectory { base } => {
+                self.present_overlay(Box::new(ActiveDialog::new_entry(
+                    NewEntryKind::Directory,
+                    base,
+                    None,
+                    self.vault.clone(),
+                    tx,
+                )));
+            }
             FileOp::ShowCreateWithContent { path, content } => {
                 // The suggested path is derived from a title (an Ask question),
                 // so unlike the other create-note entry points it is not known
@@ -1237,7 +1293,14 @@ impl EditorScreen {
                 // Pure notification: a note now exists at `path`. Opening is the
                 // creator's job (via OpenPath); here we only keep the sidebar in
                 // step when it is browsing the new note's directory.
-                self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
+                //
+                // A new directory opens nothing, so FILES points it out
+                // instead: it shows the parent and selects the directory.
+                if !path.is_note() && self.drawer_open_on(DrawerView::Files) {
+                    self.panels.sidebar_mut().reveal(&path, tx);
+                } else {
+                    self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
+                }
             }
             FileOp::Deleted(path) => {
                 self.on_entry_op(path, tx).await;
@@ -1676,7 +1739,7 @@ impl EditorScreen {
     }
 
     /// Ensure the Ask workspace is showing, then run `f` against its live
-    /// panel — the shared shape behind the leader `a n`/`a y`/`a e`/`a r`
+    /// panel — the shared shape behind the leader `a n`/`a y`/`a s`/`a r`
     /// conversation actions.
     fn with_ask_panel(&mut self, tx: &AppTx, f: impl FnOnce(&mut ThreadPanel, &AppTx)) {
         self.ensure_ask_workspace(tx);
@@ -1812,7 +1875,7 @@ impl EditorScreen {
     /// way in — hence the `llm_available` gate. The gate only
     /// applies to that enter-from-outside path: when Ask is already showing,
     /// focusing the composer is ungated, matching the sibling `a n`/`a
-    /// y`/`a e`/`a r` actions, which work fine on a degraded (capability-off)
+    /// y`/`a s`/`a r` actions, which work fine on a degraded (capability-off)
     /// thread.
     fn open_ask_workspace(&mut self, tx: &AppTx) {
         if self.overlays.is_open() {
@@ -1838,7 +1901,7 @@ impl EditorScreen {
     /// asks and lets the answer decide.
     fn follow_link_at_cursor(&mut self, tx: &AppTx) -> bool {
         use crate::logic::editor::claim::FollowTarget;
-        // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
+        // In the attachment view, FollowLink (Ctrl+U) opens the attachment with
         // the OS default program rather than following a link (there is none).
         if self.panels.is_showing_attachment() {
             self.open_attachment_externally(tx);
@@ -1934,14 +1997,8 @@ impl EditorScreen {
                 self.open_drawer_view(DrawerView::Links, tx);
                 self.panels.links_mut().show_tab(tab, tx);
             }
-            LeaderRoute::NewNote => {
-                // The FILES filter doubles as the create field (typing a new
-                // name offers "Create: …"); the telescope picker (08) gives
-                // this a dedicated door.
-                self.open_drawer_view(DrawerView::Files, tx);
-                self.footer
-                    .flash("type a name — Enter creates".to_string(), tx);
-            }
+            LeaderRoute::NewNote => self.request_new_note(None, tx),
+            LeaderRoute::NewDirectory => self.request_new_directory(tx),
             LeaderRoute::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
@@ -2742,6 +2799,62 @@ mod tests {
         );
     }
 
+    /// The `[+]` menu request opens the menu overlay.
+    #[tokio::test]
+    async fn a_new_menu_request_opens_the_menu() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(!screen.overlays.is_open());
+        screen
+            .handle_file_op(
+                FileOp::ShowNewMenu {
+                    base: VaultPath::root(),
+                },
+                &tx,
+            )
+            .await;
+        assert!(screen.overlays.is_open());
+    }
+
+    /// A new directory opens nothing, so with FILES showing, the browser is
+    /// taken to it (its parent shown, its row selected): nested names too.
+    #[tokio::test]
+    async fn a_created_directory_is_revealed_in_the_open_file_browser() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        let nested = VaultPath::new("projects/archive");
+        vault.create_directory(&nested).await.unwrap();
+
+        screen
+            .handle_file_op(FileOp::Created(nested.clone()), &tx)
+            .await;
+
+        assert!(
+            screen
+                .panels
+                .sidebar()
+                .current_dir()
+                .is_like(&VaultPath::new("projects"))
+        );
+    }
+
+    /// With FILES hidden nothing is pulled into view: the browser stays where
+    /// the user left it.
+    #[tokio::test]
+    async fn a_created_directory_leaves_a_hidden_file_browser_alone() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.panels.hide(PanelKind::Drawer);
+        let before = screen.panels.sidebar().current_dir().clone();
+        let nested = VaultPath::new("elsewhere/new");
+        vault.create_directory(&nested).await.unwrap();
+
+        screen.handle_file_op(FileOp::Created(nested), &tx).await;
+
+        assert_eq!(screen.panels.sidebar().current_dir(), &before);
+    }
+
     /// With FILES already open but browsed elsewhere, the open-file-browser
     /// shortcut is the "where is my note" gesture: it re-reveals the current
     /// note's directory.
@@ -2838,10 +2951,10 @@ mod tests {
         );
     }
 
-    /// Leader `m i` pins the open note, flashing its 1-based position, then
+    /// Leader `m p` pins the open note, flashing its 1-based position, then
     /// unpins it on the second press.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_toggles_the_pin_and_flashes() {
+    async fn leader_m_p_toggles_the_pin_and_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -2850,7 +2963,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "pinned as 1 of 9"),
@@ -2864,7 +2977,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "unpinned"),
@@ -2876,7 +2989,7 @@ mod tests {
     /// A tenth pin is refused with a message telling the user what to do —
     /// the cap is what guarantees every pinned note keeps a digit shortcut.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_refuses_a_tenth_pin() {
+    async fn leader_m_p_refuses_a_tenth_pin() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         for i in 0..kimun_core::PINNED_NOTES_CAP {
@@ -2889,7 +3002,7 @@ mod tests {
         screen.session.set_path(extra);
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
@@ -2901,13 +3014,13 @@ mod tests {
     /// in another terminal, or a create dialog dismissed with the path left
     /// set. Pinning it would only store a pin born "missing", so it flashes.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_on_a_missing_note_flashes() {
+    async fn leader_m_p_on_a_missing_note_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen.session.set_path(VaultPath::new("gone.md"));
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "note not found: gone.md"),
@@ -2917,10 +3030,10 @@ mod tests {
     }
 
     /// Every "+this note" action shares one definition of "this note": with
-    /// the Ask workspace up, `m c` refuses exactly as `m i` does, instead of
+    /// the Ask workspace up, `m c` refuses exactly as `m p` does, instead of
     /// copying a wikilink to the note the user is no longer looking at.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_c_with_ask_shown_flashes_like_m_i() {
+    async fn leader_m_c_with_ask_shown_flashes_like_m_p() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -2941,13 +3054,13 @@ mod tests {
     /// Toggling with no note open (the screen starts on the vault root, which
     /// is not a note) flashes rather than doing nothing.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_no_note_open_flashes() {
+    async fn leader_m_p_with_no_note_open_flashes() {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // test_screen opens on VaultPath::root(), which is not a note.
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
@@ -2958,7 +3071,7 @@ mod tests {
     /// The attachment view counts as "no note open" even though `self.path`
     /// is set (to the attachment's path, itself never a note).
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_attachment_shown_flashes() {
+    async fn leader_m_p_with_attachment_shown_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         vault
@@ -2972,7 +3085,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
@@ -3015,7 +3128,7 @@ mod tests {
     /// still names the note that was open before switching to Ask — the
     /// editor area is not showing it.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_ask_shown_flashes() {
+    async fn leader_m_p_with_ask_shown_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -3026,7 +3139,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
@@ -4245,7 +4358,7 @@ mod tests {
 
     /// Leader `a a` (`open_ask_workspace`) gates on `llm_available` only for
     /// the enter-from-outside path. Once Ask is already showing, the
-    /// sibling `a n`/`a y`/`a e`/`a r` actions all work on a degraded
+    /// sibling `a n`/`a y`/`a s`/`a r` actions all work on a degraded
     /// (capability-off) thread, so re-focusing the composer must be
     /// consistent with them rather than flashing the gate message again.
     #[tokio::test]

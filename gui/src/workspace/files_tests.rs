@@ -375,10 +375,12 @@ fn typing_filters_and_escape_clears_then_leaves(cx: &mut TestAppContext) {
     assert_eq!(started.focused(cx), Panel::Editor);
 }
 
-/// The `Create:` row makes the note through core, opens it, and FILES lists
-/// it (the `Created` refresh).
+/// The `Create:` row does not make the note: it opens the new note dialog
+/// with the typed name (the filter has done its job); the dialog's Enter
+/// makes the note through core, opens it, and FILES lists it (the `Created`
+/// refresh).
 #[gpui_kit::test]
-fn the_create_row_makes_and_opens_the_note(cx: &mut TestAppContext) {
+fn the_create_row_opens_the_dialog_which_makes_and_opens_the_note(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (v, started) = started_on(cx, &rt, "sub/a.md");
@@ -386,7 +388,17 @@ fn the_create_row_makes_and_opens_the_note(cx: &mut TestAppContext) {
     started.type_in("zulu", cx);
     assert_eq!(started.selected(cx).as_deref(), Some("+sub/zulu.md"));
     started.press_key("enter", cx);
-    assert_eq!(started.focused(cx), Panel::Editor);
+    assert_eq!(
+        started.shown_modal(cx),
+        Some(super::modal::ModalKind::NewNote),
+        "the row asks for the dialog"
+    );
+    assert!(
+        rt.block_on(v.vault.get_note_text(&path("sub/zulu.md")))
+            .is_err(),
+        "nothing is made until the dialog confirms"
+    );
+    started.press_key("enter", cx);
     drive(&rt, cx, |cx| {
         started
             .open_in_editor(cx)

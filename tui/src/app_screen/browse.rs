@@ -15,11 +15,14 @@ use crate::components::events::InputEvent;
 use crate::components::sidebar::SidebarComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::logic::file_ops;
+use crate::logic::files::spawn_create_and_open;
 use crate::logic::message::{AppMessage, AppTx, FileOp};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 pub struct BrowseScreen {
+    vault: Arc<NoteVault>,
     sidebar: SidebarComponent,
     theme: Theme,
     settings: SharedSettings,
@@ -31,7 +34,7 @@ impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
         let theme = s.get_theme();
-        let mut sidebar = SidebarComponent::from_settings(vault, &s);
+        let mut sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         drop(s);
         // The sidebar's `current_dir` is the single source of truth for the
         // browsed directory; seed it so `on_enter` opens at `path`.
@@ -39,7 +42,10 @@ impl BrowseScreen {
         // Browse hosts no overlays, so it cannot open the sort dialog: the
         // label would be a click target that does nothing.
         sidebar.set_sort_chip(false);
+        // Nor a menu that opens the new note and directory dialogs.
+        sidebar.set_new_chip(false);
         Self {
+            vault,
             sidebar,
             theme,
             settings,
@@ -91,11 +97,27 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) {
-        if let AppMessage::FileOp(FileOp::Created(path)) = msg {
-            // A note was created somewhere; rebuild the listing only when we are
-            // browsing its directory so the new note shows up.
-            let (parent, _) = path.get_parent_path();
-            self.sidebar.refresh_if_showing(&parent, tx);
+        match msg {
+            AppMessage::FileOp(FileOp::Created(path)) => {
+                // A note was created somewhere; rebuild the listing only when we are
+                // browsing its directory so the new note shows up.
+                let (parent, _) = path.get_parent_path();
+                self.sidebar.refresh_if_showing(&parent, tx);
+            }
+            // The sidebar's `Create: …` row asks for the new-note dialog, but
+            // Browse hosts no dialogs: confirm the offered name straight away,
+            // as this screen always did (an existing note is opened instead).
+            AppMessage::FileOp(FileOp::ShowNewNote {
+                base,
+                initial: Some(text),
+            }) => {
+                // No dialog to explain a rejected name, so repair it as this
+                // screen always did.
+                let path = file_ops::new_note_target(&base, &text)
+                    .unwrap_or_else(|_| base.append(&VaultPath::note_path_from(&text)));
+                spawn_create_and_open(self.vault.clone(), path, tx.clone());
+            }
+            _ => {}
         }
     }
 
@@ -229,6 +251,39 @@ mod tests {
             matches!(rx.try_recv(), Ok(AppMessage::OpenJournal)),
             "Ctrl+J should request the journal entry"
         );
+    }
+
+    /// Browse hosts no dialogs, so the sidebar's create request is confirmed
+    /// at once: the offered note is made and opened.
+    #[tokio::test]
+    async fn a_new_note_request_creates_and_opens_the_offered_note() {
+        let vault = make_vault().await;
+        let settings = make_settings_with_defaults();
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = BrowseScreen::new(vault.clone(), VaultPath::root(), settings);
+
+        screen
+            .handle_app_message(
+                AppMessage::FileOp(FileOp::ShowNewNote {
+                    base: VaultPath::root(),
+                    initial: Some("sub/offered".to_string()),
+                }),
+                &tx,
+            )
+            .await;
+
+        let expected = VaultPath::new("/sub/offered.md");
+        let opened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(AppMessage::OpenPath { path, .. }) = rx.recv().await {
+                    return path;
+                }
+            }
+        })
+        .await
+        .expect("the note should open");
+        assert_eq!(opened, expected);
+        assert!(vault.exists(&expected).await);
     }
 
     #[tokio::test]

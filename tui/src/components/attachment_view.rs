@@ -2,7 +2,7 @@
 //! **Attachment** is opened (see CONTEXT.md), in place of the text editor.
 //! Renders the attachment's metadata plus, for text files, a scrollable
 //! preview of its content; binary files show metadata only. It never edits:
-//! the attachment's verb is *open externally* (**FollowLink**, default Ctrl+N),
+//! the attachment's verb is *open externally* (**FollowLink**, default Ctrl+U),
 //! handled by the editor screen.
 
 use ratatui::Frame;
