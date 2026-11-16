@@ -311,6 +311,16 @@ pub enum FileOp {
     /// they already hold `vault` and don't need to cross a component
     /// boundary.
     ShowCreateWithContent { path: VaultPath, content: String },
+    /// Request to show the new-note dialog for notes typed into `base`
+    /// (the directory being browsed). `initial` pre-fills the name: the
+    /// text typed into the FILES filter when it offered to create.
+    ShowNewNote {
+        base: VaultPath,
+        initial: Option<String>,
+    },
+    /// Request to show the new-directory dialog for directories typed into
+    /// `base`.
+    ShowNewDirectory { base: VaultPath },
     /// Notification that a note was just created at this path. The current
     /// screen refreshes its sidebar if it is browsing the note's directory.
     /// Opening the note is a separate concern (the creator emits `OpenPath`).
@@ -339,6 +349,10 @@ pub struct PinnedRow {
 pub enum OverlayData {
     /// Rename dialog: name availability check result.
     RenameValidation { available: bool },
+    /// New-entry dialog: whether `target` (the path the typed name resolved
+    /// to) is free. A result for a path the input has since moved off is
+    /// ignored.
+    NewEntryValidation { target: VaultPath, available: bool },
     /// Move dialog: directory list has loaded.
     MoveDirectoriesLoaded(Vec<VaultPath>),
     /// Move dialog: fuzzy filter results are ready.

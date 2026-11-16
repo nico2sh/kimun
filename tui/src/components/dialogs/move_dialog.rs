@@ -421,19 +421,7 @@ impl Component for MoveDialog {
         f.render_stateful_widget(list, rows[5], &mut self.list_state);
 
         // Row 6: validation status.
-        let (status_text, status_style) = match self.dest_validation {
-            ValidationState::Idle => ("", Style::default().bg(bg)),
-            ValidationState::Pending => ("  Checking...", Style::default().fg(gray).bg(bg)),
-            ValidationState::Available => (
-                "  Available",
-                Style::default().fg(theme.green.to_ratatui()).bg(bg),
-            ),
-            ValidationState::Taken => (
-                "  Already exists",
-                Style::default().fg(theme.red.to_ratatui()).bg(bg),
-            ),
-        };
-        f.render_widget(Paragraph::new(status_text).style(status_style), rows[6]);
+        super::render_validation_status(f, rows[6], self.dest_validation, theme);
 
         // Row 7: hint line.  Dim Enter when there's no valid selection.
         // Enter moves unless the destination is Taken — also while the check

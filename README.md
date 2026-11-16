@@ -90,7 +90,7 @@ The [documentation site](https://nico2sh.github.io/kimun/) has guides for both a
 | `Ctrl+K` | Search your notes |
 | `Ctrl+O` | Find a note by name |
 | `Ctrl+B` | Start a command sequence. For example, `Ctrl+B` then `f b` opens the backlinks |
-| `Ctrl+N` | Follow the link under the cursor |
+| `Ctrl+U` | Follow the link under the cursor |
 | `Ctrl+T` | Show or hide the side panel |
 | `Ctrl+W` | Write a quick note |
 | `Ctrl+J` | Open today's journal |

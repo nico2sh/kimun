@@ -245,6 +245,18 @@ pub fn new_entry_base(browser_dir: Option<&VaultPath>, open_note: Option<&VaultP
     VaultPath::root()
 }
 
+/// What the new-note dialog starts with when FILES offers `Create: …` for
+/// `path` while browsing `base`: the name as the dialog types it (relative to
+/// `base`, no extension), or from the vault root when `path` lies outside
+/// `base`.
+pub fn new_note_initial_text(base: &VaultPath, path: &VaultPath) -> String {
+    if base.is_ancestor_of(path) {
+        path.get_relative_to(base).to_bare_string()
+    } else {
+        path.to_bare_string()
+    }
+}
+
 /// The note the new-note dialog would create for `input` typed while
 /// browsing `base`, or the reason `input` cannot name one. Missing
 /// directories in `input` are created with the note.
@@ -325,6 +337,82 @@ pub async fn create_directory(vault: &NoteVault, path: &VaultPath) -> Result<Fil
                 matches!(e, VaultError::DirectoryExists { .. })
             })
         })
+}
+
+/// What the new-entry dialog creates. One value drives the dialog's wording,
+/// how a typed name resolves and what the confirm does, so the note and
+/// directory flows (and the TUI and GUI dialogs) share one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewEntryKind {
+    Note,
+    Directory,
+}
+
+/// What a confirmed new-entry dialog made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewEntry {
+    Note(NoteOutcome),
+    Directory(VaultPath),
+}
+
+impl NewEntryKind {
+    /// The dialog's title.
+    pub fn title(self) -> &'static str {
+        match self {
+            NewEntryKind::Note => "New note",
+            NewEntryKind::Directory => "New directory",
+        }
+    }
+
+    /// The caption over the input.
+    pub fn field_label(self) -> &'static str {
+        match self {
+            NewEntryKind::Note => "NOTE NAME",
+            NewEntryKind::Directory => "DIRECTORY NAME",
+        }
+    }
+
+    /// The path `input` names while browsing `base`, or why it cannot.
+    pub fn target(self, base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+        match self {
+            NewEntryKind::Note => new_note_target(base, input),
+            NewEntryKind::Directory => new_directory_target(base, input),
+        }
+    }
+
+    /// Create the entry at `path` (from [`NewEntryKind::target`]). `content`
+    /// seeds a note (the templates seam) and is ignored for a directory.
+    pub async fn create(
+        self,
+        vault: &NoteVault,
+        path: &VaultPath,
+        content: Option<String>,
+    ) -> Result<NewEntry, String> {
+        match self {
+            NewEntryKind::Note => create_new_note(vault, path, content)
+                .await
+                .map(NewEntry::Note),
+            NewEntryKind::Directory => create_directory(vault, path)
+                .await
+                .map(|_| NewEntry::Directory(path.clone())),
+        }
+    }
+}
+
+impl NewEntry {
+    /// Report it: [`FileOp::Created`] so listings refresh, and open a note.
+    /// A directory opens nothing; the caller reveals it.
+    pub fn announce(self, tx: &AppTx) {
+        match self {
+            NewEntry::Note(outcome) => outcome.announce_and_open(tx),
+            NewEntry::Directory(path) => {
+                tx.send(crate::logic::message::AppMessage::FileOp(FileOp::Created(
+                    path,
+                )))
+                .ok();
+            }
+        }
+    }
 }
 
 /// A timestamped note holding `text` in the inbox; returns its path. The

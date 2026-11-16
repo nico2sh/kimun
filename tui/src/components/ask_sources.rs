@@ -1308,15 +1308,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn followlink_ctrl_n_opens_selected() {
-        assert_opens_selected(|_p| {}, ctrl(KeyCode::Char('n'))).await;
+    async fn followlink_ctrl_u_opens_selected() {
+        assert_opens_selected(|_p| {}, ctrl(KeyCode::Char('u'))).await;
         // Also from Full.
         assert_opens_selected(
             |p| {
                 p.reader.preview.toggle(Some(VaultPath::new("b.md")));
                 p.reader.preview.toggle(Some(VaultPath::new("b.md")));
             },
-            ctrl(KeyCode::Char('n')),
+            ctrl(KeyCode::Char('u')),
         )
         .await;
     }

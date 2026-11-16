@@ -129,6 +129,8 @@ const CONFIG_HEADER: &str = "\
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"F4\", \"ctrl&,\"]     # F4 (Ctrl+, alias)
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
+#   NewNote      = [\"ctrl&N\"]            # Ctrl+N  (ask for a name, create the note)
+#   NewDirectory = [\"alt&N\"]             # Alt+N   (ask for a name, create the directory)
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = [\"ctrl&B\"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
 #   OpenCommandPalette = [\"ctrl&P\"]      # Ctrl+P  (every leader command, fuzzy)
@@ -282,8 +284,12 @@ fn default_keybindings() -> KeyBindings {
         // are unaffected — this only changes what a fresh install picks up.
         .add(KeyStrike::KeyB, ActionShortcuts::Leader)
         // FollowLink's always-works binding; Ctrl+Enter also follows on
-        // kitty-protocol terminals (hardcoded in the editor screen).
-        .add(KeyStrike::KeyN, ActionShortcuts::FollowLink)
+        // kitty-protocol terminals (hardcoded in the editor screen). It sat
+        // on Ctrl-N until New note took that chord (config v8 moves an
+        // untouched binding along); Ctrl-U was free since the formatting
+        // chords retired.
+        .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
+        .add(KeyStrike::KeyN, ActionShortcuts::NewNote)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
@@ -335,6 +341,13 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
+
+    // New directory. Alt rather than Ctrl: the Ctrl-letter namespace is full,
+    // and New note already holds Ctrl-N. The leader tree reaches both too
+    // (`n n`, `n f`) for terminals that swallow Alt chords.
+    kb.batch_add()
+        .with_alt()
+        .add(KeyStrike::KeyN, ActionShortcuts::NewDirectory);
 
     kb
 }
@@ -1353,6 +1366,31 @@ mod tests {
         // delete a hand-authored theme).
         assert!(path.exists(), "corrupt theme file must not be deleted");
         std::fs::remove_file(&path).ok();
+    }
+
+    /// New note takes the chord FollowLink used to hold, so both are pinned:
+    /// a default table cannot bind one chord twice (the builder panics), and
+    /// this fixes which action got which.
+    #[test]
+    fn new_note_and_directory_have_defaults_and_follow_link_moved() {
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let kb = default_keybindings();
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let alt = KeyModifiers::new().and_alt();
+        assert_eq!(
+            kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyN)),
+            Some(ActionShortcuts::NewNote)
+        );
+        assert_eq!(
+            kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyU)),
+            Some(ActionShortcuts::FollowLink)
+        );
+        assert_eq!(
+            kb.get_action(&KeyCombo::new(alt, KeyStrike::KeyN)),
+            Some(ActionShortcuts::NewDirectory)
+        );
     }
 
     #[test]

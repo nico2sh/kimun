@@ -340,6 +340,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Literal Ctrl on every platform: Cmd+Tab is macOS's app switcher.
         A::NextTab => &["ctrl+tab"],
         A::PrevTab => &["ctrl+shift+tab"],
+        // New note / New directory: the desktop app's dialogs land with
+        // their chords (`primary+n`, `primary+shift+n`); until then no chord.
+        A::NewNote | A::NewDirectory => return None,
     })
 }
 
