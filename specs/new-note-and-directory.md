@@ -27,6 +27,7 @@ Status: draft. Applies to the TUI and the GUI.
 | Search-field suggestion | Kept. Choosing it opens the New note dialog pre-filled with the search text, so there is one creation path. |
 | Scope | The shortcuts work globally in the main workspace (editor, file browser, any drawer). |
 | Templates | A seam only (optional initial content). No template UI. |
+| Discoverability | A single `+` button in the FILES header opens a two-item menu (New note, New directory). Each item shows its shortcut. No labels and no second button. |
 
 ## Core
 
@@ -92,8 +93,10 @@ Both are rebindable through the existing keymap.
 
 ### File browser
 
+- The two actions are added to the F2 file-operations menu, which is the TUI's discoverable route.
 - The search-field "Create: …" suggestion is rerouted to open `NewNoteDialog` pre-filled with the typed text, replacing its direct create.
 - On creation, the browser navigates to the parent (if needed) and selects the new entry.
+- Optional, not required for the first version: a clickable `[+]` chip in the browser header that opens the same two-item menu (the TUI already handles mouse clicks on hint chips). Skip it if the header is too tight. F2 covers discoverability.
 
 ## GUI
 
@@ -122,6 +125,18 @@ Both are rebindable through the existing keymap.
 - The search-field create suggestion opens the New note dialog pre-filled with the typed text.
 - On creation, FILES announces and reveals the entry (`FileOp::Created`) and selects it.
 
+### `+` menu
+
+- A single icon-only `+` button sits in the FILES panel header, in the existing header row (with the sort/filter controls), so it adds no row. It has a tooltip ("New…").
+- Clicking it opens a small menu with two items: *New note* and *New directory*. Each item shows its shortcut on the right (the effective binding from the keymap, not a hardcoded string).
+- Choosing an item opens the matching dialog, the same as the shortcut does.
+- The target directory is the one the browser is showing, as for the shortcuts.
+- It is disabled whenever the shortcuts are unavailable (no open vault, read-only).
+
+## Later, not in scope
+
+- A right-click context menu on a directory with "New note here" and "New directory here", which sets the target explicitly.
+
 ## Edge cases
 
 - Input that is empty or only whitespace: the Create button/Enter is disabled or shows an inline error. Nothing is created.
@@ -143,7 +158,7 @@ Both are rebindable through the existing keymap.
 - Core: unit tests as above.
 - Shared logic: tests for `create_note_from_input` and `create_directory_from_input` (parents, collisions, outcomes).
 - TUI: dialog tests (key handling, error display, pre-fill from the search suggestion), leader routing tests for `n n` and `n d`, keymap default tests for the new bindings, and a test that no two default actions share a chord.
-- GUI: `*_tests.rs` in `gui/src/workspace` for both dialogs, the keymap tests, and the search-suggestion routing.
+- GUI: `*_tests.rs` in `gui/src/workspace` for both dialogs, the keymap tests, the search-suggestion routing, and the `+` menu (items, shown shortcuts, disabled state).
 
 ## Open items to settle during planning
 
