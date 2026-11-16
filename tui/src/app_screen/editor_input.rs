@@ -181,12 +181,18 @@ pub enum EditorOp {
     FocusLeft,
     FocusRight,
     OpenJournal,
+    /// Ask for a new note's name (`NewNote`), in the directory being browsed.
+    NewNote,
+    /// Ask for a new directory's name (`NewDirectory`).
+    NewDirectory,
     ShowFileOps,
     ToggleQueryPanel,
     /// Open (or switch the drawer to) FILES and reveal the open note's
     /// directory — never hides the drawer.
     OpenFileBrowserReveal,
     SaveCurrentQuery,
+    /// Write the open note now (`SaveNote`).
+    SaveNote,
     FindInBuffer,
     /// Open the find bar with the replace field revealed.
     ReplaceInBuffer,
@@ -480,6 +486,18 @@ pub(crate) fn classify_tail(
                 EditorIntent::Consume
             }),
             Some(ActionShortcuts::NewJournal) => Some(EditorIntent::Op(EditorOp::OpenJournal)),
+            Some(ActionShortcuts::SaveNote) => Some(EditorIntent::Op(EditorOp::SaveNote)),
+            // Like the quick note: never replaces a dialog that is open.
+            Some(ActionShortcuts::NewNote) => Some(if ctx.overlay.is_none() {
+                EditorIntent::Op(EditorOp::NewNote)
+            } else {
+                EditorIntent::Consume
+            }),
+            Some(ActionShortcuts::NewDirectory) => Some(if ctx.overlay.is_none() {
+                EditorIntent::Op(EditorOp::NewDirectory)
+            } else {
+                EditorIntent::Consume
+            }),
             Some(ActionShortcuts::SearchNotes) => Some(EditorIntent::ToggleOverlay {
                 kind: OverlayKind::NoteBrowser,
                 open: OverlayOpen::SearchBrowser,
@@ -599,7 +617,7 @@ pub(crate) fn classify_tail(
 
     if matches!(event, InputEvent::Mouse(_)) {
         // A double-click in the editor follows the link under it, exactly as
-        // Ctrl+N does — same intent, same executor, one follow path. The
+        // Ctrl+U does — same intent, same executor, one follow path. The
         // classifier cannot hit-test panels (that is `PanelSet`'s job, and why
         // `Mouse` exists at all), so it leans on focus: the first press of the
         // pair already focused whatever column it landed in.
@@ -671,8 +689,9 @@ mod tests {
             .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
             .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
             .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
-            .add(KeyStrike::KeyN, ActionShortcuts::FollowLink)
-            .add(KeyStrike::KeyW, ActionShortcuts::QuickNote);
+            .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
+            .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
+            .add(KeyStrike::KeyS, ActionShortcuts::SaveNote);
         kb.batch_add()
             .add(KeyStrike::F2, ActionShortcuts::FileOperations);
         kb
@@ -881,19 +900,19 @@ mod tests {
         assert_eq!(classify_it(&press(), &ctx()).intent, EditorIntent::Mouse);
     }
 
-    /// The whole point: a double-click means the same thing as Ctrl+N, so it
+    /// The whole point: a double-click means the same thing as Ctrl+U, so it
     /// produces the same intent and runs through the same executor.
     #[test]
     fn a_double_click_follows_the_link_under_it() {
         assert_eq!(
             classify_it(&press(), &ctx_double()).intent,
             EditorIntent::FollowLink,
-            "the same intent Ctrl+N produces"
+            "the same intent Ctrl+U produces"
         );
         assert_eq!(
-            classify_it(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &ctx()).intent,
+            classify_it(&key(KeyCode::Char('u'), KeyModifiers::CONTROL), &ctx()).intent,
             EditorIntent::FollowLink,
-            "and Ctrl+N still produces it"
+            "and Ctrl+U still produces it"
         );
     }
 
@@ -960,7 +979,7 @@ mod tests {
         };
         assert_eq!(classify_it(&press(), &popup).intent, EditorIntent::Mouse);
         assert_eq!(
-            classify_it(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &popup).intent,
+            classify_it(&key(KeyCode::Char('u'), KeyModifiers::CONTROL), &popup).intent,
             EditorIntent::FollowLink,
             "the popup does not own the keyboard follow"
         );
@@ -1191,6 +1210,12 @@ mod tests {
         cx.overlay = Some(OverlayKind::NoteBrowser);
         let c = classify_it(&ctrl('h'), &cx);
         assert_eq!(c.intent, EditorIntent::Consume);
+    }
+
+    #[test]
+    fn ctrl_s_saves_the_note() {
+        let c = classify_it(&ctrl('s'), &ctx());
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::SaveNote));
     }
 
     #[test]

@@ -18,6 +18,7 @@
 //!   itself or inside it (move). New frontends use these.
 
 use kimun_core::NoteVault;
+use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 
 use crate::logic::list::{ListRow, fuzzy_rank};
@@ -231,6 +232,192 @@ pub async fn create_note(
     result.map_err(|e| e.to_string())
 }
 
+/// The directory a new note or directory goes into by default: the one the
+/// file browser shows, else the directory of the open note, else the vault
+/// root.
+///
+/// Always absolute: a path read off the open note may be relative, and the
+/// names typed under it resolve to vault paths either way.
+pub fn new_entry_base(browser_dir: Option<&VaultPath>, open_note: Option<&VaultPath>) -> VaultPath {
+    if let Some(dir) = browser_dir {
+        return dir.clone().absolute();
+    }
+    if let Some(note) = open_note {
+        return note.get_parent_path().0.absolute();
+    }
+    VaultPath::root()
+}
+
+/// What the new-note dialog starts with when FILES offers `Create: …` for
+/// `path` while browsing `base`: the name as the dialog types it (relative to
+/// `base`, no extension), or from the vault root when `path` lies outside
+/// `base`.
+pub fn new_note_initial_text(base: &VaultPath, path: &VaultPath) -> String {
+    if base.is_ancestor_of(path) {
+        path.get_relative_to(base).to_bare_string()
+    } else {
+        path.to_bare_string()
+    }
+}
+
+/// The note the new-note dialog would create for `input` typed while
+/// browsing `base`, or the reason `input` cannot name one. Missing
+/// directories in `input` are created with the note.
+pub fn new_note_target(base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+    VaultPath::new_note_in(base, input).map_err(|e| invalid_name_message(&e))
+}
+
+/// The directory the new-directory dialog would create for `input` typed
+/// while browsing `base`, or the reason `input` cannot name one.
+pub fn new_directory_target(base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+    VaultPath::new_directory_in(base, input).map_err(|e| invalid_name_message(&e))
+}
+
+/// The reason alone, without the path core's error also names (the dialog
+/// already shows what was typed).
+fn invalid_name_message(e: &FSError) -> String {
+    match e {
+        FSError::InvalidPath { message, .. } => message.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A create failure in words for the dialog. `exists` is the message for the
+/// entry itself being taken; a parent that is a file (so the directories
+/// leading to the new entry cannot be made) is the other collision a typed
+/// path can hit. Shared by [`create_new_note`] and [`create_directory`].
+fn create_failure(e: VaultError, taken: &str, is_taken: impl Fn(&VaultError) -> bool) -> String {
+    use std::io::ErrorKind;
+    if is_taken(&e) {
+        return taken.to_string();
+    }
+    match e {
+        VaultError::FSError(FSError::ReadFileError(io))
+            if matches!(
+                io.kind(),
+                ErrorKind::AlreadyExists | ErrorKind::NotADirectory
+            ) =>
+        {
+            "A file with the same name as one of the parent directories already exists".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// The new-note dialog's confirm: a fresh note at `path` holding `content`
+/// (empty when `None`; the seam a template fills). Unlike [`create_note`] an
+/// existing note is an error, never loaded, so the dialog can say so and
+/// stay open.
+pub async fn create_new_note(
+    vault: &NoteVault,
+    path: &VaultPath,
+    content: Option<String>,
+) -> Result<NoteOutcome, String> {
+    vault
+        .create_note(path, content.unwrap_or_default())
+        .await
+        .map(|_| NoteOutcome {
+            path: path.clone(),
+            created: true,
+        })
+        .map_err(|e| {
+            create_failure(e, "A note with that name already exists", |e| {
+                matches!(e, VaultError::NoteExists { .. })
+            })
+        })
+}
+
+/// The new-directory dialog's confirm: create the directory at `path`,
+/// reported as [`FileOp::Created`] (its parent's listing refreshes, which is
+/// where the new directory shows up).
+pub async fn create_directory(vault: &NoteVault, path: &VaultPath) -> Result<FileOp, String> {
+    vault
+        .create_directory(path)
+        .await
+        .map(|_| FileOp::Created(path.clone()))
+        .map_err(|e| {
+            create_failure(e, "A directory with that name already exists", |e| {
+                matches!(e, VaultError::DirectoryExists { .. })
+            })
+        })
+}
+
+/// What the new-entry dialog creates. One value drives the dialog's wording,
+/// how a typed name resolves and what the confirm does, so the note and
+/// directory flows (and the TUI and GUI dialogs) share one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewEntryKind {
+    Note,
+    Directory,
+}
+
+/// What a confirmed new-entry dialog made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewEntry {
+    Note(NoteOutcome),
+    Directory(VaultPath),
+}
+
+impl NewEntryKind {
+    /// The dialog's title.
+    pub fn title(self) -> &'static str {
+        match self {
+            NewEntryKind::Note => "New note",
+            NewEntryKind::Directory => "New directory",
+        }
+    }
+
+    /// The caption over the input.
+    pub fn field_label(self) -> &'static str {
+        match self {
+            NewEntryKind::Note => "NOTE NAME",
+            NewEntryKind::Directory => "DIRECTORY NAME",
+        }
+    }
+
+    /// The path `input` names while browsing `base`, or why it cannot.
+    pub fn target(self, base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+        match self {
+            NewEntryKind::Note => new_note_target(base, input),
+            NewEntryKind::Directory => new_directory_target(base, input),
+        }
+    }
+
+    /// Create the entry at `path` (from [`NewEntryKind::target`]). `content`
+    /// seeds a note (the templates seam) and is ignored for a directory.
+    pub async fn create(
+        self,
+        vault: &NoteVault,
+        path: &VaultPath,
+        content: Option<String>,
+    ) -> Result<NewEntry, String> {
+        match self {
+            NewEntryKind::Note => create_new_note(vault, path, content)
+                .await
+                .map(NewEntry::Note),
+            NewEntryKind::Directory => create_directory(vault, path)
+                .await
+                .map(|_| NewEntry::Directory(path.clone())),
+        }
+    }
+}
+
+impl NewEntry {
+    /// Report it: [`FileOp::Created`] so listings refresh, and open a note.
+    /// A directory opens nothing; the caller reveals it.
+    pub fn announce(self, tx: &AppTx) {
+        match self {
+            NewEntry::Note(outcome) => outcome.announce_and_open(tx),
+            NewEntry::Directory(path) => {
+                tx.send(crate::logic::message::AppMessage::FileOp(FileOp::Created(
+                    path,
+                )))
+                .ok();
+            }
+        }
+    }
+}
+
 /// A timestamped note holding `text` in the inbox; returns its path. The
 /// caller reports [`FileOp::Created`] and opens it or not.
 pub async fn quick_note(vault: &NoteVault, text: &str) -> Result<VaultPath, String> {
@@ -272,6 +459,16 @@ pub fn list_directories(vault: &NoteVault) -> Result<Vec<VaultPath>, String> {
         .collect();
     paths.sort();
     Ok(paths)
+}
+
+/// How a directory is named in a chooser: the root reads as the vault root.
+/// Each frontend adds its own padding.
+pub fn directory_name(dir: &VaultPath) -> String {
+    if dir.is_root_or_empty() {
+        "/ (vault root)".to_string()
+    } else {
+        dir.to_string()
+    }
 }
 
 #[derive(Clone)]

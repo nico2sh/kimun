@@ -19,8 +19,8 @@ To start it, open Kimün from your application menu. To open one note, run `kimu
 - The rail is a strip at the edge. It lists the views: FILES, FIND, TAGS, LINKS, and OUTLINE. If you connect a [Kimün server](@/using-kimun/server.md), it also lists SEM (search by meaning) and ASK. Click a view to open it.
 - Views sit in slots next to the editor. Drag a view by its slot header to move it. Drag it to an edge of the window to give it a new slot. Drag a divider to resize a slot.
 - The footer shows the note path, the cursor position, the backlink count, and whether the note is saved.
-- Press `Ctrl+Shift+M` to zoom the view that has focus. Press it again to go back. In a tab with several panes, zoom shows the current pane only. The focus keys still move to the other panes, and the zoom then shows the pane they reach.
-- To hide or show the rail, press `Ctrl+Shift+A`. To move it to another edge, use `Rail position` in Preferences.
+- Press `Alt+M` (`Cmd+Option+M` on macOS) to zoom the view that has focus. Press it again to go back. In a tab with several panes, zoom shows the current pane only. The focus keys still move to the other panes, and the zoom then shows the pane they reach.
+- To hide or show the rail, press `Alt+A` (`Cmd+Option+A` on macOS). To move it to another edge, use `Rail position` in Preferences.
 
 On macOS, use `Cmd` in place of `Ctrl`.
 
@@ -48,6 +48,15 @@ The note menu acts on a pane and its note. To open it, right-click in a pane, cl
 
 The first items work on the note: Properties, Rename, Move, and Delete. Press `P`, `R`, `M`, or `D` to pick one. The next items change the layout: Split right, Split down, New tab, Close pane, and Close tab. They show their keys. The menu hides an item that cannot work. For example, an empty pane shows only the layout items. Press `Esc`, click outside the menu, or press `F2` again to close it.
 
+## New notes and directories
+
+- Press `Ctrl+N` to make a note. Type its name and press `Enter`. The note goes in the folder that FILES shows, or in the folder of the open note. A name with slashes, such as `projects/ideas`, makes the folders for you. Start the name with `/` to begin at the top of the vault.
+- Press `Ctrl+Shift+N` to make a directory. It takes the same kind of name.
+- The window shows the folder it will use. Click `Change…` to pick another one: type to filter the list, use `Up` and `Down`, and press `Enter` or click a folder. `Esc` closes the list first, then the window.
+- The window shows where the entry will go, and tells you if the name is already taken or is not allowed.
+- The `+` button in FILES opens a small menu with both choices. If you type a name in the FILES filter or in the note finder and nothing matches, pick `Create: …` to open the same window with that name filled in.
+- You can also press `Ctrl+Shift+B n n` for a note and `Ctrl+Shift+B n d` for a directory.
+
 ## Search
 
 Click FIND in the rail, or press `Ctrl+K`. Type a query and the results update as you type. Click a result to see more of it. In this example, `<carlos or:title` finds the notes that link to `carlos`, sorted by title.
@@ -72,13 +81,14 @@ Press `F1` to see every shortcut. These are the most useful:
 
 | Shortcut | What it does |
 |---|---|
-| `Ctrl+K` | Search your notes |
+| `Ctrl+K` or `Ctrl+Shift+F` | Search your notes |
 | `Ctrl+Shift+P` | Command palette: find any command |
 | `Ctrl+S` | Save |
 | `F5` | Switch workspace |
 | `F4` | Preferences |
 | `Ctrl+Shift+B` | Start a command sequence. For example, `Ctrl+Shift+B f f` opens the note finder |
 | `Ctrl+T` / `Ctrl+W` | New tab / close tab |
+| `Ctrl+N` / `Ctrl+Shift+N` | New note / new directory |
 | `Alt+Shift+R` / `Alt+Shift+D` / `Alt+Shift+W` | Split the pane right / down, close the pane |
 | `Alt+Shift+Left` / `Right` / `Up` / `Down` | Move the pane (or the view that has focus) that way |
 | `F2` | Note menu |

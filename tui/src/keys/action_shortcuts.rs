@@ -10,13 +10,12 @@ use crate::logic::text_action::TextAction;
 /// here (or is a `Text(..)` action: formatting lives on the leader), pinned by
 /// a test in `settings`. The layout actions (ADR-0050) have no TUI meaning yet:
 /// the TUI has one drawer, one slot and one group, and its shortcut tier
-/// ignores them even if a user binds one. `SaveNote` is the leader's `w`
-/// (save now); the TUI has no free chord for it. `KeyboardHelp` is the
+/// ignores them even if a user binds one. `KeyboardHelp` is the
 /// desktop app's F1 reference; the TUI's F1 help is built in (the editor
 /// screen's F-key fallback), not a keymap action. `QuerySyntax` is the
 /// desktop app's F1 in FIND and its search browser; the TUI's search views
 /// show their query help themselves.
-pub const TUI_UNBOUND: [ActionShortcuts; 24] = [
+pub const TUI_UNBOUND: [ActionShortcuts; 23] = [
     // Reachable via the rail and leader; no free chord.
     ActionShortcuts::ToggleQueryPanel,
     // `Tab` from an open find bar reaches the same state.
@@ -26,7 +25,6 @@ pub const TUI_UNBOUND: [ActionShortcuts; 24] = [
     ActionShortcuts::FocusRegion(Dir::Up),
     ActionShortcuts::FocusRegion(Dir::Down),
     ActionShortcuts::ToggleRightDrawer,
-    ActionShortcuts::SaveNote,
     ActionShortcuts::KeyboardHelp,
     ActionShortcuts::QuerySyntax,
     ActionShortcuts::SplitSlotRight,
@@ -153,6 +151,8 @@ impl ActionShortcuts {
             ActionShortcuts::CloseTab => "Close tab".into(),
             ActionShortcuts::NextTab => "Next tab".into(),
             ActionShortcuts::PrevTab => "Previous tab".into(),
+            ActionShortcuts::NewNote => "New note".into(),
+            ActionShortcuts::NewDirectory => "New directory".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),

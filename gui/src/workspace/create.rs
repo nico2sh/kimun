@@ -11,7 +11,7 @@
 //!   a timestamped note in the inbox. Enter on an empty line closes without
 //!   making anything; Enter saves and closes; Shift+Enter saves and opens
 //!   the note. Typing clears a shown error.
-//! - **Journal** (`NewJournal` chord, leader `n d`, the palette): today's
+//! - **Journal** (`NewJournal` chord, leader `n j`, the palette): today's
 //!   entry, made with its date heading the first time, opened every time.
 //!
 //! A failure stays in the dialog, which stays open; while a note is being
@@ -460,7 +460,7 @@ impl Workspace {
         }));
     }
 
-    /// The `NewJournal` chord, leader `n d`: today's journal entry, made
+    /// The `NewJournal` chord, leader `n j`: today's journal entry, made
     /// the first time, opened in the editor (which takes the keyboard).
     pub(crate) fn open_journal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(vault) = self.vault() else {
@@ -511,7 +511,7 @@ impl Workspace {
 
     /// The note task from the dialog `mine` made its note: close that
     /// dialog — not whatever modal took its place.
-    fn close_note_dialog(
+    pub(super) fn close_note_dialog(
         &mut self,
         mine: &Option<Entity<OpStatus>>,
         window: &mut Window,
@@ -524,7 +524,7 @@ impl Workspace {
 
     /// The note task from the dialog `mine` failed: the dialog says why,
     /// or, when it is gone, a flash does.
-    fn note_failed(
+    pub(super) fn note_failed(
         &mut self,
         mine: &Option<Entity<OpStatus>>,
         error: String,
@@ -537,7 +537,12 @@ impl Workspace {
         }
     }
 
-    fn set_note_status(&self, busy: bool, error: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn set_note_status(
+        &self,
+        busy: bool,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(status) = self.note_status.as_ref() {
             status.update(cx, |status, cx| {
                 status.busy = busy;

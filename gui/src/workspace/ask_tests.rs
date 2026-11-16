@@ -46,7 +46,7 @@ use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
 /// The zoom chord with the default Linux/Windows keymap.
-const ZOOM: &str = "ctrl-shift-m";
+const ZOOM: &str = "alt-m";
 
 /// The TUI's flash for a route into ASK the server can't serve.
 const NO_LLM: &str = "Ask needs an LLM-configured server; this one is semantic-search only";

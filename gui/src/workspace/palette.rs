@@ -283,6 +283,8 @@ fn leaf_chord(action: LeaderAction) -> Option<ActionShortcuts> {
         LeaderAction::FindGrep | LeaderAction::FindRecent => Some(ActionShortcuts::SearchNotes),
         LeaderAction::FindSaved => Some(ActionShortcuts::OpenSavedSearches),
         LeaderAction::NoteDaily => Some(ActionShortcuts::NewJournal),
+        LeaderAction::NoteNew => Some(ActionShortcuts::NewNote),
+        LeaderAction::NoteNewDirectory => Some(ActionShortcuts::NewDirectory),
         LeaderAction::AskFocus => Some(ActionShortcuts::OpenAsk),
         LeaderAction::VaultSwitch => Some(ActionShortcuts::SwitchWorkspace),
         LeaderAction::VaultPreferences => Some(ActionShortcuts::OpenPreferences),

@@ -196,7 +196,7 @@ fn no_pins_shows_the_empty_state(cx: &mut TestAppContext) {
     assert!(!started.shows(PINNED_EMPTY_ID, cx));
     assert!(rows(&started, &rt, cx).is_empty());
     assert!(started.shows(PINNED_EMPTY_ID, cx));
-    assert!(EMPTY_TEXT.contains("leader m i"));
+    assert!(EMPTY_TEXT.contains("leader m p"));
     assert_eq!(disabled(&started, PINNED_OPEN_ID, cx), Some(true));
 }
 

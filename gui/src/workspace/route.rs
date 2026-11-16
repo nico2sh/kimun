@@ -12,6 +12,7 @@
 use gpui_kit::{App, ClipboardItem, Context, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::keys::leader::LeaderAction;
+use kimun_notes::logic::file_ops::NewEntryKind;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::leader_route::{
     self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
@@ -101,6 +102,8 @@ impl Workspace {
             LeaderRoute::LinksTab(_) => None,
             LeaderRoute::NewNote if self.files.is_some() => None,
             LeaderRoute::NewNote => Some(NO_WORKSPACE),
+            LeaderRoute::NewDirectory if self.files.is_some() => None,
+            LeaderRoute::NewDirectory => Some(NO_WORKSPACE),
             LeaderRoute::Quit => None,
             LeaderRoute::NoNoteOpen => Some(NO_NOTE),
             LeaderRoute::Yank { .. } => None,
@@ -134,7 +137,7 @@ impl Workspace {
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
-            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n d`: the
+            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n j`: the
             // finder, the search browser, the saved searches, the pinned
             // notes, today's journal.
             LeaderRoute::Overlay(
@@ -208,10 +211,10 @@ impl Workspace {
             }
             LeaderRoute::LinksTab(tab) => self.show_links_tab(tab, window, cx),
             LeaderRoute::NewNote if self.files.is_some() => {
-                // The FILES filter doubles as the create field: typing a
-                // name offers `Create:`.
-                self.open_file_browser(window, cx);
-                self.flash("Type a name — Enter creates", cx);
+                self.open_new_entry_here(NewEntryKind::Note, None, window, cx)
+            }
+            LeaderRoute::NewDirectory if self.files.is_some() => {
+                self.open_new_entry_here(NewEntryKind::Directory, None, window, cx)
             }
             LeaderRoute::Quit => self.request_quit(window, cx),
             LeaderRoute::Yank { text, label } => {
@@ -266,6 +269,7 @@ impl Workspace {
             // Blocked here (see `route_block`).
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
+            | LeaderRoute::NewDirectory
             | LeaderRoute::Overlay(_)
             | LeaderRoute::Soon(_) => {}
             LeaderRoute::GitStatus => self.show_git_status(cx),

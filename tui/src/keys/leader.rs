@@ -28,6 +28,7 @@ pub enum LeaderAction {
     FindHeadings,
     // +note
     NoteNew,
+    NoteNewDirectory,
     NoteDaily,
     NoteFromTemplate,
     NoteRename,
@@ -63,7 +64,7 @@ pub enum LeaderAction {
     PinnedJump(u8),
     /// Open the pinned-notes dialog (`f p`).
     FindPinned,
-    /// Pin or unpin the open note (`m i`).
+    /// Pin or unpin the open note (`m p`).
     NoteTogglePin,
     // +ask (a) — the Ask workspace's conversation.
     AskFocus,
@@ -114,6 +115,7 @@ impl LeaderAction {
             LeaderAction::FindSaved => "find.saved",
             LeaderAction::FindHeadings => "find.headings",
             LeaderAction::NoteNew => "note.new",
+            LeaderAction::NoteNewDirectory => "note.new_directory",
             LeaderAction::NoteDaily => "note.daily",
             LeaderAction::NoteFromTemplate => "note.template",
             LeaderAction::NoteRename => "note.rename",
@@ -173,7 +175,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 67] = [
+    pub const ALL: [LeaderAction; 68] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -188,6 +190,7 @@ impl LeaderAction {
         LeaderAction::FindSaved,
         LeaderAction::FindHeadings,
         LeaderAction::NoteNew,
+        LeaderAction::NoteNewDirectory,
         LeaderAction::NoteDaily,
         LeaderAction::NoteFromTemplate,
         LeaderAction::NoteRename,
@@ -271,6 +274,7 @@ impl LeaderAction {
             LeaderAction::FindSaved => "saved searches",
             LeaderAction::FindHeadings => "headings",
             LeaderAction::NoteNew => "new note",
+            LeaderAction::NoteNewDirectory => "new directory",
             LeaderAction::NoteDaily => "daily",
             LeaderAction::NoteFromTemplate => "from template",
             LeaderAction::NoteRename => "rename",
@@ -452,7 +456,8 @@ pub fn leader_tree() -> LeaderNode {
                     label: "+note".into(),
                     children: vec![
                         ('n', leaf("new", A::NoteNew)),
-                        ('d', leaf("daily", A::NoteDaily)),
+                        ('d', leaf("new directory", A::NoteNewDirectory)),
+                        ('j', leaf("daily", A::NoteDaily)),
                         ('t', leaf("from template", A::NoteFromTemplate)),
                         ('r', leaf("rename", A::NoteRename)),
                         ('m', leaf("move", A::NoteMove)),
@@ -480,10 +485,10 @@ pub fn leader_tree() -> LeaderNode {
                     label: "+open drawer".into(),
                     children: vec![
                         ('f', leaf("files", A::OpenDrawer(DV::Files))),
-                        ('q', leaf("find", A::OpenDrawer(DV::Find))),
+                        ('s', leaf("search", A::OpenDrawer(DV::Find))),
                         ('t', leaf("tags", A::OpenDrawer(DV::Tags))),
-                        ('k', leaf("links", A::OpenDrawer(DV::Links))),
-                        ('l', leaf("outline", A::OpenDrawer(DV::Outline))),
+                        ('l', leaf("links", A::OpenDrawer(DV::Links))),
+                        ('o', leaf("outline", A::OpenDrawer(DV::Outline))),
                     ],
                 },
             ),
@@ -532,14 +537,14 @@ pub fn leader_tree() -> LeaderNode {
                     label: "+this note".into(),
                     children: vec![
                         ('t', leaf("toggle todo", A::NoteToggleTodo)),
-                        ('p', leaf("preview", A::NotePreview)),
+                        ('v', leaf("preview", A::NotePreview)),
                         ('c', leaf("copy wikilink", A::NoteCopyWikilink)),
                         ('e', leaf("export (soon)", A::NoteExport)),
                         // Same dialog as `n r` — every rename rewrites
                         // backlinks (core NoteRename), so the labels match.
                         ('r', leaf("rename", A::NoteRename)),
                         ('y', leaf("yank note path", A::NoteYankPath)),
-                        ('i', leaf("pin / unpin", A::NoteTogglePin)),
+                        ('p', leaf("pin / unpin", A::NoteTogglePin)),
                     ],
                 },
             ),
@@ -562,9 +567,9 @@ pub fn leader_tree() -> LeaderNode {
                         ('a', leaf("focus composer", A::AskFocus)),
                         ('n', leaf("new conversation", A::AskNew)),
                         ('y', leaf("copy answer", A::AskCopy)),
-                        ('e', leaf("save as note", A::AskSave)),
+                        ('s', leaf("save as note", A::AskSave)),
                         ('r', leaf("regenerate", A::AskRegenerate)),
-                        ('s', leaf("open top source", A::AskSource)),
+                        ('o', leaf("open top source", A::AskSource)),
                     ],
                 },
             ),
@@ -1088,7 +1093,7 @@ mod tests {
         let mut e = LeaderEngine::new();
         e.start();
         e.feed('n');
-        assert_eq!(e.feed('d'), LeaderOutcome::Fired(LeaderAction::NoteDaily));
+        assert_eq!(e.feed('j'), LeaderOutcome::Fired(LeaderAction::NoteDaily));
         e.start();
         e.feed('n');
         assert_eq!(e.feed('D'), LeaderOutcome::Fired(LeaderAction::NoteDelete));
@@ -1166,7 +1171,7 @@ mod tests {
         e.start();
         e.feed('m');
         assert_eq!(
-            e.feed('i'),
+            e.feed('p'),
             LeaderOutcome::Fired(LeaderAction::NoteTogglePin)
         );
     }

@@ -13,7 +13,7 @@ use super::SettingsError;
 /// layout (`workspace_dir` + top-level `last_paths`) and moved the index out of
 /// the vault, and every installation has long since passed through them. The
 /// oldest config this build understands is a v3 one.
-pub const CURRENT_CONFIG_VERSION: u32 = 7;
+pub const CURRENT_CONFIG_VERSION: u32 = 8;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -67,14 +67,43 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v7 → v8: New note takes Ctrl-N; FollowLink moves to Ctrl-U.
+        if settings.config_version < 8 {
+            Self::migrate_to_v8(settings);
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 8 { ... migrated = true; }
+        // if settings.config_version < 9 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
         }
 
         Ok(migrated)
+    }
+
+    /// v7 → v8: New note takes Ctrl-N, so FollowLink moves to Ctrl-U. Only
+    /// applies when FollowLink is still exactly at its v7 default and Ctrl-U
+    /// is free; otherwise the user's choice stands, and New note simply stays
+    /// unbound (`merge_missing_default_bindings` never steals a chord).
+    fn migrate_to_v8(settings: &mut AppSettings) {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::KeyCombo;
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = crate::keys::key_combo::KeyModifiers::new().and_ctrl();
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+        let ctrl_u = KeyCombo::new(ctrl, KeyStrike::KeyU);
+
+        let mut map = settings.key_bindings.to_hashmap();
+        let at_old_default = still_at_default(&map, &ActionShortcuts::FollowLink, ctrl_n);
+        let ctrl_u_free = !map.values().flatten().any(|c| *c == ctrl_u);
+        if at_old_default && ctrl_u_free {
+            map.insert(ActionShortcuts::FollowLink, vec![ctrl_u]);
+        }
+        settings.key_bindings = KeyBindings::from_hashmap(map);
     }
 
     /// v5 → v6: settings move from Ctrl+Shift+P to Ctrl+, — Ctrl+Shift+P is
@@ -239,6 +268,91 @@ mod tests {
         assert!(!migrated);
     }
 
+    fn v7_settings(follow: &[crate::keys::key_combo::KeyCombo]) -> AppSettings {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::FollowLink, follow.to_vec());
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 7;
+        settings
+    }
+
+    /// New note takes Ctrl-N, so an untouched FollowLink moves to Ctrl-U.
+    #[test]
+    fn v8_moves_an_untouched_followlink_to_ctrl_u() {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+        let ctrl_u = KeyCombo::new(ctrl, KeyStrike::KeyU);
+        let mut settings = v7_settings(&[ctrl_n]);
+
+        assert!(ConfigMigration::run(&mut settings).unwrap());
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_u]));
+        assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
+        // Running it again changes nothing.
+        assert!(!ConfigMigration::run(&mut settings).unwrap());
+        assert_eq!(
+            settings
+                .key_bindings
+                .to_hashmap()
+                .get(&ActionShortcuts::FollowLink),
+            Some(&vec![ctrl_u])
+        );
+    }
+
+    /// A FollowLink the user chose, or one with a second chord, is theirs.
+    #[test]
+    fn v8_leaves_a_customised_followlink_alone() {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+        let ctrl_y = KeyCombo::new(ctrl, KeyStrike::KeyY);
+
+        for chords in [vec![ctrl_y], vec![ctrl_n, ctrl_y]] {
+            let mut settings = v7_settings(&chords);
+            ConfigMigration::run(&mut settings).unwrap();
+            let map = settings.key_bindings.to_hashmap();
+            assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&chords));
+        }
+    }
+
+    /// Ctrl-U already in use (a kept Underline chord, say) blocks the move:
+    /// FollowLink stays where the user has it.
+    #[test]
+    fn v8_does_not_take_a_ctrl_u_that_is_bound() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+        use crate::logic::text_action::TextAction;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+        let ctrl_u = KeyCombo::new(ctrl, KeyStrike::KeyU);
+        let mut settings = v7_settings(&[ctrl_n]);
+        let mut map = settings.key_bindings.to_hashmap();
+        map.insert(ActionShortcuts::Text(TextAction::Underline), vec![ctrl_u]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+
+        ConfigMigration::run(&mut settings).unwrap();
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_n]));
+        assert_eq!(
+            map.get(&ActionShortcuts::Text(TextAction::Underline)),
+            Some(&vec![ctrl_u])
+        );
+    }
+
     #[test]
     fn v4_moves_ctrl_g_from_followlink_to_leader() {
         use crate::keys::KeyBindings;
@@ -248,9 +362,10 @@ mod tests {
 
         let ctrl = KeyModifiers::new().and_ctrl();
         let ctrl_g = KeyCombo::new(ctrl, KeyStrike::KeyG);
-        let ctrl_n = KeyCombo::new(ctrl, KeyStrike::KeyN);
+        let ctrl_u = KeyCombo::new(ctrl, KeyStrike::KeyU);
 
         // Old default: FollowLink bound to exactly Ctrl-G.
+        // (v4 moved it to Ctrl-N, which v8 then moved to Ctrl-U.)
         let mut settings = AppSettings::default();
         let mut map = std::collections::HashMap::new();
         map.insert(ActionShortcuts::FollowLink, vec![ctrl_g]);
@@ -260,7 +375,7 @@ mod tests {
         assert!(ConfigMigration::run(&mut settings).unwrap());
         let map = settings.key_bindings.to_hashmap();
         assert_eq!(map.get(&ActionShortcuts::Leader), Some(&vec![ctrl_g]));
-        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_n]));
+        assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_u]));
         assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
     }
 

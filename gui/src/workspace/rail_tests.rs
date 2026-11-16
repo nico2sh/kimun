@@ -326,7 +326,7 @@ fn directional_focus_reaches_and_leaves_the_rail_on_its_edge(cx: &mut TestAppCon
 }
 
 /// The toggle chord with the default Linux/Windows keymap.
-const TOGGLE_RAIL: &str = "ctrl-shift-a";
+const TOGGLE_RAIL: &str = "alt-a";
 const TOGGLE_ID: &str = crate::status_row::RAIL_TOGGLE_ID;
 
 fn hidden(shell: &Shell, cx: &gpui_kit::App) -> bool {
@@ -510,12 +510,12 @@ fn zoom_and_a_hidden_rail_do_not_interact(cx: &mut TestAppContext) {
     let (_dir, _config, shell) = open_rail_with(cx, RailPosition::Left, false, files_alone());
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-m", cx);
+        window.press("alt-m", cx);
         assert!(shell.workspace.read(cx).layout.zoomed().is_some());
         window.press(TOGGLE_RAIL, cx);
         assert!(hidden(&shell, cx));
         assert!(shell.workspace.read(cx).layout.zoomed().is_some());
-        window.press("ctrl-shift-m", cx);
+        window.press("alt-m", cx);
         assert!(shell.workspace.read(cx).layout.zoomed().is_none());
         assert!(hidden(&shell, cx));
     })
@@ -613,7 +613,7 @@ fn hiding_the_rail_while_zoomed_keeps_the_zoom(cx: &mut TestAppContext) {
             focus(&shell, cx),
             Focus::Leaf(kimun_notes::logic::layout_tree::Leaf::Editor)
         ));
-        window.press("ctrl-shift-m", cx);
+        window.press("alt-m", cx);
         let zoomed = shell.workspace.read(cx).layout.zoomed().expect("zoomed");
         window.press("alt-left", cx);
         assert_eq!(focus(&shell, cx), Focus::Rail);

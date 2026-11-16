@@ -86,6 +86,10 @@ pub(crate) enum ModalKind {
     CreateNote,
     /// The quick note.
     QuickNote,
+    /// The new note dialog (`NewNote`, leader `n n`, FILES' `+`).
+    NewNote,
+    /// The new directory dialog (`NewDirectory`, leader `n d`, FILES' `+`).
+    NewDirectory,
     /// The open note's properties (with its delete confirmation stacked on
     /// it while one asks).
     Properties,
@@ -272,6 +276,7 @@ impl Workspace {
         }
         self.picker = None;
         self.quick_note = None;
+        self.new_entry = None;
         self.note_status = None;
         // A property write in flight still lands: its reload is the window's
         // own message, not the dialog's.

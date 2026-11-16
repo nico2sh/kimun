@@ -71,7 +71,7 @@ pub enum ActionShortcuts {
     FocusRegion(Dir),
     /// Show or hide the right drawer.
     ToggleRightDrawer,
-    /// Save the open note now (the leader's `w` in the TUI, which binds no
+    /// Save the open note now (the leader's `n w` in the TUI, which binds no
     /// chord to it).
     SaveNote,
     /// The keyboard reference: every chord and leader sequence in effect
@@ -122,6 +122,13 @@ pub enum ActionShortcuts {
     /// Show the previous tab, wrapping (ADR-0058). The TUI binds no chord
     /// to it.
     PrevTab,
+    /// Ask for the name of a new note and create it in the directory being
+    /// browsed (Ctrl+N by default in the TUI, `primary+n` in the desktop app).
+    NewNote,
+    /// Ask for the name of a new directory and create it in the directory
+    /// being browsed (Alt+N by default in the TUI, `primary+shift+n` in the
+    /// desktop app).
+    NewDirectory,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -184,7 +191,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 58] = [
+    pub const ALL: [ActionShortcuts; 60] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -243,6 +250,8 @@ impl ActionShortcuts {
         ActionShortcuts::CloseTab,
         ActionShortcuts::NextTab,
         ActionShortcuts::PrevTab,
+        ActionShortcuts::NewNote,
+        ActionShortcuts::NewDirectory,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -273,6 +282,8 @@ impl ActionShortcuts {
             A::OpenNote
             | A::NewJournal
             | A::QuickNote
+            | A::NewNote
+            | A::NewDirectory
             | A::FileOperations
             | A::OpenFileBrowser
             | A::OpenSortDialog
@@ -356,6 +367,8 @@ impl Display for ActionShortcuts {
             ActionShortcuts::CloseTab => "CloseTab".to_string(),
             ActionShortcuts::NextTab => "NextTab".to_string(),
             ActionShortcuts::PrevTab => "PrevTab".to_string(),
+            ActionShortcuts::NewNote => "NewNote".to_string(),
+            ActionShortcuts::NewDirectory => "NewDirectory".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -419,6 +432,8 @@ impl TryFrom<String> for ActionShortcuts {
             "CloseTab" => ActionShortcuts::CloseTab,
             "NextTab" => ActionShortcuts::NextTab,
             "PrevTab" => ActionShortcuts::PrevTab,
+            "NewNote" => ActionShortcuts::NewNote,
+            "NewDirectory" => ActionShortcuts::NewDirectory,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -489,9 +504,11 @@ mod tests {
             ActionShortcuts::CloseTab => 37,
             ActionShortcuts::NextTab => 38,
             ActionShortcuts::PrevTab => 39,
+            ActionShortcuts::NewNote => 40,
+            ActionShortcuts::NewDirectory => 41,
         }
     }
-    const VARIANTS: usize = 40;
+    const VARIANTS: usize = 42;
 
     #[test]
     fn all_lists_every_variant() {
@@ -610,7 +627,7 @@ mod tests {
 
     /// `QuerySyntax`'s on-disk name is permanent (`[gui.keys]` writes it),
     /// and only the layout-tree commands (ADR-0052), `ToggleZoom` (ADR-0053)
-    /// and `OpenQueryInSidebar` (ADR-0054), added after it, follow it, so the serialized keymap's order is unchanged.
+    /// and `OpenQueryInSidebar` (ADR-0054), the tab commands and the new note and directory commands, added after it, follow it, so the serialized keymap's order is unchanged.
     #[test]
     fn query_syntax_name() {
         assert_eq!(ActionShortcuts::QuerySyntax.to_string(), "QuerySyntax");
@@ -635,6 +652,8 @@ mod tests {
                 ActionShortcuts::CloseTab,
                 ActionShortcuts::NextTab,
                 ActionShortcuts::PrevTab,
+                ActionShortcuts::NewNote,
+                ActionShortcuts::NewDirectory,
             ]
         );
         assert_eq!(

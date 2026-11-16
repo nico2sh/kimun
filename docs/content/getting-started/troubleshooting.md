@@ -9,7 +9,7 @@ Most problems below are about the terminal app. Terminals cannot send some key c
 
 ## Ctrl+Enter acts like Enter
 
-Many terminals cannot tell `Ctrl+Enter` from `Enter`. Press `Ctrl+N` instead. It follows a link in the same way.
+Many terminals cannot tell `Ctrl+Enter` from `Enter`. Press `Ctrl+U` instead. It follows a link in the same way.
 
 Kitty, Ghostty, and foot support `Ctrl+Enter`. In WezTerm, add `config.enable_kitty_keyboard = true` to `~/.wezterm.lua`.
 

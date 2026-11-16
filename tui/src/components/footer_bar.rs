@@ -80,7 +80,7 @@ pub enum FooterTarget {
     ServerUpdate,
     /// `N backlinks` — opens the LINKS drawer on its backlinks tab.
     Backlinks,
-    /// `→ target` — follows the link under the cursor (the mouse's Ctrl+N).
+    /// `→ target` — follows the link under the cursor (the mouse's Ctrl+U).
     Link,
 }
 

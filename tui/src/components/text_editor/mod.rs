@@ -1222,7 +1222,7 @@ impl Component for TextEditorComponent {
                 }
                 // A press only places the cursor. Following is a double-click
                 // (see `app_screen::click_run`) and is not decided here: it classifies to
-                // `EditorIntent::FollowLink` — the same intent Ctrl+N produces
+                // `EditorIntent::FollowLink` — the same intent Ctrl+U produces
                 // — and the editor screen executes it against this cursor.
                 // The press that placed the cursor is the *first* of the pair,
                 // which is why one path can serve both.

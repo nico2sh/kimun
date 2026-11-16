@@ -412,10 +412,10 @@ fn keys_go_to_the_focused_panel_only(cx: &mut TestAppContext) {
 }
 
 /// Alt+Arrow moves focus between the panels without wrapping; Alt+E and
-/// Alt+F (Cmd+Option+E and Cmd+Option+S on macOS) cycle through the
-/// visible ones, wrapping.
+/// Alt+F (Cmd+Option+E and Cmd+Option+S on macOS) focus the editor and
+/// the rail.
 #[gpui_kit::test]
-fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
+fn focus_moves_by_direction_and_by_target(cx: &mut TestAppContext) {
     let shell = open_default(cx, "");
     cx.update_window(shell.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -434,18 +434,11 @@ fn focus_moves_by_direction_and_cycles(cx: &mut TestAppContext) {
         window.press("alt-right", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
 
-        // The cycle wraps: editor -> rail, and back.
-        window.press("alt-e", cx);
-        assert_eq!(shell.focused(cx), Panel::Rail);
+        // The targets: Alt+F the rail, Alt+E the editor, from anywhere.
         window.press("alt-f", cx);
-        assert_eq!(shell.focused(cx), Panel::Editor);
-        window.press("alt-f", cx);
-        assert_eq!(shell.focused(cx), Panel::Drawer(Side::Left));
-        // A hidden slot is skipped (hiding it focused the editor).
-        window.press("alt-l", cx);
-        assert_eq!(shell.focused(cx), Panel::Editor);
-        window.press("alt-e", cx);
         assert_eq!(shell.focused(cx), Panel::Rail);
+        window.press("alt-e", cx);
+        assert_eq!(shell.focused(cx), Panel::Editor);
         window.press("alt-e", cx);
         assert_eq!(shell.focused(cx), Panel::Editor);
         assert_eq!(shell.text(cx), "", "no chord reached the buffer");

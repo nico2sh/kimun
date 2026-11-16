@@ -601,7 +601,7 @@ fn hidden_views_do_no_work(cx: &mut TestAppContext) {
     assert!(!cx.read(|cx| list.read(cx).is_started()));
 
     // Shown, they catch up at once.
-    leader(&started, "ol", cx);
+    leader(&started, "oo", cx);
     assert_eq!(outline_rows(&started, cx), ["Beta"]);
 }
 
@@ -631,11 +631,11 @@ fn outline_lists_nested_headings_and_enter_jumps(cx: &mut TestAppContext) {
     assert!(editor_focused(&started, cx));
 
     // End and Enter; then a click on a row jumps at once (C1).
-    leader(&started, "ol", cx);
+    leader(&started, "oo", cx);
     press(&started, "end", cx);
     press(&started, "enter", cx);
     assert_eq!(caret(&started, cx).0, 8, "on `# Other`");
-    leader(&started, "ol", cx);
+    leader(&started, "oo", cx);
     click(
         &started,
         heading_row_id(&outline_entry(&started, "Second", cx)),
@@ -749,7 +749,7 @@ fn the_copy_chord_copies_the_selected_row(cx: &mut TestAppContext) {
     assert_eq!(copied, selected);
     assert_eq!(started.flash(cx).as_deref(), Some("path copied"));
 
-    leader(&started, "ol", cx);
+    leader(&started, "oo", cx);
     press(&started, "ctrl-c", cx);
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(copied.as_deref(), Some("Alpha notes"));
@@ -762,7 +762,7 @@ fn escape_returns_to_the_editor(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, LINKED, "alpha.md");
-    leader(&started, "ol", cx);
+    leader(&started, "oo", cx);
     assert!(list_focused(&started, &outline_list(&started, cx), cx));
     press(&started, "escape", cx);
     assert!(editor_focused(&started, cx));

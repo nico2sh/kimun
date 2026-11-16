@@ -3,19 +3,18 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::Paragraph;
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
-use crate::components::clickable::list_index_at;
 use crate::components::dialogs::ValidationState;
+use crate::components::dialogs::directory_picker::{DirectoryPicker, PickerEvent};
 use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
-use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::logic::file_ops;
 use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
@@ -27,10 +26,9 @@ use crate::settings::themes::Theme;
 /// Modal dialog that lets the user move a note or directory to a different
 /// directory inside the vault.
 ///
-/// A background task loads all vault directories asynchronously.  As the user
-/// types a filter query, a second background task runs nucleo fuzzy matching
-/// and sends the ranked results back to the UI thread via a `std::sync::mpsc`
-/// channel that is polled at the start of every `render()` call.
+/// The destination list is a [`DirectoryPicker`]; a background task loads the
+/// vault's directories and the dialog checks the highlighted destination for
+/// a name clash.
 pub struct MoveDialog {
     /// The vault path being moved.
     pub path: VaultPath,
@@ -38,27 +36,14 @@ pub struct MoveDialog {
     pub vault: Arc<NoteVault>,
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
-    /// Current text in the search / filter input.
-    pub search_query: SingleLineInput,
-    /// Full list of directories returned by the vault (populated once load completes).
-    pub all_dirs: Vec<VaultPath>,
-    /// Handle to the directory-load background task.
-    pub load_task: Option<JoinHandle<()>>,
-    /// Handle to the filter background task (aborted on each new keystroke).
-    pub filter_task: Option<JoinHandle<()>>,
-    /// Fuzzy-filter results; `None` means "show all dirs" (no clone needed).
-    pub filtered: Option<Vec<VaultPath>>,
-    /// Selection state for the ratatui `List` widget.
-    pub list_state: ListState,
+    /// The destination filter and list.
+    pub picker: DirectoryPicker,
     /// Result of the most-recent destination existence check.
     pub dest_validation: ValidationState,
     /// Handle to the running validation task so we can abort it on selection change.
     pub validation_task: Option<JoinHandle<()>>,
     /// Optional error message surfaced from a failed move attempt.
     pub error: Option<String>,
-    /// The destination list's inner rect (inside its border) from the last
-    /// render — where its rows are hit-tested.
-    list_rect: Rect,
     hints: HintRow,
 }
 
@@ -68,96 +53,40 @@ impl MoveDialog {
     /// Directory loading starts immediately in a background task.
     pub fn new(path: VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
         let path_display = format!("  {}", path);
-        let mut dialog = Self {
+        let dialog = Self {
             path,
             vault,
             path_display,
-            search_query: SingleLineInput::new(),
-            all_dirs: vec![],
-            load_task: None,
-            filter_task: None,
-            filtered: None,
-            list_state: ListState::default(),
+            picker: DirectoryPicker::new().bordered(),
             dest_validation: ValidationState::Idle,
             validation_task: None,
             error: None,
-            list_rect: Rect::default(),
             hints: super::confirm_hints("Move here"),
         };
         dialog.schedule_load(tx);
         dialog
     }
 
-    /// Returns the currently displayed list of directories.
-    ///
-    /// When no filter is active (`filtered` is `None`) this borrows `all_dirs`
-    /// directly — no clone required.
-    pub fn results(&self) -> &[VaultPath] {
-        self.filtered.as_deref().unwrap_or(&self.all_dirs)
-    }
-
-    // -----------------------------------------------------------------------
-    // Load helpers
-    // -----------------------------------------------------------------------
-
     /// Spawn a background task that retrieves all vault directories and sends
     /// the result as [`OverlayData::MoveDirectoriesLoaded`].
-    fn schedule_load(&mut self, tx: &AppTx) {
+    fn schedule_load(&self, tx: &AppTx) {
         let vault = Arc::clone(&self.vault);
-        let tx_clone = tx.clone();
-        let handle = tokio::spawn(async move {
-            let result =
-                tokio::task::spawn_blocking(move || file_ops::list_directories(&vault)).await;
-            if let Ok(Ok(paths)) = result {
-                tx_clone
-                    .send(AppMessage::OverlayData(OverlayData::MoveDirectoriesLoaded(
-                        paths,
-                    )))
-                    .ok();
-            }
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || file_ops::list_directories(&vault))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            tx.send(AppMessage::OverlayData(OverlayData::MoveDirectoriesLoaded(
+                result,
+            )))
+            .ok();
         });
-        self.load_task = Some(handle);
     }
 
-    // -----------------------------------------------------------------------
-    // Filter helpers
-    // -----------------------------------------------------------------------
-
-    /// Abort any in-flight filter task and schedule a new one for the current
-    /// value of `self.search_query`.  If the query is empty the full
-    /// `all_dirs` list is restored synchronously.  Otherwise the result is
-    /// sent as [`OverlayData::MoveFilterResults`].
-    fn schedule_filter(&mut self, tx: &AppTx) {
-        if let Some(handle) = self.filter_task.take() {
-            handle.abort();
-        }
-
-        if self.search_query.is_empty() {
-            self.filtered = None;
-            if self.list_state.selected().is_none() && !self.results().is_empty() {
-                self.list_state.select(Some(0));
-            }
-            return;
-        }
-
-        let query = self.search_query.value().to_string();
-        let dirs = self.all_dirs.clone();
-        let tx_clone = tx.clone();
-
-        let handle = tokio::spawn(async move {
-            let paths =
-                tokio::task::spawn_blocking(move || file_ops::filter_directories(&dirs, &query))
-                    .await
-                    .unwrap_or_default();
-
-            tx_clone
-                .send(AppMessage::OverlayData(OverlayData::MoveFilterResults(
-                    paths,
-                )))
-                .ok();
-        });
-
-        self.filter_task = Some(handle);
+    /// The directories arrived (or could not be listed).
+    pub fn on_directories(&mut self, directories: Result<Vec<VaultPath>, String>, tx: &AppTx) {
+        self.picker.set_directories(directories, &VaultPath::root());
+        self.spawn_validation(tx);
     }
 
     // -----------------------------------------------------------------------
@@ -172,11 +101,7 @@ impl MoveDialog {
             handle.abort();
         }
 
-        let Some(idx) = self.list_state.selected() else {
-            self.dest_validation = ValidationState::Idle;
-            return;
-        };
-        let Some(dest_dir) = self.results().get(idx).cloned() else {
+        let Some(dest_dir) = self.picker.highlighted().cloned() else {
             self.dest_validation = ValidationState::Idle;
             return;
         };
@@ -210,69 +135,30 @@ impl MoveDialog {
         if let Some(key) = self.hints.hit(m) {
             return self.handle_key(key, tx);
         }
-        let over_list = self.list_rect.contains(Position::new(m.column, m.row));
-        match m.kind {
-            MouseEventKind::ScrollUp if over_list => {
-                self.handle_key(KeyEvent::from(KeyCode::Up), tx);
-            }
-            MouseEventKind::ScrollDown if over_list => {
-                self.handle_key(KeyEvent::from(KeyCode::Down), tx);
-            }
-            _ => {
-                let len = self.results().len();
-                if let Some(idx) = list_index_at(m, self.list_rect, self.list_state.offset(), len)
-                    && self.list_state.selected() != Some(idx)
-                {
-                    self.list_state.select(Some(idx));
-                    self.spawn_validation(tx);
-                }
-            }
+        let before = self.picker.highlighted().cloned();
+        if let PickerEvent::Chosen(dir) = self.picker.handle_mouse(m) {
+            self.picker.select(&dir);
         }
+        self.revalidate_if_moved(before, tx);
         EventState::Consumed
     }
 
-    /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
-    /// this dialog acts on; callers should forward only key events.
+    /// The destination changed (or may have): check the new one.
+    fn revalidate_if_moved(&mut self, before: Option<VaultPath>, tx: &AppTx) {
+        if self.picker.highlighted() != before.as_ref() {
+            self.spawn_validation(tx);
+        }
+    }
+
+    /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`]: the
+    /// dialog is modal.
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
-        // List navigation — handle directly before forwarding to the text input.
-        match key.code {
-            KeyCode::Up => {
-                if let Some(idx) = self.list_state.selected() {
-                    self.list_state.select(Some(idx.saturating_sub(1)));
-                    self.spawn_validation(tx);
-                }
-                return EventState::Consumed;
-            }
-            KeyCode::Down => {
-                if !self.results().is_empty() {
-                    let next = self
-                        .list_state
-                        .selected()
-                        .map_or(0, |i| (i + 1).min(self.results().len() - 1));
-                    self.list_state.select(Some(next));
-                    self.spawn_validation(tx);
-                }
-                return EventState::Consumed;
-            }
-            _ => {}
-        }
-        // Drop Ctrl/Alt-modified chars so combos (e.g. Ctrl+K) don't leak as text.
-        if let KeyCode::Char(_) = key.code {
-            let non_shift = key.modifiers - KeyModifiers::SHIFT;
-            if !non_shift.is_empty() {
-                return EventState::Consumed;
-            }
-        }
-        match self.search_query.handle_key(&key) {
-            InputOutcome::Submit => {
-                if self.dest_validation == ValidationState::Taken {
-                    return EventState::Consumed;
-                }
-                if let Some(selected_idx) = self.list_state.selected()
-                    && selected_idx < self.results().len()
-                {
+        let before = self.picker.highlighted().cloned();
+        match self.picker.handle_key(key) {
+            PickerEvent::Chosen(dest) => {
+                if self.dest_validation != ValidationState::Taken {
                     let from = self.path.clone();
-                    let new_path = file_ops::move_candidate(&from, &self.results()[selected_idx]);
+                    let new_path = file_ops::move_candidate(&from, &dest);
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
@@ -286,20 +172,13 @@ impl MoveDialog {
                         tx2.send(msg).ok();
                     });
                 }
-                EventState::Consumed
             }
-            InputOutcome::Cancel => {
+            PickerEvent::Back => {
                 tx.send(AppMessage::CloseOverlay).ok();
-                EventState::Consumed
             }
-            InputOutcome::Changed => {
-                self.schedule_filter(tx);
-                self.dest_validation = ValidationState::Idle;
-                EventState::Consumed
-            }
-            InputOutcome::Consumed => EventState::Consumed,
-            InputOutcome::NotConsumed => EventState::NotConsumed,
+            PickerEvent::None => self.revalidate_if_moved(before, tx),
         }
+        EventState::Consumed
     }
 }
 
@@ -332,11 +211,10 @@ impl Component for MoveDialog {
         // Row 1: source path value
         // Row 2: spacer
         // Row 3: "DESTINATION" label (muted)
-        // Row 4: search input field (height 3, bordered)
-        // Row 5: directory list (fills available space)
-        // Row 6: validation status
-        // Row 7: hint line
-        // Row 8 (optional): error line
+        // Row 4: destination filter and directory list (fills available space)
+        // Row 5: validation status
+        // Row 6: hint line
+        // Row 7 (optional): error line
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -345,11 +223,10 @@ impl Component for MoveDialog {
                 Constraint::Length(1), // 1: source path
                 Constraint::Length(1), // 2: spacer
                 Constraint::Length(1), // 3: "DESTINATION" label
-                Constraint::Length(3), // 4: search input (bordered box)
-                Constraint::Min(3),    // 5: directory list
-                Constraint::Length(1), // 6: validation status
-                Constraint::Length(1), // 7: hint line
-                Constraint::Length(if self.error.is_some() { 1 } else { 0 }), // 8: error
+                Constraint::Min(6),    // 4: filter + list
+                Constraint::Length(1), // 5: validation status
+                Constraint::Length(1), // 6: hint line
+                Constraint::Length(if self.error.is_some() { 1 } else { 0 }), // 7: error
             ])
             .split(inner);
 
@@ -370,82 +247,20 @@ impl Component for MoveDialog {
             rows[3],
         );
 
-        // Row 4: search input with cursor indicator.
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(gray))
-            .style(Style::default().bg(bg));
-        let input_inner = input_block.inner(rows[4]);
-        f.render_widget(input_block, rows[4]);
-        self.search_query
-            .render(f, input_inner, Style::default().fg(fg).bg(bg), 0, true);
+        // Row 4: destination filter and list.
+        self.picker.render(f, rows[4], theme);
 
-        // Row 5: directory list (or loading placeholder).
-        let list_items: Vec<ListItem> = if self.results().is_empty() {
-            if self.load_task.is_some() {
-                vec![ListItem::new("  (loading...)").style(Style::default().fg(gray).bg(bg))]
-            } else {
-                vec![ListItem::new("  (no matches)").style(Style::default().fg(gray).bg(bg))]
-            }
-        } else {
-            self.results()
-                .iter()
-                .map(|p| {
-                    let display = if *p == VaultPath::root() {
-                        "  / (vault root)".to_string()
-                    } else {
-                        format!("  {}", p)
-                    };
-                    ListItem::new(display).style(Style::default().fg(fg).bg(bg))
-                })
-                .collect()
-        };
+        // Row 5: validation status.
+        super::render_validation_status(f, rows[5], self.dest_validation, theme);
 
-        let list_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(gray))
-            .style(Style::default().bg(bg));
-
-        // Rows are hit-tested inside the block actually drawn.
-        self.list_rect = list_block.inner(rows[5]);
-        let list = List::new(list_items)
-            .block(list_block)
-            .highlight_style(
-                Style::default()
-                    .bg(theme.selection_bg.to_ratatui())
-                    .fg(theme.selection_fg.to_ratatui())
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-
-        f.render_stateful_widget(list, rows[5], &mut self.list_state);
-
-        // Row 6: validation status.
-        let (status_text, status_style) = match self.dest_validation {
-            ValidationState::Idle => ("", Style::default().bg(bg)),
-            ValidationState::Pending => ("  Checking...", Style::default().fg(gray).bg(bg)),
-            ValidationState::Available => (
-                "  Available",
-                Style::default().fg(theme.green.to_ratatui()).bg(bg),
-            ),
-            ValidationState::Taken => (
-                "  Already exists",
-                Style::default().fg(theme.red.to_ratatui()).bg(bg),
-            ),
-        };
-        f.render_widget(Paragraph::new(status_text).style(status_style), rows[6]);
-
-        // Row 7: hint line.  Dim Enter when there's no valid selection.
+        // Row 6: hint line.  Dim Enter when there's no valid selection.
         // Enter moves unless the destination is Taken — also while the check
         // is still Idle/Pending — so the chip must too.
-        let enter_acts = self.dest_validation != ValidationState::Taken
-            && self
-                .list_state
-                .selected()
-                .is_some_and(|i| i < self.results().len());
+        let enter_acts =
+            self.dest_validation != ValidationState::Taken && self.picker.highlighted().is_some();
         super::render_confirm_hints(
             f,
-            rows[7],
+            rows[6],
             &mut self.hints,
             self.dest_validation == ValidationState::Available,
             enter_acts,
@@ -453,9 +268,9 @@ impl Component for MoveDialog {
             theme,
         );
 
-        // Row 8 (optional): error message.
+        // Row 7 (optional): error message.
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[8], msg, theme);
+            super::render_error_row(f, rows[7], msg, theme);
         }
     }
 }
@@ -480,17 +295,9 @@ mod tests {
         fn _check_error_field(d: &MoveDialog) -> Option<&String> {
             d.error.as_ref()
         }
-        // Verify the `search_query` field exists and exposes its value as `&str`.
-        fn _check_search_query(d: &MoveDialog) -> &str {
-            d.search_query.value()
-        }
-        // Verify `results()` accessor returns a slice.
-        fn _check_results(d: &MoveDialog) -> &[VaultPath] {
-            d.results()
-        }
-        // Verify `list_state` field is `ListState`.
-        fn _check_list_state(d: &mut MoveDialog) -> &mut ListState {
-            &mut d.list_state
+        // Verify the picker exposes the highlighted destination.
+        fn _check_highlighted(d: &MoveDialog) -> Option<&VaultPath> {
+            d.picker.highlighted()
         }
     }
 
@@ -498,7 +305,7 @@ mod tests {
     /// `EventState::Consumed`, without requiring a real vault.
     #[test]
     fn esc_sends_close_dialog() {
-        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -533,7 +340,7 @@ mod tests {
         });
     }
 
-    /// A new `MoveDialog` must start with an empty `search_query` and no error.
+    /// A new `MoveDialog` must start with no error and nothing highlighted.
     ///
     /// NOTE: gated `#[ignore]` because constructing `NoteVault` requires a
     /// real SQLite database on disk.  Run explicitly with:
@@ -561,10 +368,8 @@ mod tests {
         let path = VaultPath::new("notes/projects/kimun.md");
         let dialog = MoveDialog::new(path, vault, &tx);
 
-        assert!(dialog.search_query.is_empty());
         assert!(dialog.error.is_none());
-        // Directory load is async; results may or may not be populated yet.
-        // Assert the invariant that holds regardless: filtered starts as None.
-        assert!(dialog.filtered.is_none());
+        // Directory load is async: nothing is highlighted until it lands.
+        assert!(dialog.picker.highlighted().is_none());
     }
 }
