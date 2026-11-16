@@ -183,10 +183,15 @@ impl DirectoryChoice {
         }
     }
 
-    /// Enter: choose the highlighted folder.
-    pub(crate) fn choose(&mut self, cx: &mut Context<Self>) {
-        if let Some(dir) = self.highlighted_now() {
-            cx.emit(DirectoryChoiceEvent::Chosen(dir));
+    /// Enter: choose the highlighted folder. `false` when there is none
+    /// (still loading, nothing matches, the walk failed): nothing was chosen.
+    pub(crate) fn choose(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.highlighted_now() {
+            Some(dir) => {
+                cx.emit(DirectoryChoiceEvent::Chosen(dir));
+                true
+            }
+            None => false,
         }
     }
 
