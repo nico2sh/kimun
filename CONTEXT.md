@@ -259,7 +259,7 @@ What a fired leader leaf means — open an **Overlay**, reveal a **drawer view**
 _Avoid_: command (collides with **Vim command**), intent (the classifier's **Intent**), action (the leaf itself, `LeaderAction`), dispatch.
 
 **Follow target**:
-What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note, with its kind — wikilink, markdown link or image — which decides its **link form**) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-N or by a double-click; a single click only places the cursor.
+What following resolves to — a **link** (a note reference, an external URL, or an attachment, unresolved as written in the note, with its kind — wikilink, markdown link or image — which decides its **link form**) or a **label** (a `#tag`, whose query is run). Named for the action rather than the destination, because the destination is not known until the follow runs: only then is a link decided to be a note, a URL, or a file. Wider than **note link**, which is note→note only and excludes URLs and attachments. Reached by Ctrl-U or by a double-click; a single click only places the cursor.
 _Avoid_: link target (silent about labels), note target (a link is often not a note at all).
 
 ### App shell
@@ -498,7 +498,7 @@ A visible vault file that is not a **note** — any entry the walker finds that 
 _Avoid_: asset (the `/assets` directory is one storage location, not the kind), media (too narrow — not every attachment is media), file (every note is also a file).
 
 **Attachment view**:
-The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+N), not edit. The editor area thus shows one of two contents — the text editor for a **note**, the attachment view for an attachment.
+The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+U), not edit. The editor area thus shows one of two contents — the text editor for a **note**, the attachment view for an attachment.
 _Avoid_: attachment editor (it never edits), preview pane (names only the text half; binary attachments have none).
 
 ### Note content

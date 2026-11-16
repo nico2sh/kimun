@@ -46,7 +46,7 @@
 #   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 7
+config_version = 8
 theme = "Catppuccin Frappé"
 cache_dir = "."
 history_dir = "history"
@@ -89,7 +89,7 @@ FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
 OpenSortDialog = ["ctrl&R"]
 FileOperations = ["F2"]
-FollowLink = ["ctrl&N"]
+FollowLink = ["ctrl&U"]
 QuickNote = ["ctrl&W"]
 YankRow = ["ctrl&Y"]
 OpenSavedSearches = ["F3"]

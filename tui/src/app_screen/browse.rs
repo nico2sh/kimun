@@ -110,10 +110,13 @@ impl AppScreen for BrowseScreen {
             AppMessage::FileOp(FileOp::ShowNewNote {
                 base,
                 initial: Some(text),
-            }) => match file_ops::new_note_target(&base, &text) {
-                Ok(path) => spawn_create_and_open(self.vault.clone(), path, tx.clone()),
-                Err(reason) => tracing::warn!("cannot create note from {text:?}: {reason}"),
-            },
+            }) => {
+                // No dialog to explain a rejected name, so repair it as this
+                // screen always did.
+                let path = file_ops::new_note_target(&base, &text)
+                    .unwrap_or_else(|_| base.append(&VaultPath::note_path_from(&text)));
+                spawn_create_and_open(self.vault.clone(), path, tx.clone());
+            }
             _ => {}
         }
     }
