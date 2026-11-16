@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
@@ -215,61 +215,10 @@ impl Component for RenameDialog {
         );
 
         // Row 4: input field with cursor and validation indicator.
-        //
-        // Split horizontally: [input_area | indicator (3 cols)].
-        let input_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(1),    // input field
-                Constraint::Length(3), // validation indicator
-            ])
-            .split(rows[4]);
-
-        let input_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(gray))
-            .style(Style::default().bg(bg));
-        let input_inner = input_block.inner(input_chunks[0]);
-        f.render_widget(input_block, input_chunks[0]);
-        self.input
-            .render(f, input_inner, Style::default().fg(fg).bg(bg), 0, true);
-
-        // Validation indicator glyph, centred vertically in the 3-row area.
-        let (indicator_text, indicator_style) = match self.validation_state {
-            ValidationState::Idle => ("   ", Style::default()),
-            ValidationState::Pending => (" \u{231b} ", Style::default().fg(gray)),
-            ValidationState::Available => {
-                (" \u{2713} ", Style::default().fg(theme.green.to_ratatui()))
-            }
-            ValidationState::Taken => (" \u{2717} ", Style::default().fg(theme.red.to_ratatui())),
-        };
-        let indicator_rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(input_chunks[1]);
-        f.render_widget(
-            Paragraph::new(indicator_text).style(indicator_style.bg(bg)),
-            indicator_rows[1],
-        );
+        super::render_name_field(f, rows[4], &mut self.input, self.validation_state, theme);
 
         // Row 5: validation status text.
-        let (status_text, status_style) = match self.validation_state {
-            ValidationState::Idle => ("", Style::default()),
-            ValidationState::Pending => ("  Checking...", Style::default().fg(gray).bg(bg)),
-            ValidationState::Available => (
-                "  Available",
-                Style::default().fg(theme.green.to_ratatui()).bg(bg),
-            ),
-            ValidationState::Taken => (
-                "  Already exists",
-                Style::default().fg(theme.red.to_ratatui()).bg(bg),
-            ),
-        };
-        f.render_widget(Paragraph::new(status_text).style(status_style), rows[5]);
+        super::render_validation_status(f, rows[5], self.validation_state, theme);
 
         // Row 7: hint.  Dim the Enter part unless rename is available.
         super::render_confirm_hints(

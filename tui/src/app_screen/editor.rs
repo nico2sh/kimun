@@ -39,6 +39,7 @@ use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::logic::editor::request::EditorRequest;
+use crate::logic::file_ops::{self, NewEntryKind};
 use crate::logic::leader_route::{
     self, AskStep, LayoutStep, LeaderJob, LeaderRoute, RouteFacts, jobs,
 };
@@ -895,6 +896,33 @@ impl EditorScreen {
         }
     }
 
+    /// The directory a new note or directory goes into: the one FILES shows
+    /// while it is open, else the open note's directory, else the root.
+    fn new_entry_base(&self) -> VaultPath {
+        let browsed = self
+            .drawer_open_on(DrawerView::Files)
+            .then(|| self.panels.sidebar().current_dir());
+        let note = self.session.path();
+        file_ops::new_entry_base(browsed, (!note.is_root_or_empty()).then_some(note))
+    }
+
+    /// Open the new-note dialog on [`Self::new_entry_base`].
+    fn request_new_note(&self, initial: Option<String>, tx: &AppTx) {
+        tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
+            base: self.new_entry_base(),
+            initial,
+        }))
+        .ok();
+    }
+
+    /// Open the new-directory dialog on [`Self::new_entry_base`].
+    fn request_new_directory(&self, tx: &AppTx) {
+        tx.send(AppMessage::FileOp(FileOp::ShowNewDirectory {
+            base: self.new_entry_base(),
+        }))
+        .ok();
+    }
+
     fn run_op(&mut self, op: EditorOp, tx: &AppTx) {
         match op {
             EditorOp::ToggleDrawer => self.toggle_drawer(tx),
@@ -903,6 +931,8 @@ impl EditorScreen {
             EditorOp::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
+            EditorOp::NewNote => self.request_new_note(None, tx),
+            EditorOp::NewDirectory => self.request_new_directory(tx),
             EditorOp::ShowFileOps => {
                 tx.send(AppMessage::FileOp(FileOp::ShowMenu(
                     self.session.path().clone(),
@@ -1214,6 +1244,24 @@ impl EditorScreen {
             FileOp::ShowMove(path) => {
                 self.present_overlay(Box::new(ActiveDialog::move_to(
                     path,
+                    self.vault.clone(),
+                    tx,
+                )));
+            }
+            FileOp::ShowNewNote { base, initial } => {
+                self.present_overlay(Box::new(ActiveDialog::new_entry(
+                    NewEntryKind::Note,
+                    base,
+                    initial,
+                    self.vault.clone(),
+                    tx,
+                )));
+            }
+            FileOp::ShowNewDirectory { base } => {
+                self.present_overlay(Box::new(ActiveDialog::new_entry(
+                    NewEntryKind::Directory,
+                    base,
+                    None,
                     self.vault.clone(),
                     tx,
                 )));
@@ -1838,7 +1886,7 @@ impl EditorScreen {
     /// asks and lets the answer decide.
     fn follow_link_at_cursor(&mut self, tx: &AppTx) -> bool {
         use crate::logic::editor::claim::FollowTarget;
-        // In the attachment view, FollowLink (Ctrl+N) opens the attachment with
+        // In the attachment view, FollowLink (Ctrl+U) opens the attachment with
         // the OS default program rather than following a link (there is none).
         if self.panels.is_showing_attachment() {
             self.open_attachment_externally(tx);
@@ -1934,14 +1982,8 @@ impl EditorScreen {
                 self.open_drawer_view(DrawerView::Links, tx);
                 self.panels.links_mut().show_tab(tab, tx);
             }
-            LeaderRoute::NewNote => {
-                // The FILES filter doubles as the create field (typing a new
-                // name offers "Create: …"); the telescope picker (08) gives
-                // this a dedicated door.
-                self.open_drawer_view(DrawerView::Files, tx);
-                self.footer
-                    .flash("type a name — Enter creates".to_string(), tx);
-            }
+            LeaderRoute::NewNote => self.request_new_note(None, tx),
+            LeaderRoute::NewDirectory => self.request_new_directory(tx),
             LeaderRoute::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }

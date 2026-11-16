@@ -5,6 +5,7 @@ pub use help_dialog::HelpDialog;
 pub use info_dialog::InfoDialog;
 pub use modal_shell::ModalShell;
 pub use move_dialog::MoveDialog;
+pub use new_entry_dialog::NewEntryDialog;
 pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use properties_dialog::PropertiesDialog;
 pub use quick_note_modal::QuickNoteModal;
@@ -99,6 +100,7 @@ pub mod help_dialog;
 pub mod info_dialog;
 pub mod modal_shell;
 pub mod move_dialog;
+pub mod new_entry_dialog;
 pub mod pinned_notes_dialog;
 pub mod properties_dialog;
 pub mod quick_note_modal;
@@ -115,6 +117,7 @@ pub enum ActiveDialog {
     Rename(RenameDialog),
     Move(MoveDialog),
     CreateNote(CreateNoteDialog),
+    NewEntry(NewEntryDialog),
     Help(HelpDialog),
     QuickNote(QuickNoteModal),
     WorkspaceSwitcher(WorkspaceSwitcherModal),
@@ -136,6 +139,7 @@ impl ActiveDialog {
             ActiveDialog::Rename(d) => d,
             ActiveDialog::Move(d) => d,
             ActiveDialog::CreateNote(d) => d,
+            ActiveDialog::NewEntry(d) => d,
             ActiveDialog::Help(d) => d,
             ActiveDialog::QuickNote(d) => d,
             ActiveDialog::WorkspaceSwitcher(d) => d,
@@ -280,6 +284,18 @@ impl ActiveDialog {
         ActiveDialog::Rename(RenameDialog::new(path, vault))
     }
 
+    /// The new note / new directory dialog for names typed into `base`,
+    /// with `initial` typed in already.
+    pub fn new_entry(
+        kind: crate::logic::file_ops::NewEntryKind,
+        base: kimun_core::nfs::VaultPath,
+        initial: Option<String>,
+        vault: Arc<NoteVault>,
+        tx: &AppTx,
+    ) -> Self {
+        ActiveDialog::NewEntry(NewEntryDialog::new(kind, base, initial, vault, tx))
+    }
+
     pub fn move_to(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
         ActiveDialog::Move(MoveDialog::new(path, vault, tx))
     }
@@ -321,6 +337,12 @@ impl Overlay for ActiveDialog {
                         ValidationState::Taken
                     };
                     d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::NewEntryValidation { target, available } => {
+                if let ActiveDialog::NewEntry(d) = self {
+                    d.on_validation(target, *available);
                 }
                 OverlayMsg::Consumed
             }
@@ -437,6 +459,81 @@ pub(super) fn render_separator(f: &mut Frame, rect: Rect, gray: Color, bg: Color
         .border_style(Style::default().fg(gray))
         .style(Style::default().bg(bg))
         .render(rect, f.buffer_mut());
+}
+
+/// The bordered name input with the validation glyph beside it (⏳ / ✓ / ✗),
+/// across the 3 rows of `rect`. The shape the rename and new-entry dialogs
+/// share.
+pub(super) fn render_name_field(
+    f: &mut Frame,
+    rect: Rect,
+    input: &mut crate::components::single_line_input::SingleLineInput,
+    state: ValidationState,
+    theme: &Theme,
+) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    let bg = theme.bg_panel.to_ratatui();
+    let fg = theme.fg.to_ratatui();
+    let gray = theme.gray.to_ratatui();
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(1),    // input field
+            Constraint::Length(3), // validation indicator
+        ])
+        .split(rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(gray))
+        .style(Style::default().bg(bg));
+    let inner = block.inner(chunks[0]);
+    f.render_widget(block, chunks[0]);
+    input.render(f, inner, Style::default().fg(fg).bg(bg), 0, true);
+
+    let (glyph, style) = match state {
+        ValidationState::Idle => ("   ", Style::default()),
+        ValidationState::Pending => (" \u{231b} ", Style::default().fg(gray)),
+        ValidationState::Available => (" \u{2713} ", Style::default().fg(theme.green.to_ratatui())),
+        ValidationState::Taken => (" \u{2717} ", Style::default().fg(theme.red.to_ratatui())),
+    };
+    let glyph_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(chunks[1]);
+    f.render_widget(Paragraph::new(glyph).style(style.bg(bg)), glyph_rows[1]);
+}
+
+/// The one-line status under a name input: `Checking...`, `Available` or
+/// `Already exists` (nothing while idle).
+pub(super) fn render_validation_status(
+    f: &mut Frame,
+    rect: Rect,
+    state: ValidationState,
+    theme: &Theme,
+) {
+    let bg = theme.bg_panel.to_ratatui();
+    let (text, style) = match state {
+        ValidationState::Idle => ("", Style::default().bg(bg)),
+        ValidationState::Pending => (
+            "  Checking...",
+            Style::default().fg(theme.gray.to_ratatui()).bg(bg),
+        ),
+        ValidationState::Available => (
+            "  Available",
+            Style::default().fg(theme.green.to_ratatui()).bg(bg),
+        ),
+        ValidationState::Taken => (
+            "  Already exists",
+            Style::default().fg(theme.red.to_ratatui()).bg(bg),
+        ),
+    };
+    f.render_widget(Paragraph::new(text).style(style), rect);
 }
 
 /// Renders `  Error: {msg}` in the theme's error color on the panel background.

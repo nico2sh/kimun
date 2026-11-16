@@ -25,7 +25,7 @@ use crate::components::sortable::{
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::logic::file_ops;
-use crate::logic::message::{AppMessage, AppTx, OverlayData, redraw_callback};
+use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData, redraw_callback};
 use crate::logic::pickers::{PickerOpen, picker_open};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
@@ -350,26 +350,26 @@ impl NoteBrowserModal {
         }
     }
 
-    /// Open the engine's selected row: create-then-open for a `CreateNote`,
-    /// or open directly for an existing `Note`. Emits only `OpenPath`; the
-    /// editor's `OpenPath` handler closes this overlay (restoring focus to the
-    /// editor), so no separate `CloseOverlay` is sent.
+    /// Open the engine's selected row: ask for the name of a new note for a
+    /// `CreateNote` (`ShowNewNote`), or open directly for an existing `Note`
+    /// (`OpenPath`; the editor's handler closes this overlay, restoring focus
+    /// to the editor, so no separate `CloseOverlay` is sent).
     fn open_selected(&self, tx: &AppTx) {
         let Some(entry) = self.list.selected_row() else {
             return;
         };
         match picker_open(entry) {
+            // The row only offers a name: the new-note dialog (which replaces
+            // this overlay) is where a note is made on purpose. The finder
+            // lists the whole vault, so the name is relative to its root.
             PickerOpen::Create(path) => {
-                let vault = Arc::clone(&self.vault);
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    match file_ops::create_note(&vault, &path, None).await {
-                        Ok(outcome) => outcome.announce_and_open(&tx),
-                        Err(e) => {
-                            tx.send(AppMessage::OverlayData(OverlayData::Error(e))).ok();
-                        }
-                    }
-                });
+                let base = VaultPath::root();
+                let initial = file_ops::new_note_initial_text(&base, &path);
+                tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
+                    base,
+                    initial: Some(initial),
+                }))
+                .ok();
             }
             PickerOpen::Open(path) => {
                 tx.send(AppMessage::OpenPath {
@@ -1342,6 +1342,27 @@ mod tests {
         .with_row_sort();
         modal.list.poll_until_idle().await;
         (modal, tx)
+    }
+
+    /// The finder's `Create: …` row does not make the note: it asks for the
+    /// new-note dialog, with the typed name relative to the vault root.
+    #[tokio::test]
+    async fn choosing_the_create_row_asks_for_the_new_note_dialog() {
+        let (mut modal, _tx) = finder_modal("finder-create-row").await;
+        modal.list.set_query("Ideas/Fresh");
+        modal.list.poll_until_idle().await;
+        let (tx, mut rx) = unbounded_channel();
+
+        modal.open_selected(&tx);
+
+        match rx.try_recv() {
+            Ok(AppMessage::FileOp(FileOp::ShowNewNote { base, initial })) => {
+                assert_eq!(base, VaultPath::root());
+                assert_eq!(initial.as_deref(), Some("ideas/fresh"));
+            }
+            other => panic!("expected ShowNewNote, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no note was made, nothing opened");
     }
 
     fn finder_names(modal: &NoteBrowserModal) -> Vec<String> {

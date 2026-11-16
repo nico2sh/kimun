@@ -438,3 +438,61 @@ async fn create_new_note_under_a_file_is_an_error_not_a_panic() {
     );
     assert!(!vault.exists(&path).await);
 }
+
+#[tokio::test]
+async fn new_entry_kind_resolves_and_creates_each_kind() {
+    let vault = vault("new-entry-kind").await;
+    let base = VaultPath::root();
+
+    let note_path = NewEntryKind::Note.target(&base, "Ideas/One").unwrap();
+    assert_eq!(note_path, p("/ideas/one.md"));
+    let made = NewEntryKind::Note
+        .create(&vault, &note_path, Some("# One".to_string()))
+        .await
+        .unwrap();
+    assert!(matches!(&made, NewEntry::Note(o) if o.path == note_path && o.created));
+
+    let dir_path = NewEntryKind::Directory.target(&base, "Archive").unwrap();
+    assert_eq!(dir_path, p("/archive"));
+    // Content never lands in a directory.
+    let made = NewEntryKind::Directory
+        .create(&vault, &dir_path, Some("ignored".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(made, NewEntry::Directory(dir_path.clone()));
+    assert!(vault.exists(&dir_path).await);
+
+    assert!(NewEntryKind::Note.target(&base, "x/").is_err());
+    assert_eq!(NewEntryKind::Note.title(), "New note");
+    assert_eq!(NewEntryKind::Directory.field_label(), "DIRECTORY NAME");
+}
+
+#[tokio::test]
+async fn announcing_a_directory_reports_created_without_opening() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    NewEntry::Directory(p("/archive")).announce(&tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppMessage::FileOp(FileOp::Created(path))) if path == p("/archive")
+    ));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn new_note_initial_text_is_relative_to_the_browsed_directory() {
+    assert_eq!(
+        new_note_initial_text(&p("/a"), &p("/a/sub/idea.md")),
+        "sub/idea"
+    );
+    assert_eq!(
+        new_note_initial_text(&VaultPath::root(), &p("/idea.md")),
+        "idea"
+    );
+    // Outside the browsed directory: from the vault root.
+    assert_eq!(new_note_initial_text(&p("/a"), &p("/b/idea.md")), "/b/idea");
+    // And it resolves back to the note the row offered.
+    let base = p("/a");
+    let path = p("/a/sub/idea.md");
+    let text = new_note_initial_text(&base, &path);
+    assert_eq!(new_note_target(&base, &text), Ok(path));
+}

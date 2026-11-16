@@ -153,6 +153,8 @@ impl ActionShortcuts {
             ActionShortcuts::CloseTab => "Close tab".into(),
             ActionShortcuts::NextTab => "Next tab".into(),
             ActionShortcuts::PrevTab => "Previous tab".into(),
+            ActionShortcuts::NewNote => "New note".into(),
+            ActionShortcuts::NewDirectory => "New directory".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),

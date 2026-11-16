@@ -101,6 +101,8 @@ impl Workspace {
             LeaderRoute::LinksTab(_) => None,
             LeaderRoute::NewNote if self.files.is_some() => None,
             LeaderRoute::NewNote => Some(NO_WORKSPACE),
+            // The desktop app's dialog lands with its chord (slice 3).
+            LeaderRoute::NewDirectory => Some("New directory is not in the desktop app yet"),
             LeaderRoute::Quit => None,
             LeaderRoute::NoNoteOpen => Some(NO_NOTE),
             LeaderRoute::Yank { .. } => None,
@@ -266,6 +268,7 @@ impl Workspace {
             // Blocked here (see `route_block`).
             LeaderRoute::Drawer(_)
             | LeaderRoute::NewNote
+            | LeaderRoute::NewDirectory
             | LeaderRoute::Overlay(_)
             | LeaderRoute::Soon(_) => {}
             LeaderRoute::GitStatus => self.show_git_status(cx),

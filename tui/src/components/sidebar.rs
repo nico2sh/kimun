@@ -16,7 +16,8 @@ use crate::components::file_list::FileListEntry;
 use crate::components::search_list::{KeyReaction, SearchList, SearchMouse};
 use crate::components::sortable::SortableList;
 use crate::keys::KeyBindings;
-use crate::logic::files::{Activation, FilesModel, spawn_create_and_open};
+use crate::logic::file_ops;
+use crate::logic::files::{Activation, FilesModel};
 use crate::logic::message::{AppMessage, AppTx, FileOp, SortTarget};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
@@ -201,8 +202,16 @@ impl SidebarComponent {
             return;
         };
         match activation {
+            // The row only offers a name: confirming it goes through the
+            // new-note dialog, the one place a note is made on purpose.
             Activation::Create(path) => {
-                spawn_create_and_open(Arc::clone(self.model.vault()), path, tx.clone());
+                let base = self.current_dir().clone();
+                let initial = file_ops::new_note_initial_text(&base, &path);
+                tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
+                    base,
+                    initial: Some(initial),
+                }))
+                .ok();
             }
             Activation::OpenAttachment(path) => {
                 tx.send(AppMessage::OpenAttachment(path)).ok();
@@ -631,6 +640,32 @@ mod tests {
                 .any(|e| matches!(e, AppMessage::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
         );
+    }
+
+    /// Choosing the `Create: …` row does not make the note: it asks for the
+    /// new-note dialog, with the typed name and the browsed directory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activating_the_create_row_asks_for_the_new_note_dialog() {
+        let mut sidebar = sidebar_with_notes("sidebar-create-row", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        while rx.try_recv().is_ok() {}
+
+        sidebar
+            .model
+            .list_mut()
+            .expect("a list after navigating")
+            .set_query("Brand New");
+        sidebar.activate_selected_entry(&tx);
+
+        match rx.try_recv() {
+            Ok(AppMessage::FileOp(FileOp::ShowNewNote { base, initial })) => {
+                assert_eq!(base, VaultPath::root());
+                assert_eq!(initial.as_deref(), Some("brand new"));
+            }
+            other => panic!("expected ShowNewNote, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "nothing else: no note was made");
     }
 
     /// Scroll wheel anywhere in the sidebar bounds scrolls the file list — even

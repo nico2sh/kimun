@@ -117,8 +117,10 @@ pub enum LeaderRoute {
     FindWithQuery(String),
     /// Reveal LINKS on this tab.
     LinksTab(LinksTab),
-    /// Reveal FILES, whose filter doubles as the create field, and say so.
+    /// Ask for a new note's name, in the directory being browsed.
     NewNote,
+    /// Ask for a new directory's name, in the directory being browsed.
+    NewDirectory,
     OpenJournal,
     Quit,
     OpenPreferences,
@@ -169,6 +171,7 @@ pub fn route(action: LeaderAction, facts: &RouteFacts) -> LeaderRoute {
 
         // +note
         A::NoteNew => R::NewNote,
+        A::NoteNewDirectory => R::NewDirectory,
         A::NoteDaily => R::OpenJournal,
         A::NoteFromTemplate => R::Soon("templates — coming soon"),
         A::NoteRename => note_dialog(NoteDialog::Rename),

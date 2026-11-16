@@ -28,6 +28,7 @@ pub enum LeaderAction {
     FindHeadings,
     // +note
     NoteNew,
+    NoteNewDirectory,
     NoteDaily,
     NoteFromTemplate,
     NoteRename,
@@ -114,6 +115,7 @@ impl LeaderAction {
             LeaderAction::FindSaved => "find.saved",
             LeaderAction::FindHeadings => "find.headings",
             LeaderAction::NoteNew => "note.new",
+            LeaderAction::NoteNewDirectory => "note.new_directory",
             LeaderAction::NoteDaily => "note.daily",
             LeaderAction::NoteFromTemplate => "note.template",
             LeaderAction::NoteRename => "note.rename",
@@ -173,7 +175,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 67] = [
+    pub const ALL: [LeaderAction; 68] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -188,6 +190,7 @@ impl LeaderAction {
         LeaderAction::FindSaved,
         LeaderAction::FindHeadings,
         LeaderAction::NoteNew,
+        LeaderAction::NoteNewDirectory,
         LeaderAction::NoteDaily,
         LeaderAction::NoteFromTemplate,
         LeaderAction::NoteRename,
@@ -271,6 +274,7 @@ impl LeaderAction {
             LeaderAction::FindSaved => "saved searches",
             LeaderAction::FindHeadings => "headings",
             LeaderAction::NoteNew => "new note",
+            LeaderAction::NoteNewDirectory => "new directory",
             LeaderAction::NoteDaily => "daily",
             LeaderAction::NoteFromTemplate => "from template",
             LeaderAction::NoteRename => "rename",
@@ -452,6 +456,7 @@ pub fn leader_tree() -> LeaderNode {
                     label: "+note".into(),
                     children: vec![
                         ('n', leaf("new", A::NoteNew)),
+                        ('f', leaf("new directory", A::NoteNewDirectory)),
                         ('d', leaf("daily", A::NoteDaily)),
                         ('t', leaf("from template", A::NoteFromTemplate)),
                         ('r', leaf("rename", A::NoteRename)),
