@@ -170,6 +170,21 @@ impl FileListEntry {
         }
     }
 
+    /// A `Create: …` row offers a name; when `rows` already list a note by
+    /// that name, choosing it must open that note, never ask to make it
+    /// again. That note's row stands in for it; any other row is itself.
+    /// Only the rows a listing holds are known (a note it has not listed
+    /// yet is refused by the new note dialog, which says the name is taken).
+    pub fn resolve_create_among(&self, rows: &[FileListEntry]) -> FileListEntry {
+        let Self::CreateNote { path, .. } = self else {
+            return self.clone();
+        };
+        rows.iter()
+            .find(|row| matches!(row, Self::Note { path: p, .. } if p.is_like(path)))
+            .cloned()
+            .unwrap_or_else(|| self.clone())
+    }
+
     /// What activating this row does. `Up` and directories navigate, notes
     /// open, attachments open as attachments, `Create: …` creates then opens.
     pub fn activation(&self) -> Activation {
@@ -581,6 +596,11 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
         }
     }
 
+    /// Whether [`reveal`](Self::reveal) still waits for its row.
+    pub fn reveal_pending(&self) -> bool {
+        self.pending_reveal.is_some()
+    }
+
     /// Select the row [`reveal`](Self::reveal) is waiting for as soon as the
     /// listing holds it; give up once the load has finished without it.
     fn apply_pending_reveal(&mut self) -> bool {
@@ -796,7 +816,9 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     /// What activating the selected row asks for; `None` with no listing or
     /// no selection. The host performs it.
     pub fn activate(&self) -> Option<Activation> {
-        self.core()?.selected_row().map(FileListEntry::activation)
+        let core = self.core()?;
+        core.selected_row()
+            .map(|row| row.resolve_create_among(core.rows()).activation())
     }
 
     /// The property-sort cache, for tests that pin when a fetch happens.
@@ -1205,6 +1227,75 @@ mod tests {
         let before = model.core().unwrap().is_loading();
         model.refresh_if_showing(&VaultPath::new("sub"), &tx);
         assert_eq!(model.core().unwrap().is_loading(), before);
+    }
+
+    /// A `Create: …` row for a name a listed note already has opens that
+    /// note instead: nothing asks to make it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_create_row_for_a_listed_note_opens_it() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        // `alpha` is a note of the temp vault; typing its name offers `Create:`.
+        model.core_mut().unwrap().set_query("alpha");
+        select(&mut model, |r| {
+            matches!(r, FileListEntry::CreateNote { .. })
+        });
+        assert!(
+            matches!(
+                model.activate(),
+                Some(Activation::Open(p)) if p.is_like(&VaultPath::note_path_from("alpha"))
+            ),
+            "{:?}",
+            model.activate()
+        );
+
+        // A name no note has still asks to be created.
+        model.core_mut().unwrap().set_query("brand-new");
+        select(&mut model, |r| {
+            matches!(r, FileListEntry::CreateNote { .. })
+        });
+        assert!(matches!(model.activate(), Some(Activation::Create(_))));
+    }
+
+    #[test]
+    fn resolve_create_among_leaves_other_rows_alone() {
+        let note = FileListEntry::Note {
+            path: VaultPath::note_path_from("a"),
+            title: "A".to_string(),
+            filename: "a.md".to_string(),
+            journal_date: None,
+            is_open: false,
+        };
+        let create = FileListEntry::CreateNote {
+            filename: "/a.md".to_string(),
+            path: VaultPath::new("/a.md"),
+        };
+        assert!(matches!(
+            create.resolve_create_among(std::slice::from_ref(&note)),
+            FileListEntry::Note { .. }
+        ));
+        assert!(matches!(
+            note.resolve_create_among(std::slice::from_ref(&create)),
+            FileListEntry::Note { .. }
+        ));
+        assert!(matches!(
+            create.resolve_create_among(&[]),
+            FileListEntry::CreateNote { .. }
+        ));
+        // A note of another name is not it.
+        let other = FileListEntry::Note {
+            path: VaultPath::note_path_from("zzz"),
+            title: "Z".to_string(),
+            filename: "zzz.md".to_string(),
+            journal_date: None,
+            is_open: false,
+        };
+        assert!(matches!(
+            create.resolve_create_among(&[other]),
+            FileListEntry::CreateNote { .. }
+        ));
     }
 
     /// A freshly made directory is pointed out: the listing shows its parent

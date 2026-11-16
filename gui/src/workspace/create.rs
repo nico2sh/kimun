@@ -511,7 +511,7 @@ impl Workspace {
 
     /// The note task from the dialog `mine` made its note: close that
     /// dialog — not whatever modal took its place.
-    fn close_note_dialog(
+    pub(super) fn close_note_dialog(
         &mut self,
         mine: &Option<Entity<OpStatus>>,
         window: &mut Window,
@@ -524,7 +524,7 @@ impl Workspace {
 
     /// The note task from the dialog `mine` failed: the dialog says why,
     /// or, when it is gone, a flash does.
-    fn note_failed(
+    pub(super) fn note_failed(
         &mut self,
         mine: &Option<Entity<OpStatus>>,
         error: String,
@@ -537,7 +537,12 @@ impl Workspace {
         }
     }
 
-    fn set_note_status(&self, busy: bool, error: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn set_note_status(
+        &self,
+        busy: bool,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(status) = self.note_status.as_ref() {
             status.update(cx, |status, cx| {
                 status.busy = busy;

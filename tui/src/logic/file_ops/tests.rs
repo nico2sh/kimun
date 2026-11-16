@@ -368,6 +368,14 @@ fn new_entry_base_prefers_browser_then_note_dir_then_root() {
 }
 
 #[test]
+fn new_entry_base_is_absolute_even_for_relative_paths() {
+    let note = VaultPath::new("d/e/note.md");
+    assert!(!note.is_absolute(), "precondition");
+    assert_eq!(new_entry_base(None, Some(&note)), p("/d/e"));
+    assert!(new_entry_base(Some(&VaultPath::new("rel")), None).is_absolute());
+}
+
+#[test]
 fn new_note_target_resolves_against_the_base_and_explains_refusals() {
     assert_eq!(
         new_note_target(&p("/a"), "Sub/Idea"),

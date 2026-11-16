@@ -358,7 +358,9 @@ impl NoteBrowserModal {
         let Some(entry) = self.list.selected_row() else {
             return;
         };
-        match picker_open(entry) {
+        // A `Create:` row for a note the list holds opens that note.
+        let entry = entry.resolve_create_among(self.list.rows());
+        match picker_open(&entry) {
             // The row only offers a name: the new-note dialog (which replaces
             // this overlay) is where a note is made on purpose. The finder
             // lists the whole vault, so the name is relative to its root.

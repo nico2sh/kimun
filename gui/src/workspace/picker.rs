@@ -58,7 +58,7 @@ use gpui_kit::{
 use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
-use kimun_notes::logic::file_ops;
+use kimun_notes::logic::file_ops::{self, NewEntryKind};
 use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::list::{Filter, ListCore, ListRow, ListSetup, RowSource};
@@ -78,7 +78,6 @@ use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, 
 use super::modal::{self, ModalKind, Slot};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
-use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -172,6 +171,15 @@ pub(crate) trait PickerRow: ListRow + Clone + 'static {
     fn preview_path(&self) -> Option<VaultPath> {
         None
     }
+    /// The row choosing resolves to among the picker's rows: a `Create:`
+    /// row for a name a listed note has is that note's row (it opens, never
+    /// asks to be made again). Every other row is itself.
+    fn resolved_among(&self, _rows: &[Self]) -> Self
+    where
+        Self: Clone,
+    {
+        self.clone()
+    }
     /// The name Delete removes the row by (a saved search; never its
     /// virtual Backlinks entry), if it can go.
     fn deletable_name(&self) -> Option<&str> {
@@ -192,6 +200,10 @@ pub(crate) trait PickerRow: ListRow + Clone + 'static {
 }
 
 impl PickerRow for FileListEntry {
+    fn resolved_among(&self, rows: &[Self]) -> Self {
+        self.resolve_create_among(rows)
+    }
+
     fn element_id(&self) -> SharedString {
         picker_row_id(self)
     }
@@ -536,9 +548,10 @@ impl<R: PickerRow> NotePicker<R> {
         if self.busy {
             return;
         }
-        let Some(row) = self.core.selected_row().cloned() else {
+        let Some(row) = self.core.selected_row() else {
             return;
         };
+        let row = row.resolved_among(self.core.rows());
         let emphasis = (!self.needles.is_empty()).then(|| self.needles.to_vec());
         let kind = self.kind;
         let creating = self
@@ -1069,8 +1082,9 @@ impl Workspace {
     }
 
     /// A picker row was chosen: open it (the picker closes first, the note
-    /// takes the keyboard), or make the `Create:` note through core and open
-    /// it once made. True when a create started: the picker waits for it.
+    /// takes the keyboard), or, for the `Create:` row, close the picker and
+    /// ask for the new note dialog holding the name it offered. Nothing is
+    /// made here, so the picker never waits: always `false`.
     pub(crate) fn picker_chose(
         &mut self,
         open: PickerOpen,
@@ -1083,7 +1097,15 @@ impl Workspace {
                 self.open_chosen(path, None, window, cx);
                 false
             }
-            PickerOpen::Create(path) => self.picker_create(path, window, cx),
+            PickerOpen::Create(path) => {
+                // The finder lists the whole vault, so the name is relative
+                // to its root.
+                self.close_modal(window, cx);
+                let base = VaultPath::root();
+                let initial = file_ops::new_note_initial_text(&base, &path);
+                self.open_new_entry(NewEntryKind::Note, base, Some(initial), window, cx);
+                false
+            }
         }
     }
 
@@ -1106,46 +1128,5 @@ impl Workspace {
         } else {
             self.files_show_dir(path, cx);
         }
-    }
-
-    /// `Create:` in the finder: core makes the note (or finds it there),
-    /// then it opens; a failure stays in the picker. Called from the picker
-    /// (which marks itself busy when this returns true), so it never
-    /// updates the picker itself before the create lands.
-    fn picker_create(
-        &mut self,
-        path: VaultPath,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let (Some(picker), Some(vault)) =
-            (self.picker.as_ref().and_then(|p| p.upgrade()), self.vault())
-        else {
-            return false;
-        };
-        if self.note_task.is_some() {
-            return false;
-        }
-        let made = tokio::spawn(async move { file_ops::create_note(&vault, &path, None).await });
-        self.note_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let made = tasks::joined(made).await;
-            this.update_in(cx, |workspace, window, cx| {
-                workspace.note_task = None;
-                match made {
-                    Ok(outcome) => {
-                        workspace.close_modal(window, cx);
-                        workspace.focus_panel(Panel::Editor, window, cx);
-                        if let Some(tx) = workspace.tx.as_ref() {
-                            outcome.announce_and_open(tx);
-                        }
-                    }
-                    Err(error) => {
-                        picker.update(cx, |picker, cx| picker.set_busy(false, Some(error), cx));
-                    }
-                }
-            })
-            .ok();
-        }));
-        true
     }
 }

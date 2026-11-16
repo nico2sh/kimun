@@ -12,6 +12,7 @@
 use gpui_kit::{App, ClipboardItem, Context, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::keys::leader::LeaderAction;
+use kimun_notes::logic::file_ops::NewEntryKind;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::leader_route::{
     self, LayoutStep, LeaderJob, LeaderRoute, NoteDialog, RouteFacts, jobs,
@@ -101,8 +102,8 @@ impl Workspace {
             LeaderRoute::LinksTab(_) => None,
             LeaderRoute::NewNote if self.files.is_some() => None,
             LeaderRoute::NewNote => Some(NO_WORKSPACE),
-            // The desktop app's dialog lands with its chord (slice 3).
-            LeaderRoute::NewDirectory => Some("New directory is not in the desktop app yet"),
+            LeaderRoute::NewDirectory if self.files.is_some() => None,
+            LeaderRoute::NewDirectory => Some(NO_WORKSPACE),
             LeaderRoute::Quit => None,
             LeaderRoute::NoNoteOpen => Some(NO_NOTE),
             LeaderRoute::Yank { .. } => None,
@@ -210,10 +211,10 @@ impl Workspace {
             }
             LeaderRoute::LinksTab(tab) => self.show_links_tab(tab, window, cx),
             LeaderRoute::NewNote if self.files.is_some() => {
-                // The FILES filter doubles as the create field: typing a
-                // name offers `Create:`.
-                self.open_file_browser(window, cx);
-                self.flash("Type a name — Enter creates", cx);
+                self.open_new_entry_here(NewEntryKind::Note, None, window, cx)
+            }
+            LeaderRoute::NewDirectory if self.files.is_some() => {
+                self.open_new_entry_here(NewEntryKind::Directory, None, window, cx)
             }
             LeaderRoute::Quit => self.request_quit(window, cx),
             LeaderRoute::Yank { text, label } => {

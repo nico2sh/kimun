@@ -195,6 +195,7 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::ask_flow::AskFlow;
+use kimun_notes::logic::file_ops::NewEntryKind;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::layout_tree::spec::ChildSpec;
@@ -625,6 +626,8 @@ pub(crate) struct Workspace {
     pub(crate) picker: Option<WeakEntity<picker::NotePicker>>,
     /// The quick note in the modal slot, while it is open ([`create`]).
     pub(crate) quick_note: Option<WeakEntity<create::QuickNoteDialog>>,
+    /// The new note / directory dialog while it is up.
+    pub(crate) new_entry: Option<WeakEntity<new_entry::NewEntryDialog>>,
     /// The progress of the create dialog's or the quick note's note.
     note_status: Option<Entity<file_dialogs::OpStatus>>,
     /// A note being made from a modal (`Create:`, the create dialog, the
@@ -872,6 +875,7 @@ impl Workspace {
             note_gone: None,
             picker: None,
             quick_note: None,
+            new_entry: None,
             note_status: None,
             note_task: None,
             properties: None,
@@ -1194,6 +1198,18 @@ impl Workspace {
             // dialog on a free path, holding the answer.
             AppMessage::FileOp(FileOp::ShowCreateWithContent { path, content }) => {
                 self.offer_saved_answer(path, content, cx)
+            }
+            // A request for the new note / directory dialog (FILES' and the
+            // finder's `Create:` rows), not a result.
+            AppMessage::FileOp(FileOp::ShowNewNote { base, initial }) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_new_entry(NewEntryKind::Note, base, initial, window, cx)
+                });
+            }
+            AppMessage::FileOp(FileOp::ShowNewDirectory { base }) => {
+                self.with_window(cx, move |workspace, window, cx| {
+                    workspace.open_new_entry(NewEntryKind::Directory, base, None, window, cx)
+                });
             }
             // A request to show the properties dialog, not a result.
             AppMessage::FileOp(FileOp::ShowProperties(path)) => {
@@ -2827,6 +2843,12 @@ impl Workspace {
             // when no view is focused. Elsewhere the chord goes on.
             ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
             ActionShortcuts::NewJournal => self.open_journal(window, cx),
+            ActionShortcuts::NewNote => {
+                self.open_new_entry_here(NewEntryKind::Note, None, window, cx)
+            }
+            ActionShortcuts::NewDirectory => {
+                self.open_new_entry_here(NewEntryKind::Directory, None, window, cx)
+            }
             ActionShortcuts::QuickNote => {
                 self.toggle_modal(ModalKind::QuickNote, Self::open_quick_note, window, cx)
             }
@@ -3775,6 +3797,7 @@ mod chevron;
 mod chrome;
 mod config;
 mod create;
+mod directory_choice;
 mod drawer_list;
 mod drop_zones;
 mod file_dialogs;
@@ -3795,6 +3818,9 @@ mod links;
 mod modal;
 mod motion;
 mod motion_box;
+mod new_entry;
+#[cfg(test)]
+mod new_entry_tests;
 mod note;
 mod note_flush;
 mod note_menu;
