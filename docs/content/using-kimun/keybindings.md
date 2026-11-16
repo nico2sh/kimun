@@ -23,8 +23,8 @@ These are the shortcuts of the terminal app. In the app, press `F1` for help and
 | Follow a link | `Ctrl+Enter` or `Ctrl+U` |
 | Today's journal | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
-| New note | `Ctrl+N` |
-| New directory | `Ctrl+B n d` (or `Alt+N` where your terminal sends it) |
+| New note or directory (menu) | `Ctrl+N` |
+| New directory | `Ctrl+B n d` |
 | Save now | `Ctrl+S` |
 | Save a search | `Ctrl+D` |
 | Saved searches | `F3` |

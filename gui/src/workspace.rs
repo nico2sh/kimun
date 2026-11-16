@@ -2822,6 +2822,7 @@ impl Workspace {
             ActionShortcuts::NewDirectory => {
                 self.open_new_entry_here(NewEntryKind::Directory, None, window, cx)
             }
+            ActionShortcuts::NewEntry => {}
             ActionShortcuts::QuickNote => {
                 self.toggle_modal(ModalKind::QuickNote, Self::open_quick_note, window, cx)
             }
