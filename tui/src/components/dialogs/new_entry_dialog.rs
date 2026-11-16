@@ -106,7 +106,7 @@ impl NewEntryDialog {
     }
 
     /// The vault's directories arrived for the directory choice.
-    pub fn on_directories(&mut self, directories: Vec<VaultPath>) {
+    pub fn on_directories(&mut self, directories: Result<Vec<VaultPath>, String>) {
         self.picker.set_directories(directories, &self.base);
     }
 
@@ -123,7 +123,7 @@ impl NewEntryDialog {
     /// the name.
     fn choose_directory(&mut self, directory: VaultPath, tx: &AppTx) {
         self.base = directory;
-        self.focus = Focus::Name;
+        self.set_focus(Focus::Name);
         self.on_input_changed(tx);
     }
 
@@ -252,7 +252,7 @@ impl NewEntryDialog {
         if self.focus == Focus::Directory {
             match self.picker.handle_key(key) {
                 PickerEvent::Chosen(dir) => self.choose_directory(dir, tx),
-                PickerEvent::Back => self.focus = Focus::Name,
+                PickerEvent::Back => self.set_focus(Focus::Name),
                 PickerEvent::None => {}
             }
             return EventState::Consumed;
@@ -281,21 +281,28 @@ impl NewEntryDialog {
 fn spawn_directory_load(vault: &Arc<NoteVault>, tx: &AppTx) {
     let (vault, tx) = (Arc::clone(vault), tx.clone());
     tokio::spawn(async move {
-        let listed = tokio::task::spawn_blocking(move || file_ops::list_directories(&vault)).await;
-        if let Ok(Ok(directories)) = listed {
-            tx.send(AppMessage::OverlayData(OverlayData::NewEntryDirectories(
-                directories,
-            )))
-            .ok();
-        }
+        let listed = tokio::task::spawn_blocking(move || file_ops::list_directories(&vault))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        tx.send(AppMessage::OverlayData(OverlayData::NewEntryDirectories(
+            listed,
+        )))
+        .ok();
     });
 }
 
 impl Component for NewEntryDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let choosing = self.focus == Focus::Directory;
-        let picker_height: u16 = if choosing { 8 } else { 0 };
-        let height = 14 + picker_height + u16::from(self.error.is_some());
+        let fixed = 14 + u16::from(self.error.is_some());
+        // The choice takes up to 8 rows, fewer on a short terminal (it needs
+        // 3: the filter line and two rows).
+        let picker_height: u16 = if choosing {
+            rect.height.saturating_sub(fixed + 2).clamp(3, 8)
+        } else {
+            0
+        };
+        let height = fixed + picker_height;
         let popup_area = super::fixed_centered_rect(58, height, rect);
         let title = format!(" {} ", self.kind.title());
         let inner = modal_chrome(
@@ -669,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn the_browsed_directory_is_the_default_choice() {
         let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/projects", None).await;
-        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        d.on_directories(Ok(dirs(&["/", "/archive", "/projects"])));
         type_text(&mut d, "idea", &tx);
         assert_eq!(d.target, Some(Ok(VaultPath::new("/projects/idea.md"))));
         // Choosing starts on it.
@@ -682,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn choosing_another_directory_moves_the_target() {
         let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/projects", None).await;
-        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        d.on_directories(Ok(dirs(&["/", "/archive", "/projects"])));
         type_text(&mut d, "sub/idea", &tx);
         assert_eq!(d.target, Some(Ok(VaultPath::new("/projects/sub/idea.md"))));
 
@@ -704,7 +711,7 @@ mod tests {
     #[tokio::test]
     async fn escape_in_the_directory_choice_goes_back_without_closing() {
         let (mut d, _vault, tx, mut rx) = dialog(NewEntryKind::Note, "/projects", None).await;
-        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        d.on_directories(Ok(dirs(&["/", "/archive", "/projects"])));
         press(&mut d, KeyCode::Tab, &tx);
         press(&mut d, KeyCode::Down, &tx);
         press(&mut d, KeyCode::Esc, &tx);
@@ -734,7 +741,7 @@ mod tests {
                 .create_directory(&VaultPath::new("/dest"))
                 .await
                 .unwrap();
-            d.on_directories(dirs(&["/", "/dest"]));
+            d.on_directories(Ok(dirs(&["/", "/dest"])));
             press(&mut d, KeyCode::Tab, &tx);
             type_text(&mut d, "dest", &tx);
             press(&mut d, KeyCode::Enter, &tx);
@@ -767,15 +774,51 @@ mod tests {
         // through the same path the dialog uses.
         super::spawn_directory_load(&vault, &_tx);
         loop {
-            if let AppMessage::OverlayData(OverlayData::NewEntryDirectories(dirs)) =
+            if let AppMessage::OverlayData(OverlayData::NewEntryDirectories(Ok(dirs))) =
                 next(&mut rx).await
                 && dirs.contains(&VaultPath::new("/found"))
             {
-                d.on_directories(dirs);
+                d.on_directories(Ok(dirs));
                 break;
             }
         }
         assert!(d.picker.highlighted().is_some());
+    }
+
+    /// On a short terminal the choice shrinks instead of squeezing the hints
+    /// and the list out: both still draw.
+    #[tokio::test]
+    async fn the_directory_choice_still_draws_on_a_short_terminal() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/projects", None).await;
+        d.on_directories(Ok(dirs(&["/", "/archive", "/projects"])));
+        press(&mut d, KeyCode::Tab, &tx);
+
+        let theme = Theme::gruvbox_dark();
+        for rows in [18, 24, 40] {
+            let mut t = Terminal::new(TestBackend::new(80, rows)).unwrap();
+            t.draw(|f| d.render(f, f.area(), &theme, true)).unwrap();
+            let buffer = t.backend().buffer();
+            for text in ["[Enter] Choose", "/projects"] {
+                assert!(
+                    crate::test_support::find_text(buffer, text).is_some(),
+                    "{text:?} missing on {rows} rows"
+                );
+            }
+        }
+    }
+
+    /// Directories that could not be listed say so in the choice.
+    #[tokio::test]
+    async fn a_failed_directory_load_shows_in_the_choice() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/", None).await;
+        d.on_directories(Err("denied".to_string()));
+        press(&mut d, KeyCode::Tab, &tx);
+        let theme = Theme::gruvbox_dark();
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        t.draw(|f| d.render(f, f.area(), &theme, true)).unwrap();
+        assert!(crate::test_support::find_text(t.backend().buffer(), "could not list").is_some());
     }
 
     #[tokio::test]

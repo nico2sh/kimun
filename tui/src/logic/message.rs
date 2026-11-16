@@ -351,7 +351,7 @@ pub enum OverlayData {
     RenameValidation { available: bool },
     /// New-entry dialog: the vault's directories have loaded (for its
     /// directory choice).
-    NewEntryDirectories(Vec<VaultPath>),
+    NewEntryDirectories(Result<Vec<VaultPath>, String>),
     /// New-entry dialog: whether `target` (the path the typed name resolved
     /// to) is free. A result for a path the input has since moved off is
     /// ignored.

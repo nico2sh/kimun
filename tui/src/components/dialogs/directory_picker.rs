@@ -35,6 +35,8 @@ pub struct DirectoryPicker {
     /// Every vault directory, once loaded.
     directories: Vec<VaultPath>,
     loaded: bool,
+    /// Why the directories could not be listed.
+    load_error: Option<String>,
     /// What the user typed to narrow the list.
     query: SingleLineInput,
     /// The rows shown: `directories` ranked against the query.
@@ -55,6 +57,7 @@ impl DirectoryPicker {
         Self {
             directories: Vec::new(),
             loaded: false,
+            load_error: None,
             query: SingleLineInput::new(),
             shown: Vec::new(),
             list_state: ListState::default(),
@@ -62,12 +65,27 @@ impl DirectoryPicker {
         }
     }
 
-    /// The directories arrived. `current` is highlighted when it is among
-    /// them.
-    pub fn set_directories(&mut self, directories: Vec<VaultPath>, current: &VaultPath) {
-        self.directories = directories;
+    /// The directories arrived (or could not be listed). The row already
+    /// highlighted stays highlighted when the user got to choosing before the
+    /// load finished; otherwise `current` is, when it is among them.
+    pub fn set_directories(
+        &mut self,
+        directories: Result<Vec<VaultPath>, String>,
+        current: &VaultPath,
+    ) {
         self.loaded = true;
-        self.refilter(Some(current));
+        match directories {
+            Ok(directories) => {
+                self.directories = directories;
+                self.load_error = None;
+            }
+            Err(reason) => self.load_error = Some(reason),
+        }
+        let keep = self
+            .highlighted()
+            .cloned()
+            .unwrap_or_else(|| current.clone());
+        self.refilter(Some(&keep));
     }
 
     /// Start a choice afresh: no filter, `current` highlighted.
@@ -89,7 +107,9 @@ impl DirectoryPicker {
             .and_then(|k| self.shown.iter().position(|d| d.is_like(k)))
             .or(if self.shown.is_empty() { None } else { Some(0) });
         self.list_state.select(at);
-        *self.list_state.offset_mut() = 0;
+        if keep.is_none() {
+            *self.list_state.offset_mut() = 0;
+        }
     }
 
     fn move_highlight(&mut self, delta: isize) {
@@ -131,6 +151,7 @@ impl DirectoryPicker {
         match m.kind {
             MouseEventKind::ScrollUp if over_list => self.move_highlight(-1),
             MouseEventKind::ScrollDown if over_list => self.move_highlight(1),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
             _ => {
                 if let Some(i) = list_index_at(
                     m,
@@ -174,10 +195,10 @@ impl DirectoryPicker {
 
         self.list_rect = rows[1];
         let items: Vec<ListItem> = if self.shown.is_empty() {
-            let text = if self.loaded {
-                "  (no matches)"
-            } else {
-                "  (loading...)"
+            let text = match (&self.load_error, self.loaded) {
+                (Some(reason), _) => format!("  (could not list directories: {reason})"),
+                (None, true) => "  (no matches)".to_string(),
+                (None, false) => "  (loading...)".to_string(),
             };
             vec![ListItem::new(text).style(Style::default().fg(gray).bg(bg))]
         } else {
@@ -222,12 +243,12 @@ mod tests {
     fn loaded() -> DirectoryPicker {
         let mut picker = DirectoryPicker::new();
         picker.set_directories(
-            vec![
+            Ok(vec![
                 VaultPath::root(),
                 p("/archive"),
                 p("/projects"),
                 p("/projects/rust"),
-            ],
+            ]),
             &p("/projects"),
         );
         picker
@@ -241,7 +262,7 @@ mod tests {
     #[test]
     fn a_directory_not_in_the_list_leaves_the_first_highlighted() {
         let mut picker = DirectoryPicker::new();
-        picker.set_directories(vec![VaultPath::root(), p("/a")], &p("/gone"));
+        picker.set_directories(Ok(vec![VaultPath::root(), p("/a")]), &p("/gone"));
         assert_eq!(picker.highlighted(), Some(&VaultPath::root()));
     }
 
@@ -318,6 +339,28 @@ mod tests {
             picker.handle_mouse(&click),
             PickerEvent::Chosen(p("/projects"))
         );
+    }
+
+    /// The load finishing while the user is already choosing must not move
+    /// the highlight they have arrowed to.
+    #[test]
+    fn a_late_load_keeps_the_highlight_the_user_moved_to() {
+        let mut picker = DirectoryPicker::new();
+        picker.set_directories(Ok(vec![VaultPath::root(), p("/a"), p("/b")]), &p("/a"));
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.highlighted(), Some(&p("/b")));
+        // The same list arrives again (a late or repeated load).
+        picker.set_directories(Ok(vec![VaultPath::root(), p("/a"), p("/b")]), &p("/a"));
+        assert_eq!(picker.highlighted(), Some(&p("/b")));
+    }
+
+    #[test]
+    fn a_failed_load_is_reported_and_chooses_nothing() {
+        let mut picker = DirectoryPicker::new();
+        picker.set_directories(Err("denied".to_string()), &VaultPath::root());
+        assert!(picker.highlighted().is_none());
+        assert_eq!(picker.handle_key(key(KeyCode::Enter)), PickerEvent::None);
+        assert_eq!(picker.load_error.as_deref(), Some("denied"));
     }
 
     #[test]
