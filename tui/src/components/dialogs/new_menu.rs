@@ -5,7 +5,7 @@
 
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
@@ -61,6 +61,11 @@ impl NewMenuDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+        // A letter with Ctrl or Alt held is a chord (the very ones this menu
+        // shows), not the menu's key: `Alt+N` is not `N`.
+        if !(key.modifiers - KeyModifiers::SHIFT).is_empty() {
+            return EventState::Consumed;
+        }
         match key.code {
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 tx.send(AppMessage::FileOp(FileOp::ShowNewNote {
@@ -83,6 +88,10 @@ impl NewMenuDialog {
         }
         EventState::Consumed
     }
+}
+
+fn width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
 }
 
 impl Component for NewMenuDialog {
@@ -146,8 +155,10 @@ impl Component for NewMenuDialog {
             ),
         ];
         for (col, (key, label, chord, code)) in cols.iter().zip(actions) {
-            // The drawn text is the target: what lights up is what clicks.
-            let text_w = (key.len() + label.len()) as u16;
+            // The drawn text, chord included, is the target: what is drawn
+            // is what clicks.
+            let chord_w = chord.map_or(0, |c| width(c) + 2);
+            let text_w = (width(key) + width(label) + chord_w) as u16;
             let r = Rect::new(col.x + 1, col.y, text_w.min(col.width.saturating_sub(1)), 1);
             crate::components::clickable::register(r);
             self.action_rects.push((r, code));
@@ -219,6 +230,28 @@ mod tests {
         assert!(rx.try_recv().is_err());
         press(&mut d, KeyCode::Esc, &tx);
         assert!(matches!(rx.try_recv(), Ok(AppMessage::CloseOverlay)));
+    }
+
+    /// The chords the menu shows are not its keys: Alt+N must not open the
+    /// note dialog, Ctrl+D must not open the directory one.
+    #[test]
+    fn a_chord_is_not_the_menus_letter() {
+        let (mut d, tx, mut rx) = menu();
+        for (code, mods) in [
+            (KeyCode::Char('n'), KeyModifiers::ALT),
+            (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL),
+        ] {
+            let state = d.handle_key(KeyEvent::new(code, mods), &tx);
+            assert_eq!(state, EventState::Consumed);
+        }
+        assert!(rx.try_recv().is_err(), "nothing opened");
+        // A shifted letter still counts.
+        d.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT), &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppMessage::FileOp(FileOp::ShowNewNote { .. }))
+        ));
     }
 
     #[test]
