@@ -857,6 +857,108 @@ impl Display for VaultPathSlice {
     }
 }
 
+impl VaultPath {
+    /// The path of a new note a user typed as `input`, relative to the
+    /// directory `base` (a leading `/` in `input` means the vault root
+    /// instead). Missing directories in `input` are fine: they are created
+    /// with the note.
+    ///
+    /// Unlike [`VaultPath::new`], which repairs bad input, this *rejects* it
+    /// with a message fit to show next to the input: every component must be
+    /// a valid name on all three filesystems, `.` and `..` are refused, and
+    /// a trailing separator is an error (that names a directory). The note
+    /// extension is added when missing, and the result is lowercased like
+    /// every vault path.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let base = VaultPath::new("/notes");
+    /// let path = VaultPath::new_note_in(&base, "Ideas/Rust").unwrap();
+    /// assert_eq!(path.to_string(), "/notes/ideas/rust.md");
+    /// assert!(VaultPath::new_note_in(&base, "bad?name").is_err());
+    /// ```
+    pub fn new_note_in(base: &VaultPath, input: &str) -> Result<VaultPath, FSError> {
+        Self::new_entry_in(base, input, true)
+    }
+
+    /// The path of a new directory a user typed as `input`, relative to
+    /// `base`, under the same rules as [`VaultPath::new_note_in`]. A trailing
+    /// separator is allowed and dropped; a name ending in the note extension
+    /// is refused, since it would name a note.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let base = VaultPath::root();
+    /// let path = VaultPath::new_directory_in(&base, "Projects/Active/").unwrap();
+    /// assert_eq!(path.to_string(), "/projects/active");
+    /// assert!(VaultPath::new_directory_in(&base, "notes.md").is_err());
+    /// ```
+    pub fn new_directory_in(base: &VaultPath, input: &str) -> Result<VaultPath, FSError> {
+        Self::new_entry_in(base, input, false)
+    }
+
+    fn new_entry_in(base: &VaultPath, input: &str, note: bool) -> Result<VaultPath, FSError> {
+        let invalid = |message: String| FSError::InvalidPath {
+            path: input.to_string(),
+            message,
+        };
+        let typed = input.trim();
+        if typed.is_empty() {
+            return Err(invalid("The name cannot be empty".to_string()));
+        }
+        if note && typed.ends_with(PATH_SEPARATOR) {
+            return Err(invalid(format!(
+                "A note name cannot end with '{PATH_SEPARATOR}'; use a new directory for that"
+            )));
+        }
+        let from_root = typed.starts_with(PATH_SEPARATOR);
+        let components: Vec<&str> = typed
+            .split(PATH_SEPARATOR)
+            .filter(|c| !c.is_empty())
+            .collect();
+        if components.is_empty() {
+            return Err(invalid("The name cannot be empty".to_string()));
+        }
+        let last = components.len() - 1;
+        let mut joined = Vec::with_capacity(components.len());
+        for (i, component) in components.iter().enumerate() {
+            if *component == "." || *component == ".." {
+                return Err(invalid(format!("'{component}' is not a valid name")));
+            }
+            // The extension is not part of the name the rules are about.
+            let stem = if note && i == last {
+                component.strip_suffix(NOTE_EXTENSION).unwrap_or(component)
+            } else {
+                component
+            };
+            if stem.is_empty() {
+                return Err(invalid("The name cannot be empty".to_string()));
+            }
+            filename::validate_filename(stem).map_err(|e| invalid(e.to_string()))?;
+            joined.push(*component);
+        }
+        let relative = joined.join(&PATH_SEPARATOR.to_string());
+        let relative = if note {
+            VaultPath::note_path_from(relative)
+        } else {
+            VaultPath::new(relative)
+        };
+        let path = if from_root {
+            VaultPath::root().append(&relative)
+        } else {
+            base.append(&relative)
+        };
+        if !note {
+            path.ensure_directory().map_err(|_| {
+                invalid(format!(
+                    "A directory name cannot end with '{NOTE_EXTENSION}'"
+                ))
+            })?;
+        }
+        Ok(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1529,5 +1631,99 @@ mod tests {
         assert!(!p("/../dup.md").is_dot_relative());
         assert!(!VaultPath::empty().is_dot_relative());
         assert!(!VaultPath::root().is_dot_relative());
+    }
+}
+
+#[cfg(test)]
+mod new_entry_tests {
+    use super::*;
+
+    fn note(base: &str, input: &str) -> Result<String, String> {
+        VaultPath::new_note_in(&VaultPath::new(base), input)
+            .map(|p| p.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    fn dir(base: &str, input: &str) -> Result<String, String> {
+        VaultPath::new_directory_in(&VaultPath::new(base), input)
+            .map(|p| p.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn note_gets_extension_lowercase_and_base() {
+        assert_eq!(note("/notes", "Ideas").unwrap(), "/notes/ideas.md");
+        assert_eq!(note("/notes", "ideas.md").unwrap(), "/notes/ideas.md");
+        assert_eq!(note("/", "Ideas").unwrap(), "/ideas.md");
+    }
+
+    #[test]
+    fn nested_input_keeps_every_directory() {
+        assert_eq!(
+            note("/notes", "Projects/Rust/Plan").unwrap(),
+            "/notes/projects/rust/plan.md"
+        );
+    }
+
+    #[test]
+    fn leading_separator_means_vault_root() {
+        assert_eq!(note("/notes", "/Top").unwrap(), "/top.md");
+        assert_eq!(dir("/notes", "/Top").unwrap(), "/top");
+    }
+
+    #[test]
+    fn note_rejects_empty_and_blank() {
+        assert!(note("/", "").is_err());
+        assert!(note("/", "   ").is_err());
+        assert!(note("/", "/").is_err());
+        assert!(note("/", ".md").is_err());
+    }
+
+    #[test]
+    fn note_rejects_trailing_separator() {
+        let err = note("/", "projects/").unwrap_err();
+        assert!(err.contains("directory"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_characters_instead_of_repairing() {
+        assert!(note("/", "bad?name").is_err());
+        assert!(note("/", "a/b:c/d").is_err());
+        assert!(note("/", "tag#1").is_err());
+        assert!(dir("/", "bad|dir").is_err());
+    }
+
+    #[test]
+    fn rejects_dot_segments() {
+        assert!(note("/a", "../escape").is_err());
+        assert!(note("/a", "./here").is_err());
+        assert!(dir("/a", "..").is_err());
+    }
+
+    #[test]
+    fn rejects_windows_reserved_names() {
+        assert!(note("/", "con").is_err());
+        assert!(note("/", "nul/inside").is_err());
+        assert!(dir("/", "AUX").is_err());
+    }
+
+    #[test]
+    fn directory_drops_trailing_separator() {
+        assert_eq!(dir("/", "Projects/Active/").unwrap(), "/projects/active");
+        assert_eq!(dir("/notes", "Sub").unwrap(), "/notes/sub");
+    }
+
+    #[test]
+    fn directory_refuses_a_note_name() {
+        let err = dir("/", "notes.md").unwrap_err();
+        assert!(err.contains(".md"), "{err}");
+    }
+
+    #[test]
+    fn error_names_the_input_as_typed() {
+        match VaultPath::new_note_in(&VaultPath::root(), "bad?") {
+            Err(FSError::InvalidPath { path, .. }) => assert_eq!(path, "bad?"),
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
     }
 }

@@ -231,6 +231,81 @@ pub async fn create_note(
     result.map_err(|e| e.to_string())
 }
 
+/// The directory a new note or directory goes into by default: the one the
+/// file browser shows, else the directory of the open note, else the vault
+/// root.
+pub fn new_entry_base(browser_dir: Option<&VaultPath>, open_note: Option<&VaultPath>) -> VaultPath {
+    if let Some(dir) = browser_dir {
+        return dir.clone();
+    }
+    if let Some(note) = open_note {
+        return note.get_parent_path().0;
+    }
+    VaultPath::root()
+}
+
+/// The note the new-note dialog would create for `input` typed while
+/// browsing `base`, or the reason `input` cannot name one. Missing
+/// directories in `input` are created with the note.
+pub fn new_note_target(base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+    VaultPath::new_note_in(base, input).map_err(|e| invalid_name_message(&e))
+}
+
+/// The directory the new-directory dialog would create for `input` typed
+/// while browsing `base`, or the reason `input` cannot name one.
+pub fn new_directory_target(base: &VaultPath, input: &str) -> Result<VaultPath, String> {
+    VaultPath::new_directory_in(base, input).map_err(|e| invalid_name_message(&e))
+}
+
+/// The reason alone, without the path core's error also names (the dialog
+/// already shows what was typed).
+fn invalid_name_message(e: &kimun_core::error::FSError) -> String {
+    match e {
+        kimun_core::error::FSError::InvalidPath { message, .. } => message.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The new-note dialog's confirm: a fresh note at `path` holding `content`
+/// (empty when `None`; the seam a template fills). Unlike [`create_note`] an
+/// existing note is an error, never loaded, so the dialog can say so and
+/// stay open.
+pub async fn create_new_note(
+    vault: &NoteVault,
+    path: &VaultPath,
+    content: Option<String>,
+) -> Result<NoteOutcome, String> {
+    vault
+        .create_note(path, content.unwrap_or_default())
+        .await
+        .map(|_| NoteOutcome {
+            path: path.clone(),
+            created: true,
+        })
+        .map_err(|e| match e {
+            kimun_core::error::VaultError::NoteExists { .. } => {
+                "A note with that name already exists".to_string()
+            }
+            other => other.to_string(),
+        })
+}
+
+/// The new-directory dialog's confirm: create the directory at `path`,
+/// reported as [`FileOp::Created`] (its parent's listing refreshes, which is
+/// where the new directory shows up).
+pub async fn create_directory(vault: &NoteVault, path: &VaultPath) -> Result<FileOp, String> {
+    vault
+        .create_directory(path)
+        .await
+        .map(|_| FileOp::Created(path.clone()))
+        .map_err(|e| match e {
+            kimun_core::error::VaultError::DirectoryExists { .. } => {
+                "A directory with that name already exists".to_string()
+            }
+            other => other.to_string(),
+        })
+}
+
 /// A timestamped note holding `text` in the inbox; returns its path. The
 /// caller reports [`FileOp::Created`] and opens it or not.
 pub async fn quick_note(vault: &NoteVault, text: &str) -> Result<VaultPath, String> {
