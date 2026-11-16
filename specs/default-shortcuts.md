@@ -25,7 +25,7 @@ Status: implemented. Applies to both frontends.
 | Action | TUI | GUI | Change |
 |---|---|---|---|
 | New note | Ctrl+N | P+N | none |
-| New directory | `Ctrl+B n f` (alias Alt+N) | P+Shift+N | TUI: the leader is the real default; Alt+N stays as an alias |
+| New directory | `Ctrl+B n d` (alias Alt+N) | P+Shift+N | TUI: the leader is the real default; Alt+N stays as an alias |
 | Save now | Ctrl+S | P+S | TUI: new |
 | Open note | Ctrl+O | P+O | none |
 | Search notes | Ctrl+K | P+K, P+Shift+F | GUI: alias added |

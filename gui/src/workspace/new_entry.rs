@@ -1,5 +1,5 @@
 //! **New note / new directory** (`NewNote`, `NewDirectory`, leader `n n` /
-//! `n f`, FILES' `+` menu and its `Create:` row): one dialog, whose kind
+//! `n d`, FILES' `+` menu and its `Create:` row): one dialog, whose kind
 //! picks the wording and what the confirm makes (`NewEntryKind`, shared with
 //! the TUI so the two cannot drift).
 //!
@@ -428,7 +428,7 @@ impl Workspace {
         file_ops::new_entry_base(browsed.as_ref(), note.as_ref())
     }
 
-    /// `NewNote` / `NewDirectory` (the chords, leader `n n` / `n f`, the
+    /// `NewNote` / `NewDirectory` (the chords, leader `n n` / `n d`, the
     /// palette, FILES' `+`): the dialog on [`Self::new_entry_base`].
     pub(crate) fn open_new_entry_here(
         &mut self,

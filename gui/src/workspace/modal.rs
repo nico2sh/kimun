@@ -88,7 +88,7 @@ pub(crate) enum ModalKind {
     QuickNote,
     /// The new note dialog (`NewNote`, leader `n n`, FILES' `+`).
     NewNote,
-    /// The new directory dialog (`NewDirectory`, leader `n f`, FILES' `+`).
+    /// The new directory dialog (`NewDirectory`, leader `n d`, FILES' `+`).
     NewDirectory,
     /// The open note's properties (with its delete confirmation stacked on
     /// it while one asks).

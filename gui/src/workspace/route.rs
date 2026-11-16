@@ -137,7 +137,7 @@ impl Workspace {
             LeaderRoute::Soon(_) => Some(SOON),
             // Leader `p`: the palette.
             LeaderRoute::Overlay(OverlayOpen::CommandPalette) => None,
-            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n d`: the
+            // Leader `f f`, `f g` / `f r`, `f s`, `f p` and `n j`: the
             // finder, the search browser, the saved searches, the pinned
             // notes, today's journal.
             LeaderRoute::Overlay(

@@ -50,7 +50,7 @@ Press `Ctrl+B`, then the keys of a group. If you wait, a panel shows your choice
 | `t` text | `t b` bold · `t i` italic · `t s` strikethrough |
 | `m` this note | `m c` copy link · `m y` copy path · `m r` rename · `m p` pin or unpin |
 | `1` to `9` | Open a pinned note |
-| `a` ask | `a a` focus composer · `a n` new conversation · `a y` copy answer · `a e` save as note · `a r` regenerate · `a o` open top source |
+| `a` ask | `a a` focus composer · `a n` new conversation · `a y` copy answer · `a s` save as note · `a r` regenerate · `a o` open top source |
 | `p` | Command palette |
 | `q` | Quit |
 | `?` | Help |

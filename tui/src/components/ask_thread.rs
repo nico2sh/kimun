@@ -534,7 +534,7 @@ impl ThreadPanel {
 
     /// Open the create-note dialog pre-filled with the selected turn saved as
     /// a note (**Saved answer**). The dialog owns validation and
-    /// the actual create call — this only supplies the path/content. Leader `a e`.
+    /// the actual create call — this only supplies the path/content. Leader `a s`.
     pub(crate) fn save_selected(&self, tx: &AppTx) {
         let Some(turn) = self.thread.selected() else {
             return;

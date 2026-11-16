@@ -329,7 +329,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // "open in sidebar" does for its search: where a query is typed.
         A::OpenQueryInSidebar => &["primary+shift+enter"],
         // The TUI's FIND toggle: here FIND is a drawer view, shown from the
-        // rail, the leader (`o q`) and the palette. Nothing acts on it.
+        // rail, the leader (`o s`) and the palette. Nothing acts on it.
         A::ToggleQueryPanel => return None,
         // Formatting lives on the palette and leader, as in the TUI.
         A::Text(_) => return None,

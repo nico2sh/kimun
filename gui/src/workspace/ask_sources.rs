@@ -388,7 +388,7 @@ impl SourcesView {
         }
     }
 
-    /// Read the source ranked `index + 1` (leader `a s`: the top one): it
+    /// Read the source ranked `index + 1` (leader `a o`: the top one): it
     /// is selected and the reader shows it, opened to Context when
     /// collapsed, at its size otherwise (the TUI's `open_reader`). Nothing
     /// for an index past the rows.

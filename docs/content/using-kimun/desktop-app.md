@@ -55,7 +55,7 @@ The first items work on the note: Properties, Rename, Move, and Delete. Press `P
 - The window shows the folder it will use. Click `Change…` to pick another one: type to filter the list, use `Up` and `Down`, and press `Enter` or click a folder. `Esc` closes the list first, then the window.
 - The window shows where the entry will go, and tells you if the name is already taken or is not allowed.
 - The `+` button in FILES opens a small menu with both choices. If you type a name in the FILES filter or in the note finder and nothing matches, pick `Create: …` to open the same window with that name filled in.
-- You can also press `Ctrl+Shift+B n n` for a note and `Ctrl+Shift+B n f` for a directory.
+- You can also press `Ctrl+Shift+B n n` for a note and `Ctrl+Shift+B n d` for a directory.
 
 ## Search
 

@@ -11,7 +11,7 @@
 //!   a timestamped note in the inbox. Enter on an empty line closes without
 //!   making anything; Enter saves and closes; Shift+Enter saves and opens
 //!   the note. Typing clears a shown error.
-//! - **Journal** (`NewJournal` chord, leader `n d`, the palette): today's
+//! - **Journal** (`NewJournal` chord, leader `n j`, the palette): today's
 //!   entry, made with its date heading the first time, opened every time.
 //!
 //! A failure stays in the dialog, which stays open; while a note is being
@@ -460,7 +460,7 @@ impl Workspace {
         }));
     }
 
-    /// The `NewJournal` chord, leader `n d`: today's journal entry, made
+    /// The `NewJournal` chord, leader `n j`: today's journal entry, made
     /// the first time, opened in the editor (which takes the keyboard).
     pub(crate) fn open_journal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(vault) = self.vault() else {
