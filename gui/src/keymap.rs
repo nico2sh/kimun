@@ -346,7 +346,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::NewNote => &["primary+n"],
         A::NewDirectory => &["primary+shift+n"],
         // The TUI's note-or-directory menu; the desktop has the two chords.
-        A::NewEntry => &[],
+        A::NewEntry => return None,
     })
 }
 
