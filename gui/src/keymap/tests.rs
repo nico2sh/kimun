@@ -215,6 +215,8 @@ fn default_tables() {
             lw("ctrl+w", A::CloseTab),
             lw("ctrl+tab", A::NextTab),
             lw("ctrl+shift+tab", A::PrevTab),
+            lw("ctrl+n", A::NewNote),
+            lw("ctrl+shift+n", A::NewDirectory),
         ]
     );
     assert_eq!(
@@ -265,6 +267,8 @@ fn default_tables() {
             lw("cmd+w", A::CloseTab),
             lw("ctrl+tab", A::NextTab),
             lw("ctrl+shift+tab", A::PrevTab),
+            lw("cmd+n", A::NewNote),
+            lw("cmd+shift+n", A::NewDirectory),
         ]
     );
 }
@@ -491,8 +495,8 @@ fn open_file_browser_is_primary_e_from_every_panel() {
 }
 
 /// Follow link is primary+Enter in the editor, under vim too (the vim engine
-/// reads no Ctrl+Enter), and nothing elsewhere. The TUI's Ctrl+N is not a
-/// GUI default. Shift+Enter stays the editor's plain newline.
+/// reads no Ctrl+Enter), and nothing elsewhere. The TUI's Ctrl+N (new note) is
+/// the GUI's `primary+n` too, never a follow. Shift+Enter stays the editor's plain newline.
 #[test]
 fn follow_link_is_primary_enter_in_the_editor() {
     let lw = Keymap::defaults(LinuxWindows);
@@ -1134,6 +1138,8 @@ fn linux_windows_resolution_table() {
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
     let new_tab = Some(A::NewTab);
+    let new_note = Some(A::NewNote);
+    let new_dir = Some(A::NewDirectory);
     let close_tab = Some(A::CloseTab);
     let next_tab = Some(A::NextTab);
     let prev_tab = Some(A::PrevTab);
@@ -1172,8 +1178,8 @@ fn linux_windows_resolution_table() {
             ),
             ("ctrl+e", [files.clone(), files.clone(), files.clone()]),
             ("ctrl+shift+e", [files.clone(), files.clone(), files]),
-            ("ctrl+n", [None, None, None]),
-            ("ctrl+shift+n", [None, None, None]),
+            ("ctrl+n", [new_note.clone(), new_note.clone(), new_note]),
+            ("ctrl+shift+n", [new_dir.clone(), new_dir.clone(), new_dir]),
             ("ctrl+enter", [follow.clone(), follow, None]),
             // Vim reads Ctrl+R (redo): the sort dialog's chord is the rail's
             // and the slots' only, so the editor keeps it, vim or not.
@@ -1248,6 +1254,8 @@ fn macos_resolution_table() {
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
     let new_tab = Some(A::NewTab);
+    let new_note = Some(A::NewNote);
+    let new_dir = Some(A::NewDirectory);
     let close_tab = Some(A::CloseTab);
     let next_tab = Some(A::NextTab);
     let prev_tab = Some(A::PrevTab);
@@ -1271,7 +1279,8 @@ fn macos_resolution_table() {
             ("cmd+t", [new_tab.clone(), new_tab.clone(), new_tab]),
             ("cmd+w", [close_tab.clone(), close_tab.clone(), close_tab]),
             ("cmd+e", [files.clone(), files.clone(), files]),
-            ("cmd+n", [None, None, None]),
+            ("cmd+n", [new_note.clone(), new_note.clone(), new_note]),
+            ("cmd+shift+n", [new_dir.clone(), new_dir.clone(), new_dir]),
             ("cmd+enter", [follow.clone(), follow, None]),
             ("cmd+alt+left", [left.clone(), left.clone(), left]),
             ("cmd+alt+right", [right.clone(), right.clone(), right]),

@@ -235,12 +235,15 @@ pub async fn create_note(
 /// The directory a new note or directory goes into by default: the one the
 /// file browser shows, else the directory of the open note, else the vault
 /// root.
+///
+/// Always absolute: a path read off the open note may be relative, and the
+/// names typed under it resolve to vault paths either way.
 pub fn new_entry_base(browser_dir: Option<&VaultPath>, open_note: Option<&VaultPath>) -> VaultPath {
     if let Some(dir) = browser_dir {
-        return dir.clone();
+        return dir.clone().absolute();
     }
     if let Some(note) = open_note {
-        return note.get_parent_path().0;
+        return note.get_parent_path().0.absolute();
     }
     VaultPath::root()
 }

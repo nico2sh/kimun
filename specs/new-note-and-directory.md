@@ -20,6 +20,7 @@ Status: draft. Applies to the TUI and the GUI.
 | New-note UI | A dedicated modal dialog with a name/path input. It shows the resolved target path live. |
 | Default target dir | The file browser's current directory. If the browser has no current directory, the open note's directory. If neither, the vault root. |
 | Directory choice | Both dialogs show the target directory (the browsed one by default) and let the user pick another: Tab moves to a filter over every vault directory (a shared `DirectoryPicker`), Enter picks, Esc goes back. The typed name is relative to the chosen directory. |
+| GUI folder choice | `Change…` beside the folder line opens the shared folder choice (a filter and a list) inside the dialog, rather than Tab: Tab keeps moving between the dialog's fields. Esc closes the list first. |
 | Name input | A vault-relative path. Missing directories are created automatically. Extension and casing are normalized by core, never hardcoded in a frontend. |
 | Existing note | An inline error ("already exists"). The dialog stays open and nothing is overwritten or opened. |
 | After note create | Open the note in the editor. The file browser reveals and selects it. |

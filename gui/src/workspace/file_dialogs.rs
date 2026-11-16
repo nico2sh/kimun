@@ -89,7 +89,11 @@ pub(super) fn error_row(status: &OpStatus, t: &Theme) -> Option<AnyElement> {
 }
 
 /// What a rename or move check says, and in which colour.
-fn hint(state: ValidationState, invalid: Option<&str>, t: &Theme) -> Option<(SharedString, Rgba)> {
+pub(super) fn hint(
+    state: ValidationState,
+    invalid: Option<&str>,
+    t: &Theme,
+) -> Option<(SharedString, Rgba)> {
     if let Some(reason) = invalid {
         return Some((SharedString::from(reason.to_string()), theme::error(t)));
     }
@@ -141,6 +145,27 @@ pub(super) fn path_line(label: &'static str, target: &VaultPath, t: &Theme) -> i
                 .truncate()
                 .child(target.to_string()),
         )
+}
+
+/// Check whether `path` is free, off the UI thread, then hand the answer to
+/// `apply` on the view (a check that fails to run counts as taken). The
+/// caller drops the returned task to cancel; `apply` itself ignores an answer
+/// for a path the view has since left. Shared by the rename, move and new
+/// entry dialogs.
+pub(super) fn check_free<V: 'static>(
+    cx: &mut Context<V>,
+    vault: Arc<NoteVault>,
+    path: VaultPath,
+    apply: impl FnOnce(&mut V, ValidationState, &mut Context<V>) + 'static,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let free = tokio::spawn(async move { file_ops::availability(&vault, &path).await }).await;
+        let state = match free {
+            Ok(free) => free.into(),
+            Err(_) => ValidationState::Taken,
+        };
+        this.update(cx, |view, cx| apply(view, state, cx)).ok();
+    })
 }
 
 /// Ask the workspace to close the open modal (unless an operation runs).
@@ -226,23 +251,18 @@ impl RenameDialog {
         match candidate {
             Ok(path) => {
                 self.state = ValidationState::Pending;
-                let vault = self.vault.clone();
                 let checked = path.clone();
-                self.check = Some(cx.spawn(async move |this, cx| {
-                    let free =
-                        tokio::spawn(async move { file_ops::availability(&vault, &checked).await })
-                            .await;
-                    this.update(cx, |dialog, cx| {
+                self.check = Some(check_free(
+                    cx,
+                    self.vault.clone(),
+                    checked,
+                    move |dialog: &mut Self, state, cx| {
                         if dialog.candidate == Some(Ok(path)) {
-                            dialog.state = match free {
-                                Ok(free) => free.into(),
-                                Err(_) => ValidationState::Taken,
-                            };
+                            dialog.state = state;
                             cx.notify();
                         }
-                    })
-                    .ok();
-                }));
+                    },
+                ));
             }
             Err(_) => self.state = ValidationState::Taken,
         }
@@ -482,23 +502,18 @@ impl MoveDialog {
         match candidate {
             Ok(path) => {
                 self.state = ValidationState::Pending;
-                let vault = self.vault.clone();
                 let checked = path.clone();
-                self.check = Some(cx.spawn(async move |this, cx| {
-                    let free =
-                        tokio::spawn(async move { file_ops::availability(&vault, &checked).await })
-                            .await;
-                    this.update(cx, |dialog, cx| {
+                self.check = Some(check_free(
+                    cx,
+                    self.vault.clone(),
+                    checked,
+                    move |dialog: &mut Self, state, cx| {
                         if dialog.candidate == Some(Ok(path)) {
-                            dialog.state = match free {
-                                Ok(free) => free.into(),
-                                Err(_) => ValidationState::Taken,
-                            };
+                            dialog.state = state;
                             cx.notify();
                         }
-                    })
-                    .ok();
-                }));
+                    },
+                ));
             }
             Err(_) => self.state = ValidationState::Taken,
         }

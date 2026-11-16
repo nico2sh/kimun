@@ -33,12 +33,14 @@ use std::sync::{Arc, Mutex};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{
     Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MovePageDown,
     MovePageUp, MoveUp,
 };
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Div, Entity, EventEmitter,
@@ -48,7 +50,9 @@ use gpui_kit::{
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel, spawn_create_and_open};
+use kimun_notes::logic::actions::ActionShortcuts;
+use kimun_notes::logic::file_ops::{self, NewEntryKind};
+use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
@@ -65,6 +69,7 @@ use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
 use super::query_field::query_field;
 use super::sort::{chip_label, sort_chip};
+use crate::keymap;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -73,6 +78,9 @@ pub(crate) const FILTER_ID: &str = "files-filter";
 pub(crate) const LIST_ID: &str = "files-list";
 pub(crate) const CRUMBS_ID: &str = "files-breadcrumb";
 pub(crate) const FILES_SORT_ID: &str = "files-sort";
+pub(crate) const FILES_NEW_ID: &str = "files-new";
+pub(crate) const FILES_NEW_NOTE_ID: &str = "files-new-note";
+pub(crate) const FILES_NEW_DIRECTORY_ID: &str = "files-new-directory";
 
 /// A note row's height, in rems: two lines of small text and their gap
 /// (a title over its filename). Every FILES row has it (the list is
@@ -129,9 +137,12 @@ pub(crate) const ICONS: [IconName; 7] = [
 pub(crate) enum FilesEvent {
     /// Open this note in the editor and give it the keyboard.
     Open(VaultPath),
-    /// A `Create:` row made this note; it opens when core has it: give the
-    /// editor the keyboard.
-    Creating(VaultPath),
+    /// The `+` menu or a `Create:` row asked for the new note / directory
+    /// dialog; `initial` is the name the row offered.
+    NewEntry {
+        kind: NewEntryKind,
+        initial: Option<String>,
+    },
     /// Show this attachment in the editor Panel and give it the keyboard.
     OpenAttachment(VaultPath),
     /// Escape with an empty filter: back to the editor.
@@ -414,13 +425,26 @@ impl FilesPane {
         for (dir, generation, counts) in landed {
             self.accept_load(dir, generation, counts, cx);
         }
+        let revealing = self.model.reveal_pending();
         let polled = self.model.poll();
+        if revealing && !self.model.reveal_pending() {
+            // The entry that was pointed out has landed, selected.
+            self.reveal_selection();
+        }
         if polled.changed {
             if polled.restarted {
                 self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             }
             cx.notify();
         }
+    }
+
+    /// Point out a freshly made entry: the filter goes, the folder holding
+    /// `path` is shown and its row selected once it has loaded.
+    pub(crate) fn reveal(&mut self, path: &VaultPath, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_filter(window, cx);
+        self.model.reveal(path, &self.tx);
+        cx.notify();
     }
 
     fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -548,11 +572,16 @@ impl FilesPane {
             Activation::Navigate(dir) => self.enter_dir(dir, window, cx),
             Activation::Open(path) => cx.emit(FilesEvent::Open(path)),
             Activation::OpenAttachment(path) => cx.emit(FilesEvent::OpenAttachment(path)),
+            // The row only offers a name: confirming it goes through the
+            // new note dialog, the one place a note is made on purpose.
             Activation::Create(path) => {
-                spawn_create_and_open(self.model.vault().clone(), path.clone(), self.tx.clone());
-                // The note is made: the filter that named it has done its job.
+                let initial = file_ops::new_note_initial_text(self.model.current_dir(), &path);
+                // The filter that named it has done its job.
                 self.clear_filter(window, cx);
-                cx.emit(FilesEvent::Creating(path));
+                cx.emit(FilesEvent::NewEntry {
+                    kind: NewEntryKind::Note,
+                    initial: Some(initial),
+                });
             }
         }
     }
@@ -638,6 +667,66 @@ impl FilesPane {
                     .child(Breadcrumb::new().text_color(muted).children(items)),
             )
             .child(chip)
+            .child(self.render_new_button(cx))
+    }
+
+    /// The `+` beside the sort chip: a menu of what can be made here, each
+    /// item with its chord.
+    fn render_new_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let owner = cx.entity().downgrade();
+        Button::new(FILES_NEW_ID)
+            .icon(IconName::Plus)
+            .small()
+            .accessibility_label("New note or directory")
+            .dropdown_menu(move |menu, _, _| {
+                let item = |kind: NewEntryKind, id: &'static str, action: ActionShortcuts| {
+                    let owner = owner.clone();
+                    PopupMenuItem::element(move |_, cx| {
+                        let theme = theme::current(cx);
+                        let hint = keymap::chord_label(cx, &action);
+                        div()
+                            .id(id)
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .w_full()
+                            .child(kind.title())
+                            .children(hint.map(|chord| {
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::muted(&theme))
+                                    .child(chord)
+                            }))
+                    })
+                    .on_click(move |_, window, cx| {
+                        // After the menu has given the keyboard back, so the
+                        // dialog it opens returns it there too.
+                        let owner = owner.clone();
+                        window.defer(cx, move |_, cx| {
+                            owner
+                                .update(cx, |_, cx| {
+                                    cx.emit(FilesEvent::NewEntry {
+                                        kind,
+                                        initial: None,
+                                    })
+                                })
+                                .ok();
+                        });
+                    })
+                };
+                menu.item(item(
+                    NewEntryKind::Note,
+                    FILES_NEW_NOTE_ID,
+                    ActionShortcuts::NewNote,
+                ))
+                .item(item(
+                    NewEntryKind::Directory,
+                    FILES_NEW_DIRECTORY_ID,
+                    ActionShortcuts::NewDirectory,
+                ))
+            })
     }
 
     fn render_filter(&self, cx: &gpui_kit::App) -> impl IntoElement {
@@ -1201,7 +1290,9 @@ impl Workspace {
                 self.focus_panel(Panel::Editor, window, cx);
                 self.open_note(path.clone(), cx);
             }
-            FilesEvent::Creating(_) => self.focus_panel(Panel::Editor, window, cx),
+            FilesEvent::NewEntry { kind, initial } => {
+                self.open_new_entry_here(*kind, initial.clone(), window, cx)
+            }
             FilesEvent::OpenAttachment(path) => {
                 self.focus_panel(Panel::Editor, window, cx);
                 self.open_attachment(path, cx);
@@ -1231,6 +1322,19 @@ impl Workspace {
     pub(super) fn files_file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         if let Some(files) = self.files.as_ref() {
             files.update(cx, |pane, cx| pane.file_op(op, cx));
+        }
+        // A new directory opens nothing, so with FILES showing it is pointed
+        // out: its folder shown, its row selected.
+        if let FileOp::Created(path) = op
+            && !path.is_note()
+            && self.is_shown(DrawerView::Files)
+        {
+            let path = path.clone();
+            self.with_window(cx, move |workspace, window, cx| {
+                if let Some(files) = workspace.files.as_ref() {
+                    files.update(cx, |pane, cx| pane.reveal(&path, window, cx));
+                }
+            });
         }
     }
 
