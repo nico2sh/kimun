@@ -461,6 +461,16 @@ pub fn list_directories(vault: &NoteVault) -> Result<Vec<VaultPath>, String> {
     Ok(paths)
 }
 
+/// How a directory is named in a chooser: the root reads as the vault root.
+/// Each frontend adds its own padding.
+pub fn directory_name(dir: &VaultPath) -> String {
+    if dir.is_root_or_empty() {
+        "/ (vault root)".to_string()
+    } else {
+        dir.to_string()
+    }
+}
+
 #[derive(Clone)]
 struct DirRow(String);
 

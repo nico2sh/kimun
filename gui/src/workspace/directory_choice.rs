@@ -43,11 +43,7 @@ pub(crate) enum DirectoryChoiceEvent {
 
 /// A folder as the list shows it.
 pub(crate) fn directory_label(dir: &VaultPath) -> SharedString {
-    if dir.is_root_or_empty() {
-        "/ (vault root)".into()
-    } else {
-        dir.to_string().into()
-    }
+    file_ops::directory_name(dir).into()
 }
 
 pub(crate) struct DirectoryChoice {

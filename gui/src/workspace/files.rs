@@ -678,6 +678,7 @@ impl FilesPane {
             .icon(IconName::Plus)
             .small()
             .accessibility_label("New note or directory")
+            .tooltip("New…")
             .dropdown_menu(move |menu, _, _| {
                 let item = |kind: NewEntryKind, id: &'static str, action: ActionShortcuts| {
                     let owner = owner.clone();
@@ -777,7 +778,8 @@ impl FilesPane {
     }
 
     /// What the list area says when it has no row to show.
-    fn render_note(&self, text: &'static str, cx: &gpui_kit::App) -> impl IntoElement {
+    fn render_note(&self, text: impl Into<SharedString>, cx: &gpui_kit::App) -> impl IntoElement {
+        let text: SharedString = text.into();
         div()
             .px_3()
             .py_2()
@@ -1197,8 +1199,11 @@ impl Render for FilesPane {
         } else if self.model.is_empty() || loading {
             self.render_note("Loading…", cx).into_any_element()
         } else {
-            self.render_note("This folder is empty", cx)
-                .into_any_element()
+            let hint = match keymap::chord_label(cx, &ActionShortcuts::NewNote) {
+                Some(chord) => format!("This folder is empty. {chord} makes a note."),
+                None => "This folder is empty. Use + to make a note.".to_string(),
+            };
+            self.render_note(hint, cx).into_any_element()
         };
         div()
             .id(FILES_ID)

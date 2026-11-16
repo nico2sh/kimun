@@ -499,7 +499,7 @@ fn move_chords_on_a_zoomed_editor_flash_and_move_nothing(cx: &mut TestAppContext
     let (_v, started) = started(cx, &rt);
     started.press(SPLIT_RIGHT, cx);
     let before = started.groups(cx);
-    started.press("ctrl-shift-m", cx);
+    started.press("alt-m", cx);
     assert_eq!(
         cx.read(|cx| started.workspace.read(cx).layout.zoomed()),
         Some(Leaf::Editor)
@@ -1025,7 +1025,7 @@ fn directional_focus_between_groups_syncs_the_window(cx: &mut TestAppContext) {
 
     for zoomed in [false, true] {
         if zoomed {
-            started.press("ctrl-shift-m", cx);
+            started.press("alt-m", cx);
             let zoom = cx.read(|cx| started.workspace.read(cx).layout.zoomed());
             assert_eq!(zoom, Some(Leaf::Editor));
         }

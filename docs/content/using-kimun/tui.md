@@ -56,7 +56,7 @@ If you wait after `Ctrl+B`, a panel shows the keys that you can press next. See 
 - Press `Ctrl+N` to make a note. Type its name and press `Enter`. The note goes in the folder that FILES shows, or in the folder of the open note. A name with slashes, such as `projects/ideas`, makes the folders for you. Start the name with `/` to begin at the top of the vault.
 - Click `[+]` in the FILES header for a small menu with both choices. It shows their keys. Press `N` for a note or `D` for a directory.
 - The dialog shows the directory under the title. Press `Tab` to choose another one: type to filter the list, use `Up` and `Down`, and press `Enter` to pick. `Tab` or `Esc` takes you back to the name.
-- Press `Alt+N` to make a directory. It works the same way. If your terminal does not send `Alt+N`, use `Ctrl+B n f`.
+- Press `Ctrl+B n f` to make a directory. It works the same way. `Alt+N` does the same where your terminal sends it.
 - The dialog shows where the entry will go and tells you if the name is already taken or is not allowed.
 - If you type a name in the FILES filter or in `Ctrl+O` and nothing matches, pick `Create: …` to open the same dialog with that name filled in.
 

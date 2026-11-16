@@ -165,6 +165,7 @@ fn default_tables() {
             lw("ctrl+,", A::OpenPreferences),
             lw("ctrl+k", A::SearchNotes),
             lw("ctrl+shift+k", A::SearchNotes),
+            lw("ctrl+shift+f", A::SearchNotes),
             lw("ctrl+o", A::OpenNote),
             lw("ctrl+shift+o", A::OpenNote),
             lw("ctrl+j", A::NewJournal),
@@ -187,7 +188,6 @@ fn default_tables() {
             lw("f(6)", A::OpenAsk),
             lw("f(5)", A::SwitchWorkspace),
             lw("ctrl+f", A::FindInBuffer),
-            lw("ctrl+shift+f", A::FindInBuffer),
             lw("ctrl+h", A::ReplaceInBuffer),
             lw("ctrl+shift+h", A::ReplaceInBuffer),
             lw("ctrl+shift+b", A::Leader),
@@ -208,9 +208,9 @@ fn default_tables() {
             lw("alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
             lw("alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
-            lw("ctrl+shift+m", A::ToggleZoom),
+            lw("alt+m", A::ToggleZoom),
             lw("ctrl+shift+enter", A::OpenQueryInSidebar),
-            lw("ctrl+shift+a", A::ToggleRail),
+            lw("alt+a", A::ToggleRail),
             lw("ctrl+t", A::NewTab),
             lw("ctrl+w", A::CloseTab),
             lw("ctrl+tab", A::NextTab),
@@ -226,6 +226,7 @@ fn default_tables() {
             lw("f(4)", A::OpenPreferences),
             lw("cmd+,", A::OpenPreferences),
             lw("cmd+k", A::SearchNotes),
+            lw("cmd+shift+f", A::SearchNotes),
             lw("cmd+o", A::OpenNote),
             lw("cmd+j", A::NewJournal),
             lw("cmd+alt+l", A::ToggleSidebar),
@@ -260,9 +261,9 @@ fn default_tables() {
             lw("cmd+alt+shift+right", A::MoveViewToNeighbour(Dir::Right)),
             lw("cmd+alt+shift+up", A::MoveViewToNeighbour(Dir::Up)),
             lw("cmd+alt+shift+down", A::MoveViewToNeighbour(Dir::Down)),
-            lw("cmd+shift+m", A::ToggleZoom),
+            lw("cmd+alt+m", A::ToggleZoom),
             lw("cmd+shift+enter", A::OpenQueryInSidebar),
-            lw("cmd+shift+a", A::ToggleRail),
+            lw("cmd+alt+a", A::ToggleRail),
             lw("cmd+t", A::NewTab),
             lw("cmd+w", A::CloseTab),
             lw("ctrl+tab", A::NextTab),
@@ -936,18 +937,14 @@ fn layout_tree_defaults_hold_unique_chords() {
 }
 
 /// Zoom (ADR-0053) has exactly one holder of its default chord on every
-/// platform (primary+shift+M: Ctrl+Shift+M, Cmd+Shift+M), live from every
-/// panel in plain and vim mode (vim reads no Ctrl+Shift chord), with no vim
+/// platform (Alt+M, Cmd+Alt+M on macOS), live from every
+/// panel in plain and vim mode (vim reads no Alt chord), with no vim
 /// twin and no load error.
 #[test]
 fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
     for p in PLATFORMS {
         let keymap = Keymap::defaults(p);
-        let written = if p == MacOs {
-            "cmd+shift+m"
-        } else {
-            "ctrl+shift+m"
-        };
+        let written = if p == MacOs { "cmd+alt+m" } else { "alt+m" };
         let key = chord(written);
         let mine: Vec<KeyInput> = keymap
             .bindings
@@ -998,11 +995,7 @@ fn toggle_zoom_has_a_unique_default_chord_on_every_platform() {
 fn toggle_rail_has_a_unique_default_chord_on_every_platform() {
     for p in PLATFORMS {
         let keymap = Keymap::defaults(p);
-        let written = if p == MacOs {
-            "cmd+shift+a"
-        } else {
-            "ctrl+shift+a"
-        };
+        let written = if p == MacOs { "cmd+alt+a" } else { "alt+a" };
         let key = chord(written);
         let mine: Vec<KeyInput> = keymap
             .bindings
@@ -1137,6 +1130,7 @@ fn linux_windows_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let search = Some(A::SearchNotes);
     let new_tab = Some(A::NewTab);
     let new_note = Some(A::NewNote);
     let new_dir = Some(A::NewDirectory);
@@ -1158,7 +1152,7 @@ fn linux_windows_resolution_table() {
         &[
             //                 plain editor  vim editor  slot / rail
             ("ctrl+f", [find.clone(), find.clone(), None]),
-            ("ctrl+shift+f", [find.clone(), find, None]),
+            ("ctrl+shift+f", [search.clone(), search.clone(), search]),
             ("ctrl+h", [replace.clone(), replace.clone(), None]),
             ("ctrl+shift+h", [replace.clone(), replace, None]),
             ("alt+l", [toggle.clone(), toggle.clone(), toggle]),
@@ -1253,6 +1247,7 @@ fn macos_resolution_table() {
     let down = Some(A::FocusRegion(Dir::Down));
     let next = Some(A::FocusEditor);
     let prev = Some(A::FocusSidebar);
+    let search = Some(A::SearchNotes);
     let new_tab = Some(A::NewTab);
     let new_note = Some(A::NewNote);
     let new_dir = Some(A::NewDirectory);
@@ -1350,7 +1345,7 @@ fn macos_resolution_table() {
             ("ctrl+enter", [None, None, None]),
             ("cmd+h", [None, None, None]),
             ("alt+left", [None, None, None]),
-            ("cmd+shift+f", [None, None, None]),
+            ("cmd+shift+f", [search.clone(), search.clone(), search]),
         ],
     );
 }

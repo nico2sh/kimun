@@ -23,7 +23,7 @@ use super::{LayoutStore, slot_id};
 use crate::shell_tree;
 
 /// The zoom chord with the default Linux/Windows keymap.
-const ZOOM: &str = "ctrl-shift-m";
+const ZOOM: &str = "alt-m";
 
 /// One slot left of the editor holding FILES (shown) and FIND (hidden).
 fn files_over_find_hidden() -> GuiSettings {

@@ -22,7 +22,7 @@ use crate::status_row;
 use crate::test_vault::test_vault;
 
 /// The zoom chord with the default Linux/Windows keymap.
-const ZOOM: &str = "ctrl-shift-m";
+const ZOOM: &str = "alt-m";
 
 /// FILES left, the editor, OUTLINE right, at 0.2 / 0.6 / 0.2.
 fn files_editor_outline() -> GuiSettings {
@@ -412,7 +412,7 @@ fn zoom_hint_names_the_bound_chord(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert_eq!(
             window.find(status_row::ZOOM_ID).label(),
-            Some(chords("Zoomed · Ctrl+Shift+M to restore").as_str())
+            Some(chords("Zoomed · Alt+M to restore").as_str())
         );
     })
     .unwrap();
@@ -525,7 +525,7 @@ fn zoom_is_never_saved(cx: &mut TestAppContext) {
 }
 
 /// While zoomed, directional focus sees only the zoomed leaf and the rail
-/// (Ruling 10), and the panel cycle only those two.
+/// (Ruling 10).
 #[gpui_kit::test]
 fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext) {
     let shell = open_shell(
@@ -547,10 +547,8 @@ fn directional_focus_while_zoomed_only_reaches_the_rail(cx: &mut TestAppContext)
             ("alt-right", editor),
             ("alt-up", editor),
             ("alt-down", editor),
-            ("alt-e", Focus::Rail),
-            ("alt-e", editor),
             ("alt-f", Focus::Rail),
-            ("alt-f", editor),
+            ("alt-e", editor),
         ] {
             window.press(key, cx);
             window.render_frame(cx);

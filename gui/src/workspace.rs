@@ -2608,33 +2608,6 @@ impl Workspace {
             .focus_dir_in(dir, &|leaf| drawn.contains(&leaf), rail)
     }
 
-    /// `FocusEditor` / `FocusSidebar`: the next (previous) of the rail (unless
-    /// it is hidden) and the visible leaves in reading order, wrapping.
-    fn cycle_focus(&mut self, forward: bool) -> Option<Focus> {
-        // A hidden rail takes no keyboard focus (ADR-0055 §9).
-        let mut order = if self.rail_hidden {
-            Vec::new()
-        } else {
-            vec![Focus::Rail]
-        };
-        order.extend(
-            self.layout
-                .regions()
-                .into_iter()
-                .map(|(leaf, _)| leaf)
-                .filter(|leaf| self.leaf_visible(*leaf))
-                .map(Focus::Leaf),
-        );
-        let at = order.iter().position(|f| *f == self.layout.focused())?;
-        let n = order.len();
-        let next = if forward {
-            (at + 1) % n
-        } else {
-            (at + n - 1) % n
-        };
-        Some(order[next])
-    }
-
     /// The context `panel` resolves chords in; the editor's own (vim, an
     /// open find bar) when it is the editor. A query is typed there when
     /// FIND has the keyboard (the search browser, a modal, says so itself:
@@ -2924,11 +2897,14 @@ impl Workspace {
             ActionShortcuts::CloseTab => self.close_shown_tab(cx),
             ActionShortcuts::NextTab => self.step_tab(true, cx),
             ActionShortcuts::PrevTab => self.step_tab(false, cx),
-            ActionShortcuts::FocusEditor | ActionShortcuts::FocusSidebar => {
-                if let Some(next) = self.cycle_focus(*action == ActionShortcuts::FocusEditor) {
-                    self.layout.focus(next);
-                    self.apply_focus(window, cx);
-                }
+            // The targets: the editor, or the rail (hidden: nothing to focus).
+            ActionShortcuts::FocusEditor => {
+                self.layout.focus(Focus::Leaf(Leaf::Editor));
+                self.apply_focus(window, cx);
+            }
+            ActionShortcuts::FocusSidebar if !self.rail_hidden => {
+                self.layout.focus(Focus::Rail);
+                self.apply_focus(window, cx);
             }
             _ => return false,
         }

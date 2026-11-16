@@ -359,10 +359,8 @@ pub enum OverlayData {
     /// to) is free. A result for a path the input has since moved off is
     /// ignored.
     NewEntryValidation { target: VaultPath, available: bool },
-    /// Move dialog: directory list has loaded.
-    MoveDirectoriesLoaded(Vec<VaultPath>),
-    /// Move dialog: fuzzy filter results are ready.
-    MoveFilterResults(Vec<VaultPath>),
+    /// Move dialog: the directory list has loaded (or could not be listed).
+    MoveDirectoriesLoaded(Result<Vec<VaultPath>, String>),
     /// Move dialog: destination existence check result.
     MoveDestValidation { available: bool },
     /// Save-search dialog: existing saved-search names have loaded (drives

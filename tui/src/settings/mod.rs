@@ -290,6 +290,8 @@ fn default_keybindings() -> KeyBindings {
         // chords retired.
         .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyN, ActionShortcuts::NewNote)
+        // Save now, as in every editor; the leader's `w` does the same.
+        .add(KeyStrike::KeyS, ActionShortcuts::SaveNote)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)

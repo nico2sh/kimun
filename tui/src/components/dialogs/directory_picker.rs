@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::components::clickable::list_index_at;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
@@ -44,6 +44,8 @@ pub struct DirectoryPicker {
     list_state: ListState,
     /// The list's inner rect from the last render, where rows are hit.
     list_rect: Rect,
+    /// Draw the filter and the list each in a bordered box, not bare.
+    bordered: bool,
 }
 
 impl Default for DirectoryPicker {
@@ -62,6 +64,20 @@ impl DirectoryPicker {
             shown: Vec::new(),
             list_state: ListState::default(),
             list_rect: Rect::default(),
+            bordered: false,
+        }
+    }
+
+    /// Draw the filter and the list each in a bordered box.
+    pub fn bordered(mut self) -> Self {
+        self.bordered = true;
+        self
+    }
+
+    /// Highlight `dir` when it is shown.
+    pub fn select(&mut self, dir: &VaultPath) {
+        if let Some(i) = self.shown.iter().position(|d| d.is_like(dir)) {
+            self.list_state.select(Some(i));
         }
     }
 
@@ -171,29 +187,49 @@ impl DirectoryPicker {
         self.list_rect.contains(Position::new(m.column, m.row))
     }
 
-    /// Draw the filter line and the list in `rect` (at least 2 rows).
+    /// Draw the filter line and the list in `rect` (at least 2 rows, 6 when
+    /// bordered).
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let gray = theme.gray.to_ratatui();
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .constraints([
+                Constraint::Length(if self.bordered { 3 } else { 1 }),
+                Constraint::Min(1),
+            ])
             .split(rect);
+        let boxed = || {
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(gray))
+                .style(Style::default().bg(bg))
+        };
 
-        f.render_widget(
-            Paragraph::new("  >").style(Style::default().fg(gray).bg(bg)),
-            rows[0],
-        );
-        let input_rect = Rect {
-            x: rows[0].x + 4,
-            width: rows[0].width.saturating_sub(4),
-            ..rows[0]
+        let input_rect = if self.bordered {
+            let block = boxed();
+            let inner = block.inner(rows[0]);
+            f.render_widget(block, rows[0]);
+            inner
+        } else {
+            f.render_widget(
+                Paragraph::new("  >").style(Style::default().fg(gray).bg(bg)),
+                rows[0],
+            );
+            Rect {
+                x: rows[0].x + 4,
+                width: rows[0].width.saturating_sub(4),
+                ..rows[0]
+            }
         };
         self.query
             .render(f, input_rect, Style::default().fg(fg).bg(bg), 0, true);
 
-        self.list_rect = rows[1];
+        let list_block = self.bordered.then(boxed);
+        self.list_rect = list_block
+            .as_ref()
+            .map_or(rows[1], |block| block.inner(rows[1]));
         let items: Vec<ListItem> = if self.shown.is_empty() {
             let text = match (&self.load_error, self.loaded) {
                 (Some(reason), _) => format!("  (could not list directories: {reason})"),
@@ -207,7 +243,11 @@ impl DirectoryPicker {
                 .map(|d| ListItem::new(directory_label(d)).style(Style::default().fg(fg).bg(bg)))
                 .collect()
         };
-        let list = List::new(items)
+        let mut list = List::new(items);
+        if let Some(block) = list_block {
+            list = list.block(block);
+        }
+        let list = list
             .highlight_style(
                 Style::default()
                     .bg(theme.selection_bg.to_ratatui())
@@ -221,11 +261,7 @@ impl DirectoryPicker {
 
 /// How a directory reads in the list.
 pub fn directory_label(dir: &VaultPath) -> String {
-    if dir.is_root_or_empty() {
-        "  / (vault root)".to_string()
-    } else {
-        format!("  {dir}")
-    }
+    format!("  {}", file_ops::directory_name(dir))
 }
 
 #[cfg(test)]

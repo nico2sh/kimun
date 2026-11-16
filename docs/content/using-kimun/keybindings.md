@@ -24,7 +24,8 @@ These are the shortcuts of the terminal app. In the app, press `F1` for help and
 | Today's journal | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
 | New note | `Ctrl+N` |
-| New directory | `Alt+N` |
+| New directory | `Ctrl+B n f` (or `Alt+N` where your terminal sends it) |
+| Save now | `Ctrl+S` |
 | Save a search | `Ctrl+D` |
 | Saved searches | `F3` |
 | Change the sort order | `Ctrl+R` |
