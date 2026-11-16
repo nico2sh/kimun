@@ -35,7 +35,7 @@ impl RouteFacts {
     }
 
     /// The note the editor area is showing, if any — what every "+this
-    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m i`) acts on.
+    /// note" leader action (`m r`/`m m`/`m d`/`m c`/`m y`/`m p`) acts on.
     /// `None` on the vault root, in the attachment view (the session path is
     /// then the attachment's path, never a note) and while the Ask
     /// workspace is up (the session path still names the note it replaced, but
@@ -261,7 +261,7 @@ pub mod jobs {
         tx.send(AppMessage::FlashMessage(msg.into())).ok();
     }
 
-    /// Leader `m i`: pin `path`, or unpin it if pinned. Refused with a flash
+    /// Leader `m p`: pin `path`, or unpin it if pinned. Refused with a flash
     /// when the note is no longer on disk or the vault holds the cap.
     pub async fn toggle_pin(vault: Arc<NoteVault>, path: VaultPath, tx: AppTx) {
         let msg = match vault.toggle_pinned_note(&path).await {

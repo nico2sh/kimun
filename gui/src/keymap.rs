@@ -208,7 +208,7 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::FocusEditor => &["alt+e"],
         A::FocusSidebar if mac => &["cmd+alt+s"],
         A::FocusSidebar => &["alt+f"],
-        // Write the open note now (the TUI's leader `w`). Everywhere: the
+        // Write the open note now (the TUI's leader `n w`). Everywhere: the
         // note is the window's, whichever panel has the keyboard.
         A::SaveNote => &["primary+s"],
         // Show FILES on the open note's folder and focus it (the TUI's

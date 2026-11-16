@@ -71,7 +71,7 @@ pub enum ActionShortcuts {
     FocusRegion(Dir),
     /// Show or hide the right drawer.
     ToggleRightDrawer,
-    /// Save the open note now (the leader's `w` in the TUI, which binds no
+    /// Save the open note now (the leader's `n w` in the TUI, which binds no
     /// chord to it).
     SaveNote,
     /// The keyboard reference: every chord and leader sequence in effect

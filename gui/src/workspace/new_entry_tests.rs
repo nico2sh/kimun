@@ -345,7 +345,7 @@ fn the_choice_filters_and_enter_picks(cx: &mut TestAppContext) {
     assert_eq!(base(&started, cx), path("/projects/rust"));
 }
 
-/// Leader `n n` and `n f` open the dialogs (leader `n n` used to focus the
+/// Leader `n n` and `n d` open the dialogs (leader `n n` used to focus the
 /// FILES filter).
 #[gpui_kit::test]
 fn the_leader_opens_the_dialogs(cx: &mut TestAppContext) {
@@ -360,7 +360,7 @@ fn the_leader_opens_the_dialogs(cx: &mut TestAppContext) {
     started.settle_dialog(cx);
 
     press(&started, "ctrl-shift-b", cx);
-    type_in(&started, "nf", cx);
+    type_in(&started, "nd", cx);
     assert_eq!(modal(&started, cx), Some(ModalKind::NewDirectory));
 }
 

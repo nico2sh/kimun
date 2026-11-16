@@ -20,7 +20,7 @@
 //!   ignored. A chorded key that is not one of these is swallowed, so a
 //!   chord meant for something else never unpins.
 //! - **What it shows** is disk on open and after each of its own edits; a
-//!   pin made elsewhere while it is open (leader `m i`) is not pushed in. A
+//!   pin made elsewhere while it is open (leader `m p`) is not pushed in. A
 //!   file operation landing closes it, as it closes every modal.
 //!
 //! **Where every read and write runs.** The list (with each pin's
@@ -65,7 +65,7 @@ pub(crate) const PINNED_UNPIN_ID: &str = "pinned-unpin";
 pub(crate) const PINNED_CLOSE_ID: &str = "pinned-close";
 
 /// What the dialog says with no pins (once the first read has landed).
-pub(crate) const EMPTY_TEXT: &str = "No pinned notes yet — leader m i pins the open note";
+pub(crate) const EMPTY_TEXT: &str = "No pinned notes yet — leader m p pins the open note";
 
 /// A pin's row id, by its note.
 pub(crate) fn pinned_row_id(path: &VaultPath) -> SharedString {
