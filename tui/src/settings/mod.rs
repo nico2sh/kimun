@@ -129,7 +129,8 @@ const CONFIG_HEADER: &str = "\
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"F4\", \"ctrl&,\"]     # F4 (Ctrl+, alias)
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
-#   NewNote      = [\"ctrl&N\"]            # Ctrl+N  (menu: new note or directory)
+#   NewEntry     = [\"ctrl&N\"]            # Ctrl+N  (menu: new note or directory)
+#   NewNote      = [\"ctrl&M\"]            # unbound by default (ask for a name, create the note)
 #   NewDirectory = [\"alt&N\"]             # unbound by default (ask for a name, create the directory)
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = [\"ctrl&B\"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
@@ -289,7 +290,7 @@ fn default_keybindings() -> KeyBindings {
         // untouched binding along); Ctrl-U was free since the formatting
         // chords retired.
         .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
-        .add(KeyStrike::KeyN, ActionShortcuts::NewNote)
+        .add(KeyStrike::KeyN, ActionShortcuts::NewEntry)
         // Save now, as in every editor; the leader's `n w` does the same.
         .add(KeyStrike::KeyS, ActionShortcuts::SaveNote)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
@@ -1376,7 +1377,7 @@ mod tests {
         let alt = KeyModifiers::new().and_alt();
         assert_eq!(
             kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyN)),
-            Some(ActionShortcuts::NewNote)
+            Some(ActionShortcuts::NewEntry)
         );
         assert_eq!(
             kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyU)),

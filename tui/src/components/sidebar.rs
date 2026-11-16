@@ -518,7 +518,7 @@ impl SidebarComponent {
         {
             return;
         }
-        let text = match self.key_bindings.first_combo_for(&ActionShortcuts::NewNote) {
+        let text = match self.key_bindings.first_combo_for(&ActionShortcuts::NewEntry) {
             Some(chord) => format!("  Empty. {chord} makes a note."),
             None => "  Empty. [+] makes a note.".to_string(),
         };

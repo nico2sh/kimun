@@ -123,12 +123,15 @@ pub enum ActionShortcuts {
     /// to it.
     PrevTab,
     /// Ask for the name of a new note and create it in the directory being
-    /// browsed (Ctrl+N by default in the TUI, `primary+n` in the desktop app).
+    /// browsed (no TUI chord by default, `primary+n` in the desktop app).
     NewNote,
     /// Ask for the name of a new directory and create it in the directory
     /// being browsed (Alt+N by default in the TUI, `primary+shift+n` in the
     /// desktop app).
     NewDirectory,
+    /// Open the menu that asks whether to make a note or a directory (Ctrl+N
+    /// by default in the TUI; the desktop app has no such menu).
+    NewEntry,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -191,7 +194,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 60] = [
+    pub const ALL: [ActionShortcuts; 61] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -252,6 +255,7 @@ impl ActionShortcuts {
         ActionShortcuts::PrevTab,
         ActionShortcuts::NewNote,
         ActionShortcuts::NewDirectory,
+        ActionShortcuts::NewEntry,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -284,6 +288,7 @@ impl ActionShortcuts {
             | A::QuickNote
             | A::NewNote
             | A::NewDirectory
+            | A::NewEntry
             | A::FileOperations
             | A::OpenFileBrowser
             | A::OpenSortDialog
@@ -369,6 +374,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::PrevTab => "PrevTab".to_string(),
             ActionShortcuts::NewNote => "NewNote".to_string(),
             ActionShortcuts::NewDirectory => "NewDirectory".to_string(),
+            ActionShortcuts::NewEntry => "NewEntry".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -434,6 +440,7 @@ impl TryFrom<String> for ActionShortcuts {
             "PrevTab" => ActionShortcuts::PrevTab,
             "NewNote" => ActionShortcuts::NewNote,
             "NewDirectory" => ActionShortcuts::NewDirectory,
+            "NewEntry" => ActionShortcuts::NewEntry,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -506,9 +513,10 @@ mod tests {
             ActionShortcuts::PrevTab => 39,
             ActionShortcuts::NewNote => 40,
             ActionShortcuts::NewDirectory => 41,
+            ActionShortcuts::NewEntry => 42,
         }
     }
-    const VARIANTS: usize = 42;
+    const VARIANTS: usize = 43;
 
     #[test]
     fn all_lists_every_variant() {
@@ -654,6 +662,7 @@ mod tests {
                 ActionShortcuts::PrevTab,
                 ActionShortcuts::NewNote,
                 ActionShortcuts::NewDirectory,
+                ActionShortcuts::NewEntry,
             ]
         );
         assert_eq!(
