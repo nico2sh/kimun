@@ -1,10 +1,12 @@
 //! The new note / new directory dialog: one dialog, whose kind picks the
 //! wording and what the confirm creates (see [`NewEntryKind`]).
 //!
-//! The typed name is a path relative to the directory being browsed (a
-//! leading `/` starts from the vault root); the directories in it are made
-//! with the entry. The resolved target shows under the title as the user
-//! types, a name core refuses shows why, and an async check marks a name
+//! The typed name is a path relative to the chosen directory, which starts as
+//! the one being browsed (a leading `/` starts from the vault root); the
+//! directories in it are made with the entry. Tab moves to the directory
+//! choice ([`DirectoryPicker`]): a filter over every vault directory, Enter
+//! picks one and returns to the name. The resolved target shows under the
+//! title as the user types, a name core refuses shows why, and an async check marks a name
 //! that is already taken. Enter creates whenever the name resolves and is
 //! not known to be taken: the create itself is exclusive, so a stale check
 //! can never overwrite anything.
@@ -14,7 +16,7 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyEvent, MouseEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -22,6 +24,7 @@ use tokio::task::JoinHandle;
 
 use crate::components::Component;
 use crate::components::dialogs::ValidationState;
+use crate::components::dialogs::directory_picker::{DirectoryPicker, PickerEvent, directory_label};
 use crate::components::event_state::EventState;
 use crate::components::hint_row::HintRow;
 use crate::components::panel::{ModalSpec, modal_chrome};
@@ -30,10 +33,22 @@ use crate::logic::file_ops::{self, NewEntry, NewEntryKind};
 use crate::logic::message::{AppMessage, AppTx, OverlayData};
 use crate::settings::themes::Theme;
 
+/// Which part of the dialog has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Name,
+    Directory,
+}
+
 pub struct NewEntryDialog {
     kind: NewEntryKind,
-    /// The directory the typed name is relative to.
+    /// The directory the typed name is relative to: the one the dialog
+    /// opened on until another is chosen.
     base: VaultPath,
+    picker: DirectoryPicker,
+    focus: Focus,
+    /// The directory line from the last render, a click target.
+    directory_rect: ratatui::layout::Rect,
     vault: Arc<NoteVault>,
     input: SingleLineInput,
     /// What the input resolves to: `None` while it is empty.
@@ -46,6 +61,8 @@ pub struct NewEntryDialog {
     /// fails into [`Self::fail`]).
     creating: bool,
     hints: HintRow,
+    /// The chips while the directory choice has the keyboard.
+    directory_hints: HintRow,
 }
 
 impl NewEntryDialog {
@@ -57,9 +74,13 @@ impl NewEntryDialog {
         vault: Arc<NoteVault>,
         tx: &AppTx,
     ) -> Self {
+        spawn_directory_load(&vault, tx);
         let mut dialog = Self {
             kind,
             base,
+            picker: DirectoryPicker::new(),
+            focus: Focus::Name,
+            directory_rect: ratatui::layout::Rect::default(),
             vault,
             input: SingleLineInput::with_value(initial.unwrap_or_default()),
             target: None,
@@ -67,10 +88,43 @@ impl NewEntryDialog {
             validation_task: None,
             error: None,
             creating: false,
-            hints: super::confirm_hints("Create"),
+            hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Create"),
+                (KeyCode::Tab, "Tab", "Directory"),
+                (KeyCode::Esc, "Esc", "Cancel"),
+            ])
+            .with_gap(3),
+            directory_hints: HintRow::new(&[
+                (KeyCode::Enter, "Enter", "Choose"),
+                (KeyCode::Tab, "Tab", "Name"),
+                (KeyCode::Esc, "Esc", "Back"),
+            ])
+            .with_gap(3),
         };
         dialog.on_input_changed(tx);
         dialog
+    }
+
+    /// The vault's directories arrived for the directory choice.
+    pub fn on_directories(&mut self, directories: Vec<VaultPath>) {
+        self.picker.set_directories(directories, &self.base);
+    }
+
+    /// Give the keyboard to the directory choice (starting it afresh on the
+    /// current directory) or back to the name.
+    fn set_focus(&mut self, focus: Focus) {
+        if focus == Focus::Directory {
+            self.picker.reset(&self.base);
+        }
+        self.focus = focus;
+    }
+
+    /// Take `directory` as the one the name is relative to, and go back to
+    /// the name.
+    fn choose_directory(&mut self, directory: VaultPath, tx: &AppTx) {
+        self.base = directory;
+        self.focus = Focus::Name;
+        self.on_input_changed(tx);
     }
 
     /// Resolve the input again and, when it names something, check whether
@@ -161,13 +215,48 @@ impl NewEntryDialog {
     /// A click on a hint chip runs its key. Modal: every mouse event is
     /// consumed.
     pub fn handle_mouse(&mut self, m: &MouseEvent, tx: &AppTx) -> EventState {
-        if let Some(key) = self.hints.hit(m) {
+        let chips = match self.focus {
+            Focus::Name => &self.hints,
+            Focus::Directory => &self.directory_hints,
+        };
+        if let Some(key) = chips.hit(m) {
             self.handle_key(key, tx);
+            return EventState::Consumed;
+        }
+        match self.focus {
+            Focus::Directory => {
+                if let PickerEvent::Chosen(dir) = self.picker.handle_mouse(m) {
+                    self.choose_directory(dir, tx);
+                }
+            }
+            Focus::Name => {
+                if crate::components::clickable::rect_hit(self.directory_rect, m)
+                    && crate::components::clickable::is_left_press(m)
+                {
+                    self.set_focus(Focus::Directory);
+                }
+            }
         }
         EventState::Consumed
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+        // Tab swaps between the name and the directory choice.
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.set_focus(match self.focus {
+                Focus::Name => Focus::Directory,
+                Focus::Directory => Focus::Name,
+            });
+            return EventState::Consumed;
+        }
+        if self.focus == Focus::Directory {
+            match self.picker.handle_key(key) {
+                PickerEvent::Chosen(dir) => self.choose_directory(dir, tx),
+                PickerEvent::Back => self.focus = Focus::Name,
+                PickerEvent::None => {}
+            }
+            return EventState::Consumed;
+        }
         match self.input.handle_key(&key) {
             InputOutcome::Submit => {
                 self.confirm(tx);
@@ -187,10 +276,27 @@ impl NewEntryDialog {
     }
 }
 
+/// Load the vault's directories off the UI thread (they come from walking
+/// the disk) for the directory choice.
+fn spawn_directory_load(vault: &Arc<NoteVault>, tx: &AppTx) {
+    let (vault, tx) = (Arc::clone(vault), tx.clone());
+    tokio::spawn(async move {
+        let listed = tokio::task::spawn_blocking(move || file_ops::list_directories(&vault)).await;
+        if let Ok(Ok(directories)) = listed {
+            tx.send(AppMessage::OverlayData(OverlayData::NewEntryDirectories(
+                directories,
+            )))
+            .ok();
+        }
+    });
+}
+
 impl Component for NewEntryDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        let height = if self.error.is_some() { 13 } else { 12 };
-        let popup_area = super::fixed_centered_rect(56, height, rect);
+        let choosing = self.focus == Focus::Directory;
+        let picker_height: u16 = if choosing { 8 } else { 0 };
+        let height = 14 + picker_height + u16::from(self.error.is_some());
+        let popup_area = super::fixed_centered_rect(58, height, rect);
         let title = format!(" {} ", self.kind.title());
         let inner = modal_chrome(
             f,
@@ -206,15 +312,17 @@ impl Component for NewEntryDialog {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // 0: spacer
-                Constraint::Length(1), // 1: where it goes
-                Constraint::Length(1), // 2: separator
-                Constraint::Length(1), // 3: label
-                Constraint::Length(3), // 4: input
-                Constraint::Length(1), // 5: status
-                Constraint::Length(1), // 6: spacer
-                Constraint::Length(1), // 7: hint
-                Constraint::Min(0),    // 8: error
+                Constraint::Length(1),             // 0: spacer
+                Constraint::Length(1),             // 1: where it goes
+                Constraint::Length(1),             // 2: separator
+                Constraint::Length(1),             // 3: directory
+                Constraint::Length(picker_height), // 4: directory choice
+                Constraint::Length(1),             // 5: label
+                Constraint::Length(3),             // 6: input
+                Constraint::Length(1),             // 7: status
+                Constraint::Length(1),             // 8: spacer
+                Constraint::Length(1),             // 9: hint
+                Constraint::Min(0),                // 10: error
             ])
             .split(inner);
 
@@ -228,35 +336,70 @@ impl Component for NewEntryDialog {
         };
         super::render_path_row(f, rows[1], &place, fg, bg);
         super::render_separator(f, rows[2], gray, bg);
+
+        // The directory: the chosen one with how to change it, or the label
+        // over the choice itself.
+        self.directory_rect = rows[3];
+        if choosing {
+            f.render_widget(
+                Paragraph::new("  DIRECTORY").style(Style::default().fg(fg).bg(bg)),
+                rows[3],
+            );
+            self.picker.render(f, rows[4], theme);
+        } else {
+            let line = ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled("  DIRECTORY", Style::default().fg(gray)),
+                ratatui::text::Span::styled(
+                    format!("  {}", directory_label(&self.base).trim_start()),
+                    Style::default().fg(fg),
+                ),
+                ratatui::text::Span::styled("  (Tab to change)", Style::default().fg(gray)),
+            ]);
+            f.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), rows[3]);
+        }
+
         f.render_widget(
             Paragraph::new(format!("  {}", self.kind.field_label()))
                 .style(Style::default().fg(gray).bg(bg)),
-            rows[3],
+            rows[5],
         );
-        super::render_name_field(f, rows[4], &mut self.input, self.validation_state, theme);
+        super::render_name_field(f, rows[6], &mut self.input, self.validation_state, theme);
         match &self.target {
             // Why core refuses the name, where the status would be.
             Some(Err(reason)) => f.render_widget(
                 Paragraph::new(format!("  {reason}"))
                     .style(Style::default().fg(theme.red.to_ratatui()).bg(bg)),
-                rows[5],
+                rows[7],
             ),
-            _ => super::render_validation_status(f, rows[5], self.validation_state, theme),
+            _ => super::render_validation_status(f, rows[7], self.validation_state, theme),
         }
 
-        let can_create = self.creatable().is_some();
-        super::render_confirm_hints(
-            f,
-            rows[7],
-            &mut self.hints,
-            can_create,
-            can_create,
-            fg,
-            theme,
-        );
+        if choosing {
+            let has_row = self.picker.highlighted().is_some();
+            super::render_confirm_hints(
+                f,
+                rows[9],
+                &mut self.directory_hints,
+                has_row,
+                has_row,
+                fg,
+                theme,
+            );
+        } else {
+            let can_create = self.creatable().is_some();
+            super::render_confirm_hints(
+                f,
+                rows[9],
+                &mut self.hints,
+                can_create,
+                can_create,
+                fg,
+                theme,
+            );
+        }
 
         if let Some(msg) = &self.error {
-            super::render_error_row(f, rows[8], msg, theme);
+            super::render_error_row(f, rows[10], msg, theme);
         }
     }
 }
@@ -375,12 +518,17 @@ mod tests {
             .await
             .unwrap();
         type_text(&mut d, "taken", &tx);
-        match next(&mut rx).await {
-            AppMessage::OverlayData(OverlayData::NewEntryValidation { target, available }) => {
-                assert!(!available);
-                d.on_validation(&target, available);
+        loop {
+            match next(&mut rx).await {
+                AppMessage::OverlayData(OverlayData::NewEntryValidation { target, available }) => {
+                    assert!(!available);
+                    d.on_validation(&target, available);
+                    break;
+                }
+                // The directory list loading alongside.
+                AppMessage::OverlayData(OverlayData::NewEntryDirectories(_)) => {}
+                other => panic!("expected a validation result, got {other:?}"),
             }
-            other => panic!("expected a validation result, got {other:?}"),
         }
         assert_eq!(d.validation_state, ValidationState::Taken);
         assert!(d.creatable().is_none());
@@ -511,6 +659,123 @@ mod tests {
         press(&mut d, KeyCode::Char('2'), &tx);
         assert!(d.error.is_none(), "typing clears the error");
         assert!(d.creatable().is_some(), "and Enter works on the new name");
+    }
+
+    fn dirs(paths: &[&str]) -> Vec<VaultPath> {
+        paths.iter().map(VaultPath::new).collect()
+    }
+
+    /// The directory the dialog opened on is the default, and it is shown.
+    #[tokio::test]
+    async fn the_browsed_directory_is_the_default_choice() {
+        let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/projects", None).await;
+        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        type_text(&mut d, "idea", &tx);
+        assert_eq!(d.target, Some(Ok(VaultPath::new("/projects/idea.md"))));
+        // Choosing starts on it.
+        press(&mut d, KeyCode::Tab, &tx);
+        assert_eq!(d.picker.highlighted(), Some(&VaultPath::new("/projects")));
+    }
+
+    /// Tab opens the choice, a pick moves the target, and the name typed so
+    /// far is kept and re-resolved against the new directory.
+    #[tokio::test]
+    async fn choosing_another_directory_moves_the_target() {
+        let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Note, "/projects", None).await;
+        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        type_text(&mut d, "sub/idea", &tx);
+        assert_eq!(d.target, Some(Ok(VaultPath::new("/projects/sub/idea.md"))));
+
+        press(&mut d, KeyCode::Tab, &tx);
+        assert_eq!(d.focus, Focus::Directory);
+        // Typing now filters directories, not the name.
+        type_text(&mut d, "arch", &tx);
+        assert_eq!(d.input.value(), "sub/idea");
+        press(&mut d, KeyCode::Enter, &tx);
+
+        assert_eq!(d.focus, Focus::Name, "back on the name");
+        assert_eq!(d.base, VaultPath::new("/archive"));
+        assert_eq!(d.target, Some(Ok(VaultPath::new("/archive/sub/idea.md"))));
+        assert_eq!(d.input.value(), "sub/idea", "the name is kept");
+    }
+
+    /// Escape in the choice goes back to the name; it does not close the
+    /// dialog or change the directory.
+    #[tokio::test]
+    async fn escape_in_the_directory_choice_goes_back_without_closing() {
+        let (mut d, _vault, tx, mut rx) = dialog(NewEntryKind::Note, "/projects", None).await;
+        d.on_directories(dirs(&["/", "/archive", "/projects"]));
+        press(&mut d, KeyCode::Tab, &tx);
+        press(&mut d, KeyCode::Down, &tx);
+        press(&mut d, KeyCode::Esc, &tx);
+        assert_eq!(d.focus, Focus::Name);
+        assert_eq!(d.base, VaultPath::new("/projects"));
+        while let Ok(msg) = rx.try_recv() {
+            assert!(!matches!(msg, AppMessage::CloseOverlay), "dialog closed");
+        }
+    }
+
+    /// Tab from the directory choice returns to the name too.
+    #[tokio::test]
+    async fn tab_toggles_between_the_name_and_the_directory() {
+        let (mut d, _vault, tx, _rx) = dialog(NewEntryKind::Directory, "/", None).await;
+        press(&mut d, KeyCode::Tab, &tx);
+        assert_eq!(d.focus, Focus::Directory);
+        press(&mut d, KeyCode::Tab, &tx);
+        assert_eq!(d.focus, Focus::Name);
+    }
+
+    /// A note made in a chosen directory lands there, and a directory too.
+    #[tokio::test]
+    async fn creating_uses_the_chosen_directory_for_both_kinds() {
+        for kind in [NewEntryKind::Note, NewEntryKind::Directory] {
+            let (mut d, vault, tx, mut rx) = dialog(kind, "/", None).await;
+            vault
+                .create_directory(&VaultPath::new("/dest"))
+                .await
+                .unwrap();
+            d.on_directories(dirs(&["/", "/dest"]));
+            press(&mut d, KeyCode::Tab, &tx);
+            type_text(&mut d, "dest", &tx);
+            press(&mut d, KeyCode::Enter, &tx);
+            type_text(&mut d, "made", &tx);
+            press(&mut d, KeyCode::Enter, &tx);
+            loop {
+                match next(&mut rx).await {
+                    AppMessage::OpenPath { .. } | AppMessage::CloseOverlay => break,
+                    AppMessage::OverlayData(OverlayData::Error(e)) => panic!("failed: {e}"),
+                    _ => {}
+                }
+            }
+            let made = match kind {
+                NewEntryKind::Note => VaultPath::new("/dest/made.md"),
+                NewEntryKind::Directory => VaultPath::new("/dest/made"),
+            };
+            assert!(vault.exists(&made).await, "{kind:?}");
+        }
+    }
+
+    /// The directories load in the background and reach the picker.
+    #[tokio::test]
+    async fn the_vault_directories_load_into_the_picker() {
+        let (mut d, vault, _tx, mut rx) = dialog(NewEntryKind::Note, "/", None).await;
+        vault
+            .create_directory(&VaultPath::new("/found"))
+            .await
+            .unwrap();
+        // The load may have started before the directory existed; ask again
+        // through the same path the dialog uses.
+        super::spawn_directory_load(&vault, &_tx);
+        loop {
+            if let AppMessage::OverlayData(OverlayData::NewEntryDirectories(dirs)) =
+                next(&mut rx).await
+                && dirs.contains(&VaultPath::new("/found"))
+            {
+                d.on_directories(dirs);
+                break;
+            }
+        }
+        assert!(d.picker.highlighted().is_some());
     }
 
     #[tokio::test]

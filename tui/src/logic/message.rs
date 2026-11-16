@@ -349,6 +349,9 @@ pub struct PinnedRow {
 pub enum OverlayData {
     /// Rename dialog: name availability check result.
     RenameValidation { available: bool },
+    /// New-entry dialog: the vault's directories have loaded (for its
+    /// directory choice).
+    NewEntryDirectories(Vec<VaultPath>),
     /// New-entry dialog: whether `target` (the path the typed name resolved
     /// to) is free. A result for a path the input has since moved off is
     /// ignored.

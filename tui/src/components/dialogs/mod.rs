@@ -95,6 +95,7 @@ macro_rules! impl_dialog {
 
 pub mod create_note_dialog;
 pub mod delete_dialog;
+pub mod directory_picker;
 pub mod file_ops_menu;
 pub mod help_dialog;
 pub mod info_dialog;
@@ -337,6 +338,12 @@ impl Overlay for ActiveDialog {
                         ValidationState::Taken
                     };
                     d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            OverlayData::NewEntryDirectories(directories) => {
+                if let ActiveDialog::NewEntry(d) = self {
+                    d.on_directories(directories.clone());
                 }
                 OverlayMsg::Consumed
             }
@@ -630,6 +637,36 @@ mod tests {
 
     fn has(events: &[AppMessage], pred: impl Fn(&AppMessage) -> bool) -> bool {
         events.iter().any(pred)
+    }
+
+    /// The new-entry dialog draws in both states (the directory shown, then
+    /// the choice open under it) and its chips and directory line are
+    /// clickable.
+    #[tokio::test]
+    async fn new_entry_directory_choice_opens_and_closes_by_click() {
+        use crate::logic::file_ops::NewEntryKind;
+        let vault = crate::test_support::temp_vault("new-entry-click").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut d = ActiveDialog::new_entry(
+            NewEntryKind::Note,
+            kimun_core::nfs::VaultPath::new("/a"),
+            None,
+            vault,
+            &tx,
+        );
+        draw_and_find(&mut d, "(Tab to change)");
+        draw_and_find(&mut d, "[Tab] Directory");
+
+        click_text(&mut d, "[Tab]");
+        draw_and_find(&mut d, "[Enter] Choose");
+        draw_and_find(&mut d, "(loading...)");
+
+        click_text(&mut d, "[Esc]");
+        draw_and_find(&mut d, "(Tab to change)");
+
+        // The directory line itself opens the choice too.
+        click_text(&mut d, "DIRECTORY");
+        draw_and_find(&mut d, "[Enter] Choose");
     }
 
     #[test]
