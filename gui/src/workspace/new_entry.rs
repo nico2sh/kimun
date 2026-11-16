@@ -100,10 +100,7 @@ impl NewEntryDialog {
             initial,
         } = start;
         let input = cx.new(|cx| {
-            let state = InputState::new(window, cx).placeholder(match kind {
-                NewEntryKind::Note => "Name, or folder/name",
-                NewEntryKind::Directory => "Name, or folder/name",
-            });
+            let state = InputState::new(window, cx).placeholder("Name, or folder/name");
             match initial.clone() {
                 Some(text) => state.default_value(text),
                 None => state,
@@ -288,7 +285,13 @@ impl Render for NewEntryDialog {
             .gap_3()
             .capture_action(cx.listener(|this, _: &Enter, window, cx| {
                 match this.choice.clone() {
-                    Some(choice) => choice.update(cx, |choice, cx| choice.choose(cx)),
+                    // With nothing to choose, Enter closes the list rather
+                    // than leave the keyboard dead.
+                    Some(choice) => {
+                        if !choice.update(cx, |choice, cx| choice.choose(cx)) {
+                            this.close_choice(window, cx);
+                        }
+                    }
                     None => this.confirm(window, cx),
                 }
                 cx.stop_propagation();

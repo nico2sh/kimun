@@ -428,3 +428,24 @@ fn a_failed_create_stays_in_the_dialog(cx: &mut TestAppContext) {
         "typing clears the error"
     );
 }
+
+/// Enter in a folder choice with nothing to choose closes the choice (the
+/// keyboard is not left dead) and leaves the dialog and its folder alone.
+#[gpui_kit::test]
+fn enter_with_nothing_to_choose_closes_the_choice(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], &["other"], "a.md");
+    press(&started, "ctrl-n", cx);
+    click(&started, NEW_ENTRY_CHANGE_ID, cx);
+    let choice = cx
+        .read(|cx| dialog(&started, cx).read(cx).choice().cloned())
+        .unwrap();
+    drive(&rt, cx, |cx| !cx.read(|cx| choice.read(cx).is_loading()));
+    type_in(&started, "zzzzqq", cx);
+    assert_eq!(cx.read(|cx| choice.read(cx).highlighted()), None);
+    press(&started, "enter", cx);
+    assert!(cx.read(|cx| dialog(&started, cx).read(cx).choice().is_none()));
+    assert_eq!(modal(&started, cx), Some(ModalKind::NewNote));
+    assert_eq!(base(&started, cx), path("/"), "the folder is unchanged");
+}
