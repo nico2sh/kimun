@@ -1267,11 +1267,11 @@ fn source_reader_opens_from_a_source_and_from_a_citation(cx: &mut TestAppContext
 
 // ---- Leader ------------------------------------------------------------------------
 
-/// Leader `a s` reads the selected turn's top source with the sources list
+/// Leader `a o` reads the selected turn's top source with the sources list
 /// focused; with ASK hidden and no server to answer, it is blocked with
 /// the TUI's message (palette and leader).
 #[gpui_kit::test]
-fn leader_a_s_reads_the_top_source(cx: &mut TestAppContext) {
+fn leader_a_o_reads_the_top_source(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = ready(cx, &rt, Stub::with(Vec::new()));

@@ -36,7 +36,7 @@ Most commands also start with `Ctrl+B`. This is the leader key. Press it, then o
 ```
 Ctrl+B f f    find a note by name
 Ctrl+B n n    make a new note
-Ctrl+B n d    open today's journal
+Ctrl+B n j    open today's journal
 Ctrl+B v t    pick a theme
 ```
 

@@ -272,7 +272,7 @@ impl SourcesPanel {
         }
     }
 
-    /// Reveal `sources[source_index]` in the preview (leader `a s`): point the
+    /// Reveal `sources[source_index]` in the preview (leader `a o`): point the
     /// selection at it and make sure the preview ends *revealed* on that source.
     /// Collapsed opens to the half-height Context preview; an already-open
     /// Context/Full stays at its expand level and re-points onto the new source
@@ -281,7 +281,7 @@ impl SourcesPanel {
     pub fn open_reader(&mut self, source_index: usize, tx: &AppTx) {
         self.list.set_query("");
         // The turn's rows are present synchronously after `set_turn`, so this
-        // resolves on the first press — even when leader `a s` runs `set_turn`
+        // resolves on the first press — even when leader `a o` runs `set_turn`
         // then `open_reader(0)` in the same tick.
         let Some(source) = self.source_at(source_index).cloned() else {
             return;
@@ -1075,7 +1075,7 @@ mod tests {
         assert_eq!(selected_heading(&p).as_deref(), Some("B"));
     }
 
-    /// Leader `a s` shape: `set_turn(new id)` then `open_reader(0)` in the SAME
+    /// Leader `a o` shape: `set_turn(new id)` then `open_reader(0)` in the SAME
     /// tick. The rows are synchronous, so the preview opens on the requested
     /// source on the FIRST press (the pre-fix bug needed two presses because the
     /// rows had not landed when `open_reader` read `source_at(0)`).

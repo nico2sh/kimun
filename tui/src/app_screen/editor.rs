@@ -1739,7 +1739,7 @@ impl EditorScreen {
     }
 
     /// Ensure the Ask workspace is showing, then run `f` against its live
-    /// panel — the shared shape behind the leader `a n`/`a y`/`a e`/`a r`
+    /// panel — the shared shape behind the leader `a n`/`a y`/`a s`/`a r`
     /// conversation actions.
     fn with_ask_panel(&mut self, tx: &AppTx, f: impl FnOnce(&mut ThreadPanel, &AppTx)) {
         self.ensure_ask_workspace(tx);
@@ -1875,7 +1875,7 @@ impl EditorScreen {
     /// way in — hence the `llm_available` gate. The gate only
     /// applies to that enter-from-outside path: when Ask is already showing,
     /// focusing the composer is ungated, matching the sibling `a n`/`a
-    /// y`/`a e`/`a r` actions, which work fine on a degraded (capability-off)
+    /// y`/`a s`/`a r` actions, which work fine on a degraded (capability-off)
     /// thread.
     fn open_ask_workspace(&mut self, tx: &AppTx) {
         if self.overlays.is_open() {
@@ -2954,7 +2954,7 @@ mod tests {
     /// Leader `m p` pins the open note, flashing its 1-based position, then
     /// unpins it on the second press.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_toggles_the_pin_and_flashes() {
+    async fn leader_m_p_toggles_the_pin_and_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -2989,7 +2989,7 @@ mod tests {
     /// A tenth pin is refused with a message telling the user what to do —
     /// the cap is what guarantees every pinned note keeps a digit shortcut.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_refuses_a_tenth_pin() {
+    async fn leader_m_p_refuses_a_tenth_pin() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         for i in 0..kimun_core::PINNED_NOTES_CAP {
@@ -3014,7 +3014,7 @@ mod tests {
     /// in another terminal, or a create dialog dismissed with the path left
     /// set. Pinning it would only store a pin born "missing", so it flashes.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_on_a_missing_note_flashes() {
+    async fn leader_m_p_on_a_missing_note_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         screen.session.set_path(VaultPath::new("gone.md"));
@@ -3033,7 +3033,7 @@ mod tests {
     /// the Ask workspace up, `m c` refuses exactly as `m p` does, instead of
     /// copying a wikilink to the note the user is no longer looking at.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_c_with_ask_shown_flashes_like_m_i() {
+    async fn leader_m_c_with_ask_shown_flashes_like_m_p() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -3054,7 +3054,7 @@ mod tests {
     /// Toggling with no note open (the screen starts on the vault root, which
     /// is not a note) flashes rather than doing nothing.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_no_note_open_flashes() {
+    async fn leader_m_p_with_no_note_open_flashes() {
         let (mut screen, _, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // test_screen opens on VaultPath::root(), which is not a note.
@@ -3071,7 +3071,7 @@ mod tests {
     /// The attachment view counts as "no note open" even though `self.path`
     /// is set (to the attachment's path, itself never a note).
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_attachment_shown_flashes() {
+    async fn leader_m_p_with_attachment_shown_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         vault
@@ -3128,7 +3128,7 @@ mod tests {
     /// still names the note that was open before switching to Ask — the
     /// editor area is not showing it.
     #[tokio::test(flavor = "multi_thread")]
-    async fn leader_m_i_with_ask_shown_flashes() {
+    async fn leader_m_p_with_ask_shown_flashes() {
         let (mut screen, vault, _, _dir) = test_screen().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let note = VaultPath::new("plan.md");
@@ -4358,7 +4358,7 @@ mod tests {
 
     /// Leader `a a` (`open_ask_workspace`) gates on `llm_available` only for
     /// the enter-from-outside path. Once Ask is already showing, the
-    /// sibling `a n`/`a y`/`a e`/`a r` actions all work on a degraded
+    /// sibling `a n`/`a y`/`a s`/`a r` actions all work on a degraded
     /// (capability-off) thread, so re-focusing the composer must be
     /// consistent with them rather than flashing the gate message again.
     #[tokio::test]
