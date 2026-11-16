@@ -108,11 +108,10 @@ impl AppScreen for BrowseScreen {
             AppMessage::FileOp(FileOp::ShowNewNote {
                 base,
                 initial: Some(text),
-            }) => {
-                if let Ok(path) = file_ops::new_note_target(&base, &text) {
-                    spawn_create_and_open(self.vault.clone(), path, tx.clone());
-                }
-            }
+            }) => match file_ops::new_note_target(&base, &text) {
+                Ok(path) => spawn_create_and_open(self.vault.clone(), path, tx.clone()),
+                Err(reason) => tracing::warn!("cannot create note from {text:?}: {reason}"),
+            },
             _ => {}
         }
     }

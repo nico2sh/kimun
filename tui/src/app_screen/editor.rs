@@ -1285,7 +1285,14 @@ impl EditorScreen {
                 // Pure notification: a note now exists at `path`. Opening is the
                 // creator's job (via OpenPath); here we only keep the sidebar in
                 // step when it is browsing the new note's directory.
-                self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
+                //
+                // A new directory opens nothing, so FILES points it out
+                // instead: it shows the parent and selects the directory.
+                if !path.is_note() && self.drawer_open_on(DrawerView::Files) {
+                    self.panels.sidebar_mut().reveal(&path, tx);
+                } else {
+                    self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
+                }
             }
             FileOp::Deleted(path) => {
                 self.on_entry_op(path, tx).await;
@@ -2782,6 +2789,45 @@ mod tests {
                 .current_dir()
                 .is_like(&VaultPath::new("projects"))
         );
+    }
+
+    /// A new directory opens nothing, so with FILES showing, the browser is
+    /// taken to it (its parent shown, its row selected): nested names too.
+    #[tokio::test]
+    async fn a_created_directory_is_revealed_in_the_open_file_browser() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        let nested = VaultPath::new("projects/archive");
+        vault.create_directory(&nested).await.unwrap();
+
+        screen
+            .handle_file_op(FileOp::Created(nested.clone()), &tx)
+            .await;
+
+        assert!(
+            screen
+                .panels
+                .sidebar()
+                .current_dir()
+                .is_like(&VaultPath::new("projects"))
+        );
+    }
+
+    /// With FILES hidden nothing is pulled into view: the browser stays where
+    /// the user left it.
+    #[tokio::test]
+    async fn a_created_directory_leaves_a_hidden_file_browser_alone() {
+        let (mut screen, vault, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.panels.hide(PanelKind::Drawer);
+        let before = screen.panels.sidebar().current_dir().clone();
+        let nested = VaultPath::new("elsewhere/new");
+        vault.create_directory(&nested).await.unwrap();
+
+        screen.handle_file_op(FileOp::Created(nested), &tx).await;
+
+        assert_eq!(screen.panels.sidebar().current_dir(), &before);
     }
 
     /// With FILES already open but browsed elsewhere, the open-file-browser
