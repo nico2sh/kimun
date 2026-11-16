@@ -17,7 +17,7 @@ use crate::logic::text_action::TextAction;
 /// show their query help themselves.
 pub const TUI_UNBOUND: [ActionShortcuts; 25] = [
     // Alt chords are not delivered consistently across terminals; the leader
-    // (`n f`) and Ctrl+N's menu reach it.
+    // (`n d`) and Ctrl+N's menu reach it.
     ActionShortcuts::NewDirectory,
     // The direct note dialog; Ctrl+N opens the menu (`NewEntry`) instead.
     ActionShortcuts::NewNote,

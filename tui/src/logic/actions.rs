@@ -126,7 +126,7 @@ pub enum ActionShortcuts {
     /// browsed (no TUI chord by default, `primary+n` in the desktop app).
     NewNote,
     /// Ask for the name of a new directory and create it in the directory
-    /// being browsed (Alt+N by default in the TUI, `primary+shift+n` in the
+    /// being browsed (no TUI chord by default, `primary+shift+n` in the
     /// desktop app).
     NewDirectory,
     /// Open the menu that asks whether to make a note or a directory (Ctrl+N
