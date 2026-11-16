@@ -290,7 +290,7 @@ fn default_keybindings() -> KeyBindings {
         // chords retired.
         .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyN, ActionShortcuts::NewNote)
-        // Save now, as in every editor; the leader's `w` does the same.
+        // Save now, as in every editor; the leader's `n w` does the same.
         .add(KeyStrike::KeyS, ActionShortcuts::SaveNote)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
@@ -346,7 +346,7 @@ fn default_keybindings() -> KeyBindings {
 
     // New directory. Alt rather than Ctrl: the Ctrl-letter namespace is full,
     // and New note already holds Ctrl-N. The leader tree reaches both too
-    // (`n n`, `n f`) for terminals that swallow Alt chords.
+    // (`n n`, `n d`) for terminals that swallow Alt chords.
     kb.batch_add()
         .with_alt()
         .add(KeyStrike::KeyN, ActionShortcuts::NewDirectory);

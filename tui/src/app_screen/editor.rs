@@ -2951,7 +2951,7 @@ mod tests {
         );
     }
 
-    /// Leader `m i` pins the open note, flashing its 1-based position, then
+    /// Leader `m p` pins the open note, flashing its 1-based position, then
     /// unpins it on the second press.
     #[tokio::test(flavor = "multi_thread")]
     async fn leader_m_i_toggles_the_pin_and_flashes() {
@@ -2963,7 +2963,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "pinned as 1 of 9"),
@@ -2977,7 +2977,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "unpinned"),
@@ -3002,7 +3002,7 @@ mod tests {
         screen.session.set_path(extra);
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "already 9 pinned — unpin one first"),
@@ -3020,7 +3020,7 @@ mod tests {
         screen.session.set_path(VaultPath::new("gone.md"));
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "note not found: gone.md"),
@@ -3030,7 +3030,7 @@ mod tests {
     }
 
     /// Every "+this note" action shares one definition of "this note": with
-    /// the Ask workspace up, `m c` refuses exactly as `m i` does, instead of
+    /// the Ask workspace up, `m c` refuses exactly as `m p` does, instead of
     /// copying a wikilink to the note the user is no longer looking at.
     #[tokio::test(flavor = "multi_thread")]
     async fn leader_m_c_with_ask_shown_flashes_like_m_i() {
@@ -3060,7 +3060,7 @@ mod tests {
         // test_screen opens on VaultPath::root(), which is not a note.
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
@@ -3085,7 +3085,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),
@@ -3139,7 +3139,7 @@ mod tests {
 
         screen.handle_input(&ctrl_key('b'), &tx);
         screen.handle_input(&chr('m'), &tx);
-        screen.handle_input(&chr('i'), &tx);
+        screen.handle_input(&chr('p'), &tx);
         let e = wait_for(&mut rx, |e| matches!(e, AppMessage::FlashMessage(_))).await;
         assert!(
             matches!(&e, AppMessage::FlashMessage(m) if m == "no note open"),

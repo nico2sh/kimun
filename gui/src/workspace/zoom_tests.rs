@@ -248,9 +248,9 @@ fn escape_does_not_exit_zoom(cx: &mut TestAppContext) {
     press(ZOOM, cx);
     assert_eq!(state(cx).0, None);
 
-    // OUTLINE's list (leader `o l`).
+    // OUTLINE's list (leader `o o`).
     press("ctrl-shift-b", cx);
-    cx.update_window(started.handle, |_, window, cx| window.input("ol", cx))
+    cx.update_window(started.handle, |_, window, cx| window.input("oo", cx))
         .unwrap();
     cx.run_until_parked();
     let outline = slot(DrawerView::Outline, cx);
