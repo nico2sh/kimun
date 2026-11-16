@@ -28,6 +28,9 @@ use crate::settings::icons::Icons;
 /// listing and its rules) whose listing is a [`SearchList`] — the filter
 /// input, viewport, keys and mouse — plus the breadcrumb and sort chip it
 /// draws. Activations the model reports are performed here.
+/// The header's chip for the new note / directory menu.
+const NEW_CHIP: &str = "[+]";
+
 pub struct SidebarComponent {
     model: FilesModel<SearchList<FileListEntry>>,
     rendered_rect: Rect,
@@ -36,6 +39,9 @@ pub struct SidebarComponent {
     breadcrumb_cells: Vec<(Rect, VaultPath)>,
     /// The sort chip (`Name ↑`) on the search box border from the last render.
     sort_chip: crate::components::clickable::BorderChip,
+    /// The `[+]` chip on the header: a menu of what can be made here.
+    new_chip: crate::components::clickable::BorderChip,
+    show_new_chip: bool,
     /// Whether to draw the sort chip at all — off where the host cannot open
     /// the sort dialog (Browse).
     show_sort_chip: bool,
@@ -83,6 +89,8 @@ impl SidebarComponent {
             breadcrumb_cells: Vec::new(),
             sort_chip: Default::default(),
             show_sort_chip: true,
+            new_chip: Default::default(),
+            show_new_chip: true,
             key_bindings,
         }
     }
@@ -160,6 +168,12 @@ impl SidebarComponent {
     /// host that cannot open the sort dialog.
     pub fn set_sort_chip(&mut self, show: bool) {
         self.show_sort_chip = show;
+    }
+
+    /// Draw (and accept clicks on) the `[+]` chip: on by default; off for a
+    /// host with no dialogs to open (Browse).
+    pub fn set_new_chip(&mut self, show: bool) {
+        self.show_new_chip = show;
     }
 
     /// Seed the directory the sidebar will show before its first `navigate`;
@@ -264,6 +278,14 @@ impl Component for SidebarComponent {
                 tx.send(AppMessage::open(dir.clone())).ok();
                 return EventState::Consumed;
             }
+            // A click on the `[+]` chip opens the new note / directory menu.
+            if self.new_chip.hit(mouse) {
+                tx.send(AppMessage::FileOp(FileOp::ShowNewMenu {
+                    base: self.model.current_dir().clone(),
+                }))
+                .ok();
+                return EventState::Consumed;
+            }
             // A click on the sort chip opens the sort dialog.
             if self.sort_chip.hit(mouse) {
                 tx.send(AppMessage::OpenSortDialog(SortTarget::Sidebar))
@@ -359,11 +381,29 @@ impl Component for SidebarComponent {
 
         let border_style = theme.border_style(focused);
 
-        let header = Block::default()
-            .title(format!("─ Files · {} ", self.model.current_dir()))
+        let header_title = format!("─ Files · {} ", self.model.current_dir());
+        let mut header = Block::default()
+            .title(header_title.clone())
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        // The `[+]` chip sits at the right end of the title edge, when the
+        // title leaves it room (a long path would run under it).
+        let chip = ratatui::text::Line::from(ratatui::text::Span::styled(NEW_CHIP, theme.action()));
+        let room = usize::from(rows[0].width.saturating_sub(2));
+        if self.show_new_chip
+            && unicode_width::UnicodeWidthStr::width(header_title.as_str()) + 1 + NEW_CHIP.len()
+                <= room
+        {
+            header = self.new_chip.place(
+                header,
+                rows[0],
+                crate::components::clickable::Edge::Top,
+                chip,
+            );
+        } else {
+            self.new_chip.hide();
+        }
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
 
@@ -644,6 +684,64 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AppMessage::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
+        );
+    }
+
+    fn draw(sidebar: &mut SidebarComponent, width: u16) -> ratatui::buffer::Buffer {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal
+            .draw(|f| sidebar.render(f, f.area(), &theme, true))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The header carries a `[+]` chip; a click on it asks for the new
+    /// note / directory menu on the directory shown.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plus_chip_asks_for_the_new_menu() {
+        let mut sidebar = sidebar_with_notes("sidebar-plus", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        sidebar.navigate(VaultPath::root(), &tx);
+        let buffer = draw(&mut sidebar, 60);
+        let (col, row) = crate::test_support::find_text(&buffer, "[+]").expect("the chip is drawn");
+        while rx.try_recv().is_ok() {}
+
+        let state = sidebar.handle_input(&mouse_down_at(col + 1, row), &tx);
+        assert_eq!(state, EventState::Consumed);
+        match rx.try_recv() {
+            Ok(AppMessage::FileOp(FileOp::ShowNewMenu { base })) => {
+                assert_eq!(base, VaultPath::root())
+            }
+            other => panic!("expected ShowNewMenu, got {other:?}"),
+        }
+    }
+
+    /// A header title too long to leave the chip room hides the chip rather
+    /// than run under it; so does a host that cannot open dialogs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plus_chip_hides_when_there_is_no_room_or_no_host() {
+        let mut sidebar = sidebar_with_notes("sidebar-plus-hide", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        let deep = VaultPath::new("/a-rather-long-directory-name/and-another-long-one");
+        sidebar.navigate(deep, &tx);
+        let buffer = draw(&mut sidebar, 40);
+        assert!(crate::test_support::find_text(&buffer, "[+]").is_none());
+
+        sidebar.navigate(VaultPath::root(), &tx);
+        assert!(crate::test_support::find_text(&draw(&mut sidebar, 60), "[+]").is_some());
+        sidebar.set_new_chip(false);
+        let buffer = draw(&mut sidebar, 60);
+        assert!(crate::test_support::find_text(&buffer, "[+]").is_none());
+        while rx.try_recv().is_ok() {}
+        sidebar.handle_input(&mouse_down_at(57, 0), &tx);
+        assert!(
+            !matches!(
+                rx.try_recv(),
+                Ok(AppMessage::FileOp(FileOp::ShowNewMenu { .. }))
+            ),
+            "a hidden chip is not clickable"
         );
     }
 

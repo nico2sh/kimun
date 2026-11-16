@@ -1257,6 +1257,13 @@ impl EditorScreen {
                     tx,
                 )));
             }
+            FileOp::ShowNewMenu { base } => {
+                let menu = {
+                    let s = self.settings.read().unwrap();
+                    ActiveDialog::new_menu(base, &s.key_bindings)
+                };
+                self.present_overlay(Box::new(menu));
+            }
             FileOp::ShowNewDirectory { base } => {
                 self.present_overlay(Box::new(ActiveDialog::new_entry(
                     NewEntryKind::Directory,
@@ -2789,6 +2796,23 @@ mod tests {
                 .current_dir()
                 .is_like(&VaultPath::new("projects"))
         );
+    }
+
+    /// The `[+]` menu request opens the menu overlay.
+    #[tokio::test]
+    async fn a_new_menu_request_opens_the_menu() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(!screen.overlays.is_open());
+        screen
+            .handle_file_op(
+                FileOp::ShowNewMenu {
+                    base: VaultPath::root(),
+                },
+                &tx,
+            )
+            .await;
+        assert!(screen.overlays.is_open());
     }
 
     /// A new directory opens nothing, so with FILES showing, the browser is
