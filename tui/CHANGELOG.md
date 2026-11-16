@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.2...kimun-notes-v0.25.3) - 2026-11-16
+
+### Added
+
+- reviewed all chords
+
+### Fixed
+
+- reviewed shortcuts
+- small bugs on notes ending with double extension
+
+### Other
+
+- reviewed the leader based keys
+- New menu: ignore chords as menu letters, click target covers the chord, doc comment back on the struct
+- [+] chip in the FILES header opening a new note / directory menu
+- new note and new directory dialogs, + menu in FILES, folder choice
+- Directory choice: report a failed load, keep the highlight, fit short terminals
+- choose the directory in the new note and directory dialogs
+- reveal a new directory, guard double Enter, doc the dialog
+- new note and new directory dialogs, Ctrl+N / Alt+N, FollowLink moves to Ctrl+U
+- Fix review findings: case-insensitive note extension, .md in directory names, clearer create errors
+- Core and shared logic for creating a note or directory from typed input
+
 ## [0.25.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.1...kimun-notes-v0.25.2) - 2026-11-15
 
 ### Fixed

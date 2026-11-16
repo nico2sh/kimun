@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/nico2sh/kimun/compare/kimun_core-v0.7.1...kimun_core-v0.7.2) - 2026-11-16
+
+### Fixed
+
+- small bugs on notes ending with double extension
+
+### Other
+
+- Fix review findings: case-insensitive note extension, .md in directory names, clearer create errors
+- Core and shared logic for creating a note or directory from typed input
+
 ## [0.7.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.7.0...kimun_core-v0.7.1) - 2026-11-12
 
 ### Added
