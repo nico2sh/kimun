@@ -318,6 +318,9 @@ pub enum FileOp {
         base: VaultPath,
         initial: Option<String>,
     },
+    /// Request to show the menu behind FILES' `[+]` chip (a new note or a
+    /// new directory), for entries made in `base`.
+    ShowNewMenu { base: VaultPath },
     /// Request to show the new-directory dialog for directories typed into
     /// `base`.
     ShowNewDirectory { base: VaultPath },

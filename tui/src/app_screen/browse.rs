@@ -42,6 +42,8 @@ impl BrowseScreen {
         // Browse hosts no overlays, so it cannot open the sort dialog: the
         // label would be a click target that does nothing.
         sidebar.set_sort_chip(false);
+        // Nor a menu that opens the new note and directory dialogs.
+        sidebar.set_new_chip(false);
         Self {
             vault,
             sidebar,

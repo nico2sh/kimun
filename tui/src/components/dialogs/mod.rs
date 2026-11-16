@@ -6,6 +6,7 @@ pub use info_dialog::InfoDialog;
 pub use modal_shell::ModalShell;
 pub use move_dialog::MoveDialog;
 pub use new_entry_dialog::NewEntryDialog;
+pub use new_menu::NewMenuDialog;
 pub use pinned_notes_dialog::PinnedNotesDialog;
 pub use properties_dialog::PropertiesDialog;
 pub use quick_note_modal::QuickNoteModal;
@@ -102,6 +103,7 @@ pub mod info_dialog;
 pub mod modal_shell;
 pub mod move_dialog;
 pub mod new_entry_dialog;
+pub mod new_menu;
 pub mod pinned_notes_dialog;
 pub mod properties_dialog;
 pub mod quick_note_modal;
@@ -119,6 +121,7 @@ pub enum ActiveDialog {
     Move(MoveDialog),
     CreateNote(CreateNoteDialog),
     NewEntry(NewEntryDialog),
+    NewMenu(NewMenuDialog),
     Help(HelpDialog),
     QuickNote(QuickNoteModal),
     WorkspaceSwitcher(WorkspaceSwitcherModal),
@@ -141,6 +144,7 @@ impl ActiveDialog {
             ActiveDialog::Move(d) => d,
             ActiveDialog::CreateNote(d) => d,
             ActiveDialog::NewEntry(d) => d,
+            ActiveDialog::NewMenu(d) => d,
             ActiveDialog::Help(d) => d,
             ActiveDialog::QuickNote(d) => d,
             ActiveDialog::WorkspaceSwitcher(d) => d,
@@ -295,6 +299,15 @@ impl ActiveDialog {
         tx: &AppTx,
     ) -> Self {
         ActiveDialog::NewEntry(NewEntryDialog::new(kind, base, initial, vault, tx))
+    }
+
+    /// The menu behind FILES' `[+]` chip: a new note or a new directory in
+    /// `base`.
+    pub fn new_menu(
+        base: kimun_core::nfs::VaultPath,
+        key_bindings: &crate::keys::KeyBindings,
+    ) -> Self {
+        ActiveDialog::NewMenu(NewMenuDialog::new(base, key_bindings))
     }
 
     pub fn move_to(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
@@ -637,6 +650,27 @@ mod tests {
 
     fn has(events: &[AppMessage], pred: impl Fn(&AppMessage) -> bool) -> bool {
         events.iter().any(pred)
+    }
+
+    /// The `[+]` menu draws both actions with the chords in effect, and a
+    /// click on each asks for its dialog on the menu's directory.
+    #[test]
+    fn new_menu_actions_are_clickable() {
+        use crate::logic::message::FileOp;
+        let bindings = crate::settings::AppSettings::default().key_bindings;
+        let base = kimun_core::nfs::VaultPath::new("/notes");
+        let mut d = ActiveDialog::new_menu(base.clone(), &bindings);
+        draw_and_find(&mut d, "ctrl&N");
+        draw_and_find(&mut d, "alt&N");
+        assert!(has(&click_text(&mut d, "[N]"), |e| matches!(
+            e,
+            AppMessage::FileOp(FileOp::ShowNewNote { base: b, initial: None }) if *b == base
+        )));
+        assert!(has(&click_text(&mut d, "[D]"), |e| matches!(
+            e,
+            AppMessage::FileOp(FileOp::ShowNewDirectory { base: b }) if *b == base
+        )));
+        assert!(closed(&click_text(&mut d, "[Esc]")));
     }
 
     /// The new-entry dialog draws in both states (the directory shown, then

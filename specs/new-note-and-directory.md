@@ -99,7 +99,7 @@ Both are rebindable through the existing keymap.
 - The F2 menu acts on a selected entry (delete/rename/move), so it does not get the new actions. TUI discoverability is the command palette, the leader tree and the keyboard help.
 - The search-field "Create: …" suggestion is rerouted to open `NewNoteDialog` pre-filled with the typed text, replacing its direct create.
 - On creation, the browser navigates to the parent (if needed) and selects the new entry.
-- Optional, not required for the first version: a clickable `[+]` chip in the browser header that opens the same two-item menu (the TUI already handles mouse clicks on hint chips). Skip it if the header is too tight. The palette and leader tree cover discoverability.
+- A clickable `[+]` chip at the right end of the FILES header's title edge opens a small menu (`NewMenuDialog`): `[N] Note` and `[D] Directory`, each with the chord bound to it, picking one opening the matching dialog on the directory shown. The chip is hidden when the title leaves it no room, and on the Browse screen (no dialog host).
 
 ## GUI
 
