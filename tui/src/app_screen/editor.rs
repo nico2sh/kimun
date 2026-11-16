@@ -939,7 +939,8 @@ impl EditorScreen {
             EditorOp::OpenJournal => {
                 tx.send(AppMessage::OpenJournal).ok();
             }
-            EditorOp::NewNote => self.request_new_menu(tx),
+            EditorOp::NewNote => self.request_new_note(None, tx),
+            EditorOp::NewEntry => self.request_new_menu(tx),
             EditorOp::NewDirectory => self.request_new_directory(tx),
             EditorOp::SaveNote => self.spawn_autosave(tx),
             EditorOp::ShowFileOps => {

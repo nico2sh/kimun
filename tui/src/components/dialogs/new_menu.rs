@@ -1,5 +1,5 @@
 //! The small menu behind FILES' `[+]` chip: what can be made here, a note
-//! or a directory; the directory's own chord shows when bound. Picking one
+//! or a directory, each with its own chord when bound. Picking one
 //! hands over to the new-entry dialog on the same directory (the menu gives
 //! way to it, as the file operations menu does).
 
@@ -26,7 +26,8 @@ pub struct NewMenuDialog {
     base: VaultPath,
     /// `"  in {base}"` for rendering.
     base_display: String,
-    /// The chord that makes a directory directly, as bound now (`None`: unbound).
+    /// The chords that make each directly, as bound now (`None`: unbound).
+    note_chord: Option<String>,
     directory_chord: Option<String>,
     shell: ModalShell,
     /// Each action's cell from the last render, with its key.
@@ -39,6 +40,7 @@ impl NewMenuDialog {
         Self {
             base_display: format!("  in {base}"),
             base,
+            note_chord: key_bindings.first_combo_for(&ActionShortcuts::NewNote),
             directory_chord: key_bindings.first_combo_for(&ActionShortcuts::NewDirectory),
             shell: ModalShell::default(),
             action_rects: Vec::new(),
@@ -142,7 +144,7 @@ impl Component for NewMenuDialog {
             (
                 "[N]",
                 " Note",
-                None,
+                self.note_chord.as_deref(),
                 KeyCode::Char('n'),
             ),
             (
@@ -255,6 +257,7 @@ mod tests {
     #[test]
     fn the_directory_chord_is_unbound_by_default() {
         let (d, _tx, _rx) = menu();
+        assert_eq!(d.note_chord, None);
         assert_eq!(d.directory_chord, None);
     }
 }

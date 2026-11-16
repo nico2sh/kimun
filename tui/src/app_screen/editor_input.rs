@@ -183,6 +183,8 @@ pub enum EditorOp {
     OpenJournal,
     /// Ask for a new note's name (`NewNote`), in the directory being browsed.
     NewNote,
+    /// Open the note-or-directory menu (`NewEntry`).
+    NewEntry,
     /// Ask for a new directory's name (`NewDirectory`).
     NewDirectory,
     ShowFileOps,
@@ -490,6 +492,11 @@ pub(crate) fn classify_tail(
             // Like the quick note: never replaces a dialog that is open.
             Some(ActionShortcuts::NewNote) => Some(if ctx.overlay.is_none() {
                 EditorIntent::Op(EditorOp::NewNote)
+            } else {
+                EditorIntent::Consume
+            }),
+            Some(ActionShortcuts::NewEntry) => Some(if ctx.overlay.is_none() {
+                EditorIntent::Op(EditorOp::NewEntry)
             } else {
                 EditorIntent::Consume
             }),
