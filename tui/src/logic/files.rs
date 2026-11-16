@@ -244,7 +244,8 @@ pub enum Activation {
     /// Show / hand off this attachment.
     OpenAttachment(VaultPath),
     /// Create this note through core, then open it
-    /// ([`spawn_create_and_open`]).
+    /// ([`spawn_create_and_open`]). Only hosts without dialogs (Browse) do;
+    /// the others confirm the name in the new-note dialog first.
     Create(VaultPath),
 }
 
@@ -587,13 +588,14 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
     /// and a fresh listing drops any filter, so the row is visible). A path
     /// the listing never holds (removed meanwhile) selects nothing.
     pub fn reveal(&mut self, path: &VaultPath, tx: &AppTx) {
-        self.pending_reveal = Some(path.clone());
         let parent = path.get_parent_path().0;
         if parent.is_like(&self.current_dir) {
             self.build_listing(tx);
         } else {
             self.navigate(parent, tx);
         }
+        // After the load starts, so a listing always exists to settle it.
+        self.pending_reveal = Some(path.clone());
     }
 
     /// Whether [`reveal`](Self::reveal) still waits for its row.
@@ -608,6 +610,7 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
             return false;
         };
         let Some(core) = self.core_mut() else {
+            self.pending_reveal = None;
             return false;
         };
         let position = core

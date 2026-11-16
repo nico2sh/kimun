@@ -134,7 +134,6 @@ impl NewEntryDialog {
             task.abort();
         }
         self.error = None;
-        self.creating = false;
         let typed = self.input.value();
         if typed.trim().is_empty() {
             self.target = None;

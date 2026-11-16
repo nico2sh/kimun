@@ -948,8 +948,10 @@ impl VaultPath {
             joined.push(stem);
         }
         let relative = VaultPath::new(joined.join(&PATH_SEPARATOR.to_string()));
+        // The extension is appended whatever the stem ends in: `a.md.md` is
+        // the note `a.md`, not `a`.
         let relative = if note {
-            VaultPath::note_path_from(relative.to_string())
+            VaultPath::new(format!("{relative}{NOTE_EXTENSION}"))
         } else {
             relative
         };
@@ -1651,6 +1653,11 @@ mod new_entry_tests {
         VaultPath::new_directory_in(&VaultPath::new(base), input)
             .map(|p| p.to_string())
             .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_stem_ending_in_the_extension_keeps_it() {
+        assert_eq!(note("/", "a.md.md").unwrap(), "/a.md.md");
     }
 
     #[test]
