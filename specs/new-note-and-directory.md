@@ -38,6 +38,7 @@ Status: draft. Applies to the TUI and the GUI.
 
 Add or confirm in core (all path handling stays in core, per `CLAUDE.md`):
 
+- An exclusive create that errors on an existing note. The TUI's `file_ops::create_note(.., None)` calls `load_or_create_note`, which loads an existing note, so it can't be reused for this dialog (it stays for follow-link).
 - One function to turn user-typed text plus a base directory into a validated `VaultPath` for a note.
   It reuses the existing note-path cleanup (no hardcoded `.md` or `/`), rejects characters invalid on any of the three OSes, and lowercases.
   The TUI and GUI both use it, both for the live preview and for the actual creation.
@@ -75,10 +76,10 @@ Add `create_note_from_input` and `create_directory_from_input` there, each wrapp
 | Action | Default chord | Leader | Notes |
 |---|---|---|---|
 | New note | `Ctrl+N` | `n n` (exists) | The leader route changes from "open FILES filter and flash a hint" to opening the dialog. |
-| New directory | `Alt+N` | `n d` (new) | |
+| New directory | `Alt+N` | `n f` (new, "folder") | `n d` is already "daily". |
 | FollowLink | `Ctrl+U` | unchanged | Moved off `Ctrl+N`. `Ctrl+Enter` still follows on kitty-protocol terminals (hardcoded in the editor screen). |
 
-Both new actions are added to the action/shortcut enum, the command palette, the file-operations menu (F2), the keyboard help, and the docs under `docs/`.
+Both new actions are added to the action/shortcut enum, the command palette, the keyboard help, and the docs under `docs/`.
 Both are rebindable through the existing keymap.
 
 ### Breaking change: FollowLink moves from `Ctrl+N` to `Ctrl+U`
@@ -93,10 +94,10 @@ Both are rebindable through the existing keymap.
 
 ### File browser
 
-- The two actions are added to the F2 file-operations menu, which is the TUI's discoverable route.
+- The F2 menu acts on a selected entry (delete/rename/move), so it does not get the new actions. TUI discoverability is the command palette, the leader tree and the keyboard help.
 - The search-field "Create: …" suggestion is rerouted to open `NewNoteDialog` pre-filled with the typed text, replacing its direct create.
 - On creation, the browser navigates to the parent (if needed) and selects the new entry.
-- Optional, not required for the first version: a clickable `[+]` chip in the browser header that opens the same two-item menu (the TUI already handles mouse clicks on hint chips). Skip it if the header is too tight. F2 covers discoverability.
+- Optional, not required for the first version: a clickable `[+]` chip in the browser header that opens the same two-item menu (the TUI already handles mouse clicks on hint chips). Skip it if the header is too tight. The palette and leader tree cover discoverability.
 
 ## GUI
 
@@ -157,11 +158,11 @@ Both are rebindable through the existing keymap.
 
 - Core: unit tests as above.
 - Shared logic: tests for `create_note_from_input` and `create_directory_from_input` (parents, collisions, outcomes).
-- TUI: dialog tests (key handling, error display, pre-fill from the search suggestion), leader routing tests for `n n` and `n d`, keymap default tests for the new bindings, and a test that no two default actions share a chord.
+- TUI: dialog tests (key handling, error display, pre-fill from the search suggestion), leader routing tests for `n n` and `n f`, keymap default tests for the new bindings, and a test that no two default actions share a chord.
 - GUI: `*_tests.rs` in `gui/src/workspace` for both dialogs, the keymap tests, the search-suggestion routing, and the `+` menu (items, shown shortcuts, disabled state).
 
 ## Open items to settle during planning
 
-1. How to handle existing configs that already persist `FollowLink = ["ctrl&N"]` (migrate vs. keep).
+1. Resolved: a v7 to v8 config migration (see the plan) rewrites a FollowLink still at the `Ctrl+N` default to `Ctrl+U`.
 2. Exact wording of the dialog titles and hints.
 3. Whether `primary+n` clashes with anything in the GUI kit.
