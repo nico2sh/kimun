@@ -373,6 +373,8 @@ pub struct FilesModel<L = ListCore<FileListEntry>> {
     property_sort: PropertySort,
     /// "Group directories first" for the active listing; see `sort`.
     group_dirs: bool,
+    /// An entry to select once the listing holds it ([`FilesModel::reveal`]).
+    pending_reveal: Option<VaultPath>,
 }
 
 impl FilesModel {
@@ -410,6 +412,7 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
             sort: (default_sort_field, default_sort_order),
             property_sort: PropertySort::default(),
             group_dirs: settings.group_directories,
+            pending_reveal: None,
         }
     }
 
@@ -548,6 +551,7 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
             polled.changed |= self.on_property_sort_values(&key, values);
         }
         self.stamp_open_marker();
+        polled.changed |= self.apply_pending_reveal();
         polled
     }
 
@@ -560,6 +564,44 @@ impl<L: ListHolder<FileListEntry>> FilesModel<L> {
         if dir.is_like(&self.current_dir) {
             self.build_listing(tx);
         }
+    }
+
+    /// Show the directory holding `path` and select `path`'s row once it
+    /// has loaded — how a freshly made entry is pointed out. Rebuilds the
+    /// listing even when it already shows that directory (the entry is new,
+    /// and a fresh listing drops any filter, so the row is visible). A path
+    /// the listing never holds (removed meanwhile) selects nothing.
+    pub fn reveal(&mut self, path: &VaultPath, tx: &AppTx) {
+        self.pending_reveal = Some(path.clone());
+        let parent = path.get_parent_path().0;
+        if parent.is_like(&self.current_dir) {
+            self.build_listing(tx);
+        } else {
+            self.navigate(parent, tx);
+        }
+    }
+
+    /// Select the row [`reveal`](Self::reveal) is waiting for as soon as the
+    /// listing holds it; give up once the load has finished without it.
+    fn apply_pending_reveal(&mut self) -> bool {
+        let Some(target) = self.pending_reveal.clone() else {
+            return false;
+        };
+        let Some(core) = self.core_mut() else {
+            return false;
+        };
+        let position = core
+            .visible_rows()
+            .iter()
+            .position(|row| row.path().is_like(&target));
+        let selected = position.is_some();
+        match position {
+            Some(position) => core.select(position),
+            None if core.is_loading() => return false,
+            None => {}
+        }
+        self.pending_reveal = None;
+        selected
     }
 
     /// Set (or clear) the note the editor currently has open, then re-stamp the
@@ -1163,6 +1205,63 @@ mod tests {
         let before = model.core().unwrap().is_loading();
         model.refresh_if_showing(&VaultPath::new("sub"), &tx);
         assert_eq!(model.core().unwrap().is_loading(), before);
+    }
+
+    /// A freshly made directory is pointed out: the listing shows its parent
+    /// (rebuilt, so a typed filter is gone) and selects its row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_selects_the_new_entry_in_the_shown_directory() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+        model.core_mut().unwrap().set_query("zzz");
+
+        let fresh = VaultPath::new("fresh");
+        model.vault().create_directory(&fresh).await.unwrap();
+        model.reveal(&fresh, &tx);
+        poll_to_idle(&mut model).await;
+
+        assert_eq!(model.core().unwrap().query(), "", "the filter is gone");
+        assert!(
+            matches!(
+                model.core().unwrap().selected_row(),
+                Some(FileListEntry::Directory { path, .. }) if path.is_like(&fresh)
+            ),
+            "selected: {:?}",
+            model.core().unwrap().selected_row()
+        );
+    }
+
+    /// Revealing a nested entry moves the listing to the directory holding it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_navigates_to_the_entrys_parent() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        let nested = VaultPath::new("sub/deep");
+        model.vault().create_directory(&nested).await.unwrap();
+        model.reveal(&nested, &tx);
+        poll_to_idle(&mut model).await;
+
+        assert!(model.current_dir().is_like(&VaultPath::new("sub")));
+        assert!(matches!(
+            model.core().unwrap().selected_row(),
+            Some(FileListEntry::Directory { path, .. }) if path.is_like(&nested)
+        ));
+    }
+
+    /// An entry the listing never holds is given up on, selecting nothing and
+    /// leaving no request behind to fire on a later listing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_of_a_missing_entry_is_dropped() {
+        let (mut model, tx) = model().await;
+        model.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut model).await;
+
+        model.reveal(&VaultPath::new("never-made"), &tx);
+        poll_to_idle(&mut model).await;
+        assert!(model.pending_reveal.is_none());
     }
 
     /// In a subdirectory the `Up` row survives any filter text, and the

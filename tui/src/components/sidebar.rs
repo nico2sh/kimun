@@ -136,6 +136,11 @@ impl SidebarComponent {
         self.model.refresh_if_showing(dir, tx);
     }
 
+    /// See [`FilesModel::reveal`].
+    pub fn reveal(&mut self, path: &VaultPath, tx: &AppTx) {
+        self.model.reveal(path, tx);
+    }
+
     /// See [`FilesModel::set_open_note`].
     pub fn set_open_note(&mut self, path: Option<VaultPath>) {
         self.model.set_open_note(path);

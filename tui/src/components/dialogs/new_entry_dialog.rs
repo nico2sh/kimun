@@ -42,6 +42,9 @@ pub struct NewEntryDialog {
     validation_task: Option<JoinHandle<()>>,
     /// Why the last create failed.
     error: Option<String>,
+    /// A create is running: Enter waits for it (it ends the dialog or
+    /// fails into [`Self::fail`]).
+    creating: bool,
     hints: HintRow,
 }
 
@@ -63,6 +66,7 @@ impl NewEntryDialog {
             validation_state: ValidationState::Idle,
             validation_task: None,
             error: None,
+            creating: false,
             hints: super::confirm_hints("Create"),
         };
         dialog.on_input_changed(tx);
@@ -76,6 +80,7 @@ impl NewEntryDialog {
             task.abort();
         }
         self.error = None;
+        self.creating = false;
         let typed = self.input.value();
         if typed.trim().is_empty() {
             self.target = None;
@@ -122,15 +127,18 @@ impl NewEntryDialog {
     /// The path Enter would create, when it may be created now.
     fn creatable(&self) -> Option<&VaultPath> {
         match &self.target {
-            Some(Ok(path)) if self.validation_state != ValidationState::Taken => Some(path),
+            Some(Ok(path)) if !self.creating && self.validation_state != ValidationState::Taken => {
+                Some(path)
+            }
             _ => None,
         }
     }
 
-    fn confirm(&self, tx: &AppTx) {
+    fn confirm(&mut self, tx: &AppTx) {
         let Some(path) = self.creatable().cloned() else {
             return;
         };
+        self.creating = true;
         let (kind, vault, tx) = (self.kind, Arc::clone(&self.vault), tx.clone());
         tokio::spawn(async move {
             match kind.create(&vault, &path, None).await {
@@ -253,7 +261,27 @@ impl Component for NewEntryDialog {
     }
 }
 
-impl_dialog!(NewEntryDialog, error);
+impl NewEntryDialog {
+    #[cfg(test)]
+    fn set_error_for_test(&mut self, msg: String) {
+        use super::Dialog as _;
+        self.set_error(msg);
+    }
+
+    /// The create failed: show why, and let the user change the name or try
+    /// again.
+    fn fail(&mut self, msg: String) {
+        self.creating = false;
+        self.error = Some(msg);
+    }
+}
+
+impl_dialog!(
+    @impl NewEntryDialog,
+    fn set_error(&mut self, msg: String) {
+        self.fail(msg);
+    }
+);
 
 #[cfg(test)]
 mod tests {
@@ -430,6 +458,59 @@ mod tests {
             .unwrap()
             .raw_text;
         assert_eq!(text, "original");
+    }
+
+    /// A second Enter while the create runs must not start another one.
+    #[tokio::test]
+    async fn a_second_enter_while_creating_does_nothing() {
+        let (mut d, vault, tx, mut rx) = dialog(NewEntryKind::Note, "/", None).await;
+        type_text(&mut d, "once", &tx);
+        press(&mut d, KeyCode::Enter, &tx);
+        assert!(d.creating);
+        press(&mut d, KeyCode::Enter, &tx);
+        let mut opens = 0;
+        while opens == 0 {
+            if let AppMessage::OpenPath { .. } = next(&mut rx).await {
+                opens += 1;
+            }
+        }
+        // Let any stray second create finish and report.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        while let Ok(msg) = rx.try_recv() {
+            assert!(
+                !matches!(
+                    msg,
+                    AppMessage::OpenPath { .. } | AppMessage::OverlayData(OverlayData::Error(_))
+                ),
+                "a second create ran: {msg:?}"
+            );
+        }
+        assert!(vault.exists(&VaultPath::new("/once.md")).await);
+    }
+
+    /// A failed create leaves the dialog usable: the error shows and Enter
+    /// works again once the name changes.
+    #[tokio::test]
+    async fn a_failed_create_reports_and_can_be_retried() {
+        let (mut d, vault, tx, mut rx) = dialog(NewEntryKind::Note, "/", None).await;
+        type_text(&mut d, "dup", &tx);
+        vault
+            .create_note(&VaultPath::new("dup.md"), "x")
+            .await
+            .unwrap();
+        press(&mut d, KeyCode::Enter, &tx);
+        assert!(d.creating);
+        loop {
+            if let AppMessage::OverlayData(OverlayData::Error(e)) = next(&mut rx).await {
+                d.set_error_for_test(e);
+                break;
+            }
+        }
+        assert!(!d.creating, "a failure frees the dialog");
+        assert!(d.error.is_some());
+        press(&mut d, KeyCode::Char('2'), &tx);
+        assert!(d.error.is_none(), "typing clears the error");
+        assert!(d.creatable().is_some(), "and Enter works on the new name");
     }
 
     #[tokio::test]
