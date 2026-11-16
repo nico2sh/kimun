@@ -24,13 +24,13 @@ use crate::logic::sort::{SortField, SortOrder};
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
+/// The header's chip for the new note / directory menu.
+const NEW_CHIP: &str = "[+]";
+
 /// The FILES drawer view: a [`FilesModel`] (directory, marker, sort, the
 /// listing and its rules) whose listing is a [`SearchList`] — the filter
 /// input, viewport, keys and mouse — plus the breadcrumb and sort chip it
 /// draws. Activations the model reports are performed here.
-/// The header's chip for the new note / directory menu.
-const NEW_CHIP: &str = "[+]";
-
 pub struct SidebarComponent {
     model: FilesModel<SearchList<FileListEntry>>,
     rendered_rect: Rect,
@@ -392,7 +392,9 @@ impl Component for SidebarComponent {
         let chip = ratatui::text::Line::from(ratatui::text::Span::styled(NEW_CHIP, theme.action()));
         let room = usize::from(rows[0].width.saturating_sub(2));
         if self.show_new_chip
-            && unicode_width::UnicodeWidthStr::width(header_title.as_str()) + 1 + NEW_CHIP.len()
+            && unicode_width::UnicodeWidthStr::width(header_title.as_str())
+                + 1
+                + unicode_width::UnicodeWidthStr::width(NEW_CHIP)
                 <= room
         {
             header = self.new_chip.place(
