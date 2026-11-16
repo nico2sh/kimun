@@ -191,6 +191,8 @@ pub enum EditorOp {
     /// directory — never hides the drawer.
     OpenFileBrowserReveal,
     SaveCurrentQuery,
+    /// Write the open note now (`SaveNote`).
+    SaveNote,
     FindInBuffer,
     /// Open the find bar with the replace field revealed.
     ReplaceInBuffer,
@@ -484,6 +486,7 @@ pub(crate) fn classify_tail(
                 EditorIntent::Consume
             }),
             Some(ActionShortcuts::NewJournal) => Some(EditorIntent::Op(EditorOp::OpenJournal)),
+            Some(ActionShortcuts::SaveNote) => Some(EditorIntent::Op(EditorOp::SaveNote)),
             // Like the quick note: never replaces a dialog that is open.
             Some(ActionShortcuts::NewNote) => Some(if ctx.overlay.is_none() {
                 EditorIntent::Op(EditorOp::NewNote)
@@ -687,7 +690,8 @@ mod tests {
             .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
             .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
             .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
-            .add(KeyStrike::KeyW, ActionShortcuts::QuickNote);
+            .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
+            .add(KeyStrike::KeyS, ActionShortcuts::SaveNote);
         kb.batch_add()
             .add(KeyStrike::F2, ActionShortcuts::FileOperations);
         kb
@@ -1206,6 +1210,12 @@ mod tests {
         cx.overlay = Some(OverlayKind::NoteBrowser);
         let c = classify_it(&ctrl('h'), &cx);
         assert_eq!(c.intent, EditorIntent::Consume);
+    }
+
+    #[test]
+    fn ctrl_s_saves_the_note() {
+        let c = classify_it(&ctrl('s'), &ctx());
+        assert_eq!(c.intent, EditorIntent::Op(EditorOp::SaveNote));
     }
 
     #[test]

@@ -933,6 +933,7 @@ impl EditorScreen {
             }
             EditorOp::NewNote => self.request_new_note(None, tx),
             EditorOp::NewDirectory => self.request_new_directory(tx),
+            EditorOp::SaveNote => self.spawn_autosave(tx),
             EditorOp::ShowFileOps => {
                 tx.send(AppMessage::FileOp(FileOp::ShowMenu(
                     self.session.path().clone(),

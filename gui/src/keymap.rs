@@ -197,13 +197,13 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
             (false, Dir::Up) => &["alt+up"],
             (false, Dir::Down) => &["alt+down"],
         },
-        // The wrapping panel cycle (the TUI's Tab / Shift+Tab, whose Tab the
-        // editor keeps for indent): E forward, F back. Alt+letter, so the
+        // Focus a target (the TUI's Ctrl+L / Ctrl+H, which it names by
+        // direction): E the editor, F the sidebar (files). Alt+letter, so the
         // browser's Ctrl+Tab and Ctrl+Shift+Tab move between tabs
         // (ADR-0058). On Linux and Windows neither the plain editor nor the
         // vim engine reads an Alt+letter. On macOS Option+letter types text
-        // (Option+E is a dead key), so the chords add Cmd there; back is S,
-        // as Cmd+Option+F is the platform's find-and-replace.
+        // (Option+E is a dead key), so the chords add Cmd there; the sidebar
+        // is S, as Cmd+Option+F is the platform's find-and-replace.
         A::FocusEditor if mac => &["cmd+alt+e"],
         A::FocusEditor => &["alt+e"],
         A::FocusSidebar if mac => &["cmd+alt+s"],
@@ -252,14 +252,15 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // Zoom (ADR-0053): the focused view or editor group takes over
         // everything right of the rail, and the same chord restores; Esc
         // never does. M for maximize. Everywhere, so the editor can zoom
-        // too: Ctrl+Shift+letter is no vim chord (no twin needed) and
-        // Cmd+Shift+M is no macOS default.
-        A::ToggleZoom => &["primary+shift+m"],
+        // too. Part of the Alt layout family (Cmd+Option on macOS, where
+        // Option types text); no vim engine reads Alt+letter.
+        A::ToggleZoom if mac => &["cmd+alt+m"],
+        A::ToggleZoom => &["alt+m"],
         // Hide or show the rail (ADR-0055): A for the Activity rail.
-        // Everywhere, so the editor can hide it too; Ctrl+Shift+letter is no
-        // vim chord (no twin needed). Not R: Ctrl+Shift+R is the sort
-        // dialog's vim twin.
-        A::ToggleRail => &["primary+shift+a"],
+        // Everywhere, so the editor can hide it too. The Alt layout family,
+        // like the zoom.
+        A::ToggleRail if mac => &["cmd+alt+a"],
+        A::ToggleRail => &["alt+a"],
         // The command palette (M6): VS Code's chord. Primary+P stays free for
         // a GUI quick-open convention; under vim Ctrl+Shift+P is no vim chord.
         A::OpenCommandPalette => &["primary+shift+p"],
@@ -292,7 +293,8 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The search browser (M7b G4): the TUI's Ctrl+K. Everywhere; vim
         // reads no Ctrl+K (it is not one of R, C, X, V), and it gets its
         // twin.
-        A::SearchNotes => &["primary+k"],
+        // Also VS Code's and Obsidian's global search chord.
+        A::SearchNotes => &["primary+k", "primary+shift+f"],
         // The saved searches (M7b G6): the TUI's F3. Everywhere.
         A::OpenSavedSearches => &["f3"],
         // Save the query (M7b G6): the TUI's Ctrl+D, only from the rail or

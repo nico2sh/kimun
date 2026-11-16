@@ -386,28 +386,9 @@ impl Overlay for ActiveDialog {
                 }
                 OverlayMsg::Consumed
             }
-            OverlayData::MoveDirectoriesLoaded(paths) => {
+            OverlayData::MoveDirectoriesLoaded(directories) => {
                 if let ActiveDialog::Move(d) = self {
-                    d.all_dirs = paths.clone();
-                    d.filtered = None;
-                    d.load_task = None;
-                    if d.list_state.selected().is_none() && !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    }
-                    d.spawn_validation(tx);
-                }
-                OverlayMsg::Consumed
-            }
-            OverlayData::MoveFilterResults(paths) => {
-                if let ActiveDialog::Move(d) = self {
-                    d.filter_task = None;
-                    d.filtered = Some(paths.clone());
-                    if !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    } else {
-                        d.list_state.select(None);
-                    }
-                    d.spawn_validation(tx);
+                    d.on_directories(directories.clone(), tx);
                 }
                 OverlayMsg::Consumed
             }
@@ -745,17 +726,23 @@ mod tests {
         let vault = crate::test_support::temp_vault("dlg-move-click").await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
-        m.all_dirs = vec![
-            kimun_core::nfs::VaultPath::root(),
-            kimun_core::nfs::VaultPath::new("projects"),
-        ];
-        m.list_state.select(Some(0));
+        m.picker.set_directories(
+            Ok(vec![
+                kimun_core::nfs::VaultPath::root(),
+                kimun_core::nfs::VaultPath::new("projects"),
+            ]),
+            &kimun_core::nfs::VaultPath::root(),
+        );
         let mut d = ActiveDialog::Move(m);
         click_text(&mut d, "projects");
         let ActiveDialog::Move(m) = &d else {
             unreachable!()
         };
-        assert_eq!(m.list_state.selected(), Some(1), "click selects the row");
+        assert_eq!(
+            m.picker.highlighted(),
+            Some(&kimun_core::nfs::VaultPath::new("projects")),
+            "click selects the row"
+        );
         assert!(closed(&click_text(&mut d, "[Esc] Cancel")));
     }
 
@@ -766,8 +753,10 @@ mod tests {
         let vault = crate::test_support::temp_vault("dlg-move-enter").await;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut m = MoveDialog::new(kimun_core::nfs::VaultPath::new("a.md"), vault, &tx);
-        m.all_dirs = vec![kimun_core::nfs::VaultPath::new("projects")];
-        m.list_state.select(Some(0));
+        m.picker.set_directories(
+            Ok(vec![kimun_core::nfs::VaultPath::new("projects")]),
+            &kimun_core::nfs::VaultPath::root(),
+        );
         assert_eq!(m.dest_validation, ValidationState::Idle);
         let mut d = ActiveDialog::Move(m);
         let (col, row) = draw_and_find(&mut d, "[Enter] Move here");

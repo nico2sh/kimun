@@ -1819,9 +1819,6 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
         assert_eq!(query(&view, cx), "foo");
         window.press("escape", cx);
         assert!(!bar_open(&view, cx));
-        window.press("ctrl-shift-f", cx);
-        assert!(bar_open(&view, cx), "the twin finds too");
-        window.press("escape", cx);
         window.press("ctrl-h", cx);
         assert!(replacing(&view, cx));
         assert_eq!(text(&view, cx), all);
@@ -1829,14 +1826,12 @@ fn under_vim_the_app_keeps_ctrl_letters_vim_does_not_read(cx: &mut TestAppContex
     .unwrap();
 }
 
-/// The plain editor keeps M4's Ctrl-F / Ctrl-H, and the twins work there too.
+/// The plain editor keeps M4's Ctrl-F / Ctrl-H, and Ctrl-Shift-H works there too.
+/// (Ctrl-Shift-F is the global search, so Find has no twin: vim reads no Ctrl-F.)
 #[gpui_kit::test]
 fn the_plain_editor_keeps_ctrl_f_and_ctrl_h(cx: &mut TestAppContext) {
     let (handle, view) = open(cx, "foo");
     cx.update_window(handle, |_, window, cx| {
-        window.press("ctrl-shift-f", cx);
-        assert!(bar_open(&view, cx));
-        window.press("escape", cx);
         window.press("ctrl-shift-h", cx);
         assert!(replacing(&view, cx));
         window.press("escape", cx);

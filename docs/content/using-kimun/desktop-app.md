@@ -19,8 +19,8 @@ To start it, open Kimün from your application menu. To open one note, run `kimu
 - The rail is a strip at the edge. It lists the views: FILES, FIND, TAGS, LINKS, and OUTLINE. If you connect a [Kimün server](@/using-kimun/server.md), it also lists SEM (search by meaning) and ASK. Click a view to open it.
 - Views sit in slots next to the editor. Drag a view by its slot header to move it. Drag it to an edge of the window to give it a new slot. Drag a divider to resize a slot.
 - The footer shows the note path, the cursor position, the backlink count, and whether the note is saved.
-- Press `Ctrl+Shift+M` to zoom the view that has focus. Press it again to go back. In a tab with several panes, zoom shows the current pane only. The focus keys still move to the other panes, and the zoom then shows the pane they reach.
-- To hide or show the rail, press `Ctrl+Shift+A`. To move it to another edge, use `Rail position` in Preferences.
+- Press `Alt+M` (`Cmd+Option+M` on macOS) to zoom the view that has focus. Press it again to go back. In a tab with several panes, zoom shows the current pane only. The focus keys still move to the other panes, and the zoom then shows the pane they reach.
+- To hide or show the rail, press `Alt+A` (`Cmd+Option+A` on macOS). To move it to another edge, use `Rail position` in Preferences.
 
 On macOS, use `Cmd` in place of `Ctrl`.
 
@@ -81,7 +81,7 @@ Press `F1` to see every shortcut. These are the most useful:
 
 | Shortcut | What it does |
 |---|---|
-| `Ctrl+K` | Search your notes |
+| `Ctrl+K` or `Ctrl+Shift+F` | Search your notes |
 | `Ctrl+Shift+P` | Command palette: find any command |
 | `Ctrl+S` | Save |
 | `F5` | Switch workspace |

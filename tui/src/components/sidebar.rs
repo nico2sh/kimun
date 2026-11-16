@@ -16,6 +16,7 @@ use crate::components::file_list::FileListEntry;
 use crate::components::search_list::{KeyReaction, SearchList, SearchMouse};
 use crate::components::sortable::SortableList;
 use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::logic::file_ops;
 use crate::logic::files::{Activation, FilesModel};
 use crate::logic::message::{AppMessage, AppTx, FileOp, SortTarget};
@@ -497,6 +498,41 @@ impl Component for SidebarComponent {
             list.set_list_rect(list_inner);
             list.set_panel_rect(rect);
         }
+        self.render_empty_hint(f, list_inner, theme);
+    }
+}
+
+impl SidebarComponent {
+    /// A folder with nothing in it (bar the `..` row) says how to make a
+    /// note, so an empty vault does not read as broken.
+    fn render_empty_hint(&self, f: &mut Frame, list_inner: Rect, theme: &Theme) {
+        let Some(core) = self.model.core() else {
+            return;
+        };
+        if core.is_loading()
+            || !core.query().is_empty()
+            || !core
+                .visible_rows()
+                .iter()
+                .all(|row| matches!(row, FileListEntry::Up { .. }))
+        {
+            return;
+        }
+        let text = match self.key_bindings.first_combo_for(&ActionShortcuts::NewNote) {
+            Some(chord) => format!("  Empty. {chord} makes a note."),
+            None => "  Empty. [+] makes a note.".to_string(),
+        };
+        let y = list_inner.y + core.visible_len() as u16;
+        if y < list_inner.bottom() {
+            f.render_widget(
+                Paragraph::new(text).style(
+                    Style::default()
+                        .fg(theme.gray.to_ratatui())
+                        .bg(theme.bg_panel.to_ratatui()),
+                ),
+                Rect::new(list_inner.x, y, list_inner.width, 1),
+            );
+        }
     }
 }
 
@@ -718,6 +754,46 @@ mod tests {
             }
             other => panic!("expected ShowNewMenu, got {other:?}"),
         }
+    }
+
+    /// An empty folder says how to make a note; one with notes does not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_folder_hints_at_the_new_note_key() {
+        let vault = temp_vault("sidebar-empty").await;
+        vault.validate_and_init().await.unwrap();
+        // The root holds the test vault's index file: use an empty folder.
+        let empty = VaultPath::new("/empty");
+        vault.create_directory(&empty).await.unwrap();
+        let settings = AppSettings::default();
+        let mut sidebar = SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        );
+        let (tx, _rx) = unbounded_channel();
+        sidebar.navigate(empty, &tx);
+        for _ in 0..50 {
+            sidebar.poll_for_test();
+            if !sidebar.is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let buffer = draw(&mut sidebar, 60);
+        assert!(crate::test_support::find_text(&buffer, "ctrl&N makes a note").is_some());
+
+        let mut full = sidebar_with_notes("sidebar-not-empty", &["alpha"]).await;
+        full.navigate(VaultPath::root(), &tx);
+        for _ in 0..50 {
+            full.poll_for_test();
+            if !full.is_loading_for_test() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let buffer = draw(&mut full, 60);
+        assert!(crate::test_support::find_text(&buffer, "makes a note").is_none());
     }
 
     /// A header title too long to leave the chip room hides the chip rather
