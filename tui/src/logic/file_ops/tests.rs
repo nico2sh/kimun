@@ -425,3 +425,16 @@ async fn create_directory_reports_created_and_refuses_a_duplicate() {
         Err(e) if e == "A directory with that name already exists"
     ));
 }
+
+#[tokio::test]
+async fn create_new_note_under_a_file_is_an_error_not_a_panic() {
+    let vault = vault("new-note-under-file").await;
+    attachment(&vault, "pic.png").await;
+    let path = new_note_target(&VaultPath::root(), "pic.png/idea").unwrap();
+    let err = create_new_note(&vault, &path, None).await.unwrap_err();
+    assert_eq!(
+        err,
+        "A file with the same name as one of the parent directories already exists"
+    );
+    assert!(!vault.exists(&path).await);
+}

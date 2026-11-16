@@ -866,7 +866,8 @@ impl VaultPath {
     /// Unlike [`VaultPath::new`], which repairs bad input, this *rejects* it
     /// with a message fit to show next to the input: every component must be
     /// a valid name on all three filesystems, `.` and `..` are refused, and
-    /// a trailing separator is an error (that names a directory). The note
+    /// a trailing separator is an error (that names a directory), and doubled
+    /// separators collapse as in [`VaultPath::new`]. The note
     /// extension is added when missing, and the result is lowercased like
     /// every vault path.
     ///
@@ -925,36 +926,38 @@ impl VaultPath {
             if *component == "." || *component == ".." {
                 return Err(invalid(format!("'{component}' is not a valid name")));
             }
-            // The extension is not part of the name the rules are about.
-            let stem = if note && i == last {
-                component.strip_suffix(NOTE_EXTENSION).unwrap_or(component)
+            let is_note_name = note && i == last;
+            // The note extension is not part of the name the rules are about,
+            // whatever its case; the one name allowed to end in it is the
+            // note's own.
+            let has_extension = component.to_lowercase().ends_with(NOTE_EXTENSION);
+            let stem = if has_extension {
+                &component[..component.len() - NOTE_EXTENSION.len()]
             } else {
                 component
             };
-            if stem.is_empty() {
+            if has_extension && !is_note_name {
+                return Err(invalid(format!(
+                    "A directory name cannot end with '{NOTE_EXTENSION}'"
+                )));
+            }
+            if stem.trim().is_empty() {
                 return Err(invalid("The name cannot be empty".to_string()));
             }
             filename::validate_filename(stem).map_err(|e| invalid(e.to_string()))?;
-            joined.push(*component);
+            joined.push(stem);
         }
-        let relative = joined.join(&PATH_SEPARATOR.to_string());
+        let relative = VaultPath::new(joined.join(&PATH_SEPARATOR.to_string()));
         let relative = if note {
-            VaultPath::note_path_from(relative)
+            VaultPath::note_path_from(relative.to_string())
         } else {
-            VaultPath::new(relative)
+            relative
         };
         let path = if from_root {
             VaultPath::root().append(&relative)
         } else {
             base.append(&relative)
         };
-        if !note {
-            path.ensure_directory().map_err(|_| {
-                invalid(format!(
-                    "A directory name cannot end with '{NOTE_EXTENSION}'"
-                ))
-            })?;
-        }
         Ok(path)
     }
 }
@@ -1725,5 +1728,24 @@ mod new_entry_tests {
             Err(FSError::InvalidPath { path, .. }) => assert_eq!(path, "bad?"),
             other => panic!("expected InvalidPath, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn extension_is_recognised_in_any_case() {
+        assert_eq!(note("/", "Idea.MD").unwrap(), "/idea.md");
+        assert_eq!(note("/", "idea.Md").unwrap(), "/idea.md");
+    }
+
+    #[test]
+    fn only_the_notes_own_name_may_end_in_the_extension() {
+        assert!(note("/", "foo.md/bar").is_err());
+        assert!(dir("/", "a.md/b").is_err());
+        assert!(dir("/", "A.MD").is_err());
+    }
+
+    #[test]
+    fn whitespace_only_component_reads_as_empty() {
+        let err = note("/", "a/ /b").unwrap_err();
+        assert!(err.contains("empty"), "{err}");
     }
 }
