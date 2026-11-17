@@ -367,14 +367,20 @@ impl PropertyFilter {
     /// and a `*` in the value is a wildcard, as in an unquoted query value.
     /// `None` when the key can't be a property or the value is blank.
     pub fn compare(key: &str, op: PropertyOp, value: &str) -> Option<Self> {
-        let value = search_form(value.trim());
-        (!value.is_empty()).then_some(())?;
-        Some(Self {
-            key: search_key(key)?,
+        Self::comparing(search_key(key)?, op, value.trim(), value.contains('*'))
+    }
+
+    /// `key<op>value`, the value in search form; `None` when it is blank.
+    /// `wildcard` is whether the value was written unquoted with a `*` in it.
+    /// The one place a comparison is built, for parsing and for forms.
+    fn comparing(key: String, op: PropertyOp, value: &str, wildcard: bool) -> Option<Self> {
+        let value = search_form(value);
+        (!value.is_empty()).then_some(Self {
+            key,
             test: PropertyTest::Compare {
                 op,
-                wildcard: value.contains('*'),
                 value,
+                wildcard,
             },
         })
     }
@@ -418,15 +424,7 @@ impl PropertyFilter {
         }
         let unquoted = unquote(raw);
         let wildcard = unquoted.len() == raw.len() && unquoted.contains('*');
-        let value = search_form(unquoted);
-        (!value.is_empty()).then_some(Self {
-            key,
-            test: PropertyTest::Compare {
-                op,
-                value,
-                wildcard,
-            },
-        })
+        Self::comparing(key, op, unquoted, wildcard)
     }
 }
 

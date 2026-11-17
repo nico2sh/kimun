@@ -11,7 +11,7 @@
 
 use kimun_core::{PropertyFilter, PropertyOp, PropertyTest, SearchTerms};
 
-use crate::logic::sort::{SortField, SortOrder, directive_of_query, query_with_sort};
+use crate::logic::sort::{SortField, SortOrder, directive_of_terms, query_with_sort};
 
 /// What a row asks of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +75,8 @@ impl RowKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuilderRow {
     pub kind: RowKind,
-    /// "Must not": the note must *not* match (`-`).
+    /// "Must not": the note must *not* match (`-`). Ignored by a raw row,
+    /// which is written as it is ([`RowKind::can_exclude`]).
     pub exclude: bool,
     /// What is matched: the text, name, folder, tag or note. A property's
     /// value. The whole text of a raw row.
@@ -110,10 +111,11 @@ impl BuilderRow {
     /// property a key (and a value, unless it only asks for the property).
     /// Incomplete rows stay on screen and are left out of the query.
     pub fn is_complete(&self) -> bool {
-        let has_value = !self.value.trim().is_empty();
         match self.kind {
-            RowKind::Property => !self.key.trim().is_empty() && (self.op.is_none() || has_value),
-            _ => has_value,
+            // What core accepts as a filter, so a row never counts as
+            // complete and then writes nothing (a multi-line key).
+            RowKind::Property => self.property_filter().is_some(),
+            _ => !self.value.trim().is_empty(),
         }
     }
 
@@ -199,11 +201,10 @@ impl BuilderModel {
         // The first sort is the sort control's; any further one has no place
         // in a form, so it is kept as written.
         for extra in terms.order_by.iter().skip(1) {
-            let only = SearchTerms {
+            rows.push(raw_row(SearchTerms {
                 order_by: vec![extra.clone()],
                 ..SearchTerms::default()
-            };
-            rows.push(BuilderRow::with_value(RowKind::Raw, only.to_query_string()));
+            }));
         }
         rows.extend(
             terms
@@ -213,7 +214,7 @@ impl BuilderModel {
         );
         Self {
             rows,
-            sort: directive_of_query(query),
+            sort: directive_of_terms(&terms),
         }
     }
 
@@ -221,38 +222,33 @@ impl BuilderModel {
     fn terms(&self) -> SearchTerms {
         let mut t = SearchTerms::default();
         for row in self.rows.iter().filter(|r| r.is_complete()) {
-            let value = row.value.trim().to_string();
+            if row.kind == RowKind::Property {
+                if let Some(filter) = row.property_filter() {
+                    if row.exclude {
+                        t.excluded_properties.push(filter);
+                    } else {
+                        t.properties.push(filter);
+                    }
+                }
+                continue;
+            }
             let (include, exclude) = match row.kind {
                 RowKind::Text => (&mut t.terms, &mut t.excluded_terms),
                 RowKind::Name => (&mut t.filename, &mut t.excluded_filename),
                 RowKind::Heading => (&mut t.breadcrumb, &mut t.excluded_breadcrumb),
                 RowKind::Folder => (&mut t.path, &mut t.excluded_path),
-                // Tags are matched in lowercase, as the parser reads them.
-                RowKind::Tag => {
-                    let value = value.to_lowercase();
-                    let list = if row.exclude {
-                        &mut t.excluded_labels
-                    } else {
-                        &mut t.labels
-                    };
-                    list.push(value);
-                    continue;
-                }
+                RowKind::Tag => (&mut t.labels, &mut t.excluded_labels),
                 RowKind::LinksTo => (&mut t.links, &mut t.excluded_links),
                 RowKind::LinkedFrom => (&mut t.forward_links, &mut t.excluded_forward_links),
-                RowKind::Property => {
-                    if let Some(filter) = row.property_filter() {
-                        let list = if row.exclude {
-                            &mut t.excluded_properties
-                        } else {
-                            &mut t.properties
-                        };
-                        list.push(filter);
-                    }
-                    continue;
-                }
                 // Written after the sort, as they were (see `to_query`).
-                RowKind::Raw => continue,
+                RowKind::Property | RowKind::Raw => continue,
+            };
+            let value = row.value.trim();
+            // The parser reads a tag in lowercase.
+            let value = if row.kind == RowKind::Tag {
+                value.to_lowercase()
+            } else {
+                value.to_string()
             };
             if row.exclude { exclude } else { include }.push(value);
         }
@@ -261,21 +257,26 @@ impl BuilderModel {
 
     /// The query the complete rows and the sort say. The raw rows come last,
     /// as written: setting the sort strips every order directive from the
-    /// text it is given, so a raw second sort must be added after it, and an
-    /// unterminated quote runs to the end of the query so it belongs there.
+    /// text it is given, so a raw second sort must be added after it. A raw
+    /// row with an unterminated quote goes last of all, since the quote runs
+    /// to the end of the query and would swallow what follows it. A raw sort
+    /// directive stays in effect (it is on screen, to edit or remove) even
+    /// when the sort control is cleared.
     pub fn to_query(&self) -> String {
         let text = self.terms().to_query_string();
         let text = match &self.sort {
             Some((field, order)) => query_with_sort(&text, field, *order).unwrap_or(text),
             None => text,
         };
-        let raw = self
+        let (open, closed): (Vec<&str>, Vec<&str>) = self
             .rows
             .iter()
             .filter(|r| r.kind == RowKind::Raw && r.is_complete())
-            .map(|r| r.value.trim());
+            .map(|r| r.value.trim())
+            .partition(|v| kimun_core::query_has_unterminated_quote(v));
         std::iter::once(text.as_str())
-            .chain(raw)
+            .chain(closed)
+            .chain(open)
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" ")
@@ -285,6 +286,11 @@ impl BuilderModel {
     pub fn incomplete(&self) -> usize {
         self.rows.iter().filter(|r| !r.is_complete()).count()
     }
+}
+
+/// A raw row holding `terms` as the query writes them.
+fn raw_row(terms: SearchTerms) -> BuilderRow {
+    BuilderRow::with_value(RowKind::Raw, terms.to_query_string())
 }
 
 /// The row for a property filter. A literal `*` in a value (a quoted one) is
@@ -308,20 +314,17 @@ fn property_row(filter: &PropertyFilter, exclude: bool) -> BuilderRow {
             value: value.clone(),
             ..BuilderRow::new(RowKind::Property)
         },
-        PropertyTest::Compare { .. } => {
-            let only = if exclude {
-                SearchTerms {
-                    excluded_properties: vec![filter.clone()],
-                    ..SearchTerms::default()
-                }
-            } else {
-                SearchTerms {
-                    properties: vec![filter.clone()],
-                    ..SearchTerms::default()
-                }
-            };
-            BuilderRow::with_value(RowKind::Raw, only.to_query_string())
-        }
+        PropertyTest::Compare { .. } => raw_row(if exclude {
+            SearchTerms {
+                excluded_properties: vec![filter.clone()],
+                ..SearchTerms::default()
+            }
+        } else {
+            SearchTerms {
+                properties: vec![filter.clone()],
+                ..SearchTerms::default()
+            }
+        }),
     }
 }
 
@@ -508,5 +511,31 @@ mod tests {
         let mut m = BuilderModel::from_query("#a");
         m.sort = Some((SortField::Property(String::new()), SortOrder::Ascending));
         assert_eq!(m.to_query(), "#a");
+    }
+
+    #[test]
+    fn a_property_row_is_complete_only_when_core_accepts_it() {
+        let mut p = BuilderRow::new(RowKind::Property);
+        p.key = "due\nbad".into();
+        p.op = None;
+        assert!(!p.is_complete(), "a multi-line key can't be a property");
+        let mut m = BuilderModel::default();
+        m.rows.push(p);
+        assert_eq!((m.incomplete(), m.to_query().as_str()), (1, ""));
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_written_after_the_other_raw_rows() {
+        let mut m = BuilderModel::from_query("a \"open");
+        m.rows.push(BuilderRow::with_value(RowKind::Raw, "#"));
+        assert_eq!(m.to_query(), "a # \"open");
+        assert_keeps_meaning(&m.to_query());
+    }
+
+    #[test]
+    fn a_raw_sort_stays_in_effect_when_the_sort_control_is_cleared() {
+        let mut m = BuilderModel::from_query("a ^title -^file");
+        m.sort = None;
+        assert_eq!(m.to_query(), "a -^file");
     }
 }
