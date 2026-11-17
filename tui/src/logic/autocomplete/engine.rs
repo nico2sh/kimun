@@ -9,16 +9,16 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use super::command::{PopupAction, PopupCommand, PopupOutcome, apply_command};
 use super::host::AutocompleteHost;
 use super::source::{SuggestionItem, SuggestionSource};
-
-/// How the `{note}` variable reads in a link-filter popup (`<`, `>`, `=`): the
-/// note open in the editor.
-pub const OPEN_NOTE_LABEL: &str = "current open note";
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
 use crate::logic::editor::claim::has_trigger_before_cursor;
 #[cfg(test)]
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
+
+/// How the `{note}` variable reads in a link-filter popup (`<`, `>`, `=`): the
+/// note open in the editor.
+pub const OPEN_NOTE_LABEL: &str = "current open note";
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -459,15 +459,20 @@ impl AutocompleteEngine {
     /// prefix, followed by note names. Pure + async so it can be unit-tested.
     ///
     /// The variable is shown as [`OPEN_NOTE_LABEL`] but inserts `{note}`. It
-    /// matches a prefix of the variable (`{n`) or any part of the label
-    /// (`cur`, `open`, `no`), so it is easy to reach without knowing the name.
+    /// matches a prefix of the variable (`{n`), of `note` (as before), or of
+    /// the label from two letters on (`cu`, `current o`). Matching words
+    /// inside the label would pin it above real note names for most letters.
     pub(super) async fn link_filter_suggestions(
         s: &dyn SuggestionSource,
         prefix: &str,
     ) -> Vec<SuggestionItem> {
         let mut out = Vec::new();
         let typed = prefix.to_lowercase();
-        if typed.is_empty() || OPEN_NOTE_LABEL.contains(&typed) || "{note}".starts_with(&typed) {
+        let offered = typed.is_empty()
+            || "{note}".starts_with(&typed)
+            || "note".starts_with(&typed)
+            || (typed.chars().count() >= 2 && OPEN_NOTE_LABEL.starts_with(&typed));
+        if offered {
             out.push(SuggestionItem::plain("{note}").with_label(OPEN_NOTE_LABEL));
         }
         out.extend(s.notes_by_prefix(prefix, 20).await);
@@ -1608,14 +1613,16 @@ mod tests {
         assert_eq!(Suggestion::from(s[0].clone()).shown(), "current open note");
         assert_eq!(Suggestion::from(s[1].clone()).shown(), "projects");
         // Reachable by the variable's own prefix and by any part of the label.
-        for typed in ["{", "{no", "c", "cur", "open", "no", "NOTE"] {
+        for typed in ["{", "{no", "n", "no", "NOTE", "cu", "cur", "current o"] {
             let s = AutocompleteEngine::link_filter_suggestions(&Mem, typed).await;
             assert!(
                 s.iter().any(|x| x.display == "{note}"),
                 "{typed:?} should offer the open note"
             );
         }
-        for typed in ["pro", "xyz"] {
+        // Not by a bare `c`, nor by words inside the label: those would put the
+        // variable above real notes (`readme`, `open-issues`).
+        for typed in ["c", "re", "ope", "open", "pro", "xyz"] {
             let s = AutocompleteEngine::link_filter_suggestions(&Mem, typed).await;
             assert!(
                 !s.iter().any(|x| x.display == "{note}"),
