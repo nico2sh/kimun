@@ -51,12 +51,12 @@ use kimun_notes::logic::query::{
     count_query, property_op_label,
 };
 use kimun_notes::logic::sort::{SortField, SortOrder};
-use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::footer;
 use super::key_suggestions::KeySuggestions;
 use super::modal::{self, ModalKind, Slot};
+use super::sort::{FIELDS, ORDERS, field_label, field_of_label, order_label, order_of_label};
 use crate::input;
 use crate::tasks;
 use crate::theme;
@@ -88,9 +88,16 @@ pub(crate) const COUNT_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Notes suggested per keystroke.
 const NOTE_SUGGESTIONS: usize = 8;
 
-/// The sort control's fields: no sort, then the sort dialog's three.
-const SORT_FIELDS: [&str; 4] = ["No sort", "Title", "Name", "Property"];
-const ORDERS: [&str; 2] = ["Ascending ↑", "Descending ↓"];
+/// The sort control's first option, before the sort dialog's fields.
+const NO_SORT: &str = "No sort";
+
+/// The sort control's field options: no sort, then the sort dialog's own.
+fn sort_field_options() -> Vec<&'static str> {
+    std::iter::once(NO_SORT).chain(FIELDS).collect()
+}
+
+/// What the dialog's "Build…" buttons say on hover, before the chord.
+pub(crate) const BUILD_TIP: &str = "Build the query from conditions";
 
 type Choice = Entity<SelectState<Vec<&'static str>>>;
 
@@ -144,6 +151,8 @@ pub(crate) struct QueryBuilderDialog {
     /// drops an answer a later keystroke has overtaken.
     notes: Vec<String>,
     notes_gen: u64,
+    /// The field `notes` were asked for.
+    notes_for: Option<Active>,
     vault: Arc<NoteVault>,
     /// The note open now, `{note}`'s meaning.
     note: Option<VaultPath>,
@@ -169,23 +178,27 @@ impl QueryBuilderDialog {
         if model.rows.is_empty() {
             model.rows.push(BuilderRow::new(RowKind::Text));
         }
-        let sort_ix = match &model.sort {
-            None => 0,
-            Some((SortField::Title, _)) => 1,
-            Some((SortField::Name, _)) => 2,
-            Some((SortField::Property(_), _)) => 3,
-        };
-        let order_ix = match &model.sort {
-            Some((_, SortOrder::Descending)) => 1,
-            _ => 0,
-        };
+        let sort_ix = model.sort.as_ref().map_or(0, |(field, _)| {
+            1 + FIELDS
+                .iter()
+                .position(|f| *f == field_label(field))
+                .unwrap_or(0)
+        });
+        let order = model
+            .sort
+            .as_ref()
+            .map_or(SortOrder::Ascending, |(_, o)| *o);
+        let order_ix = ORDERS
+            .iter()
+            .position(|o| *o == order_label(order))
+            .unwrap_or(0);
         let sort_key_text = match &model.sort {
             Some((SortField::Property(key), _)) => key.clone(),
             _ => String::new(),
         };
         let sort_field = cx.new(|cx| {
             SelectState::new(
-                SORT_FIELDS.to_vec(),
+                sort_field_options(),
                 Some(IndexPath::new(sort_ix)),
                 window,
                 cx,
@@ -214,12 +227,7 @@ impl QueryBuilderDialog {
                 window,
                 |this, _, event: &SelectEvent<Vec<&'static str>>, _, cx| {
                     if let SelectEvent::Confirm(Some(label)) = event {
-                        let order = if *label == ORDERS[1] {
-                            SortOrder::Descending
-                        } else {
-                            SortOrder::Ascending
-                        };
-                        this.pick_sort_order(order, cx);
+                        this.pick_sort_order(order_of_label(label), cx);
                     }
                 },
             ),
@@ -231,11 +239,11 @@ impl QueryBuilderDialog {
                         let key = input.read(cx).value().trim().to_string();
                         this.set_sort_key(key, cx);
                         this.active = Some(Active::SortKey);
-                        this.refresh_suggestions(cx);
+                        this.refresh_suggestions(true, cx);
                     }
                     InputEvent::Focus => {
                         this.active = Some(Active::SortKey);
-                        this.refresh_suggestions(cx);
+                        this.refresh_suggestions(true, cx);
                     }
                     _ => {}
                 },
@@ -248,11 +256,7 @@ impl QueryBuilderDialog {
             sort_field,
             sort_order,
             sort_key,
-            order_choice: if order_ix == 1 {
-                SortOrder::Descending
-            } else {
-                SortOrder::Ascending
-            },
+            order_choice: order,
             active: None,
             suggestions: KeySuggestions::default(),
             tags: Vec::new(),
@@ -260,6 +264,7 @@ impl QueryBuilderDialog {
             folders: Vec::new(),
             notes: Vec::new(),
             notes_gen: 0,
+            notes_for: None,
             vault,
             note,
             count: None,
@@ -290,6 +295,13 @@ impl QueryBuilderDialog {
         if let Some(row) = self.rows.first() {
             row.value.update(cx, |input, cx| input.focus(window, cx));
         }
+    }
+
+    /// What the comparison select of row `id` shows (tests).
+    #[cfg(test)]
+    pub(crate) fn op_shown(&self, id: u64, cx: &App) -> Option<&'static str> {
+        let ix = self.index_of(id)?;
+        self.rows[ix].op.read(cx).selected_value().copied()
     }
 
     /// The id of the row at `ix` (tests).
@@ -415,12 +427,12 @@ impl QueryBuilderDialog {
                     _ => row.value = text,
                 }
                 self.active = Some(field);
-                self.refresh_suggestions(cx);
+                self.refresh_suggestions(true, cx);
                 self.schedule_count(cx);
             }
             InputEvent::Focus => {
                 self.active = Some(field);
-                self.refresh_suggestions(cx);
+                self.refresh_suggestions(true, cx);
             }
             _ => {}
         }
@@ -442,7 +454,7 @@ impl QueryBuilderDialog {
         let Some(ix) = self.index_of(id) else { return };
         self.model.rows.remove(ix);
         self.rows.remove(ix);
-        self.refresh_suggestions(cx);
+        self.refresh_suggestions(true, cx);
         self.schedule_count(cx);
         cx.notify();
     }
@@ -452,7 +464,7 @@ impl QueryBuilderDialog {
         &mut self,
         id: u64,
         label: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(ix) = self.index_of(id) else { return };
@@ -467,7 +479,12 @@ impl QueryBuilderDialog {
         if kind == RowKind::Property && row.op.is_none() && row.key.is_empty() {
             row.op = Some(kimun_core::PropertyOp::Eq);
         }
-        self.refresh_suggestions(cx);
+        // The comparison select shows what the row now says.
+        let shown = property_op_label(row.op);
+        self.rows[ix].op.update(cx, |select, cx| {
+            select.set_selected_value(&shown, window, cx)
+        });
+        self.refresh_suggestions(true, cx);
         self.schedule_count(cx);
         cx.notify();
     }
@@ -500,12 +517,7 @@ impl QueryBuilderDialog {
     fn pick_sort_field(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
         let order = self.order_choice;
         let typed = self.sort_key.read(cx).value().trim().to_string();
-        let field = match label {
-            l if l == SORT_FIELDS[1] => Some(SortField::Title),
-            l if l == SORT_FIELDS[2] => Some(SortField::Name),
-            l if l == SORT_FIELDS[3] => Some(SortField::Property(typed)),
-            _ => None,
-        };
+        let field = (label != NO_SORT).then(|| field_of_label(label, typed));
         let property = matches!(field, Some(SortField::Property(_)));
         self.model.sort = field.map(|field| (field, order));
         if property {
@@ -535,8 +547,14 @@ impl QueryBuilderDialog {
 
     // ---- Suggestions -------------------------------------------------------------------
 
-    /// What the active field is: its kind's list, or `None` for no list.
+    /// What the active field is: its kind's list, or `None` for no list. The
+    /// notes are only those asked for this field (another's are not).
     fn suggestion_source(&self) -> Option<(&[String], String, bool)> {
+        let notes: &[String] = if self.notes_for == self.active {
+            &self.notes
+        } else {
+            &[]
+        };
         match self.active? {
             Active::SortKey => {
                 let typed = self.sort_key_text();
@@ -551,9 +569,9 @@ impl QueryBuilderDialog {
                 match row.kind {
                     RowKind::Tag => Some((&self.tags, row.value.clone(), false)),
                     RowKind::Folder => Some((&self.folders, row.value.clone(), false)),
-                    RowKind::Name => Some((&self.notes, row.value.clone(), false)),
+                    RowKind::Name => Some((notes, row.value.clone(), false)),
                     RowKind::LinksTo | RowKind::LinkedFrom => {
-                        Some((&self.notes, row.value.clone(), true))
+                        Some((notes, row.value.clone(), true))
                     }
                     _ => None,
                 }
@@ -568,9 +586,10 @@ impl QueryBuilderDialog {
         }
     }
 
-    /// Recompute the suggestions for the active field; for a note field also
-    /// ask for the notes named like what is typed.
-    fn refresh_suggestions(&mut self, cx: &mut Context<Self>) {
+    /// Recompute the suggestions for the active field. With `ask`, a note
+    /// field also asks for the notes named like what is typed (not when the
+    /// notes just landed).
+    fn refresh_suggestions(&mut self, ask: bool, cx: &mut Context<Self>) {
         let Some((known, typed, links)) = self.suggestion_source() else {
             self.suggestions = KeySuggestions::default();
             cx.notify();
@@ -581,21 +600,30 @@ impl QueryBuilderDialog {
             (links && self.note.is_some() && offers_open_note(&typed)).then_some(VAR_NOTE);
         self.suggestions
             .refresh_with_leading(&known, &typed, leading);
-        let wants_notes = matches!(self.active, Some(Active::Value(id))
-        if self.index_of(id).is_some_and(|ix| matches!(
-            self.model.rows[ix].kind,
-            RowKind::Name | RowKind::LinksTo | RowKind::LinkedFrom
-        )));
-        if wants_notes && !typed.trim().is_empty() {
+        if ask && self.active_takes_notes() && !typed.trim().is_empty() {
             self.ask_notes(typed, cx);
         }
         cx.notify();
     }
 
-    /// The notes named like `typed`, off the UI thread.
+    /// Whether the active field is a note's name (a name, a link target).
+    fn active_takes_notes(&self) -> bool {
+        let Some(Active::Value(id)) = self.active else {
+            return false;
+        };
+        self.index_of(id).is_some_and(|ix| {
+            matches!(
+                self.model.rows[ix].kind,
+                RowKind::Name | RowKind::LinksTo | RowKind::LinkedFrom
+            )
+        })
+    }
+
+    /// The notes named like `typed`, off the UI thread, for the active field.
     fn ask_notes(&mut self, typed: String, cx: &mut Context<Self>) {
         self.notes_gen += 1;
-        let asked = self.notes_gen;
+        self.notes_for = self.active;
+        let asked = (self.notes_gen, self.active);
         let vault = self.vault.clone();
         let task = tokio::spawn(async move {
             vault
@@ -608,26 +636,15 @@ impl QueryBuilderDialog {
                 return;
             };
             this.update(cx, |dialog, cx| {
-                if dialog.notes_gen == asked {
+                // Only if no later keystroke and no other field overtook it.
+                if (dialog.notes_gen, dialog.active) == asked {
                     dialog.notes = names;
-                    dialog.refresh_suggestions_without_asking(cx);
+                    dialog.refresh_suggestions(false, cx);
                 }
             })
             .ok();
         })
         .detach();
-    }
-
-    /// [`Self::refresh_suggestions`] when the notes just landed: no new ask.
-    fn refresh_suggestions_without_asking(&mut self, cx: &mut Context<Self>) {
-        if let Some((known, typed, links)) = self.suggestion_source() {
-            let known = known.to_vec();
-            let leading =
-                (links && self.note.is_some() && offers_open_note(&typed)).then_some(VAR_NOTE);
-            self.suggestions
-                .refresh_with_leading(&known, &typed, leading);
-            cx.notify();
-        }
     }
 
     /// The vault's lists landed.
@@ -641,7 +658,7 @@ impl QueryBuilderDialog {
         self.tags = tags;
         self.keys = keys;
         self.folders = folders;
-        self.refresh_suggestions(cx);
+        self.refresh_suggestions(true, cx);
     }
 
     /// Take suggestion `ix` into the active field.
@@ -753,6 +770,21 @@ impl QueryBuilderDialog {
         }
     }
 
+    /// Whether suggestions are showing under a field that has the keyboard:
+    /// the only time Up, Down and Escape are theirs.
+    fn suggestions_have_keys(&self, window: &Window, cx: &App) -> bool {
+        !self.suggestions.is_empty() && self.active_focused(window, cx)
+    }
+
+    /// Whether the active field is a row's value and the row says enough.
+    fn active_row_complete(&self) -> bool {
+        let Some(Active::Value(id)) = self.active else {
+            return false;
+        };
+        self.index_of(id)
+            .is_some_and(|ix| self.model.rows[ix].is_complete())
+    }
+
     /// Whether the active field has the keyboard.
     fn active_focused(&self, window: &Window, cx: &App) -> bool {
         match self.active {
@@ -777,7 +809,7 @@ impl QueryBuilderDialog {
 
     // ---- Rendering ---------------------------------------------------------------------
 
-    fn render_row(&self, ix: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
         let view = &self.rows[ix];
         let row = &self.model.rows[ix];
         let id = view.id;
@@ -835,7 +867,6 @@ impl QueryBuilderDialog {
                     .aria_label(row.kind.label()),
             )
         };
-        let _ = t;
         div()
             .flex()
             .items_center()
@@ -852,7 +883,7 @@ impl Render for QueryBuilderDialog {
         let theme = theme::current(cx);
         let t = &*theme;
         let rows: Vec<Div> = (0..self.rows.len())
-            .map(|ix| self.render_row(ix, t, cx))
+            .map(|ix| self.render_row(ix, cx))
             .collect();
         let property_sort = matches!(self.model.sort, Some((SortField::Property(_), _)));
         let sort_row = div()
@@ -916,37 +947,40 @@ impl Render for QueryBuilderDialog {
             .gap_3()
             .on_key_down(cx.listener(Self::on_key))
             // The suggestions' keys first, then the dialog's.
-            .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
-                if !this.suggestions.is_empty() && this.suggestions.step(false) {
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if this.suggestions_have_keys(window, cx) && this.suggestions.step(false) {
                     cx.notify();
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
-                if !this.suggestions.is_empty() && this.suggestions.step(true) {
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if this.suggestions_have_keys(window, cx) && this.suggestions.step(true) {
                     cx.notify();
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|this, _: &Enter, window, cx| {
-                // A highlighted suggestion is taken; otherwise Enter after a
-                // complete row adds the next one.
+                // Only where a field has the keyboard: a select's Enter is its
+                // own. A highlighted suggestion is taken; otherwise Enter after
+                // a complete value adds the next row.
+                if !this.active_focused(window, cx) {
+                    return;
+                }
                 if let Some(ix) = this.suggestions.highlighted() {
                     this.take_suggestion(ix, window, cx);
-                } else if let Some(Active::Value(id)) = this.active {
-                    if this
-                        .index_of(id)
-                        .is_some_and(|ix| this.model.rows[ix].is_complete())
-                    {
-                        this.add_row(window, cx);
-                    }
+                    cx.stop_propagation();
+                } else if this.active_row_complete() {
+                    this.add_row(window, cx);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }))
-            .capture_action(cx.listener(|this, _: &Escape, _, cx| {
-                // Suggestions let go first; then the dialog closes.
-                if this.suggestions.release() || !this.suggestions.is_empty() {
-                    this.suggestions = KeySuggestions::default();
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                // A highlight lets go first, then the suggestions, then the
+                // dialog closes.
+                if this.suggestions_have_keys(window, cx) {
+                    if !this.suggestions.release() {
+                        this.suggestions = KeySuggestions::default();
+                    }
                     cx.notify();
                     cx.stop_propagation();
                 }

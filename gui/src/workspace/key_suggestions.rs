@@ -1,8 +1,8 @@
-//! The **known-key suggestions** under a property-key field: the vault's
-//! property keys that hold what was typed, prefix matches first, walked
-//! with Up/Down and taken with Enter or a click. Shared by the properties
-//! form's Key field and the sort dialog's Key field, so both suggest, rank
-//! and draw keys the same way.
+//! The **known-value suggestions** under a field: the known values (the
+//! vault's property keys, tags, folders, note names) that hold what was typed,
+//! prefix matches first, walked with Up/Down and taken with Enter or a click.
+//! Shared by the properties form's Key field, the sort dialog's Key field and
+//! the query builder's fields, so all suggest, rank and draw them the same way.
 //!
 //! The owner keeps the keys (loaded off the UI thread), the field, and what
 //! taking a suggestion does; this holds the shown suggestions and the
@@ -161,11 +161,12 @@ impl KeySuggestions {
                 .flex_col()
                 .children(self.shown.iter().enumerate().map(|(ix, key)| {
                     let highlighted = self.highlighted == Some(ix);
+                    let label = label_of(key);
                     div()
                         .id(id_of(key))
                         .test_support()
                         .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(label_of(key)))
+                        .aria_label(SharedString::from(label.clone()))
                         .aria_selected(highlighted)
                         .px_2()
                         .py_0p5()
@@ -174,7 +175,7 @@ impl KeySuggestions {
                         .text_color(theme::foreground(t))
                         .when(highlighted, |row| row.bg(theme::selected_background(t)))
                         .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))
-                        .child(label_of(key))
+                        .child(label)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             pick(this, ix, window, cx)
                         }))

@@ -775,7 +775,11 @@ impl<R: PickerRow> Render for NotePicker<R> {
                         Button::new(BUILD_BUTTON_ID)
                             .ghost()
                             .label("Build…")
-                            .tooltip("Build the query from conditions")
+                            .tooltip(super::chrome::tooltip_with_chord(
+                                super::query_builder::BUILD_TIP,
+                                &kimun_notes::logic::actions::ActionShortcuts::QueryBuilder,
+                                cx,
+                            ))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 // The builder reads this field and whether
                                 // the browser is busy: after this update.

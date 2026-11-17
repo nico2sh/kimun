@@ -682,7 +682,7 @@ impl FindView {
             .xsmall()
             .label("Build…")
             .tooltip(super::chrome::tooltip_with_chord(
-                "Build the query from conditions",
+                super::query_builder::BUILD_TIP,
                 &ActionShortcuts::QueryBuilder,
                 cx,
             ))
