@@ -1,5 +1,5 @@
 //! The small menu behind FILES' `[+]` chip: what can be made here, a note
-//! or a directory, each with the chord that does it directly. Picking one
+//! or a directory, each with its own chord when bound. Picking one
 //! hands over to the new-entry dialog on the same directory (the menu gives
 //! way to it, as the file operations menu does).
 
@@ -255,9 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn the_chords_in_effect_are_shown() {
+    fn the_directory_chord_is_unbound_by_default() {
         let (d, _tx, _rx) = menu();
-        assert_eq!(d.note_chord.as_deref(), Some("ctrl&N"));
-        assert_eq!(d.directory_chord.as_deref(), Some("alt&N"));
+        assert_eq!(d.note_chord, None);
+        assert_eq!(d.directory_chord, None);
     }
 }

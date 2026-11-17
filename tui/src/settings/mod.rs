@@ -129,8 +129,9 @@ const CONFIG_HEADER: &str = "\
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"F4\", \"ctrl&,\"]     # F4 (Ctrl+, alias)
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
-#   NewNote      = [\"ctrl&N\"]            # Ctrl+N  (ask for a name, create the note)
-#   NewDirectory = [\"alt&N\"]             # Alt+N   (ask for a name, create the directory)
+#   NewEntry     = [\"ctrl&N\"]            # Ctrl+N  (menu: new note or directory)
+#   NewNote      = [\"ctrl&E\"]            # unbound by default (ask for a name, create the note)
+#   NewDirectory = [\"alt&N\"]             # unbound by default (ask for a name, create the directory)
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = [\"ctrl&B\"]            # Ctrl+B  (leader gateway: Ctrl+B f f, ...)
 #   OpenCommandPalette = [\"ctrl&P\"]      # Ctrl+P  (every leader command, fuzzy)
@@ -289,7 +290,7 @@ fn default_keybindings() -> KeyBindings {
         // untouched binding along); Ctrl-U was free since the formatting
         // chords retired.
         .add(KeyStrike::KeyU, ActionShortcuts::FollowLink)
-        .add(KeyStrike::KeyN, ActionShortcuts::NewNote)
+        .add(KeyStrike::KeyN, ActionShortcuts::NewEntry)
         // Save now, as in every editor; the leader's `n w` does the same.
         .add(KeyStrike::KeyS, ActionShortcuts::SaveNote)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
@@ -343,13 +344,6 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
-
-    // New directory. Alt rather than Ctrl: the Ctrl-letter namespace is full,
-    // and New note already holds Ctrl-N. The leader tree reaches both too
-    // (`n n`, `n d`) for terminals that swallow Alt chords.
-    kb.batch_add()
-        .with_alt()
-        .add(KeyStrike::KeyN, ActionShortcuts::NewDirectory);
 
     kb
 }
@@ -1383,16 +1377,13 @@ mod tests {
         let alt = KeyModifiers::new().and_alt();
         assert_eq!(
             kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyN)),
-            Some(ActionShortcuts::NewNote)
+            Some(ActionShortcuts::NewEntry)
         );
         assert_eq!(
             kb.get_action(&KeyCombo::new(ctrl, KeyStrike::KeyU)),
             Some(ActionShortcuts::FollowLink)
         );
-        assert_eq!(
-            kb.get_action(&KeyCombo::new(alt, KeyStrike::KeyN)),
-            Some(ActionShortcuts::NewDirectory)
-        );
+        assert_eq!(kb.get_action(&KeyCombo::new(alt, KeyStrike::KeyN)), None);
     }
 
     #[test]
