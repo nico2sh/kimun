@@ -251,6 +251,15 @@ pub enum OrderBy {
 }
 
 impl OrderBy {
+    /// The column and direction (`true` for ascending).
+    pub fn field(&self) -> (OrderField, bool) {
+        match self {
+            OrderBy::Title { asc } => (OrderField::Title, *asc),
+            OrderBy::FileName { asc } => (OrderField::FileName, *asc),
+            OrderBy::Property { key, asc } => (OrderField::Property(key.clone()), *asc),
+        }
+    }
+
     fn from_term(term: &str, asc: bool) -> Option<Self> {
         if let Some(key) = term
             .strip_prefix("prop:")
@@ -465,15 +474,15 @@ fn query_tokens(query: &str) -> impl Iterator<Item = (&str, Option<ElementType>,
     })
 }
 
-/// Wrap `term` in the search DSL's quote characters when it contains
-/// whitespace, so a multi-word value (e.g. a note name with spaces) is
-/// parsed as a single token instead of being split across terms. Values
-/// without whitespace are returned unchanged. Note names can never contain
-/// `"` (invalid on Windows/macOS/Linux filesystems alike), so no escaping
-/// is needed.
+/// Wrap `term` in the search DSL's quote characters when it needs them, so a
+/// multi-word value (e.g. a note name with spaces) is parsed as a single token
+/// instead of being split across terms: when it contains whitespace or starts
+/// with a quote of its own. Other values are returned unchanged. The quote
+/// character is `"`, or `'` for a value containing `"`. Note names can never
+/// contain `"` (invalid on Windows/macOS/Linux filesystems alike).
 pub fn quote_query_term(term: &str) -> String {
-    if term.chars().any(char::is_whitespace) {
-        format!("\"{term}\"")
+    if value_needs_quotes(term) {
+        wrap_in_quotes(term)
     } else {
         term.to_string()
     }
@@ -567,16 +576,7 @@ pub fn strip_order_directive(query: &str) -> String {
 /// directive is appended.
 pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
     let base = strip_order_directive(query);
-    let field_term = match field {
-        OrderField::Title => "title".to_string(),
-        OrderField::FileName => "file".to_string(),
-        OrderField::Property(key) => format!("prop:{}", quote_query_term(&key)),
-    };
-    let directive = if asc {
-        format!("{}:{}", ORDER_LETTER, field_term)
-    } else {
-        format!("-{}:{}", ORDER_LETTER, field_term)
-    };
+    let directive = order_directive(&field, asc, false);
     if base.is_empty() {
         directive
     } else {
@@ -707,12 +707,8 @@ impl SearchTerms {
         let mut excluded_properties = vec![];
         let mut unparsed = vec![];
         while !query.is_empty() {
-            // The token as written, for the ones that turn out to be unusable.
-            let raw = {
-                let trimmed = query.trim();
-                trimmed[..next_token(trimmed).0].to_string()
-            };
-            let qp = QueryTermExtractor::extract_and_consume(query);
+            let before = query;
+            let qp = QueryTermExtractor::extract_and_consume(&before);
             query = qp.remainder;
             // Each arm reports whether the token was usable; the others are
             // kept verbatim in `unparsed`.
@@ -750,8 +746,16 @@ impl SearchTerms {
                     push_some(&mut excluded_properties, PropertyFilter::parse(&qp.term))
                 }
             };
-            if !usable && !raw.is_empty() {
-                unparsed.push(raw);
+            if !usable {
+                // What the extractor consumed, as written. Not a second
+                // tokenizer pass: it can end a token earlier than the lexer
+                // does (an empty quote pair after a prefix), and the rest is
+                // then a token of its own.
+                let trimmed = before.trim();
+                let consumed = trimmed[..trimmed.len() - query.len()].trim_end();
+                if !consumed.is_empty() {
+                    unparsed.push(consumed.to_string());
+                }
             }
         }
 
@@ -790,7 +794,9 @@ impl SearchTerms {
     /// [`SearchTerms::from_query_string`]. Parsing the result gives back an
     /// equal `SearchTerms`, though not necessarily the same text: operators
     /// come out in their short form, grouped by kind, and values are quoted
-    /// only when they need it. Order does not matter between filters (they
+    /// only when they need it. The one exception is a property key or value
+    /// that itself begins with a quote character, which the syntax can't
+    /// always express. Order does not matter between filters (they
     /// are ANDed); sort directives keep their order. `unparsed` tokens come
     /// last and verbatim, since an unterminated quote runs to the end.
     ///
@@ -812,7 +818,11 @@ impl SearchTerms {
             (">", &self.forward_links),
         ];
         for (prefix, values) in valued {
-            out.extend(values.iter().map(|v| format!("{prefix}{}", value_token(v))));
+            out.extend(
+                values
+                    .iter()
+                    .map(|v| format!("{prefix}{}", quote_query_term(v))),
+            );
         }
         out.extend(self.excluded_terms.iter().map(|v| bare_term_token("-", v)));
         let excluded: [(&str, &Vec<String>); 6] = [
@@ -824,7 +834,11 @@ impl SearchTerms {
             ("->", &self.excluded_forward_links),
         ];
         for (prefix, values) in excluded {
-            out.extend(values.iter().map(|v| format!("{prefix}{}", value_token(v))));
+            out.extend(
+                values
+                    .iter()
+                    .map(|v| format!("{prefix}{}", quote_query_term(v))),
+            );
         }
         out.extend(
             self.properties
@@ -836,7 +850,10 @@ impl SearchTerms {
                 .iter()
                 .map(|f| format!("-%{}", property_token(f))),
         );
-        out.extend(self.order_by.iter().map(order_token));
+        out.extend(self.order_by.iter().map(|o| {
+            let (field, asc) = o.field();
+            order_directive(&field, asc, true)
+        }));
         out.extend(self.unparsed.iter().cloned());
         out.join(" ")
     }
@@ -874,15 +891,6 @@ fn wrap_in_quotes(value: &str) -> String {
 /// as written: it holds whitespace, or starts with a quote of its own.
 fn value_needs_quotes(value: &str) -> bool {
     value.chars().any(char::is_whitespace) || value.starts_with(['"', '\''])
-}
-
-/// `value` as it follows a prefix (`#`, `<`, `-=` …), quoted when needed.
-fn value_token(value: &str) -> String {
-    if value_needs_quotes(value) {
-        wrap_in_quotes(value)
-    } else {
-        value.to_string()
-    }
 }
 
 /// A full-text term, written after `lead` (empty, or `-` for an excluded
@@ -944,14 +952,21 @@ fn property_token(filter: &PropertyFilter) -> String {
     format!("{key}{}{value}", op.sql())
 }
 
-/// An order directive in its short form: `^title`, `-^file`, `^%due`.
-fn order_token(order: &OrderBy) -> String {
-    let (asc, field) = match order {
-        OrderBy::Title { asc } => (*asc, "title".to_string()),
-        OrderBy::FileName { asc } => (*asc, "file".to_string()),
-        OrderBy::Property { key, asc } => (*asc, format!("%{}", value_token(key))),
+/// An order directive, the one writer for both [`with_order_directive`]
+/// (`or:title`, `-or:prop:key`) and [`SearchTerms::to_query_string`]
+/// (`short`: `^title`, `-^%key`).
+fn order_directive(field: &OrderField, asc: bool, short: bool) -> String {
+    let (directive, property) = if short {
+        (ORDER_CHAR.to_string(), "%")
+    } else {
+        (format!("{ORDER_LETTER}:"), "prop:")
     };
-    format!("{}{ORDER_CHAR}{field}", if asc { "" } else { "-" })
+    let field = match field {
+        OrderField::Title => "title".to_string(),
+        OrderField::FileName => "file".to_string(),
+        OrderField::Property(key) => format!("{property}{}", quote_query_term(key)),
+    };
+    format!("{}{directive}{field}", if asc { "" } else { "-" })
 }
 
 fn dedup_preserving_order<T: Eq + std::hash::Hash + Clone>(v: &mut Vec<T>) {
@@ -2396,5 +2411,40 @@ mod tests {
         let long = "a ".repeat(super::MAX_QUERY_LEN);
         let st = SearchTerms::from_query_string(&long);
         assert!(st.to_query_string().len() <= super::MAX_QUERY_LEN);
+    }
+
+    #[test]
+    fn round_trip_when_a_token_is_only_partly_consumed() {
+        // Found by fuzzing: an empty quote pair after a prefix ends the token
+        // early, and the rest is a token of its own.
+        for q in ["-\"\"q w\"", "-''<", "-''=<=", "#\"\"x", "%\"\"a b"] {
+            assert_round_trips(q);
+        }
+    }
+
+    /// A seeded fuzz over glued-together fragments of the syntax: whatever the
+    /// parser makes of them, writing the result back and parsing again gives
+    /// the same terms. Property filters (`%`) are left out: a key or value
+    /// that itself starts with a quote can't always be written back.
+    #[test]
+    fn round_trip_holds_for_random_fragments() {
+        const PIECES: [&str; 20] = [
+            "a", "b c", "#", "-", "<", ">", "=", "lk:", "name:", "\"", "'", "^", "title", "x*",
+            "@", "/", " ", "or:", "-^", "\"\"",
+        ];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..30_000 {
+            let len = 1 + (next() % 7) as usize;
+            let q: String = (0..len)
+                .map(|_| PIECES[(next() % PIECES.len() as u64) as usize])
+                .collect();
+            assert_round_trips(&q);
+        }
     }
 }
