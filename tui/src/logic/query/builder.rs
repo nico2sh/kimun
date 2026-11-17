@@ -331,6 +331,7 @@ fn property_row(filter: &PropertyFilter, exclude: bool) -> BuilderRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logic::sort::directive_of_query;
 
     fn kinds(m: &BuilderModel) -> Vec<(RowKind, bool, &str)> {
         m.rows
