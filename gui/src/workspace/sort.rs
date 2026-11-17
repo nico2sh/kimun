@@ -96,9 +96,28 @@ const DIALOG_REMS: f32 = 26.;
 const LABEL_REMS: f32 = 7.;
 
 /// The Field select's options, in the TUI's cycle order.
-const FIELDS: [&str; 3] = ["Name", "Title", "Property"];
+pub(super) const FIELDS: [&str; 3] = ["Name", "Title", "Property"];
 /// The Order select's options.
-const ORDERS: [&str; 2] = ["Ascending ↑", "Descending ↓"];
+pub(super) const ORDERS: [&str; 2] = ["Ascending ↑", "Descending ↓"];
+
+/// The sort field a Field select's `label` stands for; a property sort takes
+/// `key`. Shared with the query builder's sort control.
+pub(super) fn field_of_label(label: &str, key: String) -> SortField {
+    match label {
+        l if l == FIELDS[1] => SortField::Title,
+        l if l == FIELDS[2] => SortField::Property(key),
+        _ => SortField::Name,
+    }
+}
+
+/// The order an Order select's `label` stands for.
+pub(super) fn order_of_label(label: &str) -> SortOrder {
+    if label == ORDERS[1] {
+        SortOrder::Descending
+    } else {
+        SortOrder::Ascending
+    }
+}
 
 /// What FILES' dialog says about how long its sort holds.
 pub(crate) const FILES_HINT: &str = "Applies until FILES opens another folder.";
@@ -125,7 +144,7 @@ pub(crate) fn save_label(journal: bool) -> &'static str {
 /// What a query's dialog says about where its sort goes.
 pub(crate) const QUERY_HINT: &str = "Written into the query as its order.";
 
-fn field_label(field: &SortField) -> &'static str {
+pub(super) fn field_label(field: &SortField) -> &'static str {
     match field {
         SortField::Name => FIELDS[0],
         SortField::Title => FIELDS[1],
@@ -133,7 +152,7 @@ fn field_label(field: &SortField) -> &'static str {
     }
 }
 
-fn order_label(order: SortOrder) -> &'static str {
+pub(super) fn order_label(order: SortOrder) -> &'static str {
     match order {
         SortOrder::Ascending => ORDERS[0],
         SortOrder::Descending => ORDERS[1],
@@ -238,12 +257,7 @@ impl SortDialog {
                     let SelectEvent::Confirm(Some(label)) = event else {
                         return;
                     };
-                    let order = if *label == ORDERS[1] {
-                        SortOrder::Descending
-                    } else {
-                        SortOrder::Ascending
-                    };
-                    this.pick_order(order, window, cx);
+                    this.pick_order(order_of_label(label), window, cx);
                 },
             ),
             cx.subscribe(&key, |this, _, event: &InputEvent, cx| {
@@ -340,11 +354,7 @@ impl SortDialog {
     /// and the keyboard goes to the Key field.
     pub(crate) fn pick_field(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.unsorted = false;
-        self.state.field = match label {
-            l if l == FIELDS[1] => SortField::Title,
-            l if l == FIELDS[2] => SortField::Property(self.typed_key(cx)),
-            _ => SortField::Name,
-        };
+        self.state.field = field_of_label(label, self.typed_key(cx));
         self.sync_selects(window, cx);
         if matches!(self.state.field, SortField::Property(_)) {
             // A property sort can't be a default: the tick goes with it,

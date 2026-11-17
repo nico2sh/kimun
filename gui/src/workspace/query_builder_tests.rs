@@ -263,6 +263,22 @@ fn what_no_row_says_survives_apply(cx: &mut TestAppContext) {
     assert_eq!(find_query(&s, cx), "alpha # \"open");
 }
 
+/// Turning a row into a property row shows its comparison: the select reads
+/// "=", not the "exists" a text row's select started on.
+#[gpui_kit::test]
+fn a_property_row_shows_its_comparison(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "alpha", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, window, cx| {
+        d.pick_kind(id, "Property", window, cx)
+    });
+    let d = dialog(&s, cx);
+    assert_eq!(cx.read(|cx| d.read(cx).op_shown(id, cx)), Some("="));
+}
+
 // ── Sort ─────────────────────────────────────────────────────────────────
 
 /// The sort control is the query's own order directive.
