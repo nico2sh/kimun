@@ -11,7 +11,9 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 
 use crate::logic::list::{Emit, ListRow, RowSource, YankTarget};
-use crate::logic::query::{VAR_NOTE, emphasis_needles};
+use crate::logic::query::{
+    QueryContext, VAR_NOTE, emphasis_needles, error_reason, query_is_unresolvable, resolve_query,
+};
 
 /// The canonical backlinks query (`<` / `lk:`; `>` is forward links). The
 /// panel no longer starts on it — the LINKS drawer owns backlinks — but any
@@ -173,6 +175,41 @@ pub async fn load_query_page(
         .collect()
         .await;
     QueryPage { entries, total }
+}
+
+/// What a query template matches, for a surface that only wants the number (the
+/// query builder's live count).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryCount {
+    /// Nothing typed: nothing to count.
+    Blank,
+    /// The query needs the open note (`<`, `<{note}`) and none is open, as
+    /// [`query_is_unresolvable`] says: running it would find nothing.
+    Unresolvable,
+    /// The query has a parse problem ([`error_reason`]), shown instead of a
+    /// count that would be for a different query than the one written.
+    Problem(&'static str),
+    /// How many notes match, all of them: the index already collects every
+    /// match, and nothing is read from disk to count them.
+    Matches(usize),
+}
+
+/// Count what `template` matches against `ctx`, resolving it exactly as the
+/// Query panel does (`{note}` and the bare-operator sugar through
+/// [`resolve_query`]) and counting through [`load_query_page`] with no page,
+/// so the number is the very total the panel shows.
+pub async fn count_query(vault: &NoteVault, template: &str, ctx: &QueryContext) -> QueryCount {
+    if template.trim().is_empty() {
+        return QueryCount::Blank;
+    }
+    if query_is_unresolvable(template, ctx) {
+        return QueryCount::Unresolvable;
+    }
+    let query = resolve_query(template, ctx);
+    if let Some(reason) = error_reason(&query) {
+        return QueryCount::Problem(reason);
+    }
+    QueryCount::Matches(load_query_page(vault, &query, 0, 0).await.total)
 }
 
 /// A row of a [`QueryPageSource`] listing: one result, and how many the
@@ -387,5 +424,51 @@ mod tests {
         let (emit, rx) = Emit::capture();
         source.load("  ", emit).await;
         assert!(rows(rx).is_empty());
+    }
+
+    /// The count is the panel's total for the same template, and says why
+    /// when there is no count to give.
+    #[tokio::test]
+    async fn count_query_matches_the_panels_total_and_explains_its_absence() {
+        let vault = crate::test_support::temp_vault("qp-count").await;
+        vault.validate_and_init().await.unwrap();
+        for (name, body) in [
+            ("a", "alpha #t"),
+            ("b", "beta #t [[a]]"),
+            ("c", "gamma [[a]]"),
+        ] {
+            vault
+                .create_note(&VaultPath::note_path_from(name), body)
+                .await
+                .unwrap();
+        }
+        let none = QueryContext::default();
+        let open_a = QueryContext::with_note(Some(VaultPath::note_path_from("a")));
+        let count = |q: &str, ctx: &QueryContext| {
+            let vault = vault.clone();
+            let (q, ctx) = (q.to_string(), ctx.clone());
+            async move { count_query(&vault, &q, &ctx).await }
+        };
+        assert_eq!(count("#t", &none).await, QueryCount::Matches(2));
+        assert_eq!(count("#t zzz", &none).await, QueryCount::Matches(0));
+        // Same total as the panel, for the same resolved query.
+        assert_eq!(
+            load_query_page(&vault, "#t", 0, 0).await.total,
+            2,
+            "no page, still counted"
+        );
+        // `{note}` and the bare sugar resolve against the open note.
+        assert_eq!(count("<{note}", &open_a).await, QueryCount::Matches(2));
+        assert_eq!(count("<", &open_a).await, QueryCount::Matches(2));
+        assert_eq!(count("<{note} #t", &open_a).await, QueryCount::Matches(1));
+        // Nothing to resolve against, or nothing to count.
+        assert_eq!(count("<{note}", &none).await, QueryCount::Unresolvable);
+        assert_eq!(count("  ", &open_a).await, QueryCount::Blank);
+        assert_eq!(
+            count("#t \"open", &none).await,
+            QueryCount::Problem("unterminated quote")
+        );
+        // A sort directive doesn't change the count.
+        assert_eq!(count("#t -or:title", &none).await, QueryCount::Matches(2));
     }
 }
