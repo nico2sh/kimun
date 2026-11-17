@@ -9,21 +9,37 @@
 //! places it.
 
 use gpui_kit::{
-    Anchor, AnyElement, Bounds, InteractiveElement, IntoElement, ParentElement as _, Pixels,
-    Styled, Window, anchored, deferred, point, px,
+    Anchor, AnyElement, App, Bounds, Context, InteractiveElement, IntoElement, ParentElement as _,
+    Pixels, ScrollEvent, Styled, Window, anchored, deferred, point, px,
 };
+use kimun_notes::logic::autocomplete::PopupCommand;
 use kimun_notes::settings::themes::Theme;
 
+use crate::autocomplete::wheel_command;
 use crate::theme;
 
-/// The popup's width: the field's. The field's box is the last frame's, so
-/// before its first paint it has none and the popup takes a usable one.
+/// The popup's width: the field's, but never narrower than a suggestion is
+/// readable in (a short field, such as a property key's, would otherwise get
+/// a sliver). The field's box is the last frame's, so before its first paint
+/// it has none and the popup takes the minimum.
 pub(super) fn width_of(field: Bounds<Pixels>) -> Pixels {
-    if field.size.width > px(0.) {
-        field.size.width
-    } else {
-        px(240.)
-    }
+    field.size.width.max(px(240.))
+}
+
+/// What the wheel does over a popup: `act` runs with the step the wheel's
+/// direction means ([`wheel_command`]: nothing for a sideways swipe or a
+/// trackpad's trailing events), and the wheel goes no further, so it never
+/// scrolls what is under the popup. The one place both popups wire it.
+pub(super) fn on_wheel<V: 'static>(
+    cx: &Context<V>,
+    act: impl Fn(&mut V, PopupCommand, &mut Window, &mut Context<V>) + 'static,
+) -> impl Fn(&ScrollEvent, &mut Window, &mut App) + 'static {
+    cx.listener(move |this, event: &ScrollEvent, window, cx| {
+        if let Some(command) = wheel_command(event.delta.pixel_delta(window.line_height()).y) {
+            act(this, command, window, cx);
+        }
+        cx.stop_propagation();
+    })
 }
 
 /// `list` (the caller's element, with its id and role) in the popup's frame:
@@ -77,6 +93,9 @@ pub(super) fn floating_under(
     )
     // The kit's popup priority: above a dialog (which draws at 10 and up,
     // so a popup inside one would otherwise be behind it), below tooltips.
+    // It is the Selects' and the menus' priority too: one of these popups
+    // shows only while its field has the keyboard, which opening a Select or
+    // a menu takes away, so two never stack.
     .with_priority(gpui_kit::base::POPUP_PRIORITY)
     .into_any_element()
 }

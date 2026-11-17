@@ -12,9 +12,10 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, Div, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Role, ScrollEvent, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
+use kimun_notes::logic::autocomplete::PopupCommand;
 use kimun_notes::settings::themes::Theme;
 
 use super::popup_layer;
@@ -191,14 +192,14 @@ impl KeySuggestions {
             popup_layer::width_of(field),
             t,
         )
-        .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
-            let dy = event.delta.pixel_delta(window.line_height()).y;
-            if dy != px(0.) {
-                step(this, dy < px(0.), cx);
-            }
-            // Over the popup the wheel never reaches what is under it.
-            cx.stop_propagation();
-        }))
+        .on_scroll(popup_layer::on_wheel(
+            cx,
+            move |this, command, _, cx| match command {
+                PopupCommand::Up => step(this, false, cx),
+                PopupCommand::Down => step(this, true, cx),
+                _ => {}
+            },
+        ))
         .children(rows);
         Some(popup_layer::floating_under(
             field,
@@ -229,6 +230,9 @@ impl KeySuggestions {
                     .py_0p5()
                     .rounded_md()
                     .text_sm()
+                    // One line, so the popup's height is its rows' count (the
+                    // flip decision relies on it); a long value ends in "…".
+                    .truncate()
                     .text_color(theme::foreground(t))
                     .when(highlighted, |row| row.bg(theme::selected_background(t)))
                     .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))

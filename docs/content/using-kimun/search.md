@@ -31,6 +31,33 @@ You can add filters. Separate the words and filters with spaces. A note must mat
 
 To leave something out, put `-` before it: `-#draft`, `-@temp`, `-cancelled`.
 
+## Build a query
+
+In the desktop app, you do not have to remember the signs. Click `Build…` next to the query, or press `F7`, to build the query from a list of conditions. It works in the FIND panel and in the search box (`Ctrl+K`).
+
+The window opens with the conditions of the query you already typed. Each condition is one row:
+
+- Tick `Not` to leave out the notes that match.
+- Pick what the condition is about: Text, Note name, Heading, Folder, Tag, Links to, Linked from, or Property.
+- Type the value. Kimün suggests tags, folders, property keys, and note names under the field as you type. Press `Up` and `Down` to move in the list, and `Enter` to take one.
+
+A Property row has a key, a comparison, and a value. Choose `exists` to find the notes that have the property, whatever its value.
+
+For Links to and Linked from, the first suggestion is "current open note". It uses whichever note you have open when you run the query. This is how you build a query that shows the backlinks of the open note.
+
+Under the rows, you can pick a sort. The `Query` line shows the query that your conditions write, so you can learn the signs as you go. The `Matches` line shows how many notes match, and it changes as you edit.
+
+Press `Enter` in a filled value to add a row. Press `Ctrl+Enter` or click `Apply` to put the query in the search box and run it. Press `Esc` or click `Cancel` to close the window and change nothing.
+
+A few things to know:
+
+- A row with no value is left out of the query until you fill it in.
+- A part of a query that has no row, such as a word with an open quote, stays as a Raw row. Kimün writes it back as it was.
+- The builder can rearrange the query. It writes the words and filters first, and the ones marked `Not` last. The results do not change.
+- The builder has no OR, because a query has none either. A note must match every condition.
+
+The terminal app has no query builder. It has the same signs, so you can still type them.
+
 ## Tags
 
 A tag is a word with `#` in front, written in a note: `#finance`. Tags use letters, digits, and `_`. `#Finance` and `#finance` are the same tag. Tags in the `tags` property of a note count too.

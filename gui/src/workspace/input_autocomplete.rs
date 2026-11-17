@@ -33,8 +33,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::{
     AnyElement, App, Context, Entity, Focusable as _, InteractiveElement, MouseDownEvent,
-    ParentElement as _, Role, ScrollEvent, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div,
 };
 use kimun_core::NoteVault;
 use kimun_notes::logic::autocomplete::{
@@ -46,7 +46,7 @@ use kimun_notes::logic::message::Notifier;
 use kimun_notes::settings::themes::Theme;
 
 use super::popup_layer;
-use crate::autocomplete::{PopupRow, popup_row, wheel_command};
+use crate::autocomplete::{PopupRow, popup_row};
 
 /// What running a popup command did.
 #[derive(Debug, PartialEq, Eq)]
@@ -414,15 +414,12 @@ pub(super) fn show<V: QueryFieldOwner>(
         popup_layer::width_of(field),
         t,
     )
-    .on_scroll(
-        cx.listener(move |this: &mut V, event: &ScrollEvent, window, cx| {
-            if let Some(command) = wheel_command(event.delta.pixel_delta(window.line_height()).y) {
-                this.popup(command, window, cx);
-            }
-            // Over the popup the wheel never reaches the list under it.
-            cx.stop_propagation();
-        }),
-    )
+    .on_scroll(popup_layer::on_wheel(
+        cx,
+        |this: &mut V, command, window, cx| {
+            this.popup(command, window, cx);
+        },
+    ))
     .children(rows);
     Some(popup_layer::floating_under(
         field,
