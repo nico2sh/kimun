@@ -151,7 +151,7 @@ pub fn property_op_label(op: Option<PropertyOp>) -> &'static str {
 }
 
 /// A query as rows and a sort.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BuilderModel {
     pub rows: Vec<BuilderRow>,
     /// How the results are ordered; `None` leaves the default order.
