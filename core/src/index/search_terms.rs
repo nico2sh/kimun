@@ -353,6 +353,32 @@ pub struct PropertyFilter {
 }
 
 impl PropertyFilter {
+    /// The has-property filter for `key`, as typed in a form: `None` when the
+    /// key can't be a property (blank, multi-line).
+    pub fn exists(key: &str) -> Option<Self> {
+        Some(Self {
+            key: search_key(key)?,
+            test: PropertyTest::Exists,
+        })
+    }
+
+    /// The filter `key<op>value`, as typed in a form (not as written in a
+    /// query, so nothing is quoted): the key and value are put in search form,
+    /// and a `*` in the value is a wildcard, as in an unquoted query value.
+    /// `None` when the key can't be a property or the value is blank.
+    pub fn compare(key: &str, op: PropertyOp, value: &str) -> Option<Self> {
+        let value = search_form(value.trim());
+        (!value.is_empty()).then_some(())?;
+        Some(Self {
+            key: search_key(key)?,
+            test: PropertyTest::Compare {
+                op,
+                wildcard: value.contains('*'),
+                value,
+            },
+        })
+    }
+
     /// Parses `key<op>value`, or a bare `key` as a has-property filter. The
     /// key runs up to the first `= ! < >`; `None` when the key is empty, or an
     /// operator is present but malformed or has no value.
@@ -2446,5 +2472,21 @@ mod tests {
                 .collect();
             assert_round_trips(&q);
         }
+    }
+
+    #[test]
+    fn property_filters_built_from_fields_match_what_parsing_gives() {
+        let built = PropertyFilter::compare("Due Date", PropertyOp::Ge, " 2025-01-01 ").unwrap();
+        let parsed = PropertyFilter::parse("\"Due Date\">=2025-01-01").unwrap();
+        assert_eq!(built, parsed);
+        let built = PropertyFilter::compare("Status", PropertyOp::Eq, "Do*").unwrap();
+        assert_eq!(built, PropertyFilter::parse("status=do*").unwrap());
+        assert_eq!(
+            PropertyFilter::exists("R\u{e9}sum\u{e9}").unwrap(),
+            PropertyFilter::parse("resume").unwrap()
+        );
+        assert_eq!(PropertyFilter::compare("k", PropertyOp::Eq, "  "), None);
+        assert_eq!(PropertyFilter::compare("", PropertyOp::Eq, "v"), None);
+        assert_eq!(PropertyFilter::exists("  "), None);
     }
 }
