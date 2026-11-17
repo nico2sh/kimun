@@ -345,6 +345,8 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // New note and New directory: the dialogs (the TUI's Ctrl+N / Alt+N).
         A::NewNote => &["primary+n"],
         A::NewDirectory => &["primary+shift+n"],
+        // The TUI's note-or-directory menu; the desktop has the two chords.
+        A::NewEntry => return None,
     })
 }
 
