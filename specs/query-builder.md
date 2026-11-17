@@ -1,6 +1,6 @@
 # Spec: Query builder
 
-Status: draft. Applies to the GUI. The model lives in core so the TUI can reuse it later.
+Status: draft, open items resolved (see the end). Applies to the GUI. The model is `SearchTerms` in core, so the TUI can reuse it later.
 
 ## Goals
 
@@ -25,40 +25,39 @@ Status: draft. Applies to the GUI. The model lives in core so the TUI can reuse 
 | Types | Text, Note name, Heading, Folder, Tag, Links to, Linked from, Property, Raw. |
 | Entry points | A `Build…` button beside `Syntax` in the Find view toolbar and in the Search dialog. Both open the same dialog. |
 | Round-trip | Opening the builder parses the current query text into rows. Apply replaces the query text and runs it. Cancel changes nothing. |
-| Unrepresentable terms | They become `Raw` rows holding the original text, so nothing is lost. The user can edit or remove them. Examples: `?saved` expansions and tokens the lexer can't classify. |
-| Unterminated quote | The unterminated token is kept as a `Raw` row, because the parser would discard it. The builder shows a hint on that row. |
-| Value inputs | Smart pickers per type (see below). |
+| Unrepresentable terms | Tokens the parser would discard (unterminated quote, a prefix with no value, a malformed property filter) are kept by `SearchTerms` and shown as `Raw` rows, so nothing is lost. The user can edit or remove them. A `?name` term is a plain full-text term to core, so it shows as a Text row and round-trips unchanged. |
+| Unterminated quote | The token is kept as a `Raw` row. The builder shows a hint on that row. |
+| Value inputs | Smart pickers per type (see below). Property keys are suggested from the vault's indexed keys. |
 | Sort | One optional control: key (Title, Filename, a property name) and direction. Maps to `^key` / `-^key`. It reuses the existing sort logic. |
-| Open-note variable | Links to / Linked from rows have an "Open note" toggle as an alternative to naming a note. It maps to the bare `<` / `>` (the `{note}` variable). |
+| Open-note variable | No toggle. The note autocomplete offers the `{note}` variable as its first option, labelled "current open note". Picking it inserts `{note}`. This applies everywhere the note autocomplete runs (the builder's note inputs and the query field's `<` `>` `=` operators). |
 | Live count | Debounced, about 250 ms after the last edit, using the existing query page source. Shows `N notes` or `500+`. Shows nothing for an empty or invalid query. |
 | Scope | GUI only. |
 
 ## Core
 
-All query-string construction and parsing belongs next to the parser in `core/src/index/search_terms.rs`, so quoting, prefix tables and negation can't drift apart between the builder and the parser. The GUI never concatenates operator characters itself.
+`SearchTerms` is the single entity that holds a query's content. Query-string construction belongs next to the parser in `core/src/index/search_terms.rs`, so quoting, prefix tables and negation can't drift apart. The GUI never concatenates operator characters itself.
 
-Add a query model in core (module and names to settle in planning):
+Extend `SearchTerms` (no new model type):
 
-- `QueryTerm`: an enum with one variant per row type (`Text`, `Name`, `Heading`, `Path`, `Tag`, `LinksTo`, `LinkedFrom`, `Property`, `Raw`), each with a `negated` flag. `LinksTo` and `LinkedFrom` take either a note name or "open note". `Property` has a key, an operator (`= != < <= > >=`) and a value, plus the "has property" form with no operator or value.
-- `QuerySort`: an optional key and direction.
-- `QueryModel`: `{ terms: Vec<QueryTerm>, sort: Option<QuerySort> }`.
-- `QueryModel::to_query_string()`: serializes through the existing helpers (`quote_query_term`, the prefix table, `with_order_directive`). It uses the short operator forms, the same as the syntax reference.
-- `QueryModel::from_query_string(&str)`: parses via the existing tokenizer (`QueryTermExtractor`, `strip_order_directive`, `query_token_spans`). It never fails: anything it can't map to a typed term becomes `Raw`.
+- `SearchTerms::to_query_string(&self) -> String`: the inverse of `from_query_string`. It emits the short operator forms, `-` for every `excluded_*` bucket, quotes through `quote_query_term` (and the property-key and property-value quoting rules), and appends order directives. Terms come out grouped by bucket, which is fine because the terms are ANDed.
+- `SearchTerms.unparsed: Vec<String>`: a new bucket for tokens the parser discards today (unterminated quote, bare prefix with no value, malformed property filter), kept verbatim. The index ignores it, so search results don't change. `to_query_string` emits them as written.
+- Structured edit helpers only if the builder needs them. A row-level view for the GUI is built over the existing buckets, not stored in core.
 
 Required properties, all covered by tests:
 
-- **Round-trip**: for every query the parser accepts, `from_query_string(q).to_query_string()` parses to the same `SearchTerms` as `q`. It need not be byte-identical. Raw terms are emitted verbatim.
-- **Quoting**: values with spaces or quote characters serialize so the parser reads them back unchanged. This includes quoted property keys.
-- **Negation**: `-` is emitted for every term type the parser lets it negate.
-- **Wildcards**: `*` in a value is preserved.
+- **Round-trip**: for every query the parser accepts, `from_query_string(q).to_query_string()` parses to the same `SearchTerms` as `q`. It need not be byte-identical.
+- **Quoting**: values with spaces or quote characters serialize so the parser reads them back unchanged, including quoted property keys and `?name`-style terms.
+- **Negation, wildcards, sort**: `-` for every negatable bucket, `*` preserved, and all order directives kept in their original order.
+- **Unparsed tokens** survive a round-trip and don't affect the SQL the index builds.
 - **Query size**: the existing 8 KB truncation still applies.
 - Path and note-name handling reuses the existing core functions. No hardcoded `.md` or `/`.
 
-If a note or folder list is needed for the value pickers, it comes from the existing core APIs (`NoteVault::get_directories`, `list_labels`/`suggest_tags_by_prefix`, `suggest_notes_by_prefix`). Nothing in the GUI touches the filesystem.
+Property keys for suggestions come from the existing `NoteVault::property_keys()`. Tags and notes come from `list_labels`/`suggest_tags_by_prefix` and `suggest_notes_by_prefix`. Folders come from `NoteVault::get_directories`. Nothing in the GUI touches the filesystem.
 
 ## Shared logic (`kimun_notes::logic`)
 
-- The picker data sources reuse `SuggestionSource` / `VaultSuggestions` for tags and notes.
+- The picker data sources reuse `SuggestionSource` / `VaultSuggestions` for tags and notes. Add `properties_by_prefix` (backed by `NoteVault::property_keys()`) to the trait, with an empty default like `saved_searches_by_prefix`.
+- `SuggestionItem` gains a display label separate from the inserted text, so the `{note}` item can read "current open note" while inserting `{note}`. `link_filter_suggestions` in the autocomplete engine puts it first, and the label is user-facing text, so it goes through the GUI's string handling.
 - Folders: a thin source over the existing `file_ops::list_directories` (already used by `DirectoryChoice`).
 - Live count: a small helper over `QueryPageSource` that returns a capped count and takes the same query context the Find view uses, so `{note}` resolves identically.
 
@@ -83,15 +82,15 @@ If a note or folder list is needed for the value pickers, it comes from the exis
 | Text, Note name, Heading | Plain text. Note name also offers note autocomplete. |
 | Tag | Autocomplete from vault tags. |
 | Folder | The existing fuzzy directory chooser. |
-| Links to / Linked from | Note autocomplete, plus the "Open note" toggle. |
-| Property | Three fields: key, operator dropdown, value. The operator can be "exists" (no value), which gives the bare `%key`. |
+| Links to / Linked from | Note autocomplete, with "current open note" as the first option. |
+| Property | Three fields: key (autocomplete from indexed keys), operator dropdown, value. The operator can be "exists" (no value), which gives the bare `%key`. |
 | Raw | Plain text, shown in a monospace style. |
 
 ### Entry points
 
 - `Build…` button next to `Syntax` in the Find toolbar (`find.rs`), emitting an event handled like `FindEvent::Help`.
 - `Build…` in the Search dialog's header, next to the syntax help.
-- A chord is optional and is settled in planning, together with any conflict check against the keymap.
+- A chord `Build query`, default `primary+b`, scoped to where a query is typed (the same scope as `QuerySyntax`), so the editor keeps its own `Ctrl+B`. The plan includes the keymap conflict check.
 - Apply writes the generated string into the query field. In Find it runs the query immediately (as Enter does). In the Search dialog it triggers the normal debounced search.
 - If the Build dialog is closed with Cancel, the query field keeps its text and focus returns to it.
 
@@ -118,16 +117,22 @@ If a note or folder list is needed for the value pickers, it comes from the exis
 
 ## Testing
 
-- Core: unit tests for round-trip over a corpus covering every operator, negation, quoting, wildcards, property operators, sort directives, unterminated quotes, and `?name`/unknown tokens (which must come out as `Raw`).
+- Core: unit tests for round-trip over a corpus covering every operator, negation, quoting, wildcards, property operators, sort directives, unterminated quotes, and `?name`/unknown tokens (which must come out in `unparsed` or as plain terms, as described above).
   Include a property-style test: for generated terms, `to_query_string` then `SearchTerms::from_query_string` yields the intended terms.
 - Shared logic: tests for the capped count helper and the folder source.
-- GUI: `*_tests.rs` in `gui/src/workspace` for the dialog (adding, removing, editing rows, apply and cancel behaviour, raw rows, the Open note toggle, the disabled and incomplete states) and for both entry points.
+- GUI: `*_tests.rs` in `gui/src/workspace` for the dialog (adding, removing, editing rows, apply and cancel behaviour, raw rows, the `{note}` option, the disabled and incomplete states) and for both entry points.
+
+## Resolved during spec review
+
+1. `SearchTerms` is the model, extended with `to_query_string` and an `unparsed` bucket.
+2. The open note is the first autocomplete option, labelled "current open note", inserting `{note}`.
+3. `Build…` gets a chord, default `primary+b`, scoped to where a query is typed.
+4. Property keys are suggested from the index (`property_keys()`).
 
 ## Open items to settle during planning
 
-1. Module and type names in core. Check whether `SearchTerms` can be reused as the model instead of adding a new one.
-2. Whether a bare `<` / `>` should serialize as `<{note}` or as the bare form. Check what `expand_bare_note_prefixes` and the GUI query context expect.
-3. Whether `Build…` gets a default chord, and which one.
-4. Whether property keys can be listed from the index for suggestions. If core has no such API, the property key input stays plain text in v1.
-5. How the dialog is sized and scrolled when there are many rows (the help dialog uses `HELP_REMS = 30`).
-6. The `find.rs` module doc says the field has "no autocomplete, no colouring", while the code wires `InputAutocomplete`. Confirm the current behaviour before the builder reuses it.
+1. The exact text of the "current open note" label and where its string lives.
+2. The `primary+b` conflict check against the keymap and the GUI kit.
+3. How the dialog is sized and scrolled when there are many rows (the help dialog uses `HELP_REMS = 30`).
+4. The `find.rs` module doc says the field has "no autocomplete, no colouring", while the code wires `InputAutocomplete`. Confirm the current behaviour before the builder reuses it.
+5. Whether `unparsed` should also hold tokens the order parser rejects (an unknown `^key`).
