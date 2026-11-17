@@ -30,7 +30,7 @@ Status: draft, open items resolved (see the end). Applies to the GUI. The model 
 | Value inputs | Smart pickers per type (see below). Property keys are suggested from the vault's indexed keys. |
 | Sort | One optional control: key (Title, Filename, a property name) and direction. Maps to `^key` / `-^key`. It reuses the existing sort logic. |
 | Open-note variable | No toggle. The note autocomplete offers the `{note}` variable as its first option, labelled "current open note". Picking it inserts `{note}`. This applies everywhere the note autocomplete runs (the builder's note inputs and the query field's `<` `>` `=` operators). |
-| Live count | Debounced, about 250 ms after the last edit, using the existing query page source. Shows `N notes` or `500+`. Shows nothing for an empty or invalid query. |
+| Live count | Debounced, about 250 ms after the last edit. Shows the exact number of matching notes (the index returns every match whatever is asked, so a cap would not make it cheaper). Shows nothing for an empty query, and a short reason instead of a number when the query can't run: it needs the open note and none is open, it has an unterminated quote, or the search failed. |
 | Scope | GUI only. |
 
 ## Core
