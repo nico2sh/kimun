@@ -8,8 +8,8 @@
 //! tokio runs, which is also the proof that none is read on the UI thread.
 #![cfg(test)]
 
-use gpui_kit::test::{TestQueryExt as _, TestWindowExt};
-use gpui_kit::{Entity, TestAppContext};
+use gpui_kit::test::TestWindowExt;
+use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::query::{QueryCount, RowKind};
@@ -17,7 +17,7 @@ use kimun_notes::logic::sort::{SortField, SortOrder};
 use tokio::runtime::Runtime;
 
 use super::file_dialogs::CONFIRM_ID;
-use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE, FIND_INPUT_ID};
+use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE};
 use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
 use super::query_builder::{COUNT_DEBOUNCE, QueryBuilderDialog};
