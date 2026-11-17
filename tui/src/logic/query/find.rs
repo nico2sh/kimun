@@ -12,7 +12,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::logic::list::{Emit, ListRow, RowSource, YankTarget};
 use crate::logic::query::{
-    QueryContext, VAR_NOTE, emphasis_needles, error_reason, query_is_unresolvable, resolve_query,
+    QueryContext, VAR_NOTE, emphasis_needles, error_reason, resolve_for_search,
 };
 
 /// The canonical backlinks query (`<` / `lk:`; `>` is forward links). The
@@ -184,32 +184,39 @@ pub enum QueryCount {
     /// Nothing typed: nothing to count.
     Blank,
     /// The query needs the open note (`<`, `<{note}`) and none is open, as
-    /// [`query_is_unresolvable`] says: running it would find nothing.
+    /// [`resolve_for_search`] says: running it would find nothing.
     Unresolvable,
     /// The query has a parse problem ([`error_reason`]), shown instead of a
     /// count that would be for a different query than the one written.
     Problem(&'static str),
-    /// How many notes match, all of them: the index already collects every
-    /// match, and nothing is read from disk to count them.
+    /// The search itself failed (the index could not be read): not "no
+    /// matches".
+    Failed,
+    /// How many notes match, all of them: the index returns every match
+    /// whatever is asked of it, so there is no cheaper capped count, and
+    /// nothing is read from disk to count them.
     Matches(usize),
 }
 
-/// Count what `template` matches against `ctx`, resolving it exactly as the
-/// Query panel does (`{note}` and the bare-operator sugar through
-/// [`resolve_query`]) and counting through [`load_query_page`] with no page,
-/// so the number is the very total the panel shows.
+/// Count what `template` matches against `ctx`. It decides whether and how to
+/// run exactly as the Query panel's rows do ([`resolve_for_search`]), and
+/// checks the typed template for a parse problem as the panel's header does.
+/// A `?name` is expanded into the field when accepted, so what reaches the
+/// count is already the stored query, as for the panel.
 pub async fn count_query(vault: &NoteVault, template: &str, ctx: &QueryContext) -> QueryCount {
     if template.trim().is_empty() {
         return QueryCount::Blank;
     }
-    if query_is_unresolvable(template, ctx) {
-        return QueryCount::Unresolvable;
-    }
-    let query = resolve_query(template, ctx);
-    if let Some(reason) = error_reason(&query) {
+    if let Some(reason) = error_reason(template) {
         return QueryCount::Problem(reason);
     }
-    QueryCount::Matches(load_query_page(vault, &query, 0, 0).await.total)
+    let Some(query) = resolve_for_search(template, ctx) else {
+        return QueryCount::Unresolvable;
+    };
+    match vault.search_notes(&query).await {
+        Ok(found) => QueryCount::Matches(found.len()),
+        Err(_) => QueryCount::Failed,
+    }
 }
 
 /// A row of a [`QueryPageSource`] listing: one result, and how many the
@@ -451,12 +458,16 @@ mod tests {
         };
         assert_eq!(count("#t", &none).await, QueryCount::Matches(2));
         assert_eq!(count("#t zzz", &none).await, QueryCount::Matches(0));
-        // Same total as the panel, for the same resolved query.
-        assert_eq!(
-            load_query_page(&vault, "#t", 0, 0).await.total,
-            2,
-            "no page, still counted"
-        );
+        // The very total the panel's rows carry for the same resolved query.
+        let (emit, rx) = crate::logic::list::Emit::capture();
+        QueryPageSource::new(vault.clone(), 1, 10)
+            .load("#t", emit)
+            .await;
+        let total = match rx.recv() {
+            Ok((_, crate::logic::list::Loaded::Replace(rows))) => rows[0].total,
+            _ => panic!("one replace"),
+        };
+        assert_eq!(count("#t", &none).await, QueryCount::Matches(total));
         // `{note}` and the bare sugar resolve against the open note.
         assert_eq!(count("<{note}", &open_a).await, QueryCount::Matches(2));
         assert_eq!(count("<", &open_a).await, QueryCount::Matches(2));

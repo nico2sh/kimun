@@ -45,13 +45,14 @@ Files: `tui/src/logic/autocomplete/source.rs`, `engine.rs`, `state.rs`.
 
 Check: `cargo test -p kimun_notes` (the crate name may differ, **verify**), plus the TUI autocomplete tests, since the TUI shares this code. The TUI popup must keep showing the `{note}` item correctly with the new label.
 
-### 3. Shared logic: live count
+### 3. Shared logic: live count (done)
 
-Files: `tui/src/logic/query/` (next to `QueryPageSource`).
+Files: `tui/src/logic/query/{find,vars}.rs`, `tui/src/logic/list/resolving.rs`.
 
-1. A helper that takes a query string and the query context, resolves `{note}` and `?name` the way the Find view does (reuse that code path, don't duplicate it), runs the query through `QueryPageSource`, and returns a count capped at 500 plus a flag for "capped".
-2. Returns `None` for an empty query and an error state for a failure, so the dialog shows nothing in those cases.
-3. Tests for: empty, capped, no matches, an unresolved `{note}` with no open note.
+1. `resolve_for_search(template, ctx) -> Option<String>` in `vars.rs`: the one decision of whether and how to run a template (`None` when it needs the open note and none is open). `ResolvingRowSource` and the count both use it.
+2. `count_query(vault, template, ctx) -> QueryCount` in `find.rs`, with `Blank`, `Unresolvable`, `Problem(reason)` (the panel's `error_reason`, checked on the typed template), `Failed` (the search errored) and `Matches(n)`.
+3. The count is exact, not capped at 500: the index returns every match whatever is asked of it, so a cap saves nothing, and the real number is more useful. `?name` needs nothing here: accepting it expands the field to the stored query, so the count sees the same text as the panel.
+4. Tests: blank, unresolvable, resolved `{note}` and bare `<`, unterminated quote, sort directive, and equality with the total the panel's `QueryPageSource` rows carry.
 
 ### 4. GUI: the dialog
 

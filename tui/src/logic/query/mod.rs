@@ -23,5 +23,6 @@ pub use self::find::{
 };
 pub use self::syntax::{SYNTAX, SyntaxSection};
 pub use self::vars::{
-    QueryContext, VAR_NOTE, query_has_variables, query_is_unresolvable, resolve_query,
+    QueryContext, VAR_NOTE, query_has_variables, query_is_unresolvable, resolve_for_search,
+    resolve_query,
 };
