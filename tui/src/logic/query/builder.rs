@@ -217,7 +217,7 @@ impl BuilderModel {
         }
     }
 
-    /// The terms the complete rows stand for.
+    /// The terms the complete rows stand for, but for the raw rows.
     fn terms(&self) -> SearchTerms {
         let mut t = SearchTerms::default();
         for row in self.rows.iter().filter(|r| r.is_complete()) {
@@ -251,23 +251,34 @@ impl BuilderModel {
                     }
                     continue;
                 }
-                RowKind::Raw => {
-                    t.unparsed.push(value);
-                    continue;
-                }
+                // Written after the sort, as they were (see `to_query`).
+                RowKind::Raw => continue,
             };
             if row.exclude { exclude } else { include }.push(value);
         }
         t
     }
 
-    /// The query the complete rows and the sort say.
+    /// The query the complete rows and the sort say. The raw rows come last,
+    /// as written: setting the sort strips every order directive from the
+    /// text it is given, so a raw second sort must be added after it, and an
+    /// unterminated quote runs to the end of the query so it belongs there.
     pub fn to_query(&self) -> String {
         let text = self.terms().to_query_string();
-        match &self.sort {
+        let text = match &self.sort {
             Some((field, order)) => query_with_sort(&text, field, *order).unwrap_or(text),
             None => text,
-        }
+        };
+        let raw = self
+            .rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Raw && r.is_complete())
+            .map(|r| r.value.trim());
+        std::iter::once(text.as_str())
+            .chain(raw)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// How many rows are left out of the query for being incomplete.
