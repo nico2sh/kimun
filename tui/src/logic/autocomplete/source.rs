@@ -54,12 +54,6 @@ pub trait SuggestionSource: Send + Sync + 'static {
     async fn saved_searches_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
         Vec::new()
     }
-
-    /// Property keys (`%key`) starting with `prefix`, ignoring case and
-    /// accents. Defaults to empty, like the saved searches.
-    async fn properties_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
-        Vec::new()
-    }
 }
 
 /// Production adapter over the vault. Formats the secondary line (note path,
@@ -119,13 +113,6 @@ impl SuggestionSource for VaultSuggestions {
             })
             .unwrap_or_default()
     }
-    async fn properties_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
-        self.vault
-            .suggest_property_keys_by_prefix(prefix, limit)
-            .await
-            .map(|keys| keys.into_iter().map(SuggestionItem::plain).collect())
-            .unwrap_or_default()
-    }
 }
 
 #[cfg(test)]
@@ -165,39 +152,5 @@ mod suggestion_tests {
         assert_eq!(m.notes_by_prefix("pro", 9).await.len(), 1);
         assert_eq!(m.notes_by_prefix("pro", 9).await[0].display, "projects");
         assert_eq!(m.tags_by_prefix("to", 9).await[0].display, "todo");
-    }
-
-    #[tokio::test]
-    async fn vault_property_suggestions_match_keys_in_search_form() {
-        use kimun_core::nfs::VaultPath;
-        use kimun_core::{NoteVault, VaultConfig};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cfg = VaultConfig::new(crate::test_support::sys(tmp.path()));
-        let vault = NoteVault::new(cfg).await.unwrap();
-        vault.validate_and_init().await.unwrap();
-        vault
-            .create_note(
-                &VaultPath::note_path_from("/a.md"),
-                "---\nStatus: x\nstart: 1\nR\u{e9}sum\u{e9}: z\n---\nbody",
-            )
-            .await
-            .unwrap();
-        let src = VaultSuggestions {
-            vault: std::sync::Arc::new(vault),
-        };
-        let names = |items: Vec<SuggestionItem>| -> Vec<String> {
-            items.into_iter().map(|i| i.display).collect()
-        };
-        assert_eq!(
-            names(src.properties_by_prefix("st", 10).await),
-            vec!["start", "status"]
-        );
-        assert_eq!(names(src.properties_by_prefix("ST", 10).await).len(), 2);
-        assert_eq!(
-            names(src.properties_by_prefix("res", 10).await),
-            vec!["resume"]
-        );
-        assert_eq!(names(src.properties_by_prefix("", 2).await).len(), 2);
-        assert!(src.properties_by_prefix("zzz", 10).await.is_empty());
     }
 }

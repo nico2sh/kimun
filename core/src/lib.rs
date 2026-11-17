@@ -1371,24 +1371,6 @@ impl NoteVault {
         Ok(self.index.property_keys().await?)
     }
 
-    /// Property keys starting with `prefix` (matched in search form, so case
-    /// and accents are ignored), distinct, sorted and capped at `limit`. Feeds
-    /// the property-key suggestions of the query builder.
-    pub async fn suggest_property_keys_by_prefix(
-        &self,
-        prefix: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, VaultError> {
-        let prefix = properties::search_form(prefix);
-        Ok(self
-            .property_keys()
-            .await?
-            .into_iter()
-            .filter(|k| k.starts_with(&prefix))
-            .take(limit)
-            .collect())
-    }
-
     /// Each indexed note's sort value for property `key` (matched in search
     /// form, as `or:prop:key` matches it), keyed by note path. Ordering the
     /// values with [`PropertySortValue`]'s `Ord`, notes absent from the map
