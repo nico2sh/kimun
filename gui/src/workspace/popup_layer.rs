@@ -75,6 +75,8 @@ pub(super) fn floating_under(
             .snap_to_window_with_margin(margin)
             .child(list),
     )
-    .with_priority(2)
+    // The kit's popup priority: above a dialog (which draws at 10 and up,
+    // so a popup inside one would otherwise be behind it), below tooltips.
+    .with_priority(gpui_kit::base::POPUP_PRIORITY)
     .into_any_element()
 }
