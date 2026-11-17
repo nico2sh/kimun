@@ -2865,7 +2865,7 @@ impl Workspace {
                 if !self.find_has_keyboard() {
                     return false;
                 }
-                self.open_query_builder(None, window, cx);
+                self.open_query_builder(window, cx);
             }
             // The search browser's own chord (handled by the modal); with
             // no browser open there is no query to carry, so it goes on.
