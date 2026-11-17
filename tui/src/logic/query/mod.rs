@@ -2,9 +2,9 @@
 //! resolve against ([`QueryContext`], [`resolve_query`]), the saved-search
 //! breadcrumb ([`SavedSearchBreadcrumb`]), the emphasis needles a query
 //! implies ([`emphasis_needles`]) and its parse problem ([`error_reason`]),
-//! the query builder's rows ([`BuilderModel`]), the Query panel's rows and their loader ([`BacklinkEntry`],
-//! [`BacklinkSource`], [`load_query`]), and the query-syntax reference card
-//! ([`SYNTAX`]). The order directive helpers are in
+//! the query builder's rows ([`BuilderModel`]), the Query panel's rows and
+//! their loader ([`BacklinkEntry`], [`BacklinkSource`], [`load_query`]), and
+//! the query-syntax reference card ([`SYNTAX`]). The order directive helpers are in
 //! [`crate::logic::sort`]. See CONTEXT.md (Query panel, Query variable,
 //! Saved search) and adr/0049.
 
