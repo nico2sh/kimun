@@ -1020,7 +1020,9 @@ impl Render for QueryBuilderDialog {
                                     .aria_label(SharedString::from(query.clone()))
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
+                                    // Long queries wrap to a second line, then
+                                    // end in "…": it is there to be read.
+                                    .line_clamp(2)
                                     .text_xs()
                                     .text_color(theme::muted(t))
                                     .child(if query.is_empty() {
@@ -1044,7 +1046,6 @@ impl Render for QueryBuilderDialog {
                                     .aria_label(SharedString::from(count_text.clone()))
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
                                     .text_sm()
                                     .text_color(theme::foreground(t))
                                     .child(match incomplete {
