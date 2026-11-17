@@ -425,10 +425,14 @@ mod tests {
         assert_eq!(m.rows.last().map(|r| r.kind), Some(RowKind::Raw));
         assert_keeps_meaning("a ^title -^file");
 
-        let m = BuilderModel::from_query("%name=\"a*b\" %name=a*b");
+        // The wildcard one is a property row; the literal one stays raw, and
+        // is written after the other filters (they are ANDed, so the order
+        // between them means nothing).
+        let q = "%name=a*b %name=\"a*b\"";
+        let m = BuilderModel::from_query(q);
         assert_eq!(m.rows[0].kind, RowKind::Property, "the wildcard one");
         assert_eq!(m.rows[1].kind, RowKind::Raw, "the literal one");
-        assert_keeps_meaning("%name=\"a*b\" %name=a*b");
+        assert_keeps_meaning(q);
     }
 
     #[test]
