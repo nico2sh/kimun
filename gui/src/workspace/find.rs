@@ -941,7 +941,7 @@ impl Workspace {
     ) {
         match event {
             FindEvent::Help => self.open_query_help(window, cx),
-            FindEvent::Build => self.open_query_builder(window, cx),
+            FindEvent::Build => self.open_query_builder(None, window, cx),
             FindEvent::Save => self.save_find_query(window, cx),
             FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
             FindEvent::Dismiss => self.dismiss_to_editor(window, cx),

@@ -176,7 +176,8 @@ fn the_build_button_opens_the_builder_on_the_query(cx: &mut TestAppContext) {
             (RowKind::LinksTo, false, "alpha".to_string()),
         ]
     );
-    assert_eq!(query_of(&s, cx), "#rust -#go <alpha");
+    // Written grouped: what must match, then what must not.
+    assert_eq!(query_of(&s, cx), "#rust <alpha -#go");
 }
 
 /// The chord opens it from FIND's field too, and the chord is not Bold's.

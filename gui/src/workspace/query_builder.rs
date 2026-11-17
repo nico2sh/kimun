@@ -1049,7 +1049,15 @@ impl Workspace {
 
     /// The `QueryBuilder` chord or a `Build…` button: build FIND's query, or
     /// the search browser's, over the browser. Open already: closed.
-    pub(crate) fn open_query_builder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `browser_query` is the browser's query when the browser itself asks
+    /// (its button runs inside the browser's update, so the workspace cannot
+    /// read the field back); `None` reads it.
+    pub(crate) fn open_query_builder(
+        &mut self,
+        browser_query: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.query_builder.is_some() && modal::dialog_open(window, cx) {
             self.dismiss_query_builder(window, cx);
             return;
@@ -1067,13 +1075,16 @@ impl Workspace {
             return;
         };
         let (query, target) = if stacked {
-            let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
-                return;
+            let query = match browser_query {
+                Some(query) => query,
+                None => {
+                    let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
+                        return;
+                    };
+                    picker.read(cx).input.read(cx).value().to_string()
+                }
             };
-            (
-                picker.read(cx).input.read(cx).value().to_string(),
-                BuilderTarget::Browser,
-            )
+            (query, BuilderTarget::Browser)
         } else {
             let Some(find) = self.find.clone() else {
                 self.flash(super::route::NO_WORKSPACE, cx);
