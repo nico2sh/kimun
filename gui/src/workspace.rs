@@ -638,6 +638,8 @@ pub(crate) struct Workspace {
     pub(crate) properties: Option<WeakEntity<properties::PropertiesDialog>>,
     /// The search browser's query syntax is shown over it ([`search`]).
     pub(crate) query_help: bool,
+    /// The query builder, while open ([`query_builder`]).
+    pub(crate) query_builder: Option<query_builder::QueryBuilderOpen>,
     /// The Saved Searches in the modal slot, while open
     /// ([`saved_searches`]).
     pub(crate) saved_searches:
@@ -880,6 +882,7 @@ impl Workspace {
             note_task: None,
             properties: None,
             query_help: false,
+            query_builder: None,
             saved_searches: None,
             sort: None,
             pinned: None,
@@ -2856,6 +2859,14 @@ impl Workspace {
                 }
                 self.open_query_help(window, cx);
             }
+            // FIND's query builder (the search browser's is the modal's own
+            // key); elsewhere the chord goes on.
+            ActionShortcuts::QueryBuilder => {
+                if !self.find_has_keyboard() {
+                    return false;
+                }
+                self.open_query_builder(window, cx);
+            }
             // The search browser's own chord (handled by the modal); with
             // no browser open there is no query to carry, so it goes on.
             ActionShortcuts::OpenQueryInSidebar => return false,
@@ -3810,6 +3821,7 @@ mod placement;
 mod preferences;
 mod presets;
 mod properties;
+mod query_builder;
 mod query_field;
 mod reopen;
 mod result_row;
@@ -3891,6 +3903,8 @@ mod preferences_workspaces_tests;
 mod preset_tests;
 #[cfg(test)]
 mod properties_tests;
+#[cfg(test)]
+mod query_builder_tests;
 #[cfg(test)]
 mod rail_tests;
 #[cfg(test)]

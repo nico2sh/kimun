@@ -15,7 +15,7 @@ pub use apply::apply_accept;
 pub use command::{PopupAction, PopupCommand, PopupOutcome, apply_command, key_command};
 pub use engine::{
     AcceptAction, AutocompleteEngine, AutocompleteMode, HandleKeyOutcome, OPEN_NOTE_LABEL,
-    RedrawCallback,
+    RedrawCallback, offers_open_note,
 };
 pub use host::AutocompleteHost;
 pub use source::{SuggestionItem, SuggestionSource, VaultSuggestions};

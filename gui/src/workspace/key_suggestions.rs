@@ -54,10 +54,30 @@ impl KeySuggestions {
             .collect();
     }
 
+    /// [`Self::refresh`], with `leading` offered first whatever `typed` is
+    /// (the open note, offered even in an empty field).
+    pub(crate) fn refresh_with_leading(
+        &mut self,
+        known: &[String],
+        typed: &str,
+        leading: Option<&str>,
+    ) {
+        self.refresh(known, typed);
+        if let Some(leading) = leading {
+            self.shown.insert(0, leading.to_string());
+            self.shown.truncate(SHOWN);
+        }
+    }
+
     /// The suggestions shown, best first (tests).
     #[cfg(test)]
     pub(crate) fn shown(&self) -> &[String] {
         &self.shown
+    }
+
+    /// Whether nothing is suggested.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.shown.is_empty()
     }
 
     /// The suggestion Up/Down is on.
@@ -104,6 +124,30 @@ impl KeySuggestions {
         cx: &mut Context<V>,
         pick: fn(&mut V, usize, &mut Window, &mut Context<V>),
     ) -> Option<AnyElement> {
+        self.render_labelled(
+            list_id,
+            aria_label,
+            id_of,
+            |key| key.to_string(),
+            t,
+            cx,
+            pick,
+        )
+    }
+
+    /// [`Self::render`] with each option shown as `label_of(key)` while the
+    /// key stays what is taken.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_labelled<V: 'static>(
+        &self,
+        list_id: &'static str,
+        aria_label: &'static str,
+        id_of: fn(&str) -> SharedString,
+        label_of: fn(&str) -> String,
+        t: &Theme,
+        cx: &mut Context<V>,
+        pick: fn(&mut V, usize, &mut Window, &mut Context<V>),
+    ) -> Option<AnyElement> {
         if self.shown.is_empty() {
             return None;
         }
@@ -121,7 +165,7 @@ impl KeySuggestions {
                         .id(id_of(key))
                         .test_support()
                         .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(key.clone()))
+                        .aria_label(SharedString::from(label_of(key)))
                         .aria_selected(highlighted)
                         .px_2()
                         .py_0p5()
@@ -130,7 +174,7 @@ impl KeySuggestions {
                         .text_color(theme::foreground(t))
                         .when(highlighted, |row| row.bg(theme::selected_background(t)))
                         .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))
-                        .child(key.clone())
+                        .child(label_of(key))
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             pick(this, ix, window, cx)
                         }))
