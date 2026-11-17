@@ -209,6 +209,7 @@ impl DirectoryChoice {
             .h(rems(1.75))
             .px_2()
             .rounded_md()
+            .cursor_pointer()
             .text_sm()
             .text_color(theme::directory(t))
             .when(selected, |row| row.bg(theme::selected_background(t)))
