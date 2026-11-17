@@ -87,6 +87,7 @@ pub(crate) const PICKER_LIST_ID: &str = "note-picker-list";
 pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
+pub(crate) const BUILD_BUTTON_ID: &str = "note-picker-build";
 /// The search browser's button carrying its query to the FIND view.
 pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
 pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
@@ -463,13 +464,24 @@ impl<R: PickerRow> NotePicker<R> {
         if sorted == query {
             return;
         }
+        self.apply_query(sorted, window, cx);
+    }
+
+    /// Put `query` in the field and run it (a sort, the query builder): what
+    /// was being completed is gone.
+    pub(crate) fn apply_query(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // `set_value` reports no change: the query runs here.
         if let Some(ac) = self.ac.as_mut() {
             ac.close();
         }
         self.input
-            .update(cx, |input, cx| input.set_value(sorted.clone(), window, cx));
-        self.set_query(sorted, cx);
+            .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.set_query(query, cx);
     }
 
     /// The search browser's sort chip: the query's order, or "Unsorted" on
@@ -755,6 +767,19 @@ impl<R: PickerRow> Render for NotePicker<R> {
                                 this.workspace
                                     .update(cx, |workspace, cx| {
                                         workspace.open_browser_query_in_find(query, window, cx)
+                                    })
+                                    .ok();
+                            })),
+                    )
+                    .child(
+                        Button::new(BUILD_BUTTON_ID)
+                            .ghost()
+                            .label("Build…")
+                            .tooltip("Build the query from conditions")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.open_query_builder(window, cx)
                                     })
                                     .ok();
                             })),

@@ -768,6 +768,7 @@ impl Workspace {
         let allowed = if stacked {
             self.open_modal(window, cx) == Some(ModalKind::Search)
                 && !self.query_help
+                && self.query_builder.is_none()
                 && !self.picker_busy(cx)
         } else {
             !modal::dialog_open(window, cx)

@@ -16,6 +16,18 @@ use crate::logic::editor::claim::has_trigger_before_cursor;
 use crate::logic::editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
 
+/// Whether the open-note option is offered for what is typed after a note
+/// operator: nothing yet, a prefix of the variable (`{n`) or of `note`, or from
+/// two letters on a prefix of the label (`cu`, `current o`). Matching words
+/// inside the label would pin it above real note names for most letters.
+pub fn offers_open_note(typed: &str) -> bool {
+    let typed = typed.to_lowercase();
+    typed.is_empty()
+        || "{note}".starts_with(&typed)
+        || "note".starts_with(&typed)
+        || (typed.chars().count() >= 2 && OPEN_NOTE_LABEL.starts_with(&typed))
+}
+
 /// How the `{note}` variable reads in a link-filter popup (`<`, `>`, `=`): the
 /// note open in the editor.
 pub const OPEN_NOTE_LABEL: &str = "current open note";
@@ -459,20 +471,13 @@ impl AutocompleteEngine {
     /// prefix, followed by note names. Pure + async so it can be unit-tested.
     ///
     /// The variable is shown as [`OPEN_NOTE_LABEL`] but inserts `{note}`. It
-    /// matches a prefix of the variable (`{n`), of `note` (as before), or of
-    /// the label from two letters on (`cu`, `current o`). Matching words
-    /// inside the label would pin it above real note names for most letters.
+    /// matches as [`offers_open_note`] says.
     pub(super) async fn link_filter_suggestions(
         s: &dyn SuggestionSource,
         prefix: &str,
     ) -> Vec<SuggestionItem> {
         let mut out = Vec::new();
-        let typed = prefix.to_lowercase();
-        let offered = typed.is_empty()
-            || "{note}".starts_with(&typed)
-            || "note".starts_with(&typed)
-            || (typed.chars().count() >= 2 && OPEN_NOTE_LABEL.starts_with(&typed));
-        if offered {
+        if offers_open_note(prefix) {
             out.push(SuggestionItem::plain("{note}").with_label(OPEN_NOTE_LABEL));
         }
         out.extend(s.notes_by_prefix(prefix, 20).await);

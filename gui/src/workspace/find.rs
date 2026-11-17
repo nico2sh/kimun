@@ -107,6 +107,7 @@ pub(crate) const FIND_LIST_ID: &str = "find-list";
 pub(crate) const FIND_TITLE_ID: &str = "find-title";
 pub(crate) const FIND_SORT_ID: &str = "find-sort";
 pub(crate) const FIND_HELP_ID: &str = "find-help";
+pub(crate) const FIND_BUILD_ID: &str = "find-build";
 pub(crate) const FIND_SAVE_ID: &str = "find-save";
 pub(crate) const FIND_ERROR_ID: &str = "find-query-error";
 pub(crate) const FIND_MORE_ID: &str = "find-more";
@@ -164,6 +165,8 @@ impl DrawerRow for QueryHit {
 pub(crate) enum FindEvent {
     /// The `QuerySyntax` chord (F1) or the `Syntax` button: the query syntax.
     Help,
+    /// The `QueryBuilder` chord or the `Build…` button: the query builder.
+    Build,
     /// `Save…`: save the query.
     Save,
     /// The sort chip: the sort dialog on FIND.
@@ -617,6 +620,10 @@ impl FindView {
             cx.emit(FindEvent::Help);
             return true;
         }
+        if crate::keymap::active(cx).is_bound(key, &ActionShortcuts::QueryBuilder) {
+            cx.emit(FindEvent::Build);
+            return true;
+        }
         if key.mods != Mods::NONE {
             return false;
         }
@@ -670,6 +677,16 @@ impl FindView {
             .tooltip(self.save_tip.clone())
             .disabled(!querying)
             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save)));
+        let build = Button::new(FIND_BUILD_ID)
+            .ghost()
+            .xsmall()
+            .label("Build…")
+            .tooltip(super::chrome::tooltip_with_chord(
+                "Build the query from conditions",
+                &ActionShortcuts::QueryBuilder,
+                cx,
+            ))
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Build)));
         let help = Button::new(FIND_HELP_ID)
             .ghost()
             .xsmall()
@@ -704,6 +721,7 @@ impl FindView {
             })
             .children(chip)
             .child(save)
+            .child(build)
             .child(help)
     }
 }
@@ -923,6 +941,7 @@ impl Workspace {
     ) {
         match event {
             FindEvent::Help => self.open_query_help(window, cx),
+            FindEvent::Build => self.open_query_builder(window, cx),
             FindEvent::Save => self.save_find_query(window, cx),
             FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
             FindEvent::Dismiss => self.dismiss_to_editor(window, cx),

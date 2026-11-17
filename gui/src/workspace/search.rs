@@ -1062,7 +1062,7 @@ impl Workspace {
     /// From FIND (no modal open), the query syntax alone, as the modal.
     pub(crate) fn open_query_help(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let slot = match self.open_modal(window, cx) {
-            Some(ModalKind::Search) if !self.query_help => {
+            Some(ModalKind::Search) if !self.query_help && self.query_builder.is_none() => {
                 self.query_help = true;
                 Slot::Stacked
             }
