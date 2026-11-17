@@ -175,7 +175,7 @@ pub(crate) fn popup_row(
         highlighted,
         accessible,
     } = row;
-    let (typed, rest) = split_prefix(&item.display, query);
+    let (typed, rest) = split_prefix(item.shown(), query);
     let base = div()
         // Keyed by what the row is, not where: the list reorders as the query
         // narrows.
@@ -187,7 +187,7 @@ pub(crate) fn popup_row(
         .text_color(theme::foreground(t));
     let base = if accessible {
         base.role(Role::ListBoxOption)
-            .aria_label(SharedString::from(item.display.clone()))
+            .aria_label(SharedString::from(item.shown().to_string()))
             .aria_selected(highlighted)
     } else {
         base
@@ -317,6 +317,7 @@ mod tests {
                 .map(|(d, s)| Suggestion {
                     display: (*d).to_string(),
                     secondary: s.map(str::to_string),
+                    label: None,
                 })
                 .collect(),
         );
