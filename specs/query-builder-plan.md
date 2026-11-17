@@ -39,7 +39,7 @@ Files: `tui/src/logic/autocomplete/source.rs`, `engine.rs`, `state.rs`.
 
 1. `SuggestionItem` / `Suggestion`: add an optional `label` (shown) separate from `display` (inserted). **verify** how accept uses `display`, so the inserted text stays `{note}`.
 2. `link_filter_suggestions` gives the `{note}` item the label "current open note". **verify** how user-facing strings are handled in this crate (a constant, or an i18n table) and follow it.
-3. `SuggestionSource::properties_by_prefix(prefix, limit)` with an empty default, implemented in `VaultSuggestions` over `NoteVault::property_keys()` (filtered by prefix in search form, so case and accents are ignored, as in the property matching). Put the prefix filtering in core if there's no suitable function (CLAUDE.md: path and content logic in core).
+3. Property keys need no new source: the GUI's `KeySuggestions` already lists `NoteVault::property_keys()` for the sort dialog and the properties form, and the builder's key field reuses it. (A `properties_by_prefix` source was added here first and removed as redundant.)
 4. Optionally add a `%` autocomplete trigger to the query field using the same source. **Decision at this step**: only if the trigger code stays small. Otherwise leave it and note it as a follow-up. The builder doesn't depend on it.
 5. Tests: the engine test module already covers link-filter results. Add cases for the label, for `{note}` being inserted, and for the property source.
 

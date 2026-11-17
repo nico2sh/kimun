@@ -52,11 +52,11 @@ Required properties, all covered by tests:
 - **Query size**: the existing 8 KB truncation still applies.
 - Path and note-name handling reuses the existing core functions. No hardcoded `.md` or `/`.
 
-Property keys for suggestions come from the existing `NoteVault::property_keys()`. Tags and notes come from `list_labels`/`suggest_tags_by_prefix` and `suggest_notes_by_prefix`. Folders come from `NoteVault::get_directories`. Nothing in the GUI touches the filesystem.
+Property keys for suggestions come from the existing `NoteVault::property_keys()`, listed by the GUI's `KeySuggestions` as the sort dialog and the properties form do (no new source). Tags and notes come from `list_labels`/`suggest_tags_by_prefix` and `suggest_notes_by_prefix`. Folders come from `NoteVault::get_directories`. Nothing in the GUI touches the filesystem.
 
 ## Shared logic (`kimun_notes::logic`)
 
-- The picker data sources reuse `SuggestionSource` / `VaultSuggestions` for tags and notes. Add `properties_by_prefix` (backed by `NoteVault::property_keys()`) to the trait, with an empty default like `saved_searches_by_prefix`.
+- The picker data sources reuse `SuggestionSource` / `VaultSuggestions` for tags and notes.
 - `SuggestionItem` gains a display label separate from the inserted text, so the `{note}` item can read "current open note" while inserting `{note}`. `link_filter_suggestions` in the autocomplete engine puts it first, and the label is user-facing text, so it goes through the GUI's string handling.
 - Folders: a thin source over the existing `file_ops::list_directories` (already used by `DirectoryChoice`).
 - Live count: a small helper over `QueryPageSource` that returns a capped count and takes the same query context the Find view uses, so `{note}` resolves identically.
