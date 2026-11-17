@@ -326,8 +326,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // the search browser): F1 there, as in the TUI's search views.
         A::QuerySyntax => &["f1"],
         // The query builder, where a query is typed (FIND, the search
-        // browser). Not Ctrl+B, which is Bold in the editor.
-        A::QueryBuilder => &["primary+shift+k"],
+        // browser): the F-key family's next (F1 syntax … F6 ask). Not Ctrl+B,
+        // which is Bold in the editor, and not Ctrl+Shift+K, SearchNotes' twin.
+        A::QueryBuilder => &["f7"],
         // The search browser's query shown in the FIND view, as VS Code's
         // "open in sidebar" does for its search: where a query is typed.
         A::OpenQueryInSidebar => &["primary+shift+enter"],

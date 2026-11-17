@@ -180,14 +180,14 @@ fn the_build_button_opens_the_builder_on_the_query(cx: &mut TestAppContext) {
     assert_eq!(query_of(&s, cx), "#rust <alpha -#go");
 }
 
-/// The chord opens it from FIND's field too, and the chord is not Bold's.
+/// The chord (F7) opens it from FIND's field too.
 #[gpui_kit::test]
 fn the_chord_opens_the_builder_from_find(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, s) = started(cx, &rt);
     find_on(&s, "#rust", cx);
-    press(&s, "ctrl-shift-k", cx);
+    press(&s, "f7", cx);
     assert_eq!(s.shown_modal(cx), Some(ModalKind::QueryBuilder));
     assert!(builder_open(&s, cx));
 }
@@ -377,7 +377,7 @@ fn escape_and_cancel_change_nothing(cx: &mut TestAppContext) {
     assert!(!builder_open(&s, cx));
     assert_eq!(find_query(&s, cx), "#rust");
 
-    press(&s, "ctrl-shift-k", cx);
+    press(&s, "f7", cx);
     assert!(builder_open(&s, cx));
     click(&s, super::file_dialogs::CANCEL_ID, cx);
     s.settle_dialog(cx);

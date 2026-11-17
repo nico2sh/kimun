@@ -90,7 +90,7 @@ Property keys for suggestions come from the existing `NoteVault::property_keys()
 
 - `Build…` button next to `Syntax` in the Find toolbar (`find.rs`), emitting an event handled like `FindEvent::Help`.
 - `Build…` in the Search dialog's header, next to the syntax help.
-- A chord `Build query`, default `primary+shift+k`, scoped to where a query is typed (the same scope as `QuerySyntax`). `Ctrl+B` is Bold in the editor and `primary+shift+b` is the leader, so neither is used. The plan includes the keymap conflict check.
+- A chord `Build query`, default `F7`, scoped to where a query is typed (the same scope as `QuerySyntax`). `Ctrl+B` is Bold in the editor, `primary+shift+b` is the leader and `primary+shift+k` is `SearchNotes`' automatic twin, so none is used; F7 continues the F-key family (F1 syntax … F6 ask). The plan includes the keymap conflict check.
 - Apply writes the generated string into the query field. In Find it runs the query immediately (as Enter does). In the Search dialog it triggers the normal debounced search.
 - If the Build dialog is closed with Cancel, the query field keeps its text and focus returns to it.
 
@@ -126,13 +126,13 @@ Property keys for suggestions come from the existing `NoteVault::property_keys()
 
 1. `SearchTerms` is the model, extended with `to_query_string` and an `unparsed` bucket.
 2. The open note is the first autocomplete option, labelled "current open note", inserting `{note}`.
-3. `Build…` gets a chord, default `primary+shift+k`, scoped to where a query is typed.
+3. `Build…` gets a chord, default `F7`, scoped to where a query is typed.
 4. Property keys are suggested from the index (`property_keys()`).
 
 ## Open items to settle during planning
 
 1. The exact text of the "current open note" label and where its string lives.
-2. The `primary+shift+k` conflict check against the keymap and the GUI kit.
+2. The `F7` conflict check against the keymap and the GUI kit.
 3. How the dialog is sized and scrolled when there are many rows (the help dialog uses `HELP_REMS = 30`).
 4. The `find.rs` module doc says the field has "no autocomplete, no colouring", while the code wires `InputAutocomplete`. Confirm the current behaviour before the builder reuses it.
 5. Whether `unparsed` should also hold tokens the order parser rejects (an unknown `^key`).
