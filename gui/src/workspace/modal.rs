@@ -398,7 +398,7 @@ impl Workspace {
             }
             // The browser's query builder, shown over it.
             (ModalKind::Search, Some(ActionShortcuts::QueryBuilder)) => {
-                self.open_query_builder(window, cx);
+                self.open_query_builder(None, window, cx);
                 true
             }
             // The browser's query syntax (F1 by default, the keymap's

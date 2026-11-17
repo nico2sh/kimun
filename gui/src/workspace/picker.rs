@@ -777,9 +777,12 @@ impl<R: PickerRow> Render for NotePicker<R> {
                             .label("Build…")
                             .tooltip("Build the query from conditions")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                // Handed over: the workspace cannot read the
+                                // field while this view is being updated.
+                                let query = this.input.read(cx).value().to_string();
                                 this.workspace
                                     .update(cx, |workspace, cx| {
-                                        workspace.open_query_builder(window, cx)
+                                        workspace.open_query_builder(Some(query), window, cx)
                                     })
                                     .ok();
                             })),
