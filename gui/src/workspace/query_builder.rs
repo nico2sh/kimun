@@ -37,7 +37,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Div, Entity, Focusable as _, FontWeight,
+    App, AppContext as _, ClickEvent, Context, Div, Entity, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
     Window, div, rems,
@@ -51,6 +51,8 @@ use kimun_notes::logic::query::{
     count_query, property_op_label,
 };
 use kimun_notes::logic::sort::{SortField, SortOrder};
+
+use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::file_dialogs::footer;
@@ -883,14 +885,7 @@ impl Render for QueryBuilderDialog {
             .flex()
             .items_center()
             .gap_2()
-            .child(
-                div()
-                    .w(rems(4.))
-                    .flex_none()
-                    .text_sm()
-                    .text_color(theme::muted(t))
-                    .child("Sort"),
-            )
+            .child(row_label("Sort", t))
             .child(
                 div().w(rems(9.)).flex_none().child(
                     Select::new(&self.sort_field)
@@ -1008,38 +1003,60 @@ impl Render for QueryBuilderDialog {
                     .flex()
                     .flex_col()
                     .gap_1()
+                    // What the conditions write, there to read and learn the
+                    // syntax from: dimmed, so it never competes with the
+                    // controls.
                     .child(
                         div()
-                            .id(BUILDER_PREVIEW_ID)
-                            .test_support()
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(query.clone()))
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::foreground(t))
-                            .child(if query.is_empty() {
-                                SharedString::from("(no query)")
-                            } else {
-                                SharedString::from(query.clone())
-                            }),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(row_label("Query", t))
+                            .child(
+                                div()
+                                    .id(BUILDER_PREVIEW_ID)
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(SharedString::from(query.clone()))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(theme::muted(t))
+                                    .child(if query.is_empty() {
+                                        SharedString::from("none yet")
+                                    } else {
+                                        SharedString::from(query.clone())
+                                    }),
+                            ),
                     )
                     .child(
                         div()
-                            .id(BUILDER_COUNT_ID)
-                            .test_support()
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(count_text.clone()))
-                            .text_xs()
-                            .text_color(theme::muted(t))
-                            .child(match incomplete {
-                                0 => count_text,
-                                1 => {
-                                    format!("{count_text} · 1 condition is incomplete and left out")
-                                }
-                                n => format!(
-                                    "{count_text} · {n} conditions are incomplete and left out"
-                                ),
-                            }),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(row_label("Matches", t))
+                            .child(
+                                div()
+                                    .id(BUILDER_COUNT_ID)
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(SharedString::from(count_text.clone()))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(theme::foreground(t))
+                                    .child(match incomplete {
+                                        0 => count_text,
+                                        1 => format!(
+                                            "{count_text} · 1 condition is incomplete and left out"
+                                        ),
+                                        n => format!(
+                                            "{count_text} · {n} conditions are incomplete and left out"
+                                        ),
+                                    }),
+                            ),
                     ),
             )
             .child(footer(
@@ -1058,6 +1075,17 @@ impl Render for QueryBuilderDialog {
                 },
             ))
     }
+}
+
+/// The label column of the dialog's rows below the conditions (Sort, Query,
+/// Matches), so their values line up.
+fn row_label(text: &'static str, t: &Theme) -> impl IntoElement {
+    div()
+        .w(rems(4.5))
+        .flex_none()
+        .text_sm()
+        .text_color(theme::muted(t))
+        .child(text)
 }
 
 /// How a suggestion reads: the open note's variable as its label.
