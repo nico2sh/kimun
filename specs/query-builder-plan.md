@@ -10,7 +10,7 @@ Implements `specs/query-builder.md`. Items marked **verify** were read from a co
 - `?name` is a presentation-layer sigil. Core reads it as a plain full-text term, so it round-trips as a text term. **verify** that `quote_query_term` does not touch it and that the parser doesn't treat `?` specially.
 - `link_filter_suggestions` (`tui/src/logic/autocomplete/engine.rs`) already puts the `{note}` variable first in the `<` / `>` / `=` popups. It shows as the literal `{note}`, and `SuggestionItem` has only `display` and `secondary`, so a friendly label needs a new field.
 - `NoteVault::property_keys()` already returns the distinct indexed keys, sorted. `SuggestionSource` has no property method, and the `%` operator has no autocomplete trigger today.
-- `QuerySyntax` is a `Scope::Query` action (F1), and `Scope::Query` shadows `Scope::Everywhere` where a query is typed. A `Build query` action can use the same scope. Chords in use that start with `primary+`: `, c d e enter f j k n o q r s shift+b shift+enter shift+f shift+n shift+p shift+w t w`. `primary+b` is free in the table. **verify** that it isn't used by the editor or vim layer in the query scope, and that the kit doesn't claim it.
+- `QuerySyntax` is a `Scope::Query` action (F1), and `Scope::Query` shadows `Scope::Everywhere` where a query is typed. A `Build query` action can use the same scope. Chords in use that start with `primary+`: `, c d e enter f j k n o q r s shift+b shift+enter shift+f shift+n shift+p shift+w t w`. `primary+b` is Bold in the editor and `primary+shift+b` is the leader, so the default is `primary+shift+k` (next to `primary+k`, the search dialog), which is unused. **verify** that nothing in the editor, vim layer or kit claims it.
 - Syntax help (`open_query_help`, `gui/src/workspace/search.rs`) is the template for a simple dialog. A dialog with inputs follows `new_entry.rs` / `saved_searches.rs`. **verify** the `ModalKind` and `Slot` details in `modal.rs`.
 
 ## Order of work
@@ -68,7 +68,7 @@ Files: new `gui/src/workspace/query_builder.rs` (plus `query_builder_tests.rs` p
 4. Sort control: key dropdown (Title, Filename, a property) and direction, reusing the sort dialog's logic and `OrderField` (`sort.rs`). **verify** what can be shared without opening the sort dialog.
 5. Footer: Cancel and Apply (`Ctrl+Enter` applies, Escape closes a picker first, then the dialog).
 6. Preview line with the live count, debounced about 250 ms, using step 3. Incomplete rows (empty value) are skipped and marked.
-7. Keymap: add the `Build query` action, default `primary+b`, scoped like `QuerySyntax`. Add it to the palette and the keyboard help. Run the keymap conflict tests (**verify** that a "no two defaults share a chord" test exists; the new-note work added one for the TUI, and the GUI has `gui/src/keymap/tests.rs`).
+7. Keymap: add the `Build query` action, default `primary+shift+k`, scoped like `QuerySyntax`. Add it to the palette and the keyboard help. Run the keymap conflict tests (**verify** that a "no two defaults share a chord" test exists; the new-note work added one for the TUI, and the GUI has `gui/src/keymap/tests.rs`).
 8. Tests: opening from a query pre-fills the rows, adding and removing rows, Apply and Cancel, raw rows survive, an empty builder clears the query, the `{note}` option, an incomplete row is skipped, the disabled state without a vault.
 
 ### 5. GUI: entry points
