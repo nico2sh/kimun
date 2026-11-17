@@ -20,7 +20,7 @@ use super::file_dialogs::CONFIRM_ID;
 use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE};
 use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
-use super::query_builder::{COUNT_DEBOUNCE, QueryBuilderDialog};
+use super::query_builder::{BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog};
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
@@ -328,8 +328,14 @@ fn a_tag_row_suggests_the_vaults_tags(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         cx.read(|cx| d.read(cx).suggested()) == ["rust".to_string()]
     });
+    // The list floats over the dialog: it is shown, and taking it writes.
+    assert!(s.shows(BUILDER_SUGGESTIONS_ID, cx), "the suggestions show");
     with_dialog(&s, cx, |d, window, cx| d.take_suggestion(0, window, cx));
     assert_eq!(query_of(&s, cx), "#rust");
+    assert!(
+        !s.shows(BUILDER_SUGGESTIONS_ID, cx),
+        "a taken suggestion closes the list"
+    );
 }
 
 /// A links row offers "current open note" first: it writes `{note}`, which

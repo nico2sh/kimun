@@ -785,26 +785,19 @@ impl QueryBuilderDialog {
             .is_some_and(|ix| self.model.rows[ix].is_complete())
     }
 
+    /// The field the suggestions are for.
+    fn active_input(&self) -> Option<&Entity<InputState>> {
+        Some(match self.active? {
+            Active::SortKey => &self.sort_key,
+            Active::Key(id) => &self.rows[self.index_of(id)?].key,
+            Active::Value(id) => &self.rows[self.index_of(id)?].value,
+        })
+    }
+
     /// Whether the active field has the keyboard.
     fn active_focused(&self, window: &Window, cx: &App) -> bool {
-        match self.active {
-            None => false,
-            Some(Active::SortKey) => self.sort_key.read(cx).focus_handle(cx).is_focused(window),
-            Some(Active::Key(id)) => self.index_of(id).is_some_and(|ix| {
-                self.rows[ix]
-                    .key
-                    .read(cx)
-                    .focus_handle(cx)
-                    .is_focused(window)
-            }),
-            Some(Active::Value(id)) => self.index_of(id).is_some_and(|ix| {
-                self.rows[ix]
-                    .value
-                    .read(cx)
-                    .focus_handle(cx)
-                    .is_focused(window)
-            }),
-        }
+        self.active_input()
+            .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
     }
 
     // ---- Rendering ---------------------------------------------------------------------
@@ -921,19 +914,29 @@ impl Render for QueryBuilderDialog {
                     ),
                 )
             });
-        let suggestions = if self.active_focused(window, cx) {
-            self.suggestions.render_labelled(
-                BUILDER_SUGGESTIONS_ID,
-                "Suggestions",
-                builder_suggestion_id,
-                suggestion_label,
-                t,
-                cx,
-                |this: &mut Self, ix, window, cx| this.take_suggestion(ix, window, cx),
-            )
-        } else {
-            None
-        };
+        // Floating under the field in use, so the dialog never resizes and
+        // the list is plainly that field's.
+        let suggestions = self
+            .active_input()
+            .filter(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            .map(|input| input.read(cx).input_bounds())
+            .and_then(|field| {
+                self.suggestions.render_floating(
+                    field,
+                    BUILDER_SUGGESTIONS_ID,
+                    builder_suggestion_id,
+                    suggestion_label,
+                    t,
+                    window,
+                    cx,
+                    |this: &mut Self, ix, window, cx| this.take_suggestion(ix, window, cx),
+                    |this: &mut Self, down, cx| {
+                        if this.suggestions.step(down) {
+                            cx.notify();
+                        }
+                    },
+                )
+            });
         let query = self.model.to_query();
         let incomplete = self.model.incomplete();
         let count_text = self.count_text();

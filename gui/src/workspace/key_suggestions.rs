@@ -11,11 +11,13 @@
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, InteractiveElement as _, IntoElement, ParentElement as _,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    AnyElement, Bounds, ClickEvent, Context, Div, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Role, ScrollEvent, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use kimun_notes::settings::themes::Theme;
 
+use super::popup_layer;
 use crate::theme;
 
 /// The most suggestions shown under a field.
@@ -112,9 +114,9 @@ impl KeySuggestions {
         self.highlighted.take().is_some()
     }
 
-    /// The list `list_id` under the field (`None` when empty): one option
-    /// per key, its element id from `id_of(key)`; a click calls `pick` with
-    /// its position on the owner view.
+    /// The list `list_id` under the field, in the layout (`None` when empty):
+    /// one option per key, its element id from `id_of(key)`; a click calls
+    /// `pick` with its position on the owner view.
     pub(crate) fn render<V: 'static>(
         &self,
         list_id: &'static str,
@@ -124,34 +126,19 @@ impl KeySuggestions {
         cx: &mut Context<V>,
         pick: fn(&mut V, usize, &mut Window, &mut Context<V>),
     ) -> Option<AnyElement> {
-        self.render_labelled(
-            list_id,
-            aria_label,
-            id_of,
-            |key| key.to_string(),
-            t,
-            cx,
-            pick,
-        )
-    }
-
-    /// [`Self::render`] with each option shown as `label_of(key)` while the
-    /// key stays what is taken.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_labelled<V: 'static>(
-        &self,
-        list_id: &'static str,
-        aria_label: &'static str,
-        id_of: fn(&str) -> SharedString,
-        label_of: fn(&str) -> String,
-        t: &Theme,
-        cx: &mut Context<V>,
-        pick: fn(&mut V, usize, &mut Window, &mut Context<V>),
-    ) -> Option<AnyElement> {
         if self.shown.is_empty() {
             return None;
         }
-        let hover = theme::hover_background(t);
+        let rows = self.rows(
+            id_of,
+            |key| key.to_string(),
+            t,
+            |row, ix| {
+                row.on_click(
+                    cx.listener(move |this, _: &ClickEvent, window, cx| pick(this, ix, window, cx)),
+                )
+            },
+        );
         Some(
             div()
                 .id(list_id)
@@ -159,29 +146,101 @@ impl KeySuggestions {
                 .aria_label(aria_label)
                 .flex()
                 .flex_col()
-                .children(self.shown.iter().enumerate().map(|(ix, key)| {
-                    let highlighted = self.highlighted == Some(ix);
-                    let label = label_of(key);
-                    div()
-                        .id(id_of(key))
-                        .test_support()
-                        .role(Role::ListBoxOption)
-                        .aria_label(SharedString::from(label.clone()))
-                        .aria_selected(highlighted)
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .text_sm()
-                        .text_color(theme::foreground(t))
-                        .when(highlighted, |row| row.bg(theme::selected_background(t)))
-                        .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            pick(this, ix, window, cx)
-                        }))
-                }))
+                .children(rows)
                 .into_any_element(),
         )
+    }
+
+    /// The list as a layer floating under `field` (the box of the field it is
+    /// for), so it never changes the layout around it (`None` when empty).
+    /// Each option shows as `label_of(key)` while the key stays what is
+    /// taken; a press (not a click: it must act before the field loses the
+    /// keyboard) calls `pick` with its position, and the wheel calls `step`
+    /// with whether it turned down.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_floating<V: 'static>(
+        &self,
+        field: Bounds<Pixels>,
+        list_id: &'static str,
+        id_of: fn(&str) -> SharedString,
+        label_of: fn(&str) -> String,
+        t: &Theme,
+        window: &Window,
+        cx: &mut Context<V>,
+        pick: fn(&mut V, usize, &mut Window, &mut Context<V>),
+        step: fn(&mut V, bool, &mut Context<V>),
+    ) -> Option<AnyElement> {
+        if self.shown.is_empty() {
+            return None;
+        }
+        let rows = self.rows(id_of, label_of, t, |row, ix| {
+            row.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    pick(this, ix, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+        });
+        let list = popup_layer::frame(
+            div()
+                .id(list_id)
+                .test_support()
+                .role(Role::ListBox)
+                .aria_label("Suggestions"),
+            popup_layer::width_of(field),
+            t,
+        )
+        .on_scroll(cx.listener(move |this, event: &ScrollEvent, window, cx| {
+            let dy = event.delta.pixel_delta(window.line_height()).y;
+            if dy != px(0.) {
+                step(this, dy < px(0.), cx);
+            }
+            // Over the popup the wheel never reaches what is under it.
+            cx.stop_propagation();
+        }))
+        .children(rows);
+        Some(popup_layer::floating_under(
+            field,
+            self.shown.len(),
+            list,
+            window,
+        ))
+    }
+
+    /// One option per suggestion, `attach` adding what a press does.
+    fn rows(
+        &self,
+        id_of: fn(&str) -> SharedString,
+        label_of: fn(&str) -> String,
+        t: &Theme,
+        attach: impl Fn(Stateful<Div>, usize) -> Stateful<Div>,
+    ) -> Vec<AnyElement> {
+        let hover = theme::hover_background(t);
+        self.shown
+            .iter()
+            .enumerate()
+            .map(|(ix, key)| {
+                let highlighted = self.highlighted == Some(ix);
+                let label = label_of(key);
+                let row = div()
+                    .id(id_of(key))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .text_sm()
+                    .text_color(theme::foreground(t))
+                    .when(highlighted, |row| row.bg(theme::selected_background(t)))
+                    .when(!highlighted, |row| row.hover(move |style| style.bg(hover)))
+                    .child(label.clone());
+                attach(row, ix)
+                    .test_support()
+                    .role(Role::ListBoxOption)
+                    .aria_label(SharedString::from(label))
+                    .aria_selected(highlighted)
+                    .into_any_element()
+            })
+            .collect()
     }
 }
 

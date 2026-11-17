@@ -3818,6 +3818,7 @@ mod palette;
 mod picker;
 mod pinned;
 mod placement;
+mod popup_layer;
 mod preferences;
 mod presets;
 mod properties;
