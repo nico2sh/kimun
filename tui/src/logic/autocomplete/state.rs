@@ -14,6 +14,17 @@ pub struct Suggestion {
     /// Optional dimmed text shown right-aligned in the row. Used for tag
     /// usage counts and note paths (when disambiguating same-name notes).
     pub secondary: Option<String>,
+    /// Friendlier text shown in the row instead of `display`, when the text
+    /// inserted on accept is not meant to be read (the `{note}` variable is
+    /// shown as "current open note"). `None` shows `display`.
+    pub label: Option<String>,
+}
+
+impl Suggestion {
+    /// The row's primary text: the label when there is one, else `display`.
+    pub fn shown(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.display)
+    }
 }
 
 /// State machine for the autocomplete popup.
@@ -170,6 +181,7 @@ mod tests {
         Suggestion {
             display: n.to_string(),
             secondary: None,
+            label: None,
         }
     }
 

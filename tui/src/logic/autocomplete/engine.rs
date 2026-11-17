@@ -9,6 +9,10 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use super::command::{PopupAction, PopupCommand, PopupOutcome, apply_command};
 use super::host::AutocompleteHost;
 use super::source::{SuggestionItem, SuggestionSource};
+
+/// How the `{note}` variable reads in a link-filter popup (`<`, `>`, `=`): the
+/// note open in the editor.
+pub const OPEN_NOTE_LABEL: &str = "current open note";
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
 use crate::logic::editor::claim::has_trigger_before_cursor;
@@ -453,13 +457,18 @@ impl AutocompleteEngine {
 
     /// Build link-filter suggestions: the `{note}` variable when it matches the
     /// prefix, followed by note names. Pure + async so it can be unit-tested.
+    ///
+    /// The variable is shown as [`OPEN_NOTE_LABEL`] but inserts `{note}`. It
+    /// matches a prefix of the variable (`{n`) or any part of the label
+    /// (`cur`, `open`, `no`), so it is easy to reach without knowing the name.
     pub(super) async fn link_filter_suggestions(
         s: &dyn SuggestionSource,
         prefix: &str,
     ) -> Vec<SuggestionItem> {
         let mut out = Vec::new();
-        if prefix.is_empty() || "note".starts_with(&prefix.to_lowercase()) {
-            out.push(SuggestionItem::plain("{note}"));
+        let typed = prefix.to_lowercase();
+        if typed.is_empty() || OPEN_NOTE_LABEL.contains(&typed) || "{note}".starts_with(&typed) {
+            out.push(SuggestionItem::plain("{note}").with_label(OPEN_NOTE_LABEL));
         }
         out.extend(s.notes_by_prefix(prefix, 20).await);
         out
@@ -495,18 +504,12 @@ impl AutocompleteEngine {
                     .notes_by_prefix(&query, limit)
                     .await
                     .into_iter()
-                    .map(|item| Suggestion {
-                        display: item.display,
-                        secondary: item.secondary,
-                    })
+                    .map(Suggestion::from)
                     .collect(),
                 TriggerKind::LinkFilter => Self::link_filter_suggestions(&*suggestions, &query)
                     .await
                     .into_iter()
-                    .map(|item| Suggestion {
-                        display: item.display,
-                        secondary: item.secondary,
-                    })
+                    .map(Suggestion::from)
                     .collect(),
                 // Filtering happens after the fetch, so fetch more than shown
                 // when some labels may be dropped.
@@ -525,19 +528,13 @@ impl AutocompleteEngine {
                         !hashtag_labels_only || kimun_core::note::is_hashtag_label(&item.display)
                     })
                     .take(limit)
-                    .map(|item| Suggestion {
-                        display: item.display,
-                        secondary: item.secondary,
-                    })
+                    .map(Suggestion::from)
                     .collect(),
                 TriggerKind::SavedSearch => suggestions
                     .saved_searches_by_prefix(&query, limit)
                     .await
                     .into_iter()
-                    .map(|item| Suggestion {
-                        display: item.display,
-                        secondary: item.secondary,
-                    })
+                    .map(Suggestion::from)
                     .collect(),
             };
             let _ = tx.send(QueryResult {
@@ -1589,6 +1586,42 @@ mod tests {
             !s.iter().any(|x| x.display == "{note}"),
             "{{note}} must not appear for prefix 'pro'"
         );
+    }
+
+    #[tokio::test]
+    async fn open_note_option_is_first_labelled_and_inserts_the_variable() {
+        use crate::logic::autocomplete::{SuggestionItem, SuggestionSource};
+        struct Mem;
+        #[async_trait::async_trait]
+        impl SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![SuggestionItem::plain("projects")]
+            }
+            async fn tags_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                Vec::new()
+            }
+        }
+        let s = AutocompleteEngine::link_filter_suggestions(&Mem, "").await;
+        assert_eq!(s[0].display, "{note}", "inserted text is the variable");
+        assert_eq!(s[0].label.as_deref(), Some(OPEN_NOTE_LABEL));
+        assert_eq!(s[1].display, "projects");
+        assert_eq!(Suggestion::from(s[0].clone()).shown(), "current open note");
+        assert_eq!(Suggestion::from(s[1].clone()).shown(), "projects");
+        // Reachable by the variable's own prefix and by any part of the label.
+        for typed in ["{", "{no", "c", "cur", "open", "no", "NOTE"] {
+            let s = AutocompleteEngine::link_filter_suggestions(&Mem, typed).await;
+            assert!(
+                s.iter().any(|x| x.display == "{note}"),
+                "{typed:?} should offer the open note"
+            );
+        }
+        for typed in ["pro", "xyz"] {
+            let s = AutocompleteEngine::link_filter_suggestions(&Mem, typed).await;
+            assert!(
+                !s.iter().any(|x| x.display == "{note}"),
+                "{typed:?} should not"
+            );
+        }
     }
 
     /// A `[[` candidate reaches the wikilink veto, so zones are computed

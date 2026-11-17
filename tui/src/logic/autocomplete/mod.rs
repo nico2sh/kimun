@@ -14,7 +14,8 @@ pub mod trigger;
 pub use apply::apply_accept;
 pub use command::{PopupAction, PopupCommand, PopupOutcome, apply_command, key_command};
 pub use engine::{
-    AcceptAction, AutocompleteEngine, AutocompleteMode, HandleKeyOutcome, RedrawCallback,
+    AcceptAction, AutocompleteEngine, AutocompleteMode, HandleKeyOutcome, OPEN_NOTE_LABEL,
+    RedrawCallback,
 };
 pub use host::AutocompleteHost;
 pub use source::{SuggestionItem, SuggestionSource, VaultSuggestions};

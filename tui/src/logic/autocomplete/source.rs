@@ -8,6 +8,9 @@ use async_trait::async_trait;
 pub struct SuggestionItem {
     pub display: String,
     pub secondary: Option<String>,
+    /// Shown in the popup instead of `display` when set; `display` is still
+    /// what gets inserted. See [`crate::logic::autocomplete::Suggestion::label`].
+    pub label: Option<String>,
 }
 
 impl SuggestionItem {
@@ -15,6 +18,23 @@ impl SuggestionItem {
         Self {
             display: display.into(),
             secondary: None,
+            label: None,
+        }
+    }
+
+    /// Show `label` in the popup while `display` stays the inserted text.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
+impl From<SuggestionItem> for super::state::Suggestion {
+    fn from(item: SuggestionItem) -> Self {
+        Self {
+            display: item.display,
+            secondary: item.secondary,
+            label: item.label,
         }
     }
 }
@@ -32,6 +52,12 @@ pub trait SuggestionSource: Send + Sync + 'static {
     /// popup preview AND the text inserted on accept.
     /// Defaults to empty so non-search-box suggestion sources opt out.
     async fn saved_searches_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
+        Vec::new()
+    }
+
+    /// Property keys (`%key`) starting with `prefix`, ignoring case and
+    /// accents. Defaults to empty, like the saved searches.
+    async fn properties_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
         Vec::new()
     }
 }
@@ -53,6 +79,7 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|n| SuggestionItem {
                         display: n.name,
                         secondary: Some(n.path.to_string()),
+                        label: None,
                     })
                     .collect()
             })
@@ -67,6 +94,7 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|t| SuggestionItem {
                         display: t.label,
                         secondary: Some(format!("{}×", t.usage_count)),
+                        label: None,
                     })
                     .collect()
             })
@@ -85,9 +113,17 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|s| SuggestionItem {
                         display: s.name,
                         secondary: Some(s.query),
+                        label: None,
                     })
                     .collect()
             })
+            .unwrap_or_default()
+    }
+    async fn properties_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
+        self.vault
+            .suggest_property_keys_by_prefix(prefix, limit)
+            .await
+            .map(|keys| keys.into_iter().map(SuggestionItem::plain).collect())
             .unwrap_or_default()
     }
 }
@@ -122,11 +158,46 @@ mod suggestion_tests {
             notes: vec![SuggestionItem {
                 display: "projects".into(),
                 secondary: Some("work/projects".into()),
+                label: None,
             }],
             tags: vec![SuggestionItem::plain("todo")],
         };
         assert_eq!(m.notes_by_prefix("pro", 9).await.len(), 1);
         assert_eq!(m.notes_by_prefix("pro", 9).await[0].display, "projects");
         assert_eq!(m.tags_by_prefix("to", 9).await[0].display, "todo");
+    }
+
+    #[tokio::test]
+    async fn vault_property_suggestions_match_keys_in_search_form() {
+        use kimun_core::nfs::VaultPath;
+        use kimun_core::{NoteVault, VaultConfig};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = VaultConfig::new(crate::test_support::sys(tmp.path()));
+        let vault = NoteVault::new(cfg).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(
+                &VaultPath::note_path_from("/a.md"),
+                "---\nStatus: x\nstart: 1\nR\u{e9}sum\u{e9}: z\n---\nbody",
+            )
+            .await
+            .unwrap();
+        let src = VaultSuggestions {
+            vault: std::sync::Arc::new(vault),
+        };
+        let names = |items: Vec<SuggestionItem>| -> Vec<String> {
+            items.into_iter().map(|i| i.display).collect()
+        };
+        assert_eq!(
+            names(src.properties_by_prefix("st", 10).await),
+            vec!["start", "status"]
+        );
+        assert_eq!(names(src.properties_by_prefix("ST", 10).await).len(), 2);
+        assert_eq!(
+            names(src.properties_by_prefix("res", 10).await),
+            vec!["resume"]
+        );
+        assert_eq!(names(src.properties_by_prefix("", 2).await).len(), 2);
+        assert!(src.properties_by_prefix("zzz", 10).await.is_empty());
     }
 }
