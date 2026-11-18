@@ -1891,6 +1891,7 @@ mod tests {
                     vec![SuggestionItem {
                         display: "todo-week".into(),
                         secondary: Some("#todo ^modified".into()),
+                        label: None,
                     }]
                 } else {
                     vec![]

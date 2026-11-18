@@ -162,7 +162,7 @@ fn visible_content_width(state: &AutocompleteState, start: usize, end: usize) ->
     // is wrong for any text wider than ASCII.
     let mut widest = visible_title(state).width();
     for item in &state.items[start..end] {
-        let primary = item.display.width();
+        let primary = item.shown().width();
         let secondary = item
             .secondary
             .as_deref()
@@ -194,7 +194,7 @@ fn build_row<'a>(
         .fg(theme.gray.to_ratatui())
         .add_modifier(Modifier::DIM);
 
-    let primary_len = item.display.width();
+    let primary_len = item.shown().width();
     let secondary_text = item.secondary.as_deref().unwrap_or("");
     let secondary_len = secondary_text.width();
     let separator = if secondary_text.is_empty() { 0 } else { 1 };
@@ -202,7 +202,7 @@ fn build_row<'a>(
     let total = primary_len + separator + secondary_len;
     let pad = inner_width.saturating_sub(total);
 
-    let mut spans = vec![Span::styled(item.display.clone(), row_style)];
+    let mut spans = vec![Span::styled(item.shown().to_string(), row_style)];
     if separator > 0 {
         spans.push(Span::styled(" ".repeat(pad + separator), row_style));
         spans.push(Span::styled(secondary_text.to_string(), secondary_style));
@@ -271,6 +271,7 @@ mod tests {
                 .map(|i| Suggestion {
                     display: format!("tag{i}"),
                     secondary: Some(format!("{i}")),
+                    label: None,
                 })
                 .collect(),
         );

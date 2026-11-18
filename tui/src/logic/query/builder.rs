@@ -1,0 +1,744 @@
+//! The query builder's model, toolkit-free: a query as a list of typed rows
+//! (a tag, a folder, a property …) and a sort, that turns into a query string
+//! and back. It is a view over [`SearchTerms`]: parsing and writing are core's
+//! (`from_query_string`, `to_query_string`), so quoting and the operator
+//! vocabulary live in one place. What this adds is the row shape a form can
+//! edit, and that nothing is lost on the way through: whatever a row can't
+//! express is a [`RowKind::Raw`] row, written back as it was.
+//!
+//! The sort is the query's own order directive, read and written with the
+//! helpers of [`crate::logic::sort`] — the same ones the sort dialog uses.
+
+use kimun_core::{PropertyFilter, PropertyOp, PropertyTest, SearchTerms};
+
+use crate::logic::sort::{SortField, SortOrder, directive_of_terms, query_with_sort};
+
+/// What a row asks of a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// Full-text: the note contains the words.
+    Text,
+    /// The note's file name matches (`=`).
+    Name,
+    /// A section heading matches (`@`).
+    Heading,
+    /// The note's path matches, a folder or part of one (`/`).
+    Folder,
+    /// The note has the tag (`#`).
+    Tag,
+    /// The note links to the named one (`<`).
+    LinksTo,
+    /// The note is linked from the named one (`>`).
+    LinkedFrom,
+    /// A property test (`%`).
+    Property,
+    /// Query text no other row expresses, kept as written.
+    Raw,
+}
+
+impl RowKind {
+    /// Every kind, in the order a type picker lists them.
+    pub const ALL: [RowKind; 9] = [
+        RowKind::Text,
+        RowKind::Name,
+        RowKind::Heading,
+        RowKind::Folder,
+        RowKind::Tag,
+        RowKind::LinksTo,
+        RowKind::LinkedFrom,
+        RowKind::Property,
+        RowKind::Raw,
+    ];
+
+    /// The kind's name in a picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            RowKind::Text => "Text",
+            RowKind::Name => "Note name",
+            RowKind::Heading => "Heading",
+            RowKind::Folder => "Folder",
+            RowKind::Tag => "Tag",
+            RowKind::LinksTo => "Links to",
+            RowKind::LinkedFrom => "Linked from",
+            RowKind::Property => "Property",
+            RowKind::Raw => "Raw",
+        }
+    }
+
+    /// What the row's value field asks for, said in the field itself: the
+    /// rule a user would otherwise have to know (phrases need quotes, a tag
+    /// has no `#`).
+    pub fn hint(self) -> &'static str {
+        match self {
+            RowKind::Text => "words, or \"a phrase\"",
+            RowKind::Name => "part of a note's name",
+            RowKind::Heading => "heading text",
+            RowKind::Folder => "folder path",
+            RowKind::Tag => "tag name",
+            RowKind::LinksTo => "note they link to",
+            RowKind::LinkedFrom => "note that links to them",
+            RowKind::Property => "value",
+            RowKind::Raw => "as written in the query",
+        }
+    }
+
+    /// Whether the row can be turned into "must not" (a raw row is as written).
+    pub fn can_exclude(self) -> bool {
+        self != RowKind::Raw
+    }
+}
+
+/// One condition of the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderRow {
+    pub kind: RowKind,
+    /// "Must not": the note must *not* match (`-`). Ignored by a raw row,
+    /// which is written as it is ([`RowKind::can_exclude`]).
+    pub exclude: bool,
+    /// What is matched: the text, name, folder, tag or note. A property's
+    /// value. The whole text of a raw row.
+    pub value: String,
+    /// A property's key. Unused by the other kinds.
+    pub key: String,
+    /// A property's comparison; `None` is "has the property", with no value.
+    pub op: Option<PropertyOp>,
+}
+
+impl BuilderRow {
+    /// An empty row of `kind`.
+    pub fn new(kind: RowKind) -> Self {
+        Self {
+            kind,
+            exclude: false,
+            value: String::new(),
+            key: String::new(),
+            op: (kind == RowKind::Property).then_some(PropertyOp::Eq),
+        }
+    }
+
+    /// A row of `kind` holding `value`.
+    pub fn with_value(kind: RowKind, value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            ..Self::new(kind)
+        }
+    }
+
+    /// Whether the user started the row and the query leaves it out: it is
+    /// not complete, and not just untouched.
+    pub fn is_left_out(&self) -> bool {
+        !self.is_complete() && !self.is_blank()
+    }
+
+    /// Whether the user has typed nothing in the row (an untouched row).
+    pub fn is_blank(&self) -> bool {
+        self.key.trim().is_empty() && self.value.trim().is_empty()
+    }
+
+    /// Whether the row says enough to be part of the query: a value the syntax
+    /// can write, and for a property a key (and a value, unless it only asks
+    /// for the property).
+    /// Incomplete rows stay on screen and are left out of the query.
+    pub fn is_complete(&self) -> bool {
+        match self.kind {
+            // What core accepts as a filter, so a row never counts as
+            // complete and then writes nothing (a multi-line key).
+            RowKind::Property => self.property_filter().is_some() && can_be_written(&self.value),
+            // As written by the user: the query's own tokens.
+            RowKind::Raw => !self.value.trim().is_empty(),
+            RowKind::Tag => {
+                let name = tag_name(&self.value);
+                !name.is_empty() && can_be_written(&name)
+            }
+            RowKind::Text => text_terms(&self.value)
+                .is_some_and(|words| !words.is_empty() && words.iter().all(|w| can_be_written(w))),
+            _ => !self.value.trim().is_empty() && can_be_written(&self.value),
+        }
+    }
+
+    /// The property filter a property row stands for.
+    fn property_filter(&self) -> Option<PropertyFilter> {
+        match self.op {
+            None => PropertyFilter::exists(&self.key),
+            Some(op) => PropertyFilter::compare(&self.key, op, &self.value),
+        }
+    }
+}
+
+/// The full-text terms a Text row's `value` says, read as the query's own
+/// grammar reads them: tokens split on a space, a quote at a token's start
+/// opens a phrase that runs to its twin (quotes not part of it), and the
+/// token's other characters are literal (`#draft` here is text, not a tag).
+/// `None` for a quote that never closes: the parser would drop what follows.
+fn text_terms(value: &str) -> Option<Vec<String>> {
+    let mut terms = Vec::new();
+    let mut rest = value.trim_start();
+    while let Some(first) = rest.chars().next() {
+        if first == '"' || first == '\'' {
+            let body = &rest[1..];
+            let end = body.find(first)?;
+            let phrase = body[..end].trim();
+            if !phrase.is_empty() {
+                terms.push(phrase.to_string());
+            }
+            rest = body[end + 1..].trim_start();
+        } else {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            terms.push(rest[..end].to_string());
+            rest = rest[end..].trim_start();
+        }
+    }
+    Some(terms)
+}
+
+/// A term as a Text row shows it: quoted when reading it back would give
+/// something else, which is a phrase (it holds whitespace) or a term that
+/// starts with a quote of its own.
+fn text_row_value(term: &str) -> String {
+    if term.chars().any(char::is_whitespace) || term.starts_with(['"', '\'']) {
+        let q = if term.contains('"') { '\'' } else { '"' };
+        format!("{q}{term}{q}")
+    } else {
+        term.to_string()
+    }
+}
+
+/// A Tag row's value as the tag it names: the writer adds the `#`, so one
+/// typed (`#draft`) is dropped, and the parser reads a tag in lowercase.
+fn tag_name(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches(|c: char| c == '#' || c.is_whitespace())
+        .trim_end()
+        .to_lowercase()
+}
+
+/// Whether the query syntax can write `value`: a quoted value ends at the
+/// first quote of its own kind, so one that holds both `"` and `'` has no
+/// spelling. The row is left out instead of writing a different query.
+fn can_be_written(value: &str) -> bool {
+    !(value.contains('"') && value.contains('\''))
+}
+
+/// The comparisons a property row offers, `None` (has the property) first.
+pub const PROPERTY_OPS: [Option<PropertyOp>; 7] = [
+    None,
+    Some(PropertyOp::Eq),
+    Some(PropertyOp::Ne),
+    Some(PropertyOp::Lt),
+    Some(PropertyOp::Le),
+    Some(PropertyOp::Gt),
+    Some(PropertyOp::Ge),
+];
+
+/// A comparison's name in a picker; `None` is "has the property".
+pub fn property_op_label(op: Option<PropertyOp>) -> &'static str {
+    match op {
+        None => "exists",
+        Some(PropertyOp::Eq) => "=",
+        Some(PropertyOp::Ne) => "≠",
+        Some(PropertyOp::Lt) => "<",
+        Some(PropertyOp::Le) => "≤",
+        Some(PropertyOp::Gt) => ">",
+        Some(PropertyOp::Ge) => "≥",
+    }
+}
+
+/// What a comparison says in words, for a tooltip: the symbols (`≠`, `≤`) are
+/// quick to read for some and not for others.
+pub fn property_op_name(op: Option<PropertyOp>) -> &'static str {
+    match op {
+        None => "the property exists",
+        Some(PropertyOp::Eq) => "equals",
+        Some(PropertyOp::Ne) => "does not equal",
+        Some(PropertyOp::Lt) => "is less than",
+        Some(PropertyOp::Le) => "is less than or equal to",
+        Some(PropertyOp::Gt) => "is greater than",
+        Some(PropertyOp::Ge) => "is greater than or equal to",
+    }
+}
+
+/// A query as rows and a sort.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BuilderModel {
+    pub rows: Vec<BuilderRow>,
+    /// How the results are ordered; `None` leaves the default order.
+    pub sort: Option<(SortField, SortOrder)>,
+}
+
+impl BuilderModel {
+    /// The rows of `query`. Every part of it is kept: what has no row of its
+    /// own (a token the parser can't use, a second sort, a property value with
+    /// a literal `*`) becomes a raw row.
+    pub fn from_query(query: &str) -> Self {
+        let terms = SearchTerms::from_query_string(query);
+        let mut rows = Vec::new();
+        let mut valued = |kind: RowKind, include: &[String], exclude: &[String]| {
+            for (values, exclude) in [(include, false), (exclude, true)] {
+                rows.extend(values.iter().map(|v| BuilderRow {
+                    exclude,
+                    ..BuilderRow::with_value(kind, v.clone())
+                }));
+            }
+        };
+        {
+            let shown = |v: &[String]| v.iter().map(|t| text_row_value(t)).collect::<Vec<_>>();
+            valued(
+                RowKind::Text,
+                &shown(&terms.terms),
+                &shown(&terms.excluded_terms),
+            );
+        }
+        valued(RowKind::Name, &terms.filename, &terms.excluded_filename);
+        valued(
+            RowKind::Heading,
+            &terms.breadcrumb,
+            &terms.excluded_breadcrumb,
+        );
+        valued(RowKind::Folder, &terms.path, &terms.excluded_path);
+        valued(RowKind::Tag, &terms.labels, &terms.excluded_labels);
+        valued(RowKind::LinksTo, &terms.links, &terms.excluded_links);
+        valued(
+            RowKind::LinkedFrom,
+            &terms.forward_links,
+            &terms.excluded_forward_links,
+        );
+        for (filters, exclude) in [
+            (&terms.properties, false),
+            (&terms.excluded_properties, true),
+        ] {
+            for filter in filters {
+                rows.push(property_row(filter, exclude));
+            }
+        }
+        // The first sort is the sort control's; any further one has no place
+        // in a form, so it is kept as written.
+        for extra in terms.order_by.iter().skip(1) {
+            rows.push(raw_row(SearchTerms {
+                order_by: vec![extra.clone()],
+                ..SearchTerms::default()
+            }));
+        }
+        rows.extend(
+            terms
+                .unparsed
+                .iter()
+                .map(|raw| BuilderRow::with_value(RowKind::Raw, raw.clone())),
+        );
+        Self {
+            rows,
+            sort: directive_of_terms(&terms),
+        }
+    }
+
+    /// The terms the complete rows stand for, but for the raw rows.
+    fn terms(&self) -> SearchTerms {
+        let mut t = SearchTerms::default();
+        for row in self.rows.iter().filter(|r| r.is_complete()) {
+            if row.kind == RowKind::Property {
+                if let Some(filter) = row.property_filter() {
+                    if row.exclude {
+                        t.excluded_properties.push(filter);
+                    } else {
+                        t.properties.push(filter);
+                    }
+                }
+                continue;
+            }
+            let (include, exclude) = match row.kind {
+                RowKind::Text => (&mut t.terms, &mut t.excluded_terms),
+                RowKind::Name => (&mut t.filename, &mut t.excluded_filename),
+                RowKind::Heading => (&mut t.breadcrumb, &mut t.excluded_breadcrumb),
+                RowKind::Folder => (&mut t.path, &mut t.excluded_path),
+                RowKind::Tag => (&mut t.labels, &mut t.excluded_labels),
+                RowKind::LinksTo => (&mut t.links, &mut t.excluded_links),
+                RowKind::LinkedFrom => (&mut t.forward_links, &mut t.excluded_forward_links),
+                // Written after the sort, as they were (see `to_query`).
+                RowKind::Property | RowKind::Raw => continue,
+            };
+            let values = if row.kind == RowKind::Text {
+                text_terms(&row.value).unwrap_or_default()
+            } else if row.kind == RowKind::Tag {
+                vec![tag_name(&row.value)]
+            } else {
+                vec![row.value.trim().to_string()]
+            };
+            if row.exclude { exclude } else { include }.extend(values);
+        }
+        t
+    }
+
+    /// The query the complete rows and the sort say. The raw rows come last,
+    /// as written: setting the sort strips every order directive from the
+    /// text it is given, so a raw second sort must be added after it. A raw
+    /// row with an unterminated quote goes last of all, since the quote runs
+    /// to the end of the query and would swallow what follows it. A raw sort
+    /// directive stays in effect (it is on screen, to edit or remove) even
+    /// when the sort control is cleared.
+    pub fn to_query(&self) -> String {
+        let text = self.terms().to_query_string();
+        let text = match &self.sort {
+            Some((field, order)) => query_with_sort(&text, field, *order).unwrap_or(text),
+            None => text,
+        };
+        let (open, closed): (Vec<&str>, Vec<&str>) = self
+            .rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Raw && r.is_complete())
+            .map(|r| r.value.trim())
+            .partition(|v| kimun_core::query_has_unterminated_quote(v));
+        std::iter::once(text.as_str())
+            .chain(closed)
+            .chain(open)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// How many rows are left out of the query for being incomplete.
+    pub fn incomplete(&self) -> usize {
+        self.rows.iter().filter(|r| !r.is_complete()).count()
+    }
+
+    /// How many rows are incomplete but not empty: a row the user started
+    /// and left unfinished. An untouched empty row (the one a fresh builder
+    /// offers) is not a warning.
+    pub fn unfinished(&self) -> usize {
+        self.rows.iter().filter(|r| r.is_left_out()).count()
+    }
+}
+
+/// A raw row holding `terms` as the query writes them.
+fn raw_row(terms: SearchTerms) -> BuilderRow {
+    BuilderRow::with_value(RowKind::Raw, terms.to_query_string())
+}
+
+/// The row for a property filter. A literal `*` in a value (a quoted one) is
+/// not a form value — a form's `*` is a wildcard — so that filter stays raw.
+fn property_row(filter: &PropertyFilter, exclude: bool) -> BuilderRow {
+    match &filter.test {
+        PropertyTest::Exists => BuilderRow {
+            exclude,
+            key: filter.key.clone(),
+            op: None,
+            ..BuilderRow::new(RowKind::Property)
+        },
+        PropertyTest::Compare {
+            op,
+            value,
+            wildcard,
+        } if *wildcard || !value.contains('*') => BuilderRow {
+            exclude,
+            key: filter.key.clone(),
+            op: Some(*op),
+            value: value.clone(),
+            ..BuilderRow::new(RowKind::Property)
+        },
+        PropertyTest::Compare { .. } => raw_row(if exclude {
+            SearchTerms {
+                excluded_properties: vec![filter.clone()],
+                ..SearchTerms::default()
+            }
+        } else {
+            SearchTerms {
+                properties: vec![filter.clone()],
+                ..SearchTerms::default()
+            }
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logic::sort::directive_of_query;
+
+    fn kinds(m: &BuilderModel) -> Vec<(RowKind, bool, &str)> {
+        m.rows
+            .iter()
+            .map(|r| (r.kind, r.exclude, r.value.as_str()))
+            .collect()
+    }
+
+    /// Rows → query → rows is stable, and the query means what it did.
+    fn assert_keeps_meaning(query: &str) {
+        let model = BuilderModel::from_query(query);
+        let written = model.to_query();
+        assert_eq!(
+            SearchTerms::from_query_string(&written),
+            SearchTerms::from_query_string(query),
+            "{query:?} written as {written:?}"
+        );
+        assert_eq!(BuilderModel::from_query(&written), model, "{query:?}");
+    }
+
+    #[test]
+    fn each_kind_of_term_gets_its_row() {
+        let m = BuilderModel::from_query(
+            "meeting -draft =tasks @plan /journal #urgent -#old <spec >index",
+        );
+        assert_eq!(
+            kinds(&m),
+            vec![
+                (RowKind::Text, false, "meeting"),
+                (RowKind::Text, true, "draft"),
+                (RowKind::Name, false, "tasks"),
+                (RowKind::Heading, false, "plan"),
+                (RowKind::Folder, false, "journal"),
+                (RowKind::Tag, false, "urgent"),
+                (RowKind::Tag, true, "old"),
+                (RowKind::LinksTo, false, "spec"),
+                (RowKind::LinkedFrom, false, "index"),
+            ]
+        );
+        assert_eq!(m.sort, None);
+    }
+
+    #[test]
+    fn property_rows_carry_key_comparison_and_value() {
+        let m = BuilderModel::from_query("%due %priority>=2 -%status=done");
+        let p = |i: usize| {
+            (
+                m.rows[i].key.as_str(),
+                m.rows[i].op,
+                m.rows[i].value.as_str(),
+            )
+        };
+        assert_eq!(p(0), ("due", None, ""));
+        assert_eq!(p(1), ("priority", Some(PropertyOp::Ge), "2"));
+        assert_eq!(p(2), ("status", Some(PropertyOp::Eq), "done"));
+        assert!(m.rows[2].exclude);
+        assert!(m.rows.iter().all(|r| r.kind == RowKind::Property));
+    }
+
+    #[test]
+    fn the_sort_is_read_and_written_with_the_sort_helpers() {
+        let m = BuilderModel::from_query("#a -^%\"due date\"");
+        assert_eq!(
+            m.sort,
+            Some((
+                SortField::Property("due date".into()),
+                SortOrder::Descending
+            ))
+        );
+        assert_eq!(m.rows.len(), 1);
+        let q = m.to_query();
+        assert_eq!(directive_of_query(&q), m.sort);
+        assert!(q.starts_with("#a "), "{q}");
+        // No sort, no directive.
+        let m = BuilderModel::from_query("#a");
+        assert_eq!(m.to_query(), "#a");
+    }
+
+    #[test]
+    fn what_no_row_expresses_is_kept_as_raw() {
+        // An unterminated quote, a bare prefix, a second sort, a literal `*`.
+        let q = "a # \"open";
+        let m = BuilderModel::from_query(q);
+        let raw: Vec<&str> = m
+            .rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Raw)
+            .map(|r| r.value.as_str())
+            .collect();
+        assert_eq!(raw, vec!["#", "\"open"]);
+        assert_keeps_meaning(q);
+
+        let m = BuilderModel::from_query("a ^title -^file");
+        assert_eq!(m.sort, Some((SortField::Title, SortOrder::Ascending)));
+        assert_eq!(m.rows.last().map(|r| r.kind), Some(RowKind::Raw));
+        assert_keeps_meaning("a ^title -^file");
+
+        // The wildcard one is a property row; the literal one stays raw, and
+        // is written after the other filters (they are ANDed, so the order
+        // between them means nothing).
+        let q = "%name=a*b %name=\"a*b\"";
+        let m = BuilderModel::from_query(q);
+        assert_eq!(m.rows[0].kind, RowKind::Property, "the wildcard one");
+        assert_eq!(m.rows[1].kind, RowKind::Raw, "the literal one");
+        assert_keeps_meaning(q);
+    }
+
+    #[test]
+    fn queries_keep_their_meaning_through_the_rows() {
+        for q in [
+            "",
+            "meeting notes",
+            "\"two words\" -\"not this\"",
+            "=\"my note\" @\"a heading\" /journal/2024",
+            "#finance -#draft",
+            "<{note} >{note}",
+            "%\"due date\"<2025-01-01 %tags=proj* -%done",
+            "x ^title",
+            "x -^%rank",
+            "a # lk: ^bogus",
+            "caf\u{e9} #T\u{e9}l\u{e9}",
+        ] {
+            assert_keeps_meaning(q);
+        }
+    }
+
+    #[test]
+    fn text_words_are_separate_terms_and_quotes_make_a_phrase() {
+        let mut m = BuilderModel::from_query("");
+        m.rows
+            .push(BuilderRow::with_value(RowKind::Text, "budget meeting"));
+        assert_eq!(
+            m.to_query(),
+            "budget meeting",
+            "two terms, as typed in the field"
+        );
+        m.rows[0].value = "\"budget meeting\"".into();
+        assert_eq!(m.to_query(), "\"budget meeting\"");
+        // Phrases mixed with words, or several phrases, read as the field does.
+        m.rows[0].value = "\"budget meeting\" notes \"a b\"".into();
+        assert_eq!(m.to_query(), "\"budget meeting\" notes \"a b\"");
+        // A quote that never closes writes nothing (the parser would drop the rest).
+        m.rows[0].value = "\"budget".into();
+        assert_eq!((m.incomplete(), m.to_query().as_str()), (1, ""));
+        // A phrase read from a query keeps its quotes in the row.
+        let back = BuilderModel::from_query("\"budget meeting\" -\"old plan\"");
+        assert_eq!(back.rows[0].value, "\"budget meeting\"");
+        assert_eq!(back.to_query(), "\"budget meeting\" -\"old plan\"");
+    }
+
+    #[test]
+    fn a_hash_typed_in_a_tag_row_is_not_doubled() {
+        let mut m = BuilderModel::from_query("");
+        m.rows.push(BuilderRow::with_value(RowKind::Tag, "#Draft"));
+        assert_eq!(m.to_query(), "#draft");
+        m.rows[0].value = "#".into();
+        assert_eq!(m.to_query(), "", "a bare # names no tag");
+        assert!(m.rows[0].is_left_out());
+    }
+
+    #[test]
+    fn every_comparison_has_a_name_in_words() {
+        for op in PROPERTY_OPS {
+            assert!(property_op_name(op).len() > property_op_label(op).len());
+        }
+    }
+
+    #[test]
+    fn a_tag_with_both_quote_kinds_is_left_out_and_hashes_after_spaces_go() {
+        let mut m = BuilderModel::from_query("");
+        m.rows.push(BuilderRow::with_value(RowKind::Tag, "a\"b'c"));
+        assert!(m.rows[0].is_left_out());
+        assert_eq!(m.to_query(), "");
+        m.rows[0].value = "# #x".into();
+        assert_eq!(m.to_query(), "#x", "no second # survives a space");
+        m.rows[0].value = "# #".into();
+        assert!(m.rows[0].is_left_out(), "only hashes name no tag");
+    }
+
+    #[test]
+    fn every_kind_has_a_hint() {
+        for kind in RowKind::ALL {
+            assert!(!kind.hint().is_empty(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_term_that_is_itself_quoted_keeps_its_quotes_through_the_row() {
+        // `'"x"'` is the literal term `"x"`: it must not come back as `x`.
+        let m = BuilderModel::from_query("'\"x\"'");
+        assert_eq!(m.rows[0].value, "'\"x\"'");
+        assert_eq!(m.to_query(), "'\"x\"'");
+    }
+
+    #[test]
+    fn a_value_with_both_quote_kinds_is_left_out() {
+        let mut m = BuilderModel::from_query("#a");
+        m.rows.push(BuilderRow::with_value(RowKind::Text, "a\"b'c"));
+        assert_eq!((m.incomplete(), m.unfinished()), (1, 1));
+        assert_eq!(m.to_query(), "#a", "nothing broken is written");
+        // One kind of quote is fine.
+        m.rows[1].value = "it's".into();
+        assert_eq!(m.incomplete(), 0);
+    }
+
+    #[test]
+    fn incomplete_rows_stay_but_are_not_written() {
+        let mut m = BuilderModel::from_query("#a");
+        m.rows.push(BuilderRow::new(RowKind::Tag));
+        m.rows.push(BuilderRow::with_value(RowKind::Text, "   "));
+        let mut p = BuilderRow::new(RowKind::Property);
+        p.key = "due".into();
+        p.op = Some(PropertyOp::Gt); // no value yet
+        m.rows.push(p);
+        assert_eq!(m.rows.len(), 4);
+        assert_eq!(m.incomplete(), 3);
+        // The empty Tag row is untouched; the blank-text row is empty too;
+        // only the property with a key was started.
+        assert_eq!(m.unfinished(), 1);
+        assert_eq!(m.to_query(), "#a");
+        // Once it says enough, it is part of the query.
+        m.rows[3].value = "2025-01-01".into();
+        assert_eq!(m.to_query(), "#a %due>2025-01-01");
+        // A property with no comparison only needs its key.
+        m.rows[3].op = None;
+        m.rows[3].value.clear();
+        assert_eq!(m.to_query(), "#a %due");
+    }
+
+    #[test]
+    fn rows_built_by_hand_write_what_typing_would() {
+        let mut m = BuilderModel::default();
+        m.rows
+            .push(BuilderRow::with_value(RowKind::Tag, " Urgent "));
+        m.rows.push(BuilderRow {
+            exclude: true,
+            ..BuilderRow::with_value(RowKind::Name, "my note")
+        });
+        m.rows
+            .push(BuilderRow::with_value(RowKind::LinksTo, "{note}"));
+        m.rows.push(BuilderRow {
+            key: "Due Date".into(),
+            value: "2025-01-01".into(),
+            op: Some(PropertyOp::Lt),
+            ..BuilderRow::new(RowKind::Property)
+        });
+        m.sort = Some((SortField::Title, SortOrder::Ascending));
+        let q = m.to_query();
+        assert_eq!(
+            SearchTerms::from_query_string(&q),
+            SearchTerms::from_query_string(
+                "#urgent -=\"my note\" <{note} %\"due date\"<2025-01-01 or:title"
+            )
+        );
+        assert!(!RowKind::Raw.can_exclude() && RowKind::Tag.can_exclude());
+    }
+
+    #[test]
+    fn a_blank_property_sort_is_left_out() {
+        let mut m = BuilderModel::from_query("#a");
+        m.sort = Some((SortField::Property(String::new()), SortOrder::Ascending));
+        assert_eq!(m.to_query(), "#a");
+    }
+
+    #[test]
+    fn a_property_row_is_complete_only_when_core_accepts_it() {
+        let mut p = BuilderRow::new(RowKind::Property);
+        p.key = "due\nbad".into();
+        p.op = None;
+        assert!(!p.is_complete(), "a multi-line key can't be a property");
+        let mut m = BuilderModel::default();
+        m.rows.push(p);
+        assert_eq!((m.incomplete(), m.to_query().as_str()), (1, ""));
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_written_after_the_other_raw_rows() {
+        let mut m = BuilderModel::from_query("a \"open");
+        m.rows.push(BuilderRow::with_value(RowKind::Raw, "#"));
+        assert_eq!(m.to_query(), "a # \"open");
+        assert_keeps_meaning(&m.to_query());
+    }
+
+    #[test]
+    fn a_raw_sort_stays_in_effect_when_the_sort_control_is_cleared() {
+        let mut m = BuilderModel::from_query("a ^title -^file");
+        m.sort = None;
+        assert_eq!(m.to_query(), "a -^file");
+    }
+}

@@ -353,8 +353,12 @@ pub fn order_of_query(query: &str) -> (SortField, SortOrder) {
 /// The sort a query's first usable order directive asks for; `None` when it
 /// has none (a bare `or:prop:` with no key is not usable).
 pub fn directive_of_query(query: &str) -> Option<(SortField, SortOrder)> {
-    let st = SearchTerms::from_query_string(query);
-    let (field, asc) = match st.order_by.first()? {
+    directive_of_terms(&SearchTerms::from_query_string(query))
+}
+
+/// [`directive_of_query`] for a query already parsed.
+pub fn directive_of_terms(terms: &SearchTerms) -> Option<(SortField, SortOrder)> {
+    let (field, asc) = match terms.order_by.first()? {
         OrderBy::Title { asc } => (SortField::Title, *asc),
         OrderBy::FileName { asc } => (SortField::Name, *asc),
         OrderBy::Property { key, asc } => (SortField::Property(key.clone()), *asc),
