@@ -657,8 +657,9 @@ impl FindView {
         }
     }
 
-    /// The tools beside the field: build, sort, save, syntax.
-    fn render_tools(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The tools: build and save for beside the field; sort and syntax for
+    /// the bar under it.
+    fn render_tools(&self, query: &str, cx: &mut Context<Self>) -> (Div, Div) {
         let theme = theme::current(cx);
         let querying = !query.trim().is_empty();
         let chip = querying.then(|| {
@@ -687,7 +688,12 @@ impl FindView {
     }
 
     /// The title and the match count, under the field.
-    fn render_bar(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_bar(
+        &self,
+        query: &str,
+        meta: Div,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = theme::current(cx);
         let t = &*theme;
         let list = self.list.read(cx);
@@ -720,6 +726,7 @@ impl FindView {
                         .child(count),
                 )
             })
+            .child(meta)
     }
 }
 
@@ -768,6 +775,7 @@ impl Render for FindView {
         let popup = show(self, &t, window, cx);
         let query = self.query(cx);
         let error = error_reason(&query).map(query_problem);
+        let (actions, meta) = self.render_tools(&query, cx);
         let (shown, total) = {
             let list = self.list.read(cx);
             (list.len(), list.first_row().map_or(0, |r| r.total))
@@ -849,10 +857,10 @@ impl Render for FindView {
                             .flex_1()
                             .min_w_0(),
                     )
-                    .child(div().pr_2().pb_1().child(self.render_tools(&query, cx))),
+                    .child(div().pr_2().pb_1().child(actions)),
             )
             .children(popup)
-            .child(self.render_bar(&query, cx))
+            .child(self.render_bar(&query, meta, cx))
             .when_some(error, |view, error| {
                 view.child(
                     div()
