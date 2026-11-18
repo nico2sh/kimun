@@ -1,11 +1,11 @@
 //! The **query tools**: the buttons beside a query field, the same in
 //! every view that has one (FIND, the search browser).
 //!
-//! One order, left to right, that follows the work: `Build…` (compose the
-//! query), the sort chip (shape the result), `Save…` (keep the query),
-//! then the view's own extras, then the quiet `?` (the syntax). `Save…` is
-//! the one outlined button, because it is the one that keeps work; the
-//! rest are ghost. A view supplies the ids (tests find buttons by them),
+//! Two groups. Beside the field: `Build…` (compose the query), then `Save…`
+//! (keep it); `Save…` is the one outlined button, because it is the one that
+//! keeps work. On the row under the field, with the result count: the sort
+//! chip, the view's extras, then the quiet `?` (the syntax). Only two
+//! buttons take room from the field. A view supplies the ids (tests find buttons by them),
 //! the click handlers and the chip; the shape lives here, so the views
 //! cannot drift apart again.
 
@@ -42,7 +42,7 @@ pub(super) struct QueryTools {
     /// and `Save…` wait, as their chords do.
     pub busy: bool,
     pub save_tip: SharedString,
-    /// Buttons only this view has, between `Save…` and `?`.
+    /// Buttons only this view has, between the sort chip and `?`.
     pub extras: Vec<AnyElement>,
     pub on_build: Click,
     pub on_save: Click,
@@ -59,8 +59,12 @@ pub(super) fn save_tip(cx: &App) -> SharedString {
 }
 
 impl QueryTools {
-    /// The row of tools, to sit at the right of the query field.
-    pub(super) fn render(self, cx: &App) -> Div {
+    /// The two groups of tools: the **actions**, to sit at the right of the
+    /// query field (`Build…`, `Save…`: they work on the query), and the
+    /// **meta**, to sit on the row under it with the result count (the sort
+    /// chip, the view's extras, `?`: they describe or explain the results).
+    /// Two buttons beside the field leave it the room to type in.
+    pub(super) fn render(self, cx: &App) -> (Div, Div) {
         let build = Button::new(self.ids.build)
             .ghost()
             .small()
@@ -81,7 +85,7 @@ impl QueryTools {
             .on_click(self.on_save);
         let help = Button::new(self.ids.help)
             .ghost()
-            .small()
+            .xsmall()
             .icon(IconName::CircleQuestionMark)
             .accessibility_label("Query syntax")
             .tooltip(tooltip_with_chord(
@@ -90,15 +94,21 @@ impl QueryTools {
                 cx,
             ))
             .on_click(self.on_help);
-        div()
+        let actions = div()
             .flex()
             .flex_none()
             .items_center()
             .gap_1()
             .child(build)
+            .child(save);
+        let meta = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
             .children(self.chip)
-            .child(save)
             .children(self.extras)
-            .child(help)
+            .child(help);
+        (actions, meta)
     }
 }

@@ -88,6 +88,8 @@ pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
 pub(crate) const BUILD_BUTTON_ID: &str = "note-picker-build";
+/// The line under the field: what the list shows, then the sort and help.
+pub(crate) const PICKER_SUMMARY_ID: &str = "note-picker-summary";
 pub(crate) const SAVE_BUTTON_ID: &str = "note-picker-save";
 /// The search browser's button carrying its query to the FIND view.
 pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
@@ -106,8 +108,9 @@ const SEARCH_NARROW_REMS: f32 = 52.;
 const SEARCH_LIST_REMS: f32 = 24.;
 /// What the search browser's window keeps clear of its body (results and
 /// preview), in rems: the dialog's margins and padding (4), the query row
-/// and its gap (2.5), room for both error rows (3.5) and slack.
-const SEARCH_CHROME_REMS: f32 = 12.;
+/// and its gap (2.5), the summary row under it (1.5), room for both error
+/// rows (3.5) and slack.
+const SEARCH_CHROME_REMS: f32 = 13.5;
 /// The search browser's body height bounds, in rems: never squashed below
 /// a few rows, never taller than reading needs on a big screen.
 const SEARCH_MIN_BODY_REMS: f32 = 6.;
@@ -754,7 +757,7 @@ impl<R: PickerRow> Render for NotePicker<R> {
             Some(search) => {
                 let to_find = Button::new(TO_FIND_BUTTON_ID)
                     .ghost()
-                    .small()
+                    .xsmall()
                     .icon(crate::workspace::rail_icon(DrawerView::Find))
                     .tooltip(to_find_tooltip(cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -805,12 +808,45 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     })),
                 }
                 .render(cx);
+                let (actions, meta) = tools;
+                // What the list shows, the way FIND's bar says it.
+                let summary: Option<SharedString> = if self.core.is_loading() {
+                    None
+                } else if self.core.query().trim().is_empty() {
+                    Some("Recent notes".into())
+                } else {
+                    Some(super::files::note_count_text(count))
+                };
                 let input_row = div()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().child(input))
-                    .child(tools)
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().child(input))
+                            .child(actions),
+                    )
+                    .child(
+                        div()
+                            .id(PICKER_SUMMARY_ID)
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .text_color(theme::muted(t))
+                                    .children(summary),
+                            )
+                            .child(meta),
+                    )
                     .into_any_element();
                 // A cached view: rebuilt only when the preview itself changes.
                 let preview = search
