@@ -4,13 +4,13 @@
 //! preview of the selected note beside the results (below them in a narrow
 //! window).
 //!
-//! **Rows.** The logic's search source (`resolving_search_source_with_create`):
-//! an empty query lists the recent notes, anything else runs core's query
-//! search, `{note}` and the bare `<` / `>` resolving against the open note; a
-//! typed query also leads with the finder's `Create:` row. Loads run off the
-//! UI thread and the newest query wins (the list core's generation guard).
-//! The selection starts on the first match, not on `Create:` (Enter opens
-//! the best result; Up reaches `Create:`).
+//! **Rows.** The logic's search source (`resolving_search_source`): an empty
+//! query lists the recent notes, anything else runs core's query search,
+//! `{note}` and the bare `<` / `>` resolving against the open note. There is
+//! no `Create:` row: a query is not a note name (the finder and the FILES
+//! filter offer it). Loads run off the UI thread and the newest query wins
+//! (the list core's generation guard). The selection starts on the first
+//! match (Enter opens the best result).
 //!
 //! **Preview** ([`SearchPreview`]). The selected note's text, the query's
 //! needles in the match colour. A selection held for [`PREVIEW_DEBOUNCE`]
@@ -21,7 +21,7 @@
 //! already read are wrapped again on tokio, the note is not read again. A newer
 //! selection cancels the wait or the read and its result is never shown;
 //! until the new one lands the old preview stays, dimmed. Nothing is shown
-//! for `Create:` or no selection. The preview is a cached view: typing or
+//! for no selection. The preview is a cached view: typing or
 //! moving the selection does not rebuild it until its own state changes.
 //!
 //! **Opening.** Enter (or a double-click: a click only selects, the
@@ -29,14 +29,13 @@
 //! query's needles emphasised in the editor (cleared by the first edit).
 //! With unsaved edits in the open note the browser stays up while they are
 //! written; a write that fails keeps the browser open and says why (the
-//! note stays, edits kept). `Create:` makes and opens the note as the
-//! finder does.
+//! note stays, edits kept).
 //!
 //! **Query syntax.** `F1` or the `?` button shows the reference card
 //! (`logic::query::SYNTAX`) in a kit dialog over the browser: the one
 //! stacked modal. Escape closes it and the browser has the keyboard again.
 //!
-//! The browser only reads; every write (the flush, `Create:`) is core's.
+//! The browser only reads; every write (the flush) is core's.
 //!
 //! **The Source reader** (M7c G10b) is this preview with a [`Mark::Section`]
 //! instead of needles: the note a source came from, the lines of its
@@ -1038,14 +1037,11 @@ impl Workspace {
                     .current_last_paths()
             })
             .unwrap_or_default();
-        let source = Arc::new(
-            kimun_notes::logic::pickers::resolving_search_source_with_create(
-                vault.clone(),
-                recents,
-                open.clone(),
-                self.open_note_dir(),
-            ),
-        );
+        let source = Arc::new(kimun_notes::logic::pickers::resolving_search_source(
+            vault.clone(),
+            recents,
+            open.clone(),
+        ));
         let preview = cx.new(|cx| SearchPreview::new(vault, cx));
         self.open_search_picker(source, query.unwrap_or_default(), open, preview, window, cx);
     }
@@ -1105,8 +1101,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         // The browser's source lists notes only (logic `SearchNotesProvider`:
-        // indexed notes and the recents; its `Create:` row is the picker's,
-        // never this). So `open_chosen` below always takes the note branch,
+        // indexed notes and the recents). So `open_chosen` below always takes the note branch,
         // which focuses the editor; a folder would show FILES unfocused.
         debug_assert!(path.is_note(), "the search browser lists notes only");
         let quiet = self.search_flush.is_some()
