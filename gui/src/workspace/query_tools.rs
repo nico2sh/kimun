@@ -41,7 +41,6 @@ pub(super) struct QueryTools {
     /// The view is working (the browser while a `Create:` runs): `Build…`
     /// and `Save…` wait, as their chords do.
     pub busy: bool,
-    pub save_tip: SharedString,
     /// Buttons only this view has, between the sort chip and `?`.
     pub extras: Vec<AnyElement>,
     pub on_build: Click,
@@ -50,7 +49,7 @@ pub(super) struct QueryTools {
 }
 
 /// `Save…`'s tooltip: what it does, and the chord that does it.
-pub(super) fn save_tip(cx: &App) -> SharedString {
+fn save_tip(cx: &App) -> SharedString {
     tooltip_with_chord(
         "Save the query as a saved search",
         &ActionShortcuts::SaveCurrentQuery,
@@ -80,7 +79,7 @@ impl QueryTools {
             .outline()
             .small()
             .label("Save…")
-            .tooltip(self.save_tip)
+            .tooltip(save_tip(cx))
             .disabled(!self.can_save || self.busy)
             .on_click(self.on_save);
         let help = Button::new(self.ids.help)

@@ -778,7 +778,6 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     chip: Some(self.render_sort_chip(cx).into_any_element()),
                     can_save: !self.core.query().trim().is_empty(),
                     busy: self.busy,
-                    save_tip: super::query_tools::save_tip(cx),
                     extras: vec![to_find],
                     on_build: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
                         // The builder reads this field and whether the

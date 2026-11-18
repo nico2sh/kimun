@@ -29,6 +29,8 @@ const SHOWN: usize = 5;
 pub(crate) struct KeySuggestions {
     shown: Vec<String>,
     highlighted: Option<usize>,
+    /// `shown` lists a blank field's choices (see [`Self::refresh_browsing`]).
+    browsing: bool,
 }
 
 impl KeySuggestions {
@@ -38,6 +40,7 @@ impl KeySuggestions {
     pub(crate) fn refresh(&mut self, known: &[String], typed: &str) {
         let typed = typed.trim().to_lowercase();
         self.highlighted = None;
+        self.browsing = false;
         self.shown.clear();
         if typed.is_empty() {
             return;
@@ -59,23 +62,20 @@ impl KeySuggestions {
 
     /// [`Self::refresh`], except that a blank field offers the first `known`
     /// keys in order, so a field can be browsed before anything is typed
-    /// (the query builder's tag, folder and key fields).
-    pub(crate) fn refresh_browsing(
-        &mut self,
-        known: &[String],
-        typed: &str,
-        leading: Option<&str>,
-    ) {
+    /// (the query builder's tag, folder and key fields). Such a list is
+    /// only offered: see [`Self::is_browsing`].
+    pub(crate) fn refresh_browsing(&mut self, known: &[String], typed: &str) {
+        self.refresh(known, typed);
         if typed.trim().is_empty() {
-            self.highlighted = None;
             self.shown = known.iter().take(SHOWN).cloned().collect();
-            if let Some(leading) = leading {
-                self.shown.insert(0, leading.to_string());
-                self.shown.truncate(SHOWN);
-            }
-        } else {
-            self.refresh_with_leading(known, typed, leading);
+            self.browsing = !self.shown.is_empty();
         }
+    }
+
+    /// Whether the list shown is an offer for a blank field, not matches for
+    /// what was typed: Escape is the dialog's then, until one is highlighted.
+    pub(crate) fn is_browsing(&self) -> bool {
+        self.browsing && self.highlighted.is_none()
     }
 
     /// [`Self::refresh`], with `leading` offered first whatever `typed` is

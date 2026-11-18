@@ -79,7 +79,7 @@ use super::drawer_list::{DrawerList, DrawerListEvent, DrawerRow, EXPAND};
 use super::files::{display_title, ellipsis, note_count_text};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
-use super::query_field::{self, query_field};
+use super::query_field::{self, query_field_with};
 use super::query_tools::{QueryToolIds, QueryTools};
 use super::result_row::result_row;
 use super::search::SearchPreview;
@@ -189,9 +189,6 @@ pub(crate) struct FindView {
     shown: bool,
     /// The needles of (query, note), memoised.
     needles: (String, VaultPath, Arc<[String]>),
-    /// The `SaveCurrentQuery` chord as `Save…`'s tooltip names it, rebuilt
-    /// when the keymap is replaced.
-    save_tip: SharedString,
     _subscriptions: Vec<Subscription>,
     /// Queries run (tests: the debounce runs one per pause).
     #[cfg(test)]
@@ -231,10 +228,8 @@ impl FindView {
             watch(&input, window, cx),
             // A selection move, or rows landing: the preview follows.
             cx.observe(&list, |this, _, cx| this.sync_preview(cx)),
-            keymap::observe(cx, |this: &mut Self, cx| {
-                this.save_tip = super::query_tools::save_tip(cx);
-                cx.notify();
-            }),
+            // The tools' tooltips name chords: a new keymap redraws them.
+            keymap::observe(cx, |_: &mut Self, cx| cx.notify()),
         ];
         list.update(cx, |list, cx| list.set_chevron(Some(Reach::Grow), cx));
         Self {
@@ -252,7 +247,6 @@ impl FindView {
             stale: false,
             shown: false,
             needles: (String::new(), VaultPath::empty(), Arc::from(Vec::new())),
-            save_tip: super::query_tools::save_tip(cx),
             _subscriptions: subscriptions,
             #[cfg(test)]
             runs: 0,
@@ -364,12 +358,7 @@ impl FindView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The field's text is replaced from outside: what the popup completed
-        // is gone.
-        self.ac.close();
-        self.input.update(cx, |input, cx| {
-            input.set_value(query.clone(), window, cx);
-        });
+        self.replace_query(&query, window, cx);
         self.breadcrumb.set(name, &query);
         self.model.reset();
         self.run(cx);
@@ -406,14 +395,20 @@ impl FindView {
         cx: &mut Context<Self>,
     ) {
         // `set_value` reports no change: the edit's rules run here.
-        self.ac.close();
-        self.input.update(cx, |input, cx| {
-            input.set_value(query.clone(), window, cx);
-        });
+        self.replace_query(&query, window, cx);
         let blank = query.trim().is_empty() || is_default_query(&query);
         self.breadcrumb.on_query_consumed(None, &query, blank);
         self.model.reset();
         self.run(cx);
+    }
+
+    /// Put `query` in the field from outside (a tag, a saved search, the
+    /// builder, a sort): what the popup completed is gone.
+    fn replace_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.ac.close();
+        self.input.update(cx, |input, cx| {
+            input.set_value(query.to_string(), window, cx);
+        });
     }
 
     /// The saved search the query came from (FIND's name for it), if any:
@@ -678,7 +673,6 @@ impl FindView {
             chip,
             can_save: querying,
             busy: false,
-            save_tip: self.save_tip.clone(),
             extras: Vec::new(),
             on_build: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Build))),
             on_save: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save))),
@@ -847,18 +841,13 @@ impl Render for FindView {
                 cx.emit(FindEvent::Dismiss);
                 cx.stop_propagation();
             }))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .child(
-                        query_field(&self.input, FIND_INPUT_ID, "Query", &t)
-                            .flex_1()
-                            .min_w_0(),
-                    )
-                    .child(div().pr_2().pb_1().child(actions)),
-            )
+            .child(query_field_with(
+                &self.input,
+                FIND_INPUT_ID,
+                "Query",
+                &t,
+                actions,
+            ))
             .children(popup)
             .child(self.render_bar(&query, meta, cx))
             .when_some(error, |view, error| {

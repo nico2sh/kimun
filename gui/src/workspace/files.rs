@@ -67,7 +67,7 @@ use super::drawer_list::page_move;
 #[cfg(test)]
 use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
-use super::query_field::query_field;
+use super::query_field::query_field_with;
 use super::sort::{chip_label, sort_chip};
 use crate::keymap;
 use crate::theme;
@@ -737,20 +737,13 @@ impl FilesPane {
     /// The filter, with `New` at its right: the field is where a user
     /// thinks of naming a note, so the way to make one sits beside it.
     fn render_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let field = query_field(
+        query_field_with(
             &self.filter,
             FILTER_ID,
             "Filter notes, or name a new one",
             &theme::current(cx),
+            self.render_new_button(cx),
         )
-        .flex_1()
-        .min_w_0();
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .child(field)
-            .child(div().pr_2().pb_1().child(self.render_new_button(cx)))
     }
 
     fn render_row(
