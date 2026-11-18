@@ -3824,6 +3824,7 @@ mod presets;
 mod properties;
 mod query_builder;
 mod query_field;
+mod query_tools;
 mod reopen;
 mod result_row;
 mod route;

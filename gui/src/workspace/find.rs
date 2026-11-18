@@ -48,9 +48,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -83,6 +80,7 @@ use super::files::{display_title, ellipsis, note_count_text};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::picker::query_problem;
 use super::query_field::{self, query_field};
+use super::query_tools::{QueryToolIds, QueryTools};
 use super::result_row::result_row;
 use super::search::SearchPreview;
 use super::search::label_query;
@@ -90,15 +88,6 @@ use super::sort::{chip_label, sort_chip};
 use crate::input;
 use crate::keymap;
 use crate::theme;
-
-/// `Save…`'s tooltip: what it does, and the chord that does it here.
-fn save_tip(cx: &App) -> SharedString {
-    super::chrome::tooltip_with_chord(
-        "Save the query as a saved search",
-        &ActionShortcuts::SaveCurrentQuery,
-        cx,
-    )
-}
 
 /// Element ids, for tests.
 pub(crate) const FIND_ID: &str = "find";
@@ -243,7 +232,7 @@ impl FindView {
             // A selection move, or rows landing: the preview follows.
             cx.observe(&list, |this, _, cx| this.sync_preview(cx)),
             keymap::observe(cx, |this: &mut Self, cx| {
-                this.save_tip = save_tip(cx);
+                this.save_tip = super::query_tools::save_tip(cx);
                 cx.notify();
             }),
         ];
@@ -263,7 +252,7 @@ impl FindView {
             stale: false,
             shown: false,
             needles: (String::new(), VaultPath::empty(), Arc::from(Vec::new())),
-            save_tip: save_tip(cx),
+            save_tip: super::query_tools::save_tip(cx),
             _subscriptions: subscriptions,
             #[cfg(test)]
             runs: 0,
@@ -404,13 +393,25 @@ impl FindView {
         if sorted == query {
             return;
         }
+        self.apply_edit(sorted, window, cx);
+    }
+
+    /// The query builder's Apply: `query` replaces the field's text as an
+    /// edit, so a saved search keeps its name ("• edited") and `Save…` still
+    /// offers it.
+    pub(crate) fn apply_edit(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // `set_value` reports no change: the edit's rules run here.
         self.ac.close();
         self.input.update(cx, |input, cx| {
-            input.set_value(sorted.clone(), window, cx);
+            input.set_value(query.clone(), window, cx);
         });
-        let blank = sorted.trim().is_empty() || is_default_query(&sorted);
-        self.breadcrumb.on_query_consumed(None, &sorted, blank);
+        let blank = query.trim().is_empty() || is_default_query(&query);
+        self.breadcrumb.on_query_consumed(None, &query, blank);
         self.model.reset();
         self.run(cx);
     }
@@ -656,6 +657,36 @@ impl FindView {
         }
     }
 
+    /// The tools beside the field: build, sort, save, syntax.
+    fn render_tools(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = theme::current(cx);
+        let querying = !query.trim().is_empty();
+        let chip = querying.then(|| {
+            let (field, order) = order_of_query(query);
+            sort_chip(FIND_SORT_ID, chip_label(&field, order), &theme)
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Sort)))
+                .test_support()
+                .into_any_element()
+        });
+        QueryTools {
+            ids: QueryToolIds {
+                build: FIND_BUILD_ID,
+                save: FIND_SAVE_ID,
+                help: FIND_HELP_ID,
+            },
+            chip,
+            can_save: querying,
+            busy: false,
+            save_tip: self.save_tip.clone(),
+            extras: Vec::new(),
+            on_build: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Build))),
+            on_save: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save))),
+            on_help: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Help))),
+        }
+        .render(cx)
+    }
+
+    /// The title and the match count, under the field.
     fn render_bar(&self, query: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = theme::current(cx);
         let t = &*theme;
@@ -663,36 +694,6 @@ impl FindView {
         let count = (self.started && !list.is_loading())
             .then(|| note_count_text(list.first_row().map_or(0, |r| r.total)));
         let title = self.title(query);
-        let querying = !query.trim().is_empty();
-        let chip = querying.then(|| {
-            let (field, order) = order_of_query(query);
-            sort_chip(FIND_SORT_ID, chip_label(&field, order), t)
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Sort)))
-                .test_support()
-        });
-        let save = Button::new(FIND_SAVE_ID)
-            .ghost()
-            .xsmall()
-            .label("Save…")
-            .tooltip(self.save_tip.clone())
-            .disabled(!querying)
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save)));
-        let build = Button::new(FIND_BUILD_ID)
-            .ghost()
-            .xsmall()
-            .label("Build…")
-            .tooltip(super::chrome::tooltip_with_chord(
-                super::query_builder::BUILD_TIP,
-                &ActionShortcuts::QueryBuilder,
-                cx,
-            ))
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Build)));
-        let help = Button::new(FIND_HELP_ID)
-            .ghost()
-            .xsmall()
-            .label("Syntax")
-            .tooltip("Query syntax (F1)")
-            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Help)));
         div()
             .flex()
             .flex_none()
@@ -719,10 +720,6 @@ impl FindView {
                         .child(count),
                 )
             })
-            .children(chip)
-            .child(save)
-            .child(build)
-            .child(help)
     }
 }
 
@@ -842,7 +839,18 @@ impl Render for FindView {
                 cx.emit(FindEvent::Dismiss);
                 cx.stop_propagation();
             }))
-            .child(query_field(&self.input, FIND_INPUT_ID, "Query", &t))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(
+                        query_field(&self.input, FIND_INPUT_ID, "Query", &t)
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .child(div().pr_2().pb_1().child(self.render_tools(&query, cx))),
+            )
             .children(popup)
             .child(self.render_bar(&query, cx))
             .when_some(error, |view, error| {
