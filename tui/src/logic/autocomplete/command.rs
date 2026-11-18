@@ -134,6 +134,7 @@ mod tests {
                 .map(|i| Suggestion {
                     display: format!("t{i}"),
                     secondary: None,
+                    label: None,
                 })
                 .collect(),
         );
