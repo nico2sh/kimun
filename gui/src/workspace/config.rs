@@ -176,6 +176,10 @@ impl ConfigView {
                 value: format!("{} ms", s.leader_timeout_ms),
             },
             ConfigRow {
+                label: "Version",
+                value: kimun_notes::update::CURRENT_VERSION.to_string(),
+            },
+            ConfigRow {
                 label: "Config file",
                 value: config_path_label(&s),
             },
