@@ -129,7 +129,7 @@ impl Scope {
             ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
-            ActionShortcuts::QuerySyntax => Scope::Query,
+            ActionShortcuts::QuerySyntax | ActionShortcuts::QueryBuilder => Scope::Query,
             ActionShortcuts::OpenQueryInSidebar => Scope::Browser,
             _ => Scope::Everywhere,
         }
@@ -325,6 +325,10 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // The query syntax, where a query is typed (FIND with the keyboard,
         // the search browser): F1 there, as in the TUI's search views.
         A::QuerySyntax => &["f1"],
+        // The query builder, where a query is typed (FIND, the search
+        // browser): the F-key family's next (F1 syntax … F6 ask). Not Ctrl+B,
+        // which is Bold in the editor, and not Ctrl+Shift+K, SearchNotes' twin.
+        A::QueryBuilder => &["f7"],
         // The search browser's query shown in the FIND view, as VS Code's
         // "open in sidebar" does for its search: where a query is typed.
         A::OpenQueryInSidebar => &["primary+shift+enter"],

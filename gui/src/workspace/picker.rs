@@ -40,7 +40,6 @@
 
 use std::sync::Arc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
@@ -76,6 +75,7 @@ use super::Workspace;
 use super::files::{ClickPolicy, ClickRows, entry_row, with_click_cursor};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::modal::{self, ModalKind, Slot};
+use super::query_tools::{QueryToolIds, QueryTools};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
 use crate::theme;
@@ -87,6 +87,10 @@ pub(crate) const PICKER_LIST_ID: &str = "note-picker-list";
 pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
+pub(crate) const BUILD_BUTTON_ID: &str = "note-picker-build";
+/// The line under the field: what the list shows, then the sort and help.
+pub(crate) const PICKER_SUMMARY_ID: &str = "note-picker-summary";
+pub(crate) const SAVE_BUTTON_ID: &str = "note-picker-save";
 /// The search browser's button carrying its query to the FIND view.
 pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
 pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
@@ -104,8 +108,9 @@ const SEARCH_NARROW_REMS: f32 = 52.;
 const SEARCH_LIST_REMS: f32 = 24.;
 /// What the search browser's window keeps clear of its body (results and
 /// preview), in rems: the dialog's margins and padding (4), the query row
-/// and its gap (2.5), room for both error rows (3.5) and slack.
-const SEARCH_CHROME_REMS: f32 = 12.;
+/// and its gap (2.5), the summary row under it (1.5), room for both error
+/// rows (3.5) and slack.
+const SEARCH_CHROME_REMS: f32 = 13.5;
 /// The search browser's body height bounds, in rems: never squashed below
 /// a few rows, never taller than reading needs on a big screen.
 const SEARCH_MIN_BODY_REMS: f32 = 6.;
@@ -463,13 +468,24 @@ impl<R: PickerRow> NotePicker<R> {
         if sorted == query {
             return;
         }
+        self.apply_query(sorted, window, cx);
+    }
+
+    /// Put `query` in the field and run it (a sort, the query builder): what
+    /// was being completed is gone.
+    pub(crate) fn apply_query(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // `set_value` reports no change: the query runs here.
         if let Some(ac) = self.ac.as_mut() {
             ac.close();
         }
         self.input
-            .update(cx, |input, cx| input.set_value(sorted.clone(), window, cx));
-        self.set_query(sorted, cx);
+            .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.set_query(query, cx);
     }
 
     /// The search browser's sort chip: the query's order, or "Unsorted" on
@@ -739,38 +755,96 @@ impl<R: PickerRow> Render for NotePicker<R> {
                 rows.h(rems(LIST_REMS)).into_any_element(),
             ),
             Some(search) => {
+                let to_find = Button::new(TO_FIND_BUTTON_ID)
+                    .ghost()
+                    .xsmall()
+                    .icon(crate::workspace::rail_icon(DrawerView::Find))
+                    .tooltip(to_find_tooltip(cx))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        let query = this.input.read(cx).value().to_string();
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.open_browser_query_in_find(query, window, cx)
+                            })
+                            .ok();
+                    }))
+                    .into_any_element();
+                let tools = QueryTools {
+                    ids: QueryToolIds {
+                        build: BUILD_BUTTON_ID,
+                        save: SAVE_BUTTON_ID,
+                        help: HELP_BUTTON_ID,
+                    },
+                    chip: Some(self.render_sort_chip(cx).into_any_element()),
+                    can_save: !self.core.query().trim().is_empty(),
+                    busy: self.busy,
+                    extras: vec![to_find],
+                    on_build: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // The builder reads this field and whether the
+                        // browser is busy: after this update.
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.open_query_builder(window, cx)
+                                })
+                            })
+                            .ok();
+                    })),
+                    on_save: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // The browser gives way to the dialog: after this update.
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.save_browser_query(window, cx)
+                                })
+                            })
+                            .ok();
+                    })),
+                    on_help: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.workspace
+                            .update(cx, |workspace, cx| workspace.open_query_help(window, cx))
+                            .ok();
+                    })),
+                }
+                .render(cx);
+                let (actions, meta) = tools;
+                // What the list shows, the way FIND's bar says it.
+                let summary: Option<SharedString> = if self.core.is_loading() {
+                    None
+                } else if self.core.query().trim().is_empty() {
+                    Some("Recent notes".into())
+                } else {
+                    Some(super::files::note_count_text(count))
+                };
                 let input_row = div()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().child(input))
-                    .child(self.render_sort_chip(cx))
+                    .flex_col()
+                    .gap_1()
                     .child(
-                        Button::new(TO_FIND_BUTTON_ID)
-                            .ghost()
-                            .icon(crate::workspace::rail_icon(DrawerView::Find))
-                            .tooltip(to_find_tooltip(cx))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                let query = this.input.read(cx).value().to_string();
-                                this.workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.open_browser_query_in_find(query, window, cx)
-                                    })
-                                    .ok();
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().child(input))
+                            .child(actions),
                     )
                     .child(
-                        Button::new(HELP_BUTTON_ID)
-                            .ghost()
-                            .icon(IconName::CircleQuestionMark)
-                            .tooltip("Query syntax (F1)")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.open_query_help(window, cx)
-                                    })
-                                    .ok();
-                            })),
+                        div()
+                            .id(PICKER_SUMMARY_ID)
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .text_color(theme::muted(t))
+                                    .children(summary),
+                            )
+                            .child(meta),
                     )
                     .into_any_element();
                 // A cached view: rebuilt only when the preview itself changes.

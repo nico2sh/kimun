@@ -226,7 +226,7 @@ fn quoted_sort_key_len(term: &str) -> Option<Option<usize>> {
 /// its direction. Produced by the query parser when it encounters an order
 /// token; [`OrderField`] is the direction-free counterpart used by callers
 /// that carry the asc/desc choice separately.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderBy {
     /// Sort by note title. `asc` is `true` for ascending, `false` for
     /// descending.
@@ -251,6 +251,15 @@ pub enum OrderBy {
 }
 
 impl OrderBy {
+    /// The column and direction (`true` for ascending).
+    pub fn field(&self) -> (OrderField, bool) {
+        match self {
+            OrderBy::Title { asc } => (OrderField::Title, *asc),
+            OrderBy::FileName { asc } => (OrderField::FileName, *asc),
+            OrderBy::Property { key, asc } => (OrderField::Property(key.clone()), *asc),
+        }
+    }
+
     fn from_term(term: &str, asc: bool) -> Option<Self> {
         if let Some(key) = term
             .strip_prefix("prop:")
@@ -344,6 +353,38 @@ pub struct PropertyFilter {
 }
 
 impl PropertyFilter {
+    /// The has-property filter for `key`, as typed in a form: `None` when the
+    /// key can't be a property (blank, multi-line).
+    pub fn exists(key: &str) -> Option<Self> {
+        Some(Self {
+            key: search_key(key)?,
+            test: PropertyTest::Exists,
+        })
+    }
+
+    /// The filter `key<op>value`, as typed in a form (not as written in a
+    /// query, so nothing is quoted): the key and value are put in search form,
+    /// and a `*` in the value is a wildcard, as in an unquoted query value.
+    /// `None` when the key can't be a property or the value is blank.
+    pub fn compare(key: &str, op: PropertyOp, value: &str) -> Option<Self> {
+        Self::comparing(search_key(key)?, op, value.trim(), value.contains('*'))
+    }
+
+    /// `key<op>value`, the value in search form; `None` when it is blank.
+    /// `wildcard` is whether the value was written unquoted with a `*` in it.
+    /// The one place a comparison is built, for parsing and for forms.
+    fn comparing(key: String, op: PropertyOp, value: &str, wildcard: bool) -> Option<Self> {
+        let value = search_form(value);
+        (!value.is_empty()).then_some(Self {
+            key,
+            test: PropertyTest::Compare {
+                op,
+                value,
+                wildcard,
+            },
+        })
+    }
+
     /// Parses `key<op>value`, or a bare `key` as a has-property filter. The
     /// key runs up to the first `= ! < >`; `None` when the key is empty, or an
     /// operator is present but malformed or has no value.
@@ -383,15 +424,7 @@ impl PropertyFilter {
         }
         let unquoted = unquote(raw);
         let wildcard = unquoted.len() == raw.len() && unquoted.contains('*');
-        let value = search_form(unquoted);
-        (!value.is_empty()).then_some(Self {
-            key,
-            test: PropertyTest::Compare {
-                op,
-                value,
-                wildcard,
-            },
-        })
+        Self::comparing(key, op, unquoted, wildcard)
     }
 }
 
@@ -465,15 +498,15 @@ fn query_tokens(query: &str) -> impl Iterator<Item = (&str, Option<ElementType>,
     })
 }
 
-/// Wrap `term` in the search DSL's quote characters when it contains
-/// whitespace, so a multi-word value (e.g. a note name with spaces) is
-/// parsed as a single token instead of being split across terms. Values
-/// without whitespace are returned unchanged. Note names can never contain
-/// `"` (invalid on Windows/macOS/Linux filesystems alike), so no escaping
-/// is needed.
+/// Wrap `term` in the search DSL's quote characters when it needs them, so a
+/// multi-word value (e.g. a note name with spaces) is parsed as a single token
+/// instead of being split across terms: when it contains whitespace or starts
+/// with a quote of its own. Other values are returned unchanged. The quote
+/// character is `"`, or `'` for a value containing `"`. Note names can never
+/// contain `"` (invalid on Windows/macOS/Linux filesystems alike).
 pub fn quote_query_term(term: &str) -> String {
-    if term.chars().any(char::is_whitespace) {
-        format!("\"{term}\"")
+    if value_needs_quotes(term) {
+        wrap_in_quotes(term)
     } else {
         term.to_string()
     }
@@ -567,16 +600,7 @@ pub fn strip_order_directive(query: &str) -> String {
 /// directive is appended.
 pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
     let base = strip_order_directive(query);
-    let field_term = match field {
-        OrderField::Title => "title".to_string(),
-        OrderField::FileName => "file".to_string(),
-        OrderField::Property(key) => format!("prop:{}", quote_query_term(&key)),
-    };
-    let directive = if asc {
-        format!("{}:{}", ORDER_LETTER, field_term)
-    } else {
-        format!("-{}:{}", ORDER_LETTER, field_term)
-    };
+    let directive = order_directive(&field, asc, false);
     if base.is_empty() {
         directive
     } else {
@@ -605,7 +629,7 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
 /// route the token into the matching `excluded_*` field. Values may be quoted
 /// with `"` or `'` to include whitespace (e.g. `="my note"`); an unterminated
 /// quote discards the token. Bare prefixes with no value are dropped.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct SearchTerms {
     /// Bare full-text terms (no prefix). Matched against note content.
     pub terms: Vec<String>,
@@ -643,12 +667,19 @@ pub struct SearchTerms {
     pub properties: Vec<PropertyFilter>,
     /// Negated `prop:` / `%` filters (`-prop:`, `-%`).
     pub excluded_properties: Vec<PropertyFilter>,
+    /// Tokens the parser could not turn into a filter and so ignores when
+    /// searching: an unterminated quote (which runs to the end of the query),
+    /// a prefix with no value (`#`, `lk:`), a malformed property filter or
+    /// an unknown sort key. Kept exactly as written so a query editor can
+    /// show them and [`SearchTerms::to_query_string`] can write them back.
+    /// The index never reads this field.
+    pub unparsed: Vec<String>,
 }
 
 /// Maximum byte length of a query string accepted by [`SearchTerms::from_query_string`].
 /// 8 KB is more than enough for any real search query; larger inputs are truncated
 /// on a char boundary to prevent unbounded memory allocation via duplicate labels.
-const MAX_QUERY_LEN: usize = 8 * 1024;
+pub const MAX_QUERY_LEN: usize = 8 * 1024;
 
 impl SearchTerms {
     /// Parse a raw query string into typed [`SearchTerms`] buckets.
@@ -698,91 +729,56 @@ impl SearchTerms {
         let mut excluded_forward_links = vec![];
         let mut properties = vec![];
         let mut excluded_properties = vec![];
+        let mut unparsed = vec![];
         while !query.is_empty() {
-            let qp = QueryTermExtractor::extract_and_consume(query);
+            let before = query;
+            let qp = QueryTermExtractor::extract_and_consume(&before);
             query = qp.remainder;
-            match qp.el_type {
-                ElementType::Term => {
-                    if !qp.term.is_empty() {
-                        terms.push(qp.term);
-                    }
-                }
-                ElementType::In => {
-                    if !qp.term.is_empty() {
-                        breadcrumb.push(qp.term);
-                    }
-                }
-                ElementType::At => {
-                    if !qp.term.is_empty() {
-                        filename.push(qp.term);
-                    }
-                }
-                ElementType::OrderBy { asc } => {
-                    if let Some(o) = OrderBy::from_term(&qp.term, asc) {
+            // Each arm reports whether the token was usable; the others are
+            // kept verbatim in `unparsed`.
+            let usable = match qp.el_type {
+                ElementType::Term => push_nonempty(&mut terms, qp.term),
+                ElementType::In => push_nonempty(&mut breadcrumb, qp.term),
+                ElementType::At => push_nonempty(&mut filename, qp.term),
+                ElementType::OrderBy { asc } => match OrderBy::from_term(&qp.term, asc) {
+                    Some(o) => {
                         order_by.push(o);
+                        true
                     }
-                }
-                ElementType::Invalid => {}
-                ElementType::Path => {
-                    if !qp.term.is_empty() {
-                        path.push(qp.term);
-                    }
-                }
-                ElementType::Label => {
-                    let n = qp.term.to_lowercase();
-                    if !n.is_empty() {
-                        labels.push(n);
-                    }
-                }
-                ElementType::ExcludedTerm => {
-                    if !qp.term.is_empty() {
-                        excluded_terms.push(qp.term);
-                    }
-                }
-                ElementType::ExcludedIn => {
-                    if !qp.term.is_empty() {
-                        excluded_breadcrumb.push(qp.term);
-                    }
-                }
-                ElementType::ExcludedAt => {
-                    if !qp.term.is_empty() {
-                        excluded_filename.push(qp.term);
-                    }
-                }
-                ElementType::ExcludedPath => {
-                    if !qp.term.is_empty() {
-                        excluded_path.push(qp.term);
-                    }
-                }
+                    None => false,
+                },
+                ElementType::Invalid => false,
+                ElementType::Path => push_nonempty(&mut path, qp.term),
+                ElementType::Label => push_nonempty(&mut labels, qp.term.to_lowercase()),
+                ElementType::ExcludedTerm => push_nonempty(&mut excluded_terms, qp.term),
+                ElementType::ExcludedIn => push_nonempty(&mut excluded_breadcrumb, qp.term),
+                ElementType::ExcludedAt => push_nonempty(&mut excluded_filename, qp.term),
+                ElementType::ExcludedPath => push_nonempty(&mut excluded_path, qp.term),
                 ElementType::ExcludedLabel => {
-                    let n = qp.term.to_lowercase();
-                    if !n.is_empty() {
-                        excluded_labels.push(n);
-                    }
+                    push_nonempty(&mut excluded_labels, qp.term.to_lowercase())
                 }
-                ElementType::Links => {
-                    if !qp.term.is_empty() {
-                        links.push(qp.term);
-                    }
-                }
-                ElementType::ExcludedLinks => {
-                    if !qp.term.is_empty() {
-                        excluded_links.push(qp.term);
-                    }
-                }
-                ElementType::ForwardLinks => {
-                    if !qp.term.is_empty() {
-                        forward_links.push(qp.term);
-                    }
-                }
+                ElementType::Links => push_nonempty(&mut links, qp.term),
+                ElementType::ExcludedLinks => push_nonempty(&mut excluded_links, qp.term),
+                ElementType::ForwardLinks => push_nonempty(&mut forward_links, qp.term),
                 ElementType::ExcludedForwardLinks => {
-                    if !qp.term.is_empty() {
-                        excluded_forward_links.push(qp.term);
-                    }
+                    push_nonempty(&mut excluded_forward_links, qp.term)
                 }
-                ElementType::Property => properties.extend(PropertyFilter::parse(&qp.term)),
+                ElementType::Property => {
+                    push_some(&mut properties, PropertyFilter::parse(&qp.term))
+                }
                 ElementType::ExcludedProperty => {
-                    excluded_properties.extend(PropertyFilter::parse(&qp.term))
+                    push_some(&mut excluded_properties, PropertyFilter::parse(&qp.term))
+                }
+            };
+            if !usable {
+                // What the extractor consumed, as written. Not a second
+                // tokenizer pass: it can end a token earlier than the lexer
+                // does (an empty quote pair after a prefix), and the rest is
+                // then a token of its own.
+                let trimmed = before.trim();
+                let consumed = trimmed[..trimmed.len() - query.len()].trim_end();
+                if !consumed.is_empty() {
+                    unparsed.push(consumed.to_string());
                 }
             }
         }
@@ -814,8 +810,187 @@ impl SearchTerms {
             excluded_forward_links,
             properties,
             excluded_properties,
+            unparsed,
         }
     }
+
+    /// Write the terms back as a query string: the inverse of
+    /// [`SearchTerms::from_query_string`]. Parsing the result gives back an
+    /// equal `SearchTerms`, though not necessarily the same text: operators
+    /// come out in their short form, grouped by kind, and values are quoted
+    /// only when they need it. The one exception is a property key or value
+    /// that itself begins with a quote character, which the syntax can't
+    /// always express. Order does not matter between filters (they
+    /// are ANDed); sort directives keep their order. `unparsed` tokens come
+    /// last and verbatim, since an unterminated quote runs to the end.
+    ///
+    /// ```
+    /// use kimun_core::SearchTerms;
+    ///
+    /// let st = SearchTerms::from_query_string("lb:urgent -name:\"my note\" meeting");
+    /// assert_eq!(st.to_query_string(), "meeting #urgent -=\"my note\"");
+    /// ```
+    pub fn to_query_string(&self) -> String {
+        let mut out: Vec<String> = Vec::new();
+        out.extend(self.terms.iter().map(|v| bare_term_token("", v)));
+        let valued: [(&str, &Vec<String>); 6] = [
+            ("@", &self.breadcrumb),
+            ("=", &self.filename),
+            ("/", &self.path),
+            ("#", &self.labels),
+            ("<", &self.links),
+            (">", &self.forward_links),
+        ];
+        for (prefix, values) in valued {
+            out.extend(
+                values
+                    .iter()
+                    .map(|v| format!("{prefix}{}", quote_query_term(v))),
+            );
+        }
+        out.extend(self.excluded_terms.iter().map(|v| bare_term_token("-", v)));
+        let excluded: [(&str, &Vec<String>); 6] = [
+            ("-@", &self.excluded_breadcrumb),
+            ("-=", &self.excluded_filename),
+            ("-/", &self.excluded_path),
+            ("-#", &self.excluded_labels),
+            ("-<", &self.excluded_links),
+            ("->", &self.excluded_forward_links),
+        ];
+        for (prefix, values) in excluded {
+            out.extend(
+                values
+                    .iter()
+                    .map(|v| format!("{prefix}{}", quote_query_term(v))),
+            );
+        }
+        out.extend(
+            self.properties
+                .iter()
+                .map(|f| format!("%{}", property_token(f))),
+        );
+        out.extend(
+            self.excluded_properties
+                .iter()
+                .map(|f| format!("-%{}", property_token(f))),
+        );
+        out.extend(self.order_by.iter().map(|o| {
+            let (field, asc) = o.field();
+            order_directive(&field, asc, true)
+        }));
+        out.extend(self.unparsed.iter().cloned());
+        out.join(" ")
+    }
+}
+
+/// Pushes `value` unless it is empty; whether it was pushed.
+fn push_nonempty(into: &mut Vec<String>, value: String) -> bool {
+    let keep = !value.is_empty();
+    if keep {
+        into.push(value);
+    }
+    keep
+}
+
+/// Pushes `value` when there is one; whether it was.
+fn push_some<T>(into: &mut Vec<T>, value: Option<T>) -> bool {
+    match value {
+        Some(v) => {
+            into.push(v);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `value` in quotes, with whichever quote character it does not contain
+/// (`"` unless it holds one). A value holding both can't be written; the
+/// parser would end it at the first inner `'`.
+fn wrap_in_quotes(value: &str) -> String {
+    let q = if value.contains('"') { '\'' } else { '"' };
+    format!("{q}{value}{q}")
+}
+
+/// Whether a value written right after a prefix must be quoted to read back
+/// as written: it holds whitespace, or starts with a quote of its own.
+fn value_needs_quotes(value: &str) -> bool {
+    value.chars().any(char::is_whitespace) || value.starts_with(['"', '\''])
+}
+
+/// A full-text term, written after `lead` (empty, or `-` for an excluded
+/// one). Besides the quoting every value gets, a term that would read as a
+/// prefix, an order directive or an exclusion once `lead` is in front of it
+/// is quoted too (`"#draft"`, `-"#draft"`).
+fn bare_term_token(lead: &str, term: &str) -> String {
+    let written = format!("{lead}{term}");
+    let reads_as_syntax = (lead.is_empty() && term.starts_with('-'))
+        || detect_prefix(&written).is_some()
+        || order_prefix(&written).is_some();
+    let token = if reads_as_syntax || value_needs_quotes(term) {
+        wrap_in_quotes(term)
+    } else {
+        term.to_string()
+    };
+    format!("{lead}{token}")
+}
+
+/// A property filter after its `%` / `-%`: `key`, or `key<op>value`. The key
+/// is quoted when it holds whitespace, quotes or an operator character. A
+/// value is quoted when whitespace, a leading quote or operator character, or
+/// (for a literal value) a `*` would otherwise change its meaning. A wildcard
+/// value holding whitespace can only be written by quoting the whole filter.
+fn property_token(filter: &PropertyFilter) -> String {
+    let key = if filter
+        .key
+        .chars()
+        .any(|c| c.is_whitespace() || OPERATOR_CHARS.contains(&c))
+        || filter.key.starts_with(['"', '\''])
+    {
+        wrap_in_quotes(&filter.key)
+    } else {
+        filter.key.clone()
+    };
+    let PropertyTest::Compare {
+        op,
+        value,
+        wildcard,
+    } = &filter.test
+    else {
+        return key;
+    };
+    if *wildcard {
+        let body = format!("{key}{}{value}", op.sql());
+        return if value.chars().any(char::is_whitespace) {
+            wrap_in_quotes(&body)
+        } else {
+            body
+        };
+    }
+    let literal_needs_quotes =
+        value_needs_quotes(value) || value.starts_with(OPERATOR_CHARS) || value.contains('*');
+    let value = if literal_needs_quotes {
+        wrap_in_quotes(value)
+    } else {
+        value.clone()
+    };
+    format!("{key}{}{value}", op.sql())
+}
+
+/// An order directive, the one writer for both [`with_order_directive`]
+/// (`or:title`, `-or:prop:key`) and [`SearchTerms::to_query_string`]
+/// (`short`: `^title`, `-^%key`).
+fn order_directive(field: &OrderField, asc: bool, short: bool) -> String {
+    let (directive, property) = if short {
+        (ORDER_CHAR.to_string(), "%")
+    } else {
+        (format!("{ORDER_LETTER}:"), "prop:")
+    };
+    let field = match field {
+        OrderField::Title => "title".to_string(),
+        OrderField::FileName => "file".to_string(),
+        OrderField::Property(key) => format!("{property}{}", quote_query_term(key)),
+    };
+    format!("{}{directive}{field}", if asc { "" } else { "-" })
 }
 
 fn dedup_preserving_order<T: Eq + std::hash::Hash + Clone>(v: &mut Vec<T>) {
@@ -2109,5 +2284,207 @@ mod tests {
         assert_eq!(q, "x or:file");
         let q = with_order_directive("x ^%due", OrderField::Property("prio".into()), true);
         assert_eq!(q, "x or:prop:prio");
+    }
+    // ---- to_query_string / unparsed ----
+
+    /// `parse(to_query_string(parse(q))) == parse(q)`, and a second pass is
+    /// stable text.
+    fn assert_round_trips(q: &str) {
+        let parsed = SearchTerms::from_query_string(q);
+        let written = parsed.to_query_string();
+        let reparsed = SearchTerms::from_query_string(&written);
+        assert_eq!(reparsed, parsed, "query {q:?} written as {written:?}");
+        assert_eq!(reparsed.to_query_string(), written, "unstable for {q:?}");
+    }
+
+    #[test]
+    fn round_trip_corpus() {
+        for q in [
+            "",
+            "meeting",
+            "meeting notes",
+            "\"two words\" other",
+            "'it has \"quotes\"' x",
+            "-cancelled",
+            "-\"two words\"",
+            "\"-dash first\"",
+            "\"#notatag\" -\"#nottag\"",
+            "\"name:literal\"",
+            "\"or:literal\"",
+            "kimu*",
+            "@meeting -@temp",
+            "in:meeting",
+            "=tasks -=drafts",
+            "name:\"my note\"",
+            "/journal/2024 -/archive",
+            "pt:\"my folder/sub\"",
+            "#finance #Finance -#draft",
+            "lb:\"my tag\"",
+            "<projects >projects <work/projects",
+            "lk:spec -lk:old fwd:index -fwd:gone",
+            "<\"my note\" ->\"my note\"",
+            "<{note} >{note} ={note}",
+            "%due",
+            "-%due",
+            "%priority>=2 %priority<9 %status!=done %rank>1 %rank<=7",
+            "%status=\"in progress\"",
+            "%\"due date\"<2025-01-01",
+            "%\"due date\"=\"end of year\"",
+            "%\"due date\"",
+            "%tags=proj*",
+            "%tags=\"proj*\"",
+            "%title=\"=x\"",
+            "prop:status=done -prop:status=wip",
+            "x ^title",
+            "x -^title",
+            "x ^file",
+            "x ^%due",
+            "x -^%due",
+            "x ^%\"due date\"",
+            "x or:title -or:prop:rank",
+            "meeting #urgent -#draft @work =tasks /journal <a >b %p>1 ^file",
+            "caf\u{e9} #T\u{e9}l\u{e9}",
+        ] {
+            assert_round_trips(q);
+        }
+    }
+
+    #[test]
+    fn to_query_string_uses_short_forms_and_groups() {
+        let st =
+            SearchTerms::from_query_string("lb:urgent -name:\"my note\" meeting prop:due ^title");
+        assert_eq!(
+            st.to_query_string(),
+            "meeting #urgent -=\"my note\" %due ^title"
+        );
+        assert_eq!(SearchTerms::default().to_query_string(), "");
+    }
+
+    #[test]
+    fn terms_that_look_like_syntax_are_quoted() {
+        let st = SearchTerms {
+            terms: vec!["#x".into(), "-y".into(), "name:z".into(), "or:t".into()],
+            excluded_terms: vec!["#x".into(), "plain".into()],
+            ..Default::default()
+        };
+        let written = st.to_query_string();
+        assert_eq!(SearchTerms::from_query_string(&written), st, "{written}");
+    }
+
+    #[test]
+    fn values_holding_both_quote_kinds_do_not_panic() {
+        let st = SearchTerms {
+            terms: vec!["a \"b\" 'c'".into()],
+            ..Default::default()
+        };
+        let _ = st.to_query_string();
+    }
+
+    #[test]
+    fn unparsed_keeps_discarded_tokens_verbatim() {
+        let st = SearchTerms::from_query_string("a # lk: %status=");
+        assert_eq!(st.terms, vec!["a"]);
+        assert_eq!(st.unparsed, vec!["#", "lk:", "%status="]);
+        assert!(st.labels.is_empty() && st.links.is_empty() && st.properties.is_empty());
+
+        // An unknown sort key and a malformed operator.
+        let st = SearchTerms::from_query_string("^bogus %k<>x");
+        assert_eq!(st.unparsed, vec!["^bogus", "%k<>x"]);
+        assert!(st.order_by.is_empty() && st.properties.is_empty());
+
+        // Empty quotes.
+        let st = SearchTerms::from_query_string("\"\" b");
+        assert_eq!(st.terms, vec!["b"]);
+        assert_eq!(st.unparsed, vec!["\"\""]);
+    }
+
+    #[test]
+    fn unterminated_quote_runs_to_the_end_and_is_kept() {
+        let st = SearchTerms::from_query_string("a #t \"open quote #x");
+        assert_eq!(st.terms, vec!["a"]);
+        assert_eq!(st.labels, vec!["t"]);
+        assert_eq!(st.unparsed, vec!["\"open quote #x"]);
+        assert_eq!(st.to_query_string(), "a #t \"open quote #x");
+        assert_round_trips("a #t \"open quote #x");
+    }
+
+    #[test]
+    fn clean_queries_have_no_unparsed_tokens() {
+        let st = SearchTerms::from_query_string("a #b <c %d=e ^title -x");
+        assert!(st.unparsed.is_empty());
+    }
+
+    #[test]
+    fn unparsed_does_not_change_what_the_query_matches() {
+        // Everything else is identical with or without the dead tokens.
+        let clean = SearchTerms::from_query_string("a #b");
+        let mut with_junk = SearchTerms::from_query_string("a # #b lk:");
+        with_junk.unparsed.clear();
+        assert_eq!(clean, with_junk);
+    }
+
+    #[test]
+    fn round_trip_keeps_unparsed_tokens() {
+        for q in ["# lk:", "a ^bogus b", "%k<>x #t", "x \"\" y"] {
+            assert_round_trips(q);
+        }
+    }
+
+    #[test]
+    fn oversized_queries_are_still_truncated() {
+        let long = "a ".repeat(super::MAX_QUERY_LEN);
+        let st = SearchTerms::from_query_string(&long);
+        assert!(st.to_query_string().len() <= super::MAX_QUERY_LEN);
+    }
+
+    #[test]
+    fn round_trip_when_a_token_is_only_partly_consumed() {
+        // Found by fuzzing: an empty quote pair after a prefix ends the token
+        // early, and the rest is a token of its own.
+        for q in ["-\"\"q w\"", "-''<", "-''=<=", "#\"\"x", "%\"\"a b"] {
+            assert_round_trips(q);
+        }
+    }
+
+    /// A seeded fuzz over glued-together fragments of the syntax: whatever the
+    /// parser makes of them, writing the result back and parsing again gives
+    /// the same terms. Property filters (`%`) are left out: a key or value
+    /// that itself starts with a quote can't always be written back.
+    #[test]
+    fn round_trip_holds_for_random_fragments() {
+        const PIECES: [&str; 20] = [
+            "a", "b c", "#", "-", "<", ">", "=", "lk:", "name:", "\"", "'", "^", "title", "x*",
+            "@", "/", " ", "or:", "-^", "\"\"",
+        ];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..30_000 {
+            let len = 1 + (next() % 7) as usize;
+            let q: String = (0..len)
+                .map(|_| PIECES[(next() % PIECES.len() as u64) as usize])
+                .collect();
+            assert_round_trips(&q);
+        }
+    }
+
+    #[test]
+    fn property_filters_built_from_fields_match_what_parsing_gives() {
+        let built = PropertyFilter::compare("Due Date", PropertyOp::Ge, " 2025-01-01 ").unwrap();
+        let parsed = PropertyFilter::parse("\"Due Date\">=2025-01-01").unwrap();
+        assert_eq!(built, parsed);
+        let built = PropertyFilter::compare("Status", PropertyOp::Eq, "Do*").unwrap();
+        assert_eq!(built, PropertyFilter::parse("status=do*").unwrap());
+        assert_eq!(
+            PropertyFilter::exists("R\u{e9}sum\u{e9}").unwrap(),
+            PropertyFilter::parse("resume").unwrap()
+        );
+        assert_eq!(PropertyFilter::compare("k", PropertyOp::Eq, "  "), None);
+        assert_eq!(PropertyFilter::compare("", PropertyOp::Eq, "v"), None);
+        assert_eq!(PropertyFilter::exists("  "), None);
     }
 }

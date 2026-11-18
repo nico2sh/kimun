@@ -32,10 +32,9 @@ use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputState, MoveDown, MoveUp, Position,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, Context, Entity, Focusable as _, InteractiveElement, IntoElement,
-    MouseDownEvent, ParentElement as _, Pixels, Role, ScrollEvent, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored, deferred, div,
-    point, px,
+    AnyElement, App, Context, Entity, Focusable as _, InteractiveElement, MouseDownEvent,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div,
 };
 use kimun_core::NoteVault;
 use kimun_notes::logic::autocomplete::{
@@ -46,8 +45,8 @@ use kimun_notes::logic::editor::snapshot::EditorSnapshot;
 use kimun_notes::logic::message::Notifier;
 use kimun_notes::settings::themes::Theme;
 
-use crate::autocomplete::{PopupRow, popup_row, wheel_command};
-use crate::theme;
+use super::popup_layer;
+use crate::autocomplete::{PopupRow, popup_row};
 
 /// What running a popup command did.
 #[derive(Debug, PartialEq, Eq)]
@@ -367,14 +366,6 @@ pub(super) fn popup_keys<V: QueryFieldOwner, E: InteractiveElement>(
     }))
 }
 
-/// Estimated height of `rows` popup rows, for deciding which side of the
-/// field has room. Only the decision uses it: the popup is laid out by its
-/// content.
-fn estimated_height(rows: usize, window: &Window) -> Pixels {
-    let row = window.rem_size() * 1.25 + px(4.);
-    row * rows as f32 + px(6.)
-}
-
 /// Reconcile `owner`'s autocomplete with its field, and build the popup under
 /// the field when it has something to show. Call from the owner's render.
 pub(super) fn show<V: QueryFieldOwner>(
@@ -414,61 +405,26 @@ pub(super) fn show<V: QueryFieldOwner>(
             }),
         )
     });
-    // The field's box is the last frame's: before its first paint it has no
-    // width, so a popup that early takes a usable one.
-    let width = if field.size.width > px(0.) {
-        field.size.width
-    } else {
-        px(240.)
-    };
-    let list = div()
-        .id(POPUP_ID)
-        .test_support()
-        .role(Role::ListBox)
-        .aria_label("Suggestions")
-        .occlude()
-        .flex()
-        .flex_col()
-        .w(width)
-        .py_0p5()
-        .border_1()
-        .border_color(theme::focus_border(t))
-        .bg(theme::panel_background(t))
-        .rounded_md()
-        .overflow_hidden()
-        .on_scroll(
-            cx.listener(move |this: &mut V, event: &ScrollEvent, window, cx| {
-                if let Some(command) =
-                    wheel_command(event.delta.pixel_delta(window.line_height()).y)
-                {
-                    this.popup(command, window, cx);
-                }
-                // Over the popup the wheel never reaches the list under it.
-                cx.stop_propagation();
-            }),
-        )
-        .children(rows);
-    // Under the field; above it when the window has no room below, so the
-    // popup never covers what is being typed.
-    let margin = px(8.);
-    let gap = px(2.);
-    let height = estimated_height(end - start, window);
-    let flip = field.bottom() + gap + height > window.viewport_size().height - margin
-        && field.top() - gap - height >= margin;
-    let (at, corner) = if flip {
-        (point(field.left(), field.top() - gap), Anchor::BottomLeft)
-    } else {
-        (point(field.left(), field.bottom() + gap), Anchor::TopLeft)
-    };
-    Some(
-        deferred(
-            anchored()
-                .anchor(corner)
-                .position(at)
-                .snap_to_window_with_margin(margin)
-                .child(list),
-        )
-        .with_priority(2)
-        .into_any_element(),
+    let list = popup_layer::frame(
+        div()
+            .id(POPUP_ID)
+            .test_support()
+            .role(Role::ListBox)
+            .aria_label("Suggestions"),
+        popup_layer::width_of(field),
+        t,
     )
+    .on_scroll(popup_layer::on_wheel(
+        cx,
+        |this: &mut V, command, window, cx| {
+            this.popup(command, window, cx);
+        },
+    ))
+    .children(rows);
+    Some(popup_layer::floating_under(
+        field,
+        end - start,
+        list,
+        window,
+    ))
 }

@@ -98,6 +98,9 @@ pub(crate) enum ModalKind {
     Search,
     /// The query syntax on its own (FIND's F1 and `Syntax` button).
     QueryHelp,
+    /// The query builder from FIND (over the search browser it is stacked and
+    /// the slot stays `Search`).
+    QueryBuilder,
     /// The saved searches (`OpenSavedSearches`, leader `f s`), with its
     /// delete confirmation stacked on it while one asks.
     SavedSearches,
@@ -268,6 +271,7 @@ impl Workspace {
     pub(crate) fn reset_modal_state(&mut self, cx: &mut Context<Self>) {
         self.modal = None;
         self.query_help = false;
+        self.query_builder = None;
         self.palette = None;
         self.view_chooser = None;
         #[cfg(test)]
@@ -355,7 +359,7 @@ impl Workspace {
             self.dismiss_sort(window, cx);
             return true;
         }
-        if self.sort_stacked() {
+        if self.sort_stacked() || self.query_builder_stacked() {
             return false;
         }
         // The browser's sort: stacked over it, whatever panel opened it
@@ -390,6 +394,11 @@ impl Workspace {
             // The browser's query in the FIND view (`Open in FIND`).
             (ModalKind::Search, Some(ActionShortcuts::OpenQueryInSidebar)) => {
                 self.promote_browser_query(window, cx);
+                true
+            }
+            // The browser's query builder, shown over it.
+            (ModalKind::Search, Some(ActionShortcuts::QueryBuilder)) => {
+                self.open_query_builder(window, cx);
                 true
             }
             // The browser's query syntax (F1 by default, the keymap's

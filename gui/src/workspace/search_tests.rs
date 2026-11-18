@@ -544,7 +544,7 @@ fn preview_rows_wrap_and_keep_their_marks() {
 /// its bounds.
 #[test]
 fn the_browser_body_follows_the_window_height() {
-    assert_eq!(search_body_rems(40.), 28.);
+    assert_eq!(search_body_rems(40.), 26.5);
     assert_eq!(search_body_rems(10.), 6., "a floor in a tiny window");
     assert_eq!(search_body_rems(200.), 44., "a cap on a huge screen");
 }
@@ -623,7 +623,8 @@ fn the_browser_fits_a_small_window_and_grows_in_a_tall_one(cx: &mut TestAppConte
     // Beside the results, most of the window tall (it was 20 rems).
     assert!(pane.size.height > px(600.), "{pane:?}");
     assert!(
-        (pane.top() - picker.top()).abs() < px(64.),
+        // The query row and the summary row sit above both.
+        (pane.top() - picker.top()).abs() < px(96.),
         "beside the results"
     );
 }
