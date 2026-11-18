@@ -92,6 +92,7 @@ Press `F1` to see every shortcut. These are the most useful:
 | `Alt+Shift+R` / `Alt+Shift+D` / `Alt+Shift+W` | Split the pane right / down, close the pane |
 | `Alt+Shift+Left` / `Right` / `Up` / `Down` | Move the pane (or the view that has focus) that way |
 | `F2` | Note menu |
+| `F7` | In FIND or the search box: build the query from a list of conditions |
 
 ### Change a shortcut
 
