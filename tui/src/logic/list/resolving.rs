@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{Emit, ListRow, RowSource};
-use crate::logic::query::{QueryContext, query_is_unresolvable, resolve_query};
+use crate::logic::query::{QueryContext, resolve_for_search};
 
 /// What to do when a template is purely note-dependent but no note is available
 /// to resolve it (the startup state, or a browser launched from the root).
@@ -54,14 +54,13 @@ impl<R: ListRow> ResolvingRowSource<R> {
 impl<R: ListRow> RowSource<R> for ResolvingRowSource<R> {
     async fn load(&self, query: &str, emit: Emit<R>) {
         let ctx = (self.ctx)();
-        if query_is_unresolvable(query, &ctx) {
-            match self.on_unresolvable {
+        match resolve_for_search(query, &ctx) {
+            Some(resolved) => self.inner.load(&resolved, emit).await,
+            None => match self.on_unresolvable {
                 Unresolvable::Empty => emit.replace(Vec::new()),
                 Unresolvable::AsEmptyQuery => self.inner.load("", emit).await,
-            }
-            return;
+            },
         }
-        self.inner.load(&resolve_query(query, &ctx), emit).await;
     }
 
     // The leading-row affordance ("Create: …") and the reload strategy are the

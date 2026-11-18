@@ -8,6 +8,9 @@ use async_trait::async_trait;
 pub struct SuggestionItem {
     pub display: String,
     pub secondary: Option<String>,
+    /// Shown in the popup instead of `display` when set; `display` is still
+    /// what gets inserted. See [`crate::logic::autocomplete::Suggestion::label`].
+    pub label: Option<String>,
 }
 
 impl SuggestionItem {
@@ -15,6 +18,23 @@ impl SuggestionItem {
         Self {
             display: display.into(),
             secondary: None,
+            label: None,
+        }
+    }
+
+    /// Show `label` in the popup while `display` stays the inserted text.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
+impl From<SuggestionItem> for super::state::Suggestion {
+    fn from(item: SuggestionItem) -> Self {
+        Self {
+            display: item.display,
+            secondary: item.secondary,
+            label: item.label,
         }
     }
 }
@@ -53,6 +73,7 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|n| SuggestionItem {
                         display: n.name,
                         secondary: Some(n.path.to_string()),
+                        label: None,
                     })
                     .collect()
             })
@@ -67,6 +88,7 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|t| SuggestionItem {
                         display: t.label,
                         secondary: Some(format!("{}×", t.usage_count)),
+                        label: None,
                     })
                     .collect()
             })
@@ -85,6 +107,7 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|s| SuggestionItem {
                         display: s.name,
                         secondary: Some(s.query),
+                        label: None,
                     })
                     .collect()
             })
@@ -122,6 +145,7 @@ mod suggestion_tests {
             notes: vec![SuggestionItem {
                 display: "projects".into(),
                 secondary: Some("work/projects".into()),
+                label: None,
             }],
             tags: vec![SuggestionItem::plain("todo")],
         };

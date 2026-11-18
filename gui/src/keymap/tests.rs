@@ -217,6 +217,7 @@ fn default_tables() {
             lw("ctrl+shift+tab", A::PrevTab),
             lw("ctrl+n", A::NewNote),
             lw("ctrl+shift+n", A::NewDirectory),
+            lw("f(7)", A::QueryBuilder),
         ]
     );
     assert_eq!(
@@ -270,6 +271,7 @@ fn default_tables() {
             lw("ctrl+shift+tab", A::PrevTab),
             lw("cmd+n", A::NewNote),
             lw("cmd+shift+n", A::NewDirectory),
+            lw("f(7)", A::QueryBuilder),
         ]
     );
 }

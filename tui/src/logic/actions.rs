@@ -132,6 +132,10 @@ pub enum ActionShortcuts {
     /// Open the menu that asks whether to make a note or a directory (Ctrl+N
     /// by default in the TUI; the desktop app has no such menu).
     NewEntry,
+    /// Build the query being typed from conditions (a tag, a folder, a
+    /// property …) in a dialog, where a query is typed: FIND, the desktop
+    /// app's search browser. The TUI binds no chord to it.
+    QueryBuilder,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -194,7 +198,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 61] = [
+    pub const ALL: [ActionShortcuts; 62] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -256,6 +260,7 @@ impl ActionShortcuts {
         ActionShortcuts::NewNote,
         ActionShortcuts::NewDirectory,
         ActionShortcuts::NewEntry,
+        ActionShortcuts::QueryBuilder,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -298,6 +303,7 @@ impl ActionShortcuts {
             | A::SaveCurrentQuery
             | A::OpenAsk
             | A::QuerySyntax
+            | A::QueryBuilder
             | A::OpenQueryInSidebar => ActionGroup::SearchAndAsk,
             A::Quit
             | A::OpenPreferences
@@ -375,6 +381,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::NewNote => "NewNote".to_string(),
             ActionShortcuts::NewDirectory => "NewDirectory".to_string(),
             ActionShortcuts::NewEntry => "NewEntry".to_string(),
+            ActionShortcuts::QueryBuilder => "QueryBuilder".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -441,6 +448,7 @@ impl TryFrom<String> for ActionShortcuts {
             "NewNote" => ActionShortcuts::NewNote,
             "NewDirectory" => ActionShortcuts::NewDirectory,
             "NewEntry" => ActionShortcuts::NewEntry,
+            "QueryBuilder" => ActionShortcuts::QueryBuilder,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -514,9 +522,10 @@ mod tests {
             ActionShortcuts::NewNote => 40,
             ActionShortcuts::NewDirectory => 41,
             ActionShortcuts::NewEntry => 42,
+            ActionShortcuts::QueryBuilder => 43,
         }
     }
-    const VARIANTS: usize = 43;
+    const VARIANTS: usize = 44;
 
     #[test]
     fn all_lists_every_variant() {
@@ -663,6 +672,7 @@ mod tests {
                 ActionShortcuts::NewNote,
                 ActionShortcuts::NewDirectory,
                 ActionShortcuts::NewEntry,
+                ActionShortcuts::QueryBuilder,
             ]
         );
         assert_eq!(

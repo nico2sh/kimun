@@ -72,6 +72,13 @@ pub fn query_is_unresolvable(template: &str, ctx: &QueryContext) -> bool {
             .all(|token| token.contains(VAR_NOTE))
 }
 
+/// The query to hand to the index for `template`, or `None` when it needs the
+/// open note and none is open ([`query_is_unresolvable`]). The one place both
+/// the row sources and the counts decide whether and how to run a template.
+pub fn resolve_for_search(template: &str, ctx: &QueryContext) -> Option<String> {
+    (!query_is_unresolvable(template, ctx)).then(|| resolve_query(template, ctx))
+}
+
 /// Resolve all query variables in `template` against the open note,
 /// producing a plain query string for `vault.search_notes`. Bare note
 /// operators are first expanded to their `{note}` form, then `{note}`
@@ -197,5 +204,20 @@ mod tests {
         assert!(query_has_variables("#todo <"));
         assert!(!query_has_variables("<projects"));
         assert!(!query_has_variables("\"a < b\""));
+    }
+
+    #[test]
+    fn resolve_for_search_runs_resolved_or_not_at_all() {
+        let p = VaultPath::note_path_from("work/spec.md");
+        assert_eq!(
+            resolve_for_search("#todo <{note}", &with(&p)).as_deref(),
+            Some("#todo <spec")
+        );
+        // Purely note-dependent with no note: nothing to run.
+        assert_eq!(resolve_for_search("<{note}", &none()), None);
+        assert_eq!(resolve_for_search("<", &none()), None);
+        // A concrete term keeps it runnable, as `query_is_unresolvable` says.
+        assert!(resolve_for_search("widget <", &none()).is_some());
+        assert_eq!(resolve_for_search("#a", &none()).as_deref(), Some("#a"));
     }
 }
