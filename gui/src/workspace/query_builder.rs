@@ -28,14 +28,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
+use gpui_kit::component::{IndexPath, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, Focusable as _,
@@ -49,7 +49,7 @@ use kimun_notes::logic::autocomplete::{OPEN_NOTE_LABEL, offers_open_note};
 use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::logic::query::{
     BuilderModel, BuilderRow, PROPERTY_OPS, QueryContext, QueryCount, RowKind, VAR_NOTE,
-    count_query, property_op_label,
+    count_query, property_op_label, property_op_name,
 };
 use kimun_notes::logic::sort::{SortField, SortOrder};
 
@@ -74,15 +74,16 @@ pub(crate) const BUILDER_LEAD_ID: &str = "query-builder-lead";
 /// The keys that work in the dialog but show nowhere else.
 pub(crate) const BUILDER_KEYS_ID: &str = "query-builder-keys";
 
-/// The dialog's two hidden keys, with the platform's name for the apply chord.
-fn keys_text() -> SharedString {
-    let apply = if cfg!(target_os = "macos") {
-        "\u{2318}Enter"
-    } else {
-        "Ctrl+Enter"
-    };
-    format!("Enter adds a condition when the row is done. {apply} applies.").into()
-}
+/// The dialog's two hidden keys, with the platform's name for the apply chord
+/// (Ctrl also applies on macOS, but the platform's own key is the one named).
+const KEYS_TEXT: &str = if cfg!(target_os = "macos") {
+    "Enter adds a condition when the row is done. \u{2318}Enter applies."
+} else {
+    "Enter adds a condition when the row is done. Ctrl+Enter applies."
+};
+
+/// The width of the "Must" / "Not" column, in rems.
+const NOT_REMS: f32 = 4.;
 
 /// Why a started row is not in the query.
 const LEFT_OUT_TIP: &str = "Unfinished, or a value with both ' and \" (that has no spelling)";
@@ -570,6 +571,14 @@ impl QueryBuilderDialog {
         }
     }
 
+    /// The "Must" / "Not" button: flip the row.
+    fn toggle_exclude(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(ix) = self.index_of(id) {
+            let exclude = !self.model.rows[ix].exclude;
+            self.set_exclude(id, exclude, cx);
+        }
+    }
+
     // ---- The sort ---------------------------------------------------------------------
 
     fn pick_sort_field(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -873,7 +882,15 @@ impl QueryBuilderDialog {
 
     // ---- Rendering ---------------------------------------------------------------------
 
-    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> Div {
+    /// One condition. `editing` is the row whose field has the keyboard: it is
+    /// not marked "left out" while it is being typed.
+    fn render_row(
+        &self,
+        ix: usize,
+        editing: Option<u64>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let view = &self.rows[ix];
         let row = &self.model.rows[ix];
         let id = view.id;
@@ -882,20 +899,41 @@ impl QueryBuilderDialog {
                 .id(("query-builder-kind", id as usize))
                 .accessibility_label("Condition type"),
         );
-        let not = Checkbox::new(("query-builder-not", id as usize))
-            .label("Not")
-            .checked(row.exclude && row.kind.can_exclude())
-            .disabled(!row.kind.can_exclude())
-            .on_click(
-                cx.listener(move |this, checked: &bool, _, cx| this.set_exclude(id, *checked, cx)),
-            );
+        // "Must" or "Not", in front of the type: the row reads as a sentence
+        // ("Not | Tag | draft"). A raw row is as written, so it keeps the
+        // column empty and the rows line up.
+        let excluded = row.exclude && row.kind.can_exclude();
+        let not = div()
+            .w(rems(NOT_REMS))
+            .flex_none()
+            .when(row.kind.can_exclude(), |slot| {
+                let button = Button::new(("query-builder-not", id as usize))
+                    .small()
+                    .w_full()
+                    .label(if excluded { "Not" } else { "Must" })
+                    .accessibility_label(if excluded {
+                        "Must not match"
+                    } else {
+                        "Must match"
+                    })
+                    .tooltip("Switch between must match and must not match")
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_exclude(id, cx)),
+                    );
+                slot.child(if excluded {
+                    button.outline()
+                } else {
+                    button.ghost()
+                })
+            });
         let remove = Button::new(("query-builder-remove", id as usize))
             .ghost()
             .small()
-            .label("✕")
+            .icon(IconName::Close)
             .accessibility_label("Remove condition")
             .tooltip("Remove this condition")
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.remove_row(id, cx)));
+        let op = row.op;
         let fields = if row.kind == RowKind::Property {
             div()
                 .flex_1()
@@ -911,11 +949,19 @@ impl QueryBuilderDialog {
                     ),
                 )
                 .child(
-                    div().w(rems(5.)).flex_none().child(
-                        Select::new(&view.op)
-                            .id(("query-builder-op", id as usize))
-                            .accessibility_label("Comparison"),
-                    ),
+                    div()
+                        .id(("query-builder-op-slot", id as usize))
+                        .w(rems(5.))
+                        .flex_none()
+                        // The symbol, in words.
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(property_op_name(op)).build(window, cx)
+                        })
+                        .child(
+                            Select::new(&view.op)
+                                .id(("query-builder-op", id as usize))
+                                .accessibility_label("Comparison"),
+                        ),
                 )
                 .when(row.op.is_some(), |fields| {
                     fields.child(
@@ -935,7 +981,7 @@ impl QueryBuilderDialog {
         };
         // A row the user started and the query leaves out says so itself, so
         // nobody has to guess which one the count below means.
-        let left_out = (!row.is_complete() && !row.is_blank()).then(|| {
+        let left_out = (row.is_left_out() && editing != Some(id)).then(|| {
             div()
                 .id(("query-builder-left-out", id as usize))
                 .test_support()
@@ -943,7 +989,7 @@ impl QueryBuilderDialog {
                 .flex_none()
                 .whitespace_nowrap()
                 .text_xs()
-                .text_color(theme::muted(&theme::current(cx)))
+                .text_color(theme::muted(t))
                 .tooltip(|window, cx| Tooltip::new(LEFT_OUT_TIP).build(window, cx))
                 .child("left out")
         });
@@ -963,8 +1009,15 @@ impl Render for QueryBuilderDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
+        let editing = self
+            .active_focused(window, cx)
+            .then(|| match self.active {
+                Some(Active::Value(id) | Active::Key(id)) => Some(id),
+                _ => None,
+            })
+            .flatten();
         let rows: Vec<Div> = (0..self.rows.len())
-            .map(|ix| self.render_row(ix, cx))
+            .map(|ix| self.render_row(ix, editing, t, cx))
             .collect();
         let property_sort = matches!(self.model.sort, Some((SortField::Property(_), _)));
         let sort_row = div()
@@ -1023,6 +1076,12 @@ impl Render for QueryBuilderDialog {
         // no warning.
         let incomplete = self.model.unfinished();
         let count_text = self.count_text();
+        // The status says what the rows mark: for assistive tech, which has no
+        // row marks to look at.
+        let status_label = SharedString::from(match incomplete {
+            0 => count_text.to_string(),
+            n => format!("{count_text}, {n} left out: {LEFT_OUT_TIP}"),
+        });
         let confirm = cx.entity().downgrade();
         let cancel = cx.entity().downgrade();
         div()
@@ -1165,23 +1224,13 @@ impl Render for QueryBuilderDialog {
                                     .id(BUILDER_COUNT_ID)
                                     .test_support()
                                     .role(Role::Status)
-                                    .aria_label(SharedString::from(count_text.clone()))
+                                    .aria_label(status_label)
                                     .flex_1()
                                     .min_w_0()
                                     .text_sm()
                                     .text_color(theme::foreground(t))
                                     .child(count_text),
-                            )
-                            .when(incomplete > 0, |line| {
-                                line.child(
-                                    div()
-                                        .flex_none()
-                                        .whitespace_nowrap()
-                                        .text_xs()
-                                        .text_color(theme::muted(t))
-                                        .child(format!("· {incomplete} left out")),
-                                )
-                            }),
+                            ),
                     ),
             )
             .child(
@@ -1190,7 +1239,7 @@ impl Render for QueryBuilderDialog {
                     .test_support()
                     .text_xs()
                     .text_color(theme::muted(t))
-                    .child(keys_text()),
+                    .child(KEYS_TEXT),
             )
             .child(footer(
                 "Apply",

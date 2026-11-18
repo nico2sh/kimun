@@ -16,7 +16,9 @@ mod syntax;
 mod vars;
 
 pub use self::breadcrumb::SavedSearchBreadcrumb;
-pub use self::builder::{BuilderModel, BuilderRow, PROPERTY_OPS, RowKind, property_op_label};
+pub use self::builder::{
+    BuilderModel, BuilderRow, PROPERTY_OPS, RowKind, property_op_label, property_op_name,
+};
 pub use self::emphasis::{emphasis_needles, error_reason};
 pub use self::find::{
     BacklinkEntry, BacklinkSource, DEFAULT_QUERY, DEFAULT_QUERY_LONG, QueryCount, QueryHit,
