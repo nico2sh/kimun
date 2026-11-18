@@ -39,8 +39,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, rems,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    WeakEntity, Window, div, rems,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -68,8 +68,14 @@ pub(crate) const BUILDER_ID: &str = "query-builder";
 /// The warning that the query was cut at the parser's limit.
 pub(crate) const BUILDER_CUT_ID: &str = "query-builder-cut";
 
-const CUT_TEXT: &str =
-    "This query is longer than 8 KB. Its end is not shown here, and Apply will drop it.";
+/// The warning's text, with the parser's limit in KB.
+fn cut_text() -> SharedString {
+    format!(
+        "This query is longer than {} KB. Its end is not shown here, and Apply will drop it.",
+        kimun_core::MAX_QUERY_LEN / 1024
+    )
+    .into()
+}
 
 /// The conditions' list: it scrolls past [`ROWS_MAX_REMS`].
 pub(crate) const BUILDER_ROWS_ID: &str = "query-builder-rows";
@@ -173,6 +179,9 @@ pub(crate) struct QueryBuilderDialog {
     /// `None` while the count is being taken (or nothing was asked yet).
     count: Option<QueryCount>,
     counting: Option<Task<()>>,
+    /// The conditions' scroll: a row that takes the keyboard is brought into
+    /// view.
+    rows_scroll: ScrollHandle,
     /// The query was longer than the parser reads, so its tail is not in the
     /// rows: Apply would drop it, and the dialog says so.
     cut: bool,
@@ -286,6 +295,7 @@ impl QueryBuilderDialog {
             note,
             count: None,
             counting: None,
+            rows_scroll: ScrollHandle::new(),
             cut: query.len() > kimun_core::MAX_QUERY_LEN,
             target,
             workspace,
@@ -450,6 +460,7 @@ impl QueryBuilderDialog {
             }
             InputEvent::Focus => {
                 self.active = Some(field);
+                self.rows_scroll.scroll_to_item(ix);
                 self.refresh_suggestions(true, cx);
             }
             _ => {}
@@ -460,6 +471,9 @@ impl QueryBuilderDialog {
     /// The "Add condition" button, or Enter after a complete row.
     pub(crate) fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.push_row(BuilderRow::new(RowKind::Text), window, cx);
+        // The new row has the keyboard: bring it into view.
+        self.rows_scroll
+            .scroll_to_item(self.rows.len().saturating_sub(1));
         if let Some(row) = self.rows.last() {
             let value = row.value.clone();
             value.update(cx, |input, cx| input.focus(window, cx));
@@ -622,7 +636,7 @@ impl QueryBuilderDialog {
             self.suggestions
                 .refresh_with_leading(&known, &typed, leading);
         } else {
-            self.suggestions.refresh_browsing(&known, &typed, leading);
+            self.suggestions.refresh_browsing(&known, &typed);
         }
         if ask && self.active_takes_notes() && !typed.trim().is_empty() {
             self.ask_notes(typed, cx);
@@ -798,6 +812,13 @@ impl QueryBuilderDialog {
     /// the only time Up, Down and Escape are theirs.
     fn suggestions_have_keys(&self, window: &Window, cx: &App) -> bool {
         !self.suggestions.is_empty() && self.active_focused(window, cx)
+    }
+
+    /// Whether Escape is the suggestions' (to close the list or let go of a
+    /// highlight): not for a blank field's offered list, where it closes the
+    /// dialog as it always did.
+    fn suggestions_have_escape(&self, window: &Window, cx: &App) -> bool {
+        self.suggestions_have_keys(window, cx) && !self.suggestions.is_browsing()
     }
 
     /// Whether the active field is a row's value and the row says enough.
@@ -1001,7 +1022,7 @@ impl Render for QueryBuilderDialog {
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                 // A highlight lets go first, then the suggestions, then the
                 // dialog closes.
-                if this.suggestions_have_keys(window, cx) {
+                if this.suggestions_have_escape(window, cx) {
                     if !this.suggestions.release() {
                         this.suggestions = KeySuggestions::default();
                     }
@@ -1020,6 +1041,7 @@ impl Render for QueryBuilderDialog {
                     .gap_2()
                     .max_h(rems(ROWS_MAX_REMS))
                     .overflow_y_scroll()
+                    .track_scroll(&self.rows_scroll)
                     .children(rows),
             )
             .children(suggestions)
@@ -1076,10 +1098,10 @@ impl Render for QueryBuilderDialog {
                                 .id(BUILDER_CUT_ID)
                                 .test_support()
                                 .role(Role::Alert)
-                                .aria_label(CUT_TEXT)
+                                .aria_label(cut_text())
                                 .text_xs()
                                 .text_color(theme::error(t))
-                                .child(CUT_TEXT),
+                                .child(cut_text()),
                         )
                     })
                     .child(

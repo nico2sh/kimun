@@ -22,7 +22,7 @@ use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
 use super::query_builder::{
     BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_ROWS_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE,
-    QueryBuilderDialog,
+    QueryBuilderDialog, builder_value_id,
 };
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -375,6 +375,27 @@ fn a_blank_tag_row_lists_the_vaults_tags(cx: &mut TestAppContext) {
     assert_eq!(listed, ["go".to_string(), "rust".to_string()]);
 }
 
+/// A blank field's offered tags do not take Escape: it closes the dialog,
+/// as it did before the list was offered.
+#[gpui_kit::test]
+fn escape_closes_the_builder_over_a_blank_fields_offered_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, window, cx| d.pick_kind(id, "Tag", window, cx));
+    type_in(&s, "r", cx);
+    press(&s, "backspace", cx);
+    let d = dialog(&s, cx);
+    drive(&rt, cx, |cx| {
+        !cx.read(|cx| d.read(cx).suggested()).is_empty()
+    });
+    press(&s, "escape", cx);
+    s.settle_dialog(cx);
+    assert!(!builder_open(&s, cx), "one Escape closes the dialog");
+}
+
 /// A links row offers "current open note" first: it writes `{note}`, which
 /// the query resolves against the open note, so the count is the backlinks of
 /// alpha.
@@ -464,6 +485,7 @@ fn many_conditions_scroll_and_apply_stays_in_the_window(cx: &mut TestAppContext)
     let (rows, apply, window_size, rem) = cx
         .update_window(s.handle, |_, window, cx| {
             window.render_frame(cx);
+            window.render_frame(cx);
             (
                 window.find(BUILDER_ROWS_ID).bounds(),
                 window.find(CONFIRM_ID).bounds(),
@@ -480,6 +502,17 @@ fn many_conditions_scroll_and_apply_stays_in_the_window(cx: &mut TestAppContext)
     assert!(
         apply.bottom() <= window_size.height,
         "Apply is inside the window"
+    );
+    // The row just added has the keyboard, so the list scrolled to it.
+    let last = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(builder_value_id(14)).bounds()
+        })
+        .unwrap();
+    assert!(
+        last.top() >= rows.top() && last.bottom() <= rows.bottom(),
+        "the new row {last:?} is in view of {rows:?}"
     );
 }
 
