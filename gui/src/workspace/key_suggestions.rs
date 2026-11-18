@@ -31,6 +31,9 @@ pub(crate) struct KeySuggestions {
     highlighted: Option<usize>,
     /// `shown` lists a blank field's choices (see [`Self::refresh_browsing`]).
     browsing: bool,
+    /// How many more keys match than `shown` has room for: the list says so,
+    /// or it would pass for all of them.
+    more: usize,
 }
 
 impl KeySuggestions {
@@ -41,6 +44,7 @@ impl KeySuggestions {
         let typed = typed.trim().to_lowercase();
         self.highlighted = None;
         self.browsing = false;
+        self.more = 0;
         self.shown.clear();
         if typed.is_empty() {
             return;
@@ -53,6 +57,7 @@ impl KeySuggestions {
             })
             .collect();
         hits.sort();
+        self.more = hits.len().saturating_sub(SHOWN);
         self.shown = hits
             .into_iter()
             .take(SHOWN)
@@ -68,6 +73,7 @@ impl KeySuggestions {
         self.refresh(known, typed);
         if typed.trim().is_empty() {
             self.shown = known.iter().take(SHOWN).cloned().collect();
+            self.more = known.len().saturating_sub(SHOWN);
             self.browsing = !self.shown.is_empty();
         }
     }
@@ -89,6 +95,7 @@ impl KeySuggestions {
         self.refresh(known, typed);
         if let Some(leading) = leading {
             self.shown.insert(0, leading.to_string());
+            self.more += self.shown.len().saturating_sub(SHOWN);
             self.shown.truncate(SHOWN);
         }
     }
@@ -169,6 +176,7 @@ impl KeySuggestions {
                 .flex()
                 .flex_col()
                 .children(rows)
+                .children(self.more_line(t))
                 .into_any_element(),
         )
     }
@@ -221,13 +229,31 @@ impl KeySuggestions {
                 _ => {}
             },
         ))
-        .children(rows);
+        .children(rows)
+        .children(self.more_line(t));
         Some(popup_layer::floating_under(
             field,
-            self.shown.len(),
+            self.lines(),
             list,
             window,
         ))
+    }
+
+    /// The line after the options when more keys match than are shown.
+    fn more_line(&self, t: &Theme) -> Option<Div> {
+        (self.more > 0).then(|| {
+            div()
+                .px_2()
+                .py_0p5()
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child(format!("{} more, keep typing", self.more))
+        })
+    }
+
+    /// How many lines the list draws: its options, and the "more" line.
+    fn lines(&self) -> usize {
+        self.shown.len() + usize::from(self.more > 0)
     }
 
     /// One option per suggestion, `attach` adding what a press does.
@@ -305,5 +331,22 @@ mod tests {
         s.step(true);
         assert!(s.release());
         assert!(!s.release());
+    }
+
+    #[test]
+    fn the_list_counts_what_it_has_no_room_for() {
+        let known: Vec<String> = (0..12).map(|n| format!("tag{n:02}")).collect();
+        let mut s = KeySuggestions::default();
+        s.refresh(&known, "tag");
+        assert_eq!((s.shown().len(), s.more), (SHOWN, 12 - SHOWN));
+        s.refresh(&known, "tag01");
+        assert_eq!(s.more, 0, "one match, nothing more");
+        s.refresh_browsing(&known, "");
+        assert_eq!((s.shown().len(), s.more), (SHOWN, 12 - SHOWN));
+        // The open note, offered first, pushes one more out.
+        s.refresh_with_leading(&known, "tag", Some("{note}"));
+        assert_eq!((s.shown().len(), s.more), (SHOWN, 12 - SHOWN + 1));
+        s.refresh(&known[..3], "tag");
+        assert_eq!(s.more, 0);
     }
 }
