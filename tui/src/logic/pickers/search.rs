@@ -7,7 +7,6 @@ use kimun_core::{NoteVault, strip_order_directive};
 
 use crate::logic::files::{FileListEntry, entry_order, format_journal_date};
 use crate::logic::list::{Emit, ResolvingRowSource, RowSource, Unresolvable};
-use crate::logic::pickers::create_row;
 use crate::logic::query::QueryContext;
 use crate::logic::sort::{
     SortField, SortOrder, directive_of_query, is_blank_property, property_key,
@@ -25,26 +24,7 @@ pub fn resolving_search_source(
     last_paths: Vec<VaultPath>,
     current_note: Option<VaultPath>,
 ) -> ResolvingRowSource<FileListEntry> {
-    build(
-        SearchNotesProvider::new(vault, last_paths, None),
-        current_note,
-    )
-}
-
-/// [`resolving_search_source`] with the finder's `Create: <query>` leading
-/// row ([`create_row`], resolved against `create_dir`) for every non-blank
-/// query — the desktop search browser's (the TUI's has none). The row is
-/// built from the query as typed, before any variable is resolved.
-pub fn resolving_search_source_with_create(
-    vault: Arc<NoteVault>,
-    last_paths: Vec<VaultPath>,
-    current_note: Option<VaultPath>,
-    create_dir: VaultPath,
-) -> ResolvingRowSource<FileListEntry> {
-    build(
-        SearchNotesProvider::new(vault, last_paths, Some(create_dir)),
-        current_note,
-    )
+    build(SearchNotesProvider::new(vault, last_paths), current_note)
 }
 
 fn build(
@@ -64,21 +44,11 @@ fn build(
 struct SearchNotesProvider {
     vault: Arc<NoteVault>,
     last_paths: Vec<VaultPath>,
-    /// Where a `Create:` row's note goes; `None`: no such row.
-    create_dir: Option<VaultPath>,
 }
 
 impl SearchNotesProvider {
-    fn new(
-        vault: Arc<NoteVault>,
-        last_paths: Vec<VaultPath>,
-        create_dir: Option<VaultPath>,
-    ) -> Self {
-        Self {
-            vault,
-            last_paths,
-            create_dir,
-        }
+    fn new(vault: Arc<NoteVault>, last_paths: Vec<VaultPath>) -> Self {
+        Self { vault, last_paths }
     }
 
     fn to_entry(&self, entry: NoteEntryData, content: NoteContentData) -> FileListEntry {
@@ -145,10 +115,6 @@ impl RowSource<FileListEntry> for SearchNotesProvider {
             self.sort_recents(query, &mut entries).await;
         }
         emit.replace(entries);
-    }
-
-    fn leading_row(&self, query: &str) -> Option<FileListEntry> {
-        create_row(self.create_dir.as_ref()?, query)
     }
 }
 
@@ -339,60 +305,36 @@ mod tests {
         );
     }
 
-    /// The desktop browser's source leads every non-blank query with the
-    /// finder's `Create:` row (in `create_dir`), never the blank one; the
-    /// plain source has none.
+    /// The search source never leads with a `Create:` row: a query is not a
+    /// note name.
     #[tokio::test]
-    async fn the_create_variant_leads_a_typed_query_with_create() {
-        let vault = temp_vault("search_provider_create").await;
+    async fn a_typed_query_has_no_leading_create_row() {
+        let vault = temp_vault("search_provider_no_create").await;
         vault.validate_and_init().await.unwrap();
         vault
             .create_note(&VaultPath::note_path_from("gadget"), "widget stuff")
             .await
             .unwrap();
-        let rows_for = |source: ResolvingRowSource<FileListEntry>, query: &str| {
+        for query in ["widget", "zebra", "#todo \"meeting notes\"", ""] {
             let (tx, _rx) = unbounded_channel();
-            ListCore::new(
-                Arc::new(source),
+            let mut list = ListCore::new(
+                Arc::new(resolving_search_source(vault.clone(), vec![], None)),
                 redraw_callback(tx),
                 ListSetup {
                     query: query.into(),
                     ..Default::default()
                 },
-            )
-        };
-        let dir = VaultPath::new("work");
-        let mut list = rows_for(
-            resolving_search_source_with_create(vault.clone(), vec![], None, dir.clone()),
-            "widget",
-        );
-        list.poll_until_idle().await;
-        let rows = list.visible_rows();
-        match rows.first() {
-            Some(FileListEntry::CreateNote { path, .. }) => {
-                assert_eq!(
-                    path,
-                    &dir.append(&VaultPath::note_path_from("widget")).flatten()
-                )
-            }
-            other => panic!("expected the Create row first, got {other:?}"),
+            );
+            list.poll_until_idle().await;
+            assert!(list.leading().is_none(), "query {query:?}");
+            assert!(
+                !list
+                    .visible_rows()
+                    .iter()
+                    .any(|r| matches!(r, FileListEntry::CreateNote { .. })),
+                "query {query:?}"
+            );
         }
-        assert!(has_note_named(&rows, "gadget"));
-        assert_eq!(list.match_count(), 1);
-
-        let mut blank = rows_for(
-            resolving_search_source_with_create(vault.clone(), vec![], None, dir),
-            "",
-        );
-        blank.poll_until_idle().await;
-        assert!(blank.leading().is_none());
-
-        let mut plain = rows_for(
-            resolving_search_source(vault.clone(), vec![], None),
-            "widget",
-        );
-        plain.poll_until_idle().await;
-        assert!(plain.leading().is_none());
     }
 
     // ── Sort-only query: the recent notes, reordered ─────────────────────

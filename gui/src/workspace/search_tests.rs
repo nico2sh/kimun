@@ -331,14 +331,14 @@ fn typing_runs_the_query_search(cx: &mut TestAppContext) {
     }
 }
 
-/// A typed query leads with `Create:` (in the open note's folder) but the
-/// selection starts on the best result; Up then Enter asks for the new note
-/// dialog with that name, whose Enter makes the note and opens it.
+/// A query is not a note name: the search browser never offers `Create:`,
+/// for a match, for no match, or for query syntax. Up from the first match
+/// stays on it.
 #[gpui_kit::test]
-fn a_typed_query_offers_create_below_the_selection(cx: &mut TestAppContext) {
+fn a_typed_query_never_offers_create(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
-    let (v, started) = started_on(
+    let (_v, started) = started_on(
         cx,
         &rt,
         &[("w/a.md", "alpha"), ("b.md", "beta")],
@@ -346,38 +346,35 @@ fn a_typed_query_offers_create_below_the_selection(cx: &mut TestAppContext) {
         "w/a.md",
     );
     press(&started, "ctrl-k", cx);
+    for query in ["beta", "zebra", "#todo \"meeting notes\""] {
+        search(&started, &rt, query, cx);
+        let rows = rows(&started, &rt, cx);
+        assert!(
+            rows.iter().all(|r| !r.starts_with("Create:")),
+            "{query}: {rows:?}"
+        );
+        assert!(
+            !matches!(
+                selected(&started, cx),
+                Some(FileListEntry::CreateNote { .. })
+            ),
+            "{query}"
+        );
+    }
+
     search(&started, &rt, "beta", cx);
-    let rows = rows(&started, &rt, cx);
-    let create = rows[0].strip_prefix("Create: ").expect("Create: leads");
-    assert!(path(create).is_like(&path("w/beta.md")), "{rows:?}");
-    assert!(selected_path(&started, cx).is_some_and(|p| p.is_like(&path("b.md"))));
-
+    let first = selected_path(&started, cx);
+    assert!(first.as_ref().is_some_and(|p| p.is_like(&path("b.md"))));
     press(&started, "up", cx);
-    assert!(matches!(
-        selected(&started, cx),
-        Some(FileListEntry::CreateNote { .. })
-    ));
-    press(&started, "enter", cx);
-    started.settle_dialog(cx);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::NewNote));
     assert_eq!(
-        disk(&rt, &v, "w/beta.md"),
-        None,
-        "not made until it confirms"
+        selected_path(&started, cx),
+        first,
+        "nothing above the first"
     );
-    press(&started, "enter", cx);
-    drive(&rt, cx, |cx| on(&started, "w/beta.md", cx));
-    assert_eq!(disk(&rt, &v, "w/beta.md").as_deref(), Some(""));
-    started.settle_dialog(cx);
-    assert_eq!(started.shown_modal(cx), None);
 
-    // Nothing matches: `Create:` is all there is, and selected.
-    press(&started, "ctrl-k", cx);
     search(&started, &rt, "zebra", cx);
-    assert!(matches!(
-        selected(&started, cx),
-        Some(FileListEntry::CreateNote { .. })
-    ));
+    assert!(rows(&started, &rt, cx).is_empty());
+    assert!(selected(&started, cx).is_none());
 }
 
 /// An unterminated quote says so under the results.
@@ -452,16 +449,14 @@ fn the_preview_follows_the_selection_debounced(cx: &mut TestAppContext) {
         "one read, the last"
     );
 
-    // `Create:` shows nothing.
+    // Up from the first row stays on a note: there is no `Create:` above.
     for _ in 0..8 {
         press(&started, "up", cx);
     }
     assert!(matches!(
         selected(&started, cx),
-        Some(FileListEntry::CreateNote { .. })
+        Some(FileListEntry::Note { .. })
     ));
-    settle_preview(&started, &rt, cx);
-    assert_eq!(cx.read(|cx| view.read(cx).shown()), None);
 }
 
 /// The preview's lines are laid out off the UI thread: cut on a character
