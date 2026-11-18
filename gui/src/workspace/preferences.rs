@@ -147,6 +147,8 @@ pub(crate) const UPDATE_CHECK_ID: &str = "preferences-update-check";
 /// The checkbox's visible label, which is also its accessible name.
 pub(crate) const UPDATE_CHECK_LABEL: &str = "Check for updates on startup";
 pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
+/// The running app's version, shown under the update check.
+pub(crate) const VERSION_ID: &str = "preferences-version";
 pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
 pub(crate) const UPDATE_CHECK_HELP: &str =
     "Checks GitHub for a newer release on startup. Check now looks right away.";
@@ -1840,8 +1842,21 @@ impl PreferencesView {
                         cx.emit(PreferencesEvent::CheckForUpdates)
                     })),
             );
-        unheaded_field(controls, [help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t)])
-            .into_any_element()
+        let version = format!("Kimün version {}", kimun_notes::update::CURRENT_VERSION);
+        unheaded_field(
+            controls,
+            [
+                help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t).into_any_element(),
+                div()
+                    .id(VERSION_ID)
+                    .test_support()
+                    .role(Role::Label)
+                    .aria_label(version.clone())
+                    .child(note(version, t))
+                    .into_any_element(),
+            ],
+        )
+        .into_any_element()
     }
 
     fn sort_group(
