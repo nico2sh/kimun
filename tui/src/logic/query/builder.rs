@@ -146,7 +146,10 @@ impl BuilderRow {
             RowKind::Property => self.property_filter().is_some() && can_be_written(&self.value),
             // As written by the user: the query's own tokens.
             RowKind::Raw => !self.value.trim().is_empty(),
-            RowKind::Tag => !tag_name(&self.value).is_empty(),
+            RowKind::Tag => {
+                let name = tag_name(&self.value);
+                !name.is_empty() && can_be_written(&name)
+            }
             RowKind::Text => text_terms(&self.value)
                 .is_some_and(|words| !words.is_empty() && words.iter().all(|w| can_be_written(w))),
             _ => !self.value.trim().is_empty() && can_be_written(&self.value),
@@ -203,7 +206,11 @@ fn text_row_value(term: &str) -> String {
 /// A Tag row's value as the tag it names: the writer adds the `#`, so one
 /// typed (`#draft`) is dropped, and the parser reads a tag in lowercase.
 fn tag_name(value: &str) -> String {
-    value.trim().trim_start_matches('#').trim().to_lowercase()
+    value
+        .trim()
+        .trim_start_matches(|c: char| c == '#' || c.is_whitespace())
+        .trim_end()
+        .to_lowercase()
 }
 
 /// Whether the query syntax can write `value`: a quoted value ends at the
@@ -610,6 +617,18 @@ mod tests {
         for op in PROPERTY_OPS {
             assert!(property_op_name(op).len() > property_op_label(op).len());
         }
+    }
+
+    #[test]
+    fn a_tag_with_both_quote_kinds_is_left_out_and_hashes_after_spaces_go() {
+        let mut m = BuilderModel::from_query("");
+        m.rows.push(BuilderRow::with_value(RowKind::Tag, "a\"b'c"));
+        assert!(m.rows[0].is_left_out());
+        assert_eq!(m.to_query(), "");
+        m.rows[0].value = "# #x".into();
+        assert_eq!(m.to_query(), "#x", "no second # survives a space");
+        m.rows[0].value = "# #".into();
+        assert!(m.rows[0].is_left_out(), "only hashes name no tag");
     }
 
     #[test]

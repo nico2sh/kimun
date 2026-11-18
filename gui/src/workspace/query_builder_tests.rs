@@ -21,9 +21,9 @@ use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE};
 use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
 use super::query_builder::{
-    BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_KEYS_ID, BUILDER_LEAD_ID, BUILDER_ROWS_ID,
-    BUILDER_SORT_FIELD_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog,
-    builder_value_id,
+    BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_KEYS_ID, BUILDER_LEAD_ID, BUILDER_LEFT_OUT_ID,
+    BUILDER_ROWS_ID, BUILDER_SORT_FIELD_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE,
+    QueryBuilderDialog, builder_value_id,
 };
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -630,6 +630,18 @@ fn a_started_row_that_is_left_out_is_marked(cx: &mut TestAppContext) {
     let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
     assert!(!mark(&s, id, cx), "an untouched row has no mark");
     type_in(&s, "\"unclosed", cx);
+    let total = |s: &Started, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(BUILDER_LEFT_OUT_ID).is_some()
+        })
+        .unwrap()
+    };
+    assert!(
+        total(&s, cx),
+        "the footer keeps the total, even for the row being typed in"
+    );
+    assert_eq!(super::query_builder::left_out_total(1), "· 1 left out");
     assert!(
         !mark(&s, id, cx),
         "no mark while the row is being typed in: it is not finished yet"
@@ -721,10 +733,12 @@ fn apply_says_when_it_clears_and_waits_when_there_is_nothing(cx: &mut TestAppCon
     };
     builder_on(&s, &rt, "", cx);
     click(&s, CONFIRM_ID, cx);
+    assert!(builder_open(&s, cx), "the disabled button does nothing");
+    // The chord is never a key that does nothing: it closes.
     press(&s, "ctrl-enter", cx);
-    assert!(builder_open(&s, cx), "nothing to apply: the dialog stays");
-    press(&s, "escape", cx);
     s.settle_dialog(cx);
+    assert!(!builder_open(&s, cx), "nothing to apply: the chord closes");
+    assert_eq!(find_query(&s, cx), "");
 
     // FIND is open already (the rail click would close it): set the query,
     // open the builder from its button.
@@ -764,6 +778,61 @@ fn the_sort_control_lines_up_with_the_condition_type(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert_eq!(kind.left(), sort.left(), "{kind:?} vs {sort:?}");
+}
+
+/// With more tags than the list shows, a line says so, outside the listbox
+/// (assistive tech counts options in it).
+#[gpui_kit::test]
+fn the_more_line_is_beside_the_options_not_one_of_them(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let many = "#t1 #t2 #t3 #t4 #t5 #t6 #t7";
+    let notes: Vec<(&str, &str)> = NOTES.iter().copied().chain([("many.md", many)]).collect();
+    let v = rt.block_on(test_vault(&notes, &[]));
+    let s = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(VaultPath::new("alpha.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| s.text(cx) == NOTES[0].1 && !s.indexing(cx));
+    builder_on(&s, &rt, "", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, window, cx| d.pick_kind(id, "Tag", window, cx));
+    type_in(&s, "r", cx);
+    press(&s, "backspace", cx);
+    let d = dialog(&s, cx);
+    drive(&rt, cx, |cx| {
+        !cx.read(|cx| d.read(cx).suggested()).is_empty()
+    });
+    let found = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let list = window.try_find(BUILDER_SUGGESTIONS_ID)?;
+            let more = window.try_find(super::key_suggestions::MORE_ID)?;
+            Some((list.bounds(), more.bounds()))
+        })
+        .unwrap();
+    let (list, more) = found.expect("the list and its \"more\" line are both drawn");
+    assert!(
+        more.top() >= list.bottom() - gpui_kit::px(1.),
+        "the line {more:?} is under the listbox {list:?}"
+    );
+    assert_eq!(more.left(), list.left(), "{more:?} lines up with {list:?}");
+}
+
+/// Ctrl+Enter with only started, unwritable rows applies nothing and must not
+/// throw them away: the dialog stays, like the disabled Apply button.
+#[gpui_kit::test]
+fn the_chord_keeps_started_rows_instead_of_closing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    type_in(&s, "\"unclosed", cx);
+    press(&s, "ctrl-enter", cx);
+    s.settle_dialog(cx);
+    assert!(builder_open(&s, cx), "a started row keeps the dialog open");
+    assert_eq!(find_query(&s, cx), "");
 }
 
 /// Escape and Cancel change nothing.

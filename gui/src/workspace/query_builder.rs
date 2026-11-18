@@ -85,6 +85,14 @@ const KEYS_TEXT: &str = if cfg!(target_os = "macos") {
 /// The width of the "Must" / "Not" column, in rems.
 const NOT_REMS: f32 = 4.;
 
+/// The footer's total of rows the query leaves out.
+pub(crate) const BUILDER_LEFT_OUT_ID: &str = "query-builder-left-out-total";
+
+/// The footer's total: how many rows the query leaves out.
+pub(crate) fn left_out_total(n: usize) -> String {
+    format!("· {n} left out")
+}
+
 /// Why a started row is not in the query.
 const LEFT_OUT_TIP: &str = "Unfinished, or a value with both ' and \" (that has no spelling)";
 
@@ -830,7 +838,14 @@ impl QueryBuilderDialog {
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Nothing to apply: the chord closes the dialog, as it did before the
+        // button waited, so it is never a key that does nothing. Unless rows
+        // were started: closing would throw them away, so the dialog stays,
+        // and its "left out" marks say why nothing was applied.
         if !self.apply_action().1 {
+            if self.model.unfinished() == 0 {
+                self.cancel(window, cx);
+            }
             return;
         }
         let (query, target) = (self.query(), self.target);
@@ -1247,7 +1262,21 @@ impl Render for QueryBuilderDialog {
                                     .text_sm()
                                     .text_color(theme::foreground(t))
                                     .child(count_text),
-                            ),
+                            )
+                            // Rows below the fold, and the row being typed in,
+                            // carry no mark: the footer keeps the total.
+                            .when(incomplete > 0, |line| {
+                                line.child(
+                                    div()
+                                        .id(BUILDER_LEFT_OUT_ID)
+                                        .test_support()
+                                        .flex_none()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .text_color(theme::muted(t))
+                                        .child(left_out_total(incomplete)),
+                                )
+                            }),
                     ),
             )
             .child(

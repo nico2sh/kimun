@@ -21,6 +21,9 @@ use kimun_notes::settings::themes::Theme;
 use super::popup_layer;
 use crate::theme;
 
+/// The "N more" line's element id, for tests.
+pub(crate) const MORE_ID: &str = "key-suggestions-more";
+
 /// The most suggestions shown under a field.
 const SHOWN: usize = 5;
 
@@ -170,12 +173,17 @@ impl KeySuggestions {
         );
         Some(
             div()
-                .id(list_id)
-                .role(Role::ListBox)
-                .aria_label(aria_label)
                 .flex()
                 .flex_col()
-                .children(rows)
+                .child(
+                    div()
+                        .id(list_id)
+                        .role(Role::ListBox)
+                        .aria_label(aria_label)
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                )
                 .children(self.more_line(t))
                 .into_any_element(),
         )
@@ -212,25 +220,27 @@ impl KeySuggestions {
                 }),
             )
         });
-        let list = popup_layer::frame(
-            div()
-                .id(list_id)
-                .test_support()
-                .role(Role::ListBox)
-                .aria_label("Suggestions"),
-            popup_layer::width_of(field),
-            t,
-        )
-        .on_scroll(popup_layer::on_wheel(
-            cx,
-            move |this, command, _, cx| match command {
-                PopupCommand::Up => step(this, false, cx),
-                PopupCommand::Down => step(this, true, cx),
-                _ => {}
-            },
-        ))
-        .children(rows)
-        .children(self.more_line(t));
+        // The listbox holds the options only; the "more" line is beside it, so
+        // assistive tech counts options and nothing else.
+        let listbox = div()
+            .id(list_id)
+            .test_support()
+            .role(Role::ListBox)
+            .aria_label("Suggestions")
+            .flex()
+            .flex_col()
+            .children(rows);
+        let list = popup_layer::frame(div(), popup_layer::width_of(field), t)
+            .on_scroll(popup_layer::on_wheel(
+                cx,
+                move |this, command, _, cx| match command {
+                    PopupCommand::Up => step(this, false, cx),
+                    PopupCommand::Down => step(this, true, cx),
+                    _ => {}
+                },
+            ))
+            .child(listbox)
+            .children(self.more_line(t));
         Some(popup_layer::floating_under(
             field,
             self.lines(),
@@ -240,9 +250,11 @@ impl KeySuggestions {
     }
 
     /// The line after the options when more keys match than are shown.
-    fn more_line(&self, t: &Theme) -> Option<Div> {
+    fn more_line(&self, t: &Theme) -> Option<impl IntoElement> {
         (self.more > 0).then(|| {
             div()
+                .id(MORE_ID)
+                .test_support()
                 .px_2()
                 .py_0p5()
                 .text_xs()
