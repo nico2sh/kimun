@@ -22,7 +22,8 @@ use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
 use super::query_builder::{
     BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_KEYS_ID, BUILDER_LEAD_ID, BUILDER_ROWS_ID,
-    BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog, builder_value_id,
+    BUILDER_SORT_FIELD_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog,
+    builder_value_id,
 };
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -697,6 +698,72 @@ fn the_must_not_button_flips_the_row_and_raw_rows_have_none(cx: &mut TestAppCont
         })
         .unwrap();
     assert!(!has_button, "a raw row has no Must / Not button");
+}
+
+/// Over a blank field, Apply with no conditions has nothing to do, and does
+/// nothing; over a query, removing every condition turns it into "Clear
+/// query", which clears the field.
+#[gpui_kit::test]
+fn apply_says_when_it_clears_and_waits_when_there_is_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    let confirm_label = |s: &Started, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(CONFIRM_ID)
+                .label()
+                .map(str::to_string)
+                .unwrap_or_default()
+        })
+        .unwrap()
+    };
+    builder_on(&s, &rt, "", cx);
+    click(&s, CONFIRM_ID, cx);
+    press(&s, "ctrl-enter", cx);
+    assert!(builder_open(&s, cx), "nothing to apply: the dialog stays");
+    press(&s, "escape", cx);
+    s.settle_dialog(cx);
+
+    // FIND is open already (the rail click would close it): set the query,
+    // open the builder from its button.
+    let find = cx.read(|cx| s.workspace.read(cx).find.clone().expect("FIND is built"));
+    cx.update_window(s.handle, |_, window, cx| {
+        find.update(cx, |v, cx| v.apply_query("#rust".into(), None, window, cx))
+    })
+    .unwrap();
+    click(&s, FIND_BUILD_ID, cx);
+    drive(&rt, cx, |_| true);
+    assert_eq!(confirm_label(&s, cx), "Apply");
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, _, cx| d.remove_row(id, cx));
+    assert_eq!(confirm_label(&s, cx), "Clear query");
+    click(&s, CONFIRM_ID, cx);
+    s.settle_dialog(cx);
+    assert!(!builder_open(&s, cx));
+    assert_eq!(find_query(&s, cx), "", "the query was cleared");
+}
+
+/// The sort control starts where the condition type does, and the labels
+/// column is the "Must" / "Not" column: the dialog reads as one grid.
+#[gpui_kit::test]
+fn the_sort_control_lines_up_with_the_condition_type(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "#rust", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    let (kind, sort) = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(("query-builder-kind", id as usize)).bounds(),
+                window.find(BUILDER_SORT_FIELD_ID).bounds(),
+            )
+        })
+        .unwrap();
+    assert_eq!(kind.left(), sort.left(), "{kind:?} vs {sort:?}");
 }
 
 /// Escape and Cancel change nothing.

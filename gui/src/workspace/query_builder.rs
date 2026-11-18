@@ -202,6 +202,9 @@ pub(crate) struct QueryBuilderDialog {
     /// `None` while the count is being taken (or nothing was asked yet).
     count: Option<QueryCount>,
     counting: Option<Task<()>>,
+    /// The query was not blank when the dialog opened: applying nothing then
+    /// clears it, which the button says.
+    had_query: bool,
     /// The conditions' scroll: a row that takes the keyboard is brought into
     /// view.
     rows_scroll: ScrollHandle,
@@ -319,6 +322,7 @@ impl QueryBuilderDialog {
             count: None,
             counting: None,
             rows_scroll: ScrollHandle::new(),
+            had_query: !query.trim().is_empty(),
             cut: query.len() > kimun_core::MAX_QUERY_LEN,
             target,
             workspace,
@@ -815,7 +819,20 @@ impl QueryBuilderDialog {
 
     // ---- Apply and close ---------------------------------------------------------------
 
+    /// What Apply does and whether it can: nothing to apply to a blank field
+    /// is not an action; clearing a query that was there is, and says so.
+    fn apply_action(&self) -> (&'static str, bool) {
+        match (self.query().is_empty(), self.had_query) {
+            (false, _) => ("Apply", true),
+            (true, true) => ("Clear query", true),
+            (true, false) => ("Apply", false),
+        }
+    }
+
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.apply_action().1 {
+            return;
+        }
         let (query, target) = (self.query(), self.target);
         self.workspace
             .update(cx, |workspace, cx| {
@@ -1009,13 +1026,12 @@ impl Render for QueryBuilderDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let editing = self
-            .active_focused(window, cx)
-            .then(|| match self.active {
-                Some(Active::Value(id) | Active::Key(id)) => Some(id),
-                _ => None,
-            })
-            .flatten();
+        let editing = match self.active {
+            Some(Active::Value(id) | Active::Key(id)) if self.active_focused(window, cx) => {
+                Some(id)
+            }
+            _ => None,
+        };
         let rows: Vec<Div> = (0..self.rows.len())
             .map(|ix| self.render_row(ix, editing, t, cx))
             .collect();
@@ -1082,6 +1098,7 @@ impl Render for QueryBuilderDialog {
             0 => count_text.to_string(),
             n => format!("{count_text}, {n} left out: {LEFT_OUT_TIP}"),
         });
+        let (apply_verb, apply_enabled) = self.apply_action();
         let confirm = cx.entity().downgrade();
         let cancel = cx.entity().downgrade();
         div()
@@ -1242,8 +1259,8 @@ impl Render for QueryBuilderDialog {
                     .child(KEYS_TEXT),
             )
             .child(footer(
-                "Apply",
-                true,
+                apply_verb,
+                apply_enabled,
                 false,
                 move |_, window, cx| {
                     confirm
@@ -1263,7 +1280,9 @@ impl Render for QueryBuilderDialog {
 /// Matches), so their values line up.
 fn row_label(text: &'static str, t: &Theme) -> impl IntoElement {
     div()
-        .w(rems(4.5))
+        // As wide as the rows' "Must" / "Not" column, so the sort control
+        // and the values start where the condition type does.
+        .w(rems(NOT_REMS))
         .flex_none()
         .text_sm()
         .text_color(theme::muted(t))
