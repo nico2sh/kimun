@@ -34,6 +34,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, IndexPath, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -65,6 +66,27 @@ use crate::theme;
 
 /// Element ids, for tests.
 pub(crate) const BUILDER_ID: &str = "query-builder";
+/// What the dialog says first: how the rows combine.
+const LEAD_TEXT: &str =
+    "A note must match every condition. \"Not\" leaves out the notes that match it.";
+pub(crate) const BUILDER_LEAD_ID: &str = "query-builder-lead";
+
+/// The keys that work in the dialog but show nowhere else.
+pub(crate) const BUILDER_KEYS_ID: &str = "query-builder-keys";
+
+/// The dialog's two hidden keys, with the platform's name for the apply chord.
+fn keys_text() -> SharedString {
+    let apply = if cfg!(target_os = "macos") {
+        "\u{2318}Enter"
+    } else {
+        "Ctrl+Enter"
+    };
+    format!("Enter adds a condition when the row is done. {apply} applies.").into()
+}
+
+/// Why a started row is not in the query.
+const LEFT_OUT_TIP: &str = "Unfinished, or a value with both ' and \" (that has no spelling)";
+
 /// The warning that the query was cut at the parser's limit.
 pub(crate) const BUILDER_CUT_ID: &str = "query-builder-cut";
 
@@ -383,7 +405,7 @@ impl QueryBuilderDialog {
         let op = cx.new(|cx| SelectState::new(ops, Some(IndexPath::new(op_ix)), window, cx));
         let value = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Value")
+                .placeholder(row.kind.hint())
                 .default_value(row.value.clone())
         });
         let key = cx.new(|cx| {
@@ -511,8 +533,12 @@ impl QueryBuilderDialog {
         if kind == RowKind::Property && row.op.is_none() && row.key.is_empty() {
             row.op = Some(kimun_core::PropertyOp::Eq);
         }
-        // The comparison select shows what the row now says.
+        // The comparison select shows what the row now says, and the value
+        // field asks for what the new kind takes.
         let shown = property_op_label(row.op);
+        self.rows[ix].value.update(cx, |input, cx| {
+            input.set_placeholder(kind.hint(), window, cx)
+        });
         self.rows[ix].op.update(cx, |select, cx| {
             select.set_selected_value(&shown, window, cx)
         });
@@ -907,6 +933,20 @@ impl QueryBuilderDialog {
                     .aria_label(row.kind.label()),
             )
         };
+        // A row the user started and the query leaves out says so itself, so
+        // nobody has to guess which one the count below means.
+        let left_out = (!row.is_complete() && !row.is_blank()).then(|| {
+            div()
+                .id(("query-builder-left-out", id as usize))
+                .test_support()
+                .aria_label(LEFT_OUT_TIP)
+                .flex_none()
+                .whitespace_nowrap()
+                .text_xs()
+                .text_color(theme::muted(&theme::current(cx)))
+                .tooltip(|window, cx| Tooltip::new(LEFT_OUT_TIP).build(window, cx))
+                .child("left out")
+        });
         div()
             .flex()
             .items_center()
@@ -914,6 +954,7 @@ impl QueryBuilderDialog {
             .child(not)
             .child(kind_select)
             .child(fields)
+            .children(left_out)
             .child(remove)
     }
 }
@@ -1030,6 +1071,15 @@ impl Render for QueryBuilderDialog {
                     cx.stop_propagation();
                 }
             }))
+            // How the conditions combine: the rule the rows cannot show.
+            .child(
+                div()
+                    .id(BUILDER_LEAD_ID)
+                    .test_support()
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .child(LEAD_TEXT),
+            )
             // Many conditions scroll here, so the sort, the preview and the
             // Apply / Cancel footer stay in the window.
             .child(
@@ -1120,17 +1170,27 @@ impl Render for QueryBuilderDialog {
                                     .min_w_0()
                                     .text_sm()
                                     .text_color(theme::foreground(t))
-                                    .child(match incomplete {
-                                        0 => count_text,
-                                        1 => format!(
-                                            "{count_text} · 1 condition is left out (unfinished, or a value with both ' and \")"
-                                        ),
-                                        n => format!(
-                                            "{count_text} · {n} conditions are left out (unfinished, or a value with both ' and \")"
-                                        ),
-                                    }),
-                            ),
+                                    .child(count_text),
+                            )
+                            .when(incomplete > 0, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .text_color(theme::muted(t))
+                                        .child(format!("· {incomplete} left out")),
+                                )
+                            }),
                     ),
+            )
+            .child(
+                div()
+                    .id(BUILDER_KEYS_ID)
+                    .test_support()
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .child(keys_text()),
             )
             .child(footer(
                 "Apply",

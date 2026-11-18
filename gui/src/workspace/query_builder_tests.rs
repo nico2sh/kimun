@@ -21,8 +21,8 @@ use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE};
 use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
 use super::query_builder::{
-    BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_ROWS_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE,
-    QueryBuilderDialog, builder_value_id,
+    BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_KEYS_ID, BUILDER_LEAD_ID, BUILDER_ROWS_ID,
+    BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog, builder_value_id,
 };
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -564,6 +564,72 @@ fn the_remove_button_is_named(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert_eq!(label.as_deref(), Some("Remove condition"));
+}
+
+/// The value field says what each kind takes, and follows a change of kind.
+#[gpui_kit::test]
+fn the_value_hint_follows_the_kind(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    let hint = |s: &Started, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(builder_value_id(0))
+                .placeholder()
+                .map(str::to_string)
+        })
+        .unwrap()
+    };
+    assert_eq!(hint(&s, cx).as_deref(), Some("words, or \"a phrase\""));
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, window, cx| d.pick_kind(id, "Tag", window, cx));
+    assert_eq!(hint(&s, cx).as_deref(), Some("tag name, no #"));
+}
+
+/// The dialog says how conditions combine, and which keys it takes.
+#[gpui_kit::test]
+fn the_dialog_teaches_its_rule_and_its_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    let (lead, keys) = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.try_find(BUILDER_LEAD_ID).is_some(),
+                window.try_find(BUILDER_KEYS_ID).is_some(),
+            )
+        })
+        .unwrap();
+    assert!(lead, "the combination rule shows");
+    assert!(keys, "the keys line shows");
+}
+
+/// A row the user started and the query leaves out says so on the row; an
+/// untouched row says nothing.
+#[gpui_kit::test]
+fn a_started_row_that_is_left_out_is_marked(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    let mark = |s: &Started, id: u64, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("query-builder-left-out", id as usize))
+                .is_some()
+        })
+        .unwrap()
+    };
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    assert!(!mark(&s, id, cx), "an untouched row has no mark");
+    type_in(&s, "\"unclosed", cx);
+    assert!(mark(&s, id, cx), "a started, unwritable row is marked");
 }
 
 /// Escape and Cancel change nothing.
