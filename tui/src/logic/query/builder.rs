@@ -65,6 +65,22 @@ impl RowKind {
         }
     }
 
+    /// What the row's value field asks for, said in the field itself: the
+    /// rule a user would otherwise have to know (phrases need quotes, a tag
+    /// has no `#`).
+    pub fn hint(self) -> &'static str {
+        match self {
+            RowKind::Text => "words, or \"a phrase\"",
+            RowKind::Name => "note name",
+            RowKind::Heading => "heading text",
+            RowKind::Folder => "folder path",
+            RowKind::Tag => "tag name, no #",
+            RowKind::LinksTo | RowKind::LinkedFrom => "note name",
+            RowKind::Property => "value",
+            RowKind::Raw => "as written in the query",
+        }
+    }
+
     /// Whether the row can be turned into "must not" (a raw row is as written).
     pub fn can_exclude(self) -> bool {
         self != RowKind::Raw
@@ -553,6 +569,13 @@ mod tests {
         let back = BuilderModel::from_query("\"budget meeting\" -\"old plan\"");
         assert_eq!(back.rows[0].value, "\"budget meeting\"");
         assert_eq!(back.to_query(), "\"budget meeting\" -\"old plan\"");
+    }
+
+    #[test]
+    fn every_kind_has_a_hint() {
+        for kind in RowKind::ALL {
+            assert!(!kind.hint().is_empty(), "{kind:?}");
+        }
     }
 
     #[test]
