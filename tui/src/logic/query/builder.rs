@@ -71,11 +71,12 @@ impl RowKind {
     pub fn hint(self) -> &'static str {
         match self {
             RowKind::Text => "words, or \"a phrase\"",
-            RowKind::Name => "note name",
+            RowKind::Name => "part of a note's name",
             RowKind::Heading => "heading text",
             RowKind::Folder => "folder path",
-            RowKind::Tag => "tag name, no #",
-            RowKind::LinksTo | RowKind::LinkedFrom => "note name",
+            RowKind::Tag => "tag name",
+            RowKind::LinksTo => "note they link to",
+            RowKind::LinkedFrom => "note that links to them",
             RowKind::Property => "value",
             RowKind::Raw => "as written in the query",
         }
@@ -123,6 +124,12 @@ impl BuilderRow {
         }
     }
 
+    /// Whether the user started the row and the query leaves it out: it is
+    /// not complete, and not just untouched.
+    pub fn is_left_out(&self) -> bool {
+        !self.is_complete() && !self.is_blank()
+    }
+
     /// Whether the user has typed nothing in the row (an untouched row).
     pub fn is_blank(&self) -> bool {
         self.key.trim().is_empty() && self.value.trim().is_empty()
@@ -139,6 +146,7 @@ impl BuilderRow {
             RowKind::Property => self.property_filter().is_some() && can_be_written(&self.value),
             // As written by the user: the query's own tokens.
             RowKind::Raw => !self.value.trim().is_empty(),
+            RowKind::Tag => !tag_name(&self.value).is_empty(),
             RowKind::Text => text_terms(&self.value)
                 .is_some_and(|words| !words.is_empty() && words.iter().all(|w| can_be_written(w))),
             _ => !self.value.trim().is_empty() && can_be_written(&self.value),
@@ -192,6 +200,12 @@ fn text_row_value(term: &str) -> String {
     }
 }
 
+/// A Tag row's value as the tag it names: the writer adds the `#`, so one
+/// typed (`#draft`) is dropped, and the parser reads a tag in lowercase.
+fn tag_name(value: &str) -> String {
+    value.trim().trim_start_matches('#').trim().to_lowercase()
+}
+
 /// Whether the query syntax can write `value`: a quoted value ends at the
 /// first quote of its own kind, so one that holds both `"` and `'` has no
 /// spelling. The row is left out instead of writing a different query.
@@ -220,6 +234,20 @@ pub fn property_op_label(op: Option<PropertyOp>) -> &'static str {
         Some(PropertyOp::Le) => "≤",
         Some(PropertyOp::Gt) => ">",
         Some(PropertyOp::Ge) => "≥",
+    }
+}
+
+/// What a comparison says in words, for a tooltip: the symbols (`≠`, `≤`) are
+/// quick to read for some and not for others.
+pub fn property_op_name(op: Option<PropertyOp>) -> &'static str {
+    match op {
+        None => "the property exists",
+        Some(PropertyOp::Eq) => "equals",
+        Some(PropertyOp::Ne) => "does not equal",
+        Some(PropertyOp::Lt) => "is less than",
+        Some(PropertyOp::Le) => "is less than or equal to",
+        Some(PropertyOp::Gt) => "is greater than",
+        Some(PropertyOp::Ge) => "is greater than or equal to",
     }
 }
 
@@ -324,8 +352,7 @@ impl BuilderModel {
             let values = if row.kind == RowKind::Text {
                 text_terms(&row.value).unwrap_or_default()
             } else if row.kind == RowKind::Tag {
-                // The parser reads a tag in lowercase.
-                vec![row.value.trim().to_lowercase()]
+                vec![tag_name(&row.value)]
             } else {
                 vec![row.value.trim().to_string()]
             };
@@ -370,10 +397,7 @@ impl BuilderModel {
     /// and left unfinished. An untouched empty row (the one a fresh builder
     /// offers) is not a warning.
     pub fn unfinished(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|r| !r.is_complete() && !r.is_blank())
-            .count()
+        self.rows.iter().filter(|r| r.is_left_out()).count()
     }
 }
 
@@ -569,6 +593,23 @@ mod tests {
         let back = BuilderModel::from_query("\"budget meeting\" -\"old plan\"");
         assert_eq!(back.rows[0].value, "\"budget meeting\"");
         assert_eq!(back.to_query(), "\"budget meeting\" -\"old plan\"");
+    }
+
+    #[test]
+    fn a_hash_typed_in_a_tag_row_is_not_doubled() {
+        let mut m = BuilderModel::from_query("");
+        m.rows.push(BuilderRow::with_value(RowKind::Tag, "#Draft"));
+        assert_eq!(m.to_query(), "#draft");
+        m.rows[0].value = "#".into();
+        assert_eq!(m.to_query(), "", "a bare # names no tag");
+        assert!(m.rows[0].is_left_out());
+    }
+
+    #[test]
+    fn every_comparison_has_a_name_in_words() {
+        for op in PROPERTY_OPS {
+            assert!(property_op_name(op).len() > property_op_label(op).len());
+        }
     }
 
     #[test]

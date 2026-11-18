@@ -586,7 +586,7 @@ fn the_value_hint_follows_the_kind(cx: &mut TestAppContext) {
     assert_eq!(hint(&s, cx).as_deref(), Some("words, or \"a phrase\""));
     let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
     with_dialog(&s, cx, |d, window, cx| d.pick_kind(id, "Tag", window, cx));
-    assert_eq!(hint(&s, cx).as_deref(), Some("tag name, no #"));
+    assert_eq!(hint(&s, cx).as_deref(), Some("tag name"));
 }
 
 /// The dialog says how conditions combine, and which keys it takes.
@@ -629,7 +629,74 @@ fn a_started_row_that_is_left_out_is_marked(cx: &mut TestAppContext) {
     let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
     assert!(!mark(&s, id, cx), "an untouched row has no mark");
     type_in(&s, "\"unclosed", cx);
+    assert!(
+        !mark(&s, id, cx),
+        "no mark while the row is being typed in: it is not finished yet"
+    );
+    // Moving on (a new row takes the keyboard) leaves it marked, and the
+    // status says so for assistive tech.
+    with_dialog(&s, cx, |d, window, cx| d.add_row(window, cx));
     assert!(mark(&s, id, cx), "a started, unwritable row is marked");
+    let status = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(BUILDER_COUNT_ID)
+                .label()
+                .map(str::to_string)
+                .unwrap_or_default()
+        })
+        .unwrap();
+    assert!(status.contains("1 left out"), "got {status:?}");
+}
+
+/// "Must" flips to "Not" on a click and back, and writes the exclusion; a raw
+/// row, which is as written, has no such button.
+#[gpui_kit::test]
+fn the_must_not_button_flips_the_row_and_raw_rows_have_none(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "#rust", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    let label = |s: &Started, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(("query-builder-not", id as usize))
+                .label()
+                .map(str::to_string)
+        })
+        .unwrap()
+    };
+    assert_eq!(label(&s, cx).as_deref(), Some("Must match"));
+    cx.update_window(s.handle, |_, window, cx| {
+        window.click(("query-builder-not", id as usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(label(&s, cx).as_deref(), Some("Must not match"));
+    assert_eq!(query_of(&s, cx), "-#rust");
+    cx.update_window(s.handle, |_, window, cx| {
+        window.click(("query-builder-not", id as usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(query_of(&s, cx), "#rust");
+
+    // A raw row is as written: nothing to flip.
+    with_dialog(&s, cx, |d, window, cx| d.add_row(window, cx));
+    let raw = with_dialog(&s, cx, |d, _, _| d.row_id(1));
+    with_dialog(&s, cx, |d, window, cx| d.pick_kind(raw, "Raw", window, cx));
+    let has_button = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(("query-builder-not", raw as usize))
+                .is_some()
+        })
+        .unwrap();
+    assert!(!has_button, "a raw row has no Must / Not button");
 }
 
 /// Escape and Cancel change nothing.
