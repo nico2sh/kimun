@@ -191,8 +191,13 @@ fn the_rows_show_the_settings(cx: &mut TestAppContext) {
             "Leader key",
             "Preferences",
             "Which-key delay",
+            "Version",
             "Config file"
         ]
+    );
+    assert_eq!(
+        s.cf_value("Version", cx),
+        kimun_notes::update::CURRENT_VERSION
     );
     assert_eq!(NOT_SET, "not set");
     settle(&rt, cx);
