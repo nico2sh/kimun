@@ -10,8 +10,8 @@
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
-    App, Context, Div, Entity, Focusable as _, KeyDownEvent, ParentElement as _, Styled as _,
-    Window, div,
+    App, Context, Div, Entity, Focusable as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Styled as _, Window, div,
 };
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::settings::themes::Theme;
@@ -36,6 +36,24 @@ pub(super) fn query_field(
             .border_color(theme::divider(t))
             .text_color(theme::foreground(t)),
     )
+}
+
+/// [`query_field`] with `trailing` at its right (the tools that act on the
+/// query: `Build…` and `Save…` in FIND, `New` in FILES). The field takes the
+/// room the tools leave.
+pub(super) fn query_field_with(
+    input: &Entity<InputState>,
+    id: &'static str,
+    label: &'static str,
+    t: &Theme,
+    trailing: impl IntoElement,
+) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .child(query_field(input, id, label, t).flex_1().min_w_0())
+        .child(div().pr_2().pb_1().child(trailing))
 }
 
 /// Give the keyboard to `list`.

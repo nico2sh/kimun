@@ -67,7 +67,7 @@ use super::drawer_list::page_move;
 #[cfg(test)]
 use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
-use super::query_field::query_field;
+use super::query_field::query_field_with;
 use super::sort::{chip_label, sort_chip};
 use crate::keymap;
 use crate::theme;
@@ -667,18 +667,22 @@ impl FilesPane {
                     .child(Breadcrumb::new().text_color(muted).children(items)),
             )
             .child(chip)
-            .child(self.render_new_button(cx))
     }
 
-    /// The `+` beside the sort chip: a menu of what can be made here, each
+    /// The `+ New` beside the filter: a menu of what can be made here, each
     /// item with its chord.
-    fn render_new_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_new_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let owner = cx.entity().downgrade();
         Button::new(FILES_NEW_ID)
             .icon(IconName::Plus)
+            .label("New")
             .small()
             .accessibility_label("New note or directory")
-            .tooltip("New…")
+            .tooltip(super::chrome::tooltip_with_chord(
+                "New note or directory",
+                &ActionShortcuts::NewNote,
+                cx,
+            ))
             .dropdown_menu(move |menu, _, _| {
                 let item = |kind: NewEntryKind, id: &'static str, action: ActionShortcuts| {
                     let owner = owner.clone();
@@ -730,12 +734,15 @@ impl FilesPane {
             })
     }
 
-    fn render_filter(&self, cx: &gpui_kit::App) -> impl IntoElement {
-        query_field(
+    /// The filter, with `New` at its right: the field is where a user
+    /// thinks of naming a note, so the way to make one sits beside it.
+    fn render_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        query_field_with(
             &self.filter,
             FILTER_ID,
             "Filter notes, or name a new one",
             &theme::current(cx),
+            self.render_new_button(cx),
         )
     }
 
