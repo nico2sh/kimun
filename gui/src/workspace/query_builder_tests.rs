@@ -20,7 +20,10 @@ use super::file_dialogs::CONFIRM_ID;
 use super::find::{FIND_BUILD_ID, FIND_DEBOUNCE};
 use super::modal::ModalKind;
 use super::picker::{BUILD_BUTTON_ID, NotePicker};
-use super::query_builder::{BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE, QueryBuilderDialog};
+use super::query_builder::{
+    BUILDER_COUNT_ID, BUILDER_CUT_ID, BUILDER_ROWS_ID, BUILDER_SUGGESTIONS_ID, COUNT_DEBOUNCE,
+    QueryBuilderDialog,
+};
 use super::start_tests::select_all_key;
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
 use crate::startup::FirstNote;
@@ -201,6 +204,18 @@ fn an_empty_query_starts_on_one_empty_row(cx: &mut TestAppContext) {
     builder_on(&s, &rt, "", cx);
     assert_eq!(rows_of(&s, cx), [(RowKind::Text, false, String::new())]);
     assert_eq!(query_of(&s, cx), "", "an incomplete row writes nothing");
+    // The untouched row is no warning.
+    let count = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(BUILDER_COUNT_ID)
+                .label()
+                .map(str::to_string)
+                .unwrap_or_default()
+        })
+        .unwrap();
+    assert!(!count.contains("left out"), "got {count:?}");
 }
 
 // ── Editing ──────────────────────────────────────────────────────────────
@@ -338,6 +353,28 @@ fn a_tag_row_suggests_the_vaults_tags(cx: &mut TestAppContext) {
     );
 }
 
+/// A tag row lists the vault's tags before anything is typed: the builder is
+/// for browsing what exists.
+#[gpui_kit::test]
+fn a_blank_tag_row_lists_the_vaults_tags(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    with_dialog(&s, cx, |d, window, cx| d.pick_kind(id, "Tag", window, cx));
+    // Typed in, then cleared: the field is the active one, and blank.
+    type_in(&s, "r", cx);
+    press(&s, "backspace", cx);
+    let d = dialog(&s, cx);
+    drive(&rt, cx, |cx| {
+        !cx.read(|cx| d.read(cx).suggested()).is_empty()
+    });
+    let mut listed = cx.read(|cx| d.read(cx).suggested());
+    listed.sort();
+    assert_eq!(listed, ["go".to_string(), "rust".to_string()]);
+}
+
 /// A links row offers "current open note" first: it writes `{note}`, which
 /// the query resolves against the open note, so the count is the backlinks of
 /// alpha.
@@ -383,6 +420,117 @@ fn apply_runs_the_built_query_in_find(cx: &mut TestAppContext) {
     assert!(!builder_open(&s, cx));
     assert_eq!(s.shown_modal(cx), None);
     assert_eq!(find_query(&s, cx), "back #rust");
+}
+
+/// Apply is an edit of a saved search open in FIND: it keeps the name, so
+/// `Save…` offers it and does not make a duplicate.
+#[gpui_kit::test]
+fn apply_keeps_the_saved_search_name(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    click_rail_find(&s, cx);
+    let find = cx.read(|cx| s.workspace.read(cx).find.clone().expect("FIND is built"));
+    cx.update_window(s.handle, |_, window, cx| {
+        find.update(cx, |v, cx| {
+            v.apply_query("#rust".into(), Some("rusty".into()), window, cx)
+        })
+    })
+    .unwrap();
+    click(&s, FIND_BUILD_ID, cx);
+    drive(&rt, cx, |_| true);
+    with_dialog(&s, cx, |d, window, cx| d.add_row(window, cx));
+    type_in(&s, "back", cx);
+    click(&s, CONFIRM_ID, cx);
+    s.settle_dialog(cx);
+    assert_eq!(find_query(&s, cx), "back #rust");
+    assert_eq!(
+        cx.read(|cx| find.read(cx).saved_name()),
+        Some("rusty".to_string())
+    );
+}
+
+/// Many conditions scroll inside the dialog: the rows stop growing, so the
+/// Apply button stays in the window.
+#[gpui_kit::test]
+fn many_conditions_scroll_and_apply_stays_in_the_window(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "#rust", cx);
+    for _ in 0..14 {
+        with_dialog(&s, cx, |d, window, cx| d.add_row(window, cx));
+    }
+    let (rows, apply, window_size, rem) = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(BUILDER_ROWS_ID).bounds(),
+                window.find(CONFIRM_ID).bounds(),
+                window.viewport_size(),
+                window.rem_size(),
+            )
+        })
+        .unwrap();
+    assert!(
+        rows.size.height <= rem * 18.5,
+        "the rows are capped, not {:?}",
+        rows.size.height
+    );
+    assert!(
+        apply.bottom() <= window_size.height,
+        "Apply is inside the window"
+    );
+}
+
+/// A query past the parser's limit is cut when read into rows: the dialog
+/// says so before Apply drops the tail.
+#[gpui_kit::test]
+fn a_query_past_the_limit_is_flagged(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    let drawn = |s: &Started, cx: &mut TestAppContext| {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(BUILDER_CUT_ID).is_some()
+        })
+        .unwrap()
+    };
+    builder_on(&s, &rt, "#rust", cx);
+    assert!(!drawn(&s, cx), "a short query has no warning");
+    press(&s, "escape", cx);
+    s.settle_dialog(cx);
+
+    let long = "#t ".repeat(kimun_core::MAX_QUERY_LEN / 3 + 10);
+    let find = cx.read(|cx| s.workspace.read(cx).find.clone().expect("FIND is built"));
+    cx.update_window(s.handle, |_, window, cx| {
+        find.update(cx, |v, cx| v.apply_query(long, None, window, cx))
+    })
+    .unwrap();
+    click(&s, FIND_BUILD_ID, cx);
+    drive(&rt, cx, |_| true);
+    assert!(drawn(&s, cx), "a long query is flagged");
+}
+
+/// The remove button is named for assistive tech, not read as "✕".
+#[gpui_kit::test]
+fn the_remove_button_is_named(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    builder_on(&s, &rt, "#rust", cx);
+    let id = with_dialog(&s, cx, |d, _, _| d.row_id(0));
+    let label = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(("query-builder-remove", id as usize))
+                .label()
+                .map(str::to_string)
+        })
+        .unwrap();
+    assert_eq!(label.as_deref(), Some("Remove condition"));
 }
 
 /// Escape and Cancel change nothing.

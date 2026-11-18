@@ -107,15 +107,22 @@ impl BuilderRow {
         }
     }
 
-    /// Whether the row says enough to be part of the query: a value, and for a
-    /// property a key (and a value, unless it only asks for the property).
+    /// Whether the row says enough to be part of the query: a value the syntax
+    /// can write, and for a property a key (and a value, unless it only asks
+    /// for the property).
     /// Incomplete rows stay on screen and are left out of the query.
     pub fn is_complete(&self) -> bool {
         match self.kind {
             // What core accepts as a filter, so a row never counts as
             // complete and then writes nothing (a multi-line key).
-            RowKind::Property => self.property_filter().is_some(),
-            _ => !self.value.trim().is_empty(),
+            RowKind::Property => self.property_filter().is_some() && can_be_written(&self.value),
+            // As written by the user: the query's own tokens.
+            RowKind::Raw => !self.value.trim().is_empty(),
+            RowKind::Text => {
+                let words = text_terms(&self.value);
+                !words.is_empty() && words.iter().all(|w| can_be_written(w))
+            }
+            _ => !self.value.trim().is_empty() && can_be_written(&self.value),
         }
     }
 
@@ -126,6 +133,44 @@ impl BuilderRow {
             Some(op) => PropertyFilter::compare(&self.key, op, &self.value),
         }
     }
+}
+
+/// The full-text terms a Text row's `value` says, as the query field would
+/// read it: each word is a term, and words in quotes (`"budget meeting"`) are
+/// one phrase, the quotes not part of it.
+fn text_terms(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let quoted = value.len() >= 2
+        && ['"', '\''].iter().any(|q| {
+            value.starts_with(*q) && value.ends_with(*q) && !value[1..value.len() - 1].contains(*q)
+        });
+    if quoted {
+        let phrase = value[1..value.len() - 1].trim();
+        return if phrase.is_empty() {
+            Vec::new()
+        } else {
+            vec![phrase.to_string()]
+        };
+    }
+    value.split_whitespace().map(str::to_string).collect()
+}
+
+/// A term as a Text row shows it: a phrase keeps its quotes, so reading it
+/// back is the same phrase and not separate words.
+fn text_row_value(term: &str) -> String {
+    if term.chars().any(char::is_whitespace) {
+        let q = if term.contains('"') { '\'' } else { '"' };
+        format!("{q}{term}{q}")
+    } else {
+        term.to_string()
+    }
+}
+
+/// Whether the query syntax can write `value`: a quoted value ends at the
+/// first quote of its own kind, so one that holds both `"` and `'` has no
+/// spelling. The row is left out instead of writing a different query.
+fn can_be_written(value: &str) -> bool {
+    !(value.contains('"') && value.contains('\''))
 }
 
 /// The comparisons a property row offers, `None` (has the property) first.
@@ -175,7 +220,14 @@ impl BuilderModel {
                 }));
             }
         };
-        valued(RowKind::Text, &terms.terms, &terms.excluded_terms);
+        {
+            let shown = |v: &[String]| v.iter().map(|t| text_row_value(t)).collect::<Vec<_>>();
+            valued(
+                RowKind::Text,
+                &shown(&terms.terms),
+                &shown(&terms.excluded_terms),
+            );
+        }
         valued(RowKind::Name, &terms.filename, &terms.excluded_filename);
         valued(
             RowKind::Heading,
@@ -243,14 +295,15 @@ impl BuilderModel {
                 // Written after the sort, as they were (see `to_query`).
                 RowKind::Property | RowKind::Raw => continue,
             };
-            let value = row.value.trim();
-            // The parser reads a tag in lowercase.
-            let value = if row.kind == RowKind::Tag {
-                value.to_lowercase()
+            let values = if row.kind == RowKind::Text {
+                text_terms(&row.value)
+            } else if row.kind == RowKind::Tag {
+                // The parser reads a tag in lowercase.
+                vec![row.value.trim().to_lowercase()]
             } else {
-                value.to_string()
+                vec![row.value.trim().to_string()]
             };
-            if row.exclude { exclude } else { include }.push(value);
+            if row.exclude { exclude } else { include }.extend(values);
         }
         t
     }
@@ -285,6 +338,16 @@ impl BuilderModel {
     /// How many rows are left out of the query for being incomplete.
     pub fn incomplete(&self) -> usize {
         self.rows.iter().filter(|r| !r.is_complete()).count()
+    }
+
+    /// How many rows are incomplete but not empty: a row the user started
+    /// and left unfinished. An untouched empty row (the one a fresh builder
+    /// offers) is not a warning.
+    pub fn unfinished(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| !r.is_complete() && !(r.key.trim().is_empty() && r.value.trim().is_empty()))
+            .count()
     }
 }
 
@@ -459,6 +522,36 @@ mod tests {
     }
 
     #[test]
+    fn text_words_are_separate_terms_and_quotes_make_a_phrase() {
+        let mut m = BuilderModel::from_query("");
+        m.rows
+            .push(BuilderRow::with_value(RowKind::Text, "budget meeting"));
+        assert_eq!(
+            m.to_query(),
+            "budget meeting",
+            "two terms, as typed in the field"
+        );
+        m.rows[0].value = "\"budget meeting\"".into();
+        assert_eq!(m.to_query(), "\"budget meeting\"");
+        // A phrase read from a query keeps its quotes in the row.
+        let back = BuilderModel::from_query("\"budget meeting\" -\"old plan\"");
+        assert_eq!(back.rows[0].value, "\"budget meeting\"");
+        assert_eq!(back.to_query(), "\"budget meeting\" -\"old plan\"");
+    }
+
+    #[test]
+    fn a_value_with_both_quote_kinds_is_left_out() {
+        let mut m = BuilderModel::from_query("#a");
+        m.rows
+            .push(BuilderRow::with_value(RowKind::Text, "say \"it's\""));
+        assert_eq!((m.incomplete(), m.unfinished()), (1, 1));
+        assert_eq!(m.to_query(), "#a", "nothing broken is written");
+        // One kind of quote is fine.
+        m.rows[1].value = "it's".into();
+        assert_eq!(m.incomplete(), 0);
+    }
+
+    #[test]
     fn incomplete_rows_stay_but_are_not_written() {
         let mut m = BuilderModel::from_query("#a");
         m.rows.push(BuilderRow::new(RowKind::Tag));
@@ -469,6 +562,9 @@ mod tests {
         m.rows.push(p);
         assert_eq!(m.rows.len(), 4);
         assert_eq!(m.incomplete(), 3);
+        // The empty Tag row is untouched; the blank-text row is empty too;
+        // only the property with a key was started.
+        assert_eq!(m.unfinished(), 1);
         assert_eq!(m.to_query(), "#a");
         // Once it says enough, it is part of the query.
         m.rows[3].value = "2025-01-01".into();

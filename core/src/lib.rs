@@ -61,7 +61,7 @@ pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
     strip_order_directive, with_order_directive, OrderBy, OrderField, PropertyFilter, PropertyOp,
-    PropertyTest, QueryTokenClass, QueryTokenSpan, SearchTerms,
+    PropertyTest, QueryTokenClass, QueryTokenSpan, SearchTerms, MAX_QUERY_LEN,
 };
 pub use index::{
     IndexDiff, IndexObserver, NoteChange, NoteSuggestion, PropertySortValue, TagSuggestion,

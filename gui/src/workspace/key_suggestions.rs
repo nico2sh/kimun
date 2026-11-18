@@ -57,6 +57,27 @@ impl KeySuggestions {
             .collect();
     }
 
+    /// [`Self::refresh`], except that a blank field offers the first `known`
+    /// keys in order, so a field can be browsed before anything is typed
+    /// (the query builder's tag, folder and key fields).
+    pub(crate) fn refresh_browsing(
+        &mut self,
+        known: &[String],
+        typed: &str,
+        leading: Option<&str>,
+    ) {
+        if typed.trim().is_empty() {
+            self.highlighted = None;
+            self.shown = known.iter().take(SHOWN).cloned().collect();
+            if let Some(leading) = leading {
+                self.shown.insert(0, leading.to_string());
+                self.shown.truncate(SHOWN);
+            }
+        } else {
+            self.refresh_with_leading(known, typed, leading);
+        }
+    }
+
     /// [`Self::refresh`], with `leading` offered first whatever `typed` is
     /// (the open note, offered even in an empty field).
     pub(crate) fn refresh_with_leading(

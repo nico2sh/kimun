@@ -65,6 +65,18 @@ use crate::theme;
 
 /// Element ids, for tests.
 pub(crate) const BUILDER_ID: &str = "query-builder";
+/// The warning that the query was cut at the parser's limit.
+pub(crate) const BUILDER_CUT_ID: &str = "query-builder-cut";
+
+const CUT_TEXT: &str =
+    "This query is longer than 8 KB. Its end is not shown here, and Apply will drop it.";
+
+/// The conditions' list: it scrolls past [`ROWS_MAX_REMS`].
+pub(crate) const BUILDER_ROWS_ID: &str = "query-builder-rows";
+
+/// The tallest the conditions grow before they scroll.
+const ROWS_MAX_REMS: f32 = 18.;
+
 pub(crate) const BUILDER_ADD_ID: &str = "query-builder-add";
 pub(crate) const BUILDER_PREVIEW_ID: &str = "query-builder-preview";
 pub(crate) const BUILDER_COUNT_ID: &str = "query-builder-count";
@@ -161,6 +173,9 @@ pub(crate) struct QueryBuilderDialog {
     /// `None` while the count is being taken (or nothing was asked yet).
     count: Option<QueryCount>,
     counting: Option<Task<()>>,
+    /// The query was longer than the parser reads, so its tail is not in the
+    /// rows: Apply would drop it, and the dialog says so.
+    cut: bool,
     target: BuilderTarget,
     workspace: WeakEntity<Workspace>,
     _subscriptions: Vec<Subscription>,
@@ -271,6 +286,7 @@ impl QueryBuilderDialog {
             note,
             count: None,
             counting: None,
+            cut: query.len() > kimun_core::MAX_QUERY_LEN,
             target,
             workspace,
             _subscriptions: subscriptions,
@@ -600,8 +616,14 @@ impl QueryBuilderDialog {
         let known = known.to_vec();
         let leading =
             (links && self.note.is_some() && offers_open_note(&typed)).then_some(VAR_NOTE);
-        self.suggestions
-            .refresh_with_leading(&known, &typed, leading);
+        // A blank tag, folder or key field lists what exists: browsing is
+        // what the builder is for. Note fields wait for a typed prefix.
+        if self.active_takes_notes() {
+            self.suggestions
+                .refresh_with_leading(&known, &typed, leading);
+        } else {
+            self.suggestions.refresh_browsing(&known, &typed, leading);
+        }
         if ask && self.active_takes_notes() && !typed.trim().is_empty() {
             self.ask_notes(typed, cx);
         }
@@ -824,6 +846,8 @@ impl QueryBuilderDialog {
             .ghost()
             .small()
             .label("✕")
+            .accessibility_label("Remove condition")
+            .tooltip("Remove this condition")
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.remove_row(id, cx)));
         let fields = if row.kind == RowKind::Property {
             div()
@@ -933,7 +957,9 @@ impl Render for QueryBuilderDialog {
                 )
             });
         let query = self.model.to_query();
-        let incomplete = self.model.incomplete();
+        // Only rows the user started count: a fresh builder's empty row is
+        // no warning.
+        let incomplete = self.model.unfinished();
         let count_text = self.count_text();
         let confirm = cx.entity().downgrade();
         let cancel = cx.entity().downgrade();
@@ -983,7 +1009,19 @@ impl Render for QueryBuilderDialog {
                     cx.stop_propagation();
                 }
             }))
-            .child(div().flex().flex_col().gap_2().children(rows))
+            // Many conditions scroll here, so the sort, the preview and the
+            // Apply / Cancel footer stay in the window.
+            .child(
+                div()
+                    .id(BUILDER_ROWS_ID)
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .max_h(rems(ROWS_MAX_REMS))
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
             .children(suggestions)
             .child(
                 div().flex().child(
@@ -1032,6 +1070,18 @@ impl Render for QueryBuilderDialog {
                                     }),
                             ),
                     )
+                    .when(self.cut, |col| {
+                        col.child(
+                            div()
+                                .id(BUILDER_CUT_ID)
+                                .test_support()
+                                .role(Role::Alert)
+                                .aria_label(CUT_TEXT)
+                                .text_xs()
+                                .text_color(theme::error(t))
+                                .child(CUT_TEXT),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -1051,10 +1101,10 @@ impl Render for QueryBuilderDialog {
                                     .child(match incomplete {
                                         0 => count_text,
                                         1 => format!(
-                                            "{count_text} · 1 condition is incomplete and left out"
+                                            "{count_text} · 1 condition is left out (unfinished, or a value with both ' and \")"
                                         ),
                                         n => format!(
-                                            "{count_text} · {n} conditions are incomplete and left out"
+                                            "{count_text} · {n} conditions are left out (unfinished, or a value with both ' and \")"
                                         ),
                                     }),
                             ),
@@ -1268,7 +1318,7 @@ impl Workspace {
         match target {
             BuilderTarget::Find => {
                 if let Some(find) = self.find.clone() {
-                    find.update(cx, |view, cx| view.apply_query(query, None, window, cx));
+                    find.update(cx, |view, cx| view.apply_edit(query, window, cx));
                 }
             }
             BuilderTarget::Browser => {

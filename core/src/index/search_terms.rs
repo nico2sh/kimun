@@ -679,7 +679,7 @@ pub struct SearchTerms {
 /// Maximum byte length of a query string accepted by [`SearchTerms::from_query_string`].
 /// 8 KB is more than enough for any real search query; larger inputs are truncated
 /// on a char boundary to prevent unbounded memory allocation via duplicate labels.
-const MAX_QUERY_LEN: usize = 8 * 1024;
+pub const MAX_QUERY_LEN: usize = 8 * 1024;
 
 impl SearchTerms {
     /// Parse a raw query string into typed [`SearchTerms`] buckets.

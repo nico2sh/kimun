@@ -40,7 +40,6 @@
 
 use std::sync::Arc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
@@ -76,6 +75,7 @@ use super::Workspace;
 use super::files::{ClickPolicy, ClickRows, entry_row, with_click_cursor};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::modal::{self, ModalKind, Slot};
+use super::query_tools::{QueryToolIds, QueryTools};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
 use crate::theme;
@@ -88,6 +88,7 @@ pub(crate) const PICKER_ERROR_ID: &str = "note-picker-error";
 pub(crate) const QUERY_ERROR_ID: &str = "note-picker-query-error";
 pub(crate) const HELP_BUTTON_ID: &str = "note-picker-help";
 pub(crate) const BUILD_BUTTON_ID: &str = "note-picker-build";
+pub(crate) const SAVE_BUTTON_ID: &str = "note-picker-save";
 /// The search browser's button carrying its query to the FIND view.
 pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
 pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
@@ -751,60 +752,65 @@ impl<R: PickerRow> Render for NotePicker<R> {
                 rows.h(rems(LIST_REMS)).into_any_element(),
             ),
             Some(search) => {
+                let to_find = Button::new(TO_FIND_BUTTON_ID)
+                    .ghost()
+                    .small()
+                    .icon(crate::workspace::rail_icon(DrawerView::Find))
+                    .tooltip(to_find_tooltip(cx))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        let query = this.input.read(cx).value().to_string();
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.open_browser_query_in_find(query, window, cx)
+                            })
+                            .ok();
+                    }))
+                    .into_any_element();
+                let tools = QueryTools {
+                    ids: QueryToolIds {
+                        build: BUILD_BUTTON_ID,
+                        save: SAVE_BUTTON_ID,
+                        help: HELP_BUTTON_ID,
+                    },
+                    chip: Some(self.render_sort_chip(cx).into_any_element()),
+                    can_save: !self.core.query().trim().is_empty(),
+                    busy: self.busy,
+                    save_tip: super::query_tools::save_tip(cx),
+                    extras: vec![to_find],
+                    on_build: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // The builder reads this field and whether the
+                        // browser is busy: after this update.
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.open_query_builder(window, cx)
+                                })
+                            })
+                            .ok();
+                    })),
+                    on_save: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // The browser gives way to the dialog: after this update.
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.save_browser_query(window, cx)
+                                })
+                            })
+                            .ok();
+                    })),
+                    on_help: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.workspace
+                            .update(cx, |workspace, cx| workspace.open_query_help(window, cx))
+                            .ok();
+                    })),
+                }
+                .render(cx);
                 let input_row = div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(input))
-                    .child(self.render_sort_chip(cx))
-                    .child(
-                        Button::new(TO_FIND_BUTTON_ID)
-                            .ghost()
-                            .icon(crate::workspace::rail_icon(DrawerView::Find))
-                            .tooltip(to_find_tooltip(cx))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                let query = this.input.read(cx).value().to_string();
-                                this.workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.open_browser_query_in_find(query, window, cx)
-                                    })
-                                    .ok();
-                            })),
-                    )
-                    .child(
-                        Button::new(BUILD_BUTTON_ID)
-                            .ghost()
-                            .label("Build…")
-                            .tooltip(super::chrome::tooltip_with_chord(
-                                super::query_builder::BUILD_TIP,
-                                &kimun_notes::logic::actions::ActionShortcuts::QueryBuilder,
-                                cx,
-                            ))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                // The builder reads this field and whether
-                                // the browser is busy: after this update.
-                                this.workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.with_window(cx, |workspace, window, cx| {
-                                            workspace.open_query_builder(window, cx)
-                                        })
-                                    })
-                                    .ok();
-                            })),
-                    )
-                    .child(
-                        Button::new(HELP_BUTTON_ID)
-                            .ghost()
-                            .icon(IconName::CircleQuestionMark)
-                            .tooltip("Query syntax (F1)")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace.open_query_help(window, cx)
-                                    })
-                                    .ok();
-                            })),
-                    )
+                    .child(tools)
                     .into_any_element();
                 // A cached view: rebuilt only when the preview itself changes.
                 let preview = search
