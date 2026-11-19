@@ -484,6 +484,9 @@ fn role_style(role: Role, theme: &Theme) -> CellStyle {
             s.fg = fg_of(&theme.gray, theme);
         }
         Role::BlockquoteBar => s.fg = fg_of(&theme.blockquote_bar, theme),
+        Role::FrontmatterTitle | Role::FrontmatterText => {
+            s.fg = fg_of(&theme.fg_secondary, theme);
+        }
         Role::Element(kind) => match kind {
             // Weight only: the GUI has a real bold face, so no colour cue
             // (the TUI needs one; a terminal cell can't always embolden).
