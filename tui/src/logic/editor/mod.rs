@@ -10,6 +10,7 @@ pub mod editor;
 pub mod find_bar;
 pub mod find_replace;
 pub mod frame;
+pub mod frontmatter_reveal;
 pub mod handled;
 pub mod jobs;
 pub mod line_field;

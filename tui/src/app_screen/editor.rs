@@ -2172,6 +2172,7 @@ impl AppScreen for EditorScreen {
         // cannot advance it and stay pure. Nothing user-visible moves here.
         if let InputEvent::Mouse(m) = event {
             self.pointer = Some(ratatui::layout::Position::new(m.column, m.row));
+            self.panels.set_pointer(self.pointer);
         }
         self.overlays.observe_input(event);
         let double_click = self.track_click(event, std::time::Instant::now());

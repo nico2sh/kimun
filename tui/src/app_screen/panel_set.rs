@@ -497,6 +497,12 @@ impl PanelSet {
             && self.editor.covers(column, row)
     }
 
+    /// Tell the note editor where the pointer is, so a frontmatter block
+    /// opens under it.
+    pub fn set_pointer(&mut self, pointer: Option<ratatui::layout::Position>) {
+        self.editor.set_pointer(pointer);
+    }
+
     /// Whether a mouse event at this cell belongs to the editor column — the
     /// region an **editor claim** may own. False mid divider-drag, so a drag
     /// that sweeps across the editor keeps resizing the drawer.
