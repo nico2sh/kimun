@@ -800,12 +800,14 @@ impl EditorScreen {
                 }
             }
             EditorIntent::FollowLink => {
-                // A Ctrl+click has no earlier press to have placed the
+                // A Ctrl+click or Alt+click has no earlier press to have placed the
                 // cursor, so place it first. A double-click already did.
                 let mut placed = None;
                 if let InputEvent::Mouse(m) = event
-                    && m.modifiers
-                        .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+                    && m.modifiers.intersects(
+                        ratatui::crossterm::event::KeyModifiers::CONTROL
+                            | ratatui::crossterm::event::KeyModifiers::ALT,
+                    )
                 {
                     placed = Some(self.execute_intent(EditorIntent::Mouse, event, tx));
                 }

@@ -66,12 +66,15 @@ impl ClickRun {
     /// the run went unnoticed: every press is followed by one.
     pub fn observe(&mut self, event: &MouseEvent, in_editor: bool, now: Instant) -> bool {
         match event.kind {
-            // Ctrl+click follows at once, with no first press to pair with. It
+            // Ctrl+click or Alt+click follows at once, with no first press to pair with. It
             // never reaches a terminal on macOS (Terminal.app and iTerm2 turn
             // it into a right press first), so double-click stays the gesture
             // that works everywhere.
             MouseEventKind::Down(MouseButton::Left)
-                if in_editor && event.modifiers.contains(KeyModifiers::CONTROL) =>
+                if in_editor
+                    && event
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.end();
                 true
