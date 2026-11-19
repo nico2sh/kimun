@@ -253,13 +253,15 @@ mod tests {
         assert!(!text(&s).contains('#'));
     }
     #[test]
-    fn unordered_list_shows_marker() {
+    fn unordered_list_shows_bullet() {
         let s = MarkdownSpanner::render("- item", "- item", 0, None, true, false, 40, &t());
         assert!(
-            text(&s).starts_with("- "),
-            "expected '- item', got '{}'",
+            text(&s).starts_with("• "),
+            "expected '• item', got '{}'",
             text(&s)
         );
+        let raw = MarkdownSpanner::render("- item", "- item", 0, Some(2), true, false, 40, &t());
+        assert!(text(&raw).starts_with("- "), "caret line stays raw");
         assert!(text(&s).contains("item"));
     }
     #[test]

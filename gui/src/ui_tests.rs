@@ -994,8 +994,8 @@ fn lists_and_task_boxes_paint_their_markers_and_done_tasks_dim_and_strike(cx: &m
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let bullet = painted_row(&view, 14, cx);
-        assert_eq!(bullet.text(), "- bullet item");
-        assert_eq!(piece(&bullet, "- ").style.fg, fg(&t.gray, &t));
+        assert_eq!(bullet.text(), "• bullet item");
+        assert_eq!(piece(&bullet, "• ").style.fg, fg(&t.gray, &t));
         assert_eq!(painted_row(&view, 15, cx).text(), "1. ordered item");
 
         let open = painted_row(&view, 16, cx);
