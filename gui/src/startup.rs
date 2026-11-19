@@ -20,7 +20,7 @@ use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::SystemPath;
-use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::editor_region::{EditorRegion, FacetViews};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
@@ -190,6 +190,9 @@ fn note_only(path: VaultPath, shown: &str) -> Result<VaultPath, String> {
 pub(crate) struct SessionRestore {
     pub(crate) region: EditorRegion,
     pub(crate) notes: Vec<(GroupId, VaultPath)>,
+    /// The facet views to show (ADR-0061), once the notes are open: only
+    /// those of notes that exist.
+    pub(crate) facets: FacetViews,
     pub(crate) gone: Vec<VaultPath>,
 }
 
@@ -249,7 +252,7 @@ pub(crate) async fn index_and_restore(
         return None;
     };
     let restored = session_restore(&vault, &record, indexed).await;
-    if !restored.notes.is_empty() {
+    if !restored.notes.is_empty() || !restored.facets.is_empty() {
         return Some(Landing::Session(restored));
     }
     if !history {
@@ -289,20 +292,22 @@ async fn session_restore(
             }
         }
     }
-    let (region, notes) =
+    let (region, notes, facets) =
         EditorRegion::from_record(record, |note| !gone.iter().any(|g| g.is_like(note)));
     SessionRestore {
         region,
         notes,
+        facets,
         gone,
     }
 }
 
-/// Every note `record` names, tab by tab, in reading order.
+/// Every note `record` names, tab by tab, in reading order: an editor
+/// group's note and a facet view's source alike.
 fn record_notes(record: &SessionRecord) -> Vec<VaultPath> {
     fn walk(tree: &GroupTreeRecord, out: &mut Vec<VaultPath>) {
         match tree {
-            GroupTreeRecord::Leaf { note } => out.extend(note.iter().cloned()),
+            GroupTreeRecord::Leaf { note, .. } => out.extend(note.iter().cloned()),
             GroupTreeRecord::Split { children, .. } => {
                 children.iter().for_each(|child| walk(child, out))
             }

@@ -55,12 +55,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use gpui_kit::{Context, Subscription, Task};
+use gpui_kit::{App, Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::Facet;
 use kimun_notes::logic::editor_region::EditorRegion;
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::startup::RestoreTarget;
-use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
+use kimun_notes::settings::session::{
+    FacetPick, GroupTreeRecord, SessionFile, SessionRecord, TabRecord,
+};
 
 use super::Workspace;
 use super::group::GroupState;
@@ -166,11 +169,34 @@ pub(crate) enum Queued {
 struct Seen {
     region: EditorRegion,
     targets: HashMap<GroupId, Option<VaultPath>>,
+    /// The source and picks of each group's facet view ([`facet_of`]).
+    facets: HashMap<GroupId, Option<(VaultPath, Vec<Facet>)>>,
 }
 
 /// The note `state`'s group is on, as the record keeps it.
 fn target_of(state: &GroupState) -> Option<&VaultPath> {
     state.notes.as_ref().and_then(NoteHost::target_ref)
+}
+
+/// The source and picks of the facet view `state`'s group shows.
+fn facet_of(state: &GroupState, cx: &App) -> Option<(VaultPath, Vec<Facet>)> {
+    state.facet.as_ref().map(|view| {
+        let view = view.read(cx);
+        (view.source().clone(), view.picks().to_vec())
+    })
+}
+
+/// Whether `seen` is what `state`'s facet view shows now: a compare, nothing
+/// cloned.
+fn facet_matches(seen: Option<&(VaultPath, Vec<Facet>)>, state: &GroupState, cx: &App) -> bool {
+    match (seen, state.facet.as_ref()) {
+        (None, None) => true,
+        (Some((source, picks)), Some(view)) => {
+            let view = view.read(cx);
+            view.source() == source && view.picks() == picks.as_slice()
+        }
+        _ => false,
+    }
 }
 
 /// The window's side of the session file.
@@ -219,7 +245,7 @@ fn is_one_group(record: &SessionRecord) -> bool {
     matches!(
         record.tabs.as_slice(),
         [TabRecord {
-            tree: GroupTreeRecord::Leaf { .. },
+            tree: GroupTreeRecord::Leaf { facets: None, .. },
             ..
         }]
     )
@@ -230,7 +256,7 @@ fn is_one_group(record: &SessionRecord) -> bool {
 fn one_group(note: Option<VaultPath>) -> SessionRecord {
     SessionRecord::new(
         vec![TabRecord {
-            tree: GroupTreeRecord::Leaf { note },
+            tree: GroupTreeRecord::Leaf { note, facets: None },
             active: 0,
         }],
         0,
@@ -247,12 +273,17 @@ impl Workspace {
     }
 
     /// What the window shows now, as a record.
-    pub(crate) fn session_record(&self) -> SessionRecord {
+    pub(crate) fn session_record(&self, cx: &App) -> SessionRecord {
         #[cfg(test)]
         self.session.builds.set(self.session.builds.get() + 1);
-        self.layout
-            .region()
-            .to_record(|group| self.host_in(group).and_then(NoteHost::target))
+        self.layout.region().to_record(|group| {
+            // A facet group records its source and picks; it holds no note.
+            if let Some((source, picks)) = self.state(group).and_then(|s| facet_of(s, cx)) {
+                let picks = picks.iter().map(FacetPick::from).collect();
+                return (Some(source), Some(picks));
+            }
+            (self.host_in(group).and_then(NoteHost::target), None)
+        })
     }
 
     /// Record to `file` from now on (the workspace was entered), as `start`
@@ -371,8 +402,13 @@ impl Workspace {
     }
 
     /// What the record would be built from now.
-    fn seen_now(&self) -> Seen {
+    fn seen_now(&self, cx: &App) -> Seen {
         Seen {
+            facets: self
+                .groups
+                .iter()
+                .map(|(group, state)| (*group, facet_of(state, cx)))
+                .collect(),
             region: self.layout.region().clone(),
             targets: self
                 .groups
@@ -384,14 +420,19 @@ impl Workspace {
 
     /// Whether what the record is built from is as it was at the last
     /// notify that changed it: a compare, no record built, nothing cloned.
-    fn seen_unchanged(&self) -> bool {
+    fn seen_unchanged(&self, cx: &App) -> bool {
         self.session.seen.as_ref().is_some_and(|seen| {
             seen.region == *self.layout.region()
                 && seen.targets.len() == self.groups.len()
+                && seen.facets.len() == self.groups.len()
                 && self.groups.iter().all(|(group, state)| {
                     seen.targets
                         .get(group)
                         .is_some_and(|target| target.as_ref() == target_of(state))
+                        && seen
+                            .facets
+                            .get(group)
+                            .is_some_and(|facet| facet_matches(facet.as_ref(), state, cx))
                 })
         })
     }
@@ -409,13 +450,13 @@ impl Workspace {
     /// only when it differs from what the file holds: a change undone
     /// meanwhile writes nothing.
     fn session_changed(&mut self, cx: &mut Context<Self>) {
-        if self.session.file.is_none() || self.session.restoring || self.seen_unchanged() {
+        if self.session.file.is_none() || self.session.restoring || self.seen_unchanged(cx) {
             return;
         }
-        self.session.seen = Some(self.seen_now());
+        self.session.seen = Some(self.seen_now(cx));
         self.session.timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SESSION_DEBOUNCE).await;
-            this.update(cx, |workspace, _| workspace.write_session())
+            this.update(cx, |workspace, cx| workspace.write_session(cx))
                 .ok();
         }));
     }
@@ -423,7 +464,7 @@ impl Workspace {
     /// Hand the record of now to the writer when it differs from what the
     /// file holds. Nothing without a workspace, nor while a restore is on
     /// its way.
-    fn write_session(&mut self) {
+    fn write_session(&mut self, cx: &App) {
         self.session.timer = None;
         if self.session.restoring {
             return;
@@ -431,7 +472,7 @@ impl Workspace {
         let Some(file) = self.session.file.clone() else {
             return;
         };
-        let record = self.session_record();
+        let record = self.session_record(cx);
         if self.session_unchanged(&record) {
             return;
         }
@@ -445,8 +486,8 @@ impl Workspace {
 
     /// [`Self::write_session`] now, without the debounce, and wait for it:
     /// the window is about to go, or to leave its workspace.
-    pub(super) fn write_session_now(&mut self) {
-        self.write_session();
+    pub(super) fn write_session_now(&mut self, cx: &App) {
+        self.write_session(cx);
         self.session.writer.flush();
     }
 
@@ -546,13 +587,14 @@ impl Workspace {
     fn land_on_record(&mut self, restored: SessionRestore, cx: &mut Context<Self>) {
         self.restore_pending = false;
         self.first_open_pending = false;
+        let expected = self.restored_record(&restored);
         if self.groups_closing.is_some() || !self.replace_region(restored.region, cx) {
             // Not applied: the stored record is still the better one, so
             // what the window holds now is no change; only the user's own
             // is (the open asked for meanwhile, for one).
             self.session.restoring = false;
-            self.session.seen = Some(self.seen_now());
-            self.session.last = Some(self.session_record());
+            self.session.seen = Some(self.seen_now(cx));
+            self.session.last = Some(self.session_record(cx));
             self.session.launch = None;
             self.run_queued(cx);
             return;
@@ -562,6 +604,12 @@ impl Workspace {
         self.session.restoring = false;
         for (group, note) in restored.notes {
             self.open_note_in(group, note, cx);
+        }
+        // The facet views, once the notes are open (ADR-0061): a source an
+        // editor group holds too is no conflict.
+        for (group, note, picks) in &restored.facets {
+            let picks = picks.iter().filter_map(FacetPick::to_facet).collect();
+            self.open_facet_view(*group, note.clone(), picks, cx);
         }
         if let Some(first) = restored.gone.first() {
             let more = match restored.gone.len() - 1 {
@@ -577,9 +625,26 @@ impl Workspace {
         // What the restore opened is what the file says: nothing to write
         // until something changes. The open asked for meanwhile is such a
         // change.
-        self.session.seen = Some(self.seen_now());
-        self.session.last = Some(self.session_record());
+        // A facet view shows once its source is read: the record it will
+        // make is what the file says, so its showing is no change.
+        self.session.seen = Some(self.seen_now(cx));
+        self.session.last = Some(expected.unwrap_or_else(|| self.session_record(cx)));
         self.run_queued(cx);
+    }
+
+    /// The record a restore with facet views ends on, which the window
+    /// only reaches once each source is read; `None` without facet views.
+    fn restored_record(&self, restored: &SessionRestore) -> Option<SessionRecord> {
+        if restored.facets.is_empty() {
+            return None;
+        }
+        Some(restored.region.to_record(|group| {
+            if let Some((_, note, picks)) = restored.facets.iter().find(|(g, ..)| *g == group) {
+                return (Some(note.clone()), Some(picks.clone()));
+            }
+            let note = restored.notes.iter().find(|(g, _)| *g == group);
+            (note.map(|(_, note)| note.clone()), None)
+        }))
     }
 
     /// Put `region` in place of the live editor region: every group of it
@@ -661,6 +726,7 @@ mod tests {
             tabs: vec![TabRecord {
                 tree: GroupTreeRecord::Leaf {
                     note: Some(VaultPath::new(note)),
+                    facets: None,
                 },
                 active: 0,
             }],

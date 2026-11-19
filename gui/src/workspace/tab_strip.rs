@@ -172,12 +172,13 @@ pub(crate) fn tab_drop_id(index: usize) -> ElementId {
 }
 
 /// What `group` shows, named as the Footer names it: the attachment in
-/// place of the editor, else the note. `None` for an empty group.
+/// place of the editor, else the note, else a facet view's source (no
+/// prefix). `None` for an empty group.
 pub(super) fn group_name(workspace: &Workspace, group: GroupId, cx: &App) -> Option<String> {
     let state = workspace.state(group)?;
     let shown: Option<VaultPath> = match state.attachment.as_ref() {
         Some(view) => Some(view.read(cx).path().clone()),
-        None => state.notes.as_ref().and_then(|h| h.note.clone()),
+        None => workspace.shown_note_in(group, cx),
     };
     shown.map(|path| path.get_name())
 }
@@ -509,6 +510,7 @@ impl Workspace {
         match self.layout.region_mut().close_group(group) {
             Some(CloseOutcome::Emptied) => {
                 self.forget_attachment_request(group);
+                self.forget_facet_request(group);
                 self.drop_attachment_in(group);
                 self.release_note_in(group, cx);
             }

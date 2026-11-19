@@ -14,7 +14,14 @@ use kimun_core::nfs::VaultPath;
 use crate::logic::layout::node::Node;
 use crate::logic::layout::{Axis, Dir, GroupId, UnitRect};
 use crate::logic::layout_tree::{EPS, nearest};
-use crate::settings::session::{GroupTreeRecord, SessionRecord, TabRecord};
+use crate::settings::session::{FacetPick, GroupTreeRecord, SessionRecord, TabRecord};
+
+/// What one group holds when recorded: its note, and the facets picked when
+/// it is a facet view of that note.
+pub type GroupHeld = (Option<VaultPath>, Option<Vec<FacetPick>>);
+
+/// The facet views a restore opens: group, note and the picks.
+pub type FacetViews = Vec<(GroupId, VaultPath, Vec<FacetPick>)>;
 
 /// Identifies one tab. Never reused within one region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -507,15 +514,17 @@ impl EditorRegion {
 
 impl EditorRegion {
     /// The region as a session record (ADR-0058): every tab in order with
-    /// its splits, their axes and weights (normalized per split), the note
-    /// of each group as `note_of` says (`None` for an empty group), each
+    /// its splits, their axes and weights (normalized per split), what
+    /// each group holds, as `held_in` says for its [`GroupId`]: a
+    /// [`GroupHeld`], the note (`None` for an empty group) and the facet
+    /// picks (`Some` when the group shows a facet view), each
     /// tab's active group and the shown tab.
-    pub fn to_record(&self, note_of: impl Fn(GroupId) -> Option<VaultPath>) -> SessionRecord {
+    pub fn to_record(&self, held_in: impl Fn(GroupId) -> GroupHeld) -> SessionRecord {
         let tabs = self
             .tabs
             .iter()
             .map(|t| TabRecord {
-                tree: tree_record(&t.root, &note_of),
+                tree: tree_record(&t.root, &held_in),
                 active: t
                     .root
                     .leaves()
@@ -533,15 +542,16 @@ impl EditorRegion {
     /// The region `record` describes, with fresh ids, and the note each
     /// group opens, in reading order. A group whose note is missing
     /// (`exists` says no, or the path is no note at all, such as an empty
-    /// one) stays in its place, empty. A note recorded in two groups opens
-    /// in the first only: a note is open in at most one group. The recorded
+    /// one) stays in its place, empty. A note recorded in two editor groups opens
+    /// in the first only: a note is open in at most one editor group (facet
+    /// views, returned apart, may repeat it). The recorded
     /// shown tab, each tab's active group, the splits and their weights come
     /// back. A record that leaves no note to open is a fresh start: one tab
     /// with one empty group.
     pub fn from_record(
         record: &SessionRecord,
         exists: impl Fn(&VaultPath) -> bool,
-    ) -> (EditorRegion, Vec<(GroupId, VaultPath)>) {
+    ) -> (EditorRegion, Vec<(GroupId, VaultPath)>, FacetViews) {
         let mut region = EditorRegion {
             tabs: Vec::with_capacity(record.tabs.len()),
             shown: TabId(0),
@@ -549,8 +559,9 @@ impl EditorRegion {
             next_group: 0,
         };
         let mut notes = Vec::new();
+        let mut facet_views = Vec::new();
         for (at, tab) in record.tabs.iter().enumerate() {
-            let root = region.build(&tab.tree, &exists, &mut notes);
+            let root = region.build(&tab.tree, &exists, &mut notes, &mut facet_views);
             let leaves: Vec<GroupId> = root.leaves().into_iter().copied().collect();
             let id = region.fresh_tab();
             region.tabs.push(Tab {
@@ -562,25 +573,40 @@ impl EditorRegion {
                 region.shown = id;
             }
         }
-        if notes.is_empty() {
-            return (EditorRegion::new(), notes);
+        if notes.is_empty() && facet_views.is_empty() {
+            return (EditorRegion::new(), notes, facet_views);
         }
         if region.position(region.shown).is_none() {
             region.shown = region.tabs[0].id;
         }
-        (region, notes)
+        (region, notes, facet_views)
     }
 
     /// The node `tree` describes, its groups numbered on; each note that
-    /// opens goes to `notes`.
+    /// opens goes to `notes`, each facet view to `facet_views`. Facet views
+    /// do not count for the one-group-per-note rule.
     fn build(
         &mut self,
         tree: &GroupTreeRecord,
         exists: &impl Fn(&VaultPath) -> bool,
         notes: &mut Vec<(GroupId, VaultPath)>,
+        facet_views: &mut FacetViews,
     ) -> Node<GroupId> {
         match tree {
-            GroupTreeRecord::Leaf { note } => {
+            GroupTreeRecord::Leaf {
+                note,
+                facets: Some(picks),
+            } => {
+                let group = self.fresh_group();
+                if let Some(note) = note
+                    && note.is_note()
+                    && exists(note)
+                {
+                    facet_views.push((group, note.clone(), picks.clone()));
+                }
+                Node::leaf(group)
+            }
+            GroupTreeRecord::Leaf { note, facets: None } => {
                 let group = self.fresh_group();
                 if let Some(note) = note
                     && note.is_note()
@@ -599,7 +625,7 @@ impl EditorRegion {
                 let children = weights
                     .iter()
                     .zip(children)
-                    .map(|(w, child)| (*w, self.build(child, exists, notes)))
+                    .map(|(w, child)| (*w, self.build(child, exists, notes, facet_views)))
                     .collect();
                 Node::split((*axis).into(), children)
             }
@@ -608,15 +634,12 @@ impl EditorRegion {
 }
 
 /// [`EditorRegion::to_record`] of one node.
-fn tree_record(
-    node: &Node<GroupId>,
-    note_of: &impl Fn(GroupId) -> Option<VaultPath>,
-) -> GroupTreeRecord {
+fn tree_record(node: &Node<GroupId>, held_in: &impl Fn(GroupId) -> GroupHeld) -> GroupTreeRecord {
     match node.split_children() {
         Some((axis, children)) => {
             let (weights, children) = children
                 .into_iter()
-                .map(|(w, child)| (w, tree_record(child, note_of)))
+                .map(|(w, child)| (w, tree_record(child, held_in)))
                 .unzip();
             GroupTreeRecord::Split {
                 axis: axis.into(),
@@ -624,9 +647,10 @@ fn tree_record(
                 children,
             }
         }
-        None => GroupTreeRecord::Leaf {
-            note: note_of(*node.as_leaf().expect("a node is a leaf or a split")),
-        },
+        None => {
+            let (note, facets) = held_in(*node.as_leaf().expect("a node is a leaf or a split"));
+            GroupTreeRecord::Leaf { note, facets }
+        }
     }
 }
 

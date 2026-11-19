@@ -423,7 +423,7 @@ impl Element for EditorElement {
                 .editor
                 .session()
                 .display
-                .frame(cols, focused && !bar_open);
+                .frame(cols, focused && !bar_open && !view.read_only);
             let theme_in_effect = theme::current(view_cx);
             let theme = &*theme_in_effect;
 
@@ -824,7 +824,10 @@ impl Element for EditorElement {
             let view = self.view.clone();
             let hitbox = prepaint.hitbox.clone();
             move |event: &ScrollEvent, phase, window, cx| {
-                if phase.bubble() && hitbox.should_handle_scroll(window) {
+                // A read-only editor (a facet view's chunk) is sized to its
+                // text: the wheel scrolls the column it sits in.
+                if phase.bubble() && hitbox.should_handle_scroll(window) && !view.read(cx).read_only
+                {
                     view.update(cx, |v, cx| {
                         v.scroll_wheel(event, origin, &cells, window, cx)
                     });

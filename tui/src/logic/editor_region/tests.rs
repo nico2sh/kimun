@@ -491,7 +491,7 @@ fn move_group_to_new_tab_takes_the_group_alone_into_a_new_last_tab() {
 // ── Record and restore ───────────────────────────────────────────────────
 
 use crate::settings::session::{
-    AxisRecord, GroupTreeRecord, SESSION_VERSION, SessionRecord, TabRecord,
+    AxisRecord, FacetPick, GroupTreeRecord, SESSION_VERSION, SessionRecord, TabRecord,
 };
 use kimun_core::nfs::VaultPath;
 
@@ -502,6 +502,7 @@ fn note(path: &str) -> VaultPath {
 fn leaf_record(path: Option<&str>) -> GroupTreeRecord {
     GroupTreeRecord::Leaf {
         note: path.map(VaultPath::new),
+        facets: None,
     }
 }
 
@@ -521,8 +522,11 @@ fn two_tab_region() -> (EditorRegion, Vec<(GroupId, VaultPath)>) {
     )
 }
 
-fn note_lookup(notes: &[(GroupId, VaultPath)]) -> impl Fn(GroupId) -> Option<VaultPath> + '_ {
-    move |g| notes.iter().find(|(h, _)| *h == g).map(|(_, p)| p.clone())
+fn note_lookup(notes: &[(GroupId, VaultPath)]) -> impl Fn(GroupId) -> GroupHeld + '_ {
+    move |g| {
+        let note = notes.iter().find(|(h, _)| *h == g).map(|(_, p)| p.clone());
+        (note, None)
+    }
 }
 
 /// The shape with every group replaced by the note it holds, so two regions
@@ -545,7 +549,7 @@ fn shape_with_notes(r: &EditorRegion, tab: TabId, notes: &[(GroupId, VaultPath)]
 fn record_then_restore_gives_the_same_arrangement() {
     let (r, notes) = two_tab_region();
     let record = r.to_record(note_lookup(&notes));
-    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    let (back, opened, _) = EditorRegion::from_record(&record, |_| true);
     assert_valid(&back);
     assert_eq!(back.tabs().len(), 2);
     for (was, now) in r.tabs().into_iter().zip(back.tabs()) {
@@ -572,7 +576,7 @@ fn record_keeps_the_weights_exactly() {
     };
     assert_eq!(*axis, AxisRecord::Horizontal);
     assert_eq!(weights, &vec![0.3, 0.7]);
-    let (back, _) = EditorRegion::from_record(&record, |_| true);
+    let (back, _, _) = EditorRegion::from_record(&record, |_| true);
     assert_eq!(back.shape(), r.shape(), "the same weights, to the bit");
 }
 
@@ -601,7 +605,7 @@ fn restore_rebuilds_nested_splits() {
         }],
         shown: 0,
     };
-    let (r, opened) = EditorRegion::from_record(&record, |_| true);
+    let (r, opened, _) = EditorRegion::from_record(&record, |_| true);
     assert_valid(&r);
     let groups = r.groups(r.shown());
     assert_eq!(groups.len(), 4);
@@ -640,7 +644,7 @@ fn restore_rebuilds_nested_splits() {
 fn restore_drops_a_missing_note_and_keeps_the_rest() {
     let (r, notes) = two_tab_region();
     let record = r.to_record(note_lookup(&notes));
-    let (back, opened) = EditorRegion::from_record(&record, |p| *p != note("b.md"));
+    let (back, opened, _) = EditorRegion::from_record(&record, |p| *p != note("b.md"));
     assert_valid(&back);
     assert_eq!(back.tabs().len(), 2, "the tab of the missing note stays");
     assert_eq!(back.all_groups().len(), 4, "its group stays, empty");
@@ -658,13 +662,13 @@ fn restore_drops_a_missing_note_and_keeps_the_rest() {
 fn restore_with_every_note_missing_gives_one_empty_group() {
     let (r, notes) = two_tab_region();
     let record = r.to_record(note_lookup(&notes));
-    let (back, opened) = EditorRegion::from_record(&record, |_| false);
+    let (back, opened, _) = EditorRegion::from_record(&record, |_| false);
     assert_valid(&back);
     assert_eq!(back.tabs().len(), 1);
     assert_eq!(back.all_groups().len(), 1);
     assert!(opened.is_empty());
     // A record of empty groups only is a fresh start too.
-    let (back, opened) = EditorRegion::from_record(&r.to_record(|_| None), |_| true);
+    let (back, opened, _) = EditorRegion::from_record(&r.to_record(|_| (None, None)), |_| true);
     assert_eq!(back.all_groups().len(), 1);
     assert!(opened.is_empty());
 }
@@ -684,7 +688,7 @@ fn restore_treats_an_empty_note_path_as_missing() {
         }],
         shown: 0,
     };
-    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    let (back, opened, _) = EditorRegion::from_record(&record, |_| true);
     assert_eq!(back.all_groups().len(), 2);
     assert_eq!(opened, vec![(back.all_groups()[1], note("kept.md"))]);
 }
@@ -710,7 +714,7 @@ fn restore_ignores_a_duplicate_note_and_keeps_the_first() {
         ],
         shown: 1,
     };
-    let (back, opened) = EditorRegion::from_record(&record, |_| true);
+    let (back, opened, _) = EditorRegion::from_record(&record, |_| true);
     assert_valid(&back);
     let first = back.groups(back.tabs()[0])[0];
     let second_tab = back.groups(back.tabs()[1]);
@@ -746,7 +750,7 @@ fn restore_shows_the_recorded_tab_and_active_group() {
         ],
         shown: 0,
     };
-    let (back, _) = EditorRegion::from_record(&record, |_| true);
+    let (back, _, _) = EditorRegion::from_record(&record, |_| true);
     let tabs = back.tabs();
     assert_eq!(back.shown(), tabs[0]);
     assert_eq!(back.active_group(), back.groups(tabs[0])[1]);
@@ -782,7 +786,7 @@ fn restore_keeps_a_tab_whose_notes_are_all_missing() {
         ],
         shown: 0,
     };
-    let (back, opened) = EditorRegion::from_record(&record, |p| *p == note("kept.md"));
+    let (back, opened, _) = EditorRegion::from_record(&record, |p| *p == note("kept.md"));
     assert_valid(&back);
     let tabs = back.tabs();
     assert_eq!(tabs.len(), 2, "the tab of gone notes stays, as a tab");
@@ -917,4 +921,89 @@ fn move_group_dir_to_the_left_or_top_edge_puts_the_group_first() {
         top.y() < 1e-6 && (top.width() - 1.0).abs() < 1e-6,
         "{top:?}"
     );
+}
+
+// ── Facet leaves ─────────────────────────────────────────────────────────
+
+fn pick(kind: &str, key: &str) -> FacetPick {
+    FacetPick {
+        kind: kind.to_string(),
+        key: key.to_string(),
+    }
+}
+
+fn facet_leaf(path: &str) -> GroupTreeRecord {
+    GroupTreeRecord::Leaf {
+        note: Some(VaultPath::new(path)),
+        facets: Some(vec![pick("tag", "travel")]),
+    }
+}
+
+fn two_leaf_record(first: GroupTreeRecord, second: GroupTreeRecord) -> SessionRecord {
+    SessionRecord {
+        version: SESSION_VERSION,
+        tabs: vec![TabRecord {
+            tree: GroupTreeRecord::Split {
+                axis: AxisRecord::Horizontal,
+                weights: vec![0.5, 0.5],
+                children: vec![first, second],
+            },
+            active: 0,
+        }],
+        shown: 0,
+    }
+}
+
+#[test]
+fn a_facet_leaf_round_trips() {
+    let record = two_leaf_record(facet_leaf("a.md"), leaf_record(Some("b.md")));
+    let (back, opened, facets) = EditorRegion::from_record(&record, |_| true);
+    let groups = back.all_groups();
+    assert_eq!(opened, vec![(groups[1], note("b.md"))]);
+    assert_eq!(
+        facets,
+        vec![(groups[0], note("a.md"), vec![pick("tag", "travel")])]
+    );
+    let again = back.to_record(|g| {
+        if let Some((_, n, p)) = facets.iter().find(|(h, _, _)| *h == g) {
+            (Some(n.clone()), Some(p.clone()))
+        } else {
+            (
+                opened.iter().find(|(h, _)| *h == g).map(|(_, n)| n.clone()),
+                None,
+            )
+        }
+    });
+    assert_eq!(again, record);
+}
+
+#[test]
+fn a_facet_leaf_of_a_gone_note_is_dropped() {
+    let record = two_leaf_record(facet_leaf("a.md"), leaf_record(Some("b.md")));
+    let (back, opened, facets) = EditorRegion::from_record(&record, |p| *p != note("a.md"));
+    assert_eq!(back.all_groups().len(), 2, "the group stays, empty");
+    assert!(facets.is_empty());
+    assert_eq!(opened.len(), 1);
+}
+
+#[test]
+fn a_facet_and_an_editor_group_may_hold_the_same_note() {
+    let record = two_leaf_record(facet_leaf("a.md"), leaf_record(Some("a.md")));
+    let (back, opened, facets) = EditorRegion::from_record(&record, |_| true);
+    let groups = back.all_groups();
+    assert_eq!(opened, vec![(groups[1], note("a.md"))]);
+    assert_eq!(facets.len(), 1);
+    assert_eq!(facets[0].0, groups[0]);
+    // Either order.
+    let record = two_leaf_record(leaf_record(Some("a.md")), facet_leaf("a.md"));
+    let (_, opened, facets) = EditorRegion::from_record(&record, |_| true);
+    assert_eq!((opened.len(), facets.len()), (1, 1));
+}
+
+#[test]
+fn two_editor_groups_still_cannot_hold_the_same_note() {
+    let record = two_leaf_record(leaf_record(Some("a.md")), leaf_record(Some("a.md")));
+    let (_, opened, facets) = EditorRegion::from_record(&record, |_| true);
+    assert_eq!(opened.len(), 1);
+    assert!(facets.is_empty());
 }

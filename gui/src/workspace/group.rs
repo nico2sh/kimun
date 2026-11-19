@@ -1,11 +1,11 @@
 //! What one editor group holds: its editor, its note session and the
-//! attachment it may show in place of the editor. The [`Workspace`] keeps
+//! attachment or facet view it may show in place of the editor. The [`Workspace`] keeps
 //! one per group of the layout tree (`Workspace::groups`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui_kit::{AppContext as _, Context, Entity, Subscription, Task};
+use gpui_kit::{AnyView, AppContext as _, Context, Entity, Subscription, Task};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::autocomplete::VaultSuggestions;
@@ -15,6 +15,7 @@ use kimun_notes::logic::session::NoteSession;
 
 use super::Workspace;
 use super::attachment::AttachmentView;
+use super::facet::FacetView;
 use super::note::NoteHost;
 use crate::editor_view::EditorView;
 
@@ -35,6 +36,20 @@ pub(crate) struct GroupState {
     pub(super) attachment_flushing: Option<Task<()>>,
     /// An attachment asked for while that flush ran: it opens next.
     pub(super) attachment_wanted: Option<VaultPath>,
+    /// The **Facet view** the editor Panel shows instead of the editor
+    /// (ADR-0061, [`super::facet_group`]), and its events. While it shows,
+    /// the note session holds no note: autosave and the editor never see
+    /// the source.
+    pub(crate) facet: Option<Entity<FacetView>>,
+    pub(super) _facet_events: Option<Subscription>,
+    /// The read of the source asked for by [`Workspace::open_facet_view`]
+    /// (a newer request replaces it).
+    pub(super) facet_loading: Option<Task<()>>,
+    /// The flush of the open note before a facet view shows.
+    pub(super) facet_flushing: Option<Task<()>>,
+    /// The read of the source after a save, a reload or a rename, whose
+    /// text the shown view takes ([`Workspace::refresh_facets`]).
+    pub(super) facet_reading: Option<Task<()>>,
     /// The Footer's dirty watch and the window requests of an editor made
     /// for a new group ([`Workspace::new_group_state`]); the first group's
     /// live on the workspace.
@@ -43,6 +58,21 @@ pub(crate) struct GroupState {
 }
 
 impl GroupState {
+    /// Whether the group shows a view in place of its editor: an attachment
+    /// or a facet view.
+    pub(crate) fn shows_view(&self) -> bool {
+        self.attachment.is_some() || self.facet.is_some()
+    }
+
+    /// The view the group shows in place of its editor, if any.
+    pub(crate) fn view(&self) -> Option<AnyView> {
+        match (&self.attachment, &self.facet) {
+            (Some(view), _) => Some(view.clone().into()),
+            (None, Some(view)) => Some(view.clone().into()),
+            (None, None) => None,
+        }
+    }
+
     pub(crate) fn new(editor: Entity<EditorView>) -> Self {
         Self {
             editor,
@@ -52,6 +82,11 @@ impl GroupState {
             attachment_loading: None,
             attachment_flushing: None,
             attachment_wanted: None,
+            facet: None,
+            _facet_events: None,
+            facet_loading: None,
+            facet_flushing: None,
+            facet_reading: None,
             _editor_watch: None,
             _editor_events: None,
         }
@@ -259,7 +294,8 @@ impl Workspace {
     }
 
     /// The Footer, FILES' open-note mark and the views that follow the
-    /// open note take the active group's note, attachment and dirty state.
+    /// open note take the active group's note, attachment and dirty state;
+    /// FILES marks a facet view's source.
     pub(super) fn sync_active_status(&mut self, cx: &mut Context<Self>) {
         let state = self.active_state();
         let note = state.notes.as_ref().and_then(|h| h.note.clone());
@@ -267,12 +303,18 @@ impl Workspace {
             .attachment
             .as_ref()
             .map(|view| view.read(cx).path().clone());
+        let facet = state
+            .facet
+            .as_ref()
+            .map(|view| view.read(cx).source().clone());
         let dirty = state.editor.read(cx).editor.is_dirty();
         self.status.note = note.clone();
         self.status.attachment = attachment.clone();
         self.status.dirty = dirty;
         if let Some(files) = self.files.as_ref() {
-            files.update(cx, |pane, cx| pane.set_open_note(note.or(attachment), cx));
+            files.update(cx, |pane, cx| {
+                pane.set_open_note(note.or(attachment).or(facet), cx)
+            });
         }
         self.refresh_views(cx);
     }

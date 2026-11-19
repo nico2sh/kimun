@@ -958,6 +958,8 @@ impl Workspace {
                     self.open_note_menu(group, *at, window, cx);
                 }
             }
+            // Only a read-only editor emits this; the note editors are not.
+            EditorEvent::ReadOnlyPress { .. } => {}
         }
     }
 
@@ -1224,6 +1226,7 @@ impl Workspace {
                 self.file_op_closes_modals(&op, cx);
                 self.files_file_op(&op, cx);
                 self.attachment_file_op(&op, cx);
+                self.facet_file_op(&op, cx);
                 self.views_file_op(&op, cx);
                 self.refresh_note_counts();
                 // Every result changed the working tree.
@@ -1294,7 +1297,10 @@ impl Workspace {
             }
             // A property write changed a note on disk (sent by the write
             // itself, so it arrives with the dialog closed too).
-            AppMessage::NoteReloadFromDisk(path) => self.reload_from_disk(path, cx),
+            AppMessage::NoteReloadFromDisk(path) => {
+                self.refresh_facets(&path, cx);
+                self.reload_from_disk(path, cx)
+            }
             // Results addressed to an open modal: the properties dialog's
             // (path-guarded); every other one is stale.
             AppMessage::OverlayData(data) => self.properties_data(data, cx),
@@ -1841,11 +1847,15 @@ impl Workspace {
                 Some(view) => self.view_handle(view, slot, cx),
                 None => self.slot_handle(slot),
             },
-            // The attachment view while one shows, else the editor.
-            Focus::Leaf(Leaf::Editor) => match self.active_state().attachment.as_ref() {
-                Some(view) => view.read(cx).focus_handle(cx),
-                None => self.active_state().editor.read(cx).focus_handle(cx),
-            },
+            // The attachment or facet view while one shows, else the editor.
+            Focus::Leaf(Leaf::Editor) => {
+                let state = self.active_state();
+                match (state.attachment.as_ref(), state.facet.as_ref()) {
+                    (Some(view), _) => view.read(cx).focus_handle(cx),
+                    (None, Some(view)) => view.read(cx).focus_handle(cx),
+                    (None, None) => state.editor.read(cx).focus_handle(cx),
+                }
+            }
         }
     }
 
@@ -2617,8 +2627,8 @@ impl Workspace {
     /// [`Self::intercept_modal_key`]).
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.focused_panel() {
-            // The attachment view reads no vim keys.
-            Panel::Editor if self.active_state().attachment.is_some() => KeyCtx {
+            // The attachment and facet views read no vim keys.
+            Panel::Editor if self.active_state().shows_view() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
@@ -3306,12 +3316,12 @@ impl Workspace {
     /// Whether `group` shows its editor ([`Self::render_group_document`]).
     fn group_editor_shown(&self, group: GroupId) -> bool {
         self.empty.is_none()
-            && self.state(group).is_some_and(|s| s.attachment.is_none())
+            && self.state(group).is_some_and(|s| !s.shows_view())
             && self.note_empty_state_in(group).is_none()
     }
 
-    /// What `group` shows: its attachment view, else why there is no note
-    /// (the window's own empty state first), else its editor
+    /// What `group` shows: its attachment or facet view, else why there is
+    /// no note (the window's own empty state first), else its editor
     /// ([`Self::group_editor_shown`] says which).
     pub(super) fn render_group_document(
         &self,
@@ -3321,15 +3331,15 @@ impl Workspace {
         let Some(state) = self.state(group) else {
             return div().flex_1().into_any_element();
         };
-        let attachment = state.attachment.clone().filter(|_| self.empty.is_none());
-        let empty = match &attachment {
+        let shown = state.view().filter(|_| self.empty.is_none());
+        let empty = match &shown {
             None => self
                 .empty
                 .clone()
                 .or_else(|| self.note_empty_state_in(group)),
             Some(_) => None,
         };
-        match (&empty, attachment) {
+        match (&empty, shown) {
             // The editor is not drawn: its focus handle sits on the empty
             // state, so the keyboard still reaches the window's chords (F5
             // away from a workspace that would not open, the leader, the
@@ -3788,6 +3798,8 @@ mod create;
 mod directory_choice;
 mod drawer_list;
 mod drop_zones;
+mod facet;
+mod facet_group;
 mod file_dialogs;
 mod file_ops;
 mod files;
@@ -3857,6 +3869,8 @@ mod cfg_tests;
 mod chevron_tests;
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod facet_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]

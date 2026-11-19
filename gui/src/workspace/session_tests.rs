@@ -41,6 +41,7 @@ const NOTES: &[(&str, &str)] = &[
 fn leaf(note: Option<&str>) -> GroupTreeRecord {
     GroupTreeRecord::Leaf {
         note: note.map(VaultPath::new),
+        facets: None,
     }
 }
 
@@ -72,7 +73,7 @@ impl Win {
 
     /// The window's own record of what it shows now.
     fn record(&self, cx: &TestAppContext) -> SessionRecord {
-        cx.read(|cx| self.workspace.read(cx).session_record())
+        cx.read(|cx| self.workspace.read(cx).session_record(cx))
     }
 
     /// The note `group` shows.
@@ -1322,4 +1323,216 @@ fn a_restored_session_is_drawn_in_place(cx: &mut TestAppContext) {
         (first - rest).abs() < 0.5,
         "{first} on landing, {rest} at rest"
     );
+}
+
+// ── Facet views (ADR-0061) ────────────────────────────────────────────────
+
+mod facets {
+    use kimun_core::note::{Facet, FacetKind};
+    use kimun_notes::settings::session::FacetPick;
+
+    use super::*;
+
+    const FNOTES: &[(&str, &str)] = &[
+        ("n.md", "# Head\n\nsome #a\n\nmore #b\n"),
+        ("m.md", "plain"),
+    ];
+
+    fn tag(key: &str) -> Facet {
+        Facet::new(FacetKind::Tag, key)
+    }
+
+    fn picks_of(keys: &[&str]) -> Vec<FacetPick> {
+        keys.iter().map(|k| FacetPick::from(&tag(k))).collect()
+    }
+
+    fn facet_leaf(note: &str, keys: &[&str]) -> GroupTreeRecord {
+        GroupTreeRecord::Leaf {
+            note: Some(path(note)),
+            facets: Some(picks_of(keys)),
+        }
+    }
+
+    fn split(children: Vec<GroupTreeRecord>) -> SessionRecord {
+        SessionRecord {
+            version: SESSION_VERSION,
+            tabs: vec![TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5; children.len()],
+                    children,
+                },
+                active: 0,
+            }],
+            shown: 0,
+        }
+    }
+
+    impl Win {
+        /// The source and picks of the facet view `group` shows.
+        fn facet_in(&self, group: GroupId, cx: &TestAppContext) -> Option<(VaultPath, Vec<Facet>)> {
+            cx.read(|cx| {
+                let view = self.workspace.read(cx).state(group)?.facet.clone()?;
+                let view = view.read(cx);
+                Some((view.source().clone(), view.picks().to_vec()))
+            })
+        }
+
+        fn facet_count(&self, cx: &TestAppContext) -> usize {
+            self.groups_of_shown(cx)
+                .into_iter()
+                .filter(|g| self.facet_in(*g, cx).is_some())
+                .count()
+        }
+
+        /// Pick or unpick `facet` in `group`'s view, as a click does.
+        fn toggle(&self, group: GroupId, facet: Facet, cx: &mut TestAppContext) {
+            let view = cx
+                .read(|cx| self.workspace.read(cx).state(group).unwrap().facet.clone())
+                .expect("a facet view");
+            view.update(cx, |view, cx| view.toggle(facet, cx));
+            cx.run_until_parked();
+        }
+    }
+
+    fn restored(
+        cx: &mut TestAppContext,
+        rt: &Runtime,
+        record: &SessionRecord,
+        facets: usize,
+    ) -> (TestVault, Win) {
+        let v = rt.block_on(test_vault(FNOTES, &[]));
+        session_of(&v).save(record).unwrap();
+        let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+        let win = Win(started);
+        drive(rt, cx, |cx| {
+            !win.indexing(cx) && win.all_idle(cx) && win.facet_count(cx) == facets
+        });
+        (v, win)
+    }
+
+    #[gpui_kit::test]
+    fn a_facet_view_and_its_picks_survive_a_restart(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        // First run: a facet view of n.md with #a picked, beside m.md.
+        let v = rt.block_on(test_vault(FNOTES, &[]));
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("n.md"))),
+            v.settings.clone(),
+        ));
+        drive(&rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+        win.with(cx, |w, cx| {
+            w.open_note_in_split(path("m.md"), Axis::Horizontal, cx)
+        });
+        drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "plain");
+        let first = win.groups_of_shown(cx)[0];
+        win.with(cx, |w, cx| {
+            w.open_facet_view(first, path("n.md"), vec![tag("a")], cx)
+        });
+        drive(&rt, cx, |cx| win.facet_count(cx) == 1);
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("the record is written");
+        let mut expected = split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))]);
+        expected.tabs[0].active = 1; // the split's new group has the focus
+        assert_eq!(saved, expected);
+        // Second run, from that record.
+        let (_v, win) = restored(cx, &rt, &saved, 1);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(
+            win.facet_in(groups[0], cx),
+            Some((path("n.md"), vec![tag("a")]))
+        );
+        assert_eq!(win.note_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[1], cx), Some(path("m.md")));
+        assert_eq!(win.record(cx), saved);
+    }
+
+    #[gpui_kit::test]
+    fn changing_a_pick_triggers_a_session_write(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(record.clone()),
+            "the restore writes nothing"
+        );
+        let group = win.groups_of_shown(cx)[0];
+        win.toggle(group, tag("b"), cx);
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("a record");
+        assert_ne!(saved, record);
+        assert_eq!(saved, win.record(cx));
+        let GroupTreeRecord::Split { children, .. } = &saved.tabs[0].tree else {
+            panic!("a split: {saved:?}");
+        };
+        let GroupTreeRecord::Leaf {
+            facets: Some(picks),
+            ..
+        } = &children[0]
+        else {
+            panic!("a facet leaf: {children:?}");
+        };
+        assert!(picks.contains(&FacetPick::from(&tag("b"))), "{picks:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_gone_source_restores_as_an_empty_group_with_the_gone_flash(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("gone.md", &["a"]), leaf(Some("m.md"))]);
+        let (_v, win) = restored(cx, &rt, &record, 0);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(win.facet_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[1], cx), Some(path("m.md")));
+        let flash = win.flash(cx).expect("the gone note is said");
+        assert!(flash.contains("gone.md"), "{flash}");
+        assert!(
+            flash.contains("is gone (moved or deleted outside kimün)"),
+            "{flash}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_pick_the_note_lost_is_dropped_on_restore(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("n.md", &["a", "lost"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert_eq!(
+            win.facet_in(group, cx),
+            Some((path("n.md"), vec![tag("a")]))
+        );
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))])),
+            "the dropped pick is written"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_group_and_a_facet_group_of_one_note_both_restore(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![leaf(Some("n.md")), facet_leaf("n.md", &["b"])]);
+        let (_v, win) = restored(cx, &rt, &record, 1);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(win.note_in(groups[0], cx), Some(path("n.md")));
+        assert_eq!(win.facet_in(groups[0], cx), None);
+        assert_eq!(
+            win.facet_in(groups[1], cx),
+            Some((path("n.md"), vec![tag("b")]))
+        );
+        assert_eq!(win.record(cx), record);
+    }
 }
