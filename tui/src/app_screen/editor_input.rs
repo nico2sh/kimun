@@ -628,7 +628,11 @@ pub(crate) fn classify_tail(
         // classifier cannot hit-test panels (that is `PanelSet`'s job, and why
         // `Mouse` exists at all), so it leans on focus: the first press of the
         // pair already focused whatever column it landed in.
-        if ctx.double_click && ctx.editor_active() {
+        // A Ctrl/Alt+click has no first press to have focused the editor, so
+        // it skips the focus test; `ClickRun` already hit-tested the buffer.
+        let modifier_click = matches!(event, InputEvent::Mouse(m)
+            if crate::app_screen::click_run::is_modifier_click(m));
+        if ctx.double_click && (ctx.editor_active() || modifier_click) {
             return done(EditorIntent::FollowLink);
         }
         return done(EditorIntent::Mouse);

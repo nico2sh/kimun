@@ -800,6 +800,14 @@ impl EditorScreen {
                 }
             }
             EditorIntent::FollowLink => {
+                // A Ctrl+click or Alt+click has no earlier press to have placed the
+                // cursor, so place it first. A double-click already did.
+                let mut placed = None;
+                if let InputEvent::Mouse(m) = event
+                    && crate::app_screen::click_run::is_modifier_click(m)
+                {
+                    placed = Some(self.execute_intent(EditorIntent::Mouse, event, tx));
+                }
                 if self.follow_link_at_cursor(tx) {
                     EventState::Consumed
                 } else if matches!(event, InputEvent::Mouse(_)) {
@@ -810,7 +818,7 @@ impl EditorScreen {
                     // happen. Hand it back to the panels as the press it is —
                     // the same fallback-on-runtime-outcome shape `ImageProbe`
                     // uses when the clipboard turns out to hold no image.
-                    self.execute_intent(EditorIntent::Mouse, event, tx)
+                    placed.unwrap_or_else(|| self.execute_intent(EditorIntent::Mouse, event, tx))
                 } else {
                     EventState::Consumed
                 }
@@ -4717,6 +4725,38 @@ mod tests {
                 _ => None,
             })
             .expect("the double-click emitted no FollowLink");
+        assert_eq!(
+            followed,
+            ("target note".to_string(), LinkSpanKind::WikiLink)
+        );
+    }
+
+    /// Ctrl+click follows in one press: it places the cursor, then follows.
+    #[tokio::test]
+    async fn a_ctrl_click_on_a_wikilink_follows_it() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        screen
+            .panels
+            .editor_mut()
+            .unwrap()
+            .set_text("[[target note]]".to_string());
+        lay_out(&mut screen);
+        let (col, row) = buffer_origin(&screen);
+        let mut press = press_at(col + 6, row);
+        if let InputEvent::Mouse(m) = &mut press {
+            m.modifiers = ratatui::crossterm::event::KeyModifiers::CONTROL;
+        }
+
+        screen.handle_input(&press, &tx);
+
+        let followed = crate::test_support::drain(&mut rx)
+            .into_iter()
+            .find_map(|ev| match ev {
+                AppMessage::FollowLink { target, kind } => Some((target, kind)),
+                _ => None,
+            })
+            .expect("the ctrl+click emitted no FollowLink");
         assert_eq!(
             followed,
             ("target note".to_string(), LinkSpanKind::WikiLink)
