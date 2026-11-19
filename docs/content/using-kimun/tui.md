@@ -72,6 +72,7 @@ The editor shows Markdown with style, such as bold headings and colored links. Y
 
 - Type `[[` to link to a note. Type `#` to add a tag. Press `Tab` or `Enter` to accept a suggestion.
 - Double-click a `[[link]]` or a `#tag` to follow it. You can also press `Ctrl+Enter` or `Ctrl+U`. If no note matches the link, Kimün offers to create it.
+- Hold `Ctrl` or `Alt` and click a link or a tag to follow it with one click. On macOS, Terminal.app and iTerm2 turn `Ctrl`+click into a right-click, and `Alt`+click works only if you turn on "Use Option as Meta key". Double-click works everywhere.
 - Press `Ctrl+B t b` for bold, `Ctrl+B t i` for italic, and `Ctrl+B t s` for strikethrough.
 - Paste an image with `Ctrl+V`. Kimün saves it in `/assets/` and adds the link.
 - Paste a web address over selected text to make a link.
