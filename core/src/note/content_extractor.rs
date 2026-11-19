@@ -9,6 +9,7 @@ use crate::{
     note::{ContentChunk, NoteContentData},
 };
 
+use super::properties::FrontmatterFormat;
 use super::walk::{overlaps_any, retarget_links, walk, TextLine};
 use super::NoteLink;
 
@@ -824,6 +825,38 @@ pub(in crate::note) fn frontmatter_bounds(text: &str) -> Option<FrontmatterBound
         offset += line.len() + 1; // +1 for '\n'
     }
     None
+}
+
+/// Where a note's frontmatter block sits, in lines. See [`frontmatter_lines`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmatterLines {
+    /// Zero-based line numbers, from the opening fence through the closing
+    /// fence. The range is half-open, so `lines.end` is the first line after
+    /// the block. A line is counted the way an editor counts it: split on
+    /// `\n`, with a CRLF file counting the same as an LF file.
+    pub lines: Range<usize>,
+    /// The syntax the fence announces: `---` is YAML, `+++` is TOML.
+    pub format: FrontmatterFormat,
+}
+
+/// The lines a closed frontmatter block covers in `text`, or `None` when the
+/// text has no block or the block is never closed. The fence rule is the one
+/// the indexer uses (`frontmatter_bounds`), so an editor that draws the block
+/// agrees with the index about what the block is.
+pub fn frontmatter_lines(text: &str) -> Option<FrontmatterLines> {
+    let bounds = frontmatter_bounds(text)?;
+    let format = if bounds.delimiter == FrontmatterFormat::Toml.delimiter() {
+        FrontmatterFormat::Toml
+    } else {
+        FrontmatterFormat::Yaml
+    };
+    // `inner` ends where the closing fence line starts, so the number of
+    // line breaks before it is the closing fence's line number.
+    let closing_line = text[..bounds.inner.end].matches('\n').count();
+    Some(FrontmatterLines {
+        lines: 0..closing_line + 1,
+        format,
+    })
 }
 
 /// Splits a leading UTF-8 byte-order mark off `text`: `("\u{feff}", rest)`, or
@@ -3145,5 +3178,97 @@ ls -la ./test
         assert_eq!(chunks[0].text, "body");
         assert_eq!(chunks[1].text, "title: x");
         assert_eq!(&text[super::frontmatter_end_byte(text)..], "body");
+    }
+}
+
+#[cfg(test)]
+mod frontmatter_lines_tests {
+    use super::frontmatter_lines;
+    use crate::note::FrontmatterFormat;
+
+    fn lines(text: &str) -> Option<(std::ops::Range<usize>, FrontmatterFormat)> {
+        frontmatter_lines(text).map(|block| (block.lines, block.format))
+    }
+
+    #[test]
+    fn a_yaml_block_covers_both_fences() {
+        assert_eq!(
+            lines("---\ntags: [a]\ndue: x\n---\nBody\n"),
+            Some((0..4, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn a_toml_block_reports_its_format() {
+        assert_eq!(
+            lines("+++\ntitle = \"x\"\n+++\n# Body\n"),
+            Some((0..3, FrontmatterFormat::Toml))
+        );
+    }
+
+    #[test]
+    fn crlf_lines_count_like_lf_lines() {
+        assert_eq!(
+            lines("---\r\ntags: [a]\r\n---\r\nBody\r\n"),
+            Some((0..3, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_shift_the_lines() {
+        assert_eq!(
+            lines("\u{feff}---\ntags: [a]\n---\nBody\n"),
+            Some((0..3, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn an_empty_block_is_two_lines() {
+        assert_eq!(
+            lines("---\n---\nBody"),
+            Some((0..2, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_body_after_it_still_ends_at_the_closing_fence() {
+        assert_eq!(
+            lines("---\na: b\n---"),
+            Some((0..3, FrontmatterFormat::Yaml))
+        );
+        assert_eq!(
+            lines("---\na: b\n---\n"),
+            Some((0..3, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn an_unclosed_block_is_not_frontmatter() {
+        assert_eq!(lines("---\ntags: [a]\n\nBody\n"), None);
+    }
+
+    #[test]
+    fn a_fence_that_is_not_on_the_first_line_is_not_frontmatter() {
+        assert_eq!(lines("\n---\ntags: [a]\n---\nBody\n"), None);
+        assert_eq!(lines("Body\n---\ntags: [a]\n---\n"), None);
+    }
+
+    #[test]
+    fn a_closing_fence_must_match_the_opening_fence() {
+        assert_eq!(lines("---\na: b\n+++\nBody\n"), None);
+    }
+
+    #[test]
+    fn a_later_horizontal_rule_does_not_extend_the_block() {
+        assert_eq!(
+            lines("---\na: b\n---\nBody\n\n---\nMore\n"),
+            Some((0..3, FrontmatterFormat::Yaml))
+        );
+    }
+
+    #[test]
+    fn text_with_no_frontmatter_has_none() {
+        assert_eq!(lines(""), None);
+        assert_eq!(lines("# Title\n"), None);
     }
 }
