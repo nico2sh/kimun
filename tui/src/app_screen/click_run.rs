@@ -1,7 +1,8 @@
 //! When two clicks are one gesture.
 //!
-//! Following a link with the mouse is a double-click, not the Ctrl+click every
-//! IDE uses, because no modifier-click survives all three platforms:
+//! Following a link with the mouse is a double-click everywhere, and also a
+//! Ctrl+click where the terminal delivers one. The double-click is the primary
+//! gesture because no modifier-click survives all three platforms:
 //!
 //! - **Cmd+click cannot exist.** xterm mouse reporting encodes three modifier
 //!   bits — shift, alt, control. There is no super bit for a terminal to set
@@ -17,8 +18,8 @@
 //!
 //! A double-click needs no modifier bit and no terminal cooperation beyond the
 //! mouse reporting kimün already requires, so it behaves the same everywhere.
-//! Nothing is lost by not having a chord: the bound `FollowLink` shortcut
-//! (Ctrl-U by default) follows from the keyboard, and the footer advertises it
+//! The keyboard is the other way in: the bound `FollowLink` shortcut (Ctrl-U
+//! by default) follows from the keyboard, and the footer advertises it
 //! whenever the cursor sits on a link.
 //!
 //! This module is the rule for what counts as one gesture.
@@ -41,13 +42,22 @@
 //! this holds no clock — the caller passes `now`, so a test describes a gap
 //! instead of sleeping through one.
 
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
 /// How close together two clicks on a cell have to be to read as one gesture
 /// — [`DOUBLE_CLICK`](crate::components::DOUBLE_CLICK), shared with the
 /// list engine's double-click.
 pub(crate) const WINDOW: Duration = crate::components::DOUBLE_CLICK;
+
+/// Whether a mouse event carries the modifier that follows in one press
+/// (Ctrl or Alt). The one definition: the run, the classifier and the executor
+/// all ask it.
+pub(crate) fn is_modifier_click(event: &MouseEvent) -> bool {
+    event
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
 
 /// The clicks currently forming one gesture.
 #[derive(Debug, Default)]
@@ -65,6 +75,14 @@ impl ClickRun {
     /// the run went unnoticed: every press is followed by one.
     pub fn observe(&mut self, event: &MouseEvent, in_editor: bool, now: Instant) -> bool {
         match event.kind {
+            // Ctrl+click or Alt+click follows at once, with no first press to pair with. It
+            // never reaches a terminal on macOS (Terminal.app and iTerm2 turn
+            // it into a right press first), so double-click stays the gesture
+            // that works everywhere.
+            MouseEventKind::Down(MouseButton::Left) if in_editor && is_modifier_click(event) => {
+                self.end();
+                true
+            }
             MouseEventKind::Down(MouseButton::Left) if in_editor => {
                 self.completes_double(event.column, event.row, now)
             }
@@ -128,6 +146,38 @@ mod tests {
         // A fixed origin so the tests describe gaps rather than wall-clock time.
         static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(millis)
+    }
+
+    fn left_press(col: u16, row: u16, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn a_ctrl_or_alt_press_in_the_editor_follows_at_once() {
+        for m in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let mut run = ClickRun::default();
+            assert!(run.observe(&left_press(4, 2, m), true, at(0)), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn a_modifier_press_outside_the_editor_does_not_follow() {
+        let mut run = ClickRun::default();
+        assert!(!run.observe(&left_press(4, 2, KeyModifiers::CONTROL), false, at(0)));
+    }
+
+    #[test]
+    fn a_modifier_press_clears_a_pending_first_press() {
+        let mut run = ClickRun::default();
+        assert!(!run.observe(&left_press(4, 2, KeyModifiers::NONE), true, at(0)));
+        assert!(run.observe(&left_press(4, 2, KeyModifiers::CONTROL), true, at(10)));
+        // The plain press that follows starts over, not a second of a pair.
+        assert!(!run.observe(&left_press(4, 2, KeyModifiers::NONE), true, at(20)));
     }
 
     #[test]

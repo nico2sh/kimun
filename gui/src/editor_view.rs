@@ -18,9 +18,11 @@
 //! the buffer.
 //!
 //! **Following links.** A single press only places the caret. A double-click
-//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`])
-//! on a link or a label asks the window's owner to follow it, on the app
-//! channel; the `FollowLink` chord bubbles to the owner like any app command.
+//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`]) or
+//! a click with the primary modifier (Cmd on macOS, Ctrl elsewhere) on a link
+//! or a label asks the window's owner to follow it, on the app channel; the
+//! `FollowLink` chord bubbles to the owner like any app command. With the find
+//! bar open a press never follows, as in the TUI.
 //!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
 //! ([`crate::keymap`]) with the editor focused. Find and replace are the
@@ -798,10 +800,29 @@ impl EditorView {
         }
         let left = pointer.kind == PointerKind::Down(Button::Left);
         // A press on a link (the hand cursor) only places the caret, as the
-        // TUI's first press does. A second plain left press on the same cell
-        // soon after follows the **follow target** the first one put the
-        // caret on (ADR-0043): the workspace does it, as for the chord. With
-        // nothing to follow there, it is an ordinary press.
+        // TUI's first press does. The primary modifier (Cmd on macOS, Ctrl
+        // elsewhere, as the keymap's `primary`; Ctrl+click is a right-click on
+        // a Mac) follows in one press: place the caret, then follow what is
+        // under it. The find bar owns the pointer while open, so there it is
+        // an ordinary press.
+        if left
+            && pointer.mods == keymap::Platform::current().primary()
+            && self.editor.find_bar().is_none()
+        {
+            self.clicks.end();
+            self.editor.handle_pointer(&pointer, &self.tx);
+            self.editor.settle_pointer(true);
+            // Stay armed even when it follows: the release must still reach
+            // the editor to end the press `handle_pointer` started.
+            self.follow_at_caret();
+            self.dragging = true;
+            self.settle(window, cx);
+            return;
+        }
+        // A second plain left press on the same cell soon after follows the
+        // **follow target** the first one put the caret on (ADR-0043): the
+        // workspace does it, as for the chord. With nothing to follow there,
+        // it is an ordinary press.
         if left && pointer.mods == Mods::NONE {
             if self
                 .clicks
