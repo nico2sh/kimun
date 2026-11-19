@@ -1114,10 +1114,12 @@ mod tests {
                 RowHints {
                     visible: &[],
                     inset: 2,
+                    hidden: false,
                 },
                 RowHints {
                     visible: &[],
                     inset: 2,
+                    hidden: false,
                 },
             ];
             let l = Layout::compute(&t, 10, Metrics::default(), &hints);

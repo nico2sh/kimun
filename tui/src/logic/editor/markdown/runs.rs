@@ -31,6 +31,10 @@ pub enum Role {
     CodeText,
     /// Trailing pad of a code box.
     CodeBoxPad,
+    /// The `properties` label in the top rule of a frontmatter box.
+    FrontmatterTitle,
+    /// A property row inside a frontmatter box: raw text, no markdown.
+    FrontmatterText,
     /// The `│` blockquote gutter.
     BlockquoteBar,
     /// Bold, Italic, Strikethrough, InlineCode, Link, Image, Blockquote,
@@ -353,6 +357,115 @@ pub fn render_runs(
         runs = gutter;
     }
     runs
+}
+
+/// Which fence of a frontmatter block a row is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontmatterFence {
+    /// The first line of the block: drawn as a titled rule.
+    Opening,
+    /// The last line of the block: drawn as a plain rule.
+    Closing,
+}
+
+/// The title in the opening rule of a frontmatter box.
+pub const FRONTMATTER_TITLE: &str = "properties";
+
+/// Semantic runs for the first visual line of a frontmatter fence row.
+///
+/// With the cursor off the row, the fence draws as a rule `width` columns
+/// wide: the opening fence carries the title (`─ properties ───`), the
+/// closing one is bare. A rule too narrow for the title is bare as well. With
+/// the cursor on the row it shows the raw fence, so the reader can edit it.
+pub fn frontmatter_fence_runs(
+    fence: FrontmatterFence,
+    content: &str,
+    cursor_on_row: bool,
+    width: u16,
+) -> Vec<Run> {
+    if cursor_on_row {
+        return vec![Run::new(content, Role::Sigil, 0)];
+    }
+    let width = width as usize;
+    let title_width = FRONTMATTER_TITLE.chars().count();
+    // `─ ` before the title, one space and at least one `─` after it.
+    let titled_min = 2 + title_width + 2;
+    if fence == FrontmatterFence::Opening && width >= titled_min {
+        return vec![
+            Run::new("─ ", Role::Rule, 0),
+            Run::new(FRONTMATTER_TITLE, Role::FrontmatterTitle, 0),
+            Run::new(
+                format!(" {}", "─".repeat(width - 2 - title_width - 1)),
+                Role::Rule,
+                0,
+            ),
+        ];
+    }
+    vec![Run::new("─".repeat(width), Role::Rule, 0)]
+}
+
+/// Semantic runs for the one row a folded frontmatter block draws: a rule
+/// that carries the title and the property keys, `─ properties · tags, due ───`.
+///
+/// The keys are cut with `…` when the row is too narrow for them. A row too
+/// narrow for the title is a bare rule. `width` is the pane width in columns.
+pub fn frontmatter_summary_runs(keys: &[String], width: u16) -> Vec<Run> {
+    use crate::logic::editor::markdown::string_display_width;
+    let width = width as usize;
+    let title_width = FRONTMATTER_TITLE.chars().count();
+    // `─ ` + title, then at least ` ─` after it.
+    let fixed = 2 + title_width;
+    if width < fixed + 2 {
+        return vec![Run::new("─".repeat(width), Role::Rule, 0)];
+    }
+    let mut runs = vec![
+        Run::new("─ ", Role::Rule, 0),
+        Run::new(FRONTMATTER_TITLE, Role::FrontmatterTitle, 0),
+    ];
+    let mut used = fixed;
+    let joined = keys.join(", ");
+    // ` · ` before the keys, one space and one `─` after them.
+    let budget = (width - used).saturating_sub(3 + 2);
+    if !joined.is_empty() && budget >= 1 {
+        let shown = if string_display_width(&joined) <= budget {
+            joined
+        } else {
+            let mut cut = String::new();
+            let mut cut_width = 0;
+            for ch in joined.chars() {
+                let w = string_display_width(ch.encode_utf8(&mut [0; 4]));
+                if cut_width + w + 1 > budget {
+                    break;
+                }
+                cut.push(ch);
+                cut_width += w;
+            }
+            cut.push('…');
+            cut
+        };
+        let text = format!(" · {shown}");
+        used += string_display_width(&text);
+        runs.push(Run::new(text, Role::FrontmatterText, 0));
+    }
+    runs.push(Run::new(
+        format!(" {}", "─".repeat(width.saturating_sub(used + 1))),
+        Role::Rule,
+        0,
+    ));
+    runs
+}
+
+/// Paint a property row's runs as frontmatter text. A row of a frontmatter
+/// block renders force-raw, so its text arrives as [`Role::CodeText`].
+pub fn as_frontmatter_text(runs: Vec<Run>) -> Vec<Run> {
+    runs.into_iter()
+        .map(|mut run| {
+            if run.role == Role::CodeText {
+                run.role = Role::FrontmatterText;
+            }
+            run
+        })
+        .collect()
 }
 
 /// Mark the code-box background on every run of a code-block visual line and
