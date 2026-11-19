@@ -1,6 +1,6 @@
 # Frontmatter display in the editors
 
-Status: steps 1 to 3 built, 2026-11-19. Hover reveal was dropped. Scope: the TUI editor and the GUI editor.
+Status: built in the TUI and the GUI, 2026-11-19. Hover reveal was dropped. Scope: the TUI editor and the GUI editor.
 
 ## Problem
 
