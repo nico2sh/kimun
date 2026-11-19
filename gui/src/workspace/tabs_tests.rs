@@ -679,6 +679,7 @@ fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
     let leaf = |note: &str| GroupTreeRecord::Leaf {
         note: Some(path(note)),
         facets: None,
+        collection: None,
     };
     let b_record = SessionRecord {
         version: SESSION_VERSION,

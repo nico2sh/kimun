@@ -387,8 +387,10 @@ impl Workspace {
             state._attachment_events = None;
             // The facet view's reads (the view went with the note).
             state.facet_loading = None;
+            state.collection_pending = None;
             state.facet_flushing = None;
             state.facet_reading = None;
+            state.collection_reading.clear();
         }
         // Every task over the old vault: dropped, so none lands here.
         self.reopening = None;

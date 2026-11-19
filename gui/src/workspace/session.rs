@@ -16,15 +16,19 @@
 //! quit or a window close writes it at once and waits for the write, when
 //! it differs from what the file holds. A group's note is the one it holds
 //! or is opening ([`super::note::NoteHost::target`]); a group showing an
-//! attachment holds none. Without a workspace nothing is written.
+//! attachment holds none. A group showing a facet view records its source,
+//! a collection its resolved query, each with its picks; a collection
+//! still loading is recorded as the one it opens. Without a workspace
+//! nothing is written.
 //!
 //! **Restoring.** A start with no note on the command line, or with one
 //! that was refused, restores: once the vault indexed, a record that still
-//! has a note to open wins over the history. The region is rebuilt from it
+//! has something to show (a note, a facet view of a note still there, or a
+//! collection) wins over the history. The region is rebuilt from it
 //! ([`EditorRegion::from_record`], a gone note dropped from its group), every
 //! group gets a state ([`Workspace::replace_region`]) and each note opens
-//! in its group the normal way. With no record, or none of its notes left,
-//! the history's newest note opens as before (not after a refused
+//! in its group the normal way, then each facet view and collection. With
+//! no record, or nothing of it left to show, the history's newest note opens as before (not after a refused
 //! argument: the editor stays empty, as it did). A restore whose job fails
 //! lands on the history too, and the stored record is kept (only a real
 //! change writes). Only a stored record that loads makes a restore: with
@@ -58,7 +62,7 @@ use std::time::Duration;
 use gpui_kit::{App, Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::Facet;
-use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::editor_region::{EditorRegion, GroupHeld};
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::startup::RestoreTarget;
 use kimun_notes::settings::session::{
@@ -164,13 +168,20 @@ pub(crate) enum Queued {
 /// What a record is built from, kept to tell a notify that changed the
 /// record from one that did not without building it: the region (its tabs,
 /// their groups, splits and weights, the shown tab and each tab's active
-/// group) and the note each group is on ([`NoteHost::target`]). The record
-/// is a function of these two, so an equal `Seen` is an equal record.
+/// group), the note each group is on ([`NoteHost::target`]) and the view it
+/// shows. The record is a function of these, so an equal `Seen` is an equal
+/// record, a collection still loading aside (`facets`).
 struct Seen {
     region: EditorRegion,
     targets: HashMap<GroupId, Option<VaultPath>>,
-    /// The source and picks of each group's facet view ([`facet_of`]).
-    facets: HashMap<GroupId, Option<(VaultPath, Vec<Facet>)>>,
+    /// The source (or query) and picks of each group's facet view or
+    /// collection ([`facet_of`]). A collection still loading is not in
+    /// it, though the record holds it: its start alone writes nothing (a
+    /// write meanwhile, or a quit, records it), its showing is the change,
+    /// and a load that fails or is dropped leaves this as it was, so the
+    /// file keeps what it held (a restored collection whose query fails
+    /// stays in it until the next real change).
+    facets: HashMap<GroupId, Option<ViewSeen>>,
 }
 
 /// The note `state`'s group is on, as the record keeps it.
@@ -178,23 +189,43 @@ fn target_of(state: &GroupState) -> Option<&VaultPath> {
     state.notes.as_ref().and_then(NoteHost::target_ref)
 }
 
-/// The source and picks of the facet view `state`'s group shows.
-fn facet_of(state: &GroupState, cx: &App) -> Option<(VaultPath, Vec<Facet>)> {
-    state.facet.as_ref().map(|view| {
+/// What a facet view shows, as the record keeps it: a single-note view's
+/// source, or a collection's resolved query, and the picks.
+#[derive(Debug, Clone, PartialEq)]
+enum ViewSeen {
+    Facet(VaultPath, Vec<Facet>),
+    Collection(String, Vec<Facet>),
+}
+
+/// The source or query and picks of the view `state`'s group shows.
+fn facet_of(state: &GroupState, cx: &App) -> Option<ViewSeen> {
+    state.facet.as_ref().and_then(|view| {
         let view = view.read(cx);
-        (view.source().clone(), view.picks().to_vec())
+        let picks = view.picks().to_vec();
+        match (view.source(), view.query()) {
+            (Some(source), _) => Some(ViewSeen::Facet(source.clone(), picks)),
+            (None, Some(query)) => Some(ViewSeen::Collection(query.to_owned(), picks)),
+            (None, None) => None,
+        }
     })
 }
 
-/// Whether `seen` is what `state`'s facet view shows now: a compare, nothing
+/// Whether `seen` is what `state`'s view shows now: a compare, nothing
 /// cloned.
-fn facet_matches(seen: Option<&(VaultPath, Vec<Facet>)>, state: &GroupState, cx: &App) -> bool {
-    match (seen, state.facet.as_ref()) {
+fn facet_matches(seen: Option<&ViewSeen>, state: &GroupState, cx: &App) -> bool {
+    let view = state.facet.as_ref().map(|view| view.read(cx));
+    match (seen, view) {
         (None, None) => true,
-        (Some((source, picks)), Some(view)) => {
-            let view = view.read(cx);
-            view.source() == source && view.picks() == picks.as_slice()
+        (Some(ViewSeen::Facet(source, picks)), Some(view)) => {
+            view.source() == Some(source) && view.picks() == picks.as_slice()
         }
+        (Some(ViewSeen::Collection(query, picks)), Some(view)) => {
+            view.source().is_none()
+                && view.query() == Some(query.as_str())
+                && view.picks() == picks.as_slice()
+        }
+        // A view with neither source nor query is no record: it reads as none.
+        (None, Some(view)) => view.source().is_none() && view.query().is_none(),
         _ => false,
     }
 }
@@ -245,7 +276,11 @@ fn is_one_group(record: &SessionRecord) -> bool {
     matches!(
         record.tabs.as_slice(),
         [TabRecord {
-            tree: GroupTreeRecord::Leaf { facets: None, .. },
+            tree: GroupTreeRecord::Leaf {
+                facets: None,
+                collection: None,
+                ..
+            },
             ..
         }]
     )
@@ -256,7 +291,11 @@ fn is_one_group(record: &SessionRecord) -> bool {
 fn one_group(note: Option<VaultPath>) -> SessionRecord {
     SessionRecord::new(
         vec![TabRecord {
-            tree: GroupTreeRecord::Leaf { note, facets: None },
+            tree: GroupTreeRecord::Leaf {
+                note,
+                facets: None,
+                collection: None,
+            },
             active: 0,
         }],
         0,
@@ -277,12 +316,23 @@ impl Workspace {
         #[cfg(test)]
         self.session.builds.set(self.session.builds.get() + 1);
         self.layout.region().to_record(|group| {
-            // A facet group records its source and picks; it holds no note.
-            if let Some((source, picks)) = self.state(group).and_then(|s| facet_of(s, cx)) {
-                let picks = picks.iter().map(FacetPick::from).collect();
-                return (Some(source), Some(picks));
+            // A facet group records its source and picks, a collection its
+            // resolved query and picks; neither holds a note. A collection
+            // still loading is recorded as the one it opens.
+            let pending = self.state(group).and_then(|s| {
+                s.collection_pending
+                    .as_ref()
+                    .map(|(query, picks)| ViewSeen::Collection(query.clone(), picks.clone()))
+            });
+            match pending.or_else(|| self.state(group).and_then(|s| facet_of(s, cx))) {
+                Some(ViewSeen::Facet(source, picks)) => {
+                    GroupHeld::Facet(source, picks.iter().map(FacetPick::from).collect())
+                }
+                Some(ViewSeen::Collection(query, picks)) => {
+                    GroupHeld::Collection(query, picks.iter().map(FacetPick::from).collect())
+                }
+                None => GroupHeld::Note(self.host_in(group).and_then(NoteHost::target)),
             }
-            (self.host_in(group).and_then(NoteHost::target), None)
         })
     }
 
@@ -622,11 +672,17 @@ impl Workspace {
                 cx,
             );
         }
+        // A collection, once the notes and facet views are open.
+        for (group, query, picks) in &restored.collections {
+            let picks = picks.iter().filter_map(FacetPick::to_facet).collect();
+            self.open_collection(*group, query.clone(), picks, cx);
+        }
         // What the restore opened is what the file says: nothing to write
         // until something changes. The open asked for meanwhile is such a
         // change.
-        // A facet view shows once its source is read: the record it will
-        // make is what the file says, so its showing is no change.
+        // A facet view shows once its source is read, a collection once its
+        // query ran: the record each will make is what the file says, so
+        // its showing is no change.
         self.session.seen = Some(self.seen_now(cx));
         self.session.last = Some(expected.unwrap_or_else(|| self.session_record(cx)));
         self.run_queued(cx);
@@ -635,15 +691,19 @@ impl Workspace {
     /// The record a restore with facet views ends on, which the window
     /// only reaches once each source is read; `None` without facet views.
     fn restored_record(&self, restored: &SessionRestore) -> Option<SessionRecord> {
-        if restored.facets.is_empty() {
+        if restored.facets.is_empty() && restored.collections.is_empty() {
             return None;
         }
         Some(restored.region.to_record(|group| {
             if let Some((_, note, picks)) = restored.facets.iter().find(|(g, ..)| *g == group) {
-                return (Some(note.clone()), Some(picks.clone()));
+                return GroupHeld::Facet(note.clone(), picks.clone());
+            }
+            if let Some((_, query, picks)) = restored.collections.iter().find(|(g, ..)| *g == group)
+            {
+                return GroupHeld::Collection(query.clone(), picks.clone());
             }
             let note = restored.notes.iter().find(|(g, _)| *g == group);
-            (note.map(|(_, note)| note.clone()), None)
+            GroupHeld::Note(note.map(|(_, note)| note.clone()))
         }))
     }
 
@@ -727,6 +787,7 @@ mod tests {
                 tree: GroupTreeRecord::Leaf {
                     note: Some(VaultPath::new(note)),
                     facets: None,
+                    collection: None,
                 },
                 active: 0,
             }],

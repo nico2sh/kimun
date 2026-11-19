@@ -68,6 +68,10 @@ pub enum GroupTreeRecord {
         note: Option<VaultPath>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         facets: Option<Vec<FacetPick>>,
+        /// With no note, a collection group: the resolved query it shows and
+        /// the facets picked. An older build reads it as an empty group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collection: Option<CollectionRecord>,
     },
     /// Children laid out along `axis` by relative `weights` (one per child).
     Split {
@@ -75,6 +79,15 @@ pub enum GroupTreeRecord {
         weights: Vec<f64>,
         children: Vec<GroupTreeRecord>,
     },
+}
+
+/// A collection group as stored: the **resolved** query (so a restore shows
+/// the same notes whichever note is open then) and the picked facets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionRecord {
+    pub query: String,
+    #[serde(default)]
+    pub facets: Vec<FacetPick>,
 }
 
 /// A picked facet as stored: its kind (`"heading"`, `"tag"` or `"link"`) and

@@ -13,7 +13,8 @@
 //! read-only editor would take letters), and never passed on, so neither the
 //! group's hidden editor nor the workspace's keymap gets them: `/` opens the
 //! search list (a note with no facet has none), `j`/`k` bring the
-//! next/previous piece to the top, Escape clears the picks. An open list
+//! next/previous piece to the top, `r` asks a collection to run its query
+//! again ([`FacetEvent::Refresh`]), Escape clears the picks. An open list
 //! closes on Escape first: the kit's popover takes it before any key
 //! listener. With the keyboard inside a piece (after a press there), Escape
 //! first hands it to the view and only then clears, and Tab and Shift+Tab,
@@ -44,6 +45,8 @@ pub(crate) enum Stop {
     Clear,
     /// The empty message's `Remove last pick`.
     RemoveLast,
+    /// A collection's empty message's `Refresh`.
+    Refresh,
     Pill(Facet),
     /// The chip that opens a kind's list (`+N more`, `Sections N`).
     Opener(FacetKind),
@@ -68,6 +71,7 @@ impl Stop {
             Stop::Search => SEARCH_ID.into(),
             Stop::Clear => CLEAR_ID.into(),
             Stop::RemoveLast => REMOVE_LAST_ID.into(),
+            Stop::Refresh => REFRESH_ID.into(),
             Stop::Pill(facet) => pill_id(facet),
             Stop::Opener(kind) => more_button_id(*kind),
             Stop::Crumb(chunk, index) => crumb_id(*chunk, *index),
@@ -243,6 +247,8 @@ impl FacetView {
             Key::Char('/') => self.open_list(None, window, cx),
             Key::Char('j') => self.step_piece(true, cx),
             Key::Char('k') => self.step_piece(false, cx),
+            // A collection runs its query again; a single note has no `r`.
+            Key::Char('r') if key.mods == Mods::NONE => return self.refresh_key(cx),
             // A piece's read-only editor binds Tab to nothing: walk on.
             Key::Tab if in_piece && !key.mods.shift => window.focus_next(cx),
             Key::Tab | Key::BackTab if in_piece => window.focus_prev(cx),
@@ -277,22 +283,21 @@ impl FacetView {
             }
             Stop::Clear => self.clear(cx),
             Stop::RemoveLast => self.remove_last_pick(cx),
+            Stop::Refresh => {
+                self.refresh_key(cx);
+            }
             Stop::Pill(facet) => self.toggle(facet, cx),
             Stop::Crumb(chunk, index) => {
-                let facet = self
-                    .plans
-                    .get(chunk)
-                    .and_then(|plan| plan.crumbs.get(index))
-                    .map(|crumb| crumb.facet.clone());
-                if let Some(facet) = facet {
+                if let Some(facet) = self.members.crumb_facet(chunk, index) {
                     self.toggle(facet, cx);
                 }
             }
             Stop::Open(i) => {
-                let line = self.first_line(i);
-                cx.emit(FacetEvent::OpenSource { line });
+                if let Some((note, line)) = self.chunk_source(i) {
+                    cx.emit(FacetEvent::OpenSource { note, line });
+                }
             }
-            Stop::GapDown(g) => self.reveal(g.saturating_sub(1), Reveal::Below, cx),
+            Stop::GapDown(g) => self.reveal(g, Reveal::Below, cx),
             Stop::GapUp(g) => self.reveal(g, Reveal::Above, cx),
             Stop::ShowAll(g) => self.reveal_all(g, cx),
             Stop::ShowMore => self.show_more(cx),

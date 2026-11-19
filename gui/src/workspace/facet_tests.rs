@@ -25,11 +25,11 @@ use super::facet::{
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
 
-type Events = Rc<RefCell<Vec<FacetEvent>>>;
+pub(super) type Events = Rc<RefCell<Vec<FacetEvent>>>;
 
 /// A facet view of `text` (a note at `/notes/n.md`) with `picks`, in its own
 /// window, drawn once, and the events it emits.
-fn open<'a>(
+pub(super) fn open<'a>(
     cx: &'a mut TestAppContext,
     text: &str,
     picks: Vec<Facet>,
@@ -39,17 +39,33 @@ fn open<'a>(
     Events,
     Subscription,
 ) {
+    let text = text.to_string();
+    open_with(cx, move |cx| {
+        FacetView::new(VaultPath::new("/notes/n.md"), text, picks, cx)
+    })
+}
+
+/// The facet view `build` makes, in its own window, drawn once, and the
+/// events it emits.
+pub(super) fn open_with(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(&mut gpui_kit::Context<FacetView>) -> FacetView + 'static,
+) -> (
+    Entity<FacetView>,
+    &mut VisualTestContext,
+    Events,
+    Subscription,
+) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
-    let text = text.to_string();
     // Under the kit's root, as the app's window is: it walks Tab.
     let built: Rc<RefCell<Option<Entity<FacetView>>>> = Rc::default();
     let slot = built.clone();
     let (_root, cx) = cx.add_window_view(move |window, cx| {
-        let view = cx.new(|cx| FacetView::new(VaultPath::new("/notes/n.md"), text, picks, cx));
+        let view = cx.new(build);
         *slot.borrow_mut() = Some(view.clone());
         gpui_kit::base::Root::new(view, window, cx)
     });
@@ -65,7 +81,7 @@ fn open<'a>(
     (view, cx, events, sub)
 }
 
-fn click(cx: &mut VisualTestContext, id: impl Into<SharedString>) {
+pub(super) fn click(cx: &mut VisualTestContext, id: impl Into<SharedString>) {
     let id: SharedString = id.into();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -74,7 +90,7 @@ fn click(cx: &mut VisualTestContext, id: impl Into<SharedString>) {
     cx.run_until_parked();
 }
 
-fn shows(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
+pub(super) fn shows(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
     let id: SharedString = id.into();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -83,7 +99,7 @@ fn shows(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
 }
 
 /// Scroll the view's column to its end and draw it there.
-fn to_bottom(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
+pub(super) fn to_bottom(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         view.read(cx).scroll.scroll_to_bottom();
@@ -92,12 +108,12 @@ fn to_bottom(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
     });
 }
 
-fn picks(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<Facet> {
+pub(super) fn picks(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<Facet> {
     view.read_with(cx, |view, _| view.picks().to_vec())
 }
 
 /// The text each chunk's editor holds, in order.
-fn chunk_texts(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<String> {
+pub(super) fn chunk_texts(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<String> {
     view.read_with(cx, |view, cx| {
         view.chunks()
             .iter()
@@ -111,7 +127,7 @@ fn chunk(view: &Entity<FacetView>, i: usize, cx: &mut VisualTestContext) -> Enti
 }
 
 /// Window position of cell (`col`, `row`) in chunk `i`'s last frame.
-fn cell(
+pub(super) fn cell(
     view: &Entity<FacetView>,
     i: usize,
     col: u16,
@@ -135,7 +151,7 @@ fn cell(
 }
 
 /// A press and release at `at`, with the primary modifier held when `primary`.
-fn press(cx: &mut VisualTestContext, at: Point<Pixels>, primary: bool) {
+pub(super) fn press(cx: &mut VisualTestContext, at: Point<Pixels>, primary: bool) {
     cx.update(|window, cx| {
         if primary {
             window.change_modifiers(gpui_kit::Modifiers::control(), cx);
@@ -149,11 +165,11 @@ fn press(cx: &mut VisualTestContext, at: Point<Pixels>, primary: bool) {
     cx.run_until_parked();
 }
 
-fn tag(key: &str) -> Facet {
+pub(super) fn tag(key: &str) -> Facet {
     Facet::new(FacetKind::Tag, key)
 }
 
-fn picks_changed(events: &Events) -> usize {
+pub(super) fn picks_changed(events: &Events) -> usize {
     events
         .borrow()
         .iter()
@@ -456,7 +472,10 @@ fn a_primary_press_emits_follow_and_leaves_picks_alone(cx: &mut TestAppContext) 
     assert!(picks(&view, cx).is_empty());
     assert_eq!(
         *events.borrow(),
-        [FacetEvent::Follow(FollowTarget::Label("b".into()))]
+        [FacetEvent::Follow {
+            from: VaultPath::new("/notes/n.md"),
+            target: FollowTarget::Label("b".into())
+        }]
     );
 }
 
@@ -483,7 +502,13 @@ fn open_source_emits_the_first_line_of_the_chunk(cx: &mut TestAppContext) {
     let text = "#x p0\n\np1\n\n#x p2\n";
     let (_view, cx, events, _sub) = open(cx, text, vec![tag("x")]);
     click(cx, open_id(1));
-    assert_eq!(*events.borrow(), [FacetEvent::OpenSource { line: 4 }]);
+    assert_eq!(
+        *events.borrow(),
+        [FacetEvent::OpenSource {
+            note: VaultPath::new("/notes/n.md"),
+            line: 4
+        }]
+    );
 }
 
 // ── piece presentation: breadcrumb, no frames, gap rows ──────────────────
@@ -575,7 +600,13 @@ fn open_source_is_a_labelled_text_button_in_the_breadcrumb_row(cx: &mut TestAppC
         "at the row's right end"
     );
     click(cx, open_id(0));
-    assert_eq!(*events.borrow(), [FacetEvent::OpenSource { line: 2 }]);
+    assert_eq!(
+        *events.borrow(),
+        [FacetEvent::OpenSource {
+            note: VaultPath::new("/notes/n.md"),
+            line: 2
+        }]
+    );
 }
 
 /// A breadcrumb wider than its row shortens with an ellipsis, outer crumbs
@@ -730,7 +761,7 @@ fn set_source_retargets_the_view(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, NOTE, vec![]);
     view.update(cx, |view, _| view.set_source(VaultPath::new("/other/m.md")));
     view.read_with(cx, |view, _| {
-        assert_eq!(view.source(), &VaultPath::new("/other/m.md"))
+        assert_eq!(view.source(), Some(&VaultPath::new("/other/m.md")))
     });
 }
 
@@ -846,7 +877,7 @@ fn field_focused(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
     cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window))
 }
 
-fn key(cx: &mut VisualTestContext, key: &str) {
+pub(super) fn key(cx: &mut VisualTestContext, key: &str) {
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.press(key, cx);
@@ -949,7 +980,7 @@ fn a_list_with_no_chip_gives_the_keyboard_back_to_the_view(cx: &mut TestAppConte
 // ── the keyboard ─────────────────────────────────────────────────────────
 
 /// Whether the element `id` holds the keyboard.
-fn has_focus(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
+pub(super) fn has_focus(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
     let id: SharedString = id.into();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -974,7 +1005,7 @@ fn selected(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
 
 /// Give the keyboard to the view, as the workspace does when its group
 /// shows it.
-fn focus_view(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
+pub(super) fn focus_view(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         let handle = view.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -990,7 +1021,7 @@ fn query(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> String {
 }
 
 /// Tab until `id` holds the keyboard; panics after `limit` presses.
-fn tab_to(cx: &mut VisualTestContext, id: impl Into<SharedString>, limit: usize) {
+pub(super) fn tab_to(cx: &mut VisualTestContext, id: impl Into<SharedString>, limit: usize) {
     let id: SharedString = id.into();
     for _ in 0..limit {
         key(cx, "tab");
@@ -1339,7 +1370,10 @@ fn tab_walks_on_from_a_piece(cx: &mut TestAppContext) {
 
 // ── the pinned filter bar ────────────────────────────────────────────────
 
-fn bounds(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> gpui_kit::Bounds<Pixels> {
+pub(super) fn bounds(
+    cx: &mut VisualTestContext,
+    id: impl Into<SharedString>,
+) -> gpui_kit::Bounds<Pixels> {
     let id: SharedString = id.into();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -1347,7 +1381,7 @@ fn bounds(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> gpui_kit::
     })
 }
 
-fn label(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> Option<String> {
+pub(super) fn label(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> Option<String> {
     let id: SharedString = id.into();
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -1358,7 +1392,7 @@ fn label(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> Option<Stri
     })
 }
 
-fn heading(text: &str) -> Facet {
+pub(super) fn heading(text: &str) -> Facet {
     Facet::new(FacetKind::Heading, text)
 }
 
@@ -1588,7 +1622,7 @@ fn sections_chip_opens_the_heading_list(cx: &mut TestAppContext) {
 
 /// A real `Workspace` on a real temp vault (`start_tests::drive`), its
 /// groups showing facet views.
-mod in_a_group {
+pub(super) mod in_a_group {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{AppContext as _, Entity, Focusable as _, TestAppContext};
     use kimun_core::nfs::VaultPath;
@@ -1608,7 +1642,7 @@ mod in_a_group {
     use crate::startup::FirstNote;
     use crate::test_vault::{TestVault, test_vault};
 
-    fn path(p: &str) -> VaultPath {
+    pub(in crate::workspace) fn path(p: &str) -> VaultPath {
         VaultPath::new(p)
     }
 
@@ -1619,7 +1653,7 @@ mod in_a_group {
     const A: &str = "# A\n\nalpha #x\n\n# B\n\nbeta";
 
     /// A vault holding `notes`, started on `first` and driven until it shows.
-    fn started(
+    pub(in crate::workspace) fn started(
         cx: &mut TestAppContext,
         rt: &Runtime,
         notes: &[(&str, &str)],
@@ -1636,15 +1670,19 @@ mod in_a_group {
         (v, started)
     }
 
-    fn active(s: &Started, cx: &TestAppContext) -> GroupId {
+    pub(in crate::workspace) fn active(s: &Started, cx: &TestAppContext) -> GroupId {
         cx.read(|cx| s.workspace.read(cx).layout.active_group())
     }
 
-    fn tabs(s: &Started, cx: &TestAppContext) -> usize {
+    pub(in crate::workspace) fn tabs(s: &Started, cx: &TestAppContext) -> usize {
         cx.read(|cx| s.workspace.read(cx).layout.region().tabs().len())
     }
 
-    fn facet(s: &Started, group: GroupId, cx: &TestAppContext) -> Option<Entity<FacetView>> {
+    pub(in crate::workspace) fn facet(
+        s: &Started,
+        group: GroupId,
+        cx: &TestAppContext,
+    ) -> Option<Entity<FacetView>> {
         cx.read(|cx| {
             s.workspace
                 .read(cx)
@@ -1655,7 +1693,7 @@ mod in_a_group {
 
     fn source(s: &Started, group: GroupId, cx: &TestAppContext) -> Option<VaultPath> {
         let view = facet(s, group, cx)?;
-        Some(cx.read(|cx| view.read(cx).source().clone()))
+        cx.read(|cx| view.read(cx).source().cloned())
     }
 
     fn facet_text(s: &Started, group: GroupId, cx: &TestAppContext) -> Option<String> {
@@ -1668,7 +1706,11 @@ mod in_a_group {
         cx.read(|cx| view.read(cx).picks().to_vec())
     }
 
-    fn note_in(s: &Started, group: GroupId, cx: &TestAppContext) -> Option<VaultPath> {
+    pub(in crate::workspace) fn note_in(
+        s: &Started,
+        group: GroupId,
+        cx: &TestAppContext,
+    ) -> Option<VaultPath> {
         cx.read(|cx| {
             s.workspace
                 .read(cx)
@@ -1685,7 +1727,7 @@ mod in_a_group {
         })
     }
 
-    fn assert_states_in_step(s: &Started, cx: &TestAppContext) {
+    pub(in crate::workspace) fn assert_states_in_step(s: &Started, cx: &TestAppContext) {
         cx.read(|cx| {
             let w = s.workspace.read(cx);
             let mut groups = w.layout.region().all_groups();
@@ -1712,13 +1754,17 @@ mod in_a_group {
         drive(rt, cx, |cx| source(s, group, cx).as_ref() == Some(&want));
     }
 
-    fn new_tab(s: &Started, cx: &mut TestAppContext) -> GroupId {
+    pub(in crate::workspace) fn new_tab(s: &Started, cx: &mut TestAppContext) -> GroupId {
         s.workspace.update(cx, |w, cx| w.new_tab(cx));
         cx.run_until_parked();
         active(s, cx)
     }
 
-    fn drawn(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+    pub(in crate::workspace) fn drawn(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> bool {
         let id = id.into();
         cx.update_window(s.handle, |_, window, cx| {
             window.render_frame(cx);
@@ -1727,7 +1773,7 @@ mod in_a_group {
         .unwrap()
     }
 
-    fn press(s: &Started, key: &str, cx: &mut TestAppContext) {
+    pub(in crate::workspace) fn press(s: &Started, key: &str, cx: &mut TestAppContext) {
         cx.update_window(s.handle, |_, window, cx| {
             window.render_frame(cx);
             window.press(key, cx)
@@ -1736,7 +1782,7 @@ mod in_a_group {
         cx.run_until_parked();
     }
 
-    fn open_menu(s: &Started, cx: &mut TestAppContext) {
+    pub(in crate::workspace) fn open_menu(s: &Started, cx: &mut TestAppContext) {
         let workspace = s.workspace.clone();
         cx.update_window(s.handle, |_, window, cx| {
             workspace.update(cx, |w, cx| w.file_ops_chord(window, cx))
@@ -1745,7 +1791,7 @@ mod in_a_group {
         cx.run_until_parked();
     }
 
-    fn run(s: &Started, request: FileOpRequest, cx: &mut TestAppContext) {
+    pub(in crate::workspace) fn run(s: &Started, request: FileOpRequest, cx: &mut TestAppContext) {
         let workspace = s.workspace.clone();
         cx.update_window(s.handle, |_, window, cx| {
             workspace.update(cx, |w, cx| w.request_file_op(request, window, cx))
@@ -1754,7 +1800,12 @@ mod in_a_group {
     }
 
     /// Replace `group`'s text with `text`, unsaved, then save it.
-    fn save_text_in(s: &Started, group: GroupId, text: &str, cx: &mut TestAppContext) {
+    pub(in crate::workspace) fn save_text_in(
+        s: &Started,
+        group: GroupId,
+        text: &str,
+        cx: &mut TestAppContext,
+    ) {
         s.workspace.update(cx, |w, cx| w.focus_group(group, cx));
         let editor = cx.read(|cx| s.workspace.read(cx).state(group).unwrap().editor.clone());
         cx.update(|cx| {
@@ -2006,11 +2057,15 @@ mod in_a_group {
         open_facet(&s, &rt, facet_group, "dir/src.md", vec![], cx);
         assert_eq!(tabs(&s, cx), 2);
         let view = facet(&s, facet_group, cx).unwrap();
-        view.update(cx, |_, cx| {
-            cx.emit(FacetEvent::Follow(FollowTarget::Link {
-                target: "t.md".into(),
-                kind: LinkSpanKind::Markdown,
-            }))
+        view.update(cx, |view, cx| {
+            let from = view.source().cloned().expect("a single-note view");
+            cx.emit(FacetEvent::Follow {
+                from,
+                target: FollowTarget::Link {
+                    target: "t.md".into(),
+                    kind: LinkSpanKind::Markdown,
+                },
+            })
         });
         drive(&rt, cx, |cx| {
             let group = active(&s, cx);
@@ -2047,11 +2102,15 @@ mod in_a_group {
     fn follow_from_facet(s: &Started, group: GroupId, target: &str, cx: &mut TestAppContext) {
         let view = facet(s, group, cx).unwrap();
         let target = target.to_string();
-        view.update(cx, |_, cx| {
-            cx.emit(FacetEvent::Follow(FollowTarget::Link {
-                target,
-                kind: LinkSpanKind::WikiLink,
-            }))
+        view.update(cx, |view, cx| {
+            let from = view.source().cloned().expect("a single-note view");
+            cx.emit(FacetEvent::Follow {
+                from,
+                target: FollowTarget::Link {
+                    target,
+                    kind: LinkSpanKind::WikiLink,
+                },
+            })
         });
     }
 
@@ -2169,7 +2228,11 @@ mod in_a_group {
     use kimun_notes::logic::layout::Panel;
     use kimun_notes::logic::layout_tree::Axis;
 
-    fn click(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
+    pub(in crate::workspace) fn click(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) {
         let id = id.into();
         cx.update_window(s.handle, |_, window, cx| {
             window.render_frame(cx);
@@ -2180,7 +2243,7 @@ mod in_a_group {
     }
 
     /// The accessible label and toggled state of the element `id`, if drawn.
-    fn button(
+    pub(in crate::workspace) fn button(
         s: &Started,
         id: impl Into<gpui_kit::ElementId>,
         cx: &mut TestAppContext,
@@ -2202,7 +2265,11 @@ mod in_a_group {
     }
 
     /// Two groups in one tab (the active one first), so each draws a header.
-    fn split(s: &Started, rt: &Runtime, cx: &mut TestAppContext) -> [GroupId; 2] {
+    pub(in crate::workspace) fn split(
+        s: &Started,
+        rt: &Runtime,
+        cx: &mut TestAppContext,
+    ) -> [GroupId; 2] {
         let first = active(s, cx);
         s.workspace.update(cx, |w, cx| {
             w.open_note_in_split(path("b.md"), Axis::Horizontal, cx)

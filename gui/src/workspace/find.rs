@@ -47,7 +47,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Enter, Escape, InputEvent, InputState, MoveDown};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -61,6 +64,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::list::{ListSetup, ResolvingRowSource, RowSource, Unresolvable};
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
@@ -68,7 +72,7 @@ use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::preview::PreviewModel;
 use kimun_notes::logic::query::{
     QueryContext, QueryHit, QueryPageSource, SavedSearchBreadcrumb, emphasis_needles, error_reason,
-    is_default_query, query_has_variables, resolve_query,
+    is_default_query, query_has_variables, resolve_collection_query, resolve_query,
 };
 use kimun_notes::logic::sort::{SortField, SortOrder, order_of_query, query_with_sort};
 use kimun_notes::settings::themes::Theme;
@@ -98,6 +102,11 @@ pub(crate) const FIND_SORT_ID: &str = "find-sort";
 pub(crate) const FIND_HELP_ID: &str = "find-help";
 pub(crate) const FIND_BUILD_ID: &str = "find-build";
 pub(crate) const FIND_SAVE_ID: &str = "find-save";
+pub(crate) const FIND_COLLECTION_ID: &str = "find-collection";
+/// The collection button's label and tooltip.
+pub(crate) const COLLECTION_LABEL: &str = "Open as collection";
+/// The collection button's icon.
+pub(crate) const COLLECTION_ICON: IconName = IconName::Layers;
 pub(crate) const FIND_ERROR_ID: &str = "find-query-error";
 pub(crate) const FIND_MORE_ID: &str = "find-more";
 pub(crate) const FIND_PREVIEW_ID: &str = "find-preview";
@@ -160,6 +169,9 @@ pub(crate) enum FindEvent {
     Save,
     /// The sort chip: the sort dialog on FIND.
     Sort,
+    /// The `Open as collection` button: the query's notes as a collection in
+    /// the active editor group.
+    Collection,
     /// Escape in the field: back to the editor.
     Dismiss,
 }
@@ -673,7 +685,18 @@ impl FindView {
             chip,
             can_save: querying,
             busy: false,
-            extras: Vec::new(),
+            extras: vec![
+                Button::new(FIND_COLLECTION_ID)
+                    .ghost()
+                    .small()
+                    .icon(COLLECTION_ICON)
+                    .accessibility_label(COLLECTION_LABEL)
+                    .tooltip(COLLECTION_LABEL)
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Collection)),
+                    )
+                    .into_any_element(),
+            ],
             on_build: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Build))),
             on_save: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Save))),
             on_help: Box::new(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Help))),
@@ -949,8 +972,59 @@ impl Workspace {
             FindEvent::Build => self.open_query_builder(window, cx),
             FindEvent::Save => self.save_find_query(window, cx),
             FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
+            FindEvent::Collection => self.open_find_as_collection(cx),
             FindEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }
+    }
+
+    /// FIND's `Open as collection` (button, `OpenQueryAsCollection`): resolve
+    /// the query typed in FIND against the active group's note, once, and
+    /// show the resolved query's notes as a collection in the active group.
+    /// A blank query, or one that needs a note when the group has none, says
+    /// so. The drawer stays as it is.
+    pub(crate) fn open_find_as_collection(&mut self, cx: &mut Context<Self>) {
+        let Some(find) = self.find.clone() else {
+            self.flash(super::route::NO_WORKSPACE, cx);
+            return;
+        };
+        let template = find.read(cx).query(cx);
+        if template.trim().is_empty() {
+            self.flash("No query to open", cx);
+            return;
+        }
+        let note = self
+            .active_state()
+            .notes
+            .as_ref()
+            .and_then(|h| h.note.clone());
+        let Some(resolved) = resolve_collection_query(&template, &QueryContext::with_note(note))
+        else {
+            self.flash("This query needs an open note.", cx);
+            return;
+        };
+        let group = self.layout.active_group();
+        self.open_collection(group, resolved, Vec::new(), cx);
+    }
+
+    /// `RefreshCollection`: run the active group's collection query again,
+    /// or say the group shows none.
+    pub(crate) fn refresh_active_collection(&mut self, cx: &mut Context<Self>) {
+        let group = self.layout.active_group();
+        match self.collection_refresh_blocked(group, cx) {
+            Some(reason) => self.flash(reason, cx),
+            None => self.refresh_collection(group, cx),
+        }
+    }
+
+    /// Why `RefreshCollection` cannot run on `group`: it shows no collection.
+    pub(crate) fn collection_refresh_blocked(
+        &self,
+        group: GroupId,
+        cx: &App,
+    ) -> Option<&'static str> {
+        self.collection_query_in(group, cx)
+            .is_none()
+            .then_some("This pane shows no collection")
     }
 
     /// Bring FIND up to the layout and the open note (hidden: nothing).

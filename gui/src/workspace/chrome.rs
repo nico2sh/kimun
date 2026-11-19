@@ -54,6 +54,10 @@ pub(crate) const CLOSE_ICON: IconName = IconName::Close;
 /// leaves it out; the app's asset source adds it ([`crate::assets`]).
 pub(crate) const FACET_ICON: IconName = IconName::Funnel;
 
+/// A collection group's Refresh button glyph (in place of the funnel): the
+/// kit's `refresh-cw`, carried by the default bundle.
+pub(crate) const REFRESH_ICON: IconName = IconName::RefreshCw;
+
 /// The facet mark: [`FACET_ICON`] drawn small and muted, an icon element
 /// (never a text prefix), named for screen readers. The caller sets its id
 /// and its colour.

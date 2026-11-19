@@ -140,6 +140,13 @@ pub enum ActionShortcuts {
     /// facet view for the editor (ADR-0061). The TUI has no facet view and
     /// no chord for it; neither has the desktop app by default.
     ToggleFacetView,
+    /// Open the results of the query typed in FIND as a collection in the
+    /// active editor group. The TUI has no collections; neither chord nor
+    /// default binding in the desktop app.
+    OpenQueryAsCollection,
+    /// Run the open collection's query again. The TUI has no collections;
+    /// no default chord in the desktop app.
+    RefreshCollection,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -202,7 +209,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 63] = [
+    pub const ALL: [ActionShortcuts; 65] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -266,6 +273,8 @@ impl ActionShortcuts {
         ActionShortcuts::NewEntry,
         ActionShortcuts::QueryBuilder,
         ActionShortcuts::ToggleFacetView,
+        ActionShortcuts::OpenQueryAsCollection,
+        ActionShortcuts::RefreshCollection,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -290,7 +299,9 @@ impl ActionShortcuts {
             | A::CloseTab
             | A::NextTab
             | A::PrevTab
-            | A::ToggleFacetView => ActionGroup::WindowAndPanels,
+            | A::ToggleFacetView
+            | A::OpenQueryAsCollection
+            | A::RefreshCollection => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
             }
@@ -389,6 +400,8 @@ impl Display for ActionShortcuts {
             ActionShortcuts::NewEntry => "NewEntry".to_string(),
             ActionShortcuts::QueryBuilder => "QueryBuilder".to_string(),
             ActionShortcuts::ToggleFacetView => "ToggleFacetView".to_string(),
+            ActionShortcuts::OpenQueryAsCollection => "OpenQueryAsCollection".to_string(),
+            ActionShortcuts::RefreshCollection => "RefreshCollection".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -457,6 +470,8 @@ impl TryFrom<String> for ActionShortcuts {
             "NewEntry" => ActionShortcuts::NewEntry,
             "QueryBuilder" => ActionShortcuts::QueryBuilder,
             "ToggleFacetView" => ActionShortcuts::ToggleFacetView,
+            "OpenQueryAsCollection" => ActionShortcuts::OpenQueryAsCollection,
+            "RefreshCollection" => ActionShortcuts::RefreshCollection,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -532,9 +547,11 @@ mod tests {
             ActionShortcuts::NewEntry => 42,
             ActionShortcuts::QueryBuilder => 43,
             ActionShortcuts::ToggleFacetView => 44,
+            ActionShortcuts::OpenQueryAsCollection => 45,
+            ActionShortcuts::RefreshCollection => 46,
         }
     }
-    const VARIANTS: usize = 45;
+    const VARIANTS: usize = 47;
 
     #[test]
     fn all_lists_every_variant() {
@@ -683,6 +700,8 @@ mod tests {
                 ActionShortcuts::NewEntry,
                 ActionShortcuts::QueryBuilder,
                 ActionShortcuts::ToggleFacetView,
+                ActionShortcuts::OpenQueryAsCollection,
+                ActionShortcuts::RefreshCollection,
             ]
         );
         assert_eq!(

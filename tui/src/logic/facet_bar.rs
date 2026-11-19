@@ -1,7 +1,7 @@
 //! The facet pill bar model: which facets of a note are picked, and the rows
 //! of pills to show. Pure state over [`NoteFacets`], shared by every frontend.
 
-use kimun_core::note::{Facet, FacetEntry, FacetKind, NoteFacets, select_blocks};
+use kimun_core::note::{Facet, FacetEntry, FacetKind, NoteFacets};
 
 use super::text_match::match_ranges;
 
@@ -153,22 +153,32 @@ impl FacetBar {
             .collect()
     }
 
-    /// "Showing text tagged #a or #b, in D \u{b7} 12 pieces". `None` without picks.
-    pub fn summary(&self, facets: &NoteFacets, pieces: usize) -> Option<String> {
+    /// "Showing text tagged #a or #b, in D \u{b7} 12 pieces", with
+    /// " in N notes" after the pieces when `notes` is given. `None` without
+    /// picks.
+    pub fn summary(
+        &self,
+        facets: &NoteFacets,
+        pieces: usize,
+        notes: Option<usize>,
+    ) -> Option<String> {
         if self.picks.is_empty() {
             return None;
         }
         let noun = if pieces == 1 { "piece" } else { "pieces" };
+        let in_notes = notes.map_or_else(String::new, |n| {
+            format!(" in {n} {}", if n == 1 { "note" } else { "notes" })
+        });
         Some(format!(
-            "Showing text {} \u{b7} {pieces} {noun}",
+            "Showing text {} \u{b7} {pieces} {noun}{in_notes}",
             self.phrases(facets).join(", ")
         ))
     }
 
     /// Why nothing shows: "No text tagged #a and in D." `None` when there are
-    /// no picks or something is shown.
-    pub fn empty_reason(&self, facets: &NoteFacets) -> Option<String> {
-        if self.picks.is_empty() || !select_blocks(facets, &self.picks).is_empty() {
+    /// no picks or `any_shown` (the caller drew something).
+    pub fn empty_reason(&self, facets: &NoteFacets, any_shown: bool) -> Option<String> {
+        if self.picks.is_empty() || any_shown {
             return None;
         }
         Some(format!("No text {}.", self.phrases(facets).join(" and ")))
@@ -426,12 +436,12 @@ mod tests {
         let mut bar = FacetBar::default();
         bar.set_picks(vec![tag("run"), tag("garden"), heading("d")]);
         assert_eq!(
-            bar.summary(&f, 12).as_deref(),
+            bar.summary(&f, 12, None).as_deref(),
             Some("Showing text tagged #run or #garden, in D \u{b7} 12 pieces")
         );
         bar.set_picks(vec![tag("run")]);
         assert_eq!(
-            bar.summary(&f, 1).as_deref(),
+            bar.summary(&f, 1, None).as_deref(),
             Some("Showing text tagged #run \u{b7} 1 piece")
         );
     }
@@ -439,16 +449,58 @@ mod tests {
     #[test]
     fn summary_is_none_without_picks() {
         let f = facets("#a\n");
-        assert_eq!(FacetBar::default().summary(&f, 3), None);
+        assert_eq!(FacetBar::default().summary(&f, 3, None), None);
     }
 
     #[test]
     fn empty_reason_is_none_when_something_shows() {
         let f = facets("# D\n\n#run\n");
         let mut bar = FacetBar::default();
-        assert_eq!(bar.empty_reason(&f), None);
+        assert_eq!(bar.empty_reason(&f, false), None);
         bar.set_picks(vec![tag("run")]);
-        assert_eq!(bar.empty_reason(&f), None);
+        assert_eq!(bar.empty_reason(&f, true), None);
+    }
+
+    #[test]
+    fn empty_reason_uses_the_any_shown_flag() {
+        let f = facets("# D\n\n#run\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("run")]);
+        // The flag decides, not the facets: `#run` selects blocks, yet the
+        // caller says nothing is shown.
+        assert_eq!(
+            bar.empty_reason(&f, false).as_deref(),
+            Some("No text tagged #run.")
+        );
+        assert_eq!(bar.empty_reason(&f, true), None);
+        assert_eq!(FacetBar::default().empty_reason(&f, false), None);
+    }
+
+    #[test]
+    fn summary_names_notes_when_given() {
+        let f = facets("# D\n\n#run\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("run"), heading("d")]);
+        assert_eq!(
+            bar.summary(&f, 12, Some(5)).as_deref(),
+            Some("Showing text tagged #run, in D \u{b7} 12 pieces in 5 notes")
+        );
+        assert_eq!(
+            bar.summary(&f, 1, Some(1)).as_deref(),
+            Some("Showing text tagged #run, in D \u{b7} 1 piece in 1 note")
+        );
+    }
+
+    #[test]
+    fn summary_without_notes_is_unchanged() {
+        let f = facets("#run\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("run")]);
+        assert_eq!(
+            bar.summary(&f, 2, None).as_deref(),
+            Some("Showing text tagged #run \u{b7} 2 pieces")
+        );
+        assert_eq!(FacetBar::default().summary(&f, 2, Some(3)), None);
     }
 
     #[test]
@@ -457,7 +509,7 @@ mod tests {
         let mut bar = FacetBar::default();
         bar.set_picks(vec![tag("run"), heading("b")]);
         assert_eq!(
-            bar.empty_reason(&f).as_deref(),
+            bar.empty_reason(&f, false).as_deref(),
             Some("No text tagged #run and in B.")
         );
     }

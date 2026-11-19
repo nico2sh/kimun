@@ -521,7 +521,7 @@ The region of a note that a **facet** owns. A tag or note link owns the nearest 
 A read-only view of the content of one note, or of a **collection**, narrowed to the **facet scope** of the picked facets. With no facet picked it shows the whole document. A bar that stays in view lists the facets by kind, summarises the picks and clears them. Each shown chunk carries the headings that contain it, each pickable, and a jump to its source, which opens a new tab as a **follow** of a note link from a facet view does; following a tag opens a search for it. Hidden blocks next to a shown chunk are revealed one block at a time, or all at once when three or fewer are hidden, never across a note boundary.
 
 **Collection**:
-The notes returned by a query, shown in query order as one document in a **facet view**. The list of notes is fixed when the view opens and changes only on a manual refresh. The content of each note stays live.
+The notes returned by a query, shown in query order as one document in a **facet view**. The query is resolved once, against the note open at that moment. The list of notes is bounded, fixed when the view opens, and changes only on a manual refresh. The content of each note stays live. An **editor group** that shows one holds no note, and its title is the query.
 
 **Scan helpers**:
 The `note::scan` module — live text analysis over editor buffer fragments: link/wikilink spans, exclusion zones (code, frontmatter, links), label tokens, URL classification. The presentation layer drives WYSIWYG behaviour with these on text being edited; they take arbitrary text fragments, not notes. Whole-note extraction belongs to **Note details** instead.

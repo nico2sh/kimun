@@ -1,4 +1,5 @@
 pub(crate) mod blocks;
+pub(crate) mod collection;
 pub(crate) mod content_extractor;
 pub(crate) mod facet_view;
 pub(crate) mod facets;
@@ -14,6 +15,7 @@ pub use properties::{
 // Facets: what a user can pick to narrow a note to the blocks tied to it
 // (see `CONTEXT.md`, **Facet**). Pure functions over note text.
 pub use blocks::{BlockKind, NoteBlock};
+pub use collection::{merge_entries, plan_collection, select_collection, NotePlan};
 pub use facet_view::{
     plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
 };
