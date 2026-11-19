@@ -6,9 +6,10 @@
 //! The TUI's painter wraps it as `MarkdownEditorView`. See ADR-0049.
 
 use crate::logic::editor::frame::{EditorFrame, FrameRow};
+use crate::logic::editor::frontmatter_reveal::FrontmatterReveal;
 use crate::logic::editor::markdown::runs::{
-    FrontmatterFence, as_frontmatter_text, box_runs, frontmatter_fence_runs, mark_overlay,
-    render_runs,
+    FrontmatterFence, as_frontmatter_text, box_runs, frontmatter_fence_runs,
+    frontmatter_summary_runs, mark_overlay, render_runs,
 };
 use crate::logic::editor::markdown::{ElementKind, ParsedBuffer, opener_shape, reveal};
 use crate::logic::editor::overlay::{Overlay, OverlayKind};
@@ -56,6 +57,8 @@ struct FrontmatterBox {
     /// Display columns of the property rows' box: the widest row, capped at
     /// the pane width.
     box_width: u16,
+    /// The property keys, as written, for the folded summary row.
+    keys: Vec<String>,
 }
 
 /// What a buffer row is within a frontmatter block.
@@ -82,7 +85,7 @@ impl FrontmatterBox {
     /// the first row that repeats the opening fence, so an edit in a long note
     /// costs the size of its frontmatter and no more. The fence rule itself
     /// stays in core: the rows read go to `frontmatter_lines`.
-    fn locate(text: &crate::ropetext::Text) -> Option<Range<usize>> {
+    fn locate(text: &crate::ropetext::Text) -> Option<(Range<usize>, Vec<String>)> {
         let first = text.line(0)?;
         let opening = first.trim_start_matches('\u{feff}').trim_end_matches('\r');
         if opening != "---" && opening != "+++" {
@@ -96,7 +99,12 @@ impl FrontmatterBox {
                 break;
             }
         }
-        kimun_core::note::scan::frontmatter_lines(&head).map(|block| block.lines)
+        let block = kimun_core::note::scan::frontmatter_lines(&head)?;
+        let keys = kimun_core::note::NoteDetails::properties_of(&head)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        Some((block.lines, keys))
     }
 }
 
@@ -132,6 +140,13 @@ pub struct EditorDisplay {
     /// The note's frontmatter block, drawn as a box. `None` when the note has
     /// no closed block. Rebuilt whenever the text changes.
     frontmatter: Option<FrontmatterBox>,
+    /// What keeps the frontmatter block open: pointer, cursor, find, pin.
+    fm_reveal: FrontmatterReveal,
+    /// The rows the layout hides: a folded block's rows after its opening
+    /// fence. `None` while the block is open or absent.
+    fm_hidden: Option<Range<usize>>,
+    /// The pane row the pointer last sat on, if it is over the editor.
+    fm_pointer_row: Option<usize>,
     /// Per-logical-row code-box width (display cols), or `None` when the row
     /// is not in a code block. All rows of one block share the block's
     /// widest-rendered-line width, capped at the editor width. Rebuilt in
@@ -236,6 +251,8 @@ pub struct PendingLayoutJob {
     pub width: usize,
     pub rendered_cache: Vec<Vec<bool>>,
     pub gutter_insets: Vec<usize>,
+    /// The rows a folded frontmatter block hides, as of capture.
+    pub hidden: Option<Range<usize>>,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -336,6 +353,9 @@ impl EditorDisplay {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             frontmatter: None,
+            fm_reveal: FrontmatterReveal::default(),
+            fm_hidden: None,
+            fm_pointer_row: None,
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
             // Empty buffer, spliceable — preserves the previous
@@ -432,6 +452,7 @@ impl EditorDisplay {
             width: self.last_layout_width as usize,
             rendered_cache: self.rendered_cache.clone(),
             gutter_insets: self.gutter_insets.clone(),
+            hidden: self.fm_hidden.clone(),
         })
     }
 
@@ -450,6 +471,10 @@ impl EditorDisplay {
         }
         self.layout = layout;
         self.layout_pending = None;
+        // The job was laid out with the block as it stood at capture; the
+        // reader may have opened or folded it since.
+        let text = self.text_snapshot.clone();
+        self.relayout_frontmatter(&text);
         // The wrapped layout numbers visual rows differently from the stub, so
         // a detached top would now point somewhere else in the note.
         self.detached = false;
@@ -475,7 +500,11 @@ impl EditorDisplay {
                 spawned: false,
             });
         } else {
-            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+            let hints = row_hints(
+                &self.rendered_cache,
+                &self.gutter_insets,
+                self.fm_hidden.as_ref(),
+            );
             self.layout = Layout::compute(text, width as usize, Metrics::default(), &hints);
             self.layout_pending = None;
         }
@@ -624,7 +653,11 @@ impl EditorDisplay {
         let Some(cursor) = text.position(buf.cursor().0, Column::new(buf.cursor().1)) else {
             return false;
         };
-        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+        let hints = row_hints(
+            &self.rendered_cache,
+            &self.gutter_insets,
+            self.fm_hidden.as_ref(),
+        );
         let goal = self
             .visual_goal
             .unwrap_or_else(|| self.layout.cell_of(&text, &hints, cursor).column);
@@ -637,6 +670,7 @@ impl EditorDisplay {
             motion::VisualGoal::Cell(goal),
         );
         self.visual_goal = Some(goal);
+        let landed = self.past_folded_frontmatter(&text, cursor, landed, down);
 
         if extend {
             if buf.selection_range().is_none() {
@@ -647,6 +681,78 @@ impl EditorDisplay {
         }
         buf.move_to(landed);
         true
+    }
+
+    /// A visual move across a folded frontmatter block's one row enters the
+    /// block instead of stepping over it. Going up from below lands on the
+    /// closing fence, the nearest line of the block. Going down from the
+    /// opening fence lands on the first property row, the next line of the
+    /// note. Either way the cursor is then inside the block, and the next
+    /// frame opens it.
+    fn past_folded_frontmatter(
+        &self,
+        text: &crate::ropetext::Text,
+        from: crate::ropetext::Position,
+        landed: crate::ropetext::Position,
+        down: bool,
+    ) -> crate::ropetext::Position {
+        let Some(hidden) = &self.fm_hidden else {
+            return landed;
+        };
+        let opening = hidden.start - 1;
+        let target = if !down && landed.row() == opening && from.row() >= hidden.end {
+            hidden.end - 1
+        } else if down && from.row() == opening && landed.row() >= hidden.end {
+            hidden.start
+        } else {
+            return landed;
+        };
+        text.position(target, Column::new(0)).unwrap_or(landed)
+    }
+
+    /// A different note replaced the buffer: the block's pin and the
+    /// first-move rule start over.
+    pub fn note_loaded(&mut self) {
+        self.fm_reveal.note_loaded();
+    }
+
+    /// The pane row the pointer is over, or `None` when it is elsewhere. A
+    /// frontmatter block opens while the pointer is over it.
+    pub fn set_frontmatter_pointer(&mut self, pane_row: Option<usize>) {
+        self.fm_pointer_row = pane_row;
+    }
+
+    /// The row of the find bar's current match, or `None`. A match inside the
+    /// frontmatter block holds it open.
+    pub fn set_frontmatter_find_row(&mut self, row: Option<usize>) {
+        self.fm_reveal.set_find_row(row);
+    }
+
+    pub fn frontmatter_pinned(&self) -> bool {
+        self.fm_reveal.is_pinned()
+    }
+
+    /// Hold the frontmatter block open (or stop holding it).
+    pub fn pin_frontmatter(&mut self, pinned: bool) {
+        self.fm_reveal.pin(pinned);
+    }
+
+    /// Whether the visual line on pane row `pane_row` is the first line of a
+    /// frontmatter block: its top rule when open, its summary when folded.
+    pub fn frontmatter_top_at(&self, pane_row: usize) -> bool {
+        let Some(block) = &self.frontmatter else {
+            return false;
+        };
+        self.layout
+            .visual_lines()
+            .get(self.viewport.top() + pane_row)
+            .is_some_and(|vl| vl.logical_row == block.lines.start && vl.first)
+    }
+
+    /// The first property row of the frontmatter block, or the closing fence
+    /// when the block has no properties.
+    pub fn frontmatter_first_property_row(&self) -> Option<usize> {
+        self.frontmatter.as_ref().map(|b| b.lines.start + 1)
     }
 
     /// Record which rows an edit changed, for the next `update` to act on.
@@ -813,11 +919,17 @@ impl EditorDisplay {
             // flip between box and plain text, so the layout and the row cache
             // rebuild in full.
             let located = FrontmatterBox::locate(text);
-            if located.as_ref() != self.frontmatter.as_ref().map(|f| &f.lines) {
+            if located.as_ref().map(|(lines, _)| lines)
+                != self.frontmatter.as_ref().map(|f| &f.lines)
+            {
                 self.last_text_change = TextChangeKind::Full;
             }
             let box_width = self.frontmatter.as_ref().map_or(0, |f| f.box_width);
-            self.frontmatter = located.map(|lines| FrontmatterBox { lines, box_width });
+            self.frontmatter = located.map(|(lines, keys)| FrontmatterBox {
+                lines,
+                box_width,
+                keys,
+            });
             // Incremental update of `lines_snapshot` mirrors the parse
             // path: on the splice path only the rows in `range` can
             // have changed (try_incremental_parse already bails when
@@ -856,10 +968,30 @@ impl EditorDisplay {
             .lines
             .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
+        // Which rows the frontmatter block hides this frame. The pointer is
+        // read against the layout the reader last saw, before this frame
+        // changes it.
+        self.fm_reveal.observe(cursor, generation);
+        let pointer_over = match (&self.frontmatter, self.fm_pointer_row) {
+            (Some(block), Some(pane_row)) => self
+                .layout
+                .visual_lines()
+                .get(self.viewport.top() + pane_row)
+                .is_some_and(|vl| block.lines.contains(&vl.logical_row)),
+            _ => false,
+        };
+        self.fm_reveal.set_pointer_over(pointer_over);
+        let hidden = self.frontmatter.as_ref().and_then(|block| {
+            let open = self.fm_reveal.is_open(&block.lines, cursor);
+            (!open).then(|| block.lines.start + 1..block.lines.end)
+        });
+        let hidden_changed = hidden != self.fm_hidden;
+        self.fm_hidden = hidden;
         let need_layout = generation != self.last_layout_generation
             || width != self.last_layout_width
             || cursor.0 != self.last_layout_cursor.0
-            || new_expanded != old_expanded;
+            || new_expanded != old_expanded
+            || hidden_changed;
 
         if need_layout {
             let width_changed = width != self.last_layout_width;
@@ -1009,7 +1141,11 @@ impl EditorDisplay {
                 self.full_layout_rebuild(&snap.text, width, row_count, generation);
             } else if let Some(rows) = relayout_across_line_change {
                 let delta = row_count as isize - self.layout.row_count() as isize;
-                let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                let hints = row_hints(
+                    &self.rendered_cache,
+                    &self.gutter_insets,
+                    self.fm_hidden.as_ref(),
+                );
                 self.layout.relayout_rows(&snap.text, &hints, rows, delta);
             } else if line_count_changed {
                 self.full_layout_rebuild(&snap.text, width, row_count, generation);
@@ -1029,7 +1165,11 @@ impl EditorDisplay {
                                 .map(|r| r + 1)
                                 .unwrap_or(range.end),
                         );
-                        let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                        let hints = row_hints(
+                            &self.rendered_cache,
+                            &self.gutter_insets,
+                            self.fm_hidden.as_ref(),
+                        );
                         // Line count is unchanged on this path — the caller above
                         // takes the full-recompute branch when it is not — so the
                         // relayout shifts nothing.
@@ -1039,7 +1179,11 @@ impl EditorDisplay {
                         if let (Some(&first), Some(&last)) =
                             (cursor_affected_rows.first(), cursor_affected_rows.last())
                         {
-                            let hints = row_hints(&self.rendered_cache, &self.gutter_insets);
+                            let hints = row_hints(
+                                &self.rendered_cache,
+                                &self.gutter_insets,
+                                self.fm_hidden.as_ref(),
+                            );
                             self.layout
                                 .relayout_rows(&snap.text, &hints, first..last + 1, 0);
                         }
@@ -1061,6 +1205,9 @@ impl EditorDisplay {
                 self.rebuild_code_box_width(text, width);
             } else if let TextChangeKind::Incremental(range) = &self.last_text_change {
                 self.patch_code_box_width(text, width, range.clone());
+            }
+            if hidden_changed {
+                self.relayout_frontmatter(text);
             }
             if width_changed || !matches!(self.last_text_change, TextChangeKind::None) {
                 self.refresh_frontmatter_box_width(text, width);
@@ -1528,6 +1675,12 @@ impl EditorDisplay {
                 let parsed = &parsed_lines[vl.logical_row];
                 let content = &logical_line[vl.bytes.clone()];
                 let runs = match frontmatter_row {
+                    Some(FrontmatterRow::Fence(FrontmatterFence::Opening))
+                        if vl.first && self.fm_hidden.is_some() =>
+                    {
+                        let keys = self.frontmatter.as_ref().map_or(&[][..], |b| &b.keys);
+                        frontmatter_summary_runs(keys, width)
+                    }
                     Some(FrontmatterRow::Fence(fence)) if vl.first => {
                         frontmatter_fence_runs(fence, content, cursor_col.is_some(), width)
                     }
@@ -1697,6 +1850,33 @@ impl EditorDisplay {
                 .frontmatter
                 .as_ref()
                 .is_some_and(|block| block.lines.contains(&row))
+    }
+
+    /// Re-lay the frontmatter block's rows with the rows `fm_hidden` names
+    /// hidden, leaving every other row alone. Folding or opening the block
+    /// changes how many visual lines sit above the rest of the note, so a view
+    /// scrolled below the block moves by the difference and keeps showing the
+    /// same text.
+    fn relayout_frontmatter(&mut self, text: &crate::ropetext::Text) {
+        let Some(rows) = self.frontmatter.as_ref().map(|b| b.lines.clone()) else {
+            return;
+        };
+        if rows.end > self.layout.row_count() || !self.layout.describes(text) {
+            return;
+        }
+        let top = self.viewport.top();
+        let below = self.layout.row_start(rows.end);
+        let before = self.layout.visual_line_count();
+        let hints = row_hints(
+            &self.rendered_cache,
+            &self.gutter_insets,
+            self.fm_hidden.as_ref(),
+        );
+        self.layout.relayout_rows(text, &hints, rows, 0);
+        let delta = self.layout.visual_line_count() as isize - before as isize;
+        if delta != 0 && below.is_some_and(|start| top >= start) {
+            self.viewport.scroll_by(&self.layout, delta);
+        }
     }
 
     /// Size the frontmatter box to its widest property row, capped at the
@@ -1922,12 +2102,17 @@ impl Default for EditorDisplay {
 /// [`PendingLayoutJob`]'s owned `rendered_cache`/`gutter_insets` clones —
 /// `RowHints` borrows, so it cannot cross the `tokio::spawn` boundary
 /// itself and has to be reconstructed on the other side from owned data.
-pub(crate) fn row_hints<'a>(rendered: &'a [Vec<bool>], insets: &'a [usize]) -> Vec<RowHints<'a>> {
+pub(crate) fn row_hints<'a>(
+    rendered: &'a [Vec<bool>],
+    insets: &'a [usize],
+    hidden: Option<&Range<usize>>,
+) -> Vec<RowHints<'a>> {
     let rows = rendered.len().max(insets.len());
     (0..rows)
         .map(|row| RowHints {
             visible: rendered.get(row).map(Vec::as_slice).unwrap_or(&[]),
             inset: insets.get(row).copied().unwrap_or(0),
+            hidden: hidden.is_some_and(|rows| rows.contains(&row)),
         })
         .collect()
 }
@@ -2042,7 +2227,7 @@ pub(crate) mod tests {
             let mut v = EditorDisplay::new();
             update_view(&mut v, &lines, (park, 0), rect(20), 1, None);
             let text = v.text_snapshot.clone();
-            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
             for vrow in 0..v.layout.visual_lines().len() {
                 for vcol in 0..24 {
                     let (tui_row, tui_col) = v.click_to_logical_for_testing(vrow, vcol);
@@ -3053,7 +3238,7 @@ pub(crate) mod tests {
             "stub row count must match input"
         );
         let real_visual_lines = {
-            let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+            let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
             Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints).visual_line_count()
         };
         assert!(
@@ -3067,7 +3252,7 @@ pub(crate) mod tests {
         // Caller (TextEditorComponent in production) spawns the real wrap
         // and installs the result. Simulate that here.
         let job = pending.unwrap();
-        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets, job.hidden.as_ref());
         let real = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
         let real_count = real.visual_line_count();
         v.install_full_layout(job.generation, real);
@@ -3137,7 +3322,7 @@ pub(crate) mod tests {
         );
 
         // The current generation's install lands.
-        let hints = row_hints(&v.rendered_cache, &v.gutter_insets);
+        let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
         let real = Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints);
         v.install_full_layout(2, real);
         assert!(
@@ -3163,7 +3348,7 @@ pub(crate) mod tests {
         // Pane resized before the background wrap for width 40 lands.
         update_view(&mut v, &lines, (0, 0), (80, rect(40).1), 1, None);
 
-        let hints = row_hints(&job.rendered_cache, &job.gutter_insets);
+        let hints = row_hints(&job.rendered_cache, &job.gutter_insets, job.hidden.as_ref());
         let stale_width_layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
         v.install_full_layout(job.generation, stale_width_layout);
         assert!(
@@ -3500,7 +3685,7 @@ pub(crate) mod tests {
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
         let fresh_text = crate::ropetext::Text::from(edited.join("\n").as_str());
-        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[]);
+        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[], None);
         let fresh_layout = Layout::compute(&fresh_text, 40, Metrics::default(), &fresh_hints);
 
         let actual = v.layout.visual_lines();
@@ -3972,6 +4157,7 @@ mod frontmatter_box_tests {
     /// A view of `text` with the cursor at `cursor`, 40 columns wide.
     fn view(text: &str, cursor: (usize, usize)) -> (EditorDisplay, EditorFrame) {
         let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
         update_view(&mut v, &lines(text), cursor, rect(12), 1, None);
         let frame = v.frame(40, true);
         (v, frame)
@@ -4057,6 +4243,7 @@ mod frontmatter_box_tests {
     #[test]
     fn closing_the_block_by_typing_the_fence_draws_the_box() {
         let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
         update_view(
             &mut v,
             &lines("---\ntags: [a]\n\nBody"),
@@ -4081,6 +4268,7 @@ mod frontmatter_box_tests {
     #[test]
     fn breaking_the_closing_fence_drops_the_box() {
         let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
         update_view(&mut v, &lines(NOTE), (4, 0), rect(12), 1, None);
         update_view(
             &mut v,
@@ -4098,6 +4286,7 @@ mod frontmatter_box_tests {
     #[test]
     fn editing_a_property_resizes_the_box() {
         let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
         update_view(&mut v, &lines(NOTE), (4, 0), rect(12), 1, None);
         update_view(
             &mut v,
@@ -4116,6 +4305,7 @@ mod frontmatter_box_tests {
         let mut text: Vec<String> = lines(NOTE);
         text.extend((0..100).map(|i| format!("paragraph {i}")));
         let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
         update_view(&mut v, &text, (8, 0), rect(12), 1, None);
         text[8].push('x');
         update_view(&mut v, &text, (8, 1), rect(12), 2, None);
@@ -4133,5 +4323,297 @@ mod frontmatter_box_tests {
                 .iter()
                 .all(|run| !matches!(run.role, Role::FrontmatterTitle | Role::FrontmatterText))
         }));
+    }
+}
+
+/// When the frontmatter block folds to one row and when it opens. Rows below a
+/// folded block keep their buffer line numbers, and the cursor never sits on a
+/// row that is not drawn.
+#[cfg(test)]
+mod frontmatter_fold_tests {
+    use super::tests::{rect, update_view};
+    use super::*;
+    use crate::logic::editor::markdown::runs::Role;
+    use crate::logic::editor::rope_buffer::RopeBuffer;
+    use crate::logic::editor::snapshot::EditorSnapshot;
+    use crate::ropetext::{Column, Text};
+    use std::num::NonZeroU64;
+
+    const NOTE: &str = "---\ntags: [a]\ndue: tomorrow\n---\nBody\nMore";
+
+    fn lines(text: &str) -> Vec<String> {
+        text.split('\n').map(str::to_string).collect()
+    }
+
+    fn row_text(frame: &EditorFrame, row: usize) -> String {
+        frame.rows[row]
+            .runs
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect()
+    }
+
+    fn logical_rows(frame: &EditorFrame) -> Vec<usize> {
+        frame.rows.iter().map(|r| r.logical_row).collect()
+    }
+
+    /// Draw `NOTE` for the first time with the cursor on `cursor`.
+    fn drawn(cursor: (usize, usize)) -> (EditorDisplay, EditorFrame) {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines(NOTE), cursor, rect(12), 1, None);
+        let frame = v.frame(40, true);
+        (v, frame)
+    }
+
+    /// Another frame of the same text, as the editor draws one when nothing
+    /// was edited: the same `Text`, so the same revision.
+    fn redraw(v: &mut EditorDisplay, cursor: (usize, usize)) -> EditorFrame {
+        let snap =
+            EditorSnapshot::of_buffer(v.text_snapshot.clone(), cursor, NonZeroU64::new(1).unwrap());
+        v.update_sized(&snap, 40, 12);
+        v.frame(40, true)
+    }
+
+    #[test]
+    fn a_block_with_the_cursor_below_it_folds_to_one_row() {
+        let (_, frame) = drawn((4, 0));
+        assert_eq!(logical_rows(&frame), [0, 4, 5]);
+        let summary = row_text(&frame, 0);
+        assert!(
+            summary.starts_with("─ properties · tags, due "),
+            "{summary:?}"
+        );
+        assert_eq!(summary.chars().count(), 40);
+        assert_eq!(
+            frame.rows[0]
+                .runs
+                .iter()
+                .map(|r| r.role)
+                .collect::<Vec<_>>(),
+            [
+                Role::Rule,
+                Role::FrontmatterTitle,
+                Role::FrontmatterText,
+                Role::Rule
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_keys_folds_to_a_titled_rule() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines("---\n---\nBody"), (2, 0), rect(12), 1, None);
+        let frame = v.frame(40, true);
+        let summary = row_text(&frame, 0);
+        assert!(summary.starts_with("─ properties ─"), "{summary:?}");
+        assert_eq!(logical_rows(&frame), [0, 2]);
+    }
+
+    #[test]
+    fn a_narrow_pane_cuts_the_keys_with_an_ellipsis() {
+        let mut v = EditorDisplay::new();
+        let note = "---\nalpha: 1\nbeta: 2\ngamma: 3\n---\nBody";
+        update_view(&mut v, &lines(note), (5, 0), (24, 12), 1, None);
+        let frame = v.frame(24, true);
+        let summary = row_text(&frame, 0);
+        assert_eq!(summary.chars().count(), 24, "{summary:?}");
+        assert!(summary.contains('…'), "{summary:?}");
+        assert!(summary.ends_with('─'), "{summary:?}");
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_the_title_gets_a_bare_rule() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines(NOTE), (4, 0), (8, 12), 1, None);
+        assert_eq!(row_text(&v.frame(8, true), 0), "─".repeat(8));
+    }
+
+    #[test]
+    fn the_cursor_inside_the_block_opens_it() {
+        let (_, frame) = drawn((2, 3));
+        assert_eq!(logical_rows(&frame), [0, 1, 2, 3, 4, 5]);
+        assert!(row_text(&frame, 0).starts_with("─ properties ─"));
+        assert_eq!(row_text(&frame, 2), "due: tomorrow");
+    }
+
+    #[test]
+    fn the_cursor_on_line_one_of_a_fresh_note_leaves_the_block_folded() {
+        let (_, frame) = drawn((0, 0));
+        assert_eq!(logical_rows(&frame), [0, 4, 5]);
+    }
+
+    #[test]
+    fn once_the_reader_has_moved_line_one_opens_the_block() {
+        let (mut v, _) = drawn((0, 0));
+        assert_eq!(logical_rows(&redraw(&mut v, (4, 0))), [0, 4, 5]);
+        assert_eq!(logical_rows(&redraw(&mut v, (0, 0))), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn leaving_the_block_folds_it_again() {
+        let (mut v, _) = drawn((2, 0));
+        assert_eq!(logical_rows(&redraw(&mut v, (2, 1))), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+    }
+
+    #[test]
+    fn loading_another_note_starts_the_first_move_rule_over() {
+        let (mut v, _) = drawn((0, 0));
+        redraw(&mut v, (4, 0));
+        v.note_loaded();
+        update_view(&mut v, &lines(NOTE), (0, 0), rect(12), 2, None);
+        assert_eq!(logical_rows(&v.frame(40, true)), [0, 4, 5]);
+    }
+
+    #[test]
+    fn a_pin_holds_the_block_open_and_unpinning_folds_it() {
+        let (mut v, _) = drawn((5, 0));
+        v.pin_frontmatter(true);
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 1, 2, 3, 4, 5]);
+        v.pin_frontmatter(false);
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+    }
+
+    #[test]
+    fn a_find_match_inside_the_block_opens_it() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_find_row(Some(2));
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 1, 2, 3, 4, 5]);
+        v.set_frontmatter_find_row(None);
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+    }
+
+    #[test]
+    fn the_pointer_over_the_summary_opens_the_block() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_pointer(Some(0));
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_block_stays_open_while_the_pointer_moves_within_it() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_pointer(Some(0));
+        for pane_row in [0, 1, 2, 3, 2, 0] {
+            v.set_frontmatter_pointer(Some(pane_row));
+            let frame = redraw(&mut v, (5, 0));
+            assert_eq!(
+                logical_rows(&frame),
+                [0, 1, 2, 3, 4, 5],
+                "pointer on pane row {pane_row}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pointer_leaving_the_block_folds_it_and_it_stays_folded() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_pointer(Some(0));
+        redraw(&mut v, (5, 0));
+        // Pane row 4 is `Body` while the block is open, then row 4 of a
+        // folded note is past the text. Neither reopens the block.
+        for _ in 0..3 {
+            v.set_frontmatter_pointer(Some(4));
+            assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+        }
+    }
+
+    #[test]
+    fn the_pointer_off_the_editor_folds_the_block() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_pointer(Some(0));
+        redraw(&mut v, (5, 0));
+        v.set_frontmatter_pointer(None);
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+    }
+
+    #[test]
+    fn the_pointer_over_the_body_does_not_open_the_block() {
+        let (mut v, _) = drawn((5, 0));
+        v.set_frontmatter_pointer(Some(1));
+        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
+    }
+
+    #[test]
+    fn the_top_of_the_block_is_found_by_pane_row() {
+        let (mut v, _) = drawn((5, 0));
+        assert!(v.frontmatter_top_at(0), "the summary is the top");
+        assert!(!v.frontmatter_top_at(1));
+        v.pin_frontmatter(true);
+        redraw(&mut v, (5, 0));
+        assert!(v.frontmatter_top_at(0), "the top rule is the top");
+        assert!(!v.frontmatter_top_at(1));
+        assert_eq!(v.frontmatter_first_property_row(), Some(1));
+    }
+
+    #[test]
+    fn a_note_without_frontmatter_has_no_top() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines("a\nb"), (0, 0), rect(12), 1, None);
+        assert!(!v.frontmatter_top_at(0));
+        assert_eq!(v.frontmatter_first_property_row(), None);
+    }
+
+    #[test]
+    fn folding_a_block_above_the_view_keeps_the_same_text_on_top() {
+        let mut text = lines("---\ntags: [a]\ndue: x\n---");
+        text.extend((0..60).map(|i| format!("paragraph {i}")));
+        let mut v = EditorDisplay::new();
+        v.pin_frontmatter(true);
+        update_view(&mut v, &text, (40, 0), rect(10), 1, None);
+        let open_top = v.frame(40, true).rows[0].logical_row;
+        assert!(open_top > 4, "the view is scrolled below the block");
+        v.pin_frontmatter(false);
+        update_view(&mut v, &text, (40, 0), rect(10), 1, None);
+        let frame = v.frame(40, true);
+        assert_eq!(frame.rows[0].logical_row, open_top);
+        assert!(frame.rows.iter().any(|r| r.logical_row == 40));
+    }
+
+    #[test]
+    fn the_cursor_cell_is_on_screen_beside_a_folded_block() {
+        let (_, frame) = drawn((5, 2));
+        // Rows drawn: summary, Body, More. The cursor is on `More`.
+        assert_eq!(frame.cursor, Some((2, 2)));
+    }
+
+    /// A buffer of `NOTE` the display has drawn, cursor at `row`.
+    fn buffer_at(row: usize) -> (EditorDisplay, RopeBuffer) {
+        let mut buf = RopeBuffer::new(Text::from(NOTE));
+        let at = buf.text().position(row, Column::new(0)).unwrap();
+        buf.move_to(at);
+        let mut v = EditorDisplay::new();
+        let snap = EditorSnapshot::of_buffer(
+            buf.text().clone(),
+            buf.cursor(),
+            NonZeroU64::new(1).unwrap(),
+        );
+        v.update_sized(&snap, 40, 12);
+        // Move off line one so the block is folded and armed.
+        (v, buf)
+    }
+
+    #[test]
+    fn moving_up_into_a_folded_block_lands_on_its_closing_fence() {
+        let (mut v, mut buf) = buffer_at(4);
+        assert_eq!(v.fm_hidden, Some(1..4), "folded");
+        assert!(v.move_cursor_visually(&mut buf, false, false));
+        assert_eq!(buf.cursor().0, 3, "the closing fence");
+    }
+
+    #[test]
+    fn moving_down_from_the_folded_block_enters_it_at_the_first_property() {
+        let (mut v, mut buf) = buffer_at(0);
+        assert_eq!(v.fm_hidden, Some(1..4), "folded under the fresh-note rule");
+        assert!(v.move_cursor_visually(&mut buf, true, false));
+        assert_eq!(buf.cursor().0, 1, "the first property row, not the body");
+    }
+
+    #[test]
+    fn moving_down_from_the_closing_fence_of_an_open_block_goes_to_the_body() {
+        let (mut v, mut buf) = buffer_at(3);
+        assert_eq!(v.fm_hidden, None, "the cursor inside opens it");
+        assert!(v.move_cursor_visually(&mut buf, true, false));
+        assert_eq!(buf.cursor().0, 4);
     }
 }
