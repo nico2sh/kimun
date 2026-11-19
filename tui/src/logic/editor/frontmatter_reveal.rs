@@ -1,9 +1,9 @@
 //! When a note's frontmatter block shows open and when it folds to one row.
 //!
 //! Pure state, no layout and no text: the display feeds it the cursor, the
-//! pointer and the find bar, and asks whether the block is open. Four things
-//! open it — the pointer over it, the cursor inside it, the find bar's current
-//! match inside it, or a pin the reader set with a click. Otherwise it folds.
+//! find bar and the pin, and asks whether the block is open. Three things
+//! open it — the cursor inside it, the find bar's current match inside it, or
+//! a pin the reader set with a click. Otherwise it folds.
 
 use std::ops::Range;
 
@@ -11,7 +11,6 @@ use std::ops::Range;
 #[derive(Debug, Clone, Default)]
 pub struct FrontmatterReveal {
     pinned: bool,
-    pointer_over: bool,
     find_row: Option<usize>,
     /// Whether the reader has done anything since the note loaded. A note
     /// opens with its cursor on line 1, which is the block's own fence, so
@@ -23,12 +22,9 @@ pub struct FrontmatterReveal {
 
 impl FrontmatterReveal {
     /// A different note replaced the buffer: forget the pin and the first-move
-    /// state. The pointer stays where it is.
+    /// state.
     pub fn note_loaded(&mut self) {
-        *self = Self {
-            pointer_over: self.pointer_over,
-            ..Self::default()
-        };
+        *self = Self::default();
     }
 
     /// Record this frame's cursor and content revision. The first call after
@@ -41,10 +37,6 @@ impl FrontmatterReveal {
             }
             Some(_) => {}
         }
-    }
-
-    pub fn set_pointer_over(&mut self, over: bool) {
-        self.pointer_over = over;
     }
 
     /// The row of the find bar's current match, or `None` when there is none.
@@ -63,7 +55,6 @@ impl FrontmatterReveal {
     /// Whether a block covering `lines` shows open with the cursor at `cursor`.
     pub fn is_open(&self, lines: &Range<usize>, cursor: (usize, usize)) -> bool {
         self.pinned
-            || self.pointer_over
             || self.find_row.is_some_and(|row| lines.contains(&row))
             || self.cursor_inside(lines, cursor)
     }
@@ -89,15 +80,6 @@ mod tests {
     #[test]
     fn a_block_is_folded_when_nothing_opens_it() {
         assert!(!loaded().is_open(&BLOCK, (6, 0)));
-    }
-
-    #[test]
-    fn the_pointer_over_the_block_opens_it() {
-        let mut reveal = loaded();
-        reveal.set_pointer_over(true);
-        assert!(reveal.is_open(&BLOCK, (6, 0)));
-        reveal.set_pointer_over(false);
-        assert!(!reveal.is_open(&BLOCK, (6, 0)));
     }
 
     #[test]
@@ -152,14 +134,6 @@ mod tests {
         reveal.observe((0, 0), 1);
         assert!(!reveal.is_open(&BLOCK, (0, 0)));
         assert!(!reveal.is_pinned());
-    }
-
-    #[test]
-    fn loading_another_note_keeps_the_pointer() {
-        let mut reveal = loaded();
-        reveal.set_pointer_over(true);
-        reveal.note_loaded();
-        assert!(reveal.is_open(&BLOCK, (6, 0)));
     }
 
     #[test]

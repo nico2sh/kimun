@@ -145,8 +145,6 @@ pub struct EditorDisplay {
     /// The rows the layout hides: a folded block's rows after its opening
     /// fence. `None` while the block is open or absent.
     fm_hidden: Option<Range<usize>>,
-    /// The pane row the pointer last sat on, if it is over the editor.
-    fm_pointer_row: Option<usize>,
     /// Per-logical-row code-box width (display cols), or `None` when the row
     /// is not in a code block. All rows of one block share the block's
     /// widest-rendered-line width, capped at the editor width. Rebuilt in
@@ -355,7 +353,6 @@ impl EditorDisplay {
             frontmatter: None,
             fm_reveal: FrontmatterReveal::default(),
             fm_hidden: None,
-            fm_pointer_row: None,
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
             // Empty buffer, spliceable — preserves the previous
@@ -716,12 +713,6 @@ impl EditorDisplay {
         self.fm_reveal.note_loaded();
     }
 
-    /// The pane row the pointer is over, or `None` when it is elsewhere. A
-    /// frontmatter block opens while the pointer is over it.
-    pub fn set_frontmatter_pointer(&mut self, pane_row: Option<usize>) {
-        self.fm_pointer_row = pane_row;
-    }
-
     /// The row of the find bar's current match, or `None`. A match inside the
     /// frontmatter block holds it open.
     pub fn set_frontmatter_find_row(&mut self, row: Option<usize>) {
@@ -968,19 +959,8 @@ impl EditorDisplay {
             .lines
             .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
-        // Which rows the frontmatter block hides this frame. The pointer is
-        // read against the layout the reader last saw, before this frame
-        // changes it.
+        // Which rows the frontmatter block hides this frame.
         self.fm_reveal.observe(cursor, generation);
-        let pointer_over = match (&self.frontmatter, self.fm_pointer_row) {
-            (Some(block), Some(pane_row)) => self
-                .layout
-                .visual_lines()
-                .get(self.viewport.top() + pane_row)
-                .is_some_and(|vl| block.lines.contains(&vl.logical_row)),
-            _ => false,
-        };
-        self.fm_reveal.set_pointer_over(pointer_over);
         let hidden = self.frontmatter.as_ref().and_then(|block| {
             let open = self.fm_reveal.is_open(&block.lines, cursor);
             (!open).then(|| block.lines.start + 1..block.lines.end)
@@ -4480,57 +4460,6 @@ mod frontmatter_fold_tests {
         v.set_frontmatter_find_row(Some(2));
         assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 1, 2, 3, 4, 5]);
         v.set_frontmatter_find_row(None);
-        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
-    }
-
-    #[test]
-    fn the_pointer_over_the_summary_opens_the_block() {
-        let (mut v, _) = drawn((5, 0));
-        v.set_frontmatter_pointer(Some(0));
-        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn the_block_stays_open_while_the_pointer_moves_within_it() {
-        let (mut v, _) = drawn((5, 0));
-        v.set_frontmatter_pointer(Some(0));
-        for pane_row in [0, 1, 2, 3, 2, 0] {
-            v.set_frontmatter_pointer(Some(pane_row));
-            let frame = redraw(&mut v, (5, 0));
-            assert_eq!(
-                logical_rows(&frame),
-                [0, 1, 2, 3, 4, 5],
-                "pointer on pane row {pane_row}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_pointer_leaving_the_block_folds_it_and_it_stays_folded() {
-        let (mut v, _) = drawn((5, 0));
-        v.set_frontmatter_pointer(Some(0));
-        redraw(&mut v, (5, 0));
-        // Pane row 4 is `Body` while the block is open, then row 4 of a
-        // folded note is past the text. Neither reopens the block.
-        for _ in 0..3 {
-            v.set_frontmatter_pointer(Some(4));
-            assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
-        }
-    }
-
-    #[test]
-    fn the_pointer_off_the_editor_folds_the_block() {
-        let (mut v, _) = drawn((5, 0));
-        v.set_frontmatter_pointer(Some(0));
-        redraw(&mut v, (5, 0));
-        v.set_frontmatter_pointer(None);
-        assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
-    }
-
-    #[test]
-    fn the_pointer_over_the_body_does_not_open_the_block() {
-        let (mut v, _) = drawn((5, 0));
-        v.set_frontmatter_pointer(Some(1));
         assert_eq!(logical_rows(&redraw(&mut v, (5, 0))), [0, 4, 5]);
     }
 
