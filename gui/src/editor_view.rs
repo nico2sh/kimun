@@ -809,7 +809,10 @@ impl EditorView {
             self.clicks.end();
             self.editor.handle_pointer(&pointer, &self.tx);
             self.editor.settle_pointer(true);
-            self.dragging = !self.follow_at_caret();
+            // Stay armed even when it follows: the release must still reach
+            // the editor to end the press `handle_pointer` started.
+            self.follow_at_caret();
+            self.dragging = true;
             self.settle(window, cx);
             return;
         }
