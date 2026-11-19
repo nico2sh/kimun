@@ -13,6 +13,9 @@ use super::{
 use crate::logic::editor::overlay::{OverlayKind, OverlaySet};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Glyph drawn in place of an unordered list marker (`-`, `*`, `+`).
+pub(crate) const LIST_BULLET: char = '•';
+
 /// What a run of text *is*, as far as styling goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -319,6 +322,21 @@ pub fn render_runs(
                 seg_str.push(' ');
             }
             visual_col += tw;
+        } else if this_is_sigil
+            && in_list_sigil
+            && cursor_col.is_none()
+            && matches!(cluster, "-" | "*" | "+")
+        {
+            // Unordered marker off the caret's line: draw a bullet. `•` is
+            // one cell wide like the ASCII marker, so wrap and cursor math
+            // are untouched. The caret's line keeps the raw source.
+            seg_str.push(LIST_BULLET);
+            visual_col += cluster_display_width(cluster);
+            debug_assert_eq!(
+                cluster_display_width(cluster),
+                string_display_width(&LIST_BULLET.to_string()),
+                "bullet must measure like the marker it replaces"
+            );
         } else {
             seg_str.push_str(cluster);
             visual_col += cluster_display_width(cluster);
@@ -627,6 +645,33 @@ mod tests {
                 && r.text.contains("text")),
             "{rs:?}"
         );
+    }
+
+    #[test]
+    fn unordered_marker_draws_as_bullet_off_the_caret_line() {
+        for src in ["- item", "* item", "+ item", "  - item"] {
+            let rs = runs(src, None, false, 40);
+            let text = joined(&rs);
+            assert!(text.contains("• item"), "{src}: {rs:?}");
+            assert!(!text.contains(['-', '*', '+']), "{src}: {rs:?}");
+        }
+    }
+
+    #[test]
+    fn task_item_keeps_bullet_before_checkbox() {
+        assert_eq!(joined(&runs("- [ ] todo", None, false, 40)), "• [ ] todo");
+    }
+
+    #[test]
+    fn unordered_marker_stays_raw_on_the_caret_line() {
+        let rs = runs("* item", Some(3), false, 40);
+        assert_eq!(joined(&rs), "* item");
+    }
+
+    #[test]
+    fn ordered_marker_and_dashes_in_text_are_untouched() {
+        assert_eq!(joined(&runs("1. item", None, false, 40)), "1. item");
+        assert_eq!(joined(&runs("- a - b", None, false, 40)), "• a - b");
     }
 
     #[test]
