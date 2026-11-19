@@ -115,7 +115,7 @@ pub(super) fn text_button(
 
 /// How much faster an outer crumb shrinks than the innermost one: outer
 /// crumbs give up their room first.
-const OUTER_CRUMB_SHRINK: f32 = 1000.;
+pub(super) const OUTER_CRUMB_SHRINK: f32 = 1000.;
 
 /// A crumb of a piece's breadcrumb: a [`text_button`] that shrinks when the
 /// row is too narrow, its label cut with an ellipsis. Outer crumbs shrink

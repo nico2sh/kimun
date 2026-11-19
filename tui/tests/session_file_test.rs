@@ -3,7 +3,8 @@ use kimun_core::note::{Facet, FacetKind};
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::history::HistoryFile;
 use kimun_notes::settings::session::{
-    AxisRecord, FacetPick, GroupTreeRecord, SESSION_VERSION, SessionFile, SessionRecord, TabRecord,
+    AxisRecord, CollectionRecord, FacetPick, GroupTreeRecord, SESSION_VERSION, SessionFile,
+    SessionRecord, TabRecord,
 };
 
 mod common;
@@ -17,6 +18,7 @@ fn leaf(note: Option<&str>) -> GroupTreeRecord {
     GroupTreeRecord::Leaf {
         note: note.map(VaultPath::new),
         facets: None,
+        collection: None,
     }
 }
 
@@ -208,7 +210,8 @@ fn a_leaf_with_no_note_round_trips_as_an_empty_group() {
         loaded.tabs[0].tree,
         GroupTreeRecord::Leaf {
             note: None,
-            facets: None
+            facets: None,
+            collection: None
         }
     );
 }
@@ -315,6 +318,7 @@ fn a_facet_leaf_round_trips_through_the_file() {
             tree: GroupTreeRecord::Leaf {
                 note: Some(VaultPath::new("a.md")),
                 facets: Some(vec![FacetPick::from(&Facet::new(FacetKind::Tag, "Travel"))]),
+                collection: None,
             },
             active: 0,
         }],
@@ -335,9 +339,14 @@ fn an_old_file_without_facets_still_loads() {
     .unwrap();
     let loaded = file.load().expect("an old file loads");
     match &loaded.tabs[0].tree {
-        GroupTreeRecord::Leaf { note, facets } => {
+        GroupTreeRecord::Leaf {
+            note,
+            facets,
+            collection,
+        } => {
             assert_eq!(note.as_ref(), Some(&VaultPath::new("/a.md")));
             assert_eq!(facets, &None);
+            assert_eq!(collection, &None);
         }
         other => panic!("not a leaf: {other:?}"),
     }
@@ -373,4 +382,68 @@ fn a_facet_pick_converts_both_ways() {
         key: "x".to_string(),
     };
     assert_eq!(unknown.to_facet(), None);
+}
+
+#[test]
+fn a_collection_leaf_round_trips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = session_in(&tmp);
+    let record = SessionRecord::new(
+        vec![TabRecord {
+            tree: GroupTreeRecord::Leaf {
+                note: None,
+                facets: None,
+                collection: Some(CollectionRecord {
+                    query: "@tag:travel".to_string(),
+                    facets: vec![FacetPick::from(&Facet::new(FacetKind::Tag, "Travel"))],
+                }),
+            },
+            active: 0,
+        }],
+        0,
+    );
+    file.save(&record).unwrap();
+    assert_eq!(file.load(), Some(record));
+}
+
+#[test]
+fn an_old_file_without_the_field_still_loads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = session_in(&tmp);
+    std::fs::write(
+        file.path().as_path(),
+        br#"{"version":1,"tabs":[{"tree":{"Leaf":{"note":"/a.md","facets":[]}},"active":0}],"shown":0}"#,
+    )
+    .unwrap();
+    let loaded = file.load().expect("an old file loads");
+    assert!(matches!(
+        &loaded.tabs[0].tree,
+        GroupTreeRecord::Leaf {
+            collection: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_plain_or_facet_leaf_writes_no_collection_key() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = session_in(&tmp);
+    file.save(&two_tab_record()).unwrap();
+    let text = std::fs::read_to_string(file.path().as_path()).unwrap();
+    assert!(!text.contains("collection"));
+    let facet = SessionRecord::new(
+        vec![TabRecord {
+            tree: GroupTreeRecord::Leaf {
+                note: Some(VaultPath::new("a.md")),
+                facets: Some(vec![FacetPick::from(&Facet::new(FacetKind::Tag, "t"))]),
+                collection: None,
+            },
+            active: 0,
+        }],
+        0,
+    );
+    file.save(&facet).unwrap();
+    let text = std::fs::read_to_string(file.path().as_path()).unwrap();
+    assert!(!text.contains("collection"));
 }

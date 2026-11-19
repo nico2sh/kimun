@@ -1853,3 +1853,39 @@ fn the_facet_view_toggle_has_no_default_chord_and_can_be_bound() {
         );
     }
 }
+
+/// The collection actions ship with no chord on any platform, and a user can
+/// bind them like any other action.
+#[test]
+fn the_collection_actions_have_no_default_chord_and_can_be_bound() {
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        for action in [A::OpenQueryAsCollection, A::RefreshCollection] {
+            assert!(keymap.chords_for(&action).is_empty(), "{p:?} {action:?}");
+            assert!(!keymap.ships_bound(&action), "{p:?} {action:?}");
+        }
+    }
+    let (bound, errors) = Keymap::load(
+        LinuxWindows,
+        &overrides(&[
+            ("OpenQueryAsCollection", &["ctrl+alt+o"]),
+            ("RefreshCollection", &["ctrl+alt+r"]),
+        ]),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(
+        bound.chords_for(&A::OpenQueryAsCollection),
+        [chord("ctrl+alt+o")]
+    );
+    assert_eq!(
+        bound.chords_for(&A::RefreshCollection),
+        [chord("ctrl+alt+r")]
+    );
+    for panel in PANELS {
+        assert_eq!(
+            bound.resolve(chord("ctrl+alt+r"), ctx(panel, false)),
+            Some(&A::RefreshCollection),
+            "{panel:?}"
+        );
+    }
+}

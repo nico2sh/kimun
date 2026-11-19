@@ -32,14 +32,20 @@
 //! the search, `j`/`k` step between pieces, Escape clears the picks (from
 //! inside a piece it first hands the keyboard to the view).
 //!
-//! **Content.** Core plans everything: [`note_facets`], [`select_blocks`],
-//! [`plan_chunks`] and [`reveal`]. A change of picks or text plans again
-//! from the picks (revealed blocks reset); new text also drops picks the
-//! note no longer holds. The view takes plain data in and emits
-//! [`FacetEvent`]s; it knows no workspace.
+//! **Content.** The view shows a list of member notes ([`mod@members`]); a
+//! single-note view is a list of one. Core plans everything: the merged
+//! facets, the selection per member, one cap over the members' chunks, and
+//! reveals inside a member. A change of picks or text plans again from the
+//! picks (revealed blocks reset); new text also drops picks the notes no
+//! longer hold. Each piece answers for its own note: a press resolves links
+//! against it, `Open source` and a follow name it. The view takes plain
+//! data in and emits [`FacetEvent`]s; it knows no workspace.
+//!
+//! **Collections** ([`mod@collection`]): a view of the notes one query
+//! returned. Each piece's breadcrumb row starts with its note's title, so a
+//! piece far from its note's other pieces still says where it comes from.
 
 use std::cell::RefCell;
-use std::ops::Range;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
@@ -53,15 +59,14 @@ use gpui_kit::{
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::scan::{LinkSpanKind, heading_display_text};
-use kimun_core::note::{
-    ChunkPlan, Facet, FacetKind, GAP_SHOW_ALL_MAX, MAX_RANGES, NoteFacets, NoteTarget, Reveal,
-    note_facets, plan_chunks, reveal, reveal_gap, select_blocks,
-};
+use kimun_core::note::{Facet, FacetKind, GAP_SHOW_ALL_MAX, MAX_RANGES, NoteTarget, Reveal};
 use kimun_notes::logic::editor::claim::FollowTarget;
 use kimun_notes::logic::facet_bar::{FacetBar, Pill, Row};
 use kimun_notes::settings::themes::Theme;
 
+use self::collection::Collection;
 use self::keys::{Stop, Stops, keys};
+use self::members::{Member, Members, chunk_plan};
 use super::facet_list::{OpenList, list_popover};
 use super::facet_ui::{chip, crumb as crumb_button, icon_chip, leader, pill, text_button};
 use super::query_field::focus_input;
@@ -70,7 +75,11 @@ use crate::editor_font;
 use crate::editor_view::{EditorEvent, EditorView};
 use crate::theme;
 
+mod collection;
 mod keys;
+mod members;
+
+pub use self::members::MemberInit;
 
 /// Element ids, for tests.
 pub(crate) const FACET_VIEW_ID: &str = "facet-view";
@@ -94,6 +103,10 @@ pub(crate) const SECTIONS_ID: &str = "facet-sections";
 pub(crate) const SEARCH_ID: &str = "facet-search";
 /// The scrolling column of pieces.
 pub(crate) const COLUMN_ID: &str = "facet-column";
+/// A collection's `Refresh` text button, in its empty state.
+pub(crate) const REFRESH_ID: &str = "facet-refresh";
+/// A collection's "Showing the first N of M notes" line under the bar.
+pub(crate) const FIRST_NOTES_ID: &str = "facet-first-notes";
 
 fn kind_slug(kind: FacetKind) -> &'static str {
     match kind {
@@ -133,8 +146,9 @@ pub(crate) fn open_id(i: usize) -> SharedString {
     format!("facet-open:{i}").into()
 }
 
-/// Gap `g`'s button that reveals the block below the chunk above it. Gap
-/// `g` sits before chunk `g`; the last gap follows the last chunk.
+/// Gap `g`'s button that reveals the block below the chunk above it. In a
+/// single-note view gap `g` sits before chunk `g`, and the last gap follows
+/// the last chunk ([`mod@members`] numbers the gaps of several notes).
 pub(crate) fn gap_down_id(g: usize) -> SharedString {
     format!("facet-gap-down:{g}").into()
 }
@@ -153,6 +167,11 @@ pub(crate) fn show_all_id(g: usize) -> SharedString {
 /// Gap `g`'s count of hidden blocks (`3 hidden`).
 pub(crate) fn gap_count_id(g: usize) -> SharedString {
     format!("facet-gap-count:{g}").into()
+}
+
+/// The note title that leads chunk `chunk`'s breadcrumb row (a collection).
+pub(crate) fn note_title_id(chunk: usize) -> SharedString {
+    format!("facet-note-title:{chunk}").into()
 }
 
 /// Crumb `index` (outermost first) of chunk `chunk`'s breadcrumb.
@@ -189,12 +208,19 @@ pub(crate) fn pressed_facet(
 /// What the view asks of its host.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FacetEvent {
-    /// Jump to the source note, at the chunk's first source line (0-based).
-    OpenSource { line: usize },
-    /// Primary+click on a link or tag.
-    Follow(FollowTarget),
+    /// Jump to `note`, the piece's own note, at the piece's first source
+    /// line (0-based).
+    OpenSource { note: VaultPath, line: usize },
+    /// Primary+click on a link or tag in a piece of `from`, the note a
+    /// relative link resolves against.
+    Follow {
+        from: VaultPath,
+        target: FollowTarget,
+    },
     /// The picks changed; the workspace saves the session.
     PicksChanged,
+    /// A collection asks for its query to run again (`r`, `Refresh`).
+    Refresh,
 }
 
 /// The open list: its kind (`None`: the search over every kind), its
@@ -208,22 +234,18 @@ struct More {
 }
 
 const HINT_TEXT: &str = "Pick a tag, link or section to narrow this note.";
+const HINT_TEXT_NOTES: &str = "Pick a tag, link or section to narrow these notes.";
 
 /// The facet view. See the module docs.
 pub struct FacetView {
-    source: VaultPath,
-    text: String,
-    facets: NoteFacets,
+    /// The notes shown, their merged facets and the plan of drawn chunks.
+    members: Members,
+    /// The query and hit count of a collection; `None` for a single note.
+    collection: Option<Collection>,
     bar: FacetBar,
-    /// Block ranges shown: the picks' selection, plus revealed blocks.
-    shown: Vec<Range<usize>>,
-    /// The most chunks drawn; `Show N more` doubles it.
+    /// The most chunks drawn over all members; `Show N more` doubles it.
     limit: usize,
-    /// One plan per drawn chunk; `plans[i]` is `shown[i]`.
-    plans: Vec<ChunkPlan>,
-    /// Shown ranges past `limit`, not drawn.
-    cut: usize,
-    /// One read-only editor per plan, reused in place.
+    /// One read-only editor per drawn chunk, reused in place.
     chunks: Vec<Entity<EditorView>>,
     _chunk_events: Vec<Subscription>,
     /// The visual row count each chunk was last sized for ([`Self::rows_of`]).
@@ -251,6 +273,9 @@ pub struct FacetView {
     /// The focus handle of a list's field that [`Self::plan`] closed: the
     /// next frame gives the keyboard to the view if the field still had it.
     stranded: Option<FocusHandle>,
+    /// How many times [`Self::plan`] ran (tests).
+    #[cfg(test)]
+    plans_run: usize,
 }
 
 impl EventEmitter<FacetEvent> for FacetView {}
@@ -259,20 +284,28 @@ impl FacetView {
     /// A view of `text`, the note at `source`, with `picks` (those the note
     /// does not hold are dropped: a restore can name facets the note lost).
     pub fn new(source: VaultPath, text: String, picks: Vec<Facet>, cx: &mut Context<Self>) -> Self {
-        let facets = note_facets(&text, &source);
+        let title = source.get_clean_name();
+        let members = Members::new(vec![Member::new(source, title, text)]);
+        Self::build(members, None, picks, cx)
+    }
+
+    /// A view of `members` (a single note, or a collection), with `picks`
+    /// pruned against their merged facets.
+    fn build(
+        members: Members,
+        collection: Option<Collection>,
+        picks: Vec<Facet>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut bar = FacetBar::default();
         bar.set_picks(picks);
-        bar.prune(&facets);
+        bar.prune(&members.merged);
         let hint_done = !bar.picks().is_empty();
         let mut view = Self {
-            source,
-            text,
-            facets,
+            members,
+            collection,
             bar,
-            shown: Vec::new(),
             limit: MAX_RANGES,
-            plans: Vec::new(),
-            cut: 0,
             chunks: Vec::new(),
             _chunk_events: Vec::new(),
             sized_rows: Vec::new(),
@@ -286,30 +319,57 @@ impl FacetView {
             hint_done,
             corner_room: None,
             stranded: None,
+            #[cfg(test)]
+            plans_run: 0,
         };
         view.select(cx);
         view
     }
 
-    pub fn source(&self) -> &VaultPath {
-        &self.source
+    /// The note of a single-note view (its one member); `None` for a
+    /// collection.
+    pub fn source(&self) -> Option<&VaultPath> {
+        self.single().map(|member| &member.path)
+    }
+
+    /// The one member of a single-note view; `None` for a collection.
+    fn single(&self) -> Option<&Member> {
+        self.collection
+            .is_none()
+            .then(|| self.members.list.first())
+            .flatten()
     }
 
     pub fn picks(&self) -> &[Facet] {
         self.bar.picks()
     }
 
-    /// The note text the view shows (tests).
+    /// The note text a single-note view shows; empty for a collection
+    /// (tests).
     #[cfg(test)]
     pub(crate) fn text(&self) -> &str {
-        &self.text
+        self.single().map_or("", |member| &member.text)
     }
 
-    /// New content: re-derive, prune picks, reset reveals.
+    /// New content of a single-note view: re-derive, prune picks, reset
+    /// reveals. Nothing for a collection ([`Self::set_member_text`]).
     pub fn set_text(&mut self, text: String, cx: &mut Context<Self>) {
-        self.facets = note_facets(&text, &self.source);
-        self.text = text;
-        let pruned = self.bar.prune(&self.facets);
+        if self.single().is_some() {
+            self.member_text(0, text, cx);
+        }
+    }
+
+    /// Member `idx` has new text: only it re-derives; picks are pruned
+    /// against the merged facets, reveals reset.
+    fn member_text(&mut self, idx: usize, text: String, cx: &mut Context<Self>) {
+        self.members.set_text(idx, text);
+        self.members_changed(cx);
+    }
+
+    /// The members changed (text, list): prune the picks, select again
+    /// (reveals reset), and say so when a pick went.
+    fn members_changed(&mut self, cx: &mut Context<Self>) {
+        let pruned = self.bar.prune(&self.members.merged);
         self.select(cx);
         if pruned {
             cx.emit(FacetEvent::PicksChanged);
@@ -317,10 +377,15 @@ impl FacetView {
         cx.notify();
     }
 
-    /// The source note moved or was renamed. Relative note links resolve
-    /// against the new place from the next [`Self::set_text`] on.
+    /// The source note of a single-note view moved or was renamed. Its
+    /// facets are derived again at once, so relative note links resolve
+    /// against the new place; the shown pieces are kept until the next
+    /// [`Self::set_text`]. Nothing for a collection
+    /// ([`Self::set_member_path`]).
     pub fn set_source(&mut self, source: VaultPath) {
-        self.source = source;
+        if self.single().is_some() {
+            self.members.set_path(0, source);
+        }
     }
 
     /// Keep `room` clear at the bar's right end (`None`: no room), for
@@ -360,40 +425,53 @@ impl FacetView {
     /// `Show N more`, while chunks are left out: N is what the next click
     /// shows, the limit or what is left when that is less.
     pub(crate) fn show_more_label(&self) -> Option<String> {
-        (self.cut > 0).then(|| format!("Show {} more", self.cut.min(self.limit)))
+        let cut = self.members.cut;
+        (cut > 0).then(|| format!("Show {} more", cut.min(self.limit)))
     }
 
     /// Show what the picks select, nothing revealed.
     fn select(&mut self, cx: &mut Context<Self>) {
-        self.shown = select_blocks(&self.facets, self.bar.picks());
+        self.members.select(self.bar.picks());
         self.plan(cx);
     }
 
-    /// Plan the chunks for `shown` and bring the editors in step: one per
-    /// plan, an editor whose text is unchanged left alone.
+    /// Plan the chunks for every member's `shown` and bring the editors in
+    /// step: one per drawn chunk, an editor whose text is unchanged left
+    /// alone.
     fn plan(&mut self, cx: &mut Context<Self>) {
-        let (plans, cut) = plan_chunks(&self.facets, &self.text, &self.shown, self.limit);
-        self.chunks.truncate(plans.len());
-        self._chunk_events.truncate(plans.len());
-        self.laid_out.truncate(plans.len());
-        for (i, plan) in plans.iter().enumerate() {
+        #[cfg(test)]
+        {
+            self.plans_run += 1;
+        }
+        let (old_plans, old_refs) = self.members.plan(self.limit);
+        let len = self.members.len();
+        self.chunks.truncate(len);
+        self._chunk_events.truncate(len);
+        self.laid_out.truncate(len);
+        for i in 0..len {
+            let plan = self
+                .members
+                .chunk(i)
+                .expect("every chunk below `len` has a plan");
             match self.chunks.get(i) {
                 Some(editor) => {
-                    if self.plans.get(i).is_none_or(|old| old.text != plan.text) {
+                    let old = chunk_plan(&old_plans, &old_refs, i);
+                    if old.is_none_or(|old| old.text != plan.text) {
                         editor.update(cx, |editor, cx| editor.set_text_read_only(&plan.text, cx));
                         self.laid_out[i] = false;
                     }
                 }
                 None => {
                     let editor = cx.new(|cx| EditorView::new_read_only(&plan.text, cx));
-                    let events = cx.subscribe(&editor, |this, _, event: &EditorEvent, cx| {
+                    let events = cx.subscribe(&editor, |this, editor, event: &EditorEvent, cx| {
                         if let EditorEvent::ReadOnlyPress {
                             target,
                             line,
                             primary,
                         } = event
+                            && let Some(i) = this.chunks.iter().position(|c| *c == editor)
                         {
-                            this.pressed(target.as_ref(), line, *primary, cx);
+                            this.pressed(i, target.as_ref(), line, *primary, cx);
                         }
                     });
                     self.chunks.push(editor);
@@ -402,8 +480,6 @@ impl FacetView {
                 }
             }
         }
-        self.plans = plans;
-        self.cut = cut;
         // New text can take away what the open list hangs from (its kind's
         // row, or the whole bar for the search): it closes, and the next
         // frame hands the keyboard from its field to the view.
@@ -420,35 +496,44 @@ impl FacetView {
     /// Whether the bar draws what `kind`'s list hangs from: a row of that
     /// kind, or for the search (`None`) the bar itself (a note with a facet).
     fn list_drawable(&self, kind: Option<FacetKind>) -> bool {
-        self.facets
+        self.members
+            .merged
             .entries
             .iter()
             .any(|entry| kind.is_none_or(|kind| entry.facet.kind == kind))
     }
 
-    /// A press in a chunk: a primary press asks to follow, a plain one
-    /// toggles the facet under it.
+    /// A press in chunk `i`: a primary press asks to follow, a plain one
+    /// toggles the facet under it. Either resolves against the chunk's own
+    /// note.
     fn pressed(
         &mut self,
+        i: usize,
         target: Option<&FollowTarget>,
         line: &str,
         primary: bool,
         cx: &mut Context<Self>,
     ) {
+        let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) else {
+            return;
+        };
         if primary {
             if let Some(target) = target {
-                cx.emit(FacetEvent::Follow(target.clone()));
+                cx.emit(FacetEvent::Follow {
+                    from: note,
+                    target: target.clone(),
+                });
             }
             return;
         }
-        if let Some(facet) = pressed_facet(target, line, &self.source) {
+        if let Some(facet) = pressed_facet(target, line, &note) {
             self.toggle(facet, cx);
         }
     }
 
     /// Pick `facet`, or unpick it. Nothing for a facet the note does not hold.
     pub(super) fn toggle(&mut self, facet: Facet, cx: &mut Context<Self>) {
-        if !self.facets.entries.iter().any(|e| e.facet == facet) {
+        if !self.members.merged.entries.iter().any(|e| e.facet == facet) {
             return;
         }
         self.bar.toggle(facet);
@@ -466,18 +551,24 @@ impl FacetView {
 
     /// The message that stands in for the pieces when none are drawn.
     pub(crate) fn empty_text(&self) -> String {
+        if self.collection.is_some() && self.members.list.is_empty() {
+            return "No notes match this query.".into();
+        }
         if self.bar.picks().is_empty() {
-            return "This note is empty.".into();
+            return match self.collection {
+                Some(_) => "These notes are empty.".into(),
+                None => "This note is empty.".into(),
+            };
         }
         self.bar
-            .empty_reason(&self.facets)
+            .empty_reason(&self.members.merged, self.members.len() > 0)
             .unwrap_or_else(|| "Nothing matches the picked facets.".into())
     }
 
     /// Whether the hint under the bar shows: no pick made yet in this view,
     /// and the note has something to pick.
     fn hint_shows(&self) -> bool {
-        !self.hint_done && self.bar.picks().is_empty() && !self.facets.entries.is_empty()
+        !self.hint_done && self.bar.picks().is_empty() && !self.members.merged.entries.is_empty()
     }
 
     /// Unpick everything: the whole note again, reveals reset.
@@ -493,21 +584,33 @@ impl FacetView {
     /// What the picks show, while they show something: the picks in words
     /// and the pieces, counting those the cap leaves out.
     fn summary(&self) -> Option<String> {
-        if self.plans.is_empty() {
+        let drawn = self.members.len();
+        if drawn == 0 {
             return None;
         }
-        self.bar.summary(&self.facets, self.plans.len() + self.cut)
+        let notes = self.collection.as_ref().map(|_| self.members.notes_shown());
+        self.bar
+            .summary(&self.members.merged, drawn + self.members.cut, notes)
     }
 
-    /// Reveal one hidden block next to chunk `chunk`.
-    fn reveal(&mut self, chunk: usize, dir: Reveal, cx: &mut Context<Self>) {
-        self.shown = reveal(&self.shown, chunk, dir, self.facets.blocks.len());
-        self.plan(cx);
+    /// Reveal one block hidden in gap `g`: next to the chunk above it
+    /// ([`Reveal::Below`]) or below it ([`Reveal::Above`]), inside that
+    /// chunk's note. Nothing when the gap has no chunk on that side.
+    fn reveal(&mut self, g: usize, dir: Reveal, cx: &mut Context<Self>) {
+        let gap = self.members.gaps.get(g);
+        let chunk = match dir {
+            Reveal::Below => gap.and_then(|gap| gap.above),
+            Reveal::Above => gap.and_then(|gap| gap.below),
+        };
+        if let Some(chunk) = chunk {
+            self.members.reveal(chunk, dir);
+            self.plan(cx);
+        }
     }
 
-    /// Reveal every block hidden in gap `g` (before chunk `g`): `Show all`.
+    /// Reveal every block hidden in gap `g`: `Show all`.
     fn reveal_all(&mut self, g: usize, cx: &mut Context<Self>) {
-        self.shown = reveal_gap(&self.shown, g, self.facets.blocks.len());
+        self.members.reveal_gap(g);
         self.plan(cx);
     }
 
@@ -521,7 +624,10 @@ impl FacetView {
     /// current text (a new chunk, new text), its rows as written: the layout
     /// still describes the old text, even when that had as many rows.
     pub(crate) fn rows_of(&self, i: usize, cx: &App) -> usize {
-        let written = self.plans[i].text.split('\n').count();
+        let written = self
+            .members
+            .chunk(i)
+            .map_or(1, |plan| plan.text.split('\n').count());
         let layout = &self.chunks[i].read(cx).editor.session().display.layout;
         if self.laid_out.get(i) == Some(&true) && layout.row_count() == written {
             layout.visual_line_count().max(1)
@@ -534,8 +640,8 @@ impl FacetView {
     /// was sized for (a resize, a new layout, the background layout of a
     /// large chunk landing).
     fn rows_changed(&self, cx: &App) -> bool {
-        self.sized_rows.len() != self.plans.len()
-            || (0..self.plans.len()).any(|i| self.rows_of(i, cx) != self.sized_rows[i])
+        self.sized_rows.len() != self.members.len()
+            || (0..self.members.len()).any(|i| self.rows_of(i, cx) != self.sized_rows[i])
     }
 
     /// After a paint (the editors laid out in its prepaint): every chunk's
@@ -556,20 +662,22 @@ impl FacetView {
         &self.sized_rows
     }
 
+    /// How many times the chunks were planned (tests).
+    #[cfg(test)]
+    pub(crate) fn plans_run(&self) -> usize {
+        self.plans_run
+    }
+
     /// Whether the last paint asked for a correcting frame (tests).
     #[cfg(test)]
     pub(crate) fn resize_asked(&self) -> bool {
         self.frame_asked
     }
 
-    /// Chunk `i`'s first source line, 0-based.
-    fn first_line(&self, i: usize) -> usize {
-        let start = self
-            .plans
-            .get(i)
-            .and_then(|plan| self.facets.blocks.get(plan.blocks.start))
-            .map_or(0, |block| block.range.start);
-        self.text[..start].matches('\n').count()
+    /// Chunk `i`'s note and its first source line there, 0-based.
+    fn chunk_source(&self, i: usize) -> Option<(VaultPath, usize)> {
+        let member = self.members.member_of(i)?;
+        Some((member.path.clone(), self.members.first_line(i)))
     }
 
     /// Open `kind`'s list (`None`: the search over every kind), its filter
@@ -656,7 +764,7 @@ impl FacetView {
         let summary = self.render_summary(t, cx);
         let rows: Vec<Div> = self
             .bar
-            .rows(&self.facets)
+            .rows(&self.members.merged)
             .into_iter()
             .map(|row| self.render_row(row, t, cx))
             .collect();
@@ -845,17 +953,15 @@ impl FacetView {
         };
         let query = more.input.read(cx).value().to_string();
         match more.kind {
-            Some(kind) => self.bar.more_list(&self.facets, kind, &query),
-            None => self.bar.search(&self.facets, &query),
+            Some(kind) => self.bar.more_list(&self.members.merged, kind, &query),
+            None => self.bar.search(&self.members.merged, &query),
         }
     }
 
-    /// Gap `g` (before chunk `g`), or `None` when it hides nothing.
+    /// Gap `g` ([`mod@members`]), or `None` when it hides nothing.
     fn render_gap(&self, g: usize, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
-        let hidden = match g {
-            0 => self.plans.first()?.hidden_above,
-            _ => self.plans.get(g - 1)?.hidden_below,
-        };
+        let gap = *self.members.gaps.get(g)?;
+        let hidden = self.members.gap_hidden(g);
         if hidden == 0 {
             return None;
         }
@@ -876,12 +982,12 @@ impl FacetView {
                 .gap_2()
                 .text_xs()
                 .text_color(theme::muted(t))
-                .when(g > 0, |row| {
+                .when(gap.above.is_some(), |row| {
                     let down = gap_down_id(g);
                     let el = icon_chip(down, IconName::ChevronDown, "Show one more below", t);
                     row.child(self.button(Stop::GapDown(g), el, t, cx))
                 })
-                .when(g < self.plans.len(), |row| {
+                .when(gap.below.is_some(), |row| {
                     let el = icon_chip(gap_up_id(g), IconName::ChevronUp, "Show one more above", t);
                     row.child(self.button(Stop::GapUp(g), el, t, cx))
                 })
@@ -902,8 +1008,12 @@ impl FacetView {
     /// source` at the right end. Drawn with no crumbs too, so pieces line up.
     fn render_crumbs(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
         let mut crumbs: Vec<AnyElement> = Vec::new();
-        for (index, crumb) in self.plans[i].crumbs.iter().enumerate() {
-            if index > 0 {
+        let title = self.note_title(i, t);
+        let has_title = title.is_some();
+        crumbs.extend(title);
+        let plan_crumbs = self.members.chunk(i).map_or(&[][..], |plan| &plan.crumbs);
+        for (index, crumb) in plan_crumbs.iter().enumerate() {
+            if index > 0 || has_title {
                 crumbs.push(
                     div()
                         .flex_none()
@@ -913,7 +1023,7 @@ impl FacetView {
                         .into_any_element(),
                 );
             }
-            let last = index + 1 == self.plans[i].crumbs.len();
+            let last = index + 1 == plan_crumbs.len();
             let el = crumb_button(crumb_id(i, index), crumb.label.clone(), last, t);
             crumbs.push(
                 self.button(Stop::Crumb(i, index), el, t, cx)
@@ -1017,23 +1127,27 @@ impl Render for FacetView {
         let t = &*theme;
         let line_height = (f32::from(editor_font::font_size(cx)) * LINE_HEIGHT).round();
         let rem = f32::from(window.rem_size());
-        self.sized_rows = (0..self.plans.len()).map(|i| self.rows_of(i, cx)).collect();
+        self.sized_rows = (0..self.members.len())
+            .map(|i| self.rows_of(i, cx))
+            .collect();
         self.stops.get_mut().begin(window);
 
         let bar = self.render_bar(t, cx);
         let mut body: Vec<AnyElement> = Vec::new();
-        let mut pieces = Vec::with_capacity(self.plans.len());
-        for i in 0..=self.plans.len() {
-            if let Some(gap) = self.render_gap(i, t, cx) {
+        let mut pieces = Vec::with_capacity(self.members.len());
+        // Each gap, then the chunk below it if any: every chunk once, in
+        // order, each member's gaps its own.
+        for g in 0..self.members.gaps.len() {
+            if let Some(gap) = self.render_gap(g, t, cx) {
                 body.push(gap.into_any_element());
             }
-            if i < self.plans.len() {
+            if let Some(i) = self.members.gaps[g].below {
                 pieces.push(body.len());
                 body.push(self.render_chunk(i, line_height, rem, t, cx));
             }
         }
         self.piece_items = pieces;
-        if self.plans.is_empty() {
+        if self.members.len() == 0 {
             let text = SharedString::from(self.empty_text());
             let remove = (!self.bar.picks().is_empty()).then(|| {
                 self.button(
@@ -1042,7 +1156,9 @@ impl Render for FacetView {
                     t,
                     cx,
                 )
+                .into_any_element()
             });
+            let remove = remove.or_else(|| self.render_refresh(t, cx));
             body.push(
                 div()
                     .flex()
@@ -1064,18 +1180,23 @@ impl Render for FacetView {
             );
         }
         let hint = self.hint_shows().then(|| {
+            let text = match self.collection {
+                Some(_) => HINT_TEXT_NOTES,
+                None => HINT_TEXT,
+            };
             div()
                 .id(HINT_ID)
                 .role(Role::Status)
-                .aria_label(HINT_TEXT)
+                .aria_label(text)
                 .flex_none()
                 .px_4()
                 .pt_2()
                 .text_xs()
                 .text_color(theme::muted(t))
-                .child(HINT_TEXT)
+                .child(text)
                 .test_support()
         });
+        let first_notes = self.render_first_notes(t);
         let show_more = self
             .show_more_label()
             .map(|label| self.button(Stop::ShowMore, chip(SHOW_MORE_ID.into(), label, t), t, cx));
@@ -1103,6 +1224,7 @@ impl Render for FacetView {
             .min_h_0()
             .bg(theme::background(t))
             .children(bar)
+            .children(first_notes)
             .children(hint)
             .child(
                 div()

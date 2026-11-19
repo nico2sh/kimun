@@ -175,9 +175,13 @@ pub(crate) fn tab_drop_id(index: usize) -> ElementId {
 
 /// What `group` shows, named as the Footer names it: the attachment in
 /// place of the editor, else the note, else a facet view's source (no
-/// prefix). `None` for an empty group.
+/// prefix), or a collection's query. `None` for an empty group.
 pub(super) fn group_name(workspace: &Workspace, group: GroupId, cx: &App) -> Option<String> {
     let state = workspace.state(group)?;
+    // A collection is named by its query.
+    if let Some(query) = workspace.collection_query_in(group, cx) {
+        return Some(query);
+    }
     let shown: Option<VaultPath> = match state.attachment.as_ref() {
         Some(view) => Some(view.read(cx).path().clone()),
         None => workspace.shown_note_in(group, cx),
@@ -211,7 +215,7 @@ pub(crate) fn tab_shows_facet(workspace: &Workspace, tab: TabId, cx: &App) -> bo
     region
         .active_group_of(tab)
         .or_else(|| region.groups(tab).first().copied())
-        .is_some_and(|group| workspace.facet_source_in(group, cx).is_some())
+        .is_some_and(|group| workspace.facet_group_in(group, cx))
 }
 
 /// Whether any group of `tab` has unsaved text: its label carries the dot.

@@ -55,7 +55,7 @@ use super::modal::{ModalKind, Slot};
 use super::presets::PresetCommand;
 use super::route::{
     NEEDS_FIND_FOCUS, NEEDS_LIST_FOCUS, NEEDS_NOTE_FOCUS, NEEDS_SLOT_FOCUS,
-    NEEDS_SLOT_OR_EDITOR_FOCUS, NO_NOTE, NO_WORKSPACE,
+    NEEDS_SLOT_OR_EDITOR_FOCUS, NO_WORKSPACE,
 };
 use crate::input;
 use crate::keymap;
@@ -224,6 +224,8 @@ fn chord_rows() -> Vec<(String, PaletteRun)> {
         // The tabs (ADR-0058).
         window_row(A::NewTab),
         window_row(A::ToggleFacetView),
+        window_row(A::OpenQueryAsCollection),
+        window_row(A::RefreshCollection),
         window_row(A::CloseTab),
         window_row(A::NextTab),
         window_row(A::PrevTab),
@@ -493,15 +495,15 @@ impl Workspace {
             A::QuickNote | A::OpenSortDialog | A::NewTab | A::CloseTab => {
                 self.active_state().notes.is_none().then_some(NO_WORKSPACE)
             }
-            A::ToggleFacetView => self
-                .facet_toggle_state(self.layout.active_group())
-                .is_none()
-                .then_some(NO_NOTE),
+            A::ToggleFacetView => self.facet_toggle_blocked(self.layout.active_group(), cx),
             A::NextTab | A::PrevTab => (self.layout.region().tabs().len() < 2).then_some(ONE_TAB),
             A::YankRow => (!self.lists_have_keyboard(opener)).then_some(NEEDS_LIST_FOCUS),
-            A::SaveCurrentQuery => (!(matches!(opener, Panel::Drawer(_))
-                && self.focused_view() == Some(DrawerView::Find)))
-            .then_some(NEEDS_FIND_FOCUS),
+            A::RefreshCollection => self.collection_refresh_blocked(self.layout.active_group(), cx),
+            A::OpenQueryAsCollection | A::SaveCurrentQuery => {
+                (!(matches!(opener, Panel::Drawer(_))
+                    && self.focused_view() == Some(DrawerView::Find)))
+                .then_some(NEEDS_FIND_FOCUS)
+            }
             _ => None,
         }
     }

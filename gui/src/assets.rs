@@ -57,7 +57,8 @@ gpui_kit::assets::icon_assets!(
         Plus,
         Circle,
         CircleQuestionMark,
-        Funnel
+        Funnel,
+        Layers
     ]
 );
 
@@ -151,6 +152,16 @@ mod tests {
     #[test]
     fn the_facet_icon_is_bundled() {
         let path = crate::workspace::FACET_ICON.path();
+        assert!(
+            AppAssets.load(&path).unwrap().is_some(),
+            "{path} is not bundled"
+        );
+    }
+
+    /// FIND's "Open as collection" icon is bundled.
+    #[test]
+    fn the_collection_icon_is_bundled() {
+        let path = crate::workspace::COLLECTION_ICON.path();
         assert!(
             AppAssets.load(&path).unwrap().is_some(),
             "{path} is not bundled"

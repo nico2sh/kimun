@@ -8,6 +8,7 @@ use std::sync::Arc;
 use gpui_kit::{AnyView, AppContext as _, Context, Entity, Subscription, Task};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::Facet;
 use kimun_notes::logic::autocomplete::VaultSuggestions;
 use kimun_notes::logic::layout_tree::{Focus, GroupId, LayoutTree, Leaf};
 use kimun_notes::logic::nav::DrawerView;
@@ -45,11 +46,20 @@ pub(crate) struct GroupState {
     /// The read of the source asked for by [`Workspace::open_facet_view`]
     /// (a newer request replaces it).
     pub(super) facet_loading: Option<Task<()>>,
+    /// The resolved query and picks of a collection the group is opening
+    /// ([`Workspace::open_collection`], from its start until the view
+    /// shows or the load is dropped): the session records it in place of
+    /// what the group still shows, as it records a note still opening.
+    pub(super) collection_pending: Option<(String, Vec<Facet>)>,
     /// The flush of the open note before a facet view shows.
     pub(super) facet_flushing: Option<Task<()>>,
     /// The read of the source after a save, a reload or a rename, whose
     /// text the shown view takes ([`Workspace::refresh_facets`]).
     pub(super) facet_reading: Option<Task<()>>,
+    /// A collection's member reads after a save, a reload or a rename, one
+    /// per member path, a newer read of a path replacing its older one
+    /// ([`super::collection_group`]).
+    pub(super) collection_reading: HashMap<VaultPath, Task<()>>,
     /// The Footer's dirty watch and the window requests of an editor made
     /// for a new group ([`Workspace::new_group_state`]); the first group's
     /// live on the workspace.
@@ -85,8 +95,10 @@ impl GroupState {
             facet: None,
             _facet_events: None,
             facet_loading: None,
+            collection_pending: None,
             facet_flushing: None,
             facet_reading: None,
+            collection_reading: HashMap::new(),
             _editor_watch: None,
             _editor_events: None,
         }
@@ -295,7 +307,7 @@ impl Workspace {
 
     /// The Footer, FILES' open-note mark and the views that follow the
     /// open note take the active group's note, attachment and dirty state;
-    /// FILES marks a facet view's source.
+    /// FILES marks a facet view's source (a collection has none: nothing).
     pub(super) fn sync_active_status(&mut self, cx: &mut Context<Self>) {
         let state = self.active_state();
         let note = state.notes.as_ref().and_then(|h| h.note.clone());
@@ -306,7 +318,7 @@ impl Workspace {
         let facet = state
             .facet
             .as_ref()
-            .map(|view| view.read(cx).source().clone());
+            .and_then(|view| view.read(cx).source().cloned());
         let dirty = state.editor.read(cx).editor.is_dirty();
         self.status.note = note.clone();
         self.status.attachment = attachment.clone();

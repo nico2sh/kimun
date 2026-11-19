@@ -37,12 +37,18 @@ use crate::startup::EmptyState;
 use crate::tasks;
 
 impl Workspace {
-    /// The source of the facet view `group` shows, if it shows one.
+    /// The source of the single-note facet view `group` shows, if it shows
+    /// one (a collection has no one source).
     pub(crate) fn facet_source_in(&self, group: GroupId, cx: &App) -> Option<VaultPath> {
         self.state(group)?
             .facet
             .as_ref()
-            .map(|view| view.read(cx).source().clone())
+            .and_then(|view| view.read(cx).source().cloned())
+    }
+
+    /// Whether `group` shows a facet view: of one note, or a collection.
+    pub(crate) fn facet_group_in(&self, group: GroupId, _cx: &App) -> bool {
+        self.state(group).is_some_and(|state| state.facet.is_some())
     }
 
     /// The note `group` shows: its editor's, else its facet view's source.
@@ -91,6 +97,8 @@ impl Workspace {
         });
         if let Some(state) = self.state_mut(group) {
             state.facet_loading = Some(task);
+            // A collection still loading gives way.
+            state.collection_pending = None;
         }
     }
 
@@ -187,7 +195,7 @@ impl Workspace {
     }
 
     /// What a facet view asks of its group.
-    fn on_facet_event(
+    pub(super) fn on_facet_event(
         &mut self,
         view: Entity<FacetView>,
         event: &FacetEvent,
@@ -200,14 +208,27 @@ impl Workspace {
         if !shown {
             return;
         }
-        let source = view.read(cx).source().clone();
         match event {
-            FacetEvent::OpenSource { .. } => self.open_note_in_new_tab(source, cx),
-            FacetEvent::Follow(FollowTarget::Link { target, kind }) => {
-                self.follow_link_from(&source, target.clone(), *kind, true, cx)
-            }
-            FacetEvent::Follow(FollowTarget::Label(name)) => self.follow_label(name, cx),
+            FacetEvent::OpenSource { note, .. } => self.open_note_in_new_tab(note.clone(), cx),
+            FacetEvent::Follow {
+                from,
+                target: FollowTarget::Link { target, kind },
+            } => self.follow_link_from(from, target.clone(), *kind, true, cx),
+            FacetEvent::Follow {
+                target: FollowTarget::Label(name),
+                ..
+            } => self.follow_label(name, cx),
             FacetEvent::PicksChanged => self.facet_picks_changed(cx),
+            // A single-note view never emits it.
+            FacetEvent::Refresh => {
+                let group = self
+                    .group_ids()
+                    .into_iter()
+                    .find(|g| self.state(*g).and_then(|s| s.facet.as_ref()) == Some(&view));
+                if let Some(group) = group {
+                    self.refresh_collection(group, cx);
+                }
+            }
         }
     }
 
@@ -230,19 +251,36 @@ impl Workspace {
         (has_note && state.attachment.is_none()).then_some(false)
     }
 
+    /// Why the facet toggle cannot run in `group`, if it cannot: a
+    /// collection has no editor to go back to, a group with no note has
+    /// nothing to show.
+    pub(crate) fn facet_toggle_blocked(&self, group: GroupId, cx: &App) -> Option<&'static str> {
+        if self.collection_query_in(group, cx).is_some() {
+            return Some(super::route::NO_EDITOR_TO_RETURN_TO);
+        }
+        self.facet_toggle_state(group)
+            .is_none()
+            .then_some(super::route::NO_NOTE)
+    }
+
     /// The facet toggle (the header button, the `ToggleFacetView` action):
     /// a group showing a note opens a facet view of it with no picks, a
-    /// group showing a facet view returns to the editor, any other group
-    /// says there is no note.
+    /// group showing a single-note facet view returns to the editor, a
+    /// collection refuses (no editor to go back to), any other group says
+    /// there is no note.
     pub(crate) fn toggle_facet_view(&mut self, group: GroupId, cx: &mut Context<Self>) {
-        match self.facet_toggle_state(group) {
-            Some(true) => self.close_facet_view(group, cx),
-            Some(false) => {
-                if let Some(note) = self.shown_note_in(group, cx) {
-                    self.open_facet_view(group, note, Vec::new(), cx);
-                }
-            }
-            None => self.flash(super::route::NO_NOTE, cx),
+        if let Some(reason) = self.facet_toggle_blocked(group, cx) {
+            self.flash(reason, cx);
+            return;
+        }
+        // A group with no toggle state was refused above (`NO_NOTE`).
+        let Some(shows_facet) = self.facet_toggle_state(group) else {
+            return;
+        };
+        if shows_facet {
+            self.close_facet_view(group, cx);
+        } else if let Some(note) = self.shown_note_in(group, cx) {
+            self.open_facet_view(group, note, Vec::new(), cx);
         }
     }
 
@@ -263,14 +301,16 @@ impl Workspace {
         self.open_note_in(group, source, cx);
     }
 
-    /// Let `group`'s facet view go, with its subscription and its reads.
-    /// True when one was shown. The caller refocuses and redraws.
+    /// Let `group`'s facet view go (one note's or a collection's), with its
+    /// subscription and its reads. True when one was shown. The caller
+    /// refocuses and redraws.
     pub(super) fn drop_facet_in(&mut self, group: GroupId) -> bool {
         let Some(state) = self.state_mut(group) else {
             return false;
         };
         state._facet_events = None;
         state.facet_reading = None;
+        state.collection_reading.clear();
         state.facet.take().is_some()
     }
 
@@ -282,17 +322,20 @@ impl Workspace {
         }
     }
 
-    /// Something else was asked of `group`: a facet view still being read
-    /// gives way.
+    /// Something else was asked of `group`: a facet view or a collection
+    /// still being read gives way.
     pub(super) fn forget_facet_request(&mut self, group: GroupId) {
         if let Some(state) = self.state_mut(group) {
             state.facet_loading = None;
+            state.collection_pending = None;
         }
     }
 
     /// `path` changed on disk (saved, flushed, reloaded): every facet view
-    /// of it takes its text, read again through the vault.
+    /// of it takes its text, read again through the vault, and so does
+    /// every collection that holds it ([`Self::refresh_members`]).
     pub(super) fn refresh_facets(&mut self, path: &VaultPath, cx: &mut Context<Self>) {
+        self.refresh_members(path, cx);
         for group in self.group_ids() {
             if self
                 .facet_source_in(group, cx)
@@ -341,7 +384,11 @@ impl Workspace {
         let Some(view) = state.facet.clone() else {
             return;
         };
-        if !view.read(cx).source().is_like(path) {
+        if !view
+            .read(cx)
+            .source()
+            .is_some_and(|source| source.is_like(path))
+        {
             return;
         }
         match text {
@@ -352,7 +399,8 @@ impl Workspace {
 
     /// A file operation landed: every facet view follows its source renamed
     /// or moved, and its group empties when the source was deleted. Only
-    /// the active group's says so in the editor Panel.
+    /// the active group's says so in the editor Panel. A collection follows
+    /// its members instead ([`Self::collection_file_op_in`]).
     pub(super) fn facet_file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
         for group in self.group_ids_active_first() {
             self.facet_file_op_in(group, op, cx);
@@ -364,7 +412,13 @@ impl Workspace {
         let Some(view) = self.state(group).and_then(|s| s.facet.clone()) else {
             return;
         };
-        let shown = view.read(cx).source().clone();
+        if view.read(cx).is_collection() {
+            self.collection_file_op_in(group, &view, op, cx);
+            return;
+        }
+        let Some(shown) = view.read(cx).source().cloned() else {
+            return;
+        };
         match op {
             FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
                 if let Some(new) = relocated(&shown, from, to) {

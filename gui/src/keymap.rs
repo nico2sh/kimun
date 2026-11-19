@@ -129,6 +129,7 @@ impl Scope {
             ActionShortcuts::MoveViewToNeighbour(_) => Scope::Everywhere,
             ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
+            | ActionShortcuts::OpenQueryAsCollection
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
             ActionShortcuts::QuerySyntax | ActionShortcuts::QueryBuilder => Scope::Query,
             ActionShortcuts::OpenQueryInSidebar => Scope::Browser,
@@ -356,6 +357,9 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         // button, the note menu and the palette; no chord until the user
         // binds one.
         A::ToggleFacetView => return None,
+        // The collection commands (the Find button, the palette): no chord
+        // until the user binds one.
+        A::OpenQueryAsCollection | A::RefreshCollection => return None,
     })
 }
 

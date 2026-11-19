@@ -234,6 +234,8 @@ use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
 #[cfg(test)]
+pub(crate) use find::COLLECTION_ICON;
+#[cfg(test)]
 pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
 use modal::ModalKind;
@@ -2827,6 +2829,12 @@ impl Workspace {
                 Some(DrawerView::Find) => self.save_find_query(window, cx),
                 _ => return false,
             },
+            // FIND's query (field or results); elsewhere the chord goes on.
+            ActionShortcuts::OpenQueryAsCollection => match self.focused_view() {
+                Some(DrawerView::Find) => self.open_find_as_collection(cx),
+                _ => return false,
+            },
+            ActionShortcuts::RefreshCollection => self.refresh_active_collection(cx),
             // The focused list (FILES, FIND); the palette's row sorts FILES
             // when no view is focused. Elsewhere the chord goes on.
             ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
@@ -3806,6 +3814,7 @@ mod ask_sources;
 mod attachment;
 mod chevron;
 mod chrome;
+mod collection_group;
 mod config;
 mod create;
 mod directory_choice;
@@ -3882,6 +3891,8 @@ mod attachment_tests;
 mod cfg_tests;
 #[cfg(test)]
 mod chevron_tests;
+#[cfg(test)]
+mod collection_tests;
 #[cfg(test)]
 mod drop_tests;
 #[cfg(test)]

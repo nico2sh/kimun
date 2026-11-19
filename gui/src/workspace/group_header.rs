@@ -56,6 +56,13 @@ pub(crate) const GROUP_FACET_ID: &str = "group-facet";
 pub(crate) const GROUP_FACET_MARK_ID: &str = "group-facet-mark";
 /// The floating facet button of a lone group (no header).
 pub(crate) const CORNER_FACET_ID: &str = "group-facet-corner";
+/// A collection group header's Refresh button's id prefix (in place of
+/// the facet button).
+pub(crate) const GROUP_REFRESH_ID: &str = "group-refresh";
+/// The floating Refresh button of a lone collection group.
+pub(crate) const CORNER_REFRESH_ID: &str = "group-refresh-corner";
+/// The Refresh button's tooltip and label.
+pub(crate) const REFRESH_LABEL: &str = "Refresh results";
 /// The floating note-menu button of a lone group (no header).
 pub(crate) const CORNER_MENU_ID: &str = "group-menu-corner";
 /// The hover group of a lone group's document: the corner button lights up
@@ -73,8 +80,11 @@ pub(crate) const GROUP_TARGET_ID: &str = "group-target";
 /// Every glyph a header draws, for the bundle test: an icon the asset
 /// source does not carry paints nothing.
 #[cfg(test)]
-pub(crate) const ICONS: [gpui_kit::assets::IconName; 2] =
-    [super::chrome::CLOSE_ICON, super::chrome::FACET_ICON];
+pub(crate) const ICONS: [gpui_kit::assets::IconName; 3] = [
+    super::chrome::CLOSE_ICON,
+    super::chrome::FACET_ICON,
+    super::chrome::REFRESH_ICON,
+];
 
 /// The facet button's tooltip and label for a group showing a note.
 pub(crate) const FACET_LABEL: &str = "Facet view";
@@ -208,6 +218,21 @@ impl Workspace {
         Some(button.into_any_element())
     }
 
+    /// The facet button of `group` (`facet_id`), or in a collection group
+    /// the Refresh button that stands for it (`refresh_id`).
+    fn facet_or_refresh(
+        &self,
+        facet_id: impl Into<ElementId>,
+        refresh_id: impl Into<ElementId>,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.collection_query_in(group, cx).is_some() {
+            return Some(self.refresh_button(refresh_id, group, cx));
+        }
+        self.facet_button(facet_id, group, cx)
+    }
+
     /// The floating corner button of a lone group: top-right of its
     /// document, dim until the group or the button is hovered, drawn over
     /// the document so it reserves no space. The find bar docks at the
@@ -223,15 +248,17 @@ impl Workspace {
             .top_1()
             // Clear of a scrollbar down the document's right edge.
             .right_4()
+            // Pressed: a single-note facet view (a collection's Refresh
+            // is no toggle).
             .opacity(corner_idle_opacity(
-                self.facet_toggle_state(group) == Some(true),
+                self.facet_source_in(group, cx).is_some(),
             ))
             .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
             .hover(|s| s.opacity(corner_opacity(true)))
             .flex()
             .flex_row()
             .items_center()
-            .children(self.facet_button(CORNER_FACET_ID, group, cx))
+            .children(self.facet_or_refresh(CORNER_FACET_ID, CORNER_REFRESH_ID, group, cx))
             .child(self.menu_button(CORNER_MENU_ID, group, cx))
             .into_any_element()
     }
@@ -305,8 +332,13 @@ impl Workspace {
         let dirty = self.editor_dirty_in(group, cx);
         let spoken = super::chrome::spoken_label(&title, dirty);
         let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
-        let facet_button = self.facet_button(group_element(GROUP_FACET_ID, at), group, cx);
-        let marked = self.facet_source_in(group, cx).is_some();
+        let facet_button = self.facet_or_refresh(
+            group_element(GROUP_FACET_ID, at),
+            group_element(GROUP_REFRESH_ID, at),
+            group,
+            cx,
+        );
+        let marked = self.facet_group_in(group, cx);
         let close = super::chrome::close_button(
             group_element(GROUP_CLOSE_ID, at),
             "Close pane",
