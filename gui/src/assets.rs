@@ -56,7 +56,8 @@ gpui_kit::assets::icon_assets!(
         Paperclip,
         Plus,
         Circle,
-        CircleQuestionMark
+        CircleQuestionMark,
+        Funnel
     ]
 );
 
@@ -144,6 +145,16 @@ mod tests {
                 "{path} is not bundled"
             );
         }
+    }
+
+    /// The facet view's funnel (the header button and the mark) is bundled.
+    #[test]
+    fn the_facet_icon_is_bundled() {
+        let path = crate::workspace::FACET_ICON.path();
+        assert!(
+            AppAssets.load(&path).unwrap().is_some(),
+            "{path} is not bundled"
+        );
     }
 
     /// Every FILES row icon resolves too.

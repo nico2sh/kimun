@@ -49,6 +49,27 @@ pub(crate) fn stop_press(_: &gpui_kit::MouseDownEvent, _: &mut Window, cx: &mut 
 /// it), carried by the default bundle. Lucide's `x` is not bundled.
 pub(crate) const CLOSE_ICON: IconName = IconName::Close;
 
+/// The facet view's glyph: the kit's funnel (a filter), the toggle button's
+/// icon and the mark on a facet group's title and tab. The default bundle
+/// leaves it out; the app's asset source adds it ([`crate::assets`]).
+pub(crate) const FACET_ICON: IconName = IconName::Funnel;
+
+/// The facet mark: [`FACET_ICON`] drawn small and muted, an icon element
+/// (never a text prefix), named for screen readers. The caller sets its id
+/// and its colour.
+pub(crate) fn facet_mark(id: ElementId) -> impl Styled + IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Image)
+        .aria_label("Facet view")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .child(Icon::new(FACET_ICON).size_3())
+}
+
 /// A close button: the close icon, the hover fill, a tooltip, and a click
 /// that stops propagating (the host's own click does not follow) before
 /// `on_close` runs. The caller sets the size, the rounding and whether it

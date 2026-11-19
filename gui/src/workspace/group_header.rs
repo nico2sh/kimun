@@ -21,8 +21,10 @@
 //! there is no doubt, and nothing is drawn.
 
 use gpui_kit::base::TestSupportExt;
+use gpui_kit::component::Icon;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement, IntoElement,
@@ -48,6 +50,12 @@ pub(crate) const GROUP_UNSAVED_ID: &str = "group-unsaved";
 pub(crate) const GROUP_CLOSE_ID: &str = "group-close";
 /// A header's note-menu button's id prefix.
 pub(crate) const GROUP_MENU_ID: &str = "group-menu";
+/// A header's facet view button's id prefix.
+pub(crate) const GROUP_FACET_ID: &str = "group-facet";
+/// A header's facet mark's id prefix (on a facet group's title).
+pub(crate) const GROUP_FACET_MARK_ID: &str = "group-facet-mark";
+/// The floating facet button of a lone group (no header).
+pub(crate) const CORNER_FACET_ID: &str = "group-facet-corner";
 /// The floating note-menu button of a lone group (no header).
 pub(crate) const CORNER_MENU_ID: &str = "group-menu-corner";
 /// The hover group of a lone group's document: the corner button lights up
@@ -55,12 +63,23 @@ pub(crate) const CORNER_MENU_ID: &str = "group-menu-corner";
 pub(crate) const LONE_GROUP_HOVER: &str = "lone-group";
 /// The corner button's opacity until the group or the button is hovered.
 pub(crate) const CORNER_DIM_OPACITY: f32 = 0.35;
+/// The room, in rems, a lone group's facet view keeps clear at its bar's
+/// right end for the corner buttons: their inset from the document's right
+/// edge (1), the facet button (1.5), the note-menu button (1) and a gap
+/// (0.5).
+pub(crate) const CORNER_ROOM_REMS: f32 = 4.0;
 /// The target marker's id prefix.
 pub(crate) const GROUP_TARGET_ID: &str = "group-target";
 /// Every glyph a header draws, for the bundle test: an icon the asset
 /// source does not carry paints nothing.
 #[cfg(test)]
-pub(crate) const ICONS: [gpui_kit::assets::IconName; 1] = [super::chrome::CLOSE_ICON];
+pub(crate) const ICONS: [gpui_kit::assets::IconName; 2] =
+    [super::chrome::CLOSE_ICON, super::chrome::FACET_ICON];
+
+/// The facet button's tooltip and label for a group showing a note.
+pub(crate) const FACET_LABEL: &str = "Facet view";
+/// The facet button's tooltip and label for a group showing a facet view.
+pub(crate) const BACK_LABEL: &str = "Back to the editor";
 
 /// `prefix` with the group's position in the shown tab (reading order).
 pub(crate) fn group_element(prefix: &'static str, at: usize) -> ElementId {
@@ -85,6 +104,20 @@ pub(crate) fn group_title(workspace: &Workspace, group: GroupId, cx: &App) -> Sh
     group_name(workspace, group, cx)
         .unwrap_or_else(|| EMPTY_LABEL.to_string())
         .into()
+}
+
+/// Whether the facet button takes the hover fill: not while it is pressed
+/// (the group shows a facet view), or the fill would replace the selected
+/// background and hide the pressed look under the pointer.
+pub(crate) fn facet_hover_fills(pressed: bool) -> bool {
+    !pressed
+}
+
+/// The corner buttons' opacity while neither the group nor they are hovered:
+/// dim, except for a facet group, whose pressed button stays at full opacity
+/// so the pressed look shows at rest.
+pub(crate) fn corner_idle_opacity(facet: bool) -> f32 {
+    if facet { 1.0 } else { CORNER_DIM_OPACITY }
 }
 
 /// The corner button's opacity: full while the pointer is `near` (over
@@ -120,6 +153,61 @@ impl Workspace {
             }))
     }
 
+    /// The facet view button of `group`: a ghost icon button beside the note
+    /// menu's, for a group that shows a note or a facet view (`None` for an
+    /// empty group or an attachment). It looks pressed while the group shows
+    /// a facet view, and a click toggles ([`Self::toggle_facet_view`]). Its
+    /// press stops here, so it does not start the header's drag.
+    fn facet_button(
+        &self,
+        id: impl Into<ElementId>,
+        group: GroupId,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let facet = self.facet_toggle_state(group)?;
+        let label: &'static str = if facet { BACK_LABEL } else { FACET_LABEL };
+        let theme = theme::current(cx);
+        let hover = theme::hover_background(&theme);
+        let button = div()
+            .id(id)
+            .test_support()
+            .role(Role::Button)
+            .aria_label(label)
+            .aria_toggled(if facet {
+                gpui_kit::accesskit::Toggled::True
+            } else {
+                gpui_kit::accesskit::Toggled::False
+            })
+            .flex()
+            .flex_none()
+            .size_6()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .text_color(if facet {
+                theme::foreground(&theme)
+            } else {
+                theme::muted(&theme)
+            })
+            .when(facet, |el| el.bg(theme::selected_background(&theme)))
+            // A pressed button keeps its selected fill under the pointer.
+            .when(facet_hover_fills(facet), |el| {
+                el.hover(move |style| style.bg(hover))
+            })
+            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+            .child(Icon::new(super::chrome::FACET_ICON).size_3())
+            .on_mouse_down(gpui_kit::MouseButton::Left, super::chrome::stop_press)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                if this.layout.active_group() != group {
+                    this.focus_group(group, cx);
+                }
+                this.toggle_facet_view(group, cx);
+            }));
+        Some(button.into_any_element())
+    }
+
     /// The floating corner button of a lone group: top-right of its
     /// document, dim until the group or the button is hovered, drawn over
     /// the document so it reserves no space. The find bar docks at the
@@ -135,9 +223,15 @@ impl Workspace {
             .top_1()
             // Clear of a scrollbar down the document's right edge.
             .right_4()
-            .opacity(corner_opacity(false))
+            .opacity(corner_idle_opacity(
+                self.facet_toggle_state(group) == Some(true),
+            ))
             .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
             .hover(|s| s.opacity(corner_opacity(true)))
+            .flex()
+            .flex_row()
+            .items_center()
+            .children(self.facet_button(CORNER_FACET_ID, group, cx))
             .child(self.menu_button(CORNER_MENU_ID, group, cx))
             .into_any_element()
     }
@@ -211,6 +305,8 @@ impl Workspace {
         let dirty = self.editor_dirty_in(group, cx);
         let spoken = super::chrome::spoken_label(&title, dirty);
         let menu = self.menu_button(group_element(GROUP_MENU_ID, at), group, cx);
+        let facet_button = self.facet_button(group_element(GROUP_FACET_ID, at), group, cx);
+        let marked = self.facet_source_in(group, cx).is_some();
         let close = super::chrome::close_button(
             group_element(GROUP_CLOSE_ID, at),
             "Close pane",
@@ -255,17 +351,33 @@ impl Workspace {
             }))
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
-                    .text_ellipsis()
-                    .child(title),
+                    .when(marked, |row| {
+                        row.child(super::chrome::facet_mark(group_element(
+                            GROUP_FACET_MARK_ID,
+                            at,
+                        )))
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(title),
+                    ),
             )
             .when(dirty, |row| {
                 row.child(
                     super::chrome::unsaved_dot(group_element(GROUP_UNSAVED_ID, at), cx).flex_none(),
                 )
             })
+            .children(facet_button)
             .child(menu)
             .child(close)
             .into_any_element()

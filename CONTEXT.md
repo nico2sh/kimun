@@ -518,7 +518,7 @@ The type of a **facet**: heading, tag, or note link. Facets of the same kind com
 The region of a note that a **facet** owns. A tag or note link owns the nearest enclosing block and everything nested in it, never its parents. A heading owns its whole section, sub-headings included. In a table the block is the row, shown under the header row. In a blockquote the block is the inner paragraph or list item. A tag in code or frontmatter is not a facet.
 
 **Facet view**:
-A read-only view of the content of one note, or of a **collection**, narrowed to the **facet scope** of the picked facets. With no facet picked it shows the whole document. Hidden blocks next to a shown chunk are revealed one block at a time, never across a note boundary. A **follow** of a note link, and a jump to source, from a facet view open a new tab; following a tag opens a search for it.
+A read-only view of the content of one note, or of a **collection**, narrowed to the **facet scope** of the picked facets. With no facet picked it shows the whole document. A bar that stays in view lists the facets by kind, summarises the picks and clears them. Each shown chunk carries the headings that contain it, each pickable, and a jump to its source, which opens a new tab as a **follow** of a note link from a facet view does; following a tag opens a search for it. Hidden blocks next to a shown chunk are revealed one block at a time, or all at once when three or fewer are hidden, never across a note boundary.
 
 **Collection**:
 The notes returned by a query, shown in query order as one document in a **facet view**. The list of notes is fixed when the view opens and changes only on a manual refresh. The content of each note stays live.

@@ -228,6 +228,8 @@ use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
 use kimun_notes::logic::task_slot::TaskSlot;
 
+#[cfg(test)]
+pub(crate) use chrome::FACET_ICON;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
@@ -2916,6 +2918,10 @@ impl Workspace {
             }
             // The tabs (ADR-0058).
             ActionShortcuts::NewTab => self.new_tab(cx),
+            ActionShortcuts::ToggleFacetView => {
+                let group = self.layout.active_group();
+                self.toggle_facet_view(group, cx);
+            }
             ActionShortcuts::CloseTab => self.close_shown_tab(cx),
             ActionShortcuts::NextTab => self.step_tab(true, cx),
             ActionShortcuts::PrevTab => self.step_tab(false, cx),
@@ -3322,15 +3328,22 @@ impl Workspace {
 
     /// What `group` shows: its attachment or facet view, else why there is
     /// no note (the window's own empty state first), else its editor
-    /// ([`Self::group_editor_shown`] says which).
+    /// ([`Self::group_editor_shown`] says which). `lone`: the group is drawn
+    /// with no header, its corner buttons floating over the document's
+    /// top-right, so a facet view keeps its bar's controls clear of them.
     pub(super) fn render_group_document(
         &self,
         group: GroupId,
+        lone: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(state) = self.state(group) else {
             return div().flex_1().into_any_element();
         };
+        if let Some(facet) = &state.facet {
+            let room = lone.then(|| gpui_kit::rems(group_header::CORNER_ROOM_REMS));
+            facet.update(cx, |view, cx| view.set_corner_room(room, cx));
+        }
         let shown = state.view().filter(|_| self.empty.is_none());
         let empty = match &shown {
             None => self
@@ -3380,7 +3393,7 @@ impl Workspace {
         let document = if several {
             self.render_groups(size, f64::from(window.rem_size()), cx)
         } else {
-            self.render_group_document(active, cx)
+            self.render_group_document(active, true, cx)
         };
         let editor_shown = self.group_editor_shown(active);
         // The which-key docks over the bottom of the document, right above
@@ -3800,6 +3813,8 @@ mod drawer_list;
 mod drop_zones;
 mod facet;
 mod facet_group;
+mod facet_list;
+mod facet_ui;
 mod file_dialogs;
 mod file_ops;
 mod files;

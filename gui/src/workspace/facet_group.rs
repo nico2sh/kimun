@@ -217,6 +217,35 @@ impl Workspace {
         cx.notify();
     }
 
+    /// What the facet toggle does for `group`: `Some(true)` while it shows
+    /// a facet view (the toggle leaves it), `Some(false)` while it shows a
+    /// note in its editor (the toggle opens a view), `None` for an empty
+    /// group or an attachment (nothing to toggle).
+    pub(crate) fn facet_toggle_state(&self, group: GroupId) -> Option<bool> {
+        let state = self.state(group)?;
+        if state.facet.is_some() {
+            return Some(true);
+        }
+        let has_note = self.host_in(group).is_some_and(|host| host.note.is_some());
+        (has_note && state.attachment.is_none()).then_some(false)
+    }
+
+    /// The facet toggle (the header button, the `ToggleFacetView` action):
+    /// a group showing a note opens a facet view of it with no picks, a
+    /// group showing a facet view returns to the editor, any other group
+    /// says there is no note.
+    pub(crate) fn toggle_facet_view(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        match self.facet_toggle_state(group) {
+            Some(true) => self.close_facet_view(group, cx),
+            Some(false) => {
+                if let Some(note) = self.shown_note_in(group, cx) {
+                    self.open_facet_view(group, note, Vec::new(), cx);
+                }
+            }
+            None => self.flash(super::route::NO_NOTE, cx),
+        }
+    }
+
     /// `Edit note`: back to the editor on the source of `group`'s facet
     /// view. A source another group holds shows there instead (the
     /// plain-open rule), and the facet view stays.

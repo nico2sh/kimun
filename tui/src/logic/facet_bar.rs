@@ -1,14 +1,14 @@
 //! The facet pill bar model: which facets of a note are picked, and the rows
 //! of pills to show. Pure state over [`NoteFacets`], shared by every frontend.
 
-use kimun_core::note::{Facet, FacetEntry, FacetKind, NoteFacets};
+use kimun_core::note::{Facet, FacetEntry, FacetKind, NoteFacets, select_blocks};
 
 use super::text_match::match_ranges;
 
 /// Pills shown in one row before the rest fold into "+N more".
 pub const PILLS_PER_ROW: usize = 12;
 
-const KINDS: [FacetKind; 3] = [FacetKind::Heading, FacetKind::Tag, FacetKind::NoteLink];
+const KINDS: [FacetKind; 3] = [FacetKind::Tag, FacetKind::NoteLink, FacetKind::Heading];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pill {
@@ -24,6 +24,10 @@ pub struct Row {
     pub pills: Vec<Pill>,
     /// Pills of this kind not shown in `pills`.
     pub more: usize,
+    /// True for the heading row of a note with more than [`PILLS_PER_ROW`]
+    /// headings: `pills` then holds only the picked ones and `more` counts
+    /// the unpicked ones.
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,7 +66,7 @@ impl FacetBar {
         self.picks.len() != before
     }
 
-    /// One row per kind that has entries, in the order heading, tag, note link.
+    /// One row per kind that has entries, in the order tag, note link, heading.
     pub fn rows(&self, facets: &NoteFacets) -> Vec<Row> {
         KINDS
             .into_iter()
@@ -74,10 +78,21 @@ impl FacetBar {
                 let total = all.len();
                 // Picked pills come first, so they always fit unless the picks
                 // alone overflow the cap; they are never hidden.
-                let shown = PILLS_PER_ROW.max(all.iter().filter(|p| p.picked).count());
+                let picked = all.iter().filter(|p| p.picked).count();
+                let collapsed = kind == FacetKind::Heading && total > PILLS_PER_ROW;
+                let shown = if collapsed {
+                    picked
+                } else {
+                    PILLS_PER_ROW.max(picked)
+                };
                 let pills: Vec<Pill> = all.into_iter().take(shown).collect();
                 let more = total - pills.len();
-                Some(Row { kind, pills, more })
+                Some(Row {
+                    kind,
+                    pills,
+                    more,
+                    collapsed,
+                })
             })
             .collect()
     }
@@ -92,6 +107,76 @@ impl FacetBar {
             .into_iter()
             .filter(|p| is_subsequence(&query, &p.label))
             .collect()
+    }
+
+    /// Fuzzy search over every kind at once: kinds in the order tag, link,
+    /// heading, each in its [`Self::more_list`] order. An empty query returns
+    /// every facet.
+    pub fn search(&self, facets: &NoteFacets, query: &str) -> Vec<Pill> {
+        KINDS
+            .into_iter()
+            .flat_map(|kind| self.more_list(facets, kind, query))
+            .collect()
+    }
+
+    /// One phrase per kind that has picks, in the order tag, link, heading.
+    pub fn phrases(&self, facets: &NoteFacets) -> Vec<String> {
+        KINDS
+            .into_iter()
+            .filter_map(|kind| {
+                let labels: Vec<String> = self
+                    .picks
+                    .iter()
+                    .filter(|p| p.kind == kind)
+                    .map(|p| {
+                        let label = facets
+                            .entries
+                            .iter()
+                            .find(|e| e.facet == *p)
+                            .map_or(p.key.as_str(), |e| e.label.as_str());
+                        match kind {
+                            FacetKind::Tag => format!("#{label}"),
+                            _ => label.to_string(),
+                        }
+                    })
+                    .collect();
+                if labels.is_empty() {
+                    return None;
+                }
+                let lead = match kind {
+                    FacetKind::Tag => "tagged",
+                    FacetKind::NoteLink => "linking to",
+                    FacetKind::Heading => "in",
+                };
+                Some(format!("{lead} {}", labels.join(" or ")))
+            })
+            .collect()
+    }
+
+    /// "Showing text tagged #a or #b, in D \u{b7} 12 pieces". `None` without picks.
+    pub fn summary(&self, facets: &NoteFacets, pieces: usize) -> Option<String> {
+        if self.picks.is_empty() {
+            return None;
+        }
+        let noun = if pieces == 1 { "piece" } else { "pieces" };
+        Some(format!(
+            "Showing text {} \u{b7} {pieces} {noun}",
+            self.phrases(facets).join(", ")
+        ))
+    }
+
+    /// Why nothing shows: "No text tagged #a and in D." `None` when there are
+    /// no picks or something is shown.
+    pub fn empty_reason(&self, facets: &NoteFacets) -> Option<String> {
+        if self.picks.is_empty() || !select_blocks(facets, &self.picks).is_empty() {
+            return None;
+        }
+        Some(format!("No text {}.", self.phrases(facets).join(" and ")))
+    }
+
+    /// The most recent pick.
+    pub fn last_pick(&self) -> Option<&Facet> {
+        self.picks.last()
     }
 
     /// Every pill of `kind`: picked first, then headings in document order,
@@ -158,7 +243,7 @@ mod tests {
         let kinds: Vec<_> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(
             kinds,
-            [FacetKind::Heading, FacetKind::Tag, FacetKind::NoteLink]
+            [FacetKind::Tag, FacetKind::NoteLink, FacetKind::Heading]
         );
         let f = facets("just #a\n");
         let rows = FacetBar::default().rows(&f);
@@ -171,8 +256,8 @@ mod tests {
     fn tags_sort_by_count_headings_keep_document_order() {
         let f = facets("# Zed\n\n#b #a\n\n#c #c #c\n\n## Alpha\n\n#b\n");
         let rows = FacetBar::default().rows(&f);
-        assert_eq!(labels(&rows[0].pills), ["Zed", "Alpha"]);
-        assert_eq!(labels(&rows[1].pills), ["c", "b", "a"]);
+        assert_eq!(labels(&rows[0].pills), ["c", "b", "a"]);
+        assert_eq!(labels(&rows[1].pills), ["Zed", "Alpha"]);
     }
 
     #[test]
@@ -236,5 +321,155 @@ mod tests {
         got.sort();
         assert_eq!(got, ["idea", "idle"]);
         assert!(bar.more_list(&f, FacetKind::Heading, "ide").is_empty());
+    }
+
+    fn link(key: &str) -> Facet {
+        Facet::new(FacetKind::NoteLink, key)
+    }
+
+    fn heading(text: &str) -> Facet {
+        Facet::new(FacetKind::Heading, text)
+    }
+
+    fn many_headings(n: usize) -> String {
+        (0..n).map(|i| format!("# H{i:03}\n\n")).collect()
+    }
+
+    #[test]
+    fn rows_are_ordered_tag_link_heading() {
+        let f = facets("# Head\n\nsome #a and [[plan]]\n");
+        let kinds: Vec<_> = FacetBar::default()
+            .rows(&f)
+            .iter()
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [FacetKind::Tag, FacetKind::NoteLink, FacetKind::Heading]
+        );
+    }
+
+    #[test]
+    fn the_heading_row_collapses_over_the_pill_cap_and_keeps_picked_headings() {
+        let f = facets(&many_headings(400));
+        let mut bar = FacetBar::default();
+        bar.toggle(heading("H123"));
+        let rows = bar.rows(&f);
+        let row = &rows[0];
+        assert_eq!(row.kind, FacetKind::Heading);
+        assert!(row.collapsed);
+        assert_eq!(labels(&row.pills), ["H123"]);
+        assert_eq!(row.more, 399);
+        // The full list still opens.
+        assert_eq!(bar.more_list(&f, FacetKind::Heading, "").len(), 400);
+    }
+
+    #[test]
+    fn a_short_heading_row_is_not_collapsed() {
+        let f = facets(&many_headings(PILLS_PER_ROW));
+        let row = &FacetBar::default().rows(&f)[0];
+        assert!(!row.collapsed);
+        assert_eq!(row.pills.len(), PILLS_PER_ROW);
+        assert_eq!(row.more, 0);
+        // Only headings collapse; a long tag row is capped, not collapsed.
+        let many: String = (0..30).map(|i| format!("#t{i:02} ")).collect();
+        assert!(!FacetBar::default().rows(&facets(&many))[0].collapsed);
+    }
+
+    #[test]
+    fn search_matches_across_kinds_in_kind_order() {
+        let f = facets("# Plan day\n\n#plant and [[plan]] and #zzz\n");
+        let found = FacetBar::default().search(&f, "plan");
+        let got: Vec<_> = found
+            .iter()
+            .map(|p| (p.facet.kind, p.label.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (FacetKind::Tag, "plant"),
+                (FacetKind::NoteLink, "plan"),
+                (FacetKind::Heading, "Plan day"),
+            ]
+        );
+    }
+
+    #[test]
+    fn search_with_an_empty_query_returns_everything() {
+        let f = facets("# Head\n\nsome #a and [[plan]]\n");
+        let found = FacetBar::default().search(&f, "");
+        assert_eq!(labels(&found), ["a", "plan", "Head"]);
+    }
+
+    #[test]
+    fn phrases_use_labels_and_join_a_kind_with_or() {
+        let f = facets("# D1\n\n## D2\n\n#Run #garden [[x]] [[Y]]\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![
+            heading("D1"),
+            tag("run"),
+            link("y"),
+            tag("garden"),
+            link("x"),
+            heading("d2"),
+        ]);
+        assert_eq!(
+            bar.phrases(&f),
+            ["tagged #Run or #garden", "linking to y or x", "in D1 or D2"]
+        );
+        assert!(FacetBar::default().phrases(&f).is_empty());
+    }
+
+    #[test]
+    fn summary_names_picks_and_counts_pieces() {
+        let f = facets("# D\n\n#run #garden\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("run"), tag("garden"), heading("d")]);
+        assert_eq!(
+            bar.summary(&f, 12).as_deref(),
+            Some("Showing text tagged #run or #garden, in D \u{b7} 12 pieces")
+        );
+        bar.set_picks(vec![tag("run")]);
+        assert_eq!(
+            bar.summary(&f, 1).as_deref(),
+            Some("Showing text tagged #run \u{b7} 1 piece")
+        );
+    }
+
+    #[test]
+    fn summary_is_none_without_picks() {
+        let f = facets("#a\n");
+        assert_eq!(FacetBar::default().summary(&f, 3), None);
+    }
+
+    #[test]
+    fn empty_reason_is_none_when_something_shows() {
+        let f = facets("# D\n\n#run\n");
+        let mut bar = FacetBar::default();
+        assert_eq!(bar.empty_reason(&f), None);
+        bar.set_picks(vec![tag("run")]);
+        assert_eq!(bar.empty_reason(&f), None);
+    }
+
+    #[test]
+    fn empty_reason_joins_phrases_with_and() {
+        let f = facets("# A\n\n#run\n\n# B\n\nother\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("run"), heading("b")]);
+        assert_eq!(
+            bar.empty_reason(&f).as_deref(),
+            Some("No text tagged #run and in B.")
+        );
+    }
+
+    #[test]
+    fn last_pick_is_the_most_recent() {
+        let mut bar = FacetBar::default();
+        assert_eq!(bar.last_pick(), None);
+        bar.toggle(tag("a"));
+        bar.toggle(tag("b"));
+        assert_eq!(bar.last_pick(), Some(&tag("b")));
+        bar.toggle(tag("b"));
+        assert_eq!(bar.last_pick(), Some(&tag("a")));
     }
 }
