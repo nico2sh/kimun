@@ -1,7 +1,8 @@
 //! When two clicks are one gesture.
 //!
-//! Following a link with the mouse is a double-click, not the Ctrl+click every
-//! IDE uses, because no modifier-click survives all three platforms:
+//! Following a link with the mouse is a double-click everywhere, and also a
+//! Ctrl+click where the terminal delivers one. The double-click is the primary
+//! gesture because no modifier-click survives all three platforms:
 //!
 //! - **Cmd+click cannot exist.** xterm mouse reporting encodes three modifier
 //!   bits — shift, alt, control. There is no super bit for a terminal to set
@@ -41,7 +42,7 @@
 //! this holds no clock — the caller passes `now`, so a test describes a gap
 //! instead of sleeping through one.
 
-use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
 
 /// How close together two clicks on a cell have to be to read as one gesture
@@ -65,6 +66,16 @@ impl ClickRun {
     /// the run went unnoticed: every press is followed by one.
     pub fn observe(&mut self, event: &MouseEvent, in_editor: bool, now: Instant) -> bool {
         match event.kind {
+            // Ctrl+click follows at once, with no first press to pair with. It
+            // never reaches a terminal on macOS (Terminal.app and iTerm2 turn
+            // it into a right press first), so double-click stays the gesture
+            // that works everywhere.
+            MouseEventKind::Down(MouseButton::Left)
+                if in_editor && event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.end();
+                true
+            }
             MouseEventKind::Down(MouseButton::Left) if in_editor => {
                 self.completes_double(event.column, event.row, now)
             }
