@@ -44,9 +44,11 @@ On macOS, the pane keys use `Cmd+Option+Shift` in place of `Alt+Shift`, and the 
 
 ## The note menu
 
-The note menu acts on a pane and its note. To open it, right-click in a pane, click the small `...` button, or press `F2`. The button sits in the header of each pane when a tab has two panes or more. In a lone pane, it sits dimmed in the top right corner.
+The note menu acts on a pane and its note. To open it, right-click in a pane (not in a facet view), click the small `...` button, or press `F2`. The button sits in the header of each pane when a tab has two panes or more. In a lone pane, it sits dimmed in the top right corner.
 
-The first items work on the note: Properties, Rename, Move, and Delete. Press `P`, `R`, `M`, or `D` to pick one. The next items change the layout: Split right, Split down, New tab, Close pane, and Close tab. They show their keys. The menu hides an item that cannot work. For example, an empty pane shows only the layout items. Press `Esc`, click outside the menu, or press `F2` again to close it.
+The first items work on the note: Facet view, Properties, Rename, Move, and Delete. Press `F`, `P`, `R`, `M`, or `D` to pick one. In a facet view, the first items are Edit note and Properties (`E` and `P`). Rename, Move, and Delete are hidden there. The next items change the layout: Split right, Split down, New tab, Close pane, and Close tab. They show their keys. The menu hides an item that cannot work. For example, an empty pane shows only the layout items. Press `Esc`, click outside the menu, or press `F2` again to close it.
+
+The menu also has `Facet view`. It shows the note in a read-only view that you can narrow by heading, tag, or link. See [Facet view](@/using-kimun/facet-view.md). In that view, the menu has `Edit note` to go back.
 
 ## New notes and directories
 

@@ -330,11 +330,11 @@ A workspace inside the **editor region**: its own arrangement of **editor groups
 _Avoid_: window (names the OS window), page, **Zoom** (a transient state, not a persistent workspace), slot (holds drawer views).
 
 **Editor group**:
-A leaf of a **tab**'s arrangement (GUI) holding one piece of content at a time — a note editor or an **attachment view**. Each group has its own editor, find bar and open note. In the TUI the editor Panel is one group. A tab always holds at least one. A note is open in at most one editor group across the whole window, in any tab. Opening a note that is already open shows its tab and gives its group the keyboard, and it never opens a copy. When its tab holds two or more groups, each group shows a header with the note title, an unsaved marker and a close button, which is also the handle for dragging the note to another group, an edge split or another tab. A tab with one group shows no header. The keyboard moves a group as well: toward a direction it swaps places with the group on that side, or, with none there, goes to that outer edge of its tab.
+A leaf of a **tab**'s arrangement (GUI) holding one piece of content at a time — a note editor, an **attachment view**, or a **facet view** of a note. A note editor group has its own editor, find bar and open note; a facet view or an attachment view shows the note or file it was opened on. In the TUI the editor Panel is one group. A tab always holds at least one. A note is open in at most one editor group across the whole window, in any tab. Opening a note that is already open shows its tab and gives its group the keyboard, and it never opens a copy. When its tab holds two or more groups, each group shows a header with the note title, an unsaved marker and a close button, which is also the handle for dragging the note to another group, an edge split or another tab. A tab with one group shows no header. The keyboard moves a group as well: toward a direction it swaps places with the group on that side, or, with none there, goes to that outer edge of its tab.
 Shown to the user as "pane" (menu, tooltips, help, docs); the code and this glossary keep "group". _Avoid_: split (that is the act, not the region), tab (a tab holds groups; it is not one).
 
 **Note menu**:
-The one pointer-anchored menu (GUI) for acting on an **editor group**. It opens from a right-click in a group, from the group's small button (in its header, or floating at the corner of a lone group), and from the file-operations chord, which anchors it under the **active group**'s button. It always acts on one group, and a right-click makes that group active first. Note actions come first (Properties, Rename, Move, Delete), then a divider, then layout actions (Split right, Split down, New tab, Close group, Close tab) that show their chords as hints. Items that cannot act are hidden: an **empty group** shows only layout actions, Close group needs two or more groups, Close tab needs two or more tabs. Only the note actions have menu letters. The file list keeps its own row menu for Rename, Move and Delete.
+The one pointer-anchored menu (GUI) for acting on an **editor group**. It opens from a right-click in a note editor group (not in a facet view), from the group's small button (in its header, or floating at the corner of a lone group), and from the file-operations chord, which anchors it under the **active group**'s button. It always acts on one group, and a right-click makes that group active first. Note actions come first: for a group with a note, Facet view, Properties, Rename, Move and Delete; a **facet view** group shows only Edit note and Properties. Then a divider, then layout actions (Split right, Split down, New tab, Close group, Close tab) that show their chords as hints. Items that cannot act are hidden: an **empty group** shows only layout actions, Close group needs two or more groups, Close tab needs two or more tabs. Only the note actions have menu letters (F, E, P, R, M, D). The file list keeps its own row menu for Rename, Move and Delete.
 _Avoid_: context menu (it also opens from a button and a chord), file ops menu (the old name, for the note actions alone).
 
 **Active group**:
@@ -498,7 +498,7 @@ A visible vault file that is not a **note** — any entry the walker finds that 
 _Avoid_: asset (the `/assets` directory is one storage location, not the kind), media (too narrow — not every attachment is media), file (every note is also a file).
 
 **Attachment view**:
-The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+U), not edit. The editor area thus shows one of two contents — the text editor for a **note**, the attachment view for an attachment.
+The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+U), not edit. The editor area shows the text editor for a **note**, this view for an attachment, or a **facet view** of a note.
 _Avoid_: attachment editor (it never edits), preview pane (names only the text half; binary attachments have none).
 
 ### Note content
@@ -506,6 +506,22 @@ _Avoid_: attachment editor (it never edits), preview pane (names only the text h
 **Note details**:
 The one public door to whole-note extraction — title, indexable content data, heading chunks, links, rendered markdown — as `NoteDetails`: methods over a loaded note's owned text, plus borrowed-text associated functions (`*_of`) for bulk paths (indexing) that must not clone. The markdown extractor behind it is internal to the note module and is never named outside it.
 _Avoid_: content extractor (the implementation, not the door)
+
+**Facet**:
+A clickable element found in a note (a label, a link, a heading) that the user can pick to narrow the note to the content tied to it. Shown as a pill. Picking a facet produces a **facet view** of the note.
+_Avoid_: anchor (collides with the **Preview pane**'s anchored scroll), filter (collides with **Link filter**).
+
+**Facet kind**:
+The type of a **facet**: heading, tag, or note link. Facets of the same kind combine with OR, and facets of different kinds combine with AND. Equal facets merge by text across notes. Case and heading level do not count. External URLs, attachments and properties are not facets.
+
+**Facet scope**:
+The region of a note that a **facet** owns. A tag or note link owns the nearest enclosing block and everything nested in it, never its parents. A heading owns its whole section, sub-headings included. In a table the block is the row, shown under the header row. In a blockquote the block is the inner paragraph or list item. A tag in code or frontmatter is not a facet.
+
+**Facet view**:
+A read-only view of the content of one note, or of a **collection**, narrowed to the **facet scope** of the picked facets. With no facet picked it shows the whole document. Hidden blocks next to a shown chunk are revealed one block at a time, never across a note boundary. A **follow** of a note link, and a jump to source, from a facet view open a new tab; following a tag opens a search for it.
+
+**Collection**:
+The notes returned by a query, shown in query order as one document in a **facet view**. The list of notes is fixed when the view opens and changes only on a manual refresh. The content of each note stays live.
 
 **Scan helpers**:
 The `note::scan` module — live text analysis over editor buffer fragments: link/wikilink spans, exclusion zones (code, frontmatter, links), label tokens, URL classification. The presentation layer drives WYSIWYG behaviour with these on text being edited; they take arbitrary text fragments, not notes. Whole-note extraction belongs to **Note details** instead.

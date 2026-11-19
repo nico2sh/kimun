@@ -197,6 +197,7 @@ fn rewritable(outcome: Option<&SaveOutcome>) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LeavingFor {
     Attachment,
+    Facet,
 }
 
 /// How leaving the open note went ([`Workspace::leave_note`]).
@@ -291,7 +292,8 @@ impl Workspace {
     // ---- Opening -------------------------------------------------------------
 
     /// The group holding `path` ([`NoteHost::holds`]), in any tab. A note
-    /// is open in at most one group (ADR-0058).
+    /// is open in at most one group (ADR-0058). A facet group holds no note
+    /// (its session let it go, [`super::facet_group`]), so it never matches.
     pub(crate) fn locate_note(&self, path: &VaultPath) -> Option<GroupId> {
         self.group_where(|host| host.holds(path))
     }
@@ -425,6 +427,7 @@ impl Workspace {
         }
         // The newest request wins: an attachment still being read is dropped.
         self.forget_attachment_request(group);
+        self.forget_facet_request(group);
         let Some(host) = self.host_in_mut(group) else {
             return;
         };
@@ -512,6 +515,7 @@ impl Workspace {
         }
         if let SaveOutcome::Saved(saved) = &outcome {
             self.files_note_saved(saved, cx);
+            self.refresh_facets(&saved.path, cx);
             if self.host_in(group).and_then(|h| h.note.as_ref()) == Some(&saved.path) {
                 self.refresh_note_properties_in(group);
             }
@@ -646,6 +650,8 @@ impl Workspace {
                     // Not on display: its attachment goes quietly.
                     self.drop_attachment_in(group);
                 }
+                // A facet view gives the group back to the editor.
+                self.clear_facet_in(group, cx);
             }
             // The editor still holds the note it had: point the session back
             // at it, so nothing is saved under the missing path.
@@ -781,6 +787,7 @@ impl Workspace {
         let state = self.state_mut(group)?;
         Some(match panel {
             LeavingFor::Attachment => &mut state.attachment_flushing,
+            LeavingFor::Facet => &mut state.facet_flushing,
         })
     }
 
@@ -802,11 +809,12 @@ impl Workspace {
 
     /// Make `group` an empty group where it is: every writer of its note
     /// stopped, no session path, no note, an empty clean buffer that takes
-    /// input. Nothing is saved: the caller flushed it, or its note is gone.
-    /// The Footer names no note when `group` is the active one.
+    /// input, no facet view. Nothing is saved: the caller flushed it, or its
+    /// note is gone. The Footer names no note when `group` is the active one.
     pub(super) fn empty_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         // A menu on the group names the note it no longer holds.
         self.forget_note_menu_of(group, cx);
+        self.drop_facet_in(group);
         let Some(state) = self.state_mut(group) else {
             return;
         };
@@ -949,6 +957,7 @@ impl Workspace {
         let again = std::mem::take(&mut host.save_again);
         if let Some(saved) = &completion.saved {
             self.files_note_saved(saved, cx);
+            self.refresh_facets(&saved.path, cx);
         }
         // The Footer's property count follows what was written (the TUI's
         // rule: the open note's completion, written or not).
@@ -1108,7 +1117,7 @@ impl Workspace {
                 if close && workspace.closes_app() {
                     workspace.end_app(cx);
                 } else if close {
-                    workspace.flush_layout();
+                    workspace.flush_layout(cx);
                 }
                 close
             })
@@ -1128,7 +1137,7 @@ impl Workspace {
             }
             // The session's and the layout's last writes land before the
             // app goes.
-            workspace.write_session_now();
+            workspace.write_session_now(cx);
             let layout_writer = workspace.layout_writer.clone();
             async move { layout_writer.flush() }
         }));
@@ -1183,7 +1192,7 @@ impl Workspace {
         if self.closes_app() {
             self.end_app(cx);
         } else {
-            self.flush_layout();
+            self.flush_layout(cx);
             window.remove_window();
         }
     }
@@ -1192,13 +1201,13 @@ impl Workspace {
     /// drops the workspace, and with it the app-quit hook that flushes the writer: the
     /// window the app opens next from the dock reads the config file, and it must find
     /// the layout this one left.
-    fn flush_layout(&mut self) {
+    fn flush_layout(&mut self, cx: &App) {
         #[cfg(test)]
         {
             self.layout_flushes += 1;
         }
         // The tabs and groups as the window leaves them, at once.
-        self.write_session_now();
+        self.write_session_now(cx);
         self.layout_writer.flush();
     }
 
@@ -1211,7 +1220,7 @@ impl Workspace {
         }
         // The tabs and groups as the app leaves them, at once (the quit
         // hook writes them again, for a quit that does not come by here).
-        self.write_session_now();
+        self.write_session_now(cx);
         // An update replaced this app: start it again as this one ends. A
         // failure only costs the user the manual start.
         if std::mem::take(&mut self.updates.restart_pending)
@@ -1427,7 +1436,7 @@ impl Workspace {
                     if quit {
                         workspace.end_app(cx);
                     } else {
-                        workspace.flush_layout();
+                        workspace.flush_layout(cx);
                     }
                     Some(quit)
                 })

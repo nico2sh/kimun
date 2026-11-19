@@ -1977,3 +1977,181 @@ fn an_unset_global_changes_nothing(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// --- read-only editor (facet view's chunks) ---
+
+type Events = std::rc::Rc<std::cell::RefCell<Vec<editor_view::EditorEvent>>>;
+
+/// A read-only editor over `text`, its app channel's receiver and the events
+/// it emits.
+fn open_read_only(
+    cx: &mut TestAppContext,
+    text: &str,
+) -> (
+    AnyWindowHandle,
+    Entity<EditorView>,
+    tokio::sync::mpsc::UnboundedReceiver<kimun_notes::logic::message::AppMessage>,
+    Events,
+    gpui_kit::Subscription,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        editor_view::init(cx);
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+    });
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let text = text.to_string();
+    let events = Events::default();
+    let sink = events.clone();
+    let (handle, view, sub) = cx.update(|cx| {
+        let mut sub = None;
+        let (handle, view) = gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(640.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let view = cx.new(|cx| EditorView::new_read_only_on(&text, tx, cx));
+                window.focus(&view.read(cx).focus_handle(cx), cx);
+                sub = Some(cx.subscribe(&view, move |_, event, _| {
+                    sink.borrow_mut().push(event.clone());
+                }));
+                view
+            },
+        )
+        .expect("open test window");
+        (handle, view, sub.unwrap())
+    });
+    (handle, view, rx, events, sub)
+}
+
+#[gpui_kit::test]
+fn read_only_editor_ignores_typing(cx: &mut TestAppContext) {
+    let (handle, view, _rx, _events, _sub) = open_read_only(cx, "abc");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("xyz", cx);
+        window.press("backspace", cx);
+        window.press("enter", cx);
+        assert_eq!(text(&view, cx), "abc");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn read_only_press_on_a_tag_emits_a_press_with_the_label_target(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::ReadOnlyPress {
+            target: Some(kimun_notes::logic::editor::claim::FollowTarget::Label(
+                "idea".to_string()
+            )),
+            line: "see #idea here".to_string(),
+            primary: false,
+        }]
+    );
+    while let Ok(message) = rx.try_recv() {
+        assert!(
+            !matches!(
+                message,
+                kimun_notes::logic::message::AppMessage::FollowLabel(_)
+                    | kimun_notes::logic::message::AppMessage::FollowLink { .. }
+            ),
+            "a read-only press must not follow"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn read_only_primary_press_emits_primary_true_and_does_not_send_follow(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        window.change_modifiers(gpui_kit::Modifiers::control(), cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let events = events.borrow();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        editor_view::EditorEvent::ReadOnlyPress { primary: true, .. }
+    ));
+    while let Ok(message) = rx.try_recv() {
+        assert!(
+            !matches!(
+                message,
+                kimun_notes::logic::message::AppMessage::FollowLabel(_)
+                    | kimun_notes::logic::message::AppMessage::FollowLink { .. }
+            ),
+            "a read-only press must not follow"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn read_only_press_on_a_heading_line_carries_that_line(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "# Title\nbody");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 2, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    let events = events.borrow();
+    assert!(matches!(
+        events.as_slice(),
+        [editor_view::EditorEvent::ReadOnlyPress { line, target: None, .. }] if line == "# Title"
+    ));
+}
+
+#[gpui_kit::test]
+fn read_only_right_press_emits_nothing(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        window.pointer_down(at, MouseButton::Right, cx);
+        window.pointer_up(at, MouseButton::Right, cx);
+    })
+    .unwrap();
+    assert!(events.borrow().is_empty());
+}
+
+#[gpui_kit::test]
+fn read_only_editor_ignores_the_find_chord(cx: &mut TestAppContext) {
+    let (handle, view, _rx, _events, _sub) = open_read_only(cx, "abc");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-f", cx);
+        assert!(!view.read(cx).editor.find_open());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn read_only_editor_ignores_the_replace_chord(cx: &mut TestAppContext) {
+    let (handle, view, _rx, _events, _sub) = open_read_only(cx, "abc");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-h", cx);
+        assert!(!view.read(cx).editor.find_open());
+    })
+    .unwrap();
+}

@@ -104,13 +104,21 @@ enum AppCommand {
 
 /// What the editor asks of the window that owns it, beyond the app channel:
 /// a surface that needs a `Window` to open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EditorEvent {
     /// Vim `:` — open the command palette.
     OpenPalette,
     /// A right-press with no selection — open the note menu at `at`, the
     /// pointer in window coordinates.
     ContextMenu { at: Point<Pixels> },
+    /// A press on a read-only editor, in place of following or a menu: the
+    /// **follow target** under the caret (if any), the text of the logical
+    /// line there, and whether the primary modifier was held.
+    ReadOnlyPress {
+        target: Option<FollowTarget>,
+        line: String,
+        primary: bool,
+    },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -231,6 +239,10 @@ pub struct EditorView {
     /// loading another note into it, which would drop whatever was typed.
     /// App chords still resolve.
     pub(crate) input_blocked: bool,
+    /// A read-only surface: no caret drawn, and a press reports
+    /// [`EditorEvent::ReadOnlyPress`] instead of following. Keys are stopped
+    /// by `input_blocked`, which this sets.
+    pub(crate) read_only: bool,
     pub(crate) painted: Option<Painted>,
     /// The face, and the inputs it was chosen for (re-chosen when they
     /// change).
@@ -269,6 +281,50 @@ impl EditorView {
             }
         });
         Self::build(text, vim, tx, Some(messages), cx)
+    }
+
+    /// An editor over `text` that takes no input: a press places the caret on
+    /// the text, then emits [`EditorEvent::ReadOnlyPress`] instead of
+    /// following. It drains its own app channel, as `Self::new` does.
+    pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let messages = cx.spawn(async move |this, cx| {
+            while let Some(message) = rx.recv().await {
+                drop(message);
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self::read_only_with(text, tx, Some(messages), cx)
+    }
+
+    /// A read-only editor reporting on `tx` (tests watch the channel).
+    #[cfg(test)]
+    pub(crate) fn new_read_only_on(text: &str, tx: AppTx, cx: &mut Context<Self>) -> Self {
+        Self::read_only_with(text, tx, None, cx)
+    }
+
+    fn read_only_with(
+        text: &str,
+        tx: AppTx,
+        messages: Option<Task<()>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::build(Some(text.to_string()), false, tx, messages, cx);
+        view.input_blocked = true;
+        view.read_only = true;
+        view
+    }
+
+    /// Show `text` in a read-only editor, the caret back at the start.
+    pub fn set_text_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.editor.set_text(text.to_string());
+        self.ac_revision = self.editor.content_revision();
+        self.preedit = None;
+        self.painted = None;
+        self.row_cache = ShapedRows::default();
+        cx.notify();
     }
 
     /// An editor reporting on the window's app channel `tx`, which its owner
@@ -487,6 +543,7 @@ impl EditorView {
             clock: Instant::now,
             preedit: None,
             input_blocked: false,
+            read_only: false,
             painted: None,
             fonts: None,
             row_cache: ShapedRows::default(),
@@ -626,6 +683,15 @@ impl EditorView {
         let keymap = keymap::active(cx);
         match keymap.resolve(key, self.key_ctx()) {
             None => AppCommand::None,
+            // A read-only surface has no find bar: it would take every key
+            // (Esc too) and could not be closed. Not ours: the chord bubbles
+            // to the owner, as the other chords do, and never reaches the
+            // editor.
+            Some(ActionShortcuts::FindInBuffer | ActionShortcuts::ReplaceInBuffer)
+                if self.read_only =>
+            {
+                AppCommand::NotOurs
+            }
             Some(ActionShortcuts::FindInBuffer) => {
                 self.open_find();
                 AppCommand::Handled
@@ -799,6 +865,33 @@ impl EditorView {
             return;
         }
         let left = pointer.kind == PointerKind::Down(Button::Left);
+        if self.read_only {
+            // Only a left press reports: it places the caret (so the target
+            // under it is known) and tells the owner, who decides what it
+            // means. Never a follow, a menu or an edit. The press stays armed
+            // so the release ends it in the editor.
+            if left {
+                self.clicks.end();
+                self.editor.handle_pointer(&pointer, &self.tx);
+                self.editor.settle_pointer(true);
+                let (row, _) = self.editor.cursor();
+                let line = self
+                    .editor
+                    .get_text()
+                    .lines()
+                    .nth(row)
+                    .unwrap_or_default()
+                    .to_string();
+                cx.emit(EditorEvent::ReadOnlyPress {
+                    target: self.editor.follow_target_at_cursor(),
+                    line,
+                    primary: pointer.mods == keymap::Platform::current().primary(),
+                });
+                self.dragging = true;
+                self.settle(window, cx);
+            }
+            return;
+        }
         // A press on a link (the hand cursor) only places the caret, as the
         // TUI's first press does. The primary modifier (Cmd on macOS, Ctrl
         // elsewhere, as the keymap's `primary`; Ctrl+click is a right-click on
