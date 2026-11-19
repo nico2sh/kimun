@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.8.0...kimun_core-v0.8.1) - 2026-11-19
+
+### Other
+
+- base, common rendering of the frontmatter
+
 ## [0.8.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.7.1...kimun_core-v0.8.0) - 2026-11-18
 
 ### Fixed

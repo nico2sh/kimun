@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.3...kimun-notes-v0.25.4) - 2026-11-19
+
+### Added
+
+- alt click on macos
+- ctrl click in tui
+- tui render frontmatters
+
+### Fixed
+
+- tests in ci
+- tests
+- bullets instead of asterisks
+- checks
+- ctrl click with a started selection
+- remove hover to reveal
+
+### Other
+
+- merge origin/bullets into bullets
+- Merge branch 'main' into bullets
+- Merge branch 'main' into frontmatter-fixes
+- Merge branch 'main' into bullets
+- base, common rendering of the frontmatter
+
 ## [0.25.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.2...kimun-notes-v0.25.3) - 2026-11-18
 
 ### Added
