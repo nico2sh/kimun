@@ -39,6 +39,11 @@ pub struct RowHints<'a> {
     /// Cells of gutter the renderer draws before the row's text, on the first
     /// visual line and every continuation of it.
     pub inset: usize,
+    /// The row draws no visual line at all: a folded row. A hidden row is not
+    /// a place the reader can be, so a caller hides only rows it knows hold no
+    /// cursor. Asked where a hidden row is drawn, the layout answers with the
+    /// visual line that follows it (the last one, for a hidden tail).
+    pub hidden: bool,
 }
 
 /// One drawn line: a slice of a logical row that fits the width.
@@ -254,19 +259,28 @@ impl Layout {
         self.width
     }
 
+    /// Index of the first visual line of logical row `row`, or of the line
+    /// that follows a hidden row. `None` past the last row.
+    pub fn row_start(&self, row: usize) -> Option<usize> {
+        self.row_starts.get(row).copied()
+    }
+
     /// Which visual line `position` is drawn on.
     pub fn visual_row_of(&self, position: Position) -> usize {
         let row = position.row().min(self.row_starts.len().saturating_sub(1));
         let first = self.row_starts.get(row).copied().unwrap_or(0);
         let column = position.column().get();
-        self.lines[first..]
+        let found = self.lines[first.min(self.lines.len())..]
             .iter()
             .take_while(|line| line.logical_row == row)
             .enumerate()
             .filter(|(_, line)| line.chars.start <= column)
             .map(|(offset, _)| first + offset)
             .last()
-            .unwrap_or(first)
+            .unwrap_or(first);
+        // A hidden row has no visual line: its start is the next row's line,
+        // or one past the end when the hidden rows are the last.
+        found.min(self.lines.len().saturating_sub(1))
     }
 
     /// Which cell `position` is drawn in.
@@ -467,6 +481,9 @@ fn wrap_row(
         width.saturating_sub(hint.inset).max(1)
     };
 
+    if hint.hidden {
+        return;
+    }
     let Some(source) = text.line(row) else {
         return;
     };
@@ -679,6 +696,7 @@ mod tests {
         let hints = [RowHints {
             visible: &[],
             inset: 2,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 9, Metrics::default(), &hints);
         assert_eq!(
@@ -699,6 +717,7 @@ mod tests {
         let hints = [RowHints {
             visible: &[],
             inset: 4,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 4, Metrics::default(), &hints);
         assert_eq!(
@@ -719,6 +738,7 @@ mod tests {
         let hints = [RowHints {
             visible: &visible,
             inset: 0,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 7, Metrics::default(), &hints);
         assert_eq!(layout.visual_line_count(), 1);
@@ -782,6 +802,7 @@ mod tests {
         let hints = [RowHints {
             visible: &[],
             inset: 2,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
         assert_eq!(
@@ -797,6 +818,7 @@ mod tests {
         let hints = [RowHints {
             visible: &visible,
             inset: 0,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 40, Metrics::default(), &hints);
         assert_eq!(
@@ -845,6 +867,7 @@ mod tests {
         let hints = [RowHints {
             visible: &[],
             inset: 3,
+            hidden: false,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
         let landed = layout
@@ -1187,5 +1210,71 @@ mod tests {
                 prop_assert_eq!(seen_rows, t.line_count(), "every row is drawn");
             }
         }
+    }
+
+    // -- hidden rows --------------------------------------------------------
+
+    fn hiding(rows: std::ops::Range<usize>, count: usize) -> Vec<RowHints<'static>> {
+        (0..count)
+            .map(|row| RowHints {
+                hidden: rows.contains(&row),
+                ..RowHints::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_hidden_row_draws_no_visual_line() {
+        let t = text("a\nb\nc\nd");
+        let hints = hiding(1..3, 4);
+        let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
+        assert_eq!(drawn(&t, &layout), ["a", "d"]);
+        assert_eq!(
+            layout.row_count(),
+            4,
+            "the layout still describes every row"
+        );
+    }
+
+    #[test]
+    fn rows_after_a_hidden_run_keep_their_logical_row() {
+        let t = text("a\nb\nc\nd");
+        let layout = Layout::compute(&t, 10, Metrics::default(), &hiding(1..3, 4));
+        let rows: Vec<usize> = layout
+            .visual_lines()
+            .iter()
+            .map(|l| l.logical_row)
+            .collect();
+        assert_eq!(rows, [0, 3]);
+        assert_eq!(layout.visual_row_of(at(&t, 3, 0)), 1);
+    }
+
+    #[test]
+    fn asking_where_a_hidden_row_is_answers_with_the_line_that_follows() {
+        let t = text("a\nb\nc\nd");
+        let layout = Layout::compute(&t, 10, Metrics::default(), &hiding(1..3, 4));
+        assert_eq!(layout.visual_row_of(at(&t, 1, 0)), 1);
+        assert_eq!(layout.visual_row_of(at(&t, 2, 0)), 1);
+    }
+
+    #[test]
+    fn a_hidden_tail_answers_with_the_last_line() {
+        let t = text("a\nb\nc");
+        let layout = Layout::compute(&t, 10, Metrics::default(), &hiding(1..3, 3));
+        assert_eq!(drawn(&t, &layout), ["a"]);
+        assert_eq!(layout.visual_row_of(at(&t, 2, 0)), 0);
+    }
+
+    #[test]
+    fn relayout_can_hide_and_show_rows_in_place() {
+        let t = text("a\nb\nc\nd");
+        let mut layout = Layout::compute(&t, 10, Metrics::default(), &[]);
+        assert_eq!(drawn(&t, &layout), ["a", "b", "c", "d"]);
+        layout.relayout_rows(&t, &hiding(1..3, 4), 0..3, 0);
+        assert_eq!(drawn(&t, &layout), ["a", "d"]);
+        assert_eq!(layout.row_start(3), Some(1));
+        layout.relayout_rows(&t, &[], 0..3, 0);
+        assert_eq!(drawn(&t, &layout), ["a", "b", "c", "d"]);
+        assert_eq!(layout.row_start(3), Some(3));
     }
 }

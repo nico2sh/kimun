@@ -26,6 +26,8 @@ pub(super) fn role_style(role: Role, theme: &Theme) -> Style {
             Style::default().fg(theme.gray.to_ratatui())
         }
         Role::CodeBoxPad => Style::default(),
+        Role::FrontmatterTitle => Style::default().fg(theme.fg_secondary.to_ratatui()),
+        Role::FrontmatterText => Style::default().fg(theme.fg_secondary.to_ratatui()),
         Role::BlockquoteBar => Style::default().fg(theme.blockquote_bar.to_ratatui()),
         Role::Element(kind) => match kind {
             ElementKind::Bold => Style::default()
