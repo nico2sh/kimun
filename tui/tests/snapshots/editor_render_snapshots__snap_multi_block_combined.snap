@@ -32,13 +32,13 @@ expression: "painted(text, 80)"
    14..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
  7 |                                                                                |
    0..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
- 8 |- first                                                                         |
+ 8 |• first                                                                         |
    0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
    2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
- 9 |- second                                                                        |
+ 9 |• second                                                                        |
    0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
    2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
-10 |- nested                                                                        |
+10 |• nested                                                                        |
    0..2 fg=Rgb(124, 111, 100) bg=Rgb(40, 40, 40) mods=NONE
    2..80 fg=Rgb(235, 219, 178) bg=Rgb(40, 40, 40) mods=NONE
 11 |                                                                                |
