@@ -61,6 +61,9 @@ pub struct FrameInput {
     /// showing (decided here, on `preview`): those columns already carry the
     /// preview colour, which is the more important fact.
     pub matches: Vec<Overlay>,
+    /// The row of the find bar's **current match**, if there is one. A match
+    /// in the frontmatter block holds the block open.
+    pub reveal_row: Option<usize>,
 }
 
 /// Identity for a **replace preview**'s snapshot: the real content revision
@@ -127,8 +130,10 @@ impl EditorSession {
             preview,
             preview_overlays,
             matches,
+            reveal_row,
         } = input;
         self.jobs.pump(&mut self.display);
+        self.display.set_frontmatter_find_row(reveal_row);
 
         self.revs.adopt(snap.content_revision);
         // A preview swapping in, changing or out is no edit of the text the
@@ -212,6 +217,7 @@ mod tests {
             preview: None,
             preview_overlays: Vec::new(),
             matches: Vec::new(),
+            reveal_row: None,
         }
     }
 
@@ -320,6 +326,7 @@ mod tests {
             preview: None,
             preview_overlays: Vec::new(),
             matches: Vec::new(),
+            reveal_row: None,
         };
         session.prepare_frame(big(&lines));
         // Placeholder: every row is plain until the real parse lands.
