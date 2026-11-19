@@ -631,7 +631,7 @@ pub(crate) fn classify_tail(
         // A Ctrl/Alt+click has no first press to have focused the editor, so
         // it skips the focus test; `ClickRun` already hit-tested the buffer.
         let modifier_click = matches!(event, InputEvent::Mouse(m)
-            if m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
+            if crate::app_screen::click_run::is_modifier_click(m));
         if ctx.double_click && (ctx.editor_active() || modifier_click) {
             return done(EditorIntent::FollowLink);
         }

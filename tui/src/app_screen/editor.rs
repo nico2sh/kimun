@@ -804,10 +804,7 @@ impl EditorScreen {
                 // cursor, so place it first. A double-click already did.
                 let mut placed = None;
                 if let InputEvent::Mouse(m) = event
-                    && m.modifiers.intersects(
-                        ratatui::crossterm::event::KeyModifiers::CONTROL
-                            | ratatui::crossterm::event::KeyModifiers::ALT,
-                    )
+                    && crate::app_screen::click_run::is_modifier_click(m)
                 {
                     placed = Some(self.execute_intent(EditorIntent::Mouse, event, tx));
                 }
