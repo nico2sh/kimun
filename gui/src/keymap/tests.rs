@@ -1828,3 +1828,28 @@ fn ctrl_w_in_vim_insert_mode_goes_to_the_editor() {
         Some(&A::CloseTab)
     );
 }
+
+/// The facet view toggle ships with no chord on any platform, and a user can
+/// bind it like any other action.
+#[test]
+fn the_facet_view_toggle_has_no_default_chord_and_can_be_bound() {
+    for p in PLATFORMS {
+        let keymap = Keymap::defaults(p);
+        assert!(keymap.chords_for(&A::ToggleFacetView).is_empty(), "{p:?}");
+        assert!(!keymap.ships_bound(&A::ToggleFacetView), "{p:?}");
+    }
+    let (bound, errors) = Keymap::load(
+        LinuxWindows,
+        &overrides(&[("ToggleFacetView", &["ctrl+alt+f"])]),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let f = chord("ctrl+alt+f");
+    assert_eq!(bound.chords_for(&A::ToggleFacetView), [f]);
+    for panel in PANELS {
+        assert_eq!(
+            bound.resolve(f, ctx(panel, false)),
+            Some(&A::ToggleFacetView),
+            "{panel:?}"
+        );
+    }
+}

@@ -136,6 +136,10 @@ pub enum ActionShortcuts {
     /// property …) in a dialog, where a query is typed: FIND, the desktop
     /// app's search browser. The TUI binds no chord to it.
     QueryBuilder,
+    /// Show the note of the active editor group as a facet view, or leave a
+    /// facet view for the editor (ADR-0061). The TUI has no facet view and
+    /// no chord for it; neither has the desktop app by default.
+    ToggleFacetView,
 }
 
 /// Where an action is listed in a keyboard reference, next to the action
@@ -198,7 +202,7 @@ impl ActionGroup {
 impl ActionShortcuts {
     /// Every action, in `Ord` order. `Text` is listed once per fixed
     /// [`TextAction`] plus header levels 1 to 6.
-    pub const ALL: [ActionShortcuts; 62] = [
+    pub const ALL: [ActionShortcuts; 63] = [
         ActionShortcuts::Quit,
         ActionShortcuts::OpenPreferences,
         ActionShortcuts::SearchNotes,
@@ -261,6 +265,7 @@ impl ActionShortcuts {
         ActionShortcuts::NewDirectory,
         ActionShortcuts::NewEntry,
         ActionShortcuts::QueryBuilder,
+        ActionShortcuts::ToggleFacetView,
     ];
 
     /// The heading `self` is listed under in a keyboard reference: the one
@@ -284,7 +289,8 @@ impl ActionShortcuts {
             | A::NewTab
             | A::CloseTab
             | A::NextTab
-            | A::PrevTab => ActionGroup::WindowAndPanels,
+            | A::PrevTab
+            | A::ToggleFacetView => ActionGroup::WindowAndPanels,
             A::FindInBuffer | A::ReplaceInBuffer | A::FollowLink | A::SaveNote | A::Text(_) => {
                 ActionGroup::Editor
             }
@@ -382,6 +388,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::NewDirectory => "NewDirectory".to_string(),
             ActionShortcuts::NewEntry => "NewEntry".to_string(),
             ActionShortcuts::QueryBuilder => "QueryBuilder".to_string(),
+            ActionShortcuts::ToggleFacetView => "ToggleFacetView".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -449,6 +456,7 @@ impl TryFrom<String> for ActionShortcuts {
             "NewDirectory" => ActionShortcuts::NewDirectory,
             "NewEntry" => ActionShortcuts::NewEntry,
             "QueryBuilder" => ActionShortcuts::QueryBuilder,
+            "ToggleFacetView" => ActionShortcuts::ToggleFacetView,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -523,9 +531,10 @@ mod tests {
             ActionShortcuts::NewDirectory => 41,
             ActionShortcuts::NewEntry => 42,
             ActionShortcuts::QueryBuilder => 43,
+            ActionShortcuts::ToggleFacetView => 44,
         }
     }
-    const VARIANTS: usize = 44;
+    const VARIANTS: usize = 45;
 
     #[test]
     fn all_lists_every_variant() {
@@ -673,6 +682,7 @@ mod tests {
                 ActionShortcuts::NewDirectory,
                 ActionShortcuts::NewEntry,
                 ActionShortcuts::QueryBuilder,
+                ActionShortcuts::ToggleFacetView,
             ]
         );
         assert_eq!(

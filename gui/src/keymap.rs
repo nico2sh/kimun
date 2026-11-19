@@ -352,6 +352,10 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::NewDirectory => &["primary+shift+n"],
         // The TUI's note-or-directory menu; the desktop has the two chords.
         A::NewEntry => return None,
+        // The facet view toggle (ADR-0061): reached from the group header's
+        // button, the note menu and the palette; no chord until the user
+        // binds one.
+        A::ToggleFacetView => return None,
     })
 }
 

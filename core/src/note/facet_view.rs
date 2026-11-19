@@ -4,10 +4,20 @@
 
 use std::ops::Range;
 
-use super::facets::NoteFacets;
+use super::facets::{Facet, FacetKind, NoteFacets};
 
 /// The default most chunks a caller asks `plan_chunks` for.
 pub const MAX_RANGES: usize = 100;
+
+/// The most hidden blocks a gap can have for one click to reveal all of it.
+pub const GAP_SHOW_ALL_MAX: usize = 3;
+
+/// A heading that contains a chunk: one breadcrumb.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Crumb {
+    pub label: String,
+    pub facet: Facet,
+}
 
 /// One run of shown blocks, ready to draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +33,35 @@ pub struct ChunkPlan {
     pub hidden_above: usize,
     /// Blocks hidden between this chunk and the next (or the note end).
     pub hidden_below: usize,
+    /// Headings that strictly contain the chunk's first block, outermost
+    /// first. The chunk's own heading (a scope starting at the first block) is
+    /// not listed.
+    pub crumbs: Vec<Crumb>,
+}
+
+/// The headings whose scope strictly contains block `first`, outermost first.
+fn crumbs_for(facets: &NoteFacets, first: usize) -> Vec<Crumb> {
+    let mut found: Vec<(usize, Crumb)> = Vec::new();
+    for entry in &facets.entries {
+        if entry.facet.kind != FacetKind::Heading {
+            continue;
+        }
+        if let Some(scope) = entry
+            .scopes
+            .iter()
+            .find(|s| s.start < first && first < s.end)
+        {
+            found.push((
+                scope.start,
+                Crumb {
+                    label: entry.label.clone(),
+                    facet: entry.facet.clone(),
+                },
+            ));
+        }
+    }
+    found.sort_by_key(|(start, _)| *start);
+    found.into_iter().map(|(_, c)| c).collect()
 }
 
 /// Chunks for `shown` (ascending, non-overlapping). At most `limit` chunks;
@@ -56,9 +95,22 @@ pub fn plan_chunks(
             text: chunk,
             hidden_above: range.start.saturating_sub(above_from),
             hidden_below: below_to.saturating_sub(range.end),
+            crumbs: crumbs_for(facets, range.start),
         });
     }
     (plans, shown.len().saturating_sub(limit))
+}
+
+/// `ranges` (ascending) with touching or overlapping neighbours merged.
+fn merge_touching(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for r in ranges {
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    merged
 }
 
 /// Which side of a chunk to reveal.
@@ -84,14 +136,25 @@ pub fn reveal(
         Reveal::Above => range.start = range.start.saturating_sub(1),
         Reveal::Below => range.end = (range.end + 1).min(block_count),
     }
-    let mut merged: Vec<Range<usize>> = Vec::with_capacity(out.len());
-    for r in out {
-        match merged.last_mut() {
-            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-            _ => merged.push(r),
-        }
+    merge_touching(out)
+}
+
+/// `shown` with the whole gap `gap` filled. Gap `g` lies before chunk `g`
+/// (gap 0 is above the first chunk, gap `shown.len()` below the last).
+/// Touching ranges merge. A gap that hides nothing, or `gap > shown.len()`,
+/// changes nothing.
+pub fn reveal_gap(shown: &[Range<usize>], gap: usize, block_count: usize) -> Vec<Range<usize>> {
+    if gap > shown.len() {
+        return shown.to_vec();
     }
-    merged
+    let from = if gap == 0 { 0 } else { shown[gap - 1].end };
+    let to = shown.get(gap).map_or(block_count, |next| next.start);
+    if from >= to {
+        return shown.to_vec();
+    }
+    let mut out = shown.to_vec();
+    out.insert(gap, from..to);
+    merge_touching(out)
 }
 
 #[cfg(test)]
@@ -193,5 +256,109 @@ mod tests {
         };
         assert_eq!(key(&a), key(&b));
         assert_eq!(b[1].text, "| h |\r\n|---|\r\n| y |");
+    }
+
+    fn labels(p: &ChunkPlan) -> Vec<&str> {
+        p.crumbs.iter().map(|c| c.label.as_str()).collect()
+    }
+
+    #[test]
+    fn crumbs_name_the_headings_that_contain_the_chunk() {
+        let text = "# A\n\n## A1\n\npara\n";
+        let f = facets(text);
+        let (plans, _) = plan_chunks(&f, text, &[2..3], MAX_RANGES);
+        assert_eq!(f.blocks.len(), 3);
+        assert_eq!(labels(&plans[0]), ["A", "A1"]);
+    }
+
+    #[test]
+    fn a_chunk_that_starts_at_a_heading_does_not_list_that_heading() {
+        let text = "# A\n\n## A1\n\npara\n";
+        let f = facets(text);
+        let (plans, _) = plan_chunks(&f, text, &[1..2], MAX_RANGES);
+        assert_eq!(labels(&plans[0]), ["A"]);
+    }
+
+    #[test]
+    fn a_note_without_headings_has_no_crumbs() {
+        let f = facets(NINE);
+        let (plans, _) = plan_chunks(&f, NINE, &[2..3], MAX_RANGES);
+        assert!(plans[0].crumbs.is_empty());
+    }
+
+    #[test]
+    fn crumbs_for_repeated_heading_text_follow_each_section() {
+        let text = "# Mon\n\n### Morning\n\nm1\n\n# Tue\n\n### Morning\n\nm2\n";
+        let f = facets(text);
+        assert_eq!(f.blocks.len(), 6);
+        let (plans, _) = plan_chunks(&f, text, &[2..3, 5..6], MAX_RANGES);
+        assert_eq!(labels(&plans[0]), ["Mon", "Morning"]);
+        assert_eq!(labels(&plans[1]), ["Tue", "Morning"]);
+    }
+
+    #[test]
+    fn crumb_facets_are_the_heading_facets() {
+        let text = "# Älpha\n\npara\n";
+        let f = facets(text);
+        let (plans, _) = plan_chunks(&f, text, &[1..2], MAX_RANGES);
+        assert_eq!(
+            plans[0].crumbs,
+            [Crumb {
+                label: "Älpha".to_string(),
+                facet: Facet::new(FacetKind::Heading, "Älpha"),
+            }]
+        );
+    }
+
+    #[test]
+    fn reveal_gap_fills_the_gap_above_between_and_below() {
+        let shown = [2..3, 6..7];
+        assert_eq!(reveal_gap(&shown, 0, 9), [0..3, 6..7]);
+        assert_eq!(reveal_gap(&shown, 1, 9), [2..7]);
+        assert_eq!(reveal_gap(&shown, 2, 9), [2..3, 6..9]);
+    }
+
+    #[test]
+    fn reveal_gap_merges_touching_ranges() {
+        assert_eq!(reveal_gap(&[0..2, 4..6, 7..9], 1, 9), [0..6, 7..9]);
+        assert_eq!(reveal_gap(&[0..2, 3..5], 1, 5), [0..5]);
+    }
+
+    #[test]
+    fn reveal_gap_ignores_an_empty_gap_and_a_bad_index() {
+        let shown = [0..2, 2..4];
+        assert_eq!(reveal_gap(&shown, 0, 9), shown);
+        assert_eq!(reveal_gap(&shown, 1, 9), shown);
+        assert_eq!(reveal_gap(&[0..9], 1, 9), [0..9]);
+        assert_eq!(reveal_gap(&shown, 3, 9), shown);
+    }
+
+    #[test]
+    fn crlf_gives_the_same_crumbs() {
+        let lf = "# A\n\n## A1\n\npara\n\n# B\n\nlast\n";
+        let crlf = lf.replace('\n', "\r\n");
+        let shown = [2..3, 4..5];
+        let (a, _) = plan_chunks(&facets(lf), lf, &shown, MAX_RANGES);
+        let (b, _) = plan_chunks(&facets(&crlf), &crlf, &shown, MAX_RANGES);
+        assert_eq!(a[0].crumbs, b[0].crumbs);
+        assert_eq!(a[1].crumbs, b[1].crumbs);
+        assert_eq!(labels(&b[0]), ["A", "A1"]);
+        assert_eq!(labels(&b[1]), ["B"]);
+    }
+
+    #[test]
+    fn reveal_gap_with_no_shown_ranges_fills_everything() {
+        assert_eq!(reveal_gap(&[], 0, 5), [0..5]);
+        assert!(reveal_gap(&[], 0, 0).is_empty());
+    }
+
+    #[test]
+    fn crumbs_skip_levels_correctly() {
+        let text = "# A\n\n### C\n\npara\n\n## B\n\nafter\n";
+        let f = facets(text);
+        assert_eq!(f.blocks.len(), 5);
+        let (plans, _) = plan_chunks(&f, text, &[2..3, 4..5], MAX_RANGES);
+        assert_eq!(labels(&plans[0]), ["A", "C"]);
+        assert_eq!(labels(&plans[1]), ["A", "B"]);
     }
 }

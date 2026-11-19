@@ -14,7 +14,9 @@ pub use properties::{
 // Facets: what a user can pick to narrow a note to the blocks tied to it
 // (see `CONTEXT.md`, **Facet**). Pure functions over note text.
 pub use blocks::{BlockKind, NoteBlock};
-pub use facet_view::{plan_chunks, reveal, ChunkPlan, Reveal, MAX_RANGES};
+pub use facet_view::{
+    plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
+};
 pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
 
 pub(crate) use link_target::unique_wikilink;
