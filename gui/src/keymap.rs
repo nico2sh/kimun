@@ -61,7 +61,8 @@ impl Platform {
         }
     }
 
-    fn primary(self) -> Mods {
+    /// The primary modifier: Cmd on macOS, Ctrl elsewhere.
+    pub(crate) fn primary(self) -> Mods {
         match self {
             Platform::MacOs => Mods::SUPER,
             Platform::LinuxWindows => Mods::CTRL,

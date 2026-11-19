@@ -66,7 +66,7 @@ Click FIND in the rail, or press `Ctrl+K`. Type a query and the results update a
 ## Write a note
 
 - Type `[[` to link to another note. Type `#` to add a tag. Press `Tab` or `Enter` to accept a suggestion.
-- Double-click a link to open it.
+- Double-click a link to open it. You can also hold `Ctrl` (`Cmd` on macOS) and click it.
 - Press `Ctrl+F` to find text in the note.
 
 ## Properties
