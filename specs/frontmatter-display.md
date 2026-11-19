@@ -1,6 +1,6 @@
 # Frontmatter display in the editors
 
-Status: draft, 2026-11-18. Scope: the TUI editor and the GUI editor.
+Status: steps 1 to 3 built, 2026-11-19. Hover reveal was dropped. Scope: the TUI editor and the GUI editor.
 
 ## Problem
 
@@ -8,11 +8,11 @@ Both editors show a note's frontmatter as plain text. The `---` fences and the p
 
 ## Goal
 
-The editor draws the frontmatter block as a box. If the mouse is not over the block and the cursor is not inside it, the block is collapsed to one summary row. If the reader points at the block or moves the cursor into it, the block opens in place.
+The editor draws the frontmatter block as a box. If the cursor is not inside the block, the block is collapsed to one summary row. If the reader moves the cursor into the block, the block opens in place. The mouse does not open the block, because the properties view already shows the properties.
 
 ## Decisions already made
 
-- The block collapses unless the mouse is over it.
+- The block collapses unless the cursor is inside it, the find match is inside it, or the reader pinned it open.
 - Both frontends get the feature through the shared editor logic. The TUI shows it first.
 - The buffer text does not change. The display changes only.
 
@@ -37,28 +37,23 @@ If the cursor is on a fence row, that row shows the raw `---` or `+++`. The edit
 
 Any one of these rules opens the block:
 
-1. The mouse is over any row of the open block, or over the summary row.
-2. The cursor is inside the block, on a fence row or a property row.
-3. The current find match is inside the block.
-4. The reader pinned the block open with a click on the summary row.
+1. The cursor is inside the block, on a fence row or a property row.
+2. The current find match is inside the block.
+3. The reader pinned the block open with a click on the summary row.
 
 A second click on the top rule unpins it. In all other cases the block is collapsed.
 
-A new note starts with the cursor on line 1, and line 1 is the opening fence. The block must not open on every note load. For that reason rule 2 counts only after the first cursor move or edit in the session. Until then the block stays collapsed.
+A new note starts with the cursor on line 1, and line 1 is the opening fence. The block must not open on every note load. For that reason rule 1 counts only after the first cursor move or edit in the session. Until then the block stays collapsed.
 
 ## Cursor and rows
 
 A collapsed block has one display row. Its buffer lines are hidden.
 
-If a cursor move targets a hidden line, the block opens first and the cursor lands on the real line. Moving up from the first body line below the block lands on the closing fence row. Moving down from above lands on the opening fence row. If the cursor leaves the block and the mouse is elsewhere, the block closes again.
+If a cursor move targets a hidden line, the block opens first and the cursor lands on the real line. Moving up from the first body line below the block lands on the closing fence row. Moving down from the opening fence row lands on the first property row. If the cursor leaves the block, the block closes again.
 
 A click on the summary row pins the block open and puts the cursor on the first property line.
 
 Opening or closing a block changes the row count. The viewport keeps the first visible buffer line fixed. If the block is above the viewport top, the text below does not jump.
-
-## Hover without flicker
-
-When the mouse enters the summary row, the block opens. The mouse is then over the first row of the open block, so the block stays open. When the mouse leaves the open block, the block closes. The rows below move up and the mouse is over a row outside the block, so the block does not reopen. No close delay is needed. The implementation adds a test for this loop.
 
 ## Where the code goes
 
@@ -67,18 +62,17 @@ Core adds one public function that returns the line range of the frontmatter blo
 Both editors already share `tui/src/logic/editor`, which holds the parsed buffer, the layout, `EditorDisplay` and the `EditorFrame` rows. The new logic goes there:
 
 - A `FrontmatterBlock` value on the parsed buffer holds the line range, the keys and the open state.
-- `EditorDisplay` takes a hover input, a row or none, next to the existing viewport input. It combines the hover, the cursor, the find match and the pin into the open state.
+- A `FrontmatterReveal` value combines the cursor, the find match and the pin into the open state.
 - The layout treats a collapsed block as one row. The implementation checks first whether the `RowHints` type in `ropetext` can express a row that stands for many lines. If it cannot, the layout needs a small extension.
 - `render_runs` gains a role for the title rule, the property rows and the bottom rule.
 - Mouse mapping in `click_at_screen` must account for the collapsed row.
 
-All of this logic is shared, so the TUI and the GUI get the feature from one implementation. The frontends keep only two small jobs. Each painter maps the new run roles to colors, and each painter forwards its mouse move event to `EditorDisplay`. The GUI painter is `gui/src/row_paint.rs` with `gui/src/theme.rs`. The TUI painter is `role_style` in `markdown_style.rs`.
+All of this logic is shared, so the TUI and the GUI get the feature from one implementation. The frontends keep one small job: each painter maps the new run roles to colors. The GUI painter is `gui/src/row_paint.rs` with `gui/src/theme.rs`. The TUI painter is `role_style` in `markdown_style.rs`.
 
 ## Tests
 
 - Core: the line range for LF and CRLF files, a byte-order mark, a `+++` block, an empty block and an unclosed block.
-- Logic: the open state for each of the four rules, and the first-move rule on note load.
-- Logic: the hover loop above does not flicker.
+- Logic: the open state for each of the three rules, and the first-move rule on note load.
 - Frame: a collapsed block gives one row. An open block gives the rule rows and the property rows. Rows below the block keep their buffer line numbers.
 - Cursor: up and down moves across a collapsed block, and a click on the summary row.
 - TUI screen tests and GUI tests use the existing fixtures.
@@ -87,14 +81,13 @@ All of this logic is shared, so the TUI and the GUI get the feature from one imp
 ## Delivery order
 
 1. Core: the frontmatter line range function, with tests.
-2. Shared logic: the frontmatter model, the new run roles and the open box, always open. This step needs no hover and no hidden rows. The TUI painter shows the result first.
-3. Shared logic: collapse, hover state, cursor entry and the pin. The TUI painter forwards mouse moves.
-4. The GUI: map the new roles to colors and forward mouse moves. The GUI has no users, so its behavior can change freely.
+2. Shared logic: the frontmatter model, the new run roles and the open box, always open. This step needs no hidden rows. The TUI painter shows the result first.
+3. Shared logic: collapse, cursor entry, the find rule and the pin.
+4. The GUI: check how the box and the fold look. The color mapping came with step 2. The GUI has no users, so its behavior can change freely.
 
 Steps 2 and 3 build the feature once for both frontends. Step 4 is small. Each step ends with the full CI gate set, and the author checks the result before the next step starts.
 
 ## Open questions
 
-- Does `RowHints` support a many-line row, or does the layout need a new row kind? The answer sets the size of step 3.
 - Do the property rows need a right edge on the box? This spec says no, because a right edge needs padding math that conflicts with line wrap. The background rectangle gives the box shape without it.
 - Does the summary list keys only, or also the first value? This spec says keys only, to keep the row short.

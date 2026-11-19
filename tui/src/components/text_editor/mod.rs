@@ -158,9 +158,6 @@ pub struct TextEditorComponent {
     backend: BackendState,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
-    /// Where the pointer last was, in screen cells. A frontmatter block opens
-    /// while the pointer is over it.
-    pointer: Option<ratatui::layout::Position>,
     key_bindings: KeyBindings,
     /// The nvim arm's per-frame machinery: the open note, the revision clock,
     /// needles, the display, the background jobs and the notifier. Unused
@@ -197,7 +194,6 @@ impl TextEditorComponent {
                 settings.nvim_path.as_ref(),
             ),
             rect: Rect::default(),
-            pointer: None,
             key_bindings,
             nvim_session: EditorSession::new(),
             nvim_requests: Vec::new(),
@@ -623,12 +619,6 @@ impl TextEditorComponent {
     pub fn covers(&self, column: u16, row: u16) -> bool {
         self.rect
             .contains(ratatui::layout::Position::new(column, row))
-    }
-
-    /// Where the pointer is, or `None` when it has left the terminal. The
-    /// next frame opens a frontmatter block the pointer is over.
-    pub fn set_pointer(&mut self, pointer: Option<ratatui::layout::Position>) {
-        self.pointer = pointer;
     }
 
     /// Which editor-internal surface currently holds input.
@@ -1319,13 +1309,6 @@ impl Component for TextEditorComponent {
         // set overlays, spawn pending jobs — in that order. See
         // [`EditorSession::prepare_frame`].
         let reveal_row = self.backend.as_editor().and_then(Editor::find_match_row);
-        let pointer_row = self
-            .pointer
-            .filter(|at| editor_rect.contains(*at))
-            .map(|at| (at.y - editor_rect.y) as usize);
-        self.session_mut()
-            .display
-            .set_frontmatter_pointer(pointer_row);
         self.session_mut().prepare_frame(FrameInput {
             snapshot: snap,
             width: editor_rect.width,
@@ -4272,57 +4255,6 @@ cccccccc"
         term.draw(|f| editor.render(f, Rect::new(0, 0, 30, 4), &Theme::default(), true))
             .unwrap();
         editor
-    }
-
-    /// The text of screen row `y` of what the editor drew into `term`.
-    fn drawn_row(term: &ratatui::Terminal<ratatui::backend::TestBackend>, y: u16) -> String {
-        let buffer = term.backend().buffer();
-        (0..buffer.area.width)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    }
-
-    #[test]
-    fn a_frontmatter_block_opens_while_the_pointer_is_over_it() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-        use ratatui::layout::Position;
-        let theme = Theme::default();
-        let mut editor = make_vim_editor();
-        editor.set_text("---\ntags: [a]\n---\nBody".to_string());
-        let mut term = Terminal::new(TestBackend::new(30, 6)).unwrap();
-        let rect = Rect::new(0, 0, 30, 6);
-        let mut draw = |editor: &mut TextEditorComponent| {
-            term.draw(|f| editor.render(f, rect, &theme, true)).unwrap();
-            (0..4).map(|y| drawn_row(&term, y)).collect::<Vec<String>>()
-        };
-
-        let folded = draw(&mut editor);
-        assert!(folded[0].starts_with("─ properties · tags"), "{folded:?}");
-        assert_eq!(folded[1], "Body");
-
-        editor.set_pointer(Some(Position::new(2, 0)));
-        draw(&mut editor);
-        let open = draw(&mut editor);
-        // The cursor is on line 1, so that row shows its raw fence.
-        assert_eq!(open[0], "---", "{open:?}");
-        assert_eq!(open[1], "tags: [a]");
-        assert_eq!(open[3], "Body");
-
-        // The pointer moves down onto the body, which is outside the block.
-        editor.set_pointer(Some(Position::new(2, 3)));
-        draw(&mut editor);
-        let folded_again = draw(&mut editor);
-        assert!(folded_again[0].starts_with("─ properties · tags"));
-
-        // The pointer leaves the editor, over a block that is open.
-        editor.set_pointer(Some(Position::new(2, 0)));
-        draw(&mut editor);
-        draw(&mut editor);
-        editor.set_pointer(Some(Position::new(50, 20)));
-        assert!(draw(&mut editor)[0].starts_with("─ properties · tags"));
     }
 
     /// A selectionless right-click asks the host for the context menu, once;
