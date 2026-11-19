@@ -18,8 +18,8 @@
 //! the buffer.
 //!
 //! **Following links.** A single press only places the caret. A double-click
-//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`])
-//! on a link or a label asks the window's owner to follow it, on the app
+//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`]),
+//! or a Cmd+click (Ctrl+click off macOS), on a link or a label asks the window's owner to follow it, on the app
 //! channel; the `FollowLink` chord bubbles to the owner like any app command.
 //!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
@@ -802,6 +802,17 @@ impl EditorView {
         // soon after follows the **follow target** the first one put the
         // caret on (ADR-0043): the workspace does it, as for the chord. With
         // nothing to follow there, it is an ordinary press.
+        // The primary modifier (Cmd on macOS, Ctrl elsewhere, as the keymap's
+        // `primary`; Ctrl+click is a right-click on a Mac) does it in one press:
+        // place the caret, then follow what is under it.
+        if left && pointer.mods == keymap::Platform::current().primary() {
+            self.clicks.end();
+            self.editor.handle_pointer(&pointer, &self.tx);
+            self.editor.settle_pointer(true);
+            self.dragging = !self.follow_at_caret();
+            self.settle(window, cx);
+            return;
+        }
         if left && pointer.mods == Mods::NONE {
             if self
                 .clicks

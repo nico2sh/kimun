@@ -274,6 +274,34 @@ fn a_double_click_on_a_link_follows_it(cx: &mut TestAppContext) {
     assert!(started.on("bravo.md", cx));
 }
 
+/// One press with the platform's follow modifier (Cmd on macOS, Ctrl
+/// elsewhere) follows the link, with no first press.
+#[gpui_kit::test]
+fn a_modifier_click_on_a_link_follows_it(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(
+        cx,
+        &rt,
+        &[("a.md", "see [[bravo]] now"), ("bravo.md", "Bravo")],
+        "a.md",
+        false,
+    );
+    let on_link = started.cell(7, 0, cx);
+    let held = gpui_kit::Modifiers {
+        control: !cfg!(target_os = "macos"),
+        platform: cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    cx.update_window(started.handle, |_, window, cx| {
+        window.change_modifiers(held, cx)
+    })
+    .unwrap();
+    started.click(on_link, cx);
+    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    assert!(started.on("bravo.md", cx));
+}
+
 /// One press on a link only places the caret; two presses on neighbouring
 /// cells are no double-click either.
 #[gpui_kit::test]
