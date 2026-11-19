@@ -202,6 +202,7 @@ impl Editor {
             preview,
             preview_overlays,
             matches,
+            reveal_row: self.find_match_row(),
         };
         self.session.prepare_frame(input);
     }
@@ -214,6 +215,15 @@ impl Editor {
             Some(bar) => bar.current_match(),
             None => self.selection,
         }
+    }
+
+    /// The row of the open find bar's **current match**, or `None` with no bar
+    /// or no match. A match in the frontmatter block holds the block open.
+    pub fn find_match_row(&self) -> Option<usize> {
+        self.find
+            .as_ref()?
+            .current_match()
+            .map(|(start, _)| start.0)
     }
 
     /// The open find bar's contribution to this frame, in
@@ -383,6 +393,8 @@ impl Editor {
     fn load(&mut self, text: String) {
         // A drag under way belonged to the old text.
         self.drag_origin = None;
+        // So did a frontmatter pin and the first move that armed its block.
+        self.session.display.note_loaded();
         self.buf
             .ta
             .replace(crate::ropetext::Text::from(text.as_str()));
@@ -1373,6 +1385,22 @@ impl Editor {
         Handled::Consumed
     }
 
+    /// Pin the frontmatter block open and put the cursor on its first
+    /// property row, or release a pin and leave the cursor where it is.
+    fn toggle_frontmatter_pin(&mut self) {
+        self.session.display.follow_cursor();
+        if self.session.display.frontmatter_pinned() {
+            self.session.display.pin_frontmatter(false);
+            return;
+        }
+        self.session.display.pin_frontmatter(true);
+        if let Some(row) = self.session.display.frontmatter_first_property_row() {
+            self.buf.ta.cancel_selection();
+            self.buf.ta.jump_to(row, 0);
+        }
+        self.selection = self.buf.ta.selection_range();
+    }
+
     /// Handle a pointer event. The host has already checked that it landed
     /// inside the editor; `pointer` is relative to the text area.
     ///
@@ -1399,6 +1427,17 @@ impl Editor {
         if matches!(pointer.kind, PointerKind::Down(Button::Right)) {
             self.copy_selection_to_clipboard(tx);
             self.sync_highlight();
+            return Handled::Consumed;
+        }
+        // A press on the frontmatter block's top row (its summary when folded,
+        // its top rule when open) pins the block open, or lets go of the pin.
+        if matches!(pointer.kind, PointerKind::Down(Button::Left))
+            && self
+                .session
+                .display
+                .frontmatter_top_at(pointer.row as usize)
+        {
+            self.toggle_frontmatter_pin();
             return Handled::Consumed;
         }
         // A drag under vim selects what it covers, rebuilt from where it began.
@@ -2644,5 +2683,105 @@ mod tests {
         editor.take_selection_for_external_paste();
         assert_eq!(editor.get_text(), "hello world");
         assert_eq!(vim_mode(&editor), EditorMode::Normal);
+    }
+
+    // -- frontmatter block ----------------------------------------------------
+
+    fn frontmatter_editor() -> Editor {
+        let mut ed = Editor::new(false);
+        ed.buffer_mut().insert_str("---\ntags: [a]\n---\nBody");
+        ed.prepare_frame(40, 10);
+        ed
+    }
+
+    fn left_press(row: u16) -> PointerInput {
+        PointerInput {
+            kind: PointerKind::Down(Button::Left),
+            col: 0,
+            row,
+            mods: Mods::default(),
+        }
+    }
+
+    fn drawn_logical_rows(ed: &Editor) -> Vec<usize> {
+        ed.session
+            .display
+            .frame(40, true)
+            .rows
+            .iter()
+            .map(|r| r.logical_row)
+            .collect()
+    }
+
+    #[test]
+    fn a_click_on_the_folded_summary_pins_the_block_and_enters_it() {
+        let mut ed = frontmatter_editor();
+        assert_eq!(
+            drawn_logical_rows(&ed),
+            [0, 3],
+            "folded under the cursor on Body"
+        );
+        ed.handle_pointer(&left_press(0), &tx());
+        ed.prepare_frame(40, 10);
+        assert!(ed.session().display.frontmatter_pinned());
+        assert_eq!(ed.cursor(), (1, 0), "the first property row");
+        assert_eq!(drawn_logical_rows(&ed), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_second_click_on_the_top_rule_unpins_without_moving_the_cursor() {
+        let mut ed = frontmatter_editor();
+        ed.handle_pointer(&left_press(0), &tx());
+        ed.prepare_frame(40, 10);
+        ed.handle_pointer(&left_press(0), &tx());
+        ed.prepare_frame(40, 10);
+        assert!(!ed.session().display.frontmatter_pinned());
+        assert_eq!(ed.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn unpinned_with_the_cursor_away_the_block_folds_again() {
+        let mut ed = frontmatter_editor();
+        ed.handle_pointer(&left_press(0), &tx());
+        ed.prepare_frame(40, 10);
+        ed.handle_pointer(&left_press(0), &tx());
+        // Click `Body`, the last drawn row.
+        ed.handle_pointer(&left_press(3), &tx());
+        ed.prepare_frame(40, 10);
+        assert_eq!(drawn_logical_rows(&ed), [0, 3]);
+    }
+
+    #[test]
+    fn a_click_on_the_body_does_not_pin() {
+        let mut ed = frontmatter_editor();
+        ed.handle_pointer(&left_press(1), &tx());
+        ed.prepare_frame(40, 10);
+        assert!(!ed.session().display.frontmatter_pinned());
+        assert_eq!(ed.cursor().0, 3);
+    }
+
+    #[test]
+    fn a_click_on_the_first_row_of_a_note_without_frontmatter_is_a_plain_click() {
+        let mut ed = Editor::new(false);
+        ed.buffer_mut().insert_str("one\ntwo");
+        ed.prepare_frame(40, 10);
+        ed.handle_pointer(&left_press(0), &tx());
+        assert_eq!(ed.cursor().0, 0);
+        assert!(!ed.session().display.frontmatter_pinned());
+    }
+
+    #[test]
+    fn loading_another_note_drops_the_pin() {
+        let mut ed = frontmatter_editor();
+        ed.handle_pointer(&left_press(0), &tx());
+        assert!(ed.session().display.frontmatter_pinned());
+        ed.set_text("---\na: b\n---\nOther".to_string());
+        assert!(!ed.session().display.frontmatter_pinned());
+    }
+
+    #[test]
+    fn the_find_bar_current_match_row_is_reported() {
+        let ed = frontmatter_editor();
+        assert_eq!(ed.find_match_row(), None, "no bar is open");
     }
 }
