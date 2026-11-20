@@ -994,8 +994,8 @@ fn lists_and_task_boxes_paint_their_markers_and_done_tasks_dim_and_strike(cx: &m
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let bullet = painted_row(&view, 14, cx);
-        assert_eq!(bullet.text(), "- bullet item");
-        assert_eq!(piece(&bullet, "- ").style.fg, fg(&t.gray, &t));
+        assert_eq!(bullet.text(), "• bullet item");
+        assert_eq!(piece(&bullet, "• ").style.fg, fg(&t.gray, &t));
         assert_eq!(painted_row(&view, 15, cx).text(), "1. ordered item");
 
         let open = painted_row(&view, 16, cx);
@@ -2168,6 +2168,102 @@ fn read_only_editor_ignores_the_replace_chord(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.press("ctrl-h", cx);
         assert!(!view.read(cx).editor.find_open());
+    })
+    .unwrap();
+}
+
+// ---- Frontmatter block ---------------------------------------------------------
+
+const FRONTMATTER_NOTE: &str = "---\ntags: [a]\ndue: x\n---\nBody";
+
+#[gpui_kit::test]
+fn a_frontmatter_block_paints_folded_to_one_ruled_row(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, FRONTMATTER_NOTE);
+    let t = Theme::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let summary = painted_row(&view, 0, cx);
+        assert!(!summary.rules.is_empty(), "the rule is a stroke");
+        let title = piece(&summary, "properties").style;
+        assert_eq!(title.fg, fg(&t.fg_secondary, &t));
+        assert!(summary.text().contains("tags, due"), "{:?}", summary.text());
+        assert_eq!(painted_row(&view, 1, cx).text(), "Body");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_click_on_the_summary_pins_the_block_open_on_a_box(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, FRONTMATTER_NOTE);
+    let t = Theme::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 4, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+        assert_eq!(view.read(cx).editor.cursor(), (1, 0));
+        window.render_frame(cx);
+        let tags = painted_row(&view, 1, cx);
+        assert_eq!(tags.text(), "tags: [a]");
+        let box_bg = theme::to_gpui(&t.code_bg, Token::Background, &t).into();
+        assert_eq!(tags.fill_at(0), box_bg, "on the same box a code block uses");
+        assert_eq!(painted_row(&view, 2, cx).text(), "due: x");
+        assert_eq!(painted_row(&view, 4, cx).text(), "Body");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn down_from_the_first_line_enters_the_block_and_opens_it(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, FRONTMATTER_NOTE);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(painted_row(&view, 1, cx).text(), "Body", "folded");
+        window.press("down", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).editor.cursor().0, 1);
+        assert_eq!(painted_row(&view, 1, cx).text(), "tags: [a]", "opened");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn up_from_the_body_enters_the_block_at_its_closing_fence(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, FRONTMATTER_NOTE);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = cell_center(&view, 1, 1, cx);
+        window.pointer_down(body, MouseButton::Left, cx);
+        window.pointer_up(body, MouseButton::Left, cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).editor.cursor().0, 4, "on Body, block folded");
+        window.press("up", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).editor.cursor().0, 3, "the closing fence");
+        assert_eq!(painted_row(&view, 1, cx).text(), "tags: [a]", "opened");
+        // Leaving the block folds it again.
+        window.press("down", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).editor.cursor().0, 4);
+        assert_eq!(painted_row(&view, 1, cx).text(), "Body", "folded again");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn typing_in_an_open_block_keeps_the_caret_on_its_row(cx: &mut TestAppContext) {
+    let (handle, view) = open(cx, FRONTMATTER_NOTE);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("end", cx);
+        window.input("z", cx);
+        window.render_frame(cx);
+        assert_eq!(text(&view, cx), "---\ntags: [a]z\ndue: x\n---\nBody");
+        assert_eq!(painted_row(&view, 1, cx).text(), "tags: [a]z");
+        let caret = painted(&view, cx).caret.expect("the caret is drawn");
+        let p = painted(&view, cx);
+        assert_eq!(p.cells.row_at(f32::from(caret.origin.y - p.origin.y)), 1);
     })
     .unwrap();
 }

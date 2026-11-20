@@ -110,6 +110,7 @@ impl BackgroundJobs {
                 let hints = crate::logic::editor::display::row_hints(
                     &job.rendered_cache,
                     &job.gutter_insets,
+                    job.hidden.as_ref(),
                 );
                 let layout = crate::ropetext::Layout::compute(
                     &job.text,
