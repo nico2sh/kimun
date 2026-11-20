@@ -18,7 +18,8 @@ pub(crate) const MORE_QUERY_ID: &str = "facet-more-query";
 pub(crate) const MORE_LIST_ID: &str = "facet-more-list";
 pub(crate) const FACET_BAR_ID: &str = "facet-bar";
 /// The frame that clips the bar while its height moves. It is not drawn at
-/// rest.
+/// rest. A debug selector, not an element id: the frame must not change the
+/// element path of the bar inside it.
 pub(crate) const BAR_FRAME_ID: &str = "facet-bar-frame";
 pub(crate) const SUMMARY_ID: &str = "facet-summary";
 /// The message that stands where the pieces would be: the note is empty, or

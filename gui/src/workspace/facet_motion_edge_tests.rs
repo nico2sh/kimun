@@ -1,22 +1,30 @@
 //! UI tests for the edges of the facet bar's motion (ADR-0060): a change on
 //! the bar's second frame, a bar that comes back after it was hidden, a
-//! growth past the height cap, and growth cases of the column tests. A
-//! `FacetView` alone in a headless window with motion on.
+//! growth past the height cap, growth cases of the column tests, and an
+//! open list that stays open and in place through a pick while the bar
+//! moves. A `FacetView` alone in a headless window with motion on.
 #![cfg(test)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, px};
+use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
+use gpui_kit::{AppContext as _, Entity, MouseButton, TestAppContext, VisualTestContext, px};
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::Facet;
 
-use super::facet::{BAR_FRAME_ID, CLEAR_ID, FACET_BAR_ID, FacetView, HINT_FRAME_ID, UNDO_ID};
-use super::facet_motion_tests::{
-    TWO_TAGS, animated, column_top, drawn_bar, found, frame, long, long_note, moving, natural,
-    rest, toggle, wait,
+use super::facet::{
+    CLEAR_ID, FACET_BAR_ID, FacetView, HINT_FRAME_ID, ListKind, MORE_LIST_ID, UNDO_ID, menu_id,
+    more_item_id, pill_id, row_tick_id,
 };
-use super::facet_tests::{click, next_frame, settle, tag};
+use super::facet_motion_tests::{
+    TWO_TAGS, animated, bar_frame, column_top, drawn_bar, found, frame, long, long_note, moving,
+    natural, rest, toggle, wait,
+};
+use super::facet_tests::{
+    click, field_focused, focus_view, has_focus, key, next_frame, open_animated, open_with, picks,
+    settle, tag,
+};
 
 /// The drawn bar height of each frame, one frame every 20 ms, from the
 /// next frame until the bar and the hint rest.
@@ -168,7 +176,7 @@ fn the_column_follows_a_growing_bar_in_one_motion(cx: &mut TestAppContext) {
     for _ in 0..8 {
         wait(cx, 20);
         frame(cx);
-        let bar = found(cx, BAR_FRAME_ID).or_else(|| found(cx, FACET_BAR_ID));
+        let bar = bar_frame(cx).or_else(|| found(cx, FACET_BAR_ID));
         let top = column_top(cx);
         assert!(
             (f32::from(bar.unwrap().bottom()) - top).abs() < 0.5,
@@ -220,4 +228,256 @@ fn the_bar_and_the_hint_move_the_column_one_way_on_the_first_pick(cx: &mut TestA
     let up = tops.windows(2).any(|pair| pair[1] < pair[0] - 0.01);
     let down = tops.windows(2).any(|pair| pair[1] > pair[0] + 0.01);
     assert!(!(up && down), "the column moves one way only: {tops:?}");
+}
+
+// ── a list stays open through picks while the bar moves ─────────────────
+
+/// How a pick in the open list is made.
+#[derive(Clone, Copy, Debug)]
+enum PickBy {
+    /// A press and a release on the row, with a frame between them.
+    Click,
+    /// Down to the row, then Enter.
+    Enter,
+}
+
+/// What one frame showed of the open list: whether the view holds it open,
+/// whether it was drawn, whether its field held the keyboard, and the
+/// element paths of the list and of the chip it hangs from. The kit keys
+/// the list's popover state by its path: a new path drops that state and
+/// builds it again.
+#[derive(Debug)]
+struct ListFrame {
+    moving: bool,
+    open: bool,
+    drawn: bool,
+    field: bool,
+    list_path: Option<Vec<gpui_kit::ElementId>>,
+    chip_path: Option<Vec<gpui_kit::ElementId>>,
+}
+
+/// The element path of `id` in the last frame.
+fn path_of(
+    cx: &mut VisualTestContext,
+    id: impl Into<gpui_kit::SharedString>,
+) -> Option<Vec<gpui_kit::ElementId>> {
+    let id: gpui_kit::SharedString = id.into();
+    cx.update(|window, _| window.try_find(id).map(|e| e.path().to_vec()))
+}
+
+/// The open list as the last frame drew it.
+fn list_frame(view: &Entity<FacetView>, cx: &mut VisualTestContext, kind: ListKind) -> ListFrame {
+    let open = view.read_with(cx, |view, _| view.list_is_open(kind));
+    ListFrame {
+        moving: moving(cx),
+        open,
+        drawn: found(cx, MORE_LIST_ID).is_some(),
+        field: open && field_focused(view, cx),
+        list_path: path_of(cx, MORE_LIST_ID),
+        chip_path: path_of(cx, menu_id(kind)),
+    }
+}
+
+const LIST_NOTE: &str = "#a #b #c #d\n\nsome text\n";
+
+/// A view of [`LIST_NOTE`] with `picks`, motion on (`motion`) or reduced,
+/// at rest, with `kind`'s list open (by `/` for the list of every kind).
+fn with_list_open(
+    cx: &mut TestAppContext,
+    motion: bool,
+    kind: ListKind,
+    picks: Vec<Facet>,
+) -> (Entity<FacetView>, &mut VisualTestContext) {
+    let build = view_of(LIST_NOTE, picks);
+    let (view, cx, _events, sub) = if motion {
+        open_animated(cx, build)
+    } else {
+        open_with(cx, build)
+    };
+    drop(sub);
+    settle(cx);
+    if kind == ListKind::All {
+        focus_view(&view, cx);
+        key(cx, "/");
+    } else {
+        click(cx, menu_id(kind));
+    }
+    rest(cx, 20);
+    assert!(view.read_with(cx, |view, _| view.list_is_open(kind)));
+    (view, cx)
+}
+
+/// Pick the first unpicked row of the open list `by` a click or Enter,
+/// then draw a frame every 20 ms over the whole motion and past it. Each
+/// frame from the press on, and the picked facet.
+fn pick_and_watch(
+    view: &Entity<FacetView>,
+    cx: &mut VisualTestContext,
+    kind: ListKind,
+    by: PickBy,
+) -> (Vec<ListFrame>, Facet) {
+    let picked = picks(view, cx);
+    let rows = view.read_with(cx, |view, cx| view.list_results(cx));
+    let at = rows.iter().position(|f| !picked.contains(f)).unwrap();
+    let facet = rows[at].clone();
+    let mut seen = Vec::new();
+    match by {
+        PickBy::Click => {
+            // The pointer goes to the row, presses, and a frame is drawn
+            // before it lets go, as on screen.
+            let point = found(cx, more_item_id(&facet)).expect("the row").center();
+            cx.update(|window, cx| {
+                window.pointer_move(point, None, cx);
+                window.render_frame(cx);
+                window.pointer_down(point, MouseButton::Left, cx);
+            });
+            cx.run_until_parked();
+            frame(cx);
+            seen.push(list_frame(view, cx, kind));
+            cx.update(|window, cx| window.pointer_up(point, MouseButton::Left, cx));
+            cx.run_until_parked();
+        }
+        PickBy::Enter => {
+            for _ in 0..at {
+                key(cx, "down");
+            }
+            key(cx, "enter");
+        }
+    }
+    for _ in 0..12 {
+        frame(cx);
+        seen.push(list_frame(view, cx, kind));
+        wait(cx, 20);
+    }
+    (seen, facet)
+}
+
+/// A pick in `kind`'s list (`by` a click or Enter, after `picks_before`)
+/// leaves the list open, drawn and holding the keyboard in every frame,
+/// in one place in the element tree, its rows in their order, the picked
+/// row ticked and lit, and the picks row holding the new pill.
+fn stays_open_through_a_pick(
+    cx: &mut TestAppContext,
+    motion: bool,
+    kind: ListKind,
+    by: PickBy,
+    picks_before: Vec<Facet>,
+) {
+    let (view, cx) = with_list_open(cx, motion, kind, picks_before.clone());
+    let before = view.read_with(cx, |view, cx| view.list_results(cx));
+    frame(cx);
+    let at_rest = list_frame(&view, cx, kind);
+    let (seen, facet) = pick_and_watch(&view, cx, kind, by);
+    let case = format!("motion {motion}, {kind:?}, {by:?}, picks {picks_before:?}");
+    // The first pick adds the picks row and the summary: the bar grows
+    // over several frames. A second pick on the same line may only
+    // measure, in a frame the test cannot catch.
+    if motion && picks_before.is_empty() {
+        assert!(
+            seen.iter().any(|f| f.moving),
+            "{case}: the bar moved: {seen:?}"
+        );
+    }
+    for (i, f) in seen.iter().enumerate() {
+        assert!(
+            f.open && f.drawn && f.field,
+            "{case}: frame {i} lost the list: {seen:#?}"
+        );
+        assert_eq!(
+            (&f.list_path, &f.chip_path),
+            (&at_rest.list_path, &at_rest.chip_path),
+            "{case}: frame {i} (moving {}) moved the list in the element tree",
+            f.moving
+        );
+    }
+    assert!(picks(&view, cx).contains(&facet), "{case}: picked");
+    assert!(found(cx, row_tick_id(&facet)).is_some(), "{case}: ticked");
+    assert!(found(cx, pill_id(&facet)).is_some(), "{case}: the pill");
+    let after = view.read_with(cx, |view, cx| view.list_results(cx));
+    assert_eq!(before, after, "{case}: the order is kept");
+    let lit = cx.update(|window, _| {
+        window
+            .try_find(more_item_id(&facet))
+            .and_then(|e| e.selected())
+    });
+    assert_eq!(lit, Some(true), "{case}: the picked row is lit");
+}
+
+#[gpui_kit::test]
+fn a_first_click_pick_keeps_the_tags_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::Tags, PickBy::Click, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_click_pick_keeps_the_tags_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::Tags, PickBy::Click, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn a_first_enter_pick_keeps_the_tags_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::Tags, PickBy::Enter, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_enter_pick_keeps_the_tags_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::Tags, PickBy::Enter, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn a_first_click_pick_keeps_the_find_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::All, PickBy::Click, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_click_pick_keeps_the_find_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::All, PickBy::Click, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn a_first_enter_pick_keeps_the_find_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::All, PickBy::Enter, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_enter_pick_keeps_the_find_list_open_with_motion(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, true, ListKind::All, PickBy::Enter, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn a_first_click_pick_keeps_the_tags_list_open_reduced(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, false, ListKind::Tags, PickBy::Click, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_enter_pick_keeps_the_tags_list_open_reduced(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, false, ListKind::Tags, PickBy::Enter, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn a_first_enter_pick_keeps_the_find_list_open_reduced(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, false, ListKind::All, PickBy::Enter, vec![]);
+}
+
+#[gpui_kit::test]
+fn a_second_click_pick_keeps_the_find_list_open_reduced(cx: &mut TestAppContext) {
+    stays_open_through_a_pick(cx, false, ListKind::All, PickBy::Click, vec![tag("a")]);
+}
+
+#[gpui_kit::test]
+fn escape_while_the_bar_moves_closes_the_list_and_hands_the_keyboard_to_its_chip(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = with_list_open(cx, true, ListKind::Tags, vec![]);
+    click(cx, more_item_id(&tag("a")));
+    frame(cx);
+    assert!(moving(cx), "the bar moves");
+    key(cx, "escape");
+    assert!(!view.read_with(cx, |view, _| view.list_is_open(ListKind::Tags)));
+    rest(cx, 20);
+    assert!(found(cx, MORE_LIST_ID).is_none(), "the list is gone");
+    assert!(
+        has_focus(cx, menu_id(ListKind::Tags)),
+        "the chip has the keyboard"
+    );
+    assert_eq!(picks(&view, cx), [tag("a")]);
 }

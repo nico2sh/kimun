@@ -52,10 +52,17 @@ pub(super) fn found(
     cx.update(|window, _| window.try_find(id).map(|e| e.bounds()))
 }
 
+/// The bounds of the frame that clips the bar in the last frame, `None` at
+/// rest. The frame has no element id (it must not change the bar's element
+/// path), so it is found by its debug selector.
+pub(super) fn bar_frame(cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+    cx.debug_bounds(BAR_FRAME_ID)
+}
+
 /// The height the bar takes in the view: its frame while it moves, else
 /// the bar itself.
 pub(super) fn drawn_bar(cx: &mut VisualTestContext) -> f32 {
-    let bounds = found(cx, BAR_FRAME_ID)
+    let bounds = bar_frame(cx)
         .or_else(|| found(cx, FACET_BAR_ID))
         .expect("the bar is drawn");
     f32::from(bounds.size.height)
@@ -75,7 +82,7 @@ pub(super) fn toggle(view: &Entity<FacetView>, cx: &mut VisualTestContext, facet
 }
 
 pub(super) fn moving(cx: &mut VisualTestContext) -> bool {
-    found(cx, BAR_FRAME_ID).is_some()
+    bar_frame(cx).is_some()
 }
 
 /// Draw frames until the bar rests, at most `limit` steps of 20 ms.
@@ -139,7 +146,7 @@ fn the_column_follows_the_bar_in_one_motion(cx: &mut TestAppContext) {
     for _ in 0..8 {
         wait(cx, 20);
         frame(cx);
-        let bar = found(cx, BAR_FRAME_ID).or_else(|| found(cx, FACET_BAR_ID));
+        let bar = bar_frame(cx).or_else(|| found(cx, FACET_BAR_ID));
         let top = column_top(cx);
         assert!(
             (f32::from(bar.unwrap().bottom()) - top).abs() < 0.5,
