@@ -35,8 +35,8 @@ pub struct MemberInit {
 /// One note of the view.
 pub(crate) struct Member {
     pub(crate) path: VaultPath,
-    /// The note's title: the first segment of each of its pieces'
-    /// breadcrumb rows in a collection (not drawn for a single note).
+    /// The note's title: drawn on its dateline in a collection (not drawn
+    /// for a single note).
     pub(crate) title: String,
     pub(crate) text: String,
     pub(crate) facets: NoteFacets,
@@ -277,6 +277,15 @@ impl Members {
     /// Drawn chunk `i`'s plan.
     pub(crate) fn chunk(&self, i: usize) -> Option<&ChunkPlan> {
         chunk_plan(&self.plans, &self.refs, i)
+    }
+
+    /// How many chunks are drawn of the member drawn chunk `i` belongs to
+    /// (0 for no such chunk): under the cap, not every shown range.
+    pub(crate) fn drawn_with(&self, i: usize) -> usize {
+        self.refs
+            .get(i)
+            .and_then(|r| self.plans.get(r.plan))
+            .map_or(0, |plan| plan.chunks.len())
     }
 
     /// The member drawn chunk `i` belongs to.

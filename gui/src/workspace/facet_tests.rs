@@ -17,10 +17,9 @@ use kimun_core::note::{Facet, FacetKind, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
 
 use super::facet::{
-    CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FacetEvent, FacetView, HINT_ID, MORE_LIST_ID,
-    REMOVE_LAST_ID, SEARCH_ID, SECTIONS_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id,
-    gap_count_id, gap_down_id, gap_up_id, more_button_id, more_item_id, open_id, pill_id,
-    row_leader_id, show_all_id,
+    CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FacetEvent, FacetView, HINT_ID, ListKind, MORE_ID,
+    MORE_LIST_ID, REMOVE_LAST_ID, SECTIONS_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id,
+    gap_count_id, gap_down_id, gap_up_id, more_item_id, open_id, pill_id, show_all_id,
 };
 use crate::editor_view::{self, EditorView};
 use crate::keymap::{self, Keymap, Platform};
@@ -179,54 +178,6 @@ pub(super) fn picks_changed(events: &Events) -> usize {
 
 const NOTE: &str = "# Head\n\nsome #a\n\nmore #b\n";
 
-// ── the helpers (no window) ──────────────────────────────────────────────
-
-#[test]
-fn a_plain_press_picks_the_facet_under_it() {
-    use super::facet::pressed_facet;
-    use kimun_core::note::scan::LinkSpanKind;
-    let at = VaultPath::new("/notes/n.md");
-    let label = FollowTarget::Label("Idea".into());
-    assert_eq!(
-        pressed_facet(Some(&label), "x #Idea", &at),
-        Some(tag("idea"))
-    );
-    let wiki = FollowTarget::Link {
-        target: "Plan#goals".into(),
-        kind: LinkSpanKind::WikiLink,
-    };
-    assert_eq!(
-        pressed_facet(Some(&wiki), "see [[Plan#goals]]", &at),
-        Some(Facet::new(FacetKind::NoteLink, "plan"))
-    );
-    let md = FollowTarget::Link {
-        target: "../work/dup.md".into(),
-        kind: LinkSpanKind::Markdown,
-    };
-    assert_eq!(
-        pressed_facet(Some(&md), "", &at),
-        Some(Facet::new(FacetKind::NoteLink, "dup"))
-    );
-    let url = FollowTarget::Link {
-        target: "https://example.com".into(),
-        kind: LinkSpanKind::Markdown,
-    };
-    assert_eq!(
-        pressed_facet(Some(&url), "# Head [x](https://example.com)", &at),
-        None
-    );
-    let image = FollowTarget::Link {
-        target: "pic.png".into(),
-        kind: LinkSpanKind::Image,
-    };
-    assert_eq!(pressed_facet(Some(&image), "", &at), None);
-    assert_eq!(
-        pressed_facet(None, "## Big Plans", &at),
-        Some(Facet::new(FacetKind::Heading, "Big Plans"))
-    );
-    assert_eq!(pressed_facet(None, "plain text", &at), None);
-}
-
 // ── drawing ──────────────────────────────────────────────────────────────
 
 #[gpui_kit::test]
@@ -235,7 +186,11 @@ fn no_picks_draws_one_chunk_with_the_whole_note(cx: &mut TestAppContext) {
     assert_eq!(chunk_texts(&view, cx), ["# Head\n\nsome #a\n\nmore #b"]);
     assert!(shows(cx, chunk_id(0)));
     assert!(shows(cx, pill_id(&tag("a"))));
-    assert!(shows(cx, pill_id(&Facet::new(FacetKind::Heading, "Head"))));
+    assert!(
+        !shows(cx, pill_id(&Facet::new(FacetKind::Heading, "Head"))),
+        "an unpicked heading is not inline"
+    );
+    assert_eq!(label(cx, SECTIONS_ID).as_deref(), Some("Sections 1"));
     assert!(!shows(cx, SHOW_MORE_ID));
     // The chunk is tall enough for all of its lines.
     let chunk = chunk(&view, 0, cx);
@@ -323,6 +278,15 @@ fn a_large_chunk_grows_when_its_background_layout_lands(cx: &mut TestAppContext)
     assert!(usize::from(rows) >= visual, "{rows} grid rows for {visual}");
 }
 
+/// Draw until the view settles: the line measured, the chunks sized.
+pub(super) fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.update(|window, cx| window.render_frame(cx));
+        next_frame(cx);
+    }
+    cx.update(|window, cx| window.render_frame(cx));
+}
+
 /// Runs the next-frame callbacks the last frame asked for; how many ran.
 fn next_frame(cx: &mut VisualTestContext) -> usize {
     let ran = cx.update(|window, cx| window.simulate_next_frame(cx));
@@ -405,63 +369,266 @@ fn picking_a_tag_pill_narrows_to_its_blocks(cx: &mut TestAppContext) {
     assert_eq!(picks_changed(&events), 2);
 }
 
+// ── presses in a piece: text, never the filter ──────────────────────────
+
+/// A press and release at `at` with `mods` held.
+fn press_with(cx: &mut VisualTestContext, at: Point<Pixels>, mods: gpui_kit::Modifiers) {
+    cx.update(|window, cx| {
+        window.change_modifiers(mods, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+        window.change_modifiers(gpui_kit::Modifiers::none(), cx);
+    });
+    cx.run_until_parked();
+}
+
+/// A left drag from `from` to `to`.
+fn drag(cx: &mut VisualTestContext, from: Point<Pixels>, to: Point<Pixels>) {
+    cx.update(|window, cx| {
+        window.pointer_down(from, MouseButton::Left, cx);
+        window.pointer_move(to, Some(MouseButton::Left), cx);
+        window.pointer_up(to, MouseButton::Left, cx);
+    });
+    cx.run_until_parked();
+}
+
+/// The text selected in chunk `i`'s editor, after a frame (the window tells
+/// focus listeners of a focus change when it draws).
+fn selected_text(view: &Entity<FacetView>, i: usize, cx: &mut VisualTestContext) -> Option<String> {
+    let chunk = chunk(view, i, cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        chunk.read(cx).editor.buffer().selection_text()
+    })
+}
+
+/// The picks, the pieces and the events are as the view opened.
+fn filter_unchanged(view: &Entity<FacetView>, events: &Events, cx: &mut VisualTestContext) {
+    assert!(picks(view, cx).is_empty(), "{:?}", picks(view, cx));
+    assert_eq!(picks_changed(events), 0);
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+}
+
 #[gpui_kit::test]
-fn clicking_an_inline_tag_in_a_chunk_toggles_its_pill(cx: &mut TestAppContext) {
+fn a_plain_press_on_a_tag_in_a_piece_does_not_change_the_filter(cx: &mut TestAppContext) {
     let (view, cx, events, _sub) = open(cx, NOTE, vec![]);
     // "more #b" is row 4; col 6 is the `b`.
     let at = cell(&view, 0, 6, 4, cx);
     press(cx, at, false);
-    assert_eq!(picks(&view, cx), [tag("b")]);
-    assert_eq!(chunk_texts(&view, cx), ["more #b"]);
-    assert_eq!(picks_changed(&events), 1);
+    filter_unchanged(&view, &events, cx);
+    assert_eq!(chunk_texts(&view, cx), ["# Head\n\nsome #a\n\nmore #b"]);
+    let editor = chunk(&view, 0, cx);
+    assert_eq!(
+        cx.update(|_, cx| editor.read(cx).editor.cursor()),
+        (4, 6),
+        "the press placed the caret, as text"
+    );
 }
 
 #[gpui_kit::test]
-fn clicking_a_note_link_toggles_it_and_a_url_toggles_nothing(cx: &mut TestAppContext) {
+fn a_plain_press_on_a_note_link_does_not_change_the_filter(cx: &mut TestAppContext) {
     let text = "see [[Plan]] now\n\nweb [x](https://e.com)\n";
     let (view, cx, events, _sub) = open(cx, text, vec![]);
-    let url = cell(&view, 0, 4, 2, cx);
-    press(cx, url, false);
-    assert!(picks(&view, cx).is_empty(), "a URL is no facet");
-    assert_eq!(picks_changed(&events), 0);
     let link = cell(&view, 0, 7, 0, cx);
     press(cx, link, false);
-    assert_eq!(picks(&view, cx), [Facet::new(FacetKind::NoteLink, "plan")]);
+    let url = cell(&view, 0, 4, 2, cx);
+    press(cx, url, false);
+    filter_unchanged(&view, &events, cx);
 }
 
 #[gpui_kit::test]
-fn clicking_a_heading_line_toggles_the_heading_facet(cx: &mut TestAppContext) {
+fn a_plain_press_on_a_heading_line_does_not_change_the_filter(cx: &mut TestAppContext) {
     let text = "# Head\n\nsome #a\n\n# Other\n\nmore\n";
-    let (view, cx, _events, _sub) = open(cx, text, vec![]);
+    let (view, cx, events, _sub) = open(cx, text, vec![]);
     let at = cell(&view, 0, 3, 4, cx);
     press(cx, at, false);
-    assert_eq!(picks(&view, cx), [Facet::new(FacetKind::Heading, "Other")]);
-    assert_eq!(chunk_texts(&view, cx), ["# Other\n\nmore"]);
+    filter_unchanged(&view, &events, cx);
 }
 
-/// A heading line inside a code block reads as a heading but is no facet
-/// of the note: the press toggles nothing.
+/// There is no Alt+click: an Alt press is a plain press.
 #[gpui_kit::test]
-fn a_press_on_a_facet_the_note_does_not_hold_does_nothing(cx: &mut TestAppContext) {
-    let text = "```\n# not a heading\n```\n\nafter #a\n";
-    let (view, cx, events, _sub) = open(cx, text, vec![]);
-    let at = cell(&view, 0, 4, 1, cx);
-    press(cx, at, false);
-    assert!(picks(&view, cx).is_empty());
-    assert_eq!(picks_changed(&events), 0);
+fn an_alt_press_does_not_change_the_filter_either(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, NOTE, vec![]);
+    let at = cell(&view, 0, 6, 4, cx);
+    press_with(cx, at, gpui_kit::Modifiers::alt());
+    filter_unchanged(&view, &events, cx);
 }
 
-/// A double press is two presses (the editor emits one event per press):
-/// it toggles twice, back to where it started.
 #[gpui_kit::test]
-fn a_double_press_toggles_twice(cx: &mut TestAppContext) {
-    let (view, cx, events, _sub) = open(cx, "a #x b\n", vec![]);
-    let at = cell(&view, 0, 3, 0, cx);
+fn a_double_press_selects_a_word_and_emits_nothing(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, "a #idea b\n", vec![]);
+    let editor = chunk(&view, 0, cx);
+    // Both presses are one instant apart, however loaded the machine.
+    cx.update(|_, cx| {
+        editor.update(cx, |editor, _| {
+            editor.set_clock(crate::editor_view::frozen_clock)
+        })
+    });
+    let at = cell(&view, 0, 4, 0, cx);
     press(cx, at, false);
-    let at = cell(&view, 0, 3, 0, cx);
     press(cx, at, false);
-    assert!(picks(&view, cx).is_empty());
-    assert_eq!(picks_changed(&events), 2);
+    filter_unchanged(&view, &events, cx);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("idea"));
+    let painted = cx.update(|_, cx| editor.read(cx).editor.selection());
+    assert_eq!(painted, Some(((0, 3), (0, 7))), "the selection is drawn");
+}
+
+#[gpui_kit::test]
+fn dragging_across_a_tag_selects_text(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, "see #idea here\n", vec![]);
+    let from = cell(&view, 0, 0, 0, cx);
+    let to = cell(&view, 0, 12, 0, cx);
+    drag(cx, from, to);
+    filter_unchanged(&view, &events, cx);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("see #idea he"));
+}
+
+/// A drag across a link drawn as its text copies the link as written.
+#[gpui_kit::test]
+fn copy_across_a_concealed_link_copies_its_markdown(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "see [text](note.md) end\n", vec![]);
+    let from = cell(&view, 0, 0, 0, cx);
+    let to = cell(&view, 0, 30, 0, cx);
+    drag(cx, from, to);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before".into()));
+    key(cx, "ctrl-c");
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert!(
+        copied
+            .as_deref()
+            .is_some_and(|c| c.contains("[text](note.md)")),
+        "{copied:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn copy_copies_the_selected_text_of_a_piece(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, "see #idea here\n", vec![]);
+    let from = cell(&view, 0, 4, 0, cx);
+    let to = cell(&view, 0, 9, 0, cx);
+    drag(cx, from, to);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before".into()));
+    key(cx, "ctrl-c");
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some("#idea"));
+    filter_unchanged(&view, &events, cx);
+    assert_eq!(
+        selected_text(&view, 0, cx).as_deref(),
+        Some("#idea"),
+        "kept"
+    );
+}
+
+/// Make the test window the active one: the window tells focus listeners
+/// of a focus change only while it is active, as the app's window is.
+fn activate(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+}
+
+/// The selection chunk `i`'s editor draws.
+fn drawn_selection(
+    view: &Entity<FacetView>,
+    i: usize,
+    cx: &mut VisualTestContext,
+) -> Option<((usize, usize), (usize, usize))> {
+    let chunk = chunk(view, i, cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        chunk.read(cx).editor.selection()
+    })
+}
+
+/// A piece that loses the keyboard (Escape) drops its selection: the copy
+/// chord could no longer reach it, so it is not drawn either. The text and
+/// the picks stay.
+#[gpui_kit::test]
+fn escape_out_of_a_piece_clears_its_selection(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, "see #idea here\n", vec![]);
+    activate(cx);
+    let from = cell(&view, 0, 4, 0, cx);
+    let to = cell(&view, 0, 9, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("#idea"));
+    key(cx, "escape");
+    assert!(view_focused(&view, cx), "the view has the keyboard");
+    assert_eq!(selected_text(&view, 0, cx), None);
+    assert_eq!(drawn_selection(&view, 0, cx), None, "no selection drawn");
+    assert_eq!(chunk_texts(&view, cx), ["see #idea here"]);
+    filter_unchanged(&view, &events, cx);
+}
+
+/// Tab out of a piece also takes the keyboard away: the selection goes.
+#[gpui_kit::test]
+fn tab_out_of_a_piece_clears_its_selection(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "# Head\n\nsee #idea here\n", vec![]);
+    activate(cx);
+    let from = cell(&view, 0, 4, 2, cx);
+    let to = cell(&view, 0, 9, 2, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("#idea"));
+    key(cx, "tab");
+    assert_eq!(drawn_selection(&view, 0, cx), None);
+}
+
+/// A click on a pill takes the keyboard out of the piece: its selection
+/// goes, though the pick keeps the piece's text (the whole note is the one
+/// block that holds the tag).
+#[gpui_kit::test]
+fn a_click_on_a_pill_clears_a_pieces_selection(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "see #idea here\n", vec![]);
+    activate(cx);
+    let from = cell(&view, 0, 0, 0, cx);
+    let to = cell(&view, 0, 3, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("see"));
+    click(cx, pill_id(&tag("idea")));
+    assert_eq!(picks(&view, cx), [tag("idea")]);
+    assert_eq!(chunk_texts(&view, cx), ["see #idea here"]);
+    assert_eq!(selected_text(&view, 0, cx), None);
+    assert_eq!(drawn_selection(&view, 0, cx), None);
+}
+
+/// A selection in piece A, then one in piece B: only B's is left, and the
+/// copy chord copies it.
+#[gpui_kit::test]
+fn a_selection_in_another_piece_clears_the_first(cx: &mut TestAppContext) {
+    let text = "one #a here\n\nmiddle\n\ntwo #a there\n";
+    let (view, cx, _events, _sub) = open(cx, text, vec![tag("a")]);
+    activate(cx);
+    assert_eq!(chunk_texts(&view, cx).len(), 2, "two pieces");
+    let from = cell(&view, 0, 0, 0, cx);
+    let to = cell(&view, 0, 3, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("one"));
+    let from = cell(&view, 1, 0, 0, cx);
+    let to = cell(&view, 1, 3, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx), None, "A's selection went");
+    assert_eq!(drawn_selection(&view, 0, cx), None);
+    assert_eq!(selected_text(&view, 1, cx).as_deref(), Some("two"));
+    assert!(drawn_selection(&view, 1, cx).is_some(), "B's is drawn");
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before".into()));
+    key(cx, "ctrl-c");
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some("two"));
+}
+
+/// A second drag inside the same piece keeps the keyboard there: it selects
+/// as the first did, and nothing is cleared in between.
+#[gpui_kit::test]
+fn a_second_drag_in_the_same_piece_still_selects(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "see #idea here\n", vec![]);
+    activate(cx);
+    let from = cell(&view, 0, 0, 0, cx);
+    let to = cell(&view, 0, 3, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("see"));
+    let from = cell(&view, 0, 4, 0, cx);
+    let to = cell(&view, 0, 9, 0, cx);
+    drag(cx, from, to);
+    assert_eq!(selected_text(&view, 0, cx).as_deref(), Some("#idea"));
+    assert!(drawn_selection(&view, 0, cx).is_some());
 }
 
 #[gpui_kit::test]
@@ -477,6 +644,64 @@ fn a_primary_press_emits_follow_and_leaves_picks_alone(cx: &mut TestAppContext) 
             target: FollowTarget::Label("b".into())
         }]
     );
+}
+
+/// Whether chunk `i` drew its follow targets with the pointing hand in the
+/// last frame.
+fn hand_over_targets(view: &Entity<FacetView>, i: usize, cx: &mut VisualTestContext) -> bool {
+    let chunk = chunk(view, i, cx);
+    cx.update(|_, cx| {
+        chunk
+            .read(cx)
+            .painted
+            .as_ref()
+            .expect("painted")
+            .targets_hand
+    })
+}
+
+/// Send a modifiers change the way the platform does, with no frame drawn
+/// after it (the kit's `change_modifiers` draws one).
+fn modifiers_event(cx: &mut VisualTestContext, modifiers: gpui_kit::Modifiers) {
+    use gpui_kit::InputEvent as _;
+    cx.update(|window, cx| {
+        let capslock = window.capslock();
+        window.dispatch_event(
+            gpui_kit::ModifiersChangedEvent {
+                modifiers,
+                capslock,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_cursor_is_the_text_cursor_over_a_tag_and_a_hand_only_while_primary_is_held(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, _events, _sub) = open(cx, NOTE, vec![]);
+    settle(cx);
+    assert!(
+        !hand_over_targets(&view, 0, cx),
+        "no modifier: the text cursor"
+    );
+    // The keyboard anywhere in the view: a modifier change alone, with no
+    // pointer move, asks for a frame. The next event draws it first.
+    focus_view(&view, cx);
+    modifiers_event(cx, gpui_kit::Modifiers::control());
+    modifiers_event(cx, gpui_kit::Modifiers::control());
+    assert!(hand_over_targets(&view, 0, cx), "primary held: the hand");
+    modifiers_event(cx, gpui_kit::Modifiers::none());
+    modifiers_event(cx, gpui_kit::Modifiers::none());
+    assert!(
+        !hand_over_targets(&view, 0, cx),
+        "released: the text cursor"
+    );
+    // Alt is no primary modifier.
+    cx.update(|window, cx| window.change_modifiers(gpui_kit::Modifiers::alt(), cx));
+    assert!(!hand_over_targets(&view, 0, cx), "Alt: the text cursor");
 }
 
 // ── revealing ────────────────────────────────────────────────────────────
@@ -550,7 +775,7 @@ fn a_piece_with_no_headings_still_draws_the_source_row(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn clicking_a_crumb_toggles_that_heading_facet(cx: &mut TestAppContext) {
+fn crumb_clicks_still_toggle(cx: &mut TestAppContext) {
     let text = "# Top\n\nalpha #x\n\n# Other\n\nbeta #x\n";
     let (view, cx, events, _sub) = open(cx, text, vec![tag("x")]);
     assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Top"));
@@ -830,15 +1055,15 @@ fn the_wheel_over_a_chunk_scrolls_the_column(cx: &mut TestAppContext) {
     assert!(top(cx) < 0.0, "the column scrolled: {}", top(cx));
 }
 
-// ── the "+N more" list ───────────────────────────────────────────────────
+// ── the list of every tag and link (`+N`, `/`) ──────────────────────────
 
 #[gpui_kit::test]
-fn plus_n_more_opens_a_fuzzy_list_and_picking_from_it_toggles(cx: &mut TestAppContext) {
+fn the_list_is_fuzzy_and_picking_from_it_toggles(cx: &mut TestAppContext) {
     let text: String = (0..14).map(|i| format!("#t{i:02} ")).collect();
     let (view, cx, events, _sub) = open(cx, &text, vec![]);
     assert!(shows(cx, pill_id(&tag("t11"))));
-    assert!(!shows(cx, pill_id(&tag("t13"))), "folded into +2 more");
-    click(cx, more_button_id(FacetKind::Tag));
+    focus_view(&view, cx);
+    key(cx, "/");
     assert!(shows(cx, more_item_id(&tag("t00"))));
     assert!(shows(cx, more_item_id(&tag("t13"))));
     let input = view.read_with(cx, |view, _| view.more_input().expect("the list is open"));
@@ -853,26 +1078,32 @@ fn plus_n_more_opens_a_fuzzy_list_and_picking_from_it_toggles(cx: &mut TestAppCo
         view.read_with(cx, |view, _| view.more_input().is_some()),
         "it stays open for more picks"
     );
-    // Picked pills come first, so it shows in the row now.
+    // Picked pills come first, so it shows in the line now.
     assert!(shows(cx, pill_id(&tag("t13"))));
 }
 
-/// Fourteen tags: the tag row folds two into `+2 more`.
+/// A note with far more tags than one line holds: the `+N` chip shows. Its
+/// first line is plain text.
+pub(super) fn crowded_tags() -> String {
+    "plain\n\n".to_string() + &(0..80).map(|i| format!("#t{i:02} ")).collect::<String>()
+}
+
+/// Fourteen tags.
 fn many_tags() -> String {
     (0..14).map(|i| format!("#t{i:02} ")).collect::<String>() + "\n\nplain\n"
 }
 
-fn list_open(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
+pub(super) fn list_open(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
     view.read_with(cx, |view, _| view.more_input().is_some())
 }
 
 /// Whether the view's own focus handle has the keyboard.
-fn view_focused(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
+pub(super) fn view_focused(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
     cx.update(|window, cx| view.read(cx).focus_handle(cx).is_focused(window))
 }
 
 /// Whether the open list's filter field has the keyboard.
-fn field_focused(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
+pub(super) fn field_focused(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
     let input = view.read_with(cx, |view, _| view.more_input().expect("the list is open"));
     cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window))
 }
@@ -887,13 +1118,12 @@ pub(super) fn key(cx: &mut VisualTestContext, key: &str) {
 
 #[gpui_kit::test]
 fn the_list_opens_over_the_content_without_moving_it(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &many_tags(), vec![]);
-    cx.update(|window, cx| window.render_frame(cx));
-    next_frame(cx);
+    let (view, cx, _events, _sub) = open(cx, &crowded_tags(), vec![]);
+    settle(cx);
     let bar = bounds(cx, FACET_BAR_ID);
     let first = bounds(cx, chunk_id(0));
     let rows = view.read_with(cx, |view, _| view.sized_rows().to_vec());
-    click(cx, more_button_id(FacetKind::Tag));
+    click(cx, MORE_ID);
     assert!(list_open(&view, cx));
     assert!(shows(cx, MORE_LIST_ID));
     assert_eq!(bounds(cx, FACET_BAR_ID), bar, "the bar did not grow");
@@ -908,7 +1138,7 @@ fn the_list_opens_over_the_content_without_moving_it(cx: &mut TestAppContext) {
         !view.read_with(cx, |view, _| view.resize_asked()),
         "no resize frame was asked for"
     );
-    let chip = bounds(cx, more_button_id(FacetKind::Tag));
+    let chip = bounds(cx, MORE_ID);
     let list = bounds(cx, MORE_LIST_ID);
     assert!(
         list.top() >= chip.bottom(),
@@ -922,59 +1152,46 @@ fn the_list_opens_over_the_content_without_moving_it(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_filter_field_is_focused_when_the_list_opens(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &many_tags(), vec![]);
-    click(cx, more_button_id(FacetKind::Tag));
+    let (view, cx, _events, _sub) = open(cx, &crowded_tags(), vec![]);
+    settle(cx);
+    click(cx, MORE_ID);
     assert!(field_focused(&view, cx), "the chip's list");
     key(cx, "escape");
-    // The cross-kind search list (`/` opens it).
+    // The same list, opened by `/` (here through `open_list`).
     let text = "# Head\n\nsome #a and [[plan]]\n";
     view.update(cx, |view, cx| view.set_text(text.to_string(), cx));
-    cx.update(|window, cx| view.update(cx, |view, cx| view.open_list(None, window, cx)));
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.open_list(ListKind::Facets, window, cx))
+    });
     cx.run_until_parked();
-    assert!(field_focused(&view, cx), "the search list");
+    assert!(field_focused(&view, cx), "the list opened by `/`");
     assert!(shows(cx, MORE_LIST_ID));
     assert!(shows(cx, more_item_id(&tag("a"))));
     assert!(shows(
         cx,
         more_item_id(&Facet::new(FacetKind::NoteLink, "plan"))
     ));
-    assert!(shows(cx, more_item_id(&heading("head"))));
+    assert!(
+        !shows(cx, more_item_id(&heading("head"))),
+        "headings are in the Sections list"
+    );
 }
 
 /// Escape closes the list and nothing else: the picks stay. The keyboard
 /// goes back to the chip that opened the list (a tab stop).
 #[gpui_kit::test]
 fn escape_closes_the_list_and_returns_focus_to_the_chip(cx: &mut TestAppContext) {
-    let (view, cx, events, _sub) = open(cx, &many_tags(), vec![]);
-    click(cx, more_button_id(FacetKind::Tag));
-    click(cx, more_item_id(&tag("t13")));
+    let (view, cx, events, _sub) = open(cx, &crowded_tags(), vec![]);
+    settle(cx);
+    click(cx, MORE_ID);
+    click(cx, more_item_id(&tag("t00")));
     assert!(list_open(&view, cx));
     key(cx, "escape");
     assert!(!list_open(&view, cx), "closed");
     assert!(!shows(cx, MORE_LIST_ID));
-    assert_eq!(picks(&view, cx), [tag("t13")], "the picks stay");
+    assert_eq!(picks(&view, cx), [tag("t00")], "the picks stay");
     assert_eq!(picks_changed(&events), 1);
-    assert!(
-        has_focus(cx, more_button_id(FacetKind::Tag)),
-        "the keyboard is back on the chip"
-    );
-}
-
-/// A list whose chip is no tab stop (the row's every facet is picked, so
-/// the list hangs from the row's icon) gives the keyboard back to the view.
-#[gpui_kit::test]
-fn a_list_with_no_chip_gives_the_keyboard_back_to_the_view(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "#a #b\n", vec![]);
-    cx.update(|window, cx| {
-        view.update(cx, |view, cx| {
-            view.open_list(Some(FacetKind::Tag), window, cx)
-        })
-    });
-    cx.run_until_parked();
-    assert!(list_open(&view, cx));
-    key(cx, "escape");
-    assert!(!list_open(&view, cx));
-    assert!(view_focused(&view, cx), "the keyboard is back on the view");
+    assert!(has_focus(cx, MORE_ID), "the keyboard is back on the chip");
 }
 
 // ── the keyboard ─────────────────────────────────────────────────────────
@@ -1014,7 +1231,7 @@ pub(super) fn focus_view(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-fn query(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> String {
+pub(super) fn query(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> String {
     view.read_with(cx, |view, cx| {
         view.more_input().unwrap().read(cx).value().to_string()
     })
@@ -1030,38 +1247,6 @@ pub(super) fn tab_to(cx: &mut VisualTestContext, id: impl Into<SharedString>, li
         }
     }
     panic!("Tab never reached {id}");
-}
-
-#[gpui_kit::test]
-fn slash_opens_the_search_list_and_focuses_its_field(cx: &mut TestAppContext) {
-    let text = "# Head\n\nsome #a and [[plan]]\n";
-    let (view, cx, _events, _sub) = open(cx, text, vec![]);
-    assert!(shows(cx, SEARCH_ID), "the search button is always there");
-    assert_eq!(label(cx, SEARCH_ID).as_deref(), Some("Search facets (/)"));
-    let size = bounds(cx, SEARCH_ID).size;
-    assert!(
-        size.width >= px(24.) && size.height >= px(24.),
-        "24 px: {size:?}"
-    );
-    focus_view(&view, cx);
-    key(cx, "/");
-    assert!(list_open(&view, cx));
-    assert!(field_focused(&view, cx));
-    assert_eq!(query(&view, cx), "", "the slash is not typed into it");
-    assert!(shows(cx, more_item_id(&tag("a"))));
-    assert!(shows(
-        cx,
-        more_item_id(&Facet::new(FacetKind::NoteLink, "plan"))
-    ));
-    assert!(shows(cx, more_item_id(&heading("head"))));
-    // It hangs from the search button.
-    let button = bounds(cx, SEARCH_ID);
-    let list = bounds(cx, MORE_LIST_ID);
-    assert!(list.top() >= button.bottom(), "{list:?} {button:?}");
-    // Escape closes it and gives the keyboard to the button.
-    key(cx, "escape");
-    assert!(!list_open(&view, cx));
-    assert!(has_focus(cx, SEARCH_ID));
 }
 
 #[gpui_kit::test]
@@ -1143,7 +1328,8 @@ fn plain_letters_do_nothing_while_a_text_field_has_focus(cx: &mut TestAppContext
             .map(|i| format!("#t00 m{i}\n\n"))
             .collect::<String>();
     let (view, cx, _events, _sub) = open(cx, &text, vec![tag("t00")]);
-    click(cx, more_button_id(FacetKind::Tag));
+    focus_view(&view, cx);
+    key(cx, "/");
     let input = view.read_with(cx, |view, _| view.more_input().unwrap());
     let offset = view.read_with(cx, |view, _| view.scroll.offset());
     key(cx, "j");
@@ -1168,14 +1354,14 @@ fn plain_letters_do_nothing_while_a_text_field_has_focus(cx: &mut TestAppContext
 fn tab_reaches_every_pill_and_shows_a_focus_ring(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, NOTE, vec![tag("a")]);
     focus_view(&view, cx);
-    // Reading order: the bar (summary line, then each row), its search
-    // button, then the column (gap, piece crumbs, Open source, gap).
+    // Reading order: the bar (the filter line with its `Sections N` chip,
+    // then the summary line), then the column (gap, piece crumbs, Open
+    // source, gap).
     let want: Vec<SharedString> = vec![
-        CLEAR_ID.into(),
         pill_id(&tag("a")),
         pill_id(&tag("b")),
-        pill_id(&heading("head")),
-        SEARCH_ID.into(),
+        SECTIONS_ID.into(),
+        CLEAR_ID.into(),
         gap_up_id(0),
         show_all_id(0),
         crumb_id(0, 0),
@@ -1198,7 +1384,8 @@ fn tab_reaches_every_pill_and_shows_a_focus_ring(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn enter_on_a_focused_pill_toggles_it(cx: &mut TestAppContext) {
-    let (view, cx, events, _sub) = open(cx, &many_tags(), vec![]);
+    let text = format!("# Head\n\n{}", many_tags());
+    let (view, cx, events, _sub) = open(cx, &text, vec![]);
     focus_view(&view, cx);
     tab_to(cx, pill_id(&tag("t01")), 20);
     key(cx, "enter");
@@ -1207,13 +1394,13 @@ fn enter_on_a_focused_pill_toggles_it(cx: &mut TestAppContext) {
     key(cx, "space");
     assert!(picks(&view, cx).is_empty(), "Space too");
     assert_eq!(picks_changed(&events), 2);
-    // A chip does what a click does: `+N more` opens its list.
-    tab_to(cx, more_button_id(FacetKind::Tag), 20);
+    // A chip does what a click does: `Sections N` opens its list.
+    tab_to(cx, SECTIONS_ID, 20);
     key(cx, "enter");
     assert!(list_open(&view, cx));
     assert!(field_focused(&view, cx));
     key(cx, "escape");
-    assert!(has_focus(cx, more_button_id(FacetKind::Tag)));
+    assert!(has_focus(cx, SECTIONS_ID));
     // `Clear` too.
     key(cx, "shift-tab");
     key(cx, "enter");
@@ -1228,26 +1415,33 @@ fn enter_on_a_focused_pill_toggles_it(cx: &mut TestAppContext) {
 }
 
 /// A press outside the list closes it; the press still does what it does
-/// there (here, toggles a row pill).
+/// there (here, toggles a pill of the line).
 #[gpui_kit::test]
 fn an_outside_click_closes_the_list(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &many_tags(), vec![]);
-    click(cx, more_button_id(FacetKind::Tag));
+    let (view, cx, _events, _sub) = open(cx, &crowded_tags(), vec![]);
+    settle(cx);
+    click(cx, MORE_ID);
     assert!(list_open(&view, cx));
-    click(cx, chunk_id(0));
+    let plain = cell(&view, 0, 1, 0, cx);
+    press(cx, plain, false);
     assert!(!list_open(&view, cx), "a press on the content closes it");
+    assert!(picks(&view, cx).is_empty(), "plain text picks nothing");
     assert!(!shows(cx, MORE_LIST_ID));
-    click(cx, more_button_id(FacetKind::Tag));
+    click(cx, MORE_ID);
     assert!(list_open(&view, cx));
     click(cx, pill_id(&tag("t00")));
-    assert!(!list_open(&view, cx), "a press on a row pill closes it");
+    assert!(
+        !list_open(&view, cx),
+        "a press on a pill of the line closes it"
+    );
     assert_eq!(picks(&view, cx), [tag("t00")], "and toggles that pill");
 }
 
 #[gpui_kit::test]
 fn picking_in_the_list_toggles_and_keeps_it_open(cx: &mut TestAppContext) {
     let (view, cx, events, _sub) = open(cx, &many_tags(), vec![]);
-    click(cx, more_button_id(FacetKind::Tag));
+    focus_view(&view, cx);
+    key(cx, "/");
     let input = view.read_with(cx, |view, _| view.more_input().expect("the list is open"));
     cx.update(|window, cx| input.update(cx, |i, cx| i.set_value("1", window, cx)));
     cx.run_until_parked();
@@ -1260,14 +1454,15 @@ fn picking_in_the_list_toggles_and_keeps_it_open(cx: &mut TestAppContext) {
         view.more_input().unwrap().read(cx).value().to_string()
     });
     assert_eq!(query, "1", "the filter stays");
-    // A second press on a picked one unpicks it, still open.
-    click(cx, more_item_id(&tag("t12")));
-    assert_eq!(picks(&view, cx), [tag("t13")]);
-    assert!(list_open(&view, cx));
+    // A picked facet leaves the list (its pill leads the line, with its
+    // remove mark); the rest stay.
+    assert!(!shows(cx, more_item_id(&tag("t12"))));
+    assert!(!shows(cx, more_item_id(&tag("t13"))));
+    assert!(shows(cx, more_item_id(&tag("t11"))));
 }
 
-/// A note with no facet draws no bar, so `/` has no search button to hang
-/// a list from: it opens nothing, and the keyboard stays on the view.
+/// A note with no facet draws no bar, so `/` has no line to hang a list
+/// from: it opens nothing, and the keyboard stays on the view.
 #[gpui_kit::test]
 fn slash_does_nothing_in_a_note_with_no_facets(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, "just text\n\nmore text\n", vec![]);
@@ -1278,40 +1473,40 @@ fn slash_does_nothing_in_a_note_with_no_facets(cx: &mut TestAppContext) {
     assert!(view_focused(&view, cx), "the keyboard stays on the view");
 }
 
-/// A live edit that takes away every facet of the open list's kind leaves
-/// it nowhere to hang: it closes and the view takes the keyboard back.
+/// A live edit that takes away everything the open list holds leaves it
+/// nowhere to hang: it closes and the view takes the keyboard back.
 #[gpui_kit::test]
 fn an_edit_that_removes_the_open_lists_kind_closes_it(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, "# H\n\n#a #b\n", vec![]);
-    cx.update(|window, cx| {
-        view.update(cx, |view, cx| {
-            view.open_list(Some(FacetKind::Tag), window, cx)
-        })
-    });
-    cx.run_until_parked();
+    focus_view(&view, cx);
+    key(cx, "/");
     assert!(field_focused(&view, cx));
     view.update(cx, |view, cx| view.set_text("# H\n\nplain\n".into(), cx));
     cx.update(|window, cx| window.render_frame(cx));
     cx.run_until_parked();
-    assert!(!list_open(&view, cx), "no tag row: the tag list closed");
+    assert!(!list_open(&view, cx), "no tag or link: the list closed");
     assert!(view_focused(&view, cx), "the keyboard is back on the view");
-    // The search list closes once the bar goes.
-    focus_view(&view, cx);
+    // Headings only: `/` opens the Sections list. It closes once they go.
     key(cx, "/");
     assert!(list_open(&view, cx));
+    assert!(shows(cx, more_item_id(&heading("h"))));
     view.update(cx, |view, cx| view.set_text("plain\n".into(), cx));
     cx.update(|window, cx| window.render_frame(cx));
     cx.run_until_parked();
-    assert!(!list_open(&view, cx), "no bar: the search closed");
+    assert!(
+        !list_open(&view, cx),
+        "no heading: the Sections list closed"
+    );
     assert!(view_focused(&view, cx));
     key(cx, "/");
-    assert!(!list_open(&view, cx), "and `/` opens nothing now");
+    assert!(!list_open(&view, cx), "no facet: `/` opens nothing");
 }
 
-/// Picked facets move to the front of the list; the highlight follows the
-/// facet Enter toggled, so a second Enter toggles it back.
+/// A picked facet leaves the list (its pill leads the line); the highlight
+/// keeps its place, on the facet that moved up into it, so Enter walks down
+/// the list picking. The last one picked lights the new last.
 #[gpui_kit::test]
-fn the_highlight_follows_the_facet_enter_toggled(cx: &mut TestAppContext) {
+fn the_highlight_survives_a_toggle_that_reorders_the_list(cx: &mut TestAppContext) {
     let text = "#a #a #a\n\n#b #b\n\n#c\n";
     let (view, cx, _events, _sub) = open(cx, text, vec![]);
     focus_view(&view, cx);
@@ -1321,16 +1516,20 @@ fn the_highlight_follows_the_facet_enter_toggled(cx: &mut TestAppContext) {
         [tag("a"), tag("b"), tag("c")]
     );
     key(cx, "down");
-    key(cx, "down");
-    assert!(selected(cx, more_item_id(&tag("c"))));
+    assert!(selected(cx, more_item_id(&tag("b"))));
     key(cx, "enter");
-    assert_eq!(picks(&view, cx), [tag("c")]);
-    assert!(
-        selected(cx, more_item_id(&tag("c"))),
-        "c stays lit where it moved"
+    assert_eq!(picks(&view, cx), [tag("b")]);
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.list_results(cx)),
+        [tag("a"), tag("c")]
     );
+    assert!(selected(cx, more_item_id(&tag("c"))), "c moved up into it");
     key(cx, "enter");
-    assert!(picks(&view, cx).is_empty(), "the second Enter unpicks c");
+    assert_eq!(picks(&view, cx), [tag("b"), tag("c")]);
+    assert!(
+        selected(cx, more_item_id(&tag("a"))),
+        "the last left is lit"
+    );
 }
 
 /// The keyboard inside a piece (after a press there, to select text): the
@@ -1548,50 +1747,22 @@ fn picks_that_select_nothing_show_no_summary(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn each_row_has_a_leading_icon_for_its_kind(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "# Head\n\nsome #a and [[plan]]\n", vec![]);
-    let kinds = [
-        (FacetKind::Tag, "Tags", tag("a")),
-        (
-            FacetKind::NoteLink,
-            "Links",
-            Facet::new(FacetKind::NoteLink, "plan"),
-        ),
-        (FacetKind::Heading, "Sections", heading("head")),
-    ];
-    let mut last_top = None;
-    for (kind, name, first) in kinds {
-        assert_eq!(label(cx, row_leader_id(kind)).as_deref(), Some(name));
-        let leader = bounds(cx, row_leader_id(kind));
-        let pill = bounds(cx, pill_id(&first));
-        assert!(leader.right() <= pill.left(), "{name}: the icon leads");
-        if let Some(top) = last_top {
-            assert!(leader.top() > top, "{name}: rows go tag, link, heading");
-        }
-        last_top = Some(leader.top());
-    }
-    // A kind the note lacks has no row and no leader.
-    view.update(cx, |view, cx| view.set_text("only #a\n".to_string(), cx));
-    assert!(shows(cx, row_leader_id(FacetKind::Tag)));
-    assert!(!shows(cx, row_leader_id(FacetKind::NoteLink)));
-    assert!(!shows(cx, row_leader_id(FacetKind::Heading)));
-}
-
-#[gpui_kit::test]
-fn the_heading_row_collapses_to_a_sections_chip_for_a_long_note(cx: &mut TestAppContext) {
+fn the_line_draws_only_picked_headings_and_a_sections_chip(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, &many_headings(400), vec![heading("h123")]);
     assert!(shows(cx, pill_id(&heading("h123"))), "the pick stays");
     assert!(!shows(cx, pill_id(&heading("h000"))));
-    assert!(!shows(cx, more_button_id(FacetKind::Heading)));
     assert_eq!(label(cx, SECTIONS_ID).as_deref(), Some("Sections 400"));
     let chip = bounds(cx, SECTIONS_ID);
     assert!(
         f32::from(chip.size.height) >= 24.0,
         "a 24 px target: {chip:?}"
     );
-    // A short note keeps its heading pills.
+    // A short note counts its headings too, and draws none inline.
     view.update(cx, |view, cx| view.set_text(many_headings(3), cx));
-    assert!(shows(cx, pill_id(&heading("h000"))));
+    assert!(!shows(cx, pill_id(&heading("h000"))));
+    assert_eq!(label(cx, SECTIONS_ID).as_deref(), Some("Sections 3"));
+    // A note without headings has no chip.
+    view.update(cx, |view, cx| view.set_text("only #a\n".to_string(), cx));
     assert!(!shows(cx, SECTIONS_ID));
 }
 
@@ -1739,7 +1910,7 @@ pub(super) mod in_a_group {
     }
 
     /// Show a facet view of `note` in `group`, driven until it shows.
-    fn open_facet(
+    pub(in crate::workspace) fn open_facet(
         s: &Started,
         rt: &Runtime,
         group: GroupId,
@@ -2075,6 +2246,87 @@ pub(super) mod in_a_group {
         assert_eq!(tabs(&s, cx), 3, "a new tab");
         assert_ne!(active(&s, cx), facet_group);
         assert_eq!(source(&s, facet_group, cx), Some(path("dir/src.md")));
+    }
+
+    /// A primary press (Ctrl, or Cmd on macOS) at cell (`col`, `row`) of
+    /// `group`'s facet view chunk `i`, sent as real pointer events.
+    fn primary_click(
+        s: &Started,
+        group: GroupId,
+        i: usize,
+        col: u16,
+        row: u16,
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::test::TestEventExt as _;
+        let view = facet(s, group, cx).expect("a facet view");
+        let held = gpui_kit::Modifiers {
+            control: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let chunk = view.read(cx).chunks()[i].clone();
+            let painted = chunk
+                .read(cx)
+                .painted
+                .clone()
+                .expect("the chunk was painted");
+            let c = painted.cells;
+            let at = gpui_kit::point(
+                painted.origin.x + gpui_kit::px(c.x_of(col) + c.width() / 2.0),
+                painted.origin.y + gpui_kit::px(c.y_of(row) + c.height() / 2.0),
+            );
+            window.change_modifiers(held, cx);
+            window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+            window.change_modifiers(gpui_kit::Modifiers::none(), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn primary_click_on_a_link_still_follows_in_a_new_tab(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let notes = [
+            ("dir/src.md", "see [t](t.md)"),
+            ("dir/t.md", "inner"),
+            ("t.md", "outer"),
+        ];
+        let (_v, s) = started(cx, &rt, &notes, "t.md");
+        drive(&rt, cx, |cx| !s.indexing(cx));
+        let facet_group = new_tab(&s, cx);
+        open_facet(&s, &rt, facet_group, "dir/src.md", vec![], cx);
+        assert_eq!(tabs(&s, cx), 2);
+        // `see [t](t.md)` reads `see t`: col 4 is the link text.
+        primary_click(&s, facet_group, 0, 4, 0, cx);
+        drive(&rt, cx, |cx| {
+            let group = active(&s, cx);
+            note_in(&s, group, cx).is_some_and(|n| n.is_like(&path("dir/t.md")))
+                && s.text(cx) == "inner"
+        });
+        assert_eq!(tabs(&s, cx), 3, "a new tab");
+        assert_eq!(source(&s, facet_group, cx), Some(path("dir/src.md")));
+        assert!(
+            picks(&s, facet_group, cx).is_empty(),
+            "the filter is unchanged"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn primary_click_on_a_tag_still_searches(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt, &[("a.md", A), ("b.md", "beta")], "b.md");
+        let group = active(&s, cx);
+        open_facet(&s, &rt, group, "a.md", vec![], cx);
+        // `alpha #x` is row 2 of the whole note; col 7 is the `x`.
+        primary_click(&s, group, 0, 7, 2, cx);
+        drive(&rt, cx, |cx| s.shown_modal(cx) == Some(ModalKind::Search));
+        assert!(picks(&s, group, cx).is_empty(), "the filter is unchanged");
     }
 
     #[gpui_kit::test]
@@ -2442,7 +2694,7 @@ pub(super) mod in_a_group {
         assert_eq!(label, "a.md", "an icon element, not a text prefix");
     }
 
-    fn bounds_of(
+    pub(in crate::workspace) fn bounds_of(
         s: &Started,
         id: impl Into<gpui_kit::ElementId>,
         cx: &mut TestAppContext,
@@ -2457,24 +2709,19 @@ pub(super) mod in_a_group {
 
     /// A lone group floats its corner buttons over the top-right of the
     /// facet view: the bar keeps its controls clear of them, so a click on
-    /// the search button opens the search, not the note menu. A group in a
+    /// the `Sections N` chip opens its list, not the note menu. A group in a
     /// split has a header instead, and its bar keeps its usual inset.
     #[gpui_kit::test]
     fn no_bar_control_sits_under_the_corner_buttons(cx: &mut TestAppContext) {
-        use super::super::facet::{CLEAR_ID, FACET_VIEW_ID, SEARCH_ID, pill_id};
+        use super::super::facet::{CLEAR_ID, FACET_VIEW_ID, SECTIONS_ID, pill_id};
         use super::super::group_header::CORNER_MENU_ID;
         let rt = super::super::start_tests::runtime();
         let _guard = rt.enter();
         let (_v, s) = header_vault(cx, &rt);
         let group = active(&s, cx);
         open_facet(&s, &rt, group, "a.md", vec![tag("x")], cx);
-        let controls: Vec<gpui_kit::SharedString> = vec![
-            SEARCH_ID.into(),
-            CLEAR_ID.into(),
-            pill_id(&tag("x")),
-            pill_id(&Facet::new(FacetKind::Heading, "A")),
-            pill_id(&Facet::new(FacetKind::Heading, "B")),
-        ];
+        let controls: Vec<gpui_kit::SharedString> =
+            vec![CLEAR_ID.into(), pill_id(&tag("x")), SECTIONS_ID.into()];
         let funnel = bounds_of(&s, CORNER_FACET_ID, cx);
         let menu = bounds_of(&s, CORNER_MENU_ID, cx);
         let corner = funnel.union(&menu);
@@ -2485,11 +2732,11 @@ pub(super) mod in_a_group {
                 "{id} {b:?} under the corner buttons {corner:?}"
             );
         }
-        click(&s, SEARCH_ID, cx);
+        click(&s, SECTIONS_ID, cx);
         let view = facet(&s, group, cx).unwrap();
         assert!(
             cx.read(|cx| view.read(cx).more_input().is_some()),
-            "the search list opened"
+            "the Sections list opened"
         );
         assert!(
             !cx.read(|cx| s.workspace.read(cx).note_menu.is_some()),
@@ -2500,9 +2747,9 @@ pub(super) mod in_a_group {
         let [left, _right] = split(&s, &rt, cx);
         assert!(facet(&s, left, cx).is_some());
         assert!(!drawn(&s, CORNER_FACET_ID, cx));
-        let search = bounds_of(&s, SEARCH_ID, cx);
+        let sections = bounds_of(&s, SECTIONS_ID, cx);
         let pane = bounds_of(&s, FACET_VIEW_ID, cx);
-        let inset = f32::from(pane.right() - search.right());
+        let inset = f32::from(pane.right() - sections.right());
         assert!(inset <= 20.0, "the usual inset in a split: {inset}");
     }
 
@@ -2592,11 +2839,20 @@ fn the_hint_goes_after_the_first_pick_and_stays_gone(cx: &mut TestAppContext) {
     assert!(!shows(cx, HINT_ID), "not back after Clear");
 }
 
+/// A press in a piece picks nothing, so the hint stays; the first pick (a
+/// pill) takes it away.
 #[gpui_kit::test]
-fn the_hint_also_goes_after_a_press_on_an_inline_tag(cx: &mut TestAppContext) {
+fn the_first_pick_still_clears_the_hint(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, NOTE, vec![]);
     let at = cell(&view, 0, 6, 4, cx);
     press(cx, at, false);
+    assert!(picks(&view, cx).is_empty());
+    assert_eq!(
+        label(cx, HINT_ID).as_deref(),
+        Some(HINT),
+        "the hint is unchanged"
+    );
+    click(cx, pill_id(&tag("b")));
     assert_eq!(picks(&view, cx), [tag("b")]);
     assert!(!shows(cx, HINT_ID));
 }
@@ -2605,7 +2861,8 @@ fn the_hint_also_goes_after_a_press_on_an_inline_tag(cx: &mut TestAppContext) {
 fn the_hint_stays_gone_after_remove_last_pick(cx: &mut TestAppContext) {
     let (_view, cx, _events, _sub) = open(cx, TWO_SECTIONS, vec![]);
     click(cx, pill_id(&tag("a")));
-    click(cx, pill_id(&heading("b")));
+    click(cx, SECTIONS_ID);
+    click(cx, more_item_id(&heading("b")));
     click(cx, REMOVE_LAST_ID);
     click(cx, pill_id(&tag("a")));
     assert!(!shows(cx, HINT_ID));

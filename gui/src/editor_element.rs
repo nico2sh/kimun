@@ -32,6 +32,7 @@ use crate::editor_view::{CaretShape, EditorView, Painted};
 use crate::find_bar;
 use crate::fonts::EditorFonts;
 use crate::grid::CellMetrics;
+use crate::input;
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
 use crate::theme::{self, CellStyle};
@@ -300,8 +301,12 @@ pub struct EditorPrepaint {
     /// The text rows only (the pane minus the mode line): where the pointer
     /// is an I-beam. The mode line keeps the default arrow.
     text_hitbox: Option<Hitbox>,
-    /// Cells drawing a follow target: a pointing hand there.
+    /// Cells drawing a follow target: a pointing hand there. Empty while a
+    /// read-only editor's targets are text (no primary modifier held).
     target_hitboxes: Vec<Hitbox>,
+    /// A read-only editor: whether its targets got the hand this frame, so a
+    /// pointer move with another modifier state draws again.
+    watch_hand: Option<bool>,
     text_area: Bounds<Pixels>,
     target_areas: Vec<Bounds<Pixels>>,
     cells: CellMetrics,
@@ -386,6 +391,7 @@ impl Element for EditorElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let origin = bounds.origin;
+        let mods = input::mods(&window.modifiers());
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
@@ -497,6 +503,12 @@ impl Element for EditorElement {
                 row_paint.push(shaped.paint.clone());
             }
             view.row_cache.end_frame();
+            // A read-only editor's targets are text until the primary
+            // modifier is held: the I-beam over them, no hand.
+            let hand = view.hand_over_targets(mods);
+            if !hand {
+                target_areas.clear();
+            }
 
             let caret_at = frame.cursor.filter(|&(_, r)| r < rows);
             let caret_cell = caret_at.map(|(c, r)| cell_bounds(c, r, 1));
@@ -660,6 +672,7 @@ impl Element for EditorElement {
                 caret_glyph: caret_glyph.as_ref().map(|g| g.at),
                 find_bar: bar_paint,
                 popup: None,
+                targets_hand: hand,
             });
             // The popup hangs from the caret's cell: nowhere to hang from
             // (scrolled off, the find bar has the keyboard), nothing drawn.
@@ -683,6 +696,7 @@ impl Element for EditorElement {
                 mode_line: mode_texts,
                 text_hitbox: None,
                 target_hitboxes: Vec::new(),
+                watch_hand: view.read_only.then_some(hand),
                 target_areas,
                 text_area: if mode_line.is_some() || bar_rows > 0 {
                     Bounds::new(origin, size(bounds.size.width, px(cells.y_of(rows))))
@@ -804,8 +818,22 @@ impl Element for EditorElement {
         // keeps selecting, and its release must end it.
         window.on_mouse_event({
             let view = self.view.clone();
+            let hitbox = prepaint.hitbox.clone();
+            let watch_hand = prepaint.watch_hand;
             move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase.bubble() {
+                    // Over a read-only editor, a move with the primary
+                    // modifier pressed or released since the last frame
+                    // draws again, so the hand comes or goes.
+                    if let Some(painted) = watch_hand
+                        && hitbox.is_hovered(window)
+                        && view
+                            .read(cx)
+                            .hand_over_targets(input::mods(&event.modifiers))
+                            != painted
+                    {
+                        window.refresh();
+                    }
                     view.update(cx, |v, cx| {
                         v.pointer_move(event, origin, &cells, window, cx)
                     });

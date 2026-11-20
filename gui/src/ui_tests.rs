@@ -2042,26 +2042,10 @@ fn read_only_editor_ignores_typing(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-#[gpui_kit::test]
-fn read_only_press_on_a_tag_emits_a_press_with_the_label_target(cx: &mut TestAppContext) {
-    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let at = cell_center(&view, 6, 0, cx);
-        window.pointer_down(at, MouseButton::Left, cx);
-        window.pointer_up(at, MouseButton::Left, cx);
-    })
-    .unwrap();
-    assert_eq!(
-        *events.borrow(),
-        vec![editor_view::EditorEvent::ReadOnlyPress {
-            target: Some(kimun_notes::logic::editor::claim::FollowTarget::Label(
-                "idea".to_string()
-            )),
-            line: "see #idea here".to_string(),
-            primary: false,
-        }]
-    );
+/// No message on the editor's channel asks to follow.
+fn assert_no_follow(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<kimun_notes::logic::message::AppMessage>,
+) {
     while let Ok(message) = rx.try_recv() {
         assert!(
             !matches!(
@@ -2069,56 +2053,88 @@ fn read_only_press_on_a_tag_emits_a_press_with_the_label_target(cx: &mut TestApp
                 kimun_notes::logic::message::AppMessage::FollowLabel(_)
                     | kimun_notes::logic::message::AppMessage::FollowLink { .. }
             ),
-            "a read-only press must not follow"
+            "a read-only press must not follow on the channel"
         );
     }
 }
 
+/// A plain press is a text press: it places the caret and tells no one.
 #[gpui_kit::test]
-fn read_only_primary_press_emits_primary_true_and_does_not_send_follow(cx: &mut TestAppContext) {
+fn a_plain_read_only_press_emits_no_event(cx: &mut TestAppContext) {
     let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let at = cell_center(&view, 6, 0, cx);
-        window.change_modifiers(gpui_kit::Modifiers::control(), cx);
         window.pointer_down(at, MouseButton::Left, cx);
         window.pointer_up(at, MouseButton::Left, cx);
+        assert_eq!(view.read(cx).editor.cursor(), (0, 6), "the caret is placed");
     })
     .unwrap();
     cx.run_until_parked();
-    let events = events.borrow();
-    assert_eq!(events.len(), 1);
-    assert!(matches!(
-        &events[0],
-        editor_view::EditorEvent::ReadOnlyPress { primary: true, .. }
-    ));
-    while let Ok(message) = rx.try_recv() {
-        assert!(
-            !matches!(
-                message,
-                kimun_notes::logic::message::AppMessage::FollowLabel(_)
-                    | kimun_notes::logic::message::AppMessage::FollowLink { .. }
-            ),
-            "a read-only press must not follow"
-        );
-    }
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    assert_no_follow(&mut rx);
 }
 
+/// A primary press on a tag asks the owner to follow it, through the event
+/// (never the channel).
 #[gpui_kit::test]
-fn read_only_press_on_a_heading_line_carries_that_line(cx: &mut TestAppContext) {
-    let (handle, view, _rx, events, _sub) = open_read_only(cx, "# Title\nbody");
+fn a_primary_read_only_press_emits_a_primary_event(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here\nplain");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let at = cell_center(&view, 2, 0, cx);
+        window.change_modifiers(gpui_kit::Modifiers::control(), cx);
+        let at = cell_center(&view, 6, 0, cx);
         window.pointer_down(at, MouseButton::Left, cx);
         window.pointer_up(at, MouseButton::Left, cx);
+        // Off any follow target, a primary press emits nothing.
+        let plain = cell_center(&view, 2, 1, cx);
+        window.pointer_down(plain, MouseButton::Left, cx);
+        window.pointer_up(plain, MouseButton::Left, cx);
     })
     .unwrap();
-    let events = events.borrow();
-    assert!(matches!(
-        events.as_slice(),
-        [editor_view::EditorEvent::ReadOnlyPress { line, target: None, .. }] if line == "# Title"
-    ));
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::ReadOnlyFollow {
+            target: kimun_notes::logic::editor::claim::FollowTarget::Label("idea".to_string()),
+        }]
+    );
+    assert_no_follow(&mut rx);
+}
+
+/// Over a read-only editor's tag the cursor is the I-beam; a pointer move
+/// with the primary modifier held asks for a frame that shows the hand. (A
+/// later key event draws the frame the move asked for.)
+#[gpui_kit::test]
+fn a_move_with_primary_held_shows_the_hand_over_a_read_only_target(cx: &mut TestAppContext) {
+    use gpui_kit::InputEvent as _;
+    let (handle, view, _rx, _events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!painted(&view, cx).targets_hand, "no modifier: text");
+        let at = cell_center(&view, 6, 0, cx);
+        let held = gpui_kit::Modifiers::control();
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: at,
+                pressed_button: None,
+                modifiers: held,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        let capslock = window.capslock();
+        window.dispatch_event(
+            gpui_kit::ModifiersChangedEvent {
+                modifiers: held,
+                capslock,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        assert!(painted(&view, cx).targets_hand, "primary held: the hand");
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

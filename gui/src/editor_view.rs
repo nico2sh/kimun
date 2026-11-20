@@ -24,6 +24,13 @@
 //! `FollowLink` chord bubbles to the owner like any app command. With the find
 //! bar open a press never follows, as in the TUI.
 //!
+//! **Read-only.** A read-only editor (a facet view's piece) is text: a press
+//! places the caret, a drag selects, a double press selects a word, and the
+//! copy chord copies. Only a primary press on a link or label does more: it
+//! emits [`EditorEvent::ReadOnlyFollow`] for the owner, never a follow on the
+//! channel. Its targets show the pointing hand only while the primary
+//! modifier is held.
+//!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
 //! ([`crate::keymap`]) with the editor focused. Find and replace are the
 //! editor's own; any other app command is left to bubble to whoever owns it,
@@ -38,10 +45,10 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
-    App, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent,
-    Styled, Task, TextSystem, UTF16Selection, Window, div,
+    Styled, Subscription, Task, TextSystem, UTF16Selection, Window, div,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::autocomplete::{
@@ -111,14 +118,11 @@ pub enum EditorEvent {
     /// A right-press with no selection — open the note menu at `at`, the
     /// pointer in window coordinates.
     ContextMenu { at: Point<Pixels> },
-    /// A press on a read-only editor, in place of following or a menu: the
-    /// **follow target** under the caret (if any), the text of the logical
-    /// line there, and whether the primary modifier was held.
-    ReadOnlyPress {
-        target: Option<FollowTarget>,
-        line: String,
-        primary: bool,
-    },
+    /// A primary press (Cmd on macOS, Ctrl elsewhere) on a **follow target**
+    /// in a read-only editor: the owner decides how to follow it (the editor
+    /// never follows on the app channel). Only a primary press on a target
+    /// emits; every other press is a text press (caret, selection).
+    ReadOnlyFollow { target: FollowTarget },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -169,6 +173,9 @@ pub struct Painted {
     /// The autocomplete popup, when one is drawn: its box in window
     /// coordinates.
     pub popup: Option<Bounds<Pixels>>,
+    /// Follow targets were drawn with the pointing hand (else the text
+    /// cursor): see [`EditorView::hand_over_targets`].
+    pub targets_hand: bool,
 }
 
 /// How close together two presses on a cell must be to follow (ADR-0043;
@@ -239,10 +246,16 @@ pub struct EditorView {
     /// loading another note into it, which would drop whatever was typed.
     /// App chords still resolve.
     pub(crate) input_blocked: bool,
-    /// A read-only surface: no caret drawn, and a press reports
-    /// [`EditorEvent::ReadOnlyPress`] instead of following. Keys are stopped
-    /// by `input_blocked`, which this sets.
+    /// A read-only surface: no caret drawn, presses select text (a double
+    /// press a word), the copy chord copies, and a primary press on a follow
+    /// target reports [`EditorEvent::ReadOnlyFollow`] instead of following.
+    /// Losing the keyboard drops the selection. Other keys are stopped by
+    /// `input_blocked`, which this sets.
     pub(crate) read_only: bool,
+    /// A read-only surface's watch on its keyboard: once the keyboard leaves
+    /// it, its selection goes ([`Self::drop_unreachable_selection`]).
+    /// Subscribed at the first render, which has the window.
+    _focus_out: Option<Subscription>,
     pub(crate) painted: Option<Painted>,
     /// The face, and the inputs it was chosen for (re-chosen when they
     /// change).
@@ -283,9 +296,10 @@ impl EditorView {
         Self::build(text, vim, tx, Some(messages), cx)
     }
 
-    /// An editor over `text` that takes no input: a press places the caret on
-    /// the text, then emits [`EditorEvent::ReadOnlyPress`] instead of
-    /// following. It drains its own app channel, as `Self::new` does.
+    /// An editor over `text` that takes no input: a press places the caret
+    /// and may select, as in read-only text; a primary press on a follow
+    /// target emits [`EditorEvent::ReadOnlyFollow`] instead of following. It
+    /// drains its own app channel, as `Self::new` does.
     pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let messages = cx.spawn(async move |this, cx| {
@@ -544,6 +558,7 @@ impl EditorView {
             preedit: None,
             input_blocked: false,
             read_only: false,
+            _focus_out: None,
             painted: None,
             fonts: None,
             row_cache: ShapedRows::default(),
@@ -608,6 +623,12 @@ impl EditorView {
     ) -> bool {
         self.preedit = None;
         if self.input_blocked {
+            // A read-only surface still copies what is selected in it.
+            if self.read_only
+                && key == KeyInput::new(Key::Char('c'), keymap::Platform::current().primary())
+            {
+                self.copy_selection(cx);
+            }
             // Taken, so it reaches nothing else either.
             return true;
         }
@@ -866,28 +887,31 @@ impl EditorView {
         }
         let left = pointer.kind == PointerKind::Down(Button::Left);
         if self.read_only {
-            // Only a left press reports: it places the caret (so the target
-            // under it is known) and tells the owner, who decides what it
-            // means. Never a follow, a menu or an edit. The press stays armed
-            // so the release ends it in the editor.
+            // Read-only text: a left press places the caret and may start a
+            // drag selection, a double press selects a word, and neither
+            // tells anyone. A primary press on a follow target also asks the
+            // owner to follow it. Never a follow on the channel, a menu or an
+            // edit; a right press does nothing.
             if left {
-                self.clicks.end();
+                let primary = pointer.mods == keymap::Platform::current().primary();
+                let double = pointer.mods == Mods::NONE
+                    && self
+                        .clicks
+                        .completes_double(pointer.col, pointer.row, (self.clock)());
+                if pointer.mods != Mods::NONE {
+                    self.clicks.end();
+                }
                 self.editor.handle_pointer(&pointer, &self.tx);
                 self.editor.settle_pointer(true);
-                let (row, _) = self.editor.cursor();
-                let line = self
-                    .editor
-                    .get_text()
-                    .lines()
-                    .nth(row)
-                    .unwrap_or_default()
-                    .to_string();
-                cx.emit(EditorEvent::ReadOnlyPress {
-                    target: self.editor.follow_target_at_cursor(),
-                    line,
-                    primary: pointer.mods == keymap::Platform::current().primary(),
-                });
-                self.dragging = true;
+                if primary && let Some(target) = self.editor.follow_target_at_cursor() {
+                    cx.emit(EditorEvent::ReadOnlyFollow { target });
+                }
+                if double {
+                    self.select_word_at_caret();
+                }
+                // A double press is done; any other press stays armed so the
+                // release (or a drag) reaches the editor.
+                self.dragging = !double;
                 self.settle(window, cx);
             }
             return;
@@ -947,6 +971,54 @@ impl EditorView {
         true
     }
 
+    /// Select the word under the caret (a run of letters, digits and `_`;
+    /// on anything else, the run of that kind of char). Nothing on an empty
+    /// row.
+    fn select_word_at_caret(&mut self) {
+        let (row, col) = self.editor.buffer().cursor();
+        let line = self.editor.buffer().row(row).unwrap_or_default();
+        if let Some(cols) = word_at(&line, col) {
+            self.editor
+                .buffer_mut()
+                .set_selection((row, cols.start), (row, cols.end));
+            self.editor.sync_highlight();
+        }
+    }
+
+    /// A read-only surface without the keyboard drops its selection: the copy
+    /// chord only reaches the surface that has the keyboard, so a selection
+    /// left drawn elsewhere could not be copied. The caret stays where the
+    /// selection ended and the text is untouched. Nothing while a drag is
+    /// still selecting (its release checks again), nor in an editor that
+    /// edits.
+    fn drop_unreachable_selection(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.read_only
+            || self.dragging
+            || self.focus_handle.contains_focused(window, cx)
+            || self.editor.selection().is_none()
+        {
+            return;
+        }
+        self.editor.buffer_mut().cancel_selection();
+        self.editor.sync_highlight();
+        cx.notify();
+    }
+
+    /// Put the selected text on the clipboard (a read-only surface's copy
+    /// chord). Nothing when nothing is selected.
+    fn copy_selection(&self, cx: &mut Context<Self>) {
+        if let Some(text) = self.editor.buffer().selection_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Whether follow targets show the pointing hand with `mods` held: always
+    /// in an editor that follows, and only while the primary modifier alone
+    /// is held in a read-only one (there a target is text until then).
+    pub(crate) fn hand_over_targets(&self, mods: Mods) -> bool {
+        !self.read_only || mods == keymap::Platform::current().primary()
+    }
+
     /// A press on find bar row `row` (0 the query, 1 the replacement) gives
     /// that field the keyboard. The bar's own Tab is the one way it moves
     /// focus, so the press uses it.
@@ -979,6 +1051,7 @@ impl EditorView {
         // The release happened where we could not see it (outside the window).
         if event.pressed_button != Some(MouseButton::Left) {
             self.dragging = false;
+            self.drop_unreachable_selection(window, cx);
             return;
         }
         let Some(pointer) = input::pointer_move(event, origin, cells) else {
@@ -1001,12 +1074,13 @@ impl EditorView {
             return;
         }
         self.dragging = false;
-        let Some(pointer) = input::pointer_up(event, origin, cells) else {
-            return;
-        };
-        self.editor.handle_pointer(&pointer, &self.tx);
-        self.editor.settle_pointer(false);
-        self.settle(window, cx);
+        if let Some(pointer) = input::pointer_up(event, origin, cells) {
+            self.editor.handle_pointer(&pointer, &self.tx);
+            self.editor.settle_pointer(false);
+            self.settle(window, cx);
+        }
+        // The keyboard left during the drag: what it selected is out of reach.
+        self.drop_unreachable_selection(window, cx);
     }
 
     pub(crate) fn scroll_wheel(
@@ -1190,6 +1264,12 @@ impl Focusable for EditorView {
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tidy_autocomplete(window);
+        if self.read_only && self._focus_out.is_none() {
+            let handle = self.focus_handle.clone();
+            self._focus_out = Some(cx.on_focus_out(&handle, window, |this, _, window, cx| {
+                this.drop_unreachable_selection(window, cx)
+            }));
+        }
         div()
             .id("editor")
             .test_support()
@@ -1374,6 +1454,34 @@ impl EntityInputHandler for EditorView {
     }
 }
 
+/// The char columns of the word at char column `col` of `line`: the run of
+/// word chars (letters, digits, `_`) there, else the run of whitespace or of
+/// other chars. A column past the end counts as the last char. `None` on an
+/// empty line.
+fn word_at(line: &str, col: usize) -> Option<Range<usize>> {
+    let chars: Vec<char> = line.chars().collect();
+    let at = col.min(chars.len().checked_sub(1)?);
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            0
+        } else if c.is_whitespace() {
+            1
+        } else {
+            2
+        }
+    };
+    let kind = class(chars[at]);
+    let start = chars[..at]
+        .iter()
+        .rposition(|&c| class(c) != kind)
+        .map_or(0, |i| i + 1);
+    let end = chars[at..]
+        .iter()
+        .position(|&c| class(c) != kind)
+        .map_or(chars.len(), |i| at + i);
+    Some(start..end)
+}
+
 /// The char index `utf16` code units into `s`, clamped to its end. An offset
 /// inside a surrogate pair rounds down to the char that starts it.
 fn utf16_to_char(s: &str, utf16: usize) -> usize {
@@ -1512,6 +1620,17 @@ mod tests {
             }
         });
         assert_eq!(entries(cx), SHARED_FACES, "the cache keeps its bound");
+    }
+
+    #[test]
+    fn a_word_is_a_run_of_one_kind_of_char() {
+        assert_eq!(word_at("a #idea b", 4), Some(3..7));
+        assert_eq!(word_at("a #idea b", 2), Some(2..3), "the `#` alone");
+        assert_eq!(word_at("a  b", 1), Some(1..3), "the spaces");
+        assert_eq!(word_at("snake_case.rs", 3), Some(0..10));
+        assert_eq!(word_at("été ok", 1), Some(0..3));
+        assert_eq!(word_at("end", 9), Some(0..3), "past the end: the last word");
+        assert_eq!(word_at("", 0), None);
     }
 
     #[test]

@@ -3,33 +3,36 @@
 //!
 //! **Layout.** A pinned bar over a scrolling column. The bar never scrolls
 //! away and takes at most 40% of the view's height, scrolling inside itself
-//! past that: a summary line with `Clear` while picks show something, then
-//! one row per facet kind (tag, note link, heading), each led by its rail
-//! icon, `+N more` folding the rest into a fuzzy list. A long note's heading
-//! row collapses to its picked headings and a `Sections N` chip that opens
-//! the same list. The search button at the bar's top-right opens the
-//! search over every kind. The list floats under its chip
-//! ([`super::facet_list`]), stays open while picks are made in it, and
-//! closes on Escape or a press outside, or when new text takes away what it
-//! hangs from. The bar keeps clear of buttons its host floats over the
-//! view's top-right corner ([`FacetView::set_corner_room`]). The column
-//! holds the shown chunks with a gap row between them, then `Show N more`
-//! when more chunks match than the view draws. Each chunk is a read-only
-//! [`EditorView`] sized to its lines, with no frame, under a slim row: the
-//! headings that contain it as clickable crumbs, outer ones shortened first
-//! with an ellipsis when the row is narrow, and `Open source`. A gap row counts the hidden blocks (`3
-//! hidden`) and reveals one at a time next to the chunk above (down) or
-//! below (up), or all of them with `Show all` when few are hidden.
+//! past that: the filter line ([`mod@line`]), then a summary line with
+//! `Clear` while there are picks. The filter line is one row that never
+//! wraps: the picked pills first (each with a remove mark), then the tags
+//! (`#name`) and note links (`[[name]]`) that fit, ranked by count, a `+N`
+//! chip for those left out and a `Sections N` chip for the headings. `+N`
+//! (and `/`) opens the list of every unpicked tag and link, `Sections N`
+//! the list of headings (`/` too, when no tag or link is left unpicked). A
+//! list floats under what opened it ([`super::facet_list`]), stays open
+//! while picks are made in it, and closes on Escape or a press outside, or
+//! when new text or a pick takes away all it holds. The bar keeps clear of
+//! buttons its host floats over the view's top-right corner ([`FacetView::set_corner_room`]).
 //!
-//! **Picking.** A pill toggles its facet. A plain press in a chunk toggles
-//! the facet under it: a tag, a note link, or the heading of a heading line.
-//! A press on anything else (a URL, an attachment, plain text) toggles
-//! nothing. The editor reports one press per press, so a double press
-//! toggles twice. A primary press only asks to follow.
+//! The column holds the shown chunks with a gap row between them, then
+//! `Show N more` when more chunks match than the view draws. Each chunk is
+//! a read-only [`EditorView`] sized to its lines, with no frame, under a
+//! slim row: the headings that contain it as clickable crumbs, outer ones
+//! shortened first with an ellipsis when the row is narrow, and `Open
+//! source`. A gap row counts the hidden blocks (`3 hidden`) and reveals one
+//! at a time next to the chunk above (down) or below (up), or all of them
+//! with `Show all` when few are hidden.
+//!
+//! **Picking.** A pill toggles its facet, as do the `+N` and `Sections N`
+//! lists and the breadcrumb buttons. A press in a piece never changes the
+//! filter, with or without a modifier: the piece is read-only text (a caret,
+//! a drag or a double press selects, the copy chord copies). A primary press
+//! (Ctrl, or Cmd on macOS) on a link or tag only asks to follow it.
 //!
 //! **Keyboard** ([`mod@keys`]): every chip, pill and text button is a tab stop
 //! with a focus ring, and Enter or Space does what a click does. `/` opens
-//! the search, `j`/`k` step between pieces, Escape clears the picks (from
+//! the list of every tag and link, `j`/`k` step between pieces, Escape clears the picks (from
 //! inside a piece it first hands the keyboard to the view).
 //!
 //! **Content.** The view shows a list of member notes ([`mod@members`]); a
@@ -37,15 +40,16 @@
 //! facets, the selection per member, one cap over the members' chunks, and
 //! reveals inside a member. A change of picks or text plans again from the
 //! picks (revealed blocks reset); new text also drops picks the notes no
-//! longer hold. Each piece answers for its own note: a press resolves links
+//! longer hold. Each piece answers for its own note: a follow resolves links
 //! against it, `Open source` and a follow name it. The view takes plain
 //! data in and emits [`FacetEvent`]s; it knows no workspace.
 //!
 //! **Collections** ([`mod@collection`]): a view of the notes one query
-//! returned. Each piece's breadcrumb row starts with its note's title, so a
-//! piece far from its note's other pieces still says where it comes from.
+//! returned. Each note starts with a dateline (its title, a hairline, its
+//! folder and drawn piece count), so a piece says which note it comes from.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
@@ -58,17 +62,16 @@ use gpui_kit::{
     Subscription, WeakEntity, Window, canvas, div, px, relative,
 };
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::scan::{LinkSpanKind, heading_display_text};
-use kimun_core::note::{Facet, FacetKind, GAP_SHOW_ALL_MAX, MAX_RANGES, NoteTarget, Reveal};
+use kimun_core::note::{Facet, FacetKind, GAP_SHOW_ALL_MAX, MAX_RANGES, Reveal};
 use kimun_notes::logic::editor::claim::FollowTarget;
-use kimun_notes::logic::facet_bar::{FacetBar, Pill, Row};
+use kimun_notes::logic::facet_bar::FacetBar;
 use kimun_notes::settings::themes::Theme;
 
 use self::collection::Collection;
 use self::keys::{Stop, Stops, keys};
+use self::line::PillWidths;
 use self::members::{Member, Members, chunk_plan};
-use super::facet_list::{OpenList, list_popover};
-use super::facet_ui::{chip, crumb as crumb_button, icon_chip, leader, pill, text_button};
+use super::facet_ui::{chip, crumb as crumb_button, icon_chip, text_button};
 use super::query_field::focus_input;
 use crate::editor_element::LINE_HEIGHT;
 use crate::editor_font;
@@ -77,8 +80,13 @@ use crate::theme;
 
 mod collection;
 mod keys;
+mod line;
 mod members;
 
+#[cfg(test)]
+pub(crate) use self::collection::{
+    dateline_folder_id, dateline_id, dateline_meta_id, dateline_rule_id, dateline_title_id,
+};
 pub use self::members::MemberInit;
 
 /// Element ids, for tests.
@@ -97,10 +105,15 @@ pub(crate) const REMOVE_LAST_ID: &str = "facet-remove-last";
 /// The one-line hint under the bar, until the first pick.
 pub(crate) const HINT_ID: &str = "facet-hint";
 pub(crate) const CLEAR_ID: &str = "facet-clear";
-/// The `Sections N` chip of a collapsed heading row.
+/// The `Sections N` chip: opens the headings list.
 pub(crate) const SECTIONS_ID: &str = "facet-sections";
-/// The bar's search button: the trigger of the search over every kind.
-pub(crate) const SEARCH_ID: &str = "facet-search";
+/// The filter line: the pills that fit, `+N` and `Sections N`.
+pub(crate) const LINE_ID: &str = "facet-line";
+/// The `+N` chip, while the line leaves facets out: opens the list of every
+/// tag and link.
+pub(crate) const MORE_ID: &str = "facet-more";
+/// The filter line's clipped container of pills.
+pub(crate) const LINE_PILLS_ID: &str = "facet-line-pills";
 /// The scrolling column of pieces.
 pub(crate) const COLUMN_ID: &str = "facet-column";
 /// A collection's `Refresh` text button, in its empty state.
@@ -116,24 +129,32 @@ fn kind_slug(kind: FacetKind) -> &'static str {
     }
 }
 
-/// The pill of `facet` in its row.
+/// The pill of `facet` in the filter line.
 pub(crate) fn pill_id(facet: &Facet) -> SharedString {
     format!("facet-pill:{}:{}", kind_slug(facet.kind), facet.key).into()
 }
 
-/// The pill of `facet` in the `+N more` list.
+/// The remove mark on the picked pill of `facet` in the filter line.
+#[cfg(test)]
+pub(crate) fn remove_mark_id(facet: &Facet) -> SharedString {
+    super::facet_ui::remove_mark(&pill_id(facet))
+}
+
+/// The outline icon in front of the picked heading pill of `facet`.
+#[cfg(test)]
+pub(crate) fn outline_mark_id(facet: &Facet) -> SharedString {
+    super::facet_ui::outline_mark(&pill_id(facet))
+}
+
+/// The pill of `facet` in an open list (the `+N` list, the `Sections N`
+/// list).
 pub(crate) fn more_item_id(facet: &Facet) -> SharedString {
     format!("facet-more-item:{}:{}", kind_slug(facet.kind), facet.key).into()
 }
 
-/// The `+N more` button of `kind`'s row.
-pub(crate) fn more_button_id(kind: FacetKind) -> SharedString {
-    format!("facet-more:{}", kind_slug(kind)).into()
-}
-
-/// The leading icon of `kind`'s row.
-pub(crate) fn row_leader_id(kind: FacetKind) -> SharedString {
-    format!("facet-leader:{}", kind_slug(kind)).into()
+/// The label over `kind`'s group in the `+N` list (`Tags`, `Links`).
+pub(crate) fn list_group_id(kind: FacetKind) -> SharedString {
+    format!("facet-list-group:{}", kind_slug(kind)).into()
 }
 
 /// Chunk `i`.
@@ -169,40 +190,9 @@ pub(crate) fn gap_count_id(g: usize) -> SharedString {
     format!("facet-gap-count:{g}").into()
 }
 
-/// The note title that leads chunk `chunk`'s breadcrumb row (a collection).
-pub(crate) fn note_title_id(chunk: usize) -> SharedString {
-    format!("facet-note-title:{chunk}").into()
-}
-
 /// Crumb `index` (outermost first) of chunk `chunk`'s breadcrumb.
 pub(crate) fn crumb_id(chunk: usize, index: usize) -> SharedString {
     format!("facet-crumb:{chunk}:{index}").into()
-}
-
-/// The facet a plain press toggles, in a note at `source`: the tag or note
-/// link under the press, else the heading of `line` (the pressed line).
-/// `None` for a link that is no note link (a URL, an attachment, an image)
-/// and for a line that is no heading.
-pub(crate) fn pressed_facet(
-    target: Option<&FollowTarget>,
-    line: &str,
-    source: &VaultPath,
-) -> Option<Facet> {
-    match target {
-        Some(FollowTarget::Label(name)) => Some(Facet::new(FacetKind::Tag, name)),
-        Some(FollowTarget::Link { target, kind }) => {
-            let note = match kind {
-                LinkSpanKind::WikiLink => NoteTarget::from_wikilink(target, source),
-                LinkSpanKind::Markdown => NoteTarget::from_markdown(target, source),
-                LinkSpanKind::Image => None,
-            }?;
-            Some(Facet::new(
-                FacetKind::NoteLink,
-                &note.path().get_clean_name(),
-            ))
-        }
-        None => heading_display_text(line).map(|text| Facet::new(FacetKind::Heading, &text)),
-    }
 }
 
 /// What the view asks of its host.
@@ -223,11 +213,20 @@ pub enum FacetEvent {
     Refresh,
 }
 
-/// The open list: its kind (`None`: the search over every kind), its
-/// fuzzy query field, and the result Enter toggles (lit; a new query lights
-/// the first).
+/// Which list is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListKind {
+    /// Every unpicked tag and link, by kind: the `+N` chip and `/`.
+    Facets,
+    /// The headings: the `Sections N` chip.
+    Sections,
+}
+
+/// The open list: its kind, its fuzzy query field, and the result Enter
+/// toggles (lit, an index into the list's pills in order; a new query
+/// lights the first).
 struct More {
-    kind: Option<FacetKind>,
+    kind: ListKind,
     input: Entity<InputState>,
     highlight: usize,
     _events: Subscription,
@@ -270,6 +269,18 @@ pub struct FacetView {
     /// Room the bar keeps clear at its right end for what its host floats
     /// over the view's top-right corner ([`Self::set_corner_room`]).
     corner_room: Option<Rems>,
+    /// The filter line's room for pills and `+N`, as the last frame laid it
+    /// out ([`mod@line`]); `None` before the first layout.
+    line_room: Rc<Cell<Option<f32>>>,
+    /// The room the last render fitted the line to.
+    room_used: Option<f32>,
+    /// The measured pill widths ([`mod@line`]).
+    widths: RefCell<PillWidths>,
+    /// The facets the last frame's line left out (its `+N`).
+    more_count: Cell<usize>,
+    /// The primary modifier was held at the last modifiers change: a piece's
+    /// links and tags show the pointing hand only while it is ([`mod@keys`]).
+    primary_held: bool,
     /// The focus handle of a list's field that [`Self::plan`] closed: the
     /// next frame gives the keyboard to the view if the field still had it.
     stranded: Option<FocusHandle>,
@@ -318,6 +329,11 @@ impl FacetView {
             piece_items: Vec::new(),
             hint_done,
             corner_room: None,
+            line_room: Rc::default(),
+            room_used: None,
+            widths: RefCell::default(),
+            more_count: Cell::new(0),
+            primary_held: false,
             stranded: None,
             #[cfg(test)]
             plans_run: 0,
@@ -404,7 +420,7 @@ impl FacetView {
         &self.chunks
     }
 
-    /// The open `+N more` list's query field (tests).
+    /// The open list's query field (tests).
     #[cfg(test)]
     pub(crate) fn more_input(&self) -> Option<Entity<InputState>> {
         self.more.as_ref().map(|more| more.input.clone())
@@ -414,6 +430,21 @@ impl FacetView {
     #[cfg(test)]
     pub(crate) fn list_results(&self, cx: &App) -> Vec<Facet> {
         self.list_pills(cx).into_iter().map(|p| p.facet).collect()
+    }
+
+    /// How many facets the last frame's line left out: the `+N` (tests).
+    #[cfg(test)]
+    pub(crate) fn more_count(&self) -> usize {
+        self.more_count.get()
+    }
+
+    /// The width measured for `facet`'s pill as the line draws it now
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn measured_width(&self, facet: &Facet) -> Option<f32> {
+        let line = self.bar.line(&self.members.merged);
+        let pill = line.pills.iter().find(|p| p.facet == *facet)?;
+        self.widths.borrow().get(pill)
     }
 
     /// The element drawn with the focus ring in the last frame (tests).
@@ -464,14 +495,11 @@ impl FacetView {
                 None => {
                     let editor = cx.new(|cx| EditorView::new_read_only(&plan.text, cx));
                     let events = cx.subscribe(&editor, |this, editor, event: &EditorEvent, cx| {
-                        if let EditorEvent::ReadOnlyPress {
-                            target,
-                            line,
-                            primary,
-                        } = event
-                            && let Some(i) = this.chunks.iter().position(|c| *c == editor)
-                        {
-                            this.pressed(i, target.as_ref(), line, *primary, cx);
+                        let EditorEvent::ReadOnlyFollow { target } = event else {
+                            return;
+                        };
+                        if let Some(i) = this.chunks.iter().position(|c| *c == editor) {
+                            this.follow(i, target.clone(), cx);
                         }
                     });
                     self.chunks.push(editor);
@@ -480,9 +508,10 @@ impl FacetView {
                 }
             }
         }
-        // New text can take away what the open list hangs from (its kind's
-        // row, or the whole bar for the search): it closes, and the next
-        // frame hands the keyboard from its field to the view.
+        // New text, or a pick of the last unpicked tag or link, can take
+        // away everything the open list holds (every tag and link, or every
+        // heading): it closes, and the next frame hands the keyboard from
+        // its field to the view.
         let gone = self
             .more
             .as_ref()
@@ -493,41 +522,25 @@ impl FacetView {
         cx.notify();
     }
 
-    /// Whether the bar draws what `kind`'s list hangs from: a row of that
-    /// kind, or for the search (`None`) the bar itself (a note with a facet).
-    fn list_drawable(&self, kind: Option<FacetKind>) -> bool {
-        self.members
-            .merged
-            .entries
-            .iter()
-            .any(|entry| kind.is_none_or(|kind| entry.facet.kind == kind))
+    /// Whether `kind`'s list has anything to hold: an unpicked tag or note
+    /// link for the `+N` list (picked ones lead the line, not the list), a
+    /// heading for the `Sections N` list.
+    fn list_drawable(&self, kind: ListKind) -> bool {
+        let merged = &self.members.merged;
+        match kind {
+            ListKind::Facets => !self.bar.grouped(merged, "").is_empty(),
+            ListKind::Sections => merged
+                .entries
+                .iter()
+                .any(|entry| entry.facet.kind == FacetKind::Heading),
+        }
     }
 
-    /// A press in chunk `i`: a primary press asks to follow, a plain one
-    /// toggles the facet under it. Either resolves against the chunk's own
-    /// note.
-    fn pressed(
-        &mut self,
-        i: usize,
-        target: Option<&FollowTarget>,
-        line: &str,
-        primary: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) else {
-            return;
-        };
-        if primary {
-            if let Some(target) = target {
-                cx.emit(FacetEvent::Follow {
-                    from: note,
-                    target: target.clone(),
-                });
-            }
-            return;
-        }
-        if let Some(facet) = pressed_facet(target, line, &note) {
-            self.toggle(facet, cx);
+    /// A primary press on `target` in chunk `i`: ask the host to follow it,
+    /// from the chunk's own note (a relative link resolves against it).
+    fn follow(&mut self, i: usize, target: FollowTarget, cx: &mut Context<Self>) {
+        if let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) {
+            cx.emit(FacetEvent::Follow { from: note, target });
         }
     }
 
@@ -645,11 +658,13 @@ impl FacetView {
     }
 
     /// After a paint (the editors laid out in its prepaint): every chunk's
-    /// layout is current. True when a chunk was sized for other rows and no
-    /// correcting frame is asked for yet; the caller asks for one.
+    /// layout is current. True when a chunk was sized for other rows, or the
+    /// filter line was fitted to another room than it got, and no correcting
+    /// frame is asked for yet; the caller asks for one.
     fn painted(&mut self, cx: &App) -> bool {
         self.laid_out.iter_mut().for_each(|done| *done = true);
-        if self.frame_asked || !self.rows_changed(cx) {
+        let room_changed = self.line_room.get() != self.room_used;
+        if self.frame_asked || !(self.rows_changed(cx) || room_changed) {
             return false;
         }
         self.frame_asked = true;
@@ -680,15 +695,15 @@ impl FacetView {
         Some((member.path.clone(), self.members.first_line(i)))
     }
 
-    /// Open `kind`'s list (`None`: the search over every kind), its filter
-    /// field empty and holding the keyboard. It replaces a list already open.
+    /// Open `kind`'s list, its filter field empty and holding the keyboard.
+    /// It replaces a list already open.
     pub(crate) fn open_list(
         &mut self,
-        kind: Option<FacetKind>,
+        kind: ListKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Nothing to hang it from: a note with no facet draws no bar.
+        // Nothing to list: no unpicked tag or link, no heading.
         if !self.list_drawable(kind) {
             return;
         }
@@ -712,15 +727,15 @@ impl FacetView {
     }
 
     /// Close the open list. The keyboard goes back to the chip that opens
-    /// it (the search button for the search), or to the view when that chip
-    /// is not drawn (a row with every facet picked has none).
+    /// it (`+N`, `Sections N`), or to the view when that chip is not drawn
+    /// (every pill fits the line: no `+N`, `/` opened it).
     pub(crate) fn close_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(more) = self.more.take() else {
             return;
         };
         let chip = match more.kind {
-            Some(kind) => Stop::Opener(kind),
-            None => Stop::Search,
+            ListKind::Facets => Stop::More,
+            ListKind::Sections => Stop::Sections,
         };
         let handle = self.stops.borrow().handle(&chip);
         window.focus(&handle.unwrap_or_else(|| self.focus.clone()), cx);
@@ -732,7 +747,7 @@ impl FacetView {
     /// chip's list replaced it) changes nothing.
     fn list_changed(
         &mut self,
-        kind: Option<FacetKind>,
+        kind: ListKind,
         open: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -757,27 +772,29 @@ impl FacetView {
 
     // ---- Drawing -------------------------------------------------------------
 
-    /// The pinned bar above the column: the summary line, then one row per
-    /// kind, with the search button at its top-right. `None` when it would
-    /// be empty (a note with no facet).
-    fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    /// The pinned bar above the column: the filter line ([`mod@line`]), then
+    /// the summary line. `None` when it would be empty (a note with no
+    /// facet).
+    fn render_bar(
+        &self,
+        window: &Window,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
         let summary = self.render_summary(t, cx);
-        let rows: Vec<Div> = self
-            .bar
-            .rows(&self.members.merged)
-            .into_iter()
-            .map(|row| self.render_row(row, t, cx))
-            .collect();
-        if summary.is_none() && rows.is_empty() {
+        let line = self.bar.line(&self.members.merged);
+        let line = (!line.pills.is_empty() || line.sections > 0)
+            .then(|| self.render_line(line, window, t, cx));
+        if summary.is_none() && line.is_none() {
             return None;
         }
         Some(
             div()
                 .id(FACET_BAR_ID)
                 .flex()
+                .flex_col()
                 .flex_none()
-                .items_start()
-                .gap_2()
+                .gap_1()
                 .max_h(relative(0.4))
                 .overflow_y_scroll()
                 .px_4()
@@ -785,26 +802,10 @@ impl FacetView {
                 .py_3()
                 .border_b_1()
                 .border_color(theme::divider(t))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .children(summary)
-                        .children(rows),
-                )
-                .child(self.render_search(t, cx))
+                .children(line)
+                .children(summary)
                 .test_support(),
         )
-    }
-
-    /// The search button: the search over every kind (`/`) hangs from it.
-    fn render_search(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let button = icon_chip(SEARCH_ID.into(), IconName::Search, "Search facets (/)", t);
-        let button = self.track(Stop::Search, button.test_support(), t, cx);
-        self.render_list(None, button.into_any_element(), t, cx)
     }
 
     /// `el`, a button that does what `stop` does, as that tab stop.
@@ -853,109 +854,8 @@ impl FacetView {
         )
     }
 
-    /// One kind's row: its icon, its pills, then `+N more`, or for a
-    /// collapsed heading row the picked headings and `Sections N`. Both
-    /// chips open the kind's full list.
-    fn render_row(&self, row: Row, t: &Theme, cx: &mut Context<Self>) -> Div {
-        let kind = row.kind;
-        let total = row.pills.len() + row.more;
-        let (id, label) = if row.collapsed {
-            (SECTIONS_ID.into(), format!("Sections {total}"))
-        } else {
-            (more_button_id(kind), format!("+{} more", row.more))
-        };
-        let has_opener = row.collapsed || row.more > 0;
-        let opener = has_opener.then(|| {
-            let chip = self.track(Stop::Opener(kind), chip(id, label, t).test_support(), t, cx);
-            self.render_list(Some(kind), chip.into_any_element(), t, cx)
-        });
-        // Picks can leave a row with no chip (every facet of the kind picked)
-        // while its list is open: the list then hangs from the row's icon.
-        let leader = if !has_opener && self.list_open(Some(kind)) {
-            self.render_list(Some(kind), leader(kind, t).into_any_element(), t, cx)
-        } else {
-            leader(kind, t).into_any_element()
-        };
-        div()
-            .flex()
-            .flex_none()
-            .items_start()
-            .gap_2()
-            .child(leader)
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_1()
-                    .children(row.pills.into_iter().map(|p| {
-                        let el = pill(pill_id(&p.facet), &p, t);
-                        self.button(Stop::Pill(p.facet), el, t, cx)
-                    }))
-                    .children(opener),
-            )
-    }
-
-    fn list_open(&self, kind: Option<FacetKind>) -> bool {
+    fn list_open(&self, kind: ListKind) -> bool {
         self.more.as_ref().is_some_and(|more| more.kind == kind)
-    }
-
-    /// `trigger` with `kind`'s list ([`list_popover`]) hung under it, open
-    /// while the view holds it open: the field, then the pills of
-    /// [`FacetBar::more_list`] (of [`FacetBar::search`] for `None`).
-    fn render_list(
-        &self,
-        kind: Option<FacetKind>,
-        trigger: AnyElement,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let list = self
-            .more
-            .as_ref()
-            .filter(|more| more.kind == kind)
-            .map(|more| {
-                let pills = self.list_pills(cx);
-                let lit = more.highlight.min(pills.len().saturating_sub(1));
-                let pills = pills
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let facet = p.facet.clone();
-                        pill(more_item_id(&p.facet), &p, t)
-                            .aria_selected(i == lit)
-                            .when(i == lit, |p| p.border_color(theme::focus_border(t)))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.pick_more(facet.clone(), window, cx)
-                            }))
-                            .test_support()
-                            .into_any_element()
-                    })
-                    .collect();
-                OpenList {
-                    input: more.input.clone(),
-                    pills,
-                }
-            });
-        let changed = cx.listener(move |this, open: &bool, window, cx| {
-            this.list_changed(kind, *open, window, cx)
-        });
-        list_popover(kind, trigger, list, changed, t, cx)
-    }
-
-    /// The open list's results: [`FacetBar::more_list`] of its kind, or
-    /// [`FacetBar::search`] over every kind, filtered by its query.
-    fn list_pills(&self, cx: &App) -> Vec<Pill> {
-        let Some(more) = &self.more else {
-            return Vec::new();
-        };
-        let query = more.input.read(cx).value().to_string();
-        match more.kind {
-            Some(kind) => self.bar.more_list(&self.members.merged, kind, &query),
-            None => self.bar.search(&self.members.merged, &query),
-        }
     }
 
     /// Gap `g` ([`mod@members`]), or `None` when it hides nothing.
@@ -1008,12 +908,9 @@ impl FacetView {
     /// source` at the right end. Drawn with no crumbs too, so pieces line up.
     fn render_crumbs(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
         let mut crumbs: Vec<AnyElement> = Vec::new();
-        let title = self.note_title(i, t);
-        let has_title = title.is_some();
-        crumbs.extend(title);
         let plan_crumbs = self.members.chunk(i).map_or(&[][..], |plan| &plan.crumbs);
         for (index, crumb) in plan_crumbs.iter().enumerate() {
-            if index > 0 || has_title {
+            if index > 0 {
                 crumbs.push(
                     div()
                         .flex_none()
@@ -1131,18 +1028,27 @@ impl Render for FacetView {
             .map(|i| self.rows_of(i, cx))
             .collect();
         self.stops.get_mut().begin(window);
+        self.room_used = self.line_room.get();
 
-        let bar = self.render_bar(t, cx);
+        let bar = self.render_bar(window, t, cx);
         let mut body: Vec<AnyElement> = Vec::new();
         let mut pieces = Vec::with_capacity(self.members.len());
         // Each gap, then the chunk below it if any: every chunk once, in
-        // order, each member's gaps its own.
+        // order, each member's gaps its own. In a collection a member's
+        // dateline stands above its first gap; `j`/`k` onto the member's
+        // first chunk bring the dateline to the top.
+        let mut lead = None;
         for g in 0..self.members.gaps.len() {
+            let spaced = !body.is_empty();
+            if let Some(line) = self.render_dateline(self.members.gaps[g], spaced, t) {
+                lead = Some(body.len());
+                body.push(line);
+            }
             if let Some(gap) = self.render_gap(g, t, cx) {
                 body.push(gap.into_any_element());
             }
             if let Some(i) = self.members.gaps[g].below {
-                pieces.push(body.len());
+                pieces.push(lead.take().unwrap_or(body.len()));
                 body.push(self.render_chunk(i, line_height, rem, t, cx));
             }
         }

@@ -963,7 +963,7 @@ impl Workspace {
                 }
             }
             // Only a read-only editor emits this; the note editors are not.
-            EditorEvent::ReadOnlyPress { .. } => {}
+            EditorEvent::ReadOnlyFollow { .. } => {}
         }
     }
 
@@ -3895,6 +3895,8 @@ mod chevron_tests;
 mod collection_tests;
 #[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod facet_line_tests;
 #[cfg(test)]
 mod facet_tests;
 #[cfg(test)]
