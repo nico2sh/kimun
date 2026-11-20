@@ -42,75 +42,24 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Task, div, px,
+    div, px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, MAX_RANGES};
 use kimun_notes::logic::query::COLLECTION_NOTE_CAP;
 use kimun_notes::settings::themes::Theme;
 
+pub(crate) use super::collection_text::{dateline_meta, note_folder, piece_count, refresh_text};
+use super::collection_text::{local_now, note_count};
 use super::keys::Stop;
 use super::members::{GapRef, MemberInit, Members};
-use super::{COLLECTION_LINE_ID, FacetEvent, FacetView, REFRESH_ID};
+use super::timed::Timed;
+use super::{
+    COLLECTION_LINE_ID, FacetEvent, FacetView, REFRESH_ID, dateline_folder_id, dateline_id,
+    dateline_meta_id, dateline_rule_id, dateline_title_id,
+};
 use crate::workspace::facet_ui::text_button;
 use crate::{editor_font, theme};
-
-/// The dateline of member `member` (its index in the member list).
-pub(crate) fn dateline_id(member: usize) -> SharedString {
-    format!("facet-dateline:{member}").into()
-}
-
-/// The title on member `member`'s dateline.
-pub(crate) fn dateline_title_id(member: usize) -> SharedString {
-    format!("facet-dateline-title:{member}").into()
-}
-
-/// The hairline on member `member`'s dateline.
-pub(crate) fn dateline_rule_id(member: usize) -> SharedString {
-    format!("facet-dateline-rule:{member}").into()
-}
-
-/// The folder on member `member`'s dateline, when it has one.
-pub(crate) fn dateline_folder_id(member: usize) -> SharedString {
-    format!("facet-dateline-folder:{member}").into()
-}
-
-/// The piece count on member `member`'s dateline, at its right end; its
-/// name is the whole meta text ([`dateline_meta`]).
-pub(crate) fn dateline_meta_id(member: usize) -> SharedString {
-    format!("facet-dateline-meta:{member}").into()
-}
-
-/// The folder a dateline names for the note at `path`: its parent folder,
-/// written from the vault root without a leading separator
-/// (`journal/2026`). `None` for a note at the vault root.
-pub(crate) fn note_folder(path: &VaultPath) -> Option<String> {
-    let (mut parent, _) = path.flatten().get_parent_path();
-    if parent.is_root_or_empty() {
-        return None;
-    }
-    parent.to_relative();
-    Some(parent.to_string())
-}
-
-/// `1 piece`, `2 pieces`.
-pub(crate) fn piece_count(pieces: usize) -> String {
-    match pieces {
-        1 => "1 piece".into(),
-        n => format!("{n} pieces"),
-    }
-}
-
-/// A dateline's meta text: the note's folder ([`note_folder`]) and its
-/// drawn pieces ([`piece_count`]), joined by ` · `; the count alone at the
-/// vault root.
-pub(crate) fn dateline_meta(path: &VaultPath, pieces: usize) -> String {
-    let count = piece_count(pieces);
-    match note_folder(path) {
-        Some(folder) => format!("{folder} \u{b7} {count}"),
-        None => count,
-    }
-}
 
 /// How much faster a dateline's folder shrinks than its title.
 const META_FOLDER_SHRINK: f32 = 1000.;
@@ -127,44 +76,6 @@ const REFRESH_SHOWN: Duration = Duration::from_secs(6);
 
 /// What tells a collection the local time a load completed.
 pub(crate) type Clock = fn() -> NaiveTime;
-
-/// The local wall-clock time.
-fn local_now() -> NaiveTime {
-    chrono::Local::now().time()
-}
-
-/// `1 note`, `2 notes`.
-fn note_count(notes: usize) -> String {
-    match notes {
-        1 => "1 note".into(),
-        n => format!("{n} notes"),
-    }
-}
-
-/// What the collection line says for a while after a refresh: the notes
-/// `added` and `removed` against the list before, and the picks `dropped`
-/// because no note holds them any more. The first count names the notes.
-pub(crate) fn refresh_text(added: usize, removed: usize, dropped: usize) -> String {
-    let mut changes = Vec::new();
-    if added > 0 {
-        changes.push(format!("{} added", note_count(added)));
-    }
-    if removed > 0 {
-        changes.push(match changes.is_empty() {
-            true => format!("{} removed", note_count(removed)),
-            false => format!("{removed} removed"),
-        });
-    }
-    let mut text = match changes.is_empty() {
-        true => "Refreshed: no changes".to_string(),
-        false => format!("Refreshed: {}", changes.join(", ")),
-    };
-    if dropped > 0 {
-        let picks = if dropped == 1 { "pick" } else { "picks" };
-        text.push_str(&format!(" \u{b7} {dropped} {picks} dropped"));
-    }
-    text
-}
 
 /// What a collection view keeps beyond its members.
 pub(super) struct Collection {
@@ -183,9 +94,19 @@ pub(super) struct Collection {
     clock: Clock,
     /// A load for the view is under way: the line says `Loading...`.
     loading: bool,
-    /// What the line says just after a refresh, and the timer that ends it
-    /// after [`REFRESH_SHOWN`]. A new load or refresh drops it.
-    refreshed: Option<(String, Task<()>)>,
+    /// What the line says just after a refresh. A new load or refresh
+    /// drops it.
+    refreshed: Option<String>,
+    /// The timer that ends `refreshed` after [`REFRESH_SHOWN`].
+    report: Timed,
+}
+
+impl Collection {
+    /// End the report of the last refresh and its timer.
+    fn end_report(&mut self) {
+        self.refreshed = None;
+        self.report.cancel();
+    }
 }
 
 impl FacetView {
@@ -220,6 +141,7 @@ impl FacetView {
             clock,
             loading: false,
             refreshed: None,
+            report: Timed::default(),
         };
         Self::build(Members::from_inits(members), Some(collection), picks, cx)
     }
@@ -236,7 +158,7 @@ impl FacetView {
         }
         collection.loading = loading;
         if loading {
-            collection.refreshed = None;
+            collection.end_report();
         }
         cx.notify();
     }
@@ -245,8 +167,16 @@ impl FacetView {
     /// an undo changes what the collection line has to say.
     pub(super) fn end_refresh_report(&mut self) {
         if let Some(collection) = &mut self.collection {
-            collection.refreshed = None;
+            collection.end_report();
         }
+    }
+
+    /// Whether the timer of a refresh report runs (tests).
+    #[cfg(test)]
+    pub(super) fn refresh_report_timer(&self) -> bool {
+        self.collection
+            .as_ref()
+            .is_some_and(|c| c.report.is_active())
     }
 
     /// Whether the line says `Loading...` now (tests).
@@ -297,18 +227,15 @@ impl FacetView {
         self.members_changed(cx);
         let dropped = picks_before - self.bar.picks().len();
         let text = refresh_text(added, removed, dropped);
-        let timer = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REFRESH_SHOWN).await;
-            this.update(cx, |this, cx| {
-                if let Some(collection) = &mut this.collection {
-                    collection.refreshed = None;
-                }
-                cx.notify();
-            })
-            .ok();
-        });
         if let Some(collection) = &mut self.collection {
-            collection.refreshed = Some((text, timer));
+            collection.refreshed = Some(text);
+            // The collection line is outside the bar, so the end of the
+            // report changes no bar shape and needs no bar mark.
+            collection.report.start(REFRESH_SHOWN, cx, |this, _| {
+                if let Some(collection) = &mut this.collection {
+                    collection.end_report();
+                }
+            });
         }
     }
 
@@ -512,7 +439,7 @@ impl FacetView {
         if collection.loading {
             return Some("Loading...".into());
         }
-        if let Some((text, _)) = &collection.refreshed {
+        if let Some(text) = &collection.refreshed {
             return Some(text.clone());
         }
         let held = self.members.list.len();

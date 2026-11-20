@@ -85,6 +85,11 @@ impl FacetView {
         self.frame_asked
     }
 
+    /// How many measuring frames the bar drew (tests).
+    pub(crate) fn bar_measure_frames(&self) -> usize {
+        self.bar_motion.measure_frames()
+    }
+
     /// Whether `kind`'s list is the open one (tests).
     pub(crate) fn list_is_open(&self, kind: ListKind) -> bool {
         self.list_open(kind)

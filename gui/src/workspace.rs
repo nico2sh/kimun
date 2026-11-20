@@ -3908,6 +3908,8 @@ mod facet_line_tests;
 #[cfg(test)]
 mod facet_motion_edge_tests;
 #[cfg(test)]
+mod facet_motion_shape_tests;
+#[cfg(test)]
 mod facet_motion_tests;
 #[cfg(test)]
 mod facet_tests;

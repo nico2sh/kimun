@@ -59,6 +59,13 @@ pub(super) fn bar_frame(cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
     cx.debug_bounds(BAR_FRAME_ID)
 }
 
+/// The bounds of the frame that clips the hint in the last frame, `None`
+/// when the hint does not collapse. Found by its debug selector, like the
+/// bar's frame.
+pub(super) fn hint_frame(cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+    cx.debug_bounds(HINT_FRAME_ID)
+}
+
 /// The height the bar takes in the view: its frame while it moves, else
 /// the bar itself.
 pub(super) fn drawn_bar(cx: &mut VisualTestContext) -> f32 {
@@ -89,7 +96,7 @@ pub(super) fn moving(cx: &mut VisualTestContext) -> bool {
 pub(super) fn rest(cx: &mut VisualTestContext, limit: usize) {
     for _ in 0..limit {
         frame(cx);
-        if !moving(cx) && found(cx, HINT_FRAME_ID).is_none() {
+        if !moving(cx) && hint_frame(cx).is_none() {
             return;
         }
         wait(cx, 20);
@@ -329,7 +336,7 @@ fn reduced_motion_draws_the_end_height_at_once(cx: &mut TestAppContext) {
     assert!(!moving(cx), "no frame under reduced motion");
     frame(cx);
     assert!(!moving(cx), "no frame under reduced motion");
-    assert!(found(cx, HINT_FRAME_ID).is_none());
+    assert!(hint_frame(cx).is_none());
     assert!(found(cx, HINT_ID).is_none(), "the hint goes at once");
     let end = drawn_bar(cx);
     assert!(
@@ -386,24 +393,46 @@ fn the_hint_collapses_with_the_bar_on_the_first_pick(cx: &mut TestAppContext) {
     toggle(&view, cx, tag("a"));
     frame(cx);
     frame(cx);
-    let held = found(cx, HINT_FRAME_ID).expect("the hint collapses in a frame");
+    let held = hint_frame(cx).expect("the hint collapses in a frame");
     assert!((f32::from(held.size.height) - hint).abs() < 0.5);
     assert!((column_top(cx) - start).abs() < 0.5, "nothing moved yet");
     wait(cx, 60);
     frame(cx);
-    let middle = f32::from(
-        found(cx, HINT_FRAME_ID)
-            .expect("still collapsing")
-            .size
-            .height,
-    );
+    let middle = f32::from(hint_frame(cx).expect("still collapsing").size.height);
     assert!(middle > 0.5 && middle < hint - 0.5, "after 60 ms: {middle}");
     assert!(moving(cx), "the bar moves with it");
-    let frame_bottom = found(cx, HINT_FRAME_ID).unwrap().bottom();
+    let frame_bottom = hint_frame(cx).unwrap().bottom();
     assert!((f32::from(frame_bottom) - column_top(cx)).abs() < 0.5);
     wait(cx, 70);
     frame(cx);
-    assert!(found(cx, HINT_FRAME_ID).is_none(), "the hint is gone");
+    assert!(hint_frame(cx).is_none(), "the hint is gone");
     assert!(found(cx, HINT_ID).is_none());
     assert!(!moving(cx), "and the bar rests with it");
+}
+
+/// The element path of `id` in the last frame.
+fn path_of(cx: &mut VisualTestContext, id: &'static str) -> Option<Vec<gpui_kit::ElementId>> {
+    cx.update(|window, _| window.try_find(id).map(|e| e.path().to_vec()))
+}
+
+#[gpui_kit::test]
+fn the_hint_frame_has_no_element_id_and_keeps_its_children_path(cx: &mut TestAppContext) {
+    let (view, cx) = animated(cx, TWO_TAGS, vec![]);
+    let at_rest = path_of(cx, HINT_ID).expect("the hint at rest");
+    toggle(&view, cx, tag("a"));
+    frame(cx);
+    frame(cx);
+    let framed = path_of(cx, HINT_ID).expect("the hint in its frame");
+    assert_eq!(at_rest, framed, "the frame keeps the hint's element path");
+    assert!(hint_frame(cx).is_some(), "the hint collapses in a frame");
+}
+
+#[gpui_kit::test]
+fn both_frames_are_found_by_selector(cx: &mut TestAppContext) {
+    let (view, cx) = animated(cx, TWO_TAGS, vec![]);
+    toggle(&view, cx, tag("a"));
+    frame(cx);
+    frame(cx);
+    assert!(bar_frame(cx).is_some(), "the bar's frame by its selector");
+    assert!(hint_frame(cx).is_some(), "the hint's frame by its selector");
 }

@@ -97,16 +97,10 @@ impl FacetView {
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let kinds = [
-            (ListKind::Tags, "Tags", counts.tags, counts.any.tags),
-            (ListKind::Links, "Links", counts.links, counts.any.links),
-            (
-                ListKind::Sections,
-                "Sections",
-                counts.sections,
-                counts.any.sections,
-            ),
-        ];
+        let kinds = ListKind::chip_order().map(|kind| {
+            let (n, any) = list_counts(counts, kind);
+            (kind, kind.name(), n, any)
+        });
         #[cfg(test)]
         {
             self.open_chip.set(None);
@@ -290,7 +284,7 @@ impl FacetView {
                 let rest = (rest > 0).then(|| SharedString::from(rest_text(rest)));
                 OpenList {
                     input: more.input.clone(),
-                    name: list_name(kind),
+                    name: kind.name(),
                     scroll: more.scroll.clone(),
                     groups,
                     empty,
@@ -310,16 +304,18 @@ impl FacetView {
     pub(super) fn scope(&self, kind: ListKind, query: &str) -> Groups {
         let merged = &self.members.merged;
         let in_view = |f: &Facet| self.members.in_view_of(f);
-        let one = |kind| vec![(None, self.bar.kind_list(merged, kind, query, &in_view))];
-        let groups = match kind {
-            ListKind::Tags => one(FacetKind::Tag),
-            ListKind::Links => one(FacetKind::NoteLink),
-            ListKind::Sections => one(FacetKind::Heading),
+        let groups: Groups = match kind {
             ListKind::All => self
                 .bar
                 .all_grouped(merged, query, &in_view)
                 .into_iter()
                 .map(|(kind, pills)| (Some(kind), pills))
+                .collect(),
+            // A kind list: its one kind, with no group label.
+            kind => kind
+                .facet_kinds()
+                .iter()
+                .map(|&k| (None, self.bar.kind_list(merged, k, query, &in_view)))
                 .collect(),
         };
         groups
@@ -407,27 +403,26 @@ fn rest_text(rest: usize) -> String {
 /// The muted line of `kind`'s list when `query` matches nothing.
 fn empty_text(kind: ListKind, query: &str) -> String {
     match kind {
-        ListKind::Tags => format!("No tags match \"{query}\""),
-        ListKind::Links => format!("No links match \"{query}\""),
-        ListKind::Sections => format!("No sections match \"{query}\""),
         ListKind::All => format!("No matches for \"{query}\""),
+        kind => format!("No {} match \"{query}\"", kind.name().to_lowercase()),
     }
 }
 
-/// The name of a list's rows for screen readers.
-fn list_name(kind: ListKind) -> &'static str {
-    match kind {
-        ListKind::Tags => "Tags",
-        ListKind::Links => "Links",
-        ListKind::Sections => "Sections",
-        ListKind::All => "Find",
-    }
-}
-
+/// The label of `kind`'s group in the all-kinds list: the name of the kind
+/// list that holds it.
 fn group_label(kind: FacetKind) -> &'static str {
-    match kind {
-        FacetKind::Tag => "Tags",
-        FacetKind::NoteLink => "Links",
-        FacetKind::Heading => "Sections",
-    }
+    ListKind::of(kind).name()
+}
+
+/// What the chip of `list` counts: the unpicked facets of its kinds that
+/// give results, and whether it has any unpicked facet at all.
+pub(super) fn list_counts(counts: KindCounts, list: ListKind) -> (usize, bool) {
+    list.facet_kinds()
+        .iter()
+        .map(|&kind| match kind {
+            FacetKind::Tag => (counts.tags, counts.any.tags),
+            FacetKind::NoteLink => (counts.links, counts.any.links),
+            FacetKind::Heading => (counts.sections, counts.any.sections),
+        })
+        .fold((0, false), |(n, any), (m, more)| (n + m, any || more))
 }

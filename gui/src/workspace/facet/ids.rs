@@ -30,6 +30,7 @@ pub(crate) const REMOVE_LAST_ID: &str = "facet-remove-last";
 /// The one-line hint under the bar, until the first pick.
 pub(crate) const HINT_ID: &str = "facet-hint";
 /// The frame that clips the hint while it collapses after the first pick.
+/// A debug selector, not an element id, like [`BAR_FRAME_ID`].
 pub(crate) const HINT_FRAME_ID: &str = "facet-hint-frame";
 pub(crate) const CLEAR_ID: &str = "facet-clear";
 /// The summary row's `Undo` button, after a clear.
@@ -152,4 +153,30 @@ pub(crate) fn gap_count_id(g: usize) -> SharedString {
 /// Crumb `index` (outermost first) of chunk `chunk`'s breadcrumb.
 pub(crate) fn crumb_id(chunk: usize, index: usize) -> SharedString {
     format!("facet-crumb:{chunk}:{index}").into()
+}
+
+/// The dateline of member `member` (its index in the member list).
+pub(crate) fn dateline_id(member: usize) -> SharedString {
+    format!("facet-dateline:{member}").into()
+}
+
+/// The title on member `member`'s dateline.
+pub(crate) fn dateline_title_id(member: usize) -> SharedString {
+    format!("facet-dateline-title:{member}").into()
+}
+
+/// The hairline on member `member`'s dateline.
+pub(crate) fn dateline_rule_id(member: usize) -> SharedString {
+    format!("facet-dateline-rule:{member}").into()
+}
+
+/// The folder on member `member`'s dateline, when it has one.
+pub(crate) fn dateline_folder_id(member: usize) -> SharedString {
+    format!("facet-dateline-folder:{member}").into()
+}
+
+/// The piece count on member `member`'s dateline, at its right end; its
+/// name is the whole meta text ([`dateline_meta`](super::collection::dateline_meta)).
+pub(crate) fn dateline_meta_id(member: usize) -> SharedString {
+    format!("facet-dateline-meta:{member}").into()
 }
