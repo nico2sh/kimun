@@ -1,6 +1,7 @@
 //! Drawing helpers of the **Facet view** ([`super::facet`]): the chips,
-//! pills, text buttons and row icons its pinned bar and pieces are drawn
-//! with.
+//! pills and text buttons its pinned bar and pieces are drawn with, and the
+//! widths of a pill and a chip ([`pill_width`], [`chip_width`]) that the
+//! filter line fits with: they follow the same padding, gap and border.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
@@ -8,40 +9,28 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Div, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div,
+    Div, InteractiveElement as _, ParentElement as _, Rgba, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, div, rems,
 };
 use kimun_core::note::FacetKind;
 use kimun_notes::logic::facet_bar::Pill;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::themes::Theme;
 
-use super::facet::row_leader_id;
 use super::rail_icon;
 use crate::theme;
 
-/// The icon that leads `kind`'s row: the rail's icon for the drawer view
-/// of that kind, named for screen readers and in a tooltip.
-pub(super) fn leader(kind: FacetKind, t: &Theme) -> impl IntoElement {
-    let (view, name) = match kind {
-        FacetKind::Tag => (DrawerView::Tags, "Tags"),
-        FacetKind::NoteLink => (DrawerView::Links, "Links"),
-        FacetKind::Heading => (DrawerView::Outline, "Sections"),
-    };
-    div()
-        .id(row_leader_id(kind))
-        .role(Role::Image)
-        .aria_label(name)
-        .flex()
-        .flex_none()
-        .size_6()
-        .items_center()
-        .justify_center()
-        .text_color(theme::muted(t))
-        .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
-        .child(Icon::new(rail_icon(view)).size_4())
-        .test_support()
-}
+/// A pill's padding on each side (`px_1p5`), in rems.
+const PILL_PAD_REMS: f32 = 0.375;
+/// The gap between a pill's parts (`gap_1`), in rems.
+const PILL_GAP_REMS: f32 = 0.25;
+/// A pill's icon (the outline icon, the remove mark), square, in rems
+/// (`size_3`).
+const PILL_ICON_REMS: f32 = 0.75;
+/// A chip's least width (`min_w_6`), in rems.
+const CHIP_MIN_REMS: f32 = 1.5;
+/// A pill's or chip's border, each side.
+const BORDER_PX: f32 = 1.0;
 
 /// A small bordered button, in the style of the sort chip, 24 px tall.
 pub(super) fn chip(id: SharedString, label: impl Into<SharedString>, t: &Theme) -> Stateful<Div> {
@@ -115,7 +104,7 @@ pub(super) fn text_button(
 
 /// How much faster an outer crumb shrinks than the innermost one: outer
 /// crumbs give up their room first.
-pub(super) const OUTER_CRUMB_SHRINK: f32 = 1000.;
+const OUTER_CRUMB_SHRINK: f32 = 1000.;
 
 /// A crumb of a piece's breadcrumb: a [`text_button`] that shrinks when the
 /// row is too narrow, its label cut with an ellipsis. Outer crumbs shrink
@@ -159,26 +148,67 @@ fn text_frame(id: SharedString, label: SharedString, t: &Theme) -> Stateful<Div>
         .hover(move |style| style.bg(hover))
 }
 
-/// A facet's pill: its label in its kind's colour, its count when more
-/// than one, filled when picked.
+/// A facet's text on its pill: the kind in its own syntax, a tag `#name`,
+/// a note link `[[name]]`, a heading its text.
+pub(super) fn pill_text(p: &Pill) -> String {
+    match p.facet.kind {
+        FacetKind::Tag => format!("#{}", p.label),
+        FacetKind::NoteLink => format!("[[{}]]", p.label),
+        FacetKind::Heading => p.label.clone(),
+    }
+}
+
+/// Whether `p` draws the outline icon in front of its text: a picked
+/// heading (an unpicked one is never on the line).
+fn has_outline(p: &Pill) -> bool {
+    p.picked && p.facet.kind == FacetKind::Heading
+}
+
+/// The id of the outline icon on the pill `id`.
+pub(super) fn outline_mark(id: &str) -> SharedString {
+    format!("{id}:outline").into()
+}
+
+/// The id of the remove mark on the pill `id`.
+pub(super) fn remove_mark(id: &str) -> SharedString {
+    format!("{id}:remove").into()
+}
+
+/// A facet's pill: the outline icon of a picked heading, its text
+/// ([`pill_text`]) in its kind's colour, its count when more than one, and
+/// a picked pill's remove mark; filled when picked. 24 px tall. The marks
+/// are part of the pill: a press anywhere on it toggles it.
 pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
     let hover = theme::hover_background(t);
-    let (label, color) = match p.facet.kind {
-        FacetKind::Tag => (format!("#{}", p.label), theme::tag(t)),
-        FacetKind::Heading => (p.label.clone(), theme::bright(t)),
-        FacetKind::NoteLink => (p.label.clone(), theme::accent(t)),
+    let color = match p.facet.kind {
+        FacetKind::Tag => theme::tag(t),
+        FacetKind::Heading => theme::bright(t),
+        FacetKind::NoteLink => theme::accent(t),
     };
+    let label = pill_text(p);
+    // A press on a picked pill unpicks it: its name says so.
+    let name = if p.picked {
+        format!("Remove {label}")
+    } else {
+        label.clone()
+    };
+    let muted = theme::muted(t);
+    let outline =
+        has_outline(p).then(|| mark(outline_mark(&id), rail_icon(DrawerView::Outline), muted));
+    let remove = p
+        .picked
+        .then(|| mark(remove_mark(&id), IconName::Close, muted));
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label(SharedString::from(label.clone()))
+        .aria_label(SharedString::from(name))
         .flex()
         .flex_none()
         .h_6()
         .items_center()
-        .gap_1()
+        .gap(rems(PILL_GAP_REMS))
         .whitespace_nowrap()
-        .px_1p5()
+        .px(rems(PILL_PAD_REMS))
         .rounded_md()
         .border_1()
         .text_xs()
@@ -192,8 +222,47 @@ pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
                     .hover(move |style| style.bg(hover))
             }
         })
+        .children(outline)
         .child(div().text_color(color).child(label))
         .when(p.count > 1, |pill| {
-            pill.child(div().text_color(theme::muted(t)).child(p.count.to_string()))
+            pill.child(div().text_color(muted).child(p.count.to_string()))
         })
+        .children(remove)
+}
+
+/// A small icon inside a pill, in a box of its own fixed size.
+fn mark(id: SharedString, icon: IconName, color: Rgba) -> impl gpui_kit::IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .size(rems(PILL_ICON_REMS))
+        .items_center()
+        .justify_center()
+        .text_color(color)
+        .child(Icon::new(icon).size_3())
+        .test_support()
+}
+
+/// The width [`pill`] draws `p` at, in pixels, with `rem` the window's rem
+/// size and `text` the width of a text in the pill's font and size.
+pub(super) fn pill_width(p: &Pill, rem: f32, text: impl Fn(&str) -> f32) -> f32 {
+    let mut parts = vec![text(&pill_text(p))];
+    if has_outline(p) {
+        parts.push(PILL_ICON_REMS * rem);
+    }
+    if p.count > 1 {
+        parts.push(text(&p.count.to_string()));
+    }
+    if p.picked {
+        parts.push(PILL_ICON_REMS * rem);
+    }
+    let gaps = (parts.len() - 1) as f32 * PILL_GAP_REMS * rem;
+    parts.iter().sum::<f32>() + gaps + 2.0 * (PILL_PAD_REMS * rem + BORDER_PX)
+}
+
+/// The width [`chip`] draws `label` at, in pixels (see [`pill_width`]).
+pub(super) fn chip_width(label: &str, rem: f32, text: impl Fn(&str) -> f32) -> f32 {
+    let drawn = text(label) + 2.0 * (PILL_PAD_REMS * rem + BORDER_PX);
+    drawn.max(CHIP_MIN_REMS * rem)
 }

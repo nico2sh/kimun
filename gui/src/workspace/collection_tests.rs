@@ -3,19 +3,21 @@
 //! member; these tests check what each piece says about its own note.
 #![cfg(test)]
 
-use gpui_kit::{Entity, TestAppContext, VisualTestContext};
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::{Entity, Role, SharedString, TestAppContext, VisualTestContext};
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{Facet, FacetKind, MAX_RANGES};
+use kimun_core::note::{Facet, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
 
 use super::facet::{
-    EMPTY_ID, FIRST_NOTES_ID, FacetEvent, FacetView, MemberInit, REFRESH_ID, REMOVE_LAST_ID,
-    SHOW_MORE_ID, SUMMARY_ID, crumb_id, gap_count_id, gap_down_id, gap_up_id, note_title_id,
-    open_id, pill_id, show_all_id,
+    COLUMN_ID, EMPTY_ID, FIRST_NOTES_ID, FacetEvent, FacetView, MemberInit, REFRESH_ID,
+    REMOVE_LAST_ID, SECTIONS_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id, dateline_folder_id,
+    dateline_id, dateline_meta_id, dateline_rule_id, dateline_title_id, gap_count_id, gap_down_id,
+    gap_up_id, more_item_id, open_id, pill_id, show_all_id,
 };
 use super::facet_tests::{
-    Events, bounds, cell, chunk_texts, click, focus_view, heading, key, label, open, open_with,
-    picks, picks_changed, press, shows, tab_to, tag, to_bottom,
+    Events, bounds, cell, chunk_texts, click, focus_view, has_focus, heading, key, label, open,
+    open_with, picks, picks_changed, press, shows, tab_to, tag, to_bottom,
 };
 
 fn member(path: &str, title: &str, text: &str) -> MemberInit {
@@ -60,6 +62,36 @@ fn paths(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<VaultPath>
     view.read_with(cx, |view, _| view.member_paths())
 }
 
+/// Whether the last frame drew `id` at all, on screen or scrolled away.
+fn exists(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
+    let id: SharedString = id.into();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+}
+
+/// Every element the last frame drew with the heading role.
+fn headings(cx: &mut VisualTestContext) -> Vec<gpui_kit::test::ElementSnapshot> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find_all_by_role(Role::Heading)
+    })
+}
+
+/// Every element the last frame drew with the accessible name `name`.
+fn named(cx: &mut VisualTestContext, name: &str) -> Vec<gpui_kit::test::ElementSnapshot> {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.find_all_by_label(name)
+    })
+}
+
+/// `a - b` in pixels, as a plain number.
+fn dist(a: gpui_kit::Pixels, b: gpui_kit::Pixels) -> f32 {
+    f32::from(a - b)
+}
+
 #[gpui_kit::test]
 fn a_collection_shows_every_note_whole_with_no_picks(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "a1\n\na2\n"), (B, "Beta", "b1\n")];
@@ -84,50 +116,324 @@ fn a_single_note_view_is_no_collection(cx: &mut TestAppContext) {
     assert!(!shows(cx, FIRST_NOTES_ID));
 }
 
+/// Supersedes slice 3's `every_piece_shows_its_notes_title_in_its_breadcrumb_row`:
+/// the note's title moved to its dateline, so a breadcrumb row holds only
+/// the heading crumbs and `Open source`.
 #[gpui_kit::test]
-fn every_piece_shows_its_notes_title_in_its_breadcrumb_row(cx: &mut TestAppContext) {
+fn breadcrumbs_no_longer_start_with_the_note_title(cx: &mut TestAppContext) {
     let alpha = "# Day\n\n#x a1\n\nfar\n\nfar\n\n#x a2\n";
     let notes = [(A, "Alpha", alpha), (B, "Beta", "#x b1\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
     assert_eq!(chunk_texts(&view, cx), ["#x a1", "#x a2", "#x b1"]);
-    assert_eq!(label(cx, note_title_id(0)).as_deref(), Some("Alpha"));
-    assert_eq!(label(cx, note_title_id(1)).as_deref(), Some("Alpha"));
-    assert_eq!(label(cx, note_title_id(2)).as_deref(), Some("Beta"));
-    // `Alpha › Day`, one row, `Open source` at its right end.
-    let title = bounds(cx, note_title_id(0));
+    // Each title is drawn once, by its dateline, outside every piece.
+    for title in ["Alpha", "Beta"] {
+        let found = named(cx, title);
+        assert_eq!(found.len(), 1, "{title}: {found:?}");
+        assert_eq!(found[0].role(), Some(Role::Heading), "{title}");
+        for i in 0..3 {
+            let piece = bounds(cx, chunk_id(i));
+            assert!(
+                !piece.intersects(&found[0].bounds()),
+                "{title} inside piece {i}"
+            );
+        }
+    }
+    // The first crumb starts the row; `Open source` ends it.
+    let piece = bounds(cx, chunk_id(0));
     let crumb = bounds(cx, crumb_id(0, 0));
-    let open = bounds(cx, open_id(0));
     assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Day"));
-    assert!(title.right() <= crumb.left(), "the title leads the row");
-    assert!(
-        title.top() < crumb.bottom() && crumb.top() < title.bottom(),
-        "one row: {title:?} {crumb:?}"
-    );
-    assert!(crumb.right() <= open.left());
-    // The title is no facet: a click on it picks nothing.
-    click(cx, note_title_id(0));
-    assert_eq!(picks(&view, cx), [tag("x")]);
+    assert_eq!(crumb.left(), piece.left(), "nothing before the first crumb");
+    assert!(crumb.right() <= bounds(cx, open_id(0)).left());
+    // A piece with no crumbs still draws its row.
+    assert!(shows(cx, open_id(2)));
+    assert!(!exists(cx, crumb_id(2, 0)));
 }
 
 #[gpui_kit::test]
-fn a_single_note_view_draws_no_title(cx: &mut TestAppContext) {
+fn a_single_note_view_has_no_dateline(cx: &mut TestAppContext) {
     let (_view, cx, _events, _sub) = open(cx, "# Day\n\n#x a\n", vec![tag("x")]);
     assert!(shows(cx, crumb_id(0, 0)));
-    assert!(!shows(cx, note_title_id(0)));
+    assert!(!exists(cx, dateline_id(0)));
+    assert!(headings(cx).is_empty(), "{:?}", headings(cx));
+    // The first gap (it hides `# Day`) is the column's first row, as before.
+    let column = bounds(cx, COLUMN_ID);
+    assert_eq!(dist(bounds(cx, gap_up_id(0)).top(), column.top()), 12.0);
 }
 
 #[gpui_kit::test]
-fn a_long_title_shrinks_and_open_source_stays(cx: &mut TestAppContext) {
+fn a_long_title_shrinks_in_the_dateline_and_the_meta_stays_whole(cx: &mut TestAppContext) {
     let long = "A very long note title that would never fit into a narrow row at all";
     let text = "# The outermost section of this rather long note\n\n#x alpha\n";
     let (_view, cx, _events, _sub) = open_collection(cx, &[(A, long, text)], 1, vec![tag("x")]);
+    let meta = f32::from(bounds(cx, dateline_meta_id(0)).size.width);
     let open = f32::from(bounds(cx, open_id(0)).size.width);
     cx.simulate_resize(gpui_kit::size(gpui_kit::px(360.), gpui_kit::px(800.)));
-    let title = bounds(cx, note_title_id(0));
-    let button = bounds(cx, open_id(0));
-    assert!(f32::from(title.size.width) >= 32.0, "{title:?}");
-    assert_eq!(f32::from(button.size.width), open, "Open source whole");
-    assert!(title.right() <= button.left(), "{title:?} {button:?}");
+    let row = bounds(cx, dateline_id(0));
+    let title = bounds(cx, dateline_title_id(0));
+    let now = bounds(cx, dateline_meta_id(0));
+    assert_eq!(f32::from(now.size.width), meta, "the meta whole");
+    assert!(title.right() <= now.left(), "{title:?} {now:?}");
+    assert!(now.right() <= row.right(), "{now:?} {row:?}");
+    assert_eq!(f32::from(bounds(cx, open_id(0)).size.width), open);
+}
+
+// ── the dateline ─────────────────────────────────────────────────────────
+
+#[gpui_kit::test]
+fn every_note_starts_with_a_dateline_and_the_first_has_no_extra_space(cx: &mut TestAppContext) {
+    let notes = [
+        (A, "Alpha", "a1\n"),
+        (B, "Beta", "b1\n"),
+        (C, "Gamma", "c1\n"),
+    ];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![]);
+    for (m, title) in ["Alpha", "Beta", "Gamma"].into_iter().enumerate() {
+        assert_eq!(label(cx, dateline_id(m)).as_deref(), Some(title));
+        let line = bounds(cx, dateline_id(m));
+        let piece = bounds(cx, chunk_id(m));
+        assert_eq!(
+            dist(piece.top(), line.bottom()),
+            12.0,
+            "{title}: the stream's gap"
+        );
+    }
+    // The first dateline is the column's first row: only the padding.
+    let column = bounds(cx, COLUMN_ID);
+    assert_eq!(dist(bounds(cx, dateline_id(0)).top(), column.top()), 12.0);
+    // Every later one keeps 24 px from the note above.
+    for m in 1..3 {
+        let above = bounds(cx, chunk_id(m - 1));
+        let line = bounds(cx, dateline_id(m));
+        assert_eq!(dist(line.top(), above.bottom()), 24.0, "dateline {m}");
+    }
+}
+
+#[gpui_kit::test]
+fn the_dateline_sits_above_its_notes_first_gap(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "#x a\n"), (B, "Beta", "b head\n\n#x b\n")];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
+    // Gap 2 is B's first gap: it hides B's head.
+    assert_eq!(label(cx, gap_count_id(2)).as_deref(), Some("1 hidden"));
+    let line = bounds(cx, dateline_id(1));
+    let gap = bounds(cx, gap_up_id(2));
+    assert!(bounds(cx, chunk_id(0)).bottom() <= line.top());
+    assert!(line.bottom() <= gap.top(), "{line:?} {gap:?}");
+    assert!(gap.bottom() <= bounds(cx, chunk_id(1)).top());
+}
+
+#[gpui_kit::test]
+fn the_previous_notes_last_gap_sits_above_the_next_dateline(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "#x a\n\na tail\n"), (B, "Beta", "#x b\n")];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
+    // Gap 1 is A's last gap: it hides A's tail.
+    assert_eq!(label(cx, gap_count_id(1)).as_deref(), Some("1 hidden"));
+    let gap = bounds(cx, gap_down_id(1));
+    let line = bounds(cx, dateline_id(1));
+    assert_eq!(dist(line.top(), gap.bottom()), 24.0, "{gap:?} {line:?}");
+    assert!(line.bottom() <= bounds(cx, chunk_id(1)).top());
+}
+
+#[gpui_kit::test]
+fn the_dateline_shows_folder_and_piece_count(cx: &mut TestAppContext) {
+    let notes = [
+        (A, "Alpha", "#x a1\n\nmid\n\n#x a2\n"),
+        (B, "Beta", "#x b\n"),
+        ("/root.md", "Root", "#x r\n"),
+        ("/journal/2026/day.md", "Day", "#x d\n"),
+    ];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 4, vec![tag("x")]);
+    let metas: Vec<_> = (0..4).map(|m| label(cx, dateline_meta_id(m))).collect();
+    assert_eq!(
+        metas,
+        [
+            Some("a \u{b7} 2 pieces".to_string()),
+            Some("b \u{b7} 1 piece".to_string()),
+            Some("1 piece".to_string()),
+            Some("journal/2026 \u{b7} 1 piece".to_string()),
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn the_dateline_has_a_hairline_that_fills_the_line(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "a1\n"), (B, "Beta", "b1\n")];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
+    let check = |cx: &mut VisualTestContext| {
+        let row = bounds(cx, dateline_id(0));
+        let title = bounds(cx, dateline_title_id(0));
+        let rule = bounds(cx, dateline_rule_id(0));
+        let folder = bounds(cx, dateline_folder_id(0));
+        let meta = bounds(cx, dateline_meta_id(0));
+        let piece = bounds(cx, chunk_id(0));
+        assert_eq!(f32::from(rule.size.height), 1.0, "{rule:?}");
+        assert_eq!((row.left(), row.right()), (piece.left(), piece.right()));
+        assert_eq!(title.left(), row.left(), "the title leads");
+        assert_eq!(meta.right(), row.right(), "the meta ends the row");
+        // The rule takes what is left between them, less the row's gaps.
+        let before = dist(rule.left(), title.right());
+        let after = dist(folder.left(), rule.right());
+        assert!((0.0..=8.0).contains(&before), "{title:?} {rule:?}");
+        assert!((0.0..=8.0).contains(&after), "{rule:?} {folder:?}");
+        assert!(folder.right() <= meta.left(), "{folder:?} {meta:?}");
+        let middle = (rule.top() + rule.bottom()) / 2.0;
+        assert!(title.top() < middle && middle < title.bottom(), "centred");
+    };
+    check(cx);
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(500.), gpui_kit::px(800.)));
+    check(cx);
+}
+
+#[gpui_kit::test]
+fn a_note_with_no_drawn_piece_has_no_dateline(cx: &mut TestAppContext) {
+    let notes = [
+        (A, "Alpha", "a #y\n"),
+        (B, "Beta", "#x b\n"),
+        (C, "Gamma", "c\n"),
+    ];
+    let (_view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![tag("x")]);
+    assert!(!exists(cx, dateline_id(0)));
+    assert_eq!(label(cx, dateline_id(1)).as_deref(), Some("Beta"));
+    assert!(!exists(cx, dateline_id(2)));
+    assert_eq!(headings(cx).len(), 1);
+    // Beta's dateline is now the column's first row.
+    let column = bounds(cx, COLUMN_ID);
+    assert_eq!(dist(bounds(cx, dateline_id(1)).top(), column.top()), 12.0);
+}
+
+#[gpui_kit::test]
+fn the_dateline_is_not_a_tab_stop_and_not_clickable(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "#x a\n"), (B, "Beta", "#x b\n")];
+    let (view, cx, events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
+    for snapshot in headings(cx) {
+        assert_eq!(snapshot.focused(), None, "no focus binding: {snapshot:?}");
+    }
+    click(cx, dateline_id(1));
+    click(cx, dateline_title_id(1));
+    click(cx, dateline_meta_id(1));
+    assert_eq!(picks(&view, cx), [tag("x")]);
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    // Tab walks from B's `Open source` round to the bar and never lands
+    // on a dateline.
+    focus_view(&view, cx);
+    tab_to(cx, open_id(1), 20);
+    for _ in 0..20 {
+        key(cx, "tab");
+        for m in 0..2 {
+            assert!(!has_focus(cx, dateline_id(m)));
+            assert!(!has_focus(cx, dateline_title_id(m)));
+        }
+    }
+}
+
+/// `j` onto a note's first piece brings its dateline (and the first gap
+/// under it) to the top, so the keyboard shows which note it landed in.
+/// Later pieces of a note still come to the top themselves.
+#[gpui_kit::test]
+fn j_onto_a_notes_first_piece_shows_its_dateline(cx: &mut TestAppContext) {
+    let alpha: String = (0..3).map(|i| format!("#t a{i}\n\nplain\n\n")).collect();
+    let beta: String = "b head\n\n".to_string()
+        + &(0..40)
+            .map(|i| format!("#t b{i}\n\nplain\n\n"))
+            .collect::<String>();
+    let notes = [(A, "Alpha", alpha.as_str()), (B, "Beta", beta.as_str())];
+    let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("t")]);
+    focus_view(&view, cx);
+    let top = |cx: &mut VisualTestContext, id: SharedString| {
+        dist(bounds(cx, id).top(), bounds(cx, COLUMN_ID).top())
+    };
+    key(cx, "j");
+    assert!(
+        top(cx, chunk_id(1)).abs() < 1.0,
+        "a later piece of Alpha: itself"
+    );
+    key(cx, "j");
+    key(cx, "j");
+    // Piece 3 is Beta's first; gap 4 is Beta's first gap (it hides the head).
+    let line = top(cx, dateline_id(1));
+    assert!(line >= -0.5, "Beta's dateline in view: {line}");
+    assert!(line < 1.0, "Beta's dateline leads the view: {line}");
+    assert!(shows(cx, gap_up_id(4)));
+    assert!(bounds(cx, dateline_id(1)).bottom() <= bounds(cx, gap_up_id(4)).top());
+    key(cx, "j");
+    assert!(
+        top(cx, chunk_id(4)).abs() < 1.0,
+        "Beta's second piece: itself"
+    );
+    key(cx, "k");
+    assert!(
+        top(cx, dateline_id(1)).abs() < 1.0,
+        "k back: the dateline again"
+    );
+}
+
+/// A deep folder in a narrow pane gives up its room first: the title keeps
+/// 32 px, the count stays whole, nothing overlaps.
+#[gpui_kit::test]
+fn a_long_folder_in_a_narrow_pane_leaves_the_title_and_the_count(cx: &mut TestAppContext) {
+    let path = "/projects/clients/acme/2026/q4/planning.md";
+    let title = "Quarterly planning notes for the client";
+    let text = "#x a\n\nmid\n\n#x b\n";
+    let (_view, cx, _events, _sub) = open_collection(cx, &[(path, title, text)], 1, vec![tag("x")]);
+    assert_eq!(
+        label(cx, dateline_meta_id(0)).as_deref(),
+        Some("projects/clients/acme/2026/q4 \u{b7} 2 pieces")
+    );
+    let count = f32::from(bounds(cx, dateline_meta_id(0)).size.width);
+    for width in [300., 240.] {
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(800.)));
+        let row = bounds(cx, dateline_id(0));
+        let title = bounds(cx, dateline_title_id(0));
+        let rule = bounds(cx, dateline_rule_id(0));
+        let folder = bounds(cx, dateline_folder_id(0));
+        let now = bounds(cx, dateline_meta_id(0));
+        assert!(f32::from(title.size.width) >= 32.0, "{width}: {title:?}");
+        assert_eq!(f32::from(now.size.width), count, "{width}: the count whole");
+        assert!(title.right() <= rule.left(), "{width}: {title:?} {rule:?}");
+        assert!(
+            rule.right() <= folder.left(),
+            "{width}: {rule:?} {folder:?}"
+        );
+        assert!(folder.right() <= now.left(), "{width}: {folder:?} {now:?}");
+        assert!(now.right() <= row.right(), "{width}: {now:?} {row:?}");
+    }
+}
+
+#[gpui_kit::test]
+fn the_dateline_follows_a_cap_that_cuts_inside_a_note(cx: &mut TestAppContext) {
+    let many = |prefix: &str, n: usize| -> String {
+        (0..n)
+            .map(|i| format!("#t {prefix}{i}\n\nplain {i}\n\n"))
+            .collect()
+    };
+    let (a, b, c) = (many("a", MAX_RANGES - 1), many("b", 3), many("c", 2));
+    let notes = [
+        (A, "Alpha", a.as_str()),
+        (B, "Beta", b.as_str()),
+        (C, "Gamma", c.as_str()),
+    ];
+    let (view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![tag("t")]);
+    assert_eq!(chunk_texts(&view, cx).len(), MAX_RANGES);
+    let pieces = format!("a \u{b7} {} pieces", MAX_RANGES - 1);
+    assert_eq!(
+        label(cx, dateline_meta_id(0)).as_deref(),
+        Some(pieces.as_str())
+    );
+    to_bottom(&view, cx);
+    // Beta keeps its dateline and counts the one piece drawn of three.
+    assert_eq!(label(cx, dateline_id(1)).as_deref(), Some("Beta"));
+    assert_eq!(
+        label(cx, dateline_meta_id(1)).as_deref(),
+        Some("b \u{b7} 1 piece")
+    );
+    // Gamma is cut whole: no dateline.
+    assert!(!exists(cx, dateline_id(2)));
+    // Show more draws the rest, and the counts follow.
+    click(cx, SHOW_MORE_ID);
+    to_bottom(&view, cx);
+    assert_eq!(
+        label(cx, dateline_meta_id(2)).as_deref(),
+        Some("c \u{b7} 2 pieces")
+    );
 }
 
 #[gpui_kit::test]
@@ -139,7 +445,8 @@ fn a_tag_pick_shows_only_the_notes_that_hold_it(cx: &mut TestAppContext) {
     ];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![tag("x")]);
     assert_eq!(chunk_texts(&view, cx), ["#x a", "#x c"]);
-    assert_eq!(label(cx, note_title_id(1)).as_deref(), Some("Gamma"));
+    assert_eq!(label(cx, dateline_id(2)).as_deref(), Some("Gamma"));
+    assert!(!exists(cx, dateline_id(1)));
 }
 
 #[gpui_kit::test]
@@ -161,7 +468,9 @@ fn the_same_heading_in_two_notes_is_one_pill_that_shows_both(cx: &mut TestAppCon
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
     let count = view.read_with(cx, |view, _| view.merged_count(&heading("plan")));
     assert_eq!(count, Some(2), "one merged pill");
-    click(cx, pill_id(&heading("plan")));
+    // An unpicked heading is not inline: pick it from the Sections list.
+    click(cx, SECTIONS_ID);
+    click(cx, more_item_id(&heading("plan")));
     assert_eq!(
         chunk_texts(&view, cx),
         ["# Plan\n\nalpha", "## plan\n\nbeta"]
@@ -176,7 +485,7 @@ fn a_day_and_a_tag_intersect_inside_each_note(cx: &mut TestAppContext) {
     ];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![heading("mon"), tag("x")]);
     assert_eq!(chunk_texts(&view, cx), ["#x a"]);
-    assert_eq!(label(cx, note_title_id(0)).as_deref(), Some("Alpha"));
+    assert_eq!(label(cx, dateline_id(0)).as_deref(), Some("Alpha"));
 }
 
 #[gpui_kit::test]
@@ -322,7 +631,7 @@ fn remove_members_drops_one_and_keeps_the_rest(cx: &mut TestAppContext) {
     assert_eq!(removed, 1);
     assert_eq!(paths(&view, cx), [p(A), p(C)]);
     assert_eq!(chunk_texts(&view, cx), ["#x a", "#x c"]);
-    assert_eq!(label(cx, note_title_id(1)).as_deref(), Some("Gamma"));
+    assert_eq!(label(cx, dateline_id(1)).as_deref(), Some("Gamma"));
     let again = view.update(cx, |view, cx| view.remove_members(&[p(B)], cx));
     assert_eq!(again, 0);
 }
@@ -450,15 +759,17 @@ fn the_summary_names_the_notes(cx: &mut TestAppContext) {
     );
 }
 
-/// A plain press on a note link in a collection picks its merged facet.
+/// A plain press on a note link in a collection is a text press: the
+/// filter is unchanged.
 #[gpui_kit::test]
-fn a_plain_press_on_a_link_picks_its_note_facet(cx: &mut TestAppContext) {
+fn a_plain_press_on_a_link_in_a_collection_does_not_change_the_filter(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "see [[Plan]] now\n"), (B, "Beta", "other\n")];
-    let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
+    let (view, cx, events, _sub) = open_collection(cx, &notes, 2, vec![]);
     let at = cell(&view, 0, 7, 0, cx);
     press(cx, at, false);
-    assert_eq!(picks(&view, cx), [Facet::new(FacetKind::NoteLink, "plan")]);
-    assert_eq!(chunk_texts(&view, cx), ["see [[Plan]] now"]);
+    assert!(picks(&view, cx).is_empty());
+    assert_eq!(picks_changed(&events), 0);
+    assert_eq!(chunk_texts(&view, cx), ["see [[Plan]] now", "other"]);
 }
 
 // ── carried over from the member refactor ────────────────────────────────
@@ -530,10 +841,10 @@ fn removing_from_a_capped_collection_lowers_both_counts(cx: &mut TestAppContext)
 fn a_blank_title_falls_back_to_the_file_name(cx: &mut TestAppContext) {
     let notes = [(A, "", "#x a\n"), (B, "  ", "#x b\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
-    assert_eq!(label(cx, note_title_id(0)).as_deref(), Some("alpha"));
+    assert_eq!(label(cx, dateline_id(0)).as_deref(), Some("alpha"));
     let members = vec![member(C, "", "#x c\n")];
     view.update(cx, |view, cx| view.replace_members(members, 1, cx));
-    assert_eq!(label(cx, note_title_id(0)).as_deref(), Some("gamma"));
+    assert_eq!(label(cx, dateline_id(0)).as_deref(), Some("gamma"));
 }
 
 /// A refresh brings the cap back to `MAX_RANGES`, as it resets reveals.

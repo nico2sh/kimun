@@ -7,18 +7,25 @@
 //! A member's new text ([`FacetView::set_member_text`]) re-derives that
 //! member only. Each change prunes the picks against the merged facets.
 //!
-//! **Drawing.** Each piece's breadcrumb row starts with its note's title as
-//! plain text (`Title › Day › Section`), so a piece is attributable even
-//! far from its note's other pieces. A member's first and last gap are its
-//! own: between two notes a gap row of each may stand next to each other.
+//! **Drawing.** Each note with a drawn piece starts with a dateline: its
+//! title, a hairline that fills the row, and a muted meta text, the note's
+//! folder and how many of its pieces are drawn (`journal · 2 pieces`; a note
+//! at the vault root shows the count only). It is plain text, no tab stop and
+//! no button. It stands above the note's first gap, so that gap's hidden
+//! count reads as the note's own; the note above keeps its last gap above
+//! the dateline. Every dateline but the column's first row has 24 px above
+//! it. A piece's breadcrumb row holds only its heading crumbs and `Open
+//! source`. A member's first and last gap are its own: between two notes a
+//! gap row of each may stand next to each other.
 //! With no member the view says "No notes match this query." with a
 //! `Refresh` button. When the query hit the loader's cap, a muted line under
 //! the bar says how many notes it matched.
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div,
+    AnyElement, Context, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, MAX_RANGES};
@@ -26,10 +33,73 @@ use kimun_notes::logic::query::COLLECTION_NOTE_CAP;
 use kimun_notes::settings::themes::Theme;
 
 use super::keys::Stop;
-use super::members::{MemberInit, Members};
-use super::{FIRST_NOTES_ID, FacetEvent, FacetView, REFRESH_ID, note_title_id};
+use super::members::{GapRef, MemberInit, Members};
+use super::{FIRST_NOTES_ID, FacetEvent, FacetView, REFRESH_ID};
 use crate::theme;
-use crate::workspace::facet_ui::{OUTER_CRUMB_SHRINK, text_button};
+use crate::workspace::facet_ui::text_button;
+
+/// The dateline of member `member` (its index in the member list).
+pub(crate) fn dateline_id(member: usize) -> SharedString {
+    format!("facet-dateline:{member}").into()
+}
+
+/// The title on member `member`'s dateline.
+pub(crate) fn dateline_title_id(member: usize) -> SharedString {
+    format!("facet-dateline-title:{member}").into()
+}
+
+/// The hairline on member `member`'s dateline.
+pub(crate) fn dateline_rule_id(member: usize) -> SharedString {
+    format!("facet-dateline-rule:{member}").into()
+}
+
+/// The folder on member `member`'s dateline, when it has one.
+pub(crate) fn dateline_folder_id(member: usize) -> SharedString {
+    format!("facet-dateline-folder:{member}").into()
+}
+
+/// The piece count on member `member`'s dateline, at its right end; its
+/// name is the whole meta text ([`dateline_meta`]).
+pub(crate) fn dateline_meta_id(member: usize) -> SharedString {
+    format!("facet-dateline-meta:{member}").into()
+}
+
+/// The folder a dateline names for the note at `path`: its parent folder,
+/// written from the vault root without a leading separator
+/// (`journal/2026`). `None` for a note at the vault root.
+pub(crate) fn note_folder(path: &VaultPath) -> Option<String> {
+    let (mut parent, _) = path.flatten().get_parent_path();
+    if parent.is_root_or_empty() {
+        return None;
+    }
+    parent.to_relative();
+    Some(parent.to_string())
+}
+
+/// `1 piece`, `2 pieces`.
+pub(crate) fn piece_count(pieces: usize) -> String {
+    match pieces {
+        1 => "1 piece".into(),
+        n => format!("{n} pieces"),
+    }
+}
+
+/// A dateline's meta text: the note's folder ([`note_folder`]) and its
+/// drawn pieces ([`piece_count`]), joined by ` · `; the count alone at the
+/// vault root.
+pub(crate) fn dateline_meta(path: &VaultPath, pieces: usize) -> String {
+    let count = piece_count(pieces);
+    match note_folder(path) {
+        Some(folder) => format!("{folder} \u{b7} {count}"),
+        None => count,
+    }
+}
+
+/// How much faster a dateline's folder shrinks than its title.
+const META_FOLDER_SHRINK: f32 = 1000.;
+
+/// The size of a dateline's title, in pixels.
+const DATELINE_TITLE_PX: f32 = 13.0;
 
 /// What a collection view keeps beyond its members.
 pub(super) struct Collection {
@@ -169,29 +239,107 @@ impl FacetView {
         true
     }
 
-    /// The title segment that leads chunk `i`'s breadcrumb row in a
-    /// collection: plain text, bright, shrinking with an ellipsis down to
-    /// 32 px. `None` for a single-note view.
-    pub(super) fn note_title(&self, i: usize, t: &Theme) -> Option<AnyElement> {
+    /// The dateline above `gap` (see the module docs): only in a collection,
+    /// and only for a member's first gap when that member has a drawn chunk
+    /// below it. `spaced` adds the room that makes 24 px above it with the
+    /// column's gap: false for the column's first row.
+    pub(super) fn render_dateline(
+        &self,
+        gap: GapRef,
+        spaced: bool,
+        t: &Theme,
+    ) -> Option<AnyElement> {
         self.collection.as_ref()?;
-        let title = SharedString::from(self.members.member_of(i)?.title.clone());
-        let mut el = div()
-            .id(note_title_id(i))
+        let first = gap.below.filter(|_| gap.above.is_none())?;
+        let member = self.members.list.get(gap.member)?;
+        let m = gap.member;
+        let title = SharedString::from(member.title.clone());
+        let pieces = self.members.drawn_with(first);
+        Some(
+            div()
+                .id(dateline_id(m))
+                .role(Role::Heading)
+                .aria_label(title.clone())
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .when(spaced, |row| row.mt_3())
+                .child(
+                    div()
+                        .id(dateline_title_id(m))
+                        // A shrunk title keeps a letter and its ellipsis.
+                        .min_w_8()
+                        .truncate()
+                        .text_size(px(DATELINE_TITLE_PX))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::bright(t))
+                        .child(title)
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .id(dateline_rule_id(m))
+                        .flex_1()
+                        .h(px(1.))
+                        .bg(theme::divider(t))
+                        .test_support(),
+                )
+                .children(
+                    self.render_meta(m, &member.path, pieces, t)
+                        .into_iter()
+                        .flatten(),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    /// Member `m`'s dateline meta text ([`dateline_meta`]), as two items of
+    /// the row: the folder, which gives up its room first and is cut with
+    /// an ellipsis, and the count, which stays whole and carries the whole
+    /// text for screen readers. Two row items, not one box: a box would
+    /// never shrink below its folder's full width.
+    fn render_meta(
+        &self,
+        m: usize,
+        path: &VaultPath,
+        pieces: usize,
+        t: &Theme,
+    ) -> [Option<AnyElement>; 2] {
+        let meta = SharedString::from(dateline_meta(path, pieces));
+        let count = piece_count(pieces);
+        let (folder, count) = match note_folder(path) {
+            Some(folder) => (Some(folder), format!("\u{b7} {count}")),
+            None => (None, count),
+        };
+        let muted = theme::muted(t);
+        let folder = folder.map(|folder| {
+            let mut el = div()
+                .id(dateline_folder_id(m))
+                .min_w_0()
+                // A space's width to the dot, not the row's gap.
+                .mr(px(-4.))
+                .truncate()
+                .text_xs()
+                .text_color(muted)
+                .child(folder)
+                .test_support();
+            el.style().flex_shrink = Some(META_FOLDER_SHRINK);
+            el.into_any_element()
+        });
+        let count = div()
+            .id(dateline_meta_id(m))
             .role(Role::Label)
-            .aria_label(title.clone())
-            .flex()
-            .h_6()
-            .min_w_8()
-            .items_center()
-            .px_1()
+            .aria_label(meta)
+            .flex_none()
             .whitespace_nowrap()
             .text_xs()
-            .text_color(theme::bright(t))
-            .child(div().min_w_0().truncate().child(title))
-            .test_support();
-        // Shrinks with the outer crumbs, before the innermost one.
-        el.style().flex_shrink = Some(OUTER_CRUMB_SHRINK);
-        Some(el.into_any_element())
+            .text_color(muted)
+            .child(count)
+            .test_support()
+            .into_any_element();
+        [folder, Some(count)]
     }
 
     /// The empty state's `Refresh`, in a collection with no member.
