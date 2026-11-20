@@ -3906,6 +3906,10 @@ mod facet_chrome_tests;
 #[cfg(test)]
 mod facet_line_tests;
 #[cfg(test)]
+mod facet_motion_edge_tests;
+#[cfg(test)]
+mod facet_motion_tests;
+#[cfg(test)]
 mod facet_tests;
 #[cfg(test)]
 mod facet_undo_tests;

@@ -143,6 +143,13 @@ impl Stops {
             .filter(|stop| self.before.as_ref() != Some(*stop))
     }
 
+    /// The stop that took the keyboard since the last frame began, while
+    /// this frame draws it. A stop that went away (`Clear` after a click on
+    /// it) is not one.
+    pub(super) fn arrived_drawn(&self) -> Option<&Stop> {
+        self.arrived().filter(|stop| self.drawn.contains(*stop))
+    }
+
     /// A frame begins: note the stop with the keyboard, draw none yet.
     pub(super) fn begin(&mut self, window: &Window) {
         self.focused = self.focused(window);

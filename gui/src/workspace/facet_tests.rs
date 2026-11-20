@@ -45,9 +45,37 @@ pub(super) fn open<'a>(
 }
 
 /// The facet view `build` makes, in its own window, drawn once, and the
-/// events it emits.
+/// events it emits. Motion is reduced, so the bar draws its end height at
+/// once ([`open_animated`] leaves it on).
 pub(super) fn open_with(
     cx: &mut TestAppContext,
+    build: impl FnOnce(&mut gpui_kit::Context<FacetView>) -> FacetView + 'static,
+) -> (
+    Entity<FacetView>,
+    &mut VisualTestContext,
+    Events,
+    Subscription,
+) {
+    open_motion(cx, true, build)
+}
+
+/// [`open_with`] with motion on: the bar moves over time.
+pub(super) fn open_animated(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(&mut gpui_kit::Context<FacetView>) -> FacetView + 'static,
+) -> (
+    Entity<FacetView>,
+    &mut VisualTestContext,
+    Events,
+    Subscription,
+) {
+    open_motion(cx, false, build)
+}
+
+/// The facet view `build` makes, with reduced motion `reduce`.
+fn open_motion(
+    cx: &mut TestAppContext,
+    reduce: bool,
     build: impl FnOnce(&mut gpui_kit::Context<FacetView>) -> FacetView + 'static,
 ) -> (
     Entity<FacetView>,
@@ -59,6 +87,7 @@ pub(super) fn open_with(
         gpui_kit::init(cx);
         editor_view::init(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+        cx.set_reduce_motion(reduce);
     });
     // Under the kit's root, as the app's window is: it walks Tab.
     let built: Rc<RefCell<Option<Entity<FacetView>>>> = Rc::default();
