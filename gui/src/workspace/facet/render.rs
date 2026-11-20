@@ -9,21 +9,18 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, px, relative,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
 };
 use kimun_core::note::GAP_SHOW_ALL_MAX;
 use kimun_notes::settings::themes::Theme;
 
 use super::bar_motion::HintDraw;
-use super::chunks::resize_check;
 use super::keys::{Stop, keys};
 use super::{
     CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FACET_VIEW_ID, FacetView, HINT_ID, HINT_TEXT,
     HINT_TEXT_NOTES, REMOVE_LAST_ID, SHOW_MORE_COUNT_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id,
     collection, crumb_id, gap_count_id, gap_down_id, gap_up_id, open_id, show_all_id,
 };
-use crate::editor_element::LINE_HEIGHT;
-use crate::editor_font;
 use crate::theme;
 use crate::workspace::facet_ui::{chip, crumb as crumb_button, icon_chip, ring_room, text_button};
 
@@ -169,7 +166,7 @@ impl FacetView {
         )
     }
 
-    /// The slim row above chunk `i`, outside its sized height: the headings
+    /// The slim row above chunk `i`, above its editor: the headings
     /// that contain it as clickable crumbs joined by ` › `, and `Open
     /// note` at the right end. Drawn with no crumbs too, so pieces line up.
     pub(super) fn render_crumbs(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
@@ -223,18 +220,9 @@ impl FacetView {
             ))
     }
 
-    pub(super) fn render_chunk(
-        &self,
-        i: usize,
-        line_height: f32,
-        rem: f32,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let rows = self.sized_rows.get(i).copied().unwrap_or(1);
-        // The editor's own vertical inset (`py_2`, twice), and a pixel so
-        // the last row is never cut by rounding.
-        let height = rows as f32 * line_height + rem + 1.0;
+    /// Chunk `i`: its crumbs row, then its editor. The editor measures
+    /// its own height from its wrapped text, so the holder sets none.
+    pub(super) fn render_chunk(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(chunk_id(i))
             .test_support()
@@ -244,12 +232,7 @@ impl FacetView {
             .flex_none()
             .overflow_hidden()
             .child(self.render_crumbs(i, t, cx))
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(height))
-                    .child(self.chunks[i].clone()),
-            )
+            .child(div().flex_none().child(self.chunks[i].clone()))
             .into_any_element()
     }
 
@@ -258,8 +241,6 @@ impl FacetView {
     /// starts for `j`/`k`.
     fn render_body(
         &mut self,
-        line_height: f32,
-        rem: f32,
         title_size: Pixels,
         t: &Theme,
         cx: &mut Context<Self>,
@@ -282,7 +263,7 @@ impl FacetView {
             }
             if let Some(i) = self.members.gaps[g].below {
                 pieces.push(lead.take().unwrap_or(body.len()));
-                body.push(self.render_chunk(i, line_height, rem, t, cx));
+                body.push(self.render_chunk(i, t, cx));
             }
         }
         self.piece_items = pieces;
@@ -430,17 +411,12 @@ impl Render for FacetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let line_height = (f32::from(editor_font::font_size(cx)) * LINE_HEIGHT).round();
         let title_size = collection::dateline_title_size(cx);
-        let rem = f32::from(window.rem_size());
-        self.sized_rows = (0..self.members.len())
-            .map(|i| self.rows_of(i, cx))
-            .collect();
         self.stops.get_mut().begin(window);
 
         // Drawn in this order: the tab stops follow it.
         let bar = self.render_bar(t, window, cx);
-        let body = self.render_body(line_height, rem, title_size, t, cx);
+        let body = self.render_body(title_size, t, cx);
         let hint = self.render_hint(t, window, cx);
         let collection_line = self.render_collection_line(t);
         let show_more = self.render_show_more(t, cx);
@@ -474,8 +450,7 @@ impl Render for FacetView {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(body)
-                    .children(show_more)
-                    .child(resize_check(cx.entity().downgrade())),
+                    .children(show_more),
             )
     }
 }

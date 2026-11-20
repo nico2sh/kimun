@@ -65,11 +65,16 @@ use crate::theme;
 mod faces;
 mod ime;
 mod keys;
+mod measure;
 mod painted;
 mod pointer;
 mod popup;
 mod read_only;
 
+#[cfg(test)]
+pub(crate) use self::measure::line_height;
+#[cfg(test)]
+pub(crate) use self::measure::probe as measure_probe;
 #[cfg(test)]
 pub use self::painted::ModeLine;
 pub use self::painted::{CaretShape, Painted};
@@ -157,6 +162,22 @@ pub struct EditorView {
     /// Losing the keyboard drops the selection. Other keys are stopped by
     /// `input_blocked`, which this sets.
     pub(crate) read_only: bool,
+    /// The editor is as tall as its wrapped text, not as tall as its pane.
+    /// It measures its own height (module `measure`). Set by
+    /// `new_read_only`, for a facet piece.
+    pub(crate) sized_to_text: bool,
+    /// The columns the last measure laid the text out at. Prepaint of a
+    /// text-sized editor draws at these columns.
+    pub(crate) measured_cols: Option<u16>,
+    /// The rows the last measure found.
+    pub(crate) measured_rows: Option<usize>,
+    /// The width the measure laid out at in this frame. Layout asks the
+    /// measure more than once per frame. A call at this width again reuses
+    /// the rows. The element clears it when it asks for its layout.
+    pub(crate) measured_width: Option<Pixels>,
+    /// The text revision and the caret that the last measure laid out.
+    /// Prepaint checks them before it skips its own frame preparation.
+    pub(crate) measured_stamp: Option<measure::EditStamp>,
     /// A read-only surface's click state: the press on a follow target
     /// that waits for its release, and the last click that followed.
     clicks_ro: ReadOnlyClicks,
@@ -197,7 +218,9 @@ impl EditorView {
     /// drains its own app channel, as `Self::new` does.
     pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
         let (tx, messages) = Self::drain_own_channel(cx);
-        Self::read_only_with(text, tx, Some(messages), cx)
+        let mut view = Self::read_only_with(text, tx, Some(messages), cx);
+        view.sized_to_text = true;
+        view
     }
 
     /// A channel of the editor's own, and the task that drains it. The task
@@ -327,6 +350,11 @@ impl EditorView {
             preedit: None,
             input_blocked: false,
             read_only: false,
+            sized_to_text: false,
+            measured_cols: None,
+            measured_rows: None,
+            measured_width: None,
+            measured_stamp: None,
             clicks_ro: ReadOnlyClicks::default(),
             _focus_out: None,
             painted: None,
@@ -381,7 +409,7 @@ impl Render for EditorView {
                 this.drop_unreachable_selection(window, cx)
             }));
         }
-        div()
+        let pane = div()
             .id("editor")
             .test_support()
             .track_focus(&self.focus_handle)
@@ -394,10 +422,15 @@ impl Render for EditorView {
                     window.focus(&this.focus_handle, cx);
                 }),
             )
-            .size_full()
             .px_4()
             .py_2()
             .bg(theme::background(&theme::current(cx)))
-            .child(EditorElement::new(cx.entity()))
+            .child(EditorElement::new(cx.entity()));
+        // A text-sized editor takes its height from its text.
+        if self.sized_to_text {
+            pane.w_full()
+        } else {
+            pane.size_full()
+        }
     }
 }

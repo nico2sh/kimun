@@ -15,8 +15,9 @@ use super::facet::{
     BAR_FRAME_ID, CLEAR_ID, COLUMN_ID, FACET_BAR_ID, FacetView, HINT_FRAME_ID, HINT_ID, UNDO_ID,
     pill_id,
 };
+use super::facet_size_tests::assert_no_correction;
 use super::facet_tests::{
-    click, focus_view, has_focus, key, next_frame, open, open_animated, settle, tab_to, tag,
+    click, focus_view, has_focus, key, open, open_animated, settle, tab_to, tag,
 };
 
 /// A view of `text` with `picks`, motion on, settled at rest.
@@ -370,17 +371,13 @@ fn at_rest_the_bar_has_no_frame_and_its_natural_height(cx: &mut TestAppContext) 
 fn no_correcting_frame_is_asked_while_the_bar_moves(cx: &mut TestAppContext) {
     let (view, cx) = animated(cx, TWO_TAGS, vec![tag("a")]);
     click(cx, CLEAR_ID);
-    // The pick's own new chunks may ask for one correcting frame.
-    frame(cx);
-    next_frame(cx);
-    frame(cx);
-    next_frame(cx);
-    for _ in 0..5 {
+    // The pick's new chunks are sized in their first frame.
+    assert_no_correction(&view, cx, "the clear's frame");
+    for step in 0..5 {
         wait(cx, 20);
         frame(cx);
         assert!(moving(cx), "the bar moves");
-        let asked = view.read_with(cx, |view, _| view.resize_asked());
-        assert!(!asked, "a moving bar asks for no correcting frame");
+        assert_no_correction(&view, cx, &format!("moving frame {step}"));
     }
 }
 

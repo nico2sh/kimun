@@ -3912,6 +3912,8 @@ mod facet_motion_shape_tests;
 #[cfg(test)]
 mod facet_motion_tests;
 #[cfg(test)]
+mod facet_size_tests;
+#[cfg(test)]
 mod facet_tests;
 #[cfg(test)]
 mod facet_undo_tests;

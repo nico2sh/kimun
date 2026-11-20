@@ -280,6 +280,24 @@ impl EditorElement {
             }
         });
     }
+
+    /// The layout of a text-sized editor: its full width, and the height
+    /// its measure finds for its wrapped text. A measured node has no
+    /// children, and a read-only editor never opens the popup.
+    fn request_measured(&self, window: &mut Window, cx: &mut App) -> LayoutId {
+        debug_assert!(
+            self.view.read(cx).autocomplete_state().is_none(),
+            "a text-sized editor opens no popup"
+        );
+        // A new frame: its first measure lays the text out again.
+        self.view.update(cx, |view, _| view.measured_width = None);
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        let view = self.view.clone();
+        window.request_measured_layout(style, move |known, available, window, cx| {
+            view.update(cx, |view, cx| view.measure(known, available, window, cx))
+        })
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -357,6 +375,9 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        if self.view.read(cx).sized_to_text {
+            return (self.request_measured(window, cx), None);
+        }
         // Fill the pane; the grid is whatever fits.
         let mut style = Style::default();
         style.size.width = relative(1.).into();
@@ -397,7 +418,14 @@ impl Element for EditorElement {
             let base_font = fonts.face(false, false);
             let cells =
                 CellMetrics::from_text_system(&text_system, &base_font, font_size, line_height);
-            let (cols, pane_rows) = cells.fit(bounds.size.width.into(), bounds.size.height.into());
+            let (fit_cols, pane_rows) =
+                cells.fit(bounds.size.width.into(), bounds.size.height.into());
+            // A text-sized editor draws at the columns its measure laid out
+            // at: its height was measured for that wrap.
+            let cols = match view.measured_cols {
+                Some(cols) if view.sized_to_text => cols,
+                _ => fit_cols,
+            };
             let cell_bounds = |col: u16, row: u16, n: u16| {
                 Bounds::new(
                     point(
@@ -421,7 +449,17 @@ impl Element for EditorElement {
                 .map_or(0, find_bar::rows)
                 .min(pane_rows - chrome);
             let rows = pane_rows - chrome - bar_rows;
-            view.editor.prepare_frame(cols, rows);
+            if view.sized_to_text {
+                // When the measure prepared this frame at these columns, with
+                // a viewport that shows every row, nothing is left to do. The
+                // guard assumes no edit since the measure: see
+                // `measured_this_frame`.
+                if !view.measured_this_frame(cols) {
+                    view.prepare_counted(cols, rows, self.view.entity_id());
+                }
+            } else {
+                view.editor.prepare_frame(cols, rows);
+            }
             // The bar has the keyboard while open: no caret in the text.
             let bar_open = view.editor.find_open();
             let frame = view
