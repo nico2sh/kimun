@@ -218,6 +218,12 @@ impl FacetView {
 
     /// `bar` in the frame that clips it at `height` while it moves. The bar
     /// lays out at its full height inside, and the frame measures it.
+    ///
+    /// The frame has no element id, so the bar and everything in it keep
+    /// the element path they have at rest. The kit keys the state of an
+    /// element by its path: an id here would drop the state of the open
+    /// list's popover, of its field and of the chips when the motion starts,
+    /// and again when it ends. Tests find the frame by its debug selector.
     pub(super) fn framed_bar(&self, bar: impl IntoElement, height: f32) -> AnyElement {
         let measured = self.bar_motion.measured.clone();
         div()
@@ -226,7 +232,7 @@ impl FacetView {
                     measured.set(f32::from(bar.size.height));
                 }
             })
-            .id(BAR_FRAME_ID)
+            .debug_selector(|| BAR_FRAME_ID.into())
             .flex()
             .flex_col()
             .flex_none()
@@ -234,7 +240,6 @@ impl FacetView {
             .h(px(height))
             .overflow_hidden()
             .child(bar)
-            .test_support()
             .into_any_element()
     }
 
