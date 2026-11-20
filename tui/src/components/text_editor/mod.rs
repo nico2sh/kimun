@@ -515,6 +515,7 @@ impl TextEditorComponent {
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
         self.after_load();
+        self.nvim_session.display.note_loaded();
         self.nvim_session.display.note_bulk_edit();
     }
 
@@ -1307,6 +1308,7 @@ impl Component for TextEditorComponent {
         // Drain background results, adopt the revision, update the display,
         // set overlays, spawn pending jobs — in that order. See
         // [`EditorSession::prepare_frame`].
+        let reveal_row = self.backend.as_editor().and_then(Editor::find_match_row);
         self.session_mut().prepare_frame(FrameInput {
             snapshot: snap,
             width: editor_rect.width,
@@ -1315,6 +1317,7 @@ impl Component for TextEditorComponent {
             preview,
             preview_overlays,
             matches,
+            reveal_row,
         });
         // When the find bar is active, draw it AFTER the editor so its caret
         // (set via set_cursor_position) wins over the editor's caret call.

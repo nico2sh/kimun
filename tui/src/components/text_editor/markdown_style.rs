@@ -26,6 +26,8 @@ pub(super) fn role_style(role: Role, theme: &Theme) -> Style {
             Style::default().fg(theme.gray.to_ratatui())
         }
         Role::CodeBoxPad => Style::default(),
+        Role::FrontmatterTitle => Style::default().fg(theme.fg_secondary.to_ratatui()),
+        Role::FrontmatterText => Style::default().fg(theme.fg_secondary.to_ratatui()),
         Role::BlockquoteBar => Style::default().fg(theme.blockquote_bar.to_ratatui()),
         Role::Element(kind) => match kind {
             ElementKind::Bold => Style::default()
@@ -251,13 +253,15 @@ mod tests {
         assert!(!text(&s).contains('#'));
     }
     #[test]
-    fn unordered_list_shows_marker() {
+    fn unordered_list_shows_bullet() {
         let s = MarkdownSpanner::render("- item", "- item", 0, None, true, false, 40, &t());
         assert!(
-            text(&s).starts_with("- "),
-            "expected '- item', got '{}'",
+            text(&s).starts_with("• "),
+            "expected '• item', got '{}'",
             text(&s)
         );
+        let raw = MarkdownSpanner::render("- item", "- item", 0, Some(2), true, false, 40, &t());
+        assert!(text(&raw).starts_with("- "), "caret line stays raw");
         assert!(text(&s).contains("item"));
     }
     #[test]

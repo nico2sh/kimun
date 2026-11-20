@@ -42,10 +42,11 @@ pub(crate) mod diacritics;
 
 pub mod scan {
     pub use super::content_extractor::{
-        heading_display_text, heading_section_range, is_inside_code_link_or_frontmatter,
-        is_inside_exclusion_zone, is_remote_url, link_char_spans, link_target_filename,
-        split_link_fragment, target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans,
-        ExclusionZones, LinkSpan, LinkSpanKind,
+        frontmatter_lines, heading_display_text, heading_section_range,
+        is_inside_code_link_or_frontmatter, is_inside_exclusion_zone, is_remote_url,
+        link_char_spans, link_target_filename, split_link_fragment, target_looks_like_image,
+        url_with_allowed_scheme, wikilink_char_spans, ExclusionZones, FrontmatterLines, LinkSpan,
+        LinkSpanKind,
     };
 
     /// A label token detected in note text, with byte-offset range and the
