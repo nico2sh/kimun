@@ -10,10 +10,10 @@ use kimun_core::note::{Facet, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
 
 use super::facet::{
-    COLUMN_ID, EMPTY_ID, FIRST_NOTES_ID, FacetEvent, FacetView, MemberInit, REFRESH_ID,
-    REMOVE_LAST_ID, SECTIONS_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id, dateline_folder_id,
-    dateline_id, dateline_meta_id, dateline_rule_id, dateline_title_id, gap_count_id, gap_down_id,
-    gap_up_id, more_item_id, open_id, pill_id, show_all_id,
+    COLUMN_ID, EMPTY_ID, FIRST_NOTES_ID, FacetEvent, FacetView, ListKind, MemberInit, REFRESH_ID,
+    REMOVE_LAST_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id, dateline_folder_id, dateline_id,
+    dateline_meta_id, dateline_rule_id, dateline_title_id, gap_count_id, gap_down_id, gap_up_id,
+    menu_id, more_item_id, open_id, show_all_id,
 };
 use super::facet_tests::{
     Events, bounds, cell, chunk_texts, click, focus_view, has_focus, heading, key, label, open,
@@ -453,8 +453,12 @@ fn a_tag_pick_shows_only_the_notes_that_hold_it(cx: &mut TestAppContext) {
 fn merged_pills_count_across_notes(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "#x one #x\n"), (B, "Beta", "#X two\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
-    assert!(shows(cx, pill_id(&tag("x"))));
-    assert_eq!(label(cx, pill_id(&tag("x"))).as_deref(), Some("#x"));
+    assert_eq!(
+        label(cx, menu_id(ListKind::Tags)).as_deref(),
+        Some("Tags 1")
+    );
+    click(cx, menu_id(ListKind::Tags));
+    assert_eq!(label(cx, more_item_id(&tag("x"))).as_deref(), Some("#x"));
     let count = view.read_with(cx, |view, _| view.merged_count(&tag("x")));
     assert_eq!(count, Some(3));
 }
@@ -468,8 +472,8 @@ fn the_same_heading_in_two_notes_is_one_pill_that_shows_both(cx: &mut TestAppCon
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
     let count = view.read_with(cx, |view, _| view.merged_count(&heading("plan")));
     assert_eq!(count, Some(2), "one merged pill");
-    // An unpicked heading is not inline: pick it from the Sections list.
-    click(cx, SECTIONS_ID);
+    // An unpicked heading is not in the bar: pick it from the Sections list.
+    click(cx, menu_id(ListKind::Sections));
     click(cx, more_item_id(&heading("plan")));
     assert_eq!(
         chunk_texts(&view, cx),

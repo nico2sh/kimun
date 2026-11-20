@@ -1,7 +1,5 @@
 //! Drawing helpers of the **Facet view** ([`super::facet`]): the chips,
-//! pills and text buttons its pinned bar and pieces are drawn with, and the
-//! widths of a pill and a chip ([`pill_width`], [`chip_width`]) that the
-//! filter line fits with: they follow the same padding, gap and border.
+//! pills and text buttons its pinned bar and pieces are drawn with.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
@@ -27,10 +25,6 @@ const PILL_GAP_REMS: f32 = 0.25;
 /// A pill's icon (the outline icon, the remove mark), square, in rems
 /// (`size_3`).
 const PILL_ICON_REMS: f32 = 0.75;
-/// A chip's least width (`min_w_6`), in rems.
-const CHIP_MIN_REMS: f32 = 1.5;
-/// A pill's or chip's border, each side.
-const BORDER_PX: f32 = 1.0;
 
 /// A small bordered button, in the style of the sort chip, 24 px tall.
 pub(super) fn chip(id: SharedString, label: impl Into<SharedString>, t: &Theme) -> Stateful<Div> {
@@ -159,7 +153,7 @@ pub(super) fn pill_text(p: &Pill) -> String {
 }
 
 /// Whether `p` draws the outline icon in front of its text: a picked
-/// heading (an unpicked one is never on the line).
+/// heading.
 fn has_outline(p: &Pill) -> bool {
     p.picked && p.facet.kind == FacetKind::Heading
 }
@@ -204,6 +198,8 @@ pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
         .aria_label(SharedString::from(name))
         .flex()
         .flex_none()
+        // A long name is cut with an ellipsis: the marks stay in view.
+        .max_w_full()
         .h_6()
         .items_center()
         .gap(rems(PILL_GAP_REMS))
@@ -223,9 +219,14 @@ pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
             }
         })
         .children(outline)
-        .child(div().text_color(color).child(label))
+        .child(div().min_w_0().truncate().text_color(color).child(label))
         .when(p.count > 1, |pill| {
-            pill.child(div().text_color(muted).child(p.count.to_string()))
+            pill.child(
+                div()
+                    .flex_none()
+                    .text_color(muted)
+                    .child(p.count.to_string()),
+            )
         })
         .children(remove)
 }
@@ -242,27 +243,4 @@ fn mark(id: SharedString, icon: IconName, color: Rgba) -> impl gpui_kit::IntoEle
         .text_color(color)
         .child(Icon::new(icon).size_3())
         .test_support()
-}
-
-/// The width [`pill`] draws `p` at, in pixels, with `rem` the window's rem
-/// size and `text` the width of a text in the pill's font and size.
-pub(super) fn pill_width(p: &Pill, rem: f32, text: impl Fn(&str) -> f32) -> f32 {
-    let mut parts = vec![text(&pill_text(p))];
-    if has_outline(p) {
-        parts.push(PILL_ICON_REMS * rem);
-    }
-    if p.count > 1 {
-        parts.push(text(&p.count.to_string()));
-    }
-    if p.picked {
-        parts.push(PILL_ICON_REMS * rem);
-    }
-    let gaps = (parts.len() - 1) as f32 * PILL_GAP_REMS * rem;
-    parts.iter().sum::<f32>() + gaps + 2.0 * (PILL_PAD_REMS * rem + BORDER_PX)
-}
-
-/// The width [`chip`] draws `label` at, in pixels (see [`pill_width`]).
-pub(super) fn chip_width(label: &str, rem: f32, text: impl Fn(&str) -> f32) -> f32 {
-    let drawn = text(label) + 2.0 * (PILL_PAD_REMS * rem + BORDER_PX);
-    drawn.max(CHIP_MIN_REMS * rem)
 }

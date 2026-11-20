@@ -1,170 +1,385 @@
-//! UI tests for the **Facet view**'s filter line (Option B of the design
-//! review): one ranked line of pills that never wraps, the `+N` chip that
-//! opens the list of every tag and link, and the `Sections N` chip. Each
-//! test draws a `FacetView` alone in a headless window and measures the
-//! bounds it painted (see `facet_tests` for the helpers).
+//! UI tests for the **Facet view**'s bar (Option C of the design review):
+//! a row of kind menu chips (`Tags N`, `Links N`, `Sections N`) and a search
+//! chip, a wrapping row of picked pills under it, and the lists the chips
+//! open. Each test draws a `FacetView` alone in a headless window and reads
+//! the bounds it painted (see `facet_tests` for the helpers).
 #![cfg(test)]
 
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{
-    AppContext as _, Bounds, Pixels, SharedString, TestAppContext, VisualTestContext, px,
-};
+use gpui_kit::{SharedString, TestAppContext, VisualTestContext, px};
 use kimun_core::note::{Facet, FacetKind};
 
 use super::facet::{
-    CLEAR_ID, COLUMN_ID, FACET_VIEW_ID, LINE_ID, LINE_PILLS_ID, MORE_ID, MORE_LIST_ID,
-    MORE_QUERY_ID, SECTIONS_ID, SUMMARY_ID, chunk_id, list_group_id, more_item_id, outline_mark_id,
-    pill_id, remove_mark_id,
+    CLEAR_ID, COLUMN_ID, FACET_BAR_ID, FACET_VIEW_ID, LINE_ID, LIST_REST_ID, ListKind,
+    MORE_LIST_ID, MORE_QUERY_ID, SUMMARY_ID, chunk_id, list_group_id, menu_id, more_item_id,
+    outline_mark_id, pill_id, remove_mark_id,
 };
 use super::facet_tests::{
-    bounds, click, field_focused, focus_view, has_focus, heading, key, label, list_open, open,
-    picks, picks_changed, query, settle, shows, tag, view_focused,
+    bounds, click, field_focused, focus_view, has_focus, heading, key, label, list_open,
+    next_frame, open, picks, picks_changed, query, settle, shows, tab_to, tag, view_focused,
 };
 
 fn link(key: &str) -> Facet {
     Facet::new(FacetKind::NoteLink, key)
 }
 
-/// The 60 tags and 20 links of [`crowded`], in line order (every count is
-/// one, so by label: the links first).
-fn crowded_facets() -> Vec<Facet> {
-    let links = (0..20).map(|i| link(&format!("link{i:02}")));
-    let tags = (0..60).map(|i| tag(&format!("tag{i:02}")));
-    links.chain(tags).collect()
+/// The 60 tags of [`crowded`], in list order (every count is one, so by
+/// label).
+fn crowded_tags() -> Vec<Facet> {
+    (0..60).map(|i| tag(&format!("tag{i:02}"))).collect()
 }
 
-/// A note with a heading, then 60 tags and 20 links in one paragraph: far
-/// more than one line holds.
+/// The 20 links of [`crowded`], in list order.
+fn crowded_links() -> Vec<Facet> {
+    (0..20).map(|i| link(&format!("link{i:02}"))).collect()
+}
+
+/// A note with a heading, then 60 tags and 20 links in one paragraph.
 fn crowded() -> String {
     let tags: String = (0..60).map(|i| format!("#tag{i:02} ")).collect();
     let links: String = (0..20).map(|i| format!("[[link{i:02}]] ")).collect();
     format!("# Head\n\nintro\n\n{tags}{links}\n")
 }
 
-/// The pills drawn in the line, with their bounds, left to right.
-fn drawn_pills(cx: &mut VisualTestContext, facets: &[Facet]) -> Vec<(Facet, Bounds<Pixels>)> {
-    let mut drawn: Vec<(Facet, Bounds<Pixels>)> = Vec::new();
-    for facet in facets {
-        if shows(cx, pill_id(facet)) {
-            drawn.push((facet.clone(), bounds(cx, pill_id(facet))));
-        }
-    }
-    drawn.sort_by(|a, b| a.1.left().partial_cmp(&b.1.left()).unwrap());
-    drawn
+/// Whether the element `id` was drawn in the last frame, seen or not (a
+/// list's pills scroll inside it).
+fn exists(cx: &mut VisualTestContext, id: impl Into<SharedString>) -> bool {
+    let id: SharedString = id.into();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
 }
 
-fn more_count(
+fn results(
     view: &gpui_kit::Entity<super::facet::FacetView>,
     cx: &mut VisualTestContext,
-) -> usize {
-    view.read_with(cx, |view, _| view.more_count())
+) -> Vec<Facet> {
+    view.read_with(cx, |view, cx| view.list_results(cx))
+}
+
+/// The box around the picked pills of `picks`: row 2.
+fn picks_row(cx: &mut VisualTestContext, picks: &[Facet]) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let all: Vec<_> = picks.iter().map(|f| bounds(cx, pill_id(f))).collect();
+    all.iter().skip(1).fold(all[0], |row, b| row.union(b))
+}
+
+fn drawn_stops(
+    view: &gpui_kit::Entity<super::facet::FacetView>,
+    cx: &mut VisualTestContext,
+) -> Vec<SharedString> {
+    cx.update(|window, cx| window.render_frame(cx));
+    view.read_with(cx, |view, _| view.drawn_stop_ids())
+}
+
+const MENUS_NOTE: &str = "# Head\n\n## Sub\n\n#a #b #c [[x]] [[y]]\n";
+
+#[gpui_kit::test]
+fn row_one_holds_a_chip_per_kind_with_unpicked_counts(cx: &mut TestAppContext) {
+    let (_view, cx, _events, _sub) = open(cx, MENUS_NOTE, vec![tag("a"), heading("sub")]);
+    settle(cx);
+    assert_eq!(
+        label(cx, menu_id(ListKind::Tags)).as_deref(),
+        Some("Tags 2")
+    );
+    assert_eq!(
+        label(cx, menu_id(ListKind::Links)).as_deref(),
+        Some("Links 2")
+    );
+    assert_eq!(
+        label(cx, menu_id(ListKind::Sections)).as_deref(),
+        Some("Sections 1")
+    );
+    assert_eq!(
+        label(cx, menu_id(ListKind::All)).as_deref(),
+        Some("Search facets (/)")
+    );
+    let line = bounds(cx, LINE_ID);
+    assert!(f32::from(line.size.height) <= 26.0, "one row: {line:?}");
+    let chips: Vec<_> = [
+        ListKind::Tags,
+        ListKind::Links,
+        ListKind::Sections,
+        ListKind::All,
+    ]
+    .into_iter()
+    .map(|kind| bounds(cx, menu_id(kind)))
+    .collect();
+    for pair in chips.windows(2) {
+        assert!(pair[0].right() <= pair[1].left(), "in order: {pair:?}");
+    }
+    for chip in &chips {
+        assert_eq!(chip.top(), chips[0].top(), "on the one row");
+        assert!(chip.top() >= line.top() && chip.bottom() <= line.bottom());
+        assert!(f32::from(chip.size.height) >= 24.0, "a 24 px target");
+    }
+    // A spacer pushes the search chip to the row's right end.
+    assert!(chips[3].left() - chips[2].right() > px(100.));
+    assert!((f32::from(line.right() - chips[3].right())).abs() < 1.0);
+    // No unpicked facet is drawn in the bar.
+    assert!(!shows(cx, pill_id(&tag("b"))));
+    assert!(!shows(cx, pill_id(&link("x"))));
+    assert!(!shows(cx, pill_id(&heading("head"))));
 }
 
 #[gpui_kit::test]
-fn the_bar_is_one_line_with_many_facets(cx: &mut TestAppContext) {
-    let (_view, cx, _events, _sub) = open(cx, &crowded(), vec![]);
+fn a_kind_with_nothing_unpicked_has_no_chip(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "#a [[x]]\n", vec![tag("a")]);
+    assert!(!shows(cx, menu_id(ListKind::Tags)), "every tag picked");
+    assert_eq!(
+        label(cx, menu_id(ListKind::Links)).as_deref(),
+        Some("Links 1")
+    );
+    assert!(!shows(cx, menu_id(ListKind::Sections)), "no heading");
+    assert!(shows(cx, menu_id(ListKind::All)));
+    // Every facet picked: no chip, no search chip, no row 1.
+    view.update(cx, |view, cx| view.toggle(link("x"), cx));
+    for kind in [
+        ListKind::Tags,
+        ListKind::Links,
+        ListKind::Sections,
+        ListKind::All,
+    ] {
+        assert!(!shows(cx, menu_id(kind)), "{kind:?}");
+    }
+    assert!(!shows(cx, LINE_ID));
+    assert!(shows(cx, pill_id(&tag("a"))), "the picks stay");
+    assert!(shows(cx, CLEAR_ID));
+}
+
+#[gpui_kit::test]
+fn the_bar_has_no_search_chip_without_facets(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "just text\n\nmore text\n", vec![]);
+    assert!(!shows(cx, menu_id(ListKind::All)));
+    assert!(!shows(cx, LINE_ID));
+    assert!(!shows(cx, FACET_BAR_ID), "nothing to draw: no bar");
+    view.update(cx, |view, cx| view.set_text("#a\n".into(), cx));
+    assert!(
+        shows(cx, menu_id(ListKind::All)),
+        "a facet: the search chip"
+    );
+}
+
+#[gpui_kit::test]
+fn picks_draw_in_their_own_row_with_a_remove_mark(cx: &mut TestAppContext) {
+    let picks_made = vec![tag("tag59"), link("link19"), heading("head")];
+    let (view, cx, events, _sub) = open(cx, &crowded(), picks_made.clone());
     settle(cx);
     let line = bounds(cx, LINE_ID);
+    let row = picks_row(cx, &picks_made);
     assert!(
-        f32::from(line.size.height) <= 26.0,
-        "one pill row tall: {line:?}"
+        row.top() >= line.bottom(),
+        "under the chips: {row:?} {line:?}"
     );
-    let drawn = drawn_pills(cx, &crowded_facets());
-    assert!(drawn.len() > 2, "some pills are drawn: {}", drawn.len());
-    for (facet, b) in &drawn {
-        assert_eq!(b.top(), drawn[0].1.top(), "{facet:?} on the one row");
-        assert!(b.top() >= line.top() && b.bottom() <= line.bottom());
+    let drawn: Vec<_> = picks_made.iter().map(|f| bounds(cx, pill_id(f))).collect();
+    for pair in drawn.windows(2) {
+        assert!(pair[0].right() <= pair[1].left(), "in pick order");
     }
-    assert!(shows(cx, MORE_ID));
-    assert!(shows(cx, SECTIONS_ID));
-}
-
-#[gpui_kit::test]
-fn picked_pills_come_first_and_always_show(cx: &mut TestAppContext) {
-    let picks_made = vec![tag("tag59"), link("link19")];
-    let (view, cx, _events, _sub) = open(cx, &crowded(), picks_made.clone());
-    settle(cx);
-    let drawn = drawn_pills(cx, &crowded_facets());
-    let order: Vec<Facet> = drawn.iter().map(|(f, _)| f.clone()).collect();
-    assert_eq!(order[..2], picks_made[..], "the picks lead, in pick order");
-    assert!(shows(cx, remove_mark_id(&tag("tag59"))), "a remove mark");
+    let summary_top = bounds(cx, SUMMARY_ID).top();
+    for b in &drawn {
+        assert!(
+            b.top() >= line.bottom() && b.bottom() <= summary_top,
+            "between the chips and the summary: {b:?}"
+        );
+    }
     assert_eq!(
         label(cx, pill_id(&tag("tag59"))).as_deref(),
         Some("Remove #tag59"),
         "a picked pill is named for what a press does"
     );
-    let unpicked = pill_id(&link("link00"));
-    assert_eq!(label(cx, unpicked).as_deref(), Some("[[link00]]"));
-    assert!(shows(cx, remove_mark_id(&link("link19"))));
-    assert!(
-        !shows(cx, remove_mark_id(&order[2])),
-        "no remove mark on an unpicked pill"
-    );
-    // A click anywhere on a picked pill unpicks it (its remove mark too).
-    click(cx, remove_mark_id(&link("link19")));
-    assert_eq!(picks(&view, cx), [tag("tag59")]);
-    view.update(cx, |view, cx| view.toggle(link("link19"), cx));
-    // In a narrow pane the picks stay, and the summary names every one.
-    cx.simulate_resize(gpui_kit::size(px(300.), px(600.)));
-    settle(cx);
-    assert!(shows(cx, pill_id(&tag("tag59"))));
-    assert!(shows(cx, pill_id(&link("link19"))));
+    for facet in &picks_made {
+        assert!(
+            shows(cx, remove_mark_id(facet)),
+            "{facet:?} has a remove mark"
+        );
+    }
+    // The summary line, with `Clear`, sits under the picks.
+    assert!(bounds(cx, SUMMARY_ID).top() >= row.bottom());
+    assert!(bounds(cx, CLEAR_ID).top() >= row.bottom());
     let summary = label(cx, SUMMARY_ID).expect("the summary line");
     assert!(
         summary.contains("#tag59") && summary.contains("link19"),
         "{summary}"
     );
+    // A click on a remove mark unpicks its facet.
+    click(cx, remove_mark_id(&link("link19")));
+    assert_eq!(picks(&view, cx), [tag("tag59"), heading("head")]);
+    assert_eq!(picks_changed(&events), 1);
+    assert!(!shows(cx, pill_id(&link("link19"))));
 }
 
 #[gpui_kit::test]
-fn the_more_chip_counts_the_facets_not_shown(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &crowded(), vec![]);
+fn picks_wrap_in_a_narrow_pane_and_every_one_can_be_removed(cx: &mut TestAppContext) {
+    let long: Vec<Facet> = (0..10)
+        .map(|i| tag(&format!("longtagname{i:02}")))
+        .collect();
+    let text: String = (0..10)
+        .map(|i| format!("#longtagname{i:02} piece {i}\n\n"))
+        .collect();
+    let (view, cx, _events, _sub) = open(cx, &text, long.clone());
+    cx.simulate_resize(gpui_kit::size(px(320.), px(600.)));
     settle(cx);
-    let facets = crowded_facets();
-    let drawn = drawn_pills(cx, &facets);
-    assert_eq!(more_count(&view, cx), facets.len() - drawn.len());
-    assert!(more_count(&view, cx) > 0);
-    let name = format!("{} more facets (/)", more_count(&view, cx));
-    assert_eq!(label(cx, MORE_ID), Some(name), "the name carries the count");
-    let chip = bounds(cx, MORE_ID);
-    assert!(
-        f32::from(chip.size.height) >= 24.0,
-        "a 24 px target: {chip:?}"
-    );
-    let last = drawn.last().unwrap().1;
-    assert!(last.right() <= chip.left(), "the chip follows the pills");
-    assert!(chip.right() <= bounds(cx, SECTIONS_ID).left());
-    // The pills shown inline are the first of the line, in order.
-    let order: Vec<Facet> = drawn.into_iter().map(|(f, _)| f).collect();
-    assert_eq!(order[..], facets[..order.len()]);
-}
-
-#[gpui_kit::test]
-fn the_more_chip_is_absent_when_everything_fits(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "#a #b [[x]]\n", vec![]);
-    settle(cx);
-    assert!(!shows(cx, MORE_ID));
-    assert_eq!(more_count(&view, cx), 0);
-    for facet in [tag("a"), tag("b"), link("x")] {
-        assert!(shows(cx, pill_id(&facet)), "{facet:?}");
+    let whole = bounds(cx, FACET_VIEW_ID);
+    let row = picks_row(cx, &long);
+    assert!(f32::from(row.size.height) > 30.0, "it wraps: {row:?}");
+    for facet in &long {
+        assert!(shows(cx, pill_id(facet)), "{facet:?} drawn");
+        assert!(shows(cx, remove_mark_id(facet)), "{facet:?} keeps its mark");
+        let b = bounds(cx, pill_id(facet));
+        assert!(b.right() <= whole.right(), "{facet:?} whole: {b:?}");
+        assert!(
+            b.top() >= bounds(cx, FACET_BAR_ID).top() && b.bottom() <= bounds(cx, SUMMARY_ID).top(),
+            "{facet:?} between the bar top and the summary: {b:?}"
+        );
     }
-    assert!(!shows(cx, SECTIONS_ID), "no headings: no Sections chip");
+    for (i, facet) in long.iter().enumerate() {
+        click(cx, remove_mark_id(facet));
+        assert_eq!(picks(&view, cx), long[i + 1..], "{facet:?} unpicked");
+    }
+    assert!(!shows(cx, CLEAR_ID), "no picks: no summary line either");
 }
 
 #[gpui_kit::test]
-fn link_pills_read_as_wikilinks_and_tag_pills_as_hashtags(cx: &mut TestAppContext) {
-    let (_view, cx, _events, _sub) = open(cx, "#Run and [[Plan]]\n", vec![]);
-    assert_eq!(label(cx, pill_id(&tag("run"))).as_deref(), Some("#Run"));
-    assert_eq!(
-        label(cx, pill_id(&link("plan"))).as_deref(),
-        Some("[[plan]]")
+fn a_pick_longer_than_the_pane_keeps_its_remove_mark_in_view(cx: &mut TestAppContext) {
+    let name = "Weekly planning and review of the garden project notes";
+    let pick = heading(name);
+    let (view, cx, _events, _sub) = open(cx, &format!("# {name}\n\ntext\n"), vec![pick.clone()]);
+    cx.simulate_resize(gpui_kit::size(px(320.), px(600.)));
+    settle(cx);
+    let bar = bounds(cx, FACET_BAR_ID);
+    let b = bounds(cx, pill_id(&pick));
+    let slack = px(0.5);
+    assert!(
+        b.left() >= bar.left() - slack && b.right() <= bar.right() + slack,
+        "the pill lies inside the bar: {b:?} {bar:?}"
     );
+    assert!(shows(cx, remove_mark_id(&pick)), "the remove mark is shown");
+    click(cx, remove_mark_id(&pick));
+    assert_eq!(picks(&view, cx), Vec::<Facet>::new());
+}
+
+/// Whether `inner` lies inside `outer`, allowing half a pixel.
+fn inside(
+    inner: gpui_kit::Bounds<gpui_kit::Pixels>,
+    outer: gpui_kit::Bounds<gpui_kit::Pixels>,
+) -> bool {
+    let slack = px(0.5);
+    inner.top() >= outer.top() - slack && inner.bottom() <= outer.bottom() + slack
+}
+
+/// A short window and many long picks: the bar reaches its 40 percent cap.
+/// A pick that takes the keyboard by Tab, or after the pick it held is
+/// removed, scrolls into view.
+#[gpui_kit::test]
+fn a_focused_pick_scrolls_into_view_when_the_bar_is_capped(cx: &mut TestAppContext) {
+    let long: Vec<Facet> = (0..20)
+        .map(|i| tag(&format!("longtagname{i:02}")))
+        .collect();
+    let mut text: String = (0..20)
+        .map(|i| format!("#longtagname{i:02} piece {i}\n\n"))
+        .collect();
+    text.push_str("#other\n");
+    let (view, cx, _events, _sub) = open(cx, &text, long.clone());
+    cx.simulate_resize(gpui_kit::size(px(320.), px(260.)));
+    settle(cx);
+    focus_view(&view, cx);
+    let last = pill_id(&long[19]);
+    tab_to(cx, last.clone(), 40);
+    settle(cx);
+    let bar = bounds(cx, FACET_BAR_ID);
+    assert!(
+        f32::from(bar.size.height) <= 260.0 * 0.4 + 0.5,
+        "capped: {bar:?}"
+    );
+    let b = bounds(cx, last.clone());
+    assert!(inside(b, bar), "the last pick in view: {b:?} {bar:?}");
+    // Shift+Tab back to the first chip: the bar scrolls up again.
+    let first = menu_id(ListKind::Tags);
+    for _ in 0..30 {
+        if has_focus(cx, first.clone()) {
+            break;
+        }
+        key(cx, "shift-tab");
+    }
+    assert!(has_focus(cx, first.clone()));
+    let chip = bounds(cx, first);
+    assert!(
+        inside(chip, bounds(cx, FACET_BAR_ID)),
+        "the chip in view: {chip:?}"
+    );
+    // The last pick takes the keyboard, the bar is scrolled back to its
+    // top, and the pick is unpicked: the pick before it scrolls into view.
+    tab_to(cx, last.clone(), 40);
+    cx.update(|window, cx| {
+        let handle = view.read(cx).bar_scroll.clone();
+        handle.set_offset(gpui_kit::point(px(0.), px(0.)));
+        window.refresh();
+        window.render_frame(cx);
+    });
+    let hidden = bounds(cx, last);
+    assert!(
+        !inside(hidden, bounds(cx, FACET_BAR_ID)),
+        "the last pick is out of view before the unpick: {hidden:?}"
+    );
+    key(cx, "enter");
+    settle(cx);
+    let next = pill_id(&long[18]);
+    assert!(has_focus(cx, next.clone()));
+    let b = bounds(cx, next);
+    let bar = bounds(cx, FACET_BAR_ID);
+    assert!(
+        inside(b, bar),
+        "the new focused pick in view: {b:?} {bar:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_menu_chip_opens_only_its_kinds_list(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, &crowded(), vec![]);
+    settle(cx);
+    assert_eq!(
+        label(cx, menu_id(ListKind::Tags)).as_deref(),
+        Some("Tags 60")
+    );
+    click(cx, menu_id(ListKind::Tags));
+    assert!(list_open(&view, cx));
+    assert!(field_focused(&view, cx));
+    assert_eq!(results(&view, cx), crowded_tags(), "the tags, nothing else");
+    assert!(!exists(cx, list_group_id(FacetKind::Tag)), "no group label");
+    let chip = bounds(cx, menu_id(ListKind::Tags));
+    let list = bounds(cx, MORE_LIST_ID);
+    assert!(
+        list.top() >= chip.bottom(),
+        "under its chip: {list:?} {chip:?}"
+    );
+    assert_eq!(
+        label(cx, more_item_id(&tag("tag00"))).as_deref(),
+        Some("#tag00"),
+        "a list pill reads as a tag"
+    );
+    key(cx, "escape");
+    assert!(!list_open(&view, cx));
+    assert!(has_focus(cx, menu_id(ListKind::Tags)), "back on the chip");
+
+    click(cx, menu_id(ListKind::Links));
+    assert_eq!(results(&view, cx), crowded_links());
+    assert_eq!(
+        label(cx, more_item_id(&link("link00"))).as_deref(),
+        Some("[[link00]]")
+    );
+    // Another chip's list replaces the open one.
+    click(cx, menu_id(ListKind::Sections));
+    assert_eq!(results(&view, cx), [heading("head")]);
+    click(cx, more_item_id(&heading("head")));
+    assert_eq!(picks(&view, cx), [heading("head")]);
+    assert_eq!(picks_changed(&events), 1);
+    assert!(shows(cx, pill_id(&heading("head"))), "now in the picks row");
 }
 
 #[gpui_kit::test]
 fn a_picked_heading_shows_as_a_pill_with_the_outline_icon(cx: &mut TestAppContext) {
     let text = "# Head\n\nsome #a\n";
-    let (_view, cx, _events, _sub) = open(cx, text, vec![heading("head")]);
+    let (_view, cx, _events, _sub) = open(cx, text, vec![heading("head"), tag("a")]);
     let pill = heading("head");
     assert_eq!(label(cx, pill_id(&pill)).as_deref(), Some("Remove Head"));
     assert!(shows(cx, outline_mark_id(&pill)), "the outline icon");
@@ -177,319 +392,245 @@ fn a_picked_heading_shows_as_a_pill_with_the_outline_icon(cx: &mut TestAppContex
     );
     assert!(shows(cx, remove_mark_id(&pill)), "and a remove mark");
     assert!(f32::from(b.size.height) <= 24.5, "still 24 px: {b:?}");
+    // A picked tag has its remove mark but no outline icon.
+    assert!(shows(cx, remove_mark_id(&tag("a"))));
     assert!(!shows(cx, outline_mark_id(&tag("a"))), "only on headings");
 }
 
-/// The width the view measures for a pill is the width it draws: the fit
-/// is computed from the same text, padding and border.
 #[gpui_kit::test]
-fn measured_widths_match_the_drawn_pills(cx: &mut TestAppContext) {
-    let text = "# Head\n\n#alpha #alpha #alpha and [[a note]] and #b\n";
-    let (view, cx, _events, _sub) = open(cx, text, vec![heading("head"), tag("b")]);
-    settle(cx);
-    for facet in [tag("alpha"), link("a note"), heading("head"), tag("b")] {
-        let drawn = f32::from(bounds(cx, pill_id(&facet)).size.width);
-        let measured = view
-            .read_with(cx, |view, _| view.measured_width(&facet))
-            .expect("measured");
-        assert!(
-            measured >= drawn && measured <= drawn + 1.5,
-            "{facet:?}: measured {measured}, drawn {drawn}"
-        );
-    }
-}
-
-#[gpui_kit::test]
-fn the_list_groups_tags_then_links_and_filters(cx: &mut TestAppContext) {
+fn slash_opens_the_all_kinds_list_with_three_groups(cx: &mut TestAppContext) {
     let text = "# Head\n\n#b #a #a [[x]]\n";
-    let (view, cx, _events, _sub) = open(cx, text, vec![]);
-    focus_view(&view, cx);
-    key(cx, "/");
-    assert!(list_open(&view, cx));
-    assert_eq!(
-        label(cx, list_group_id(FacetKind::Tag)).as_deref(),
-        Some("Tags")
-    );
-    assert_eq!(
-        label(cx, list_group_id(FacetKind::NoteLink)).as_deref(),
-        Some("Links")
-    );
-    let field = bounds(cx, MORE_QUERY_ID);
-    let tags = bounds(cx, list_group_id(FacetKind::Tag));
-    let links = bounds(cx, list_group_id(FacetKind::NoteLink));
-    assert!(field.bottom() <= tags.top(), "the filter field first");
-    assert!(tags.bottom() <= links.top(), "Tags, then Links");
-    assert!(bounds(cx, more_item_id(&tag("a"))).top() >= tags.bottom());
-    assert!(bounds(cx, more_item_id(&link("x"))).top() >= links.bottom());
-    assert_eq!(
-        view.read_with(cx, |view, cx| view.list_results(cx)),
-        [tag("a"), tag("b"), link("x")],
-        "one flat order: tags, then links"
-    );
-    assert!(
-        !shows(cx, more_item_id(&heading("head"))),
-        "headings stay out"
-    );
-    assert_eq!(
-        label(cx, more_item_id(&link("x"))).as_deref(),
-        Some("[[x]]"),
-        "the list reads as the line does"
-    );
-    // A filter that matches no tag leaves the Tags group out.
-    let input = view.read_with(cx, |view, _| view.more_input().unwrap());
-    cx.update(|window, cx| input.update(cx, |i, cx| i.set_value("x", window, cx)));
-    cx.run_until_parked();
-    assert!(!shows(cx, list_group_id(FacetKind::Tag)));
-    assert!(shows(cx, list_group_id(FacetKind::NoteLink)));
-    assert_eq!(
-        view.read_with(cx, |view, cx| view.list_results(cx)),
-        [link("x")]
-    );
-    // The highlight runs over the flat list: Enter toggles the lit facet.
-    key(cx, "enter");
-    assert_eq!(picks(&view, cx), [link("x")]);
-}
-
-#[gpui_kit::test]
-fn slash_opens_the_same_list_as_the_more_chip(cx: &mut TestAppContext) {
-    let (view, cx, events, _sub) = open(cx, &crowded(), vec![]);
-    settle(cx);
-    click(cx, MORE_ID);
-    assert!(list_open(&view, cx));
-    assert!(field_focused(&view, cx));
-    let from_chip = view.read_with(cx, |view, cx| view.list_results(cx));
-    assert_eq!(from_chip.len(), 80, "every tag and link");
-    let chip = bounds(cx, MORE_ID);
-    let list = bounds(cx, MORE_LIST_ID);
-    assert!(
-        list.top() >= chip.bottom(),
-        "under the chip: {list:?} {chip:?}"
-    );
-    key(cx, "escape");
-    assert!(!list_open(&view, cx));
-    assert!(has_focus(cx, MORE_ID), "the keyboard is back on the chip");
-    key(cx, "/");
-    assert!(list_open(&view, cx));
-    assert_eq!(
-        view.read_with(cx, |view, cx| view.list_results(cx)),
-        from_chip,
-        "the same list"
-    );
-    assert!(bounds(cx, MORE_LIST_ID).top() >= chip.bottom());
-    key(cx, "escape");
-    assert!(has_focus(cx, MORE_ID));
-    assert_eq!(picks_changed(&events), 0);
-}
-
-/// With everything inline there is no `+N` chip: `/` still opens the list,
-/// under the end of the line, and Escape gives the keyboard to the view.
-#[gpui_kit::test]
-fn slash_opens_the_list_without_a_more_chip(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "#a #b [[x]]\n", vec![]);
-    settle(cx);
-    assert!(!shows(cx, MORE_ID));
+    let (view, cx, events, _sub) = open(cx, text, vec![]);
     focus_view(&view, cx);
     key(cx, "/");
     assert!(list_open(&view, cx));
     assert!(field_focused(&view, cx));
     assert_eq!(query(&view, cx), "", "the slash is not typed into it");
-    let line = bounds(cx, LINE_ID);
-    let list = bounds(cx, MORE_LIST_ID);
-    assert!(
-        list.top() >= line.top() + px(20.),
-        "under the line: {list:?} {line:?}"
+    let groups = [
+        (FacetKind::Tag, "Tags"),
+        (FacetKind::NoteLink, "Links"),
+        (FacetKind::Heading, "Sections"),
+    ];
+    for (kind, name) in groups {
+        assert_eq!(label(cx, list_group_id(kind)).as_deref(), Some(name));
+    }
+    let field = bounds(cx, MORE_QUERY_ID);
+    let tags = bounds(cx, list_group_id(FacetKind::Tag));
+    let links = bounds(cx, list_group_id(FacetKind::NoteLink));
+    let sections = bounds(cx, list_group_id(FacetKind::Heading));
+    assert!(field.bottom() <= tags.top(), "the filter field first");
+    assert!(tags.bottom() <= links.top() && links.bottom() <= sections.top());
+    assert_eq!(
+        results(&view, cx),
+        [tag("a"), tag("b"), link("x"), heading("head")],
+        "one flat order in group order"
     );
+    let chip = bounds(cx, menu_id(ListKind::All));
+    assert!(bounds(cx, MORE_LIST_ID).top() >= chip.bottom(), "under ⌕");
+    // A filter that matches no tag leaves the Tags group out.
+    let input = view.read_with(cx, |view, _| view.more_input().unwrap());
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_value("x", window, cx)));
+    cx.run_until_parked();
+    assert!(!shows(cx, list_group_id(FacetKind::Tag)));
+    assert_eq!(results(&view, cx), [link("x")]);
+    key(cx, "enter");
+    assert_eq!(picks(&view, cx), [link("x")]);
     key(cx, "escape");
     assert!(!list_open(&view, cx));
-    assert!(view_focused(&view, cx));
+    assert!(has_focus(cx, menu_id(ListKind::All)), "back on ⌕");
+    assert_eq!(picks_changed(&events), 1);
 }
 
-/// A note with headings but no tag or link: `/` opens the Sections list,
-/// and Escape gives the keyboard to the `Sections N` chip.
+/// Every tag and link picked: `/` still opens the all-kinds list, with the
+/// headings alone.
 #[gpui_kit::test]
-fn slash_opens_the_sections_list_without_tags_or_links(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "# A\n\ntext\n\n# B\n\nmore\n", vec![]);
-    focus_view(&view, cx);
-    key(cx, "/");
-    assert!(list_open(&view, cx));
-    assert!(field_focused(&view, cx));
-    assert!(shows(cx, more_item_id(&heading("a"))));
-    assert!(shows(cx, more_item_id(&heading("b"))));
-    assert!(bounds(cx, MORE_LIST_ID).top() >= bounds(cx, SECTIONS_ID).bottom());
-    key(cx, "escape");
-    assert!(!list_open(&view, cx));
-    assert!(has_focus(cx, SECTIONS_ID));
-}
-
-/// Every tag and link picked: the list of tags and links would hold
-/// nothing, so `/` opens the Sections list, and Escape gives the keyboard
-/// to the `Sections N` chip.
-#[gpui_kit::test]
-fn slash_opens_the_sections_list_when_every_tag_and_link_is_picked(cx: &mut TestAppContext) {
+fn slash_lists_the_headings_when_every_tag_and_link_is_picked(cx: &mut TestAppContext) {
     let text = "# A\n\ntext #a\n\n# B\n\nmore\n";
     let (view, cx, _events, _sub) = open(cx, text, vec![tag("a")]);
     focus_view(&view, cx);
     key(cx, "/");
     assert!(list_open(&view, cx));
-    assert!(shows(cx, more_item_id(&heading("a"))), "the headings list");
-    assert!(shows(cx, more_item_id(&heading("b"))));
-    key(cx, "escape");
-    assert!(!list_open(&view, cx));
-    assert!(has_focus(cx, SECTIONS_ID));
+    assert_eq!(results(&view, cx), [heading("a"), heading("b")]);
+    assert!(!shows(cx, list_group_id(FacetKind::Tag)));
+    assert!(shows(cx, list_group_id(FacetKind::Heading)));
 }
 
-/// Every tag and link picked in a note with no heading: nothing to list,
-/// `/` opens nothing.
 #[gpui_kit::test]
-fn slash_opens_nothing_when_every_tag_and_link_is_picked_and_no_heading(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, "text #a\n", vec![tag("a")]);
+fn slash_opens_nothing_when_everything_is_picked(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "# A\n\ntext #a\n", vec![tag("a"), heading("a")]);
     focus_view(&view, cx);
     key(cx, "/");
     assert!(!list_open(&view, cx));
+    assert!(view_focused(&view, cx), "the keyboard stays on the view");
 }
 
-/// Picking the last unpicked tag inside the open list leaves it nothing to
+/// Picking the last facet of the open list's scope leaves it nothing to
 /// show: it closes, and the keyboard goes to the view.
 #[gpui_kit::test]
 fn the_list_closes_when_its_last_facet_is_picked(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, "# A\n\ntext #a #b\n", vec![tag("a")]);
     focus_view(&view, cx);
-    key(cx, "/");
-    assert!(list_open(&view, cx));
-    assert_eq!(
-        view.read_with(cx, |view, cx| view.list_results(cx)),
-        [tag("b")]
-    );
+    click(cx, menu_id(ListKind::Tags));
+    assert_eq!(results(&view, cx), [tag("b")]);
     key(cx, "enter");
     assert_eq!(picks(&view, cx), [tag("a"), tag("b")]);
-    assert!(!list_open(&view, cx), "nothing left to list");
+    assert!(!list_open(&view, cx), "no tag left to list");
     assert!(view_focused(&view, cx));
     assert!(!shows(cx, MORE_LIST_ID));
-}
-
-/// The summary line (and `Clear`) sits under the filter line, as in the
-/// approved mock.
-#[gpui_kit::test]
-fn the_summary_line_sits_under_the_filter_line(cx: &mut TestAppContext) {
-    let (_view, cx, _events, _sub) = open(cx, &crowded(), vec![tag("tag00")]);
-    settle(cx);
-    let line = bounds(cx, LINE_ID);
-    assert!(bounds(cx, SUMMARY_ID).top() >= line.bottom());
-    assert!(bounds(cx, CLEAR_ID).top() >= line.bottom());
+    assert!(!shows(cx, menu_id(ListKind::Tags)));
+    // The all-kinds list closes once nothing at all is left.
+    key(cx, "/");
+    assert_eq!(results(&view, cx), [heading("a")]);
+    key(cx, "enter");
+    assert!(!list_open(&view, cx), "nothing left to list");
+    assert!(view_focused(&view, cx));
+    assert!(!shows(cx, menu_id(ListKind::All)));
 }
 
 #[gpui_kit::test]
-fn the_line_clips_instead_of_wrapping_in_a_narrow_pane(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &crowded(), vec![]);
-    cx.simulate_resize(gpui_kit::size(px(320.), px(600.)));
-    settle(cx);
-    let line = bounds(cx, LINE_ID);
-    assert!(f32::from(line.size.height) <= 26.0, "one row: {line:?}");
-    let chip = bounds(cx, MORE_ID);
-    let drawn = drawn_pills(cx, &crowded_facets());
-    for (facet, b) in &drawn {
-        assert!(
-            b.right() <= chip.left(),
-            "{facet:?} whole, before +N: {b:?}"
-        );
-        assert!(b.right() <= line.right(), "{facet:?} inside the line");
-        assert_eq!(b.top(), chip.top(), "{facet:?} on the one row");
-    }
-    assert_eq!(more_count(&view, cx), 80 - drawn.len());
-    assert!(bounds(cx, SECTIONS_ID).right() <= line.right());
-}
-
-/// A line whose pills all but fill the room: they all fit (no `+N`), and
-/// the last pill is whole, not cut at the clip's edge by a gap the line
-/// keeps for a chip it does not draw.
-#[gpui_kit::test]
-fn the_last_pill_is_whole_when_the_pills_just_fit(cx: &mut TestAppContext) {
-    let text = "#alpha #beta #gamma #delta [[epsilon]] #zeta\n";
-    let facets = [
-        tag("alpha"),
-        tag("beta"),
-        link("epsilon"),
-        tag("delta"),
-        tag("gamma"),
-        tag("zeta"),
-    ];
-    let (_view, cx, _events, _sub) = open(cx, text, vec![]);
-    settle(cx);
-    let window = cx.update(|window, _| window.viewport_size().width);
-    let line = bounds(cx, LINE_ID);
-    let drawn = drawn_pills(cx, &facets);
-    assert_eq!(drawn.len(), facets.len(), "a wide window fits them all");
-    let used = drawn.last().unwrap().1.right() - drawn[0].1.left();
-    // The window that leaves the line 1.5 px more room than the pills use.
-    let width = window - line.size.width + used + px(1.5);
-    cx.simulate_resize(gpui_kit::size(width, px(600.)));
-    settle(cx);
-    assert_eq!(bounds(cx, LINE_ID).size.width, used + px(1.5), "the room");
-    assert!(!shows(cx, MORE_ID), "everything fits: no +N");
-    let clip = bounds(cx, LINE_PILLS_ID);
-    let drawn = drawn_pills(cx, &facets);
-    assert_eq!(drawn.len(), facets.len());
-    let (last, b) = drawn.last().unwrap();
-    assert!(
-        b.right() <= clip.right(),
-        "{last:?} cut by the clip: {b:?} past {clip:?}"
+fn a_list_draws_at_most_the_cap_and_says_how_many_more(cx: &mut TestAppContext) {
+    use super::facet::LIST_CAP;
+    let tags: String = (0..500).map(|i| format!("#t{i:03} ")).collect();
+    let text = format!("#pick here\n\n{tags}\n");
+    let (view, cx, _events, _sub) = open(cx, &text, vec![tag("pick")]);
+    click(cx, menu_id(ListKind::Tags));
+    let shown = results(&view, cx);
+    assert_eq!(shown.len(), LIST_CAP);
+    assert_eq!(shown[LIST_CAP - 1], tag("t199"));
+    assert!(exists(cx, more_item_id(&tag("t199"))));
+    assert!(!exists(cx, more_item_id(&tag("t200"))));
+    assert_eq!(
+        label(cx, LIST_REST_ID).as_deref(),
+        Some("300 more. Type to filter.")
     );
+    let rest = bounds(cx, LIST_REST_ID);
+    let items = bounds(cx, more_item_id(&tag("t000")));
+    assert!(rest.top() >= items.bottom(), "the last line");
+    // A filter that matches fewer than the cap draws them all, no rest line.
+    let input = view.read_with(cx, |view, _| view.more_input().unwrap());
+    cx.update(|window, cx| input.update(cx, |i, cx| i.set_value("t49", window, cx)));
+    cx.run_until_parked();
+    assert!(results(&view, cx).len() < LIST_CAP);
+    assert!(!exists(cx, LIST_REST_ID));
 }
 
 #[gpui_kit::test]
-fn no_leaders_rows_or_search_button_remain(cx: &mut TestAppContext) {
-    let (_view, cx, _events, _sub) = open(cx, &crowded(), vec![heading("head")]);
-    settle(cx);
-    for id in [
-        "facet-search",
-        "facet-leader:tag",
-        "facet-leader:link",
-        "facet-leader:heading",
-        "facet-more:tag",
-        "facet-more:link",
-        "facet-more:heading",
-    ] {
-        assert!(!shows(cx, id), "{id} is gone");
-    }
-    // Picked heading, tags and links share the one row.
-    let head = bounds(cx, pill_id(&heading("head")));
-    let first = drawn_pills(cx, &crowded_facets())[0].1;
-    assert_eq!(head.top(), first.top());
-}
-
-#[gpui_kit::test]
-fn tab_order_follows_the_line(cx: &mut TestAppContext) {
-    let (view, cx, _events, _sub) = open(cx, &crowded(), vec![tag("tag00")]);
-    settle(cx);
+fn tab_order_is_chips_search_picks_clear(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, MENUS_NOTE, vec![tag("a"), link("x")]);
     focus_view(&view, cx);
-    let pills: Vec<SharedString> = drawn_pills(cx, &crowded_facets())
-        .into_iter()
-        .map(|(f, _)| pill_id(&f))
-        .collect();
-    assert_eq!(pills[0], pill_id(&tag("tag00")));
-    // The filter line first, then the summary line under it (`Clear`).
-    let mut want: Vec<SharedString> = pills;
-    want.push(MORE_ID.into());
-    want.push(SECTIONS_ID.into());
-    want.push(CLEAR_ID.into());
+    let want: Vec<SharedString> = vec![
+        menu_id(ListKind::Tags),
+        menu_id(ListKind::Links),
+        menu_id(ListKind::Sections),
+        menu_id(ListKind::All),
+        pill_id(&tag("a")),
+        pill_id(&link("x")),
+        CLEAR_ID.into(),
+    ];
+    let drawn = drawn_stops(&view, cx);
+    assert_eq!(drawn[..want.len()], want[..], "the bar's stops lead");
     for id in &want {
         key(cx, "tab");
         let ringed = view.read_with(cx, |view, _| view.ringed());
         assert!(has_focus(cx, id.clone()), "Tab reached {id}: {ringed:?}");
         assert_eq!(ringed, Some(id.clone()));
     }
-    // Enter on `+N` opens the list; Escape brings the keyboard back to it.
-    key(cx, "shift-tab");
-    key(cx, "shift-tab");
-    assert!(has_focus(cx, MORE_ID));
+    // Enter on a chip opens its list; Escape brings the keyboard back.
+    tab_to(cx, menu_id(ListKind::Links), 20);
     key(cx, "enter");
     assert!(list_open(&view, cx));
+    assert_eq!(results(&view, cx), [link("y")]);
     key(cx, "escape");
-    assert!(has_focus(cx, MORE_ID));
+    assert!(has_focus(cx, menu_id(ListKind::Links)));
 }
 
 #[gpui_kit::test]
-fn the_line_does_not_change_the_piece_column_width(cx: &mut TestAppContext) {
+fn enter_on_a_pick_unpicks_it_and_the_keyboard_moves_on_without_a_dead_ring(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, _events, _sub) = open(cx, "#a #b #c\n", vec![tag("a"), tag("b"), tag("c")]);
+    focus_view(&view, cx);
+    tab_to(cx, pill_id(&tag("a")), 10);
+    key(cx, "enter");
+    assert_eq!(picks(&view, cx), [tag("b"), tag("c")]);
+    let ringed = view.read_with(cx, |view, _| view.ringed());
+    assert!(
+        has_focus(cx, pill_id(&tag("b"))),
+        "the next pick: {ringed:?}"
+    );
+    assert_eq!(ringed, Some(pill_id(&tag("b"))));
+    // The last pick in the row hands the keyboard to the one before it.
+    tab_to(cx, pill_id(&tag("c")), 10);
+    key(cx, "space");
+    assert_eq!(picks(&view, cx), [tag("b")]);
+    assert!(has_focus(cx, pill_id(&tag("b"))));
+    assert_eq!(
+        view.read_with(cx, |view, _| view.ringed()),
+        Some(pill_id(&tag("b")))
+    );
+    // The only pick: the view takes the keyboard, no ring is left.
+    key(cx, "enter");
+    assert!(picks(&view, cx).is_empty());
+    assert!(view_focused(&view, cx));
+    cx.update(|window, cx| window.render_frame(cx));
+    assert_eq!(view.read_with(cx, |view, _| view.ringed()), None);
+}
+
+#[gpui_kit::test]
+fn escape_closes_an_open_list_first(cx: &mut TestAppContext) {
+    let (view, cx, events, _sub) = open(cx, "#a #b\n", vec![tag("a")]);
+    focus_view(&view, cx);
+    click(cx, menu_id(ListKind::Tags));
+    assert!(list_open(&view, cx));
+    key(cx, "escape");
+    assert!(!list_open(&view, cx), "the list closes first");
+    assert_eq!(picks(&view, cx), [tag("a")], "the picks stay");
+    assert!(has_focus(cx, menu_id(ListKind::Tags)));
+    assert_eq!(picks_changed(&events), 0);
+    key(cx, "escape");
+    assert!(picks(&view, cx).is_empty(), "then the picks clear");
+}
+
+#[gpui_kit::test]
+fn drawing_5000_facets_asks_for_no_correcting_frame_for_the_bar(cx: &mut TestAppContext) {
+    let tags: String = (0..5000).map(|i| format!("#t{i:04} ")).collect();
+    let text = format!("#pick here\n\n{tags}\n");
+    let (view, cx, _events, _sub) = open(cx, &text, vec![tag("pick")]);
+    settle(cx);
+    assert_eq!(
+        label(cx, menu_id(ListKind::Tags)).as_deref(),
+        Some("Tags 5000")
+    );
+    cx.update(|window, cx| window.render_frame(cx));
+    assert_eq!(next_frame(cx), 0, "a drawn bar asks for nothing");
+    click(cx, menu_id(ListKind::Tags));
+    assert_eq!(results(&view, cx).len(), super::facet::LIST_CAP);
+    cx.update(|window, cx| window.render_frame(cx));
+    assert!(
+        !view.read_with(cx, |view, _| view.resize_asked()),
+        "an open list asks for no correcting frame"
+    );
+}
+
+#[gpui_kit::test]
+fn no_old_bar_element_remains(cx: &mut TestAppContext) {
+    let (_view, cx, _events, _sub) = open(cx, &crowded(), vec![heading("head")]);
+    settle(cx);
+    for id in [
+        "facet-search",
+        "facet-more",
+        "facet-sections",
+        "facet-line-pills",
+        "facet-line-end",
+        "facet-leader:tag",
+        "facet-more:tag",
+    ] {
+        assert!(!shows(cx, id), "{id} is gone");
+    }
+}
+
+#[gpui_kit::test]
+fn the_bar_does_not_change_the_piece_column_width(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, &crowded(), vec![]);
     settle(cx);
     let whole = bounds(cx, FACET_VIEW_ID);
@@ -508,32 +649,9 @@ fn the_line_does_not_change_the_piece_column_width(cx: &mut TestAppContext) {
     assert_eq!(bounds(cx, COLUMN_ID).size.width, whole.size.width);
 }
 
-#[gpui_kit::test]
-fn sections_chip_still_opens_the_heading_list(cx: &mut TestAppContext) {
-    let (view, cx, events, _sub) = open(cx, &crowded(), vec![]);
-    settle(cx);
-    assert_eq!(label(cx, SECTIONS_ID).as_deref(), Some("Sections 1"));
-    click(cx, SECTIONS_ID);
-    assert!(list_open(&view, cx));
-    assert!(shows(cx, more_item_id(&heading("head"))));
-    assert!(!shows(cx, more_item_id(&tag("tag00"))), "headings only");
-    assert!(!shows(cx, list_group_id(FacetKind::Tag)), "no group labels");
-    let chip = bounds(cx, SECTIONS_ID);
-    assert!(bounds(cx, MORE_LIST_ID).top() >= chip.bottom());
-    click(cx, more_item_id(&heading("head")));
-    assert_eq!(picks(&view, cx), [heading("head")]);
-    assert_eq!(picks_changed(&events), 1);
-    assert!(shows(cx, pill_id(&heading("head"))), "now in the line");
-    key(cx, "escape");
-    assert!(
-        has_focus(cx, SECTIONS_ID),
-        "the keyboard is back on the chip"
-    );
-}
-
 /// A lone group floats its corner buttons over the top-right of the view:
-/// no pill or chip of a crowded line sits under them, and a click on `+N`
-/// opens the list, not the note menu.
+/// no chip or pick sits under them, and a click on a menu chip opens its
+/// list, not the note menu.
 #[gpui_kit::test]
 fn the_corner_padding_still_clears_the_lone_pane_buttons(cx: &mut TestAppContext) {
     use super::facet_tests::in_a_group::{
@@ -548,21 +666,14 @@ fn the_corner_padding_still_clears_the_lone_pane_buttons(cx: &mut TestAppContext
     open_facet(&s, &rt, group, "a.md", vec![tag("tag00")], cx);
     let view = facet(&s, group, cx).unwrap();
     let corner = bounds_of(&s, CORNER_FACET_ID, cx).union(&bounds_of(&s, CORNER_MENU_ID, cx));
-    let mut controls: Vec<SharedString> = vec![MORE_ID.into(), SECTIONS_ID.into(), CLEAR_ID.into()];
-    for facet in std::iter::once(tag("tag00")).chain(crowded_facets()) {
-        let drawn = cx
-            .update_window(s.handle, |_, window, cx| {
-                window.render_frame(cx);
-                window
-                    .try_find(pill_id(&facet))
-                    .is_some_and(|e| e.visible())
-            })
-            .unwrap();
-        if drawn {
-            controls.push(pill_id(&facet));
-        }
-    }
-    assert!(controls.len() > 4, "some pills are drawn");
+    let controls: Vec<SharedString> = vec![
+        menu_id(ListKind::Tags),
+        menu_id(ListKind::Links),
+        menu_id(ListKind::Sections),
+        menu_id(ListKind::All),
+        pill_id(&tag("tag00")),
+        CLEAR_ID.into(),
+    ];
     for id in &controls {
         let b = bounds_of(&s, id.clone(), cx);
         assert!(
@@ -570,7 +681,7 @@ fn the_corner_padding_still_clears_the_lone_pane_buttons(cx: &mut TestAppContext
             "{id} {b:?} under the corner {corner:?}"
         );
     }
-    click_in(&s, MORE_ID, cx);
+    click_in(&s, menu_id(ListKind::Tags), cx);
     assert!(
         cx.read(|cx| view.read(cx).more_input().is_some()),
         "the list opened"

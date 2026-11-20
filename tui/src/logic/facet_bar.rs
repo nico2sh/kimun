@@ -1,7 +1,8 @@
-//! The facet pill bar model: which facets of a note are picked, the one
-//! filter line of pills to show ([`FacetBar::line`]), how many of them fit
-//! ([`fit_count`]) and the lists behind it. Pure state over [`NoteFacets`],
-//! shared by every frontend.
+//! The facet pill bar model: which facets of a note are picked, how many
+//! are left to pick per kind ([`FacetBar::menus`]), the picks
+//! ([`FacetBar::picked`]) and the lists of unpicked facets
+//! ([`FacetBar::kind_list`], [`FacetBar::all_grouped`]). Pure state over
+//! [`NoteFacets`], shared by every frontend.
 
 use kimun_core::note::{Facet, FacetEntry, FacetKind, NoteFacets};
 
@@ -17,15 +18,24 @@ pub struct Pill {
     pub picked: bool,
 }
 
-/// The one-line filter bar: the pills in display order and the heading count.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BarLine {
-    /// Picked pills first (pick order), then unpicked tags and links by count
-    /// (desc), ties by label. A picked heading is included as a picked pill;
-    /// an unpicked heading never appears here.
-    pub pills: Vec<Pill>,
-    /// Total headings in the note (the `Sections N` chip).
+/// How many unpicked facets of each kind a note holds. Each one is a menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KindCounts {
+    /// Unpicked tags.
+    pub tags: usize,
+    /// Unpicked note links.
+    pub links: usize,
+    /// Unpicked headings.
     pub sections: usize,
+}
+
+fn entry_pill(e: &FacetEntry, picked: bool) -> Pill {
+    Pill {
+        facet: e.facet.clone(),
+        label: e.label.clone(),
+        count: e.count,
+        picked,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,46 +74,56 @@ impl FacetBar {
         self.picks.len() != before
     }
 
-    /// The filter line of `facets`: see [`BarLine`].
-    pub fn line(&self, facets: &NoteFacets) -> BarLine {
-        let entry = |facet: &Facet| facets.entries.iter().find(|e| e.facet == *facet);
-        let pill = |e: &FacetEntry, picked: bool| Pill {
-            facet: e.facet.clone(),
-            label: e.label.clone(),
-            count: e.count,
-            picked,
-        };
-        let mut pills: Vec<Pill> = self
-            .picks
-            .iter()
-            .filter_map(|p| entry(p).map(|e| pill(e, true)))
-            .collect();
-        pills.extend(self.unpicked_ranked(facets).map(|e| pill(e, false)));
-        let sections = facets
-            .entries
-            .iter()
-            .filter(|e| e.facet.kind == FacetKind::Heading)
-            .count();
-        BarLine { pills, sections }
+    /// How many unpicked facets of each kind the note holds.
+    pub fn menus(&self, facets: &NoteFacets) -> KindCounts {
+        let count = |kind| self.kind_list(facets, kind, "").len();
+        KindCounts {
+            tags: count(FacetKind::Tag),
+            links: count(FacetKind::NoteLink),
+            sections: count(FacetKind::Heading),
+        }
     }
 
-    /// For the list: the unpicked tags then the unpicked links (each in
-    /// [`Self::line`] order) whose label matches `query` with the same fuzzy
-    /// match as [`Self::search`]. Headings are excluded; empty groups are
-    /// left out.
-    pub fn grouped(&self, facets: &NoteFacets, query: &str) -> Vec<(FacetKind, Vec<Pill>)> {
+    /// The picks the note still holds, in pick order. Any kind can appear.
+    pub fn picked(&self, facets: &NoteFacets) -> Vec<Pill> {
+        self.picks
+            .iter()
+            .filter_map(|p| facets.entries.iter().find(|e| e.facet == *p))
+            .map(|e| entry_pill(e, true))
+            .collect()
+    }
+
+    /// The unpicked facets of `kind` whose label matches `query` with the
+    /// query's characters in order, ignoring case. Tags and links go by count (high
+    /// first), then label. Headings stay in document order.
+    pub fn kind_list(&self, facets: &NoteFacets, kind: FacetKind, query: &str) -> Vec<Pill> {
         let query: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).collect();
-        let line = self.line(facets);
-        [FacetKind::Tag, FacetKind::NoteLink]
+        let pills: Vec<Pill> = if kind == FacetKind::Heading {
+            facets
+                .entries
+                .iter()
+                .filter(|e| e.facet.kind == kind && !self.picks.contains(&e.facet))
+                .map(|e| entry_pill(e, false))
+                .collect()
+        } else {
+            self.unpicked_ranked(facets)
+                .filter(|e| e.facet.kind == kind)
+                .map(|e| entry_pill(e, false))
+                .collect()
+        };
+        pills
+            .into_iter()
+            .filter(|p| is_subsequence(&query, &p.label))
+            .collect()
+    }
+
+    /// The unpicked facets that match `query`, grouped by kind in the order
+    /// tags, links, headings. Empty groups are left out.
+    pub fn all_grouped(&self, facets: &NoteFacets, query: &str) -> Vec<(FacetKind, Vec<Pill>)> {
+        KINDS
             .into_iter()
             .filter_map(|kind| {
-                let pills: Vec<Pill> = line
-                    .pills
-                    .iter()
-                    .filter(|p| !p.picked && p.facet.kind == kind)
-                    .filter(|p| is_subsequence(&query, &p.label))
-                    .cloned()
-                    .collect();
+                let pills = self.kind_list(facets, kind, query);
                 (!pills.is_empty()).then_some((kind, pills))
             })
             .collect()
@@ -124,28 +144,6 @@ impl FacetBar {
                 .then_with(|| a.label.cmp(&b.label))
         });
         entries.into_iter()
-    }
-
-    /// The full list of one kind (the `Sections N` list of headings),
-    /// fuzzy-filtered by `query`. The query's characters must appear in the
-    /// label in order (case-insensitive); it is matched one character at a
-    /// time with [`match_ranges`].
-    pub fn more_list(&self, facets: &NoteFacets, kind: FacetKind, query: &str) -> Vec<Pill> {
-        let query: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).collect();
-        self.ordered(facets, kind)
-            .into_iter()
-            .filter(|p| is_subsequence(&query, &p.label))
-            .collect()
-    }
-
-    /// Fuzzy search over every kind at once: kinds in the order tag, link,
-    /// heading, each in its [`Self::more_list`] order. An empty query returns
-    /// every facet.
-    pub fn search(&self, facets: &NoteFacets, query: &str) -> Vec<Pill> {
-        KINDS
-            .into_iter()
-            .flat_map(|kind| self.more_list(facets, kind, query))
-            .collect()
     }
 
     /// One phrase per kind that has picks, in the order tag, link, heading.
@@ -217,59 +215,6 @@ impl FacetBar {
     pub fn last_pick(&self) -> Option<&Facet> {
         self.picks.last()
     }
-
-    /// Every pill of `kind`: picked first, then headings in document order,
-    /// tags and links by count (highest first) then label.
-    fn ordered(&self, facets: &NoteFacets, kind: FacetKind) -> Vec<Pill> {
-        let mut entries: Vec<&FacetEntry> = facets
-            .entries
-            .iter()
-            .filter(|e| e.facet.kind == kind)
-            .collect();
-        if kind != FacetKind::Heading {
-            entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
-        }
-        let mut pills: Vec<Pill> = entries
-            .into_iter()
-            .map(|e| Pill {
-                picked: self.picks.contains(&e.facet),
-                facet: e.facet.clone(),
-                label: e.label.clone(),
-                count: e.count,
-            })
-            .collect();
-        // Stable: keeps the order above inside each group.
-        pills.sort_by_key(|p| !p.picked);
-        pills
-    }
-}
-
-/// The number of pills that fit one line. `widths` are the pills' widths in
-/// order, `gap` the space between items, `available` the room for the pills
-/// plus the `+N` chip, `more_width` the width of that chip.
-///
-/// Returns the largest `n` such that the first `n` pills (with a `gap`
-/// between each) fit in `available`; when `n` is less than `widths.len()` the
-/// `gap` and `more_width` of the `+N` chip must fit too. When all pills fit
-/// there is no chip, so none is reserved. Never less than `keep` (the picked
-/// pills, which are always shown), and never more than `widths.len()`.
-pub fn fit_count(widths: &[f32], gap: f32, available: f32, more_width: f32, keep: usize) -> usize {
-    let total = widths.len();
-    let mut used = 0.0_f32;
-    let mut fit = 0;
-    for (i, w) in widths.iter().enumerate() {
-        used += if i == 0 { *w } else { gap + *w };
-        let n = i + 1;
-        let fits = if n == total {
-            used <= available
-        } else {
-            used + gap + more_width <= available
-        };
-        if fits {
-            fit = n;
-        }
-    }
-    fit.max(keep.min(total))
 }
 
 /// Whether `query`'s characters occur in `label` in order, case-insensitively.
@@ -304,166 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn line_puts_picked_first_in_pick_order() {
-        let f = facets("#a #a #a #b #b #c [[x]]\n");
-        let mut bar = FacetBar::default();
-        bar.set_picks(vec![tag("c"), link("x")]);
-        let line = bar.line(&f);
-        assert_eq!(labels(&line.pills), ["c", "x", "a", "b"]);
-        assert!(line.pills[0].picked && line.pills[1].picked);
-        assert!(!line.pills[2].picked && !line.pills[3].picked);
-        bar.set_picks(vec![link("x"), tag("c")]);
-        assert_eq!(labels(&bar.line(&f).pills)[..2], ["x", "c"]);
-    }
-
-    #[test]
-    fn line_ranks_unpicked_tags_and_links_together_by_count() {
-        let f = facets("#a [[l]] [[l]] #b #b #b [[m]]\n");
-        let line = FacetBar::default().line(&f);
-        assert_eq!(labels(&line.pills), ["b", "l", "a", "m"]);
-    }
-
-    #[test]
-    fn line_breaks_ties_by_label() {
-        let f = facets("#b #a #C #c2 [[Z]]\n");
-        let line = FacetBar::default().line(&f);
-        assert_eq!(labels(&line.pills), ["a", "b", "C", "c2", "z"]);
-    }
-
-    #[test]
-    fn an_unpicked_heading_is_never_inline_and_a_picked_one_is() {
-        let f = facets("# Head\n\n#a\n\n## Sub\n");
-        let mut bar = FacetBar::default();
-        assert_eq!(labels(&bar.line(&f).pills), ["a"]);
-        bar.toggle(heading("sub"));
-        let line = bar.line(&f);
-        assert_eq!(labels(&line.pills), ["Sub", "a"]);
-        assert!(line.pills[0].picked);
-        assert_eq!(line.pills[0].facet.kind, FacetKind::Heading);
-    }
-
-    #[test]
-    fn sections_counts_every_heading() {
-        let f = facets(&many_headings(400));
-        let mut bar = FacetBar::default();
-        bar.toggle(heading("h123"));
-        let line = bar.line(&f);
-        assert_eq!(line.sections, 400);
-        assert_eq!(labels(&line.pills), ["H123"]);
-        assert_eq!(FacetBar::default().line(&facets("#a\n")).sections, 0);
-    }
-
-    #[test]
-    fn grouped_lists_tags_then_links_and_leaves_headings_out() {
-        let f = facets("# Head\n\n[[l]] #a #a #b\n");
-        let groups = FacetBar::default().grouped(&f, "");
-        let got: Vec<_> = groups.iter().map(|(k, p)| (*k, labels(p))).collect();
-        assert_eq!(
-            got,
-            [
-                (FacetKind::Tag, vec!["a", "b"]),
-                (FacetKind::NoteLink, vec!["l"])
-            ]
-        );
-    }
-
-    #[test]
-    fn grouped_excludes_picked_pills() {
-        let f = facets("#a #b [[l]]\n");
-        let mut bar = FacetBar::default();
-        bar.toggle(tag("a"));
-        let groups = bar.grouped(&f, "");
-        assert_eq!(labels(&groups[0].1), ["b"]);
-    }
-
-    #[test]
-    fn grouped_filters_with_the_fuzzy_match() {
-        let f = facets("#plant [[plan]] #zzz #pn\n");
-        let groups = FacetBar::default().grouped(&f, "pln");
-        let got: Vec<_> = groups.iter().map(|(k, p)| (*k, labels(p))).collect();
-        assert_eq!(
-            got,
-            [
-                (FacetKind::Tag, vec!["plant"]),
-                (FacetKind::NoteLink, vec!["plan"])
-            ]
-        );
-    }
-
-    #[test]
-    fn grouped_leaves_out_an_empty_group() {
-        let f = facets("#a [[l]]\n");
-        let groups = FacetBar::default().grouped(&f, "l");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].0, FacetKind::NoteLink);
-        assert!(FacetBar::default().grouped(&f, "q").is_empty());
-    }
-
-    #[test]
-    fn fit_count_fits_what_it_can_and_reserves_the_more_chip() {
-        // Three of 40 plus gaps (40+10+40+10+40 = 140) and the chip (10+30) = 180 fit; four do not.
-        let widths = [40.0, 40.0, 40.0, 40.0, 40.0];
-        assert_eq!(fit_count(&widths, 10.0, 180.0, 30.0, 0), 3);
-        assert_eq!(fit_count(&widths, 10.0, 179.0, 30.0, 0), 2);
-    }
-
-    #[test]
-    fn fit_count_returns_all_when_everything_fits_without_the_more_chip() {
-        let widths = [40.0, 40.0, 40.0];
-        // 40+10+40+10+40 = 140: fits with no chip even though a chip would not fit.
-        assert_eq!(fit_count(&widths, 10.0, 140.0, 30.0, 0), 3);
-        assert_eq!(fit_count(&widths, 10.0, 139.0, 30.0, 0), 2);
-    }
-
-    #[test]
-    fn fit_count_never_goes_below_keep() {
-        let widths = [40.0, 40.0, 40.0];
-        assert_eq!(fit_count(&widths, 10.0, 5.0, 30.0, 2), 2);
-        assert_eq!(fit_count(&widths, 10.0, 1000.0, 30.0, 2), 3);
-        // keep beyond the number of pills is capped by it.
-        assert_eq!(fit_count(&widths, 10.0, 5.0, 30.0, 9), 3);
-    }
-
-    #[test]
-    fn fit_count_fits_nothing_when_the_more_chip_alone_is_wider_than_the_room() {
-        let widths = [40.0, 40.0];
-        // One pill and the chip (40+10+50) and both pills (90) overflow 30.
-        assert_eq!(fit_count(&widths, 10.0, 30.0, 50.0, 0), 0);
-    }
-
-    #[test]
-    fn fit_count_of_a_single_pill_wider_than_the_room() {
-        assert_eq!(fit_count(&[200.0], 10.0, 100.0, 30.0, 0), 0);
-        // A picked pill is kept even when it does not fit (the line clips).
-        assert_eq!(fit_count(&[200.0], 10.0, 100.0, 30.0, 1), 1);
-    }
-
-    #[test]
-    fn fit_count_returns_keep_when_fewer_than_keep_fit() {
-        let widths = [40.0, 40.0, 40.0, 40.0];
-        // Not even one pill with the chip (40+10+30 = 80) fits in 50.
-        assert_eq!(fit_count(&widths, 10.0, 50.0, 30.0, 2), 2);
-        assert_eq!(fit_count(&widths, 10.0, 80.0, 30.0, 2), 2);
-    }
-
-    #[test]
-    fn line_skips_a_pick_the_note_no_longer_holds() {
-        let f = facets("#a #b\n");
-        let mut bar = FacetBar::default();
-        // Not pruned yet: the line leaves the lost pick out.
-        bar.set_picks(vec![tag("gone"), tag("b")]);
-        let line = bar.line(&f);
-        assert_eq!(labels(&line.pills), ["b", "a"]);
-        assert!(line.pills[0].picked && !line.pills[1].picked);
-    }
-
-    #[test]
-    fn fit_count_of_nothing_is_zero() {
-        assert_eq!(fit_count(&[], 10.0, 100.0, 30.0, 0), 0);
-        assert_eq!(fit_count(&[], 10.0, 100.0, 30.0, 3), 0);
-    }
-
-    #[test]
     fn toggle_picks_then_unpicks() {
         let mut bar = FacetBar::default();
         bar.toggle(tag("a"));
@@ -485,55 +270,12 @@ mod tests {
         assert!(!bar.prune(&f));
     }
 
-    #[test]
-    fn more_list_is_fuzzy_filtered_and_complete() {
-        let mut text: String = (0..28).map(|i| format!("#t{i:02} ")).collect();
-        text.push_str("#idea #idle\n");
-        let f = facets(&text);
-        let bar = FacetBar::default();
-        assert_eq!(bar.more_list(&f, FacetKind::Tag, "").len(), 30);
-        let found = bar.more_list(&f, FacetKind::Tag, "ide");
-        let mut got = labels(&found);
-        got.sort();
-        assert_eq!(got, ["idea", "idle"]);
-        assert!(bar.more_list(&f, FacetKind::Heading, "ide").is_empty());
-    }
-
     fn link(key: &str) -> Facet {
         Facet::new(FacetKind::NoteLink, key)
     }
 
     fn heading(text: &str) -> Facet {
         Facet::new(FacetKind::Heading, text)
-    }
-
-    fn many_headings(n: usize) -> String {
-        (0..n).map(|i| format!("# H{i:03}\n\n")).collect()
-    }
-
-    #[test]
-    fn search_matches_across_kinds_in_kind_order() {
-        let f = facets("# Plan day\n\n#plant and [[plan]] and #zzz\n");
-        let found = FacetBar::default().search(&f, "plan");
-        let got: Vec<_> = found
-            .iter()
-            .map(|p| (p.facet.kind, p.label.as_str()))
-            .collect();
-        assert_eq!(
-            got,
-            [
-                (FacetKind::Tag, "plant"),
-                (FacetKind::NoteLink, "plan"),
-                (FacetKind::Heading, "Plan day"),
-            ]
-        );
-    }
-
-    #[test]
-    fn search_with_an_empty_query_returns_everything() {
-        let f = facets("# Head\n\nsome #a and [[plan]]\n");
-        let found = FacetBar::default().search(&f, "");
-        assert_eq!(labels(&found), ["a", "plan", "Head"]);
     }
 
     #[test]
@@ -648,5 +390,115 @@ mod tests {
         assert_eq!(bar.last_pick(), Some(&tag("b")));
         bar.toggle(tag("b"));
         assert_eq!(bar.last_pick(), Some(&tag("a")));
+    }
+
+    const MENU_NOTE: &str = "#a #b #c [[x]] [[y]]\n\n# H1\n\n## H2\n\n### H3\n\n#### H4\n";
+
+    #[test]
+    fn menus_count_only_unpicked_facets() {
+        let f = facets(MENU_NOTE);
+        let mut bar = FacetBar::default();
+        let all = bar.menus(&f);
+        assert_eq!((all.tags, all.links, all.sections), (3, 2, 4));
+        bar.set_picks(vec![tag("a"), heading("h2")]);
+        let counts = bar.menus(&f);
+        assert_eq!((counts.tags, counts.links, counts.sections), (2, 2, 3));
+    }
+
+    #[test]
+    fn picked_is_in_pick_order_and_holds_headings() {
+        let f = facets(MENU_NOTE);
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![heading("h3"), tag("b"), link("x")]);
+        let picked = bar.picked(&f);
+        assert_eq!(labels(&picked), ["H3", "b", "x"]);
+        assert!(picked.iter().all(|p| p.picked));
+        assert_eq!(picked[0].facet.kind, FacetKind::Heading);
+    }
+
+    #[test]
+    fn picked_drops_a_pick_the_note_lost() {
+        let f = facets("#a #b\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![tag("gone"), tag("b")]);
+        assert_eq!(labels(&bar.picked(&f)), ["b"]);
+    }
+
+    #[test]
+    fn kind_list_ranks_tags_by_count_then_label() {
+        let f = facets("#b #a #c #c #c #b\n");
+        let list = FacetBar::default().kind_list(&f, FacetKind::Tag, "");
+        assert_eq!(labels(&list), ["c", "b", "a"]);
+        assert!(list.iter().all(|p| !p.picked));
+    }
+
+    #[test]
+    fn kind_list_keeps_headings_in_document_order() {
+        let f = facets("# Zed\n\n## Alpha\n\n### Mid\n");
+        let list = FacetBar::default().kind_list(&f, FacetKind::Heading, "");
+        assert_eq!(labels(&list), ["Zed", "Alpha", "Mid"]);
+    }
+
+    #[test]
+    fn kind_list_fuzzy_filters_and_skips_picked() {
+        let f = facets("#plant #zzz #pn #plan\n");
+        let mut bar = FacetBar::default();
+        bar.toggle(tag("plan"));
+        let list = bar.kind_list(&f, FacetKind::Tag, "pln");
+        assert_eq!(labels(&list), ["plant"]);
+    }
+
+    #[test]
+    fn all_grouped_orders_tag_link_heading_and_skips_empty_groups() {
+        let f = facets("# Head\n\n[[l]] #a #a #b\n");
+        let groups = FacetBar::default().all_grouped(&f, "");
+        let got: Vec<_> = groups.iter().map(|(k, p)| (*k, labels(p))).collect();
+        assert_eq!(
+            got,
+            [
+                (FacetKind::Tag, vec!["a", "b"]),
+                (FacetKind::NoteLink, vec!["l"]),
+                (FacetKind::Heading, vec!["Head"]),
+            ]
+        );
+        let only = FacetBar::default().all_grouped(&f, "hea");
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].0, FacetKind::Heading);
+        let mut bar = FacetBar::default();
+        bar.toggle(heading("head"));
+        assert_eq!(bar.all_grouped(&f, "").len(), 2);
+    }
+
+    #[test]
+    fn a_headings_only_note_has_only_a_sections_menu() {
+        let f = facets("# A\n\ntext\n\n## B\n");
+        let counts = FacetBar::default().menus(&f);
+        assert_eq!((counts.tags, counts.links, counts.sections), (0, 0, 2));
+    }
+
+    #[test]
+    fn kind_list_breaks_a_count_tie_ignoring_case() {
+        let f = facets("#B #a\n");
+        assert_eq!(
+            labels(&FacetBar::default().kind_list(&f, FacetKind::Tag, "")),
+            ["a", "B"]
+        );
+    }
+
+    #[test]
+    fn kind_list_ignores_whitespace_in_the_query() {
+        let f = facets("#plant #zzz\n");
+        assert_eq!(
+            labels(&FacetBar::default().kind_list(&f, FacetKind::Tag, " p l ")),
+            ["plant"]
+        );
+    }
+
+    #[test]
+    fn all_grouped_is_empty_when_only_picked_facets_remain() {
+        let f = facets("# H\n\n#a [[x]]\n");
+        let mut bar = FacetBar::default();
+        bar.set_picks(vec![heading("h"), tag("a"), link("x")]);
+        assert!(bar.all_grouped(&f, "").is_empty());
     }
 }

@@ -2,28 +2,29 @@
 //!
 //! **Tab stops.** Every chip, pill and text button the view draws is a tab
 //! stop on a focus handle the view keeps ([`Stops`]), so the kit's root walks
-//! them with Tab in the order they are painted: the bar's filter line (the
-//! pills drawn, `+N`, `Sections N`), its summary line (`Clear`), then the
-//! column top to bottom. The stop with the keyboard is drawn with the focus
-//! ring (`theme::focus_border`), and Enter or Space on it does what a click
-//! does ([`FacetView::activate`]). A stop that goes away with the keyboard
-//! (`Clear` once the picks are cleared) hands it to the view.
+//! them with Tab in the order they are painted: the bar's kind chips, its
+//! search chip, its picked pills, `Clear`, then the column top to bottom.
+//! The stop with the keyboard is drawn with the focus ring
+//! (`theme::focus_border`), and Enter or Space on it does what a click does
+//! ([`FacetView::activate`]). A picked pill that unpicks itself while it has
+//! the keyboard hands it to the next pick, or to the one before when it was
+//! the last. Any other stop that goes away with the keyboard (`Clear` once
+//! the picks are cleared, the only pick) hands it to the view.
 //!
 //! **Keys.** Taken before anything inside the view sees them (a piece's
 //! read-only editor would take letters), and never passed on, so neither the
 //! group's hidden editor nor the workspace's keymap gets them: `/` opens the
-//! list of every unpicked tag and link, the one `+N` opens (the Sections
-//! list when no tag or link is left unpicked, nothing when the note has no
-//! heading either), `j`/`k` bring
-//! the next/previous piece to the top, `r` asks a collection to run its
-//! query again ([`FacetEvent::Refresh`]), Escape clears the picks. An open list
-//! closes on Escape first: the kit's popover takes it before any key
-//! listener. With the keyboard inside a piece (after a press there), Escape
-//! first hands it to the view and only then clears, and Tab and Shift+Tab,
-//! which the piece's editor leaves alone, walk on to the next stop. While
-//! the list's filter field has the keyboard the view leaves plain keys to
-//! it; Up and Down move the list's highlight over its pills in order (tags,
-//! then links) and Enter toggles the lit facet.
+//! list of every unpicked facet, the one the search chip opens (nothing when
+//! every facet is picked), `j`/`k` bring the next/previous piece to the top,
+//! `r` asks a collection to run its query again ([`FacetEvent::Refresh`]),
+//! Escape clears the picks. An open list closes on Escape first: the kit's
+//! popover takes it before any key listener. With the keyboard inside a
+//! piece (after a press there), Escape first hands it to the view and only
+//! then clears, and Tab and Shift+Tab, which the piece's editor leaves
+//! alone, walk on to the next stop. While the list's filter field has the
+//! keyboard the view leaves plain keys to it. Up and Down move the list's
+//! highlight over its drawn pills in order (tags, then links, then headings
+//! in the search list), and Enter picks the lit facet.
 //!
 //! **The primary modifier.** Pressing or releasing it (Ctrl, or Cmd on
 //! macOS) while the keyboard is anywhere in the view draws the view again,
@@ -49,10 +50,9 @@ use crate::theme;
 /// A tab stop of the view: what it is, so a key can do what its click does.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Stop {
-    /// The `+N` chip: opens the list of every tag and link.
-    More,
-    /// The `Sections N` chip: opens the headings list.
-    Sections,
+    /// A menu chip: opens its kind's list, or the list of every kind (the
+    /// search chip).
+    Menu(ListKind),
     Clear,
     /// The empty message's `Remove last pick`.
     RemoveLast,
@@ -76,8 +76,7 @@ impl Stop {
     pub(crate) fn id(&self) -> gpui_kit::SharedString {
         use super::*;
         match self {
-            Stop::More => MORE_ID.into(),
-            Stop::Sections => SECTIONS_ID.into(),
+            Stop::Menu(kind) => menu_id(*kind),
             Stop::Clear => CLEAR_ID.into(),
             Stop::RemoveLast => REMOVE_LAST_ID.into(),
             Stop::Refresh => REFRESH_ID.into(),
@@ -101,6 +100,8 @@ pub(super) struct Stops {
     drawn: Vec<Stop>,
     /// The stop that had the keyboard when this frame began.
     focused: Option<Stop>,
+    /// The stop that had the keyboard when the frame before began.
+    before: Option<Stop>,
     /// The stop this frame drew with the focus ring (tests).
     pub(super) ringed: Option<Stop>,
 }
@@ -119,6 +120,19 @@ impl Stops {
         self.handles.get(stop).cloned()
     }
 
+    /// The stops the last frame drew, in order (tests).
+    #[cfg(test)]
+    pub(super) fn drawn(&self) -> &[Stop] {
+        &self.drawn
+    }
+
+    /// The stop that took the keyboard since the last frame began, if any.
+    pub(super) fn arrived(&self) -> Option<&Stop> {
+        self.focused
+            .as_ref()
+            .filter(|stop| self.before.as_ref() != Some(*stop))
+    }
+
     /// A frame begins: note the stop with the keyboard, draw none yet.
     pub(super) fn begin(&mut self, window: &Window) {
         self.focused = self.focused(window);
@@ -132,9 +146,10 @@ impl Stops {
     pub(super) fn end(&mut self) -> bool {
         let drawn = &self.drawn;
         self.handles.retain(|stop, _| drawn.contains(stop));
-        self.focused
-            .take()
-            .is_some_and(|stop| !drawn.contains(&stop))
+        self.before = self.focused.take();
+        self.before
+            .as_ref()
+            .is_some_and(|stop| !drawn.contains(stop))
     }
 
     /// `el` as `stop`: a tab stop, ringed while it has the keyboard.
@@ -260,18 +275,9 @@ impl FacetView {
         }
         let in_piece = self.piece_has_keyboard(window, cx);
         match key.key {
-            // Shift is how some layouts type a slash.
-            // No unpicked tag or link (none in the note, or every one
-            // picked): the Sections list is all there is to filter, if the
-            // note has headings (`open_list` opens nothing otherwise).
-            Key::Char('/') => {
-                let kind = if self.list_drawable(ListKind::Facets) {
-                    ListKind::Facets
-                } else {
-                    ListKind::Sections
-                };
-                self.open_list(kind, window, cx)
-            }
+            // Shift is how some layouts type a slash. With every facet
+            // picked, `open_list` opens nothing.
+            Key::Char('/') => self.open_list(ListKind::All, window, cx),
             Key::Char('j') => self.step_piece(true, cx),
             Key::Char('k') => self.step_piece(false, cx),
             // A collection runs its query again; a single note has no `r`.
@@ -297,11 +303,7 @@ impl FacetView {
     /// What a click on `stop` does.
     pub(super) fn activate(&mut self, stop: Stop, window: &mut Window, cx: &mut Context<Self>) {
         match stop {
-            Stop::More | Stop::Sections => {
-                let kind = match stop {
-                    Stop::Sections => ListKind::Sections,
-                    _ => ListKind::Facets,
-                };
+            Stop::Menu(kind) => {
                 if self.list_open(kind) {
                     self.close_list(window, cx);
                 } else {
@@ -313,7 +315,7 @@ impl FacetView {
             Stop::Refresh => {
                 self.refresh_key(cx);
             }
-            Stop::Pill(facet) => self.toggle(facet, cx),
+            Stop::Pill(facet) => self.unpick_pill(facet, window, cx),
             Stop::Crumb(chunk, index) => {
                 if let Some(facet) = self.members.crumb_facet(chunk, index) {
                     self.toggle(facet, cx);
@@ -328,6 +330,28 @@ impl FacetView {
             Stop::GapUp(g) => self.reveal(g, Reveal::Above, cx),
             Stop::ShowAll(g) => self.reveal_all(g, cx),
             Stop::ShowMore => self.show_more(cx),
+        }
+    }
+
+    /// A picked pill's click: unpick its facet. When the pill has the
+    /// keyboard, the next pick takes it (the one before, for the last), so
+    /// no ring is left on a pill that is gone.
+    fn unpick_pill(&mut self, facet: Facet, window: &mut Window, cx: &mut Context<Self>) {
+        let stop = Stop::Pill(facet.clone());
+        let next = (self.stops.borrow().focused(window).as_ref() == Some(&stop))
+            .then(|| {
+                let picks = self.bar.picked(&self.members.merged);
+                let at = picks.iter().position(|p| p.facet == facet)?;
+                let next = picks
+                    .get(at + 1)
+                    .or(at.checked_sub(1).and_then(|i| picks.get(i)));
+                next.map(|p| Stop::Pill(p.facet.clone()))
+            })
+            .flatten()
+            .and_then(|next| self.stops.borrow().handle(&next));
+        self.toggle(facet, cx);
+        if let Some(handle) = next {
+            window.focus(&handle, cx);
         }
     }
 
@@ -375,11 +399,10 @@ impl FacetView {
             return;
         };
         self.pick_more(facet.clone(), window, cx);
-        // A toggle reorders the list: a picked tag or link leaves it (its
-        // pill leads the line), a picked heading moves to the front of the
-        // Sections list. The highlight follows a facet still listed, so the
-        // next Enter toggles it back; else it keeps its place, on the facet
-        // that moved up into it (the last when the list got shorter).
+        // A pick leaves the list (its pill joins the picks row). The
+        // highlight follows a facet still listed; else it keeps its place,
+        // on the facet that moved up into it (the last when the list got
+        // shorter).
         let pills = self.list_pills(cx);
         let at = pills.iter().position(|p| p.facet == facet);
         if let Some(more) = &mut self.more {
