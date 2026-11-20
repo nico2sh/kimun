@@ -1,258 +1,151 @@
-//! The **Facet view**'s filter line and its lists ([`super`]).
+//! The **Facet view**'s bar rows and their lists ([`super`]).
 //!
-//! **The line.** One row that never wraps: the pills of
-//! [`FacetBar::line`](kimun_notes::logic::facet_bar::FacetBar::line)
-//! that fit (picked first, each with its remove mark, then tags and links
-//! by count), the `+N` chip while some are left out, and the `Sections N`
-//! chip while the notes have headings. How many fit is
-//! [`fit_count`] over measured widths: each pill's width comes from the
-//! window's text system in the pill's own font and size, plus its padding,
-//! gap, icons and border ([`pill_width`]), cached per pill until the font
-//! or the rem size changes ([`PillWidths`]). The room is the line's width
-//! less the `Sections N` chip, as laid out in the last frame (a probe
-//! records it while the frame prepaints); a frame that finds it changed asks
-//! for one more (see `resize_check`). Before the first layout the window's
-//! width stands in. Picked pills are always drawn: when they alone overflow
-//! the room, the pills clip at the line's end and `+N` stays. The fit keeps
-//! a pixel of slack, and the gap before `+N` belongs to the chip, so the
-//! last pill is never cut when every pill fits.
+//! **The chips.** Row 1 holds one menu chip per kind with something left to
+//! pick: `Tags N`, `Links N` and `Sections N`, where N counts the unpicked
+//! facets of that kind ([`menus`]). A kind with nothing left has no chip. A
+//! spacer follows, then the search chip (`⌕ /`), drawn while any chip is.
+//! Row 1 never wraps.
 //!
-//! **The lists.** `+N` and `/` open the list of every unpicked tag and
-//! link ([`grouped`]), under a small label per kind (Tags, then Links), its
-//! filter field first; without a `+N` chip it hangs from the end of the
-//! line. `Sections N` opens the headings ([`more_list`]), and so does `/`
-//! when no tag or link is left unpicked. A list of tags and links left with
-//! nothing to hold (its last one picked) closes.
+//! **The picks.** Row 2 holds the picked pills in pick order ([`picked`]),
+//! each with its remove mark. It wraps onto as many lines as it needs. The
+//! bar scrolls inside its height cap, and a stop of the bar that takes the
+//! keyboard scrolls into view. Row 2 is drawn only while there are picks.
 //!
-//! [`grouped`]: kimun_notes::logic::facet_bar::FacetBar::grouped
-//! [`more_list`]: kimun_notes::logic::facet_bar::FacetBar::more_list
-//! The keyboard highlight runs over the list's pills in order.
-
-use std::cell::Cell;
-use std::collections::HashMap;
-use std::rc::Rc;
+//! **The lists.** A kind chip opens the list of that kind's unpicked facets
+//! ([`kind_list`]). The search chip and `/` open the list of every unpicked
+//! facet under a small label per kind ([`all_grouped`]). Each list starts
+//! with its filter field. It draws at most [`LIST_CAP`] matches, and a muted
+//! last line says how many more the filter can reveal. A list closes when a
+//! pick or new text leaves nothing in its scope. The keyboard highlight runs
+//! over the drawn pills in order.
+//!
+//! [`menus`]: kimun_notes::logic::facet_bar::FacetBar::menus
+//! [`picked`]: kimun_notes::logic::facet_bar::FacetBar::picked
+//! [`kind_list`]: kimun_notes::logic::facet_bar::FacetBar::kind_list
+//! [`all_grouped`]: kimun_notes::logic::facet_bar::FacetBar::all_grouped
 
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, AnyElement, App, ClickEvent, Context, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TextRun, Window, canvas, div, font,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
 use kimun_core::note::FacetKind;
-use kimun_notes::logic::facet_bar::{BarLine, Pill, fit_count};
+use kimun_notes::logic::facet_bar::{KindCounts, Pill};
 use kimun_notes::settings::themes::Theme;
 
 use super::keys::Stop;
-use super::{
-    FacetView, LINE_ID, LINE_PILLS_ID, ListKind, MORE_ID, SECTIONS_ID, list_group_id, more_item_id,
-    pill_id,
-};
+use super::{FacetView, LINE_ID, ListKind, list_group_id, menu_id, more_item_id, pill_id};
 use crate::theme;
 use crate::workspace::facet_list::{ListGroup, OpenList, list_popover};
-use crate::workspace::facet_ui::{chip, chip_width, pill, pill_width};
+use crate::workspace::facet_ui::{chip, pill};
 
-/// The `+N` chip's tooltip (its name adds the count).
-const MORE_LABEL: &str = "More facets (/)";
+/// The most matches a list draws.
+pub(crate) const LIST_CAP: usize = 200;
 
-/// The size of pill text (`text_xs`), in rems.
-const TEXT_REMS: f32 = 0.75;
+/// The search chip's name and tooltip.
+const SEARCH_LABEL: &str = "Search facets (/)";
 
-/// What the line keeps free of the room it measured, so a rounding of the
-/// layout never cuts a pixel off the last pill.
-const FIT_SLACK_PX: f32 = 1.0;
+/// The caret after a menu chip's label.
+const CARET: &str = "\u{25BE}";
 
-/// The most pill widths kept before the cache starts over.
-const MAX_CACHED: usize = 4096;
-
-/// The measured width of each pill drawn so far, for one font and rem size.
-#[derive(Default)]
-pub(super) struct PillWidths {
-    /// The font family and rem size the widths were measured with.
-    font: Option<(SharedString, u32)>,
-    by_pill: HashMap<(FacetKind, String, usize, bool), f32>,
-}
-
-impl PillWidths {
-    /// The cached width of `p`, if it was measured with the current font.
-    #[cfg(test)]
-    pub(super) fn get(&self, p: &Pill) -> Option<f32> {
-        self.by_pill.get(&key(p)).copied()
-    }
-}
-
-fn key(p: &Pill) -> (FacetKind, String, usize, bool) {
-    (p.facet.kind, p.label.clone(), p.count, p.picked)
-}
-
-/// The width of a text in the pills' font and size, from the window's text
-/// system.
-struct TextWidth {
-    system: Rc<gpui_kit::WindowTextSystem>,
-    font: gpui_kit::Font,
-    size: Pixels,
-}
-
-impl TextWidth {
-    fn new(family: SharedString, rem: f32, window: &Window) -> Self {
-        Self {
-            system: window.text_system().clone(),
-            font: font(family),
-            size: gpui_kit::px(TEXT_REMS * rem),
-        }
-    }
-
-    fn of(&self, text: &str) -> f32 {
-        let run = TextRun {
-            len: text.len(),
-            font: self.font.clone(),
-            color: gpui_kit::black(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let line = self.system.shape_line(
-            SharedString::from(text.to_string()),
-            self.size,
-            &[run],
-            None,
-        );
-        // A text element lays out at its width rounded up.
-        f32::from(line.width).ceil()
-    }
-}
-
-/// An empty element filling its parent that records the parent's width in
-/// `room` each time the frame prepaints.
-fn room_probe(room: Rc<Cell<Option<f32>>>) -> impl IntoElement {
-    canvas(
-        move |bounds, _, _| room.set(Some(f32::from(bounds.size.width))),
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-}
+/// A list's groups: each with its kind label (`None` for a kind list) and
+/// its pills.
+pub(super) type Groups = Vec<(Option<FacetKind>, Vec<Pill>)>;
 
 impl FacetView {
-    /// The filter line (see the module docs).
-    pub(super) fn render_line(
+    /// Row 1: the kind chips and the search chip (see the module docs).
+    /// `None` when no kind has anything left to pick.
+    pub(super) fn render_chips(
         &self,
-        line: BarLine,
-        window: &Window,
+        counts: KindCounts,
         t: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let rem = f32::from(window.rem_size());
-        let gap = 0.25 * rem;
-        let text = TextWidth::new(cx.theme().font_family.clone(), rem, window);
-        let widths = self.pill_widths(&line.pills, rem, &text);
-        let total = line.pills.len();
-        let more_width = chip_width(&format!("+{total}"), rem, |s| text.of(s));
-        let room = self
-            .line_room
-            .get()
-            .unwrap_or_else(|| f32::from(window.viewport_size().width));
-        let keep = line.pills.iter().filter(|p| p.picked).count();
-        let shown = fit_count(&widths, gap, room - FIT_SLACK_PX, more_width, keep);
-        let hidden = total - shown;
-        self.more_count.set(hidden);
-
-        let pills: Vec<_> = line
-            .pills
+    ) -> Option<impl IntoElement + use<>> {
+        let kinds = [
+            (ListKind::Tags, "Tags", counts.tags),
+            (ListKind::Links, "Links", counts.links),
+            (ListKind::Sections, "Sections", counts.sections),
+        ];
+        if kinds.iter().all(|(_, _, n)| *n == 0) {
+            return None;
+        }
+        let chips: Vec<AnyElement> = kinds
             .into_iter()
-            .take(shown)
+            .filter(|(_, _, n)| *n > 0)
+            .map(|(kind, name, n)| {
+                let el = chip(menu_id(kind), format!("{name} {n}"), t)
+                    .gap_0p5()
+                    .child(div().text_color(theme::muted(t)).child(CARET))
+                    .test_support();
+                let el = self.track(Stop::Menu(kind), el, t, cx);
+                self.render_list(kind, Anchor::TopLeft, el.into_any_element(), t, cx)
+            })
+            .collect();
+        let search = chip(menu_id(ListKind::All), "\u{2315} /", t)
+            .aria_label(SEARCH_LABEL)
+            .tooltip(|window, cx| Tooltip::new(SEARCH_LABEL).build(window, cx))
+            .test_support();
+        let search = self.track(Stop::Menu(ListKind::All), search, t, cx);
+        // The search chip ends the row: its list opens leftward from it.
+        let search = self.render_list(
+            ListKind::All,
+            Anchor::TopRight,
+            search.into_any_element(),
+            t,
+            cx,
+        );
+        Some(
+            div()
+                .id(LINE_ID)
+                .flex()
+                .flex_none()
+                .w_full()
+                .items_center()
+                .gap_1()
+                .children(chips)
+                .child(div().flex_1().min_w_0())
+                .child(search)
+                .test_support(),
+        )
+    }
+
+    /// Row 2: the picked pills, each a button that unpicks it. They are
+    /// children of the bar itself, so the bar can scroll each one into view
+    /// ([`Self::reveal_arrived`]). Empty without picks.
+    pub(super) fn render_picks(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        self.bar
+            .picked(&self.members.merged)
+            .into_iter()
             .map(|p| {
                 let el = pill(pill_id(&p.facet), &p, t);
                 self.button(Stop::Pill(p.facet), el, t, cx)
-            })
-            .collect();
-        let (trigger, anchor) = if hidden > 0 {
-            let el = chip(MORE_ID.into(), format!("+{hidden}"), t)
-                .aria_label(SharedString::from(format!("{hidden} more facets (/)")))
-                .tooltip(|window, cx| Tooltip::new(MORE_LABEL).build(window, cx))
-                .test_support();
-            let el = self.track(Stop::More, el, t, cx);
-            // The chip ends the room: the list opens leftward from it.
-            (el.into_any_element(), Anchor::TopRight)
-        } else {
-            // Nothing left out: `/` hangs the list from the line's end.
-            let end = div().id("facet-line-end").flex_none().w_0().h_6();
-            (end.into_any_element(), Anchor::TopLeft)
-        };
-        let more = self.render_list(ListKind::Facets, anchor, trigger, t, cx);
-        // The gap before `+N` is the one `fit_count` counts; the bare anchor
-        // takes none, so the pills get the whole room when they all fit.
-        let more = div()
-            .flex_none()
-            .when(hidden > 0, |el| el.pl_1())
-            .child(more);
-        let sections = (line.sections > 0).then(|| {
-            let label = format!("Sections {}", line.sections);
-            let el = chip(SECTIONS_ID.into(), label, t).test_support();
-            let el = self.track(Stop::Sections, el, t, cx);
-            self.render_list(
-                ListKind::Sections,
-                Anchor::TopLeft,
-                el.into_any_element(),
-                t,
-                cx,
-            )
-        });
-        div()
-            .id(LINE_ID)
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_1()
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .child(
-                        div()
-                            .id(LINE_PILLS_ID)
-                            .flex()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .items_center()
-                            .gap_1()
-                            .children(pills)
-                            .test_support(),
-                    )
-                    .child(more)
-                    .child(room_probe(self.line_room.clone())),
-            )
-            .children(sections)
-            .test_support()
-    }
-
-    /// The widths of `pills` ([`pill_width`]), measured once per font and
-    /// rem size and then cached.
-    fn pill_widths(&self, pills: &[Pill], rem: f32, text: &TextWidth) -> Vec<f32> {
-        let mut cache = self.widths.borrow_mut();
-        let font = Some((text.font.family.clone(), rem.to_bits()));
-        // A new font or rem size, or a cache grown past any one note's
-        // facets (counts change as notes are edited): measure again.
-        if cache.font != font || cache.by_pill.len() > MAX_CACHED {
-            cache.font = font;
-            cache.by_pill.clear();
-        }
-        pills
-            .iter()
-            .map(|p| {
-                *cache
-                    .by_pill
-                    .entry(key(p))
-                    .or_insert_with(|| pill_width(p, rem, |s| text.of(s)).ceil())
+                    .into_any_element()
             })
             .collect()
+    }
+
+    /// When a stop of the bar took the keyboard since the last frame (by
+    /// Tab, or after an unpick moved it on), scroll the bar so that stop
+    /// shows. The bar's children are row 1 (`chips`), the picks (`picks`
+    /// of them), then the summary line. The kit scrolls in this frame's
+    /// layout, by the least amount that shows the child.
+    pub(super) fn reveal_arrived(&self, chips: bool, picks: usize) {
+        let first_pick = usize::from(chips);
+        let ix = match self.stops.borrow().arrived() {
+            Some(Stop::Menu(_)) if chips => 0,
+            Some(Stop::Pill(facet)) => {
+                let picked = self.bar.picked(&self.members.merged);
+                match picked.iter().position(|p| p.facet == *facet) {
+                    Some(at) => first_pick + at,
+                    None => return,
+                }
+            }
+            Some(Stop::Clear) if picks > 0 => first_pick + picks,
+            _ => return,
+        };
+        self.bar_scroll.scroll_to_item(ix);
     }
 
     /// `trigger` with `kind`'s list ([`list_popover`]) hung under it, open
@@ -271,7 +164,7 @@ impl FacetView {
             .as_ref()
             .filter(|more| more.kind == kind)
             .map(|more| {
-                let groups = self.list_groups(cx);
+                let (groups, rest) = self.list_groups(cx);
                 let len = groups.iter().map(|(_, pills)| pills.len()).sum::<usize>();
                 let lit = more.highlight.min(len.saturating_sub(1));
                 let mut at = 0;
@@ -302,9 +195,11 @@ impl FacetView {
                         }
                     })
                     .collect();
+                let rest = (rest > 0).then(|| SharedString::from(rest_text(rest)));
                 OpenList {
                     input: more.input.clone(),
                     groups,
+                    rest,
                 }
             });
         let changed = cx.listener(move |this, open: &bool, window, cx| {
@@ -313,35 +208,73 @@ impl FacetView {
         list_popover(kind, anchor, trigger, list, changed, t, cx)
     }
 
-    /// The open list's groups, filtered by its query: the unpicked tags and
-    /// links under their kind, or the headings in one group with no label
-    /// (see the module docs).
-    fn list_groups(&self, cx: &App) -> Vec<(Option<FacetKind>, Vec<Pill>)> {
-        let Some(more) = &self.more else {
-            return Vec::new();
-        };
-        let query = more.input.read(cx).value().to_string();
+    /// The groups of `kind`'s list, filtered by `query`: one group with no
+    /// label for a kind, the kinds under their labels for
+    /// [`ListKind::All`]. Every match, not capped. Empty groups are left
+    /// out.
+    pub(super) fn scope(&self, kind: ListKind, query: &str) -> Groups {
         let merged = &self.members.merged;
-        match more.kind {
-            ListKind::Facets => self
+        let one = |kind| vec![(None, self.bar.kind_list(merged, kind, query))];
+        let groups = match kind {
+            ListKind::Tags => one(FacetKind::Tag),
+            ListKind::Links => one(FacetKind::NoteLink),
+            ListKind::Sections => one(FacetKind::Heading),
+            ListKind::All => self
                 .bar
-                .grouped(merged, &query)
+                .all_grouped(merged, query)
                 .into_iter()
                 .map(|(kind, pills)| (Some(kind), pills))
                 .collect(),
-            ListKind::Sections => {
-                vec![(None, self.bar.more_list(merged, FacetKind::Heading, &query))]
-            }
-        }
+        };
+        groups
+            .into_iter()
+            .filter(|(_, pills)| !pills.is_empty())
+            .collect()
     }
 
-    /// The open list's pills, in order: what the highlight runs over.
+    /// The open list's groups, filtered by its query and cut to
+    /// [`LIST_CAP`] pills in group order, and how many matches the cut left
+    /// out.
+    fn list_groups(&self, cx: &App) -> (Groups, usize) {
+        let Some(more) = &self.more else {
+            return (Vec::new(), 0);
+        };
+        let query = more.input.read(cx).value().to_string();
+        cap(self.scope(more.kind, &query))
+    }
+
+    /// The open list's drawn pills, in order: what the highlight runs over.
     pub(super) fn list_pills(&self, cx: &App) -> Vec<Pill> {
         self.list_groups(cx)
+            .0
             .into_iter()
             .flat_map(|(_, pills)| pills)
             .collect()
     }
+}
+
+/// `groups` cut to [`LIST_CAP`] pills in order (a group left empty is
+/// dropped), and how many pills the cut left out.
+fn cap(groups: Groups) -> (Groups, usize) {
+    let mut room = LIST_CAP;
+    let mut rest = 0;
+    let mut kept = Vec::new();
+    for (kind, mut pills) in groups {
+        if pills.len() > room {
+            rest += pills.len() - room;
+            pills.truncate(room);
+        }
+        room -= pills.len();
+        if !pills.is_empty() {
+            kept.push((kind, pills));
+        }
+    }
+    (kept, rest)
+}
+
+/// The muted last line of a list that left `rest` matches out.
+fn rest_text(rest: usize) -> String {
+    format!("{rest} more. Type to filter.")
 }
 
 fn group_label(kind: FacetKind) -> &'static str {

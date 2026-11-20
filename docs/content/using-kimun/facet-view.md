@@ -25,20 +25,27 @@ Kimün saves the text of the note before it opens the view. If another pane chan
 
 A bar at the top of the view lists the facets of the note. A facet is a tag, a link to another note, or a heading. The bar stays in view when you scroll the text.
 
-The filter line is one line. It never wraps. It shows the pills that fit and no more. The pills that you picked come first, each with a small remove mark. After them come the tags and the links, together, with the most used first. A tag reads `#name`. A link reads `[[name]]`. A heading that you picked shows its text with the outline icon. A pill shows a count when the facet is in more than one place. If the pills that you picked are wider than the line, the line cuts them at its end.
+The top row of the bar has one chip for each kind that still has facets to pick: `Tags N`, `Links N`, and `Sections N`. N is the number of facets of that kind that you have not picked yet. A chip with nothing left to pick is not shown. At the right end of the row is the search chip, `⌕ /`. Hover it to see its tooltip: `Search facets (/)`. The row never wraps.
 
-- Click a pill to pick it. Click it again, or click its remove mark, to remove the pick.
+Click a chip to open a list of the facets of that kind that you have not picked. The list starts with a `Filter` field. Type in it to narrow the list. A tag reads `#name`. A link reads `[[name]]`. A facet shows a count when it is in more than one place. Click a facet in the list to pick it.
+
+The search chip, and the `/` key, open one list of all the kinds. It groups the facets under `Tags`, `Links`, and `Sections`.
+
+A list shows at most 200 matches. When there are more, the last line says `N more. Type to filter.` Type in the `Filter` field to find the others.
+
+A list stays open while you pick, so you can make more picks. It closes when you pick the last facet that it holds. Press `Esc` or click outside the list to close it sooner. A click outside the list also does what that click does. For example, a click on a pick in the bar removes it.
+
+The facets that you picked show in their own row under the chips, in the order that you picked them. Each has a small remove mark. A heading that you picked shows its text with the outline icon. The row wraps onto more lines when it needs them. The bar takes at most 40 percent of the height of the view. When it is taller, it scrolls inside itself.
+
+- Click a picked facet, or its remove mark, to remove the pick.
 - With nothing picked, the view shows the whole note. Under the bar, a line says `Pick a tag, link or section to narrow this note.` It goes away when you make your first pick.
 - A pick of a tag or a link shows the paragraph, list item, or table row that holds it. A pick of a heading shows the whole section under it, with its sub-headings.
 - Picks of the same kind add up: the view shows the parts that match any of them. Picks of different kinds narrow the view: it shows only the parts that match every kind that you picked.
-- When some tags or links do not fit, the line ends with a `+N` chip, where N is how many are left out. Hover it to see its tooltip: `More facets (/)`. Click it to open a list of the other tags and links. The list has a `Filter` field. The tags are under `Tags` and the links are under `Links`. Click a pill in the list to pick it. The list stays open for your next pick. When you pick the last tag or link in the list, the list closes, because it has nothing more to show. Press `Esc` or click outside the list to close it. A click outside the list also does what that click does: for example, a click on a pill in the bar also picks it or removes its pick.
-- Press `/` to open the same list, also when there is no `+N` chip. If no tag or link is left to pick (the note has none, or you picked all of them), `/` opens the list of headings.
-- When the note has headings, the line has a `Sections N` chip at its right end, where N is the number of headings. Click it to open the list of all the headings. Type in its `Filter` field to search it. A heading shows on the line only after you pick it.
 - A note with no tags, links, or headings has no bar.
 
 ### The summary line
 
-While you have picks, a line under the filter line tells you what the view shows, for example `Showing text tagged #run or #garden, in 2026-07-03 · 12 pieces`. The `Clear` button at the right end of that line removes all picks. When the picks match nothing, the line has `Clear` only.
+While you have picks, a line under the row of picks tells you what the view shows, for example `Showing text tagged #run or #garden, in 2026-07-03 · 12 pieces`. The `Clear` button at the right end of that line removes all picks. When the picks match nothing, the line has `Clear` only.
 
 ### When nothing matches
 
@@ -48,7 +55,7 @@ If the note has no text, the view says `This note is empty.`
 
 ## Click in the text
 
-- The text of a piece is read-only text. A click in it gives the piece the keyboard. Drag to select text. Double-click to select a word. `Ctrl+C` (`Cmd+C` on macOS) copies the selection of the piece that has the keyboard. A drag across a link copies the link as it is written in the note, for example `[text](note.md)`. When the piece loses the keyboard, for example when you press `Esc` or `Tab` or click somewhere else, its selection is cleared. None of this changes your picks. To filter, use the pills, the lists, and the breadcrumb buttons.
+- The text of a piece is read-only text. A click in it gives the piece the keyboard. Drag to select text. Double-click to select a word. `Ctrl+C` (`Cmd+C` on macOS) copies the selection of the piece that has the keyboard. A drag across a link copies the link as it is written in the note, for example `[text](note.md)`. When the piece loses the keyboard, for example when you press `Esc` or `Tab` or click somewhere else, its selection is cleared. None of this changes your picks. To filter, use the chips, the lists, the picked facets, and the breadcrumb buttons.
 - Hold `Ctrl` (`Cmd` on macOS) and click a link or a tag to follow it. A link to a note opens that note in a new tab. A link to an attachment opens it in a new tab. A link to a web address opens in your browser. A tag opens a search for that tag. The mouse cursor over a tag or a link is the text cursor. It becomes a pointing hand only while you hold `Ctrl` (`Cmd` on macOS). When the keyboard is in the facet view, the hand comes or goes as soon as you press or release the key. Otherwise it changes the next time you move the mouse over a piece.
 - The view shows the note as pieces of text. A piece is one block, or several blocks that are next to each other. For example, a heading section is one piece. A piece has no frame. A slim row above it holds the breadcrumb and the `Open source` button.
 - The breadcrumb lists the headings that contain the piece, from the outside in, with `›` between them, for example `Summer › July › Week 3`. Click a heading in it to pick that heading, or to remove its pick. A piece that sits under no heading has no breadcrumb. If the breadcrumb is too long for the row, Kimün shortens the headings with `…`, the outer ones first, so that the last heading stays readable for as long as possible. `Open source` always shows in full.
@@ -68,13 +75,15 @@ These keys work in the facet view, also when the keyboard is inside a piece of t
 
 | Key | What it does |
 | --- | --- |
-| `/` | Opens the list of the other tags and links. If no tag or link is left to pick, it opens the list of headings. If there is nothing to list, it does nothing. |
+| `/` | Opens the list of all the kinds, the same list as the search chip. If every facet is picked, it does nothing. |
 | `Up`, `Down` | In a list, move to the previous or next facet. |
-| `Enter` | In a list, picks the facet that is lit, or removes its pick. The list stays open while other tags or links are left to pick. It closes when you pick the last one. |
+| `Enter` | In a list, picks the facet that is lit. The list stays open while it still holds facets. It closes when you pick the last one, and the keyboard goes to the view. |
 | `j`, `k` | Go to the next or previous piece. |
 | `Esc` | Closes the open list. If no list is open and the keyboard is inside a piece, it takes the keyboard out of the piece, and your picks stay. Otherwise it clears all picks, and with no picks it does nothing. |
-| `Tab`, `Shift+Tab` | Move to the next or previous button: pills, `+N`, `Sections N`, `Clear`, the breadcrumb headings, `Open source`, and the hidden-block buttons. From inside a piece, they go to the button after or before the text of that piece. The button that has the keyboard has a ring. |
-| `Enter`, `Space` | Press the button that has the keyboard. |
+| `Tab`, `Shift+Tab` | Move to the next or previous button. The order is the kind chips, the search chip, the picked facets, `Clear`, the breadcrumb headings, `Open source`, and the hidden-block buttons. From inside a piece, they go to the button after or before the text of that piece. The button that has the keyboard has a ring. |
+| `Enter`, `Space` | Press the button that has the keyboard. On a kind chip or the search chip, this opens the list, or closes it when it is open. On a picked facet, it removes the pick. |
+
+When you remove a pick with the keyboard, the keyboard moves to the next picked facet. If there is none, it moves to the one before. If no pick is left, it goes to the view. When the keyboard moves to a picked facet that is below the visible part of the bar, the bar scrolls to show it.
 
 While you type in the `Filter` field of a list, letters go to the field.
 
@@ -103,7 +112,7 @@ The collection opens in the current pane and replaces what the pane shows. Kimü
 ### What a collection shows
 
 - With nothing picked, the view shows every note whole, in the order of the results. Above the text, a line says `Pick a tag, link or section to narrow these notes.`
-- The bar lists the tags, the links, and the headings of all the notes together. A tag that is in 3 notes shows once, with its counts added up. Headings with the same text are one pill.
+- The bar lists the tags, the links, and the headings of all the notes together. A tag that is in 3 notes shows once, with its counts added up. Headings with the same text are one facet.
 - A pick narrows each note as it does in a facet view. A note that has no match shows nothing. The summary line adds the notes, for example `Showing text tagged #run · 12 pieces in 5 notes`.
 - Each note starts with a dateline: the title of the note, a thin line that fills the rest of the row, and a muted text at the right end. That text is the folder of the note and the number of pieces of the note that the view shows, for example `journal · 2 pieces`. The 100-piece limit can make this number smaller. A note in the root of the vault has the count only. When the row is narrow, Kimün shortens the folder with `…` first. There is space above each dateline except the first. When you press `j` or `k` to go to the first piece of a note, its dateline shows.
 - Each piece has a row above it with a breadcrumb. In a collection, the breadcrumb has only the headings inside the note, for example `Summer › Week 3`. It does not have the title of the note: the dateline has it. A piece that sits under no heading has no breadcrumb.

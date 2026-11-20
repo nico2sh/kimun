@@ -1,12 +1,11 @@
 //! The **Facet view**'s lists ([`super::facet`]): the kit's [`Popover`]
-//! anchored to what opened it, floating over the view so nothing under it
-//! moves. The list of every tag and link hangs from the `+N` chip, or from
-//! the end of the filter line when every pill is inline (`/` opens it
-//! then); the headings list hangs from the `Sections N` chip. Its filter
-//! field comes first and takes the keyboard when it opens; Escape and a
-//! press outside close it (the kit's dismissal), and a press outside still
-//! does what it does there. The view owns the open state and passes it in
-//! ([`Popover::open`]); the kit reports a dismissal through
+//! anchored to the chip that opened it, floating over the view so nothing
+//! under it moves. A kind's list hangs from its menu chip. The list of every
+//! kind hangs from the search chip, which `/` opens too. Its filter field
+//! comes first and takes the keyboard when it opens. Escape and a press
+//! outside close it (the kit's dismissal), and a press outside still does
+//! what it does there. The view owns the open state and passes it in
+//! ([`Popover::open`]). The kit reports a dismissal through
 //! `on_open_change`.
 
 use gpui_kit::base::{Selectable, TestSupportExt as _};
@@ -19,7 +18,7 @@ use gpui_kit::{
 };
 use kimun_notes::settings::themes::Theme;
 
-use super::facet::{ListKind, MORE_LIST_ID, MORE_QUERY_ID};
+use super::facet::{LIST_REST_ID, ListKind, MORE_LIST_ID, MORE_QUERY_ID};
 use super::popup_layer;
 use super::query_field::query_field;
 use crate::theme;
@@ -32,8 +31,10 @@ const PILLS_MAX_HEIGHT: f32 = 280.;
 /// The popover of `kind`'s list.
 fn popover_id(kind: ListKind) -> SharedString {
     match kind {
-        ListKind::Facets => "facet-list:facets".into(),
+        ListKind::Tags => "facet-list:tags".into(),
+        ListKind::Links => "facet-list:links".into(),
         ListKind::Sections => "facet-list:sections".into(),
+        ListKind::All => "facet-list:all".into(),
     }
 }
 
@@ -60,17 +61,19 @@ impl IntoElement for Trigger {
 }
 
 /// A group of the open list: a small muted label (`id`, text) over its
-/// pills. The headings list is one group with no label.
+/// pills. A kind's list is one group with no label.
 pub(super) struct ListGroup {
     pub label: Option<(SharedString, &'static str)>,
     pub pills: Vec<AnyElement>,
 }
 
-/// The open list: its field (`input`, which takes the keyboard) and its
-/// groups of pills, in the frame the app's other floating lists use.
+/// The open list: its field (`input`, which takes the keyboard), its
+/// groups of pills and the muted last line that says how many matches it
+/// left out (`rest`), in the frame the app's other floating lists use.
 pub(super) struct OpenList {
     pub input: Entity<InputState>,
     pub groups: Vec<ListGroup>,
+    pub rest: Option<SharedString>,
 }
 
 /// `trigger` with `kind`'s list hung under it, opening toward `anchor`. A
@@ -105,6 +108,19 @@ pub(super) fn list_popover(
 }
 
 fn frame(list: OpenList, t: &Theme) -> impl IntoElement {
+    // Not a button and not a pill: no tab stop, and the highlight skips it.
+    let rest = list.rest.map(|text| {
+        div()
+            .id(LIST_REST_ID)
+            .px_2()
+            .pb_1()
+            .role(Role::Status)
+            .aria_label(text.clone())
+            .text_xs()
+            .text_color(theme::muted(t))
+            .child(text)
+            .test_support()
+    });
     let groups = list.groups.into_iter().map(|group| {
         let label = group.label.map(|(id, text)| {
             div()
@@ -147,5 +163,7 @@ fn frame(list: OpenList, t: &Theme) -> impl IntoElement {
             .overflow_y_scroll()
             .children(groups),
     )
+    // Under the scrolling pills, so it shows without a scroll.
+    .children(rest)
     .test_support()
 }
