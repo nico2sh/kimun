@@ -18,7 +18,7 @@
 //! the buffer.
 //!
 //! **Following links.** A single press only places the caret. A double-click
-//! (ADR-0043: two plain left presses on one cell within [`DOUBLE_CLICK`]) or
+//! (ADR-0043: two plain left presses on one cell within [`pointer::DOUBLE_CLICK`]) or
 //! a click with the primary modifier (Cmd on macOS, Ctrl elsewhere) on a link
 //! or a label asks the window's owner to follow it, on the app channel; the
 //! `FollowLink` chord bubbles to the owner like any app command. With the find
@@ -42,42 +42,41 @@
 //! chords to the editor (the vim rule, ADR-0050 §6).
 
 use std::num::NonZeroU64;
-use std::ops::Range;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
-    App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Point, Render, ScrollEvent,
-    Styled, Subscription, Task, TextSystem, UTF16Selection, Window, div,
+    App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    KeyBinding, MouseButton, MouseDownEvent, NoAction, ParentElement, Pixels, Point, Render,
+    Styled, Subscription, Task, Window, div,
 };
-use kimun_notes::logic::actions::ActionShortcuts;
-use kimun_notes::logic::autocomplete::{
-    AutocompleteEngine, AutocompleteMode, AutocompleteState, HandleKeyOutcome, PopupCommand,
-    SuggestionSource, key_command,
-};
+use kimun_notes::logic::autocomplete::AutocompleteEngine;
 use kimun_notes::logic::editor::Editor;
 use kimun_notes::logic::editor::claim::FollowTarget;
-use kimun_notes::logic::editor::handled::Handled;
 use kimun_notes::logic::editor::request::EditorRequest;
-use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerKind};
-use kimun_notes::logic::layout::Panel;
-use kimun_notes::logic::message::{AppMessage, AppTx, redraw_callback};
-use kimun_notes::logic::text_action::TextAction;
+use kimun_notes::logic::message::{AppTx, redraw_callback};
 
-use crate::autocomplete::EditorHost;
 use crate::editor_element::{EditorElement, ShapedRows};
 use crate::editor_font::FaceInputs;
-use crate::find_bar::{self, BarPaint};
 use crate::fonts::EditorFonts;
-use crate::grid::CellMetrics;
-use crate::input::{self, ScrollAccumulator};
-use crate::keymap::{self, KeyCtx};
-use crate::row_paint::RowPaint;
+use crate::input::ScrollAccumulator;
 use crate::theme;
+
+mod faces;
+mod ime;
+mod keys;
+mod painted;
+mod pointer;
+mod popup;
+mod read_only;
+
+#[cfg(test)]
+pub use self::painted::ModeLine;
+pub use self::painted::{CaretShape, Painted};
+use self::pointer::ClickRun;
+#[cfg(test)]
+pub(crate) use self::pointer::frozen_clock;
+use self::read_only::ReadOnlyClicks;
 
 /// The key context of the Edit surface.
 pub const KEY_CONTEXT: &str = "KimunEditor";
@@ -103,16 +102,6 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// What the keymap made of a key-down, from the editor's side.
-enum AppCommand {
-    /// Not bound to an app command here: the editor's key.
-    None,
-    /// An editor command (find, replace), done.
-    Handled,
-    /// Another owner's command (focus, the slot): not the editor's.
-    NotOurs,
-}
-
 /// What the editor asks of the window that owns it, beyond the app channel:
 /// a surface that needs a `Window` to open.
 #[derive(Debug, Clone, PartialEq)]
@@ -133,126 +122,6 @@ pub enum EditorEvent {
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
-
-impl Painted {
-    /// Whether the pointer at `at` shows the pointing hand (tests).
-    #[cfg(test)]
-    pub(crate) fn hand_at(&self, at: Point<Pixels>) -> bool {
-        self.hand_areas.iter().any(|area| area.contains(&at))
-    }
-}
-
-/// How the caret is drawn. Mirrors the TUI's terminal cursor shapes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaretShape {
-    /// A thin bar before the cell: where typing inserts (plain mode, vim
-    /// Insert).
-    Bar,
-    /// The whole cell inverted, its glyph still readable: vim Normal, Visual
-    /// and every other non-Insert mode, where the cursor sits *on* a char.
-    Block,
-}
-
-/// What the mode line shows: vim's mode on the leading edge, the command
-/// typed so far (a count, an operator: `2d`) on the trailing edge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModeLine {
-    pub label: String,
-    pub hint: Option<String>,
-}
-
-/// Where the last frame put the grid, for input that arrives outside paint
-/// (the IME asking where the caret is) and for tests.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Painted {
-    /// Window position of cell (0, 0).
-    pub origin: Point<Pixels>,
-    pub cells: CellMetrics,
-    /// Text rows of the grid; the mode line, when shown, is the row below.
-    pub rows: u16,
-    /// The caret cell in window coordinates, when one is drawn.
-    pub caret: Option<Bounds<Pixels>>,
-    /// The caret's shape, when one is drawn.
-    pub caret_shape: Option<CaretShape>,
-    /// The mode line, when one is drawn (vim only).
-    pub mode_line: Option<ModeLine>,
-    /// What each text row painted, top to bottom.
-    pub row_paint: Vec<Rc<RowPaint>>,
-    /// The face it was painted in.
-    pub fonts: EditorFonts,
-    /// Where a block caret's repainted glyph starts, when one is drawn.
-    pub caret_glyph: Option<Point<Pixels>>,
-    /// The find bar, when open: docked in the rows below the text (above the
-    /// mode line). While it is open `caret` is the bar's.
-    pub find_bar: Option<BarPaint>,
-    /// The autocomplete popup, when one is drawn: its box in window
-    /// coordinates.
-    pub popup: Option<Bounds<Pixels>>,
-    /// Where the pointer is the pointing hand: the cells of every follow
-    /// target drawn, in window coordinates. The text cursor elsewhere.
-    /// Kept for tests only: the element sets the cursor from its own copy.
-    #[cfg(test)]
-    pub hand_areas: Vec<Bounds<Pixels>>,
-}
-
-/// How close together two presses on a cell must be to follow (ADR-0043;
-/// the TUI's `DOUBLE_CLICK`).
-pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-
-/// How far, in pixels, the pointer may move from a press on a follow target
-/// in read-only text and still click it. A longer drag selects text and
-/// follows nothing, even inside the target.
-const CLICK_SLOP: f32 = 4.0;
-
-/// The presses forming one double-click (ADR-0043): two plain left presses on
-/// the same cell within [`DOUBLE_CLICK`]. Not a neighbourhood, so two clicks
-/// on adjacent chars never follow; a fired double starts over, so a third
-/// press does not pair with the second. Holds no clock: the caller passes
-/// `now`. GPUI's own `click_count` is not used: its timing and slop are the
-/// platform's, not this rule.
-#[derive(Debug, Default)]
-pub(crate) struct ClickRun {
-    last: Option<(u16, u16, Instant)>,
-}
-
-impl ClickRun {
-    /// Whether a press on (`col`, `row`) at `now` completes a double-click,
-    /// recording it either way.
-    pub(crate) fn completes_double(&mut self, col: u16, row: u16, now: Instant) -> bool {
-        let doubled = self.last.is_some_and(|(c, r, at)| {
-            c == col && r == row && now.saturating_duration_since(at) < DOUBLE_CLICK
-        });
-        self.last = (!doubled).then_some((col, row, now));
-        doubled
-    }
-
-    /// The next press starts a new gesture: a key, a scroll, another
-    /// button, a modifier held, a press off the text.
-    pub(crate) fn end(&mut self) {
-        self.last = None;
-    }
-}
-
-/// A clock that never moves (tests): every press happens at the same instant.
-#[cfg(test)]
-pub(crate) fn frozen_clock() -> Instant {
-    static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    *AT.get_or_init(Instant::now)
-}
-
-/// A read-only press on a follow target, waiting for its release.
-#[derive(Debug)]
-struct PressedTarget {
-    /// The pressed cell, and when.
-    col: u16,
-    row: u16,
-    at: Instant,
-    /// The buffer row the target is on, and the target. The pointer stays
-    /// on the target while the caret it drags stays on this row inside a
-    /// span of this target.
-    buffer_row: usize,
-    target: FollowTarget,
-}
 
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
 pub struct EditorView {
@@ -288,13 +157,9 @@ pub struct EditorView {
     /// Losing the keyboard drops the selection. Other keys are stopped by
     /// `input_blocked`, which this sets.
     pub(crate) read_only: bool,
-    /// A read-only surface's plain press on a follow target, until the
-    /// release. A move that leaves the target's span (a drag) drops it.
-    pressed_target: Option<PressedTarget>,
-    /// A read-only surface's last click that followed: its cell and when
-    /// the last press of that run came. A press on the same cell within
-    /// [`DOUBLE_CLICK`] of it is a plain press: no word, no second follow.
-    followed: Option<(u16, u16, Instant)>,
+    /// A read-only surface's click state: the press on a follow target
+    /// that waits for its release, and the last click that followed.
+    clicks_ro: ReadOnlyClicks,
     /// A read-only surface's watch on its keyboard: once the keyboard leaves
     /// it, its selection goes ([`Self::drop_unreachable_selection`]).
     /// Subscribed at the first render, which has the window.
@@ -322,6 +187,22 @@ impl EditorView {
     /// rendering tests' editor; the app's is [`Self::on_channel`].
     #[cfg(test)]
     pub fn new(text: Option<String>, vim: bool, cx: &mut Context<Self>) -> Self {
+        let (tx, messages) = Self::drain_own_channel(cx);
+        Self::build(text, vim, tx, Some(messages), cx)
+    }
+
+    /// An editor over `text` that takes no input: a press places the caret
+    /// and may select, as in read-only text; a click on a follow target
+    /// emits [`EditorEvent::ReadOnlyFollow`] instead of following. It
+    /// drains its own app channel, as `Self::new` does.
+    pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
+        let (tx, messages) = Self::drain_own_channel(cx);
+        Self::read_only_with(text, tx, Some(messages), cx)
+    }
+
+    /// A channel of the editor's own, and the task that drains it. The task
+    /// drops each message and redraws, and stops once the editor is gone.
+    fn drain_own_channel(cx: &mut Context<Self>) -> (AppTx, Task<()>) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // tokio's channels need no tokio executor to be awaited, so GPUI's
         // foreground executor can drain this one.
@@ -336,24 +217,7 @@ impl EditorView {
                 }
             }
         });
-        Self::build(text, vim, tx, Some(messages), cx)
-    }
-
-    /// An editor over `text` that takes no input: a press places the caret
-    /// and may select, as in read-only text; a click on a follow target
-    /// emits [`EditorEvent::ReadOnlyFollow`] instead of following. It
-    /// drains its own app channel, as `Self::new` does.
-    pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let messages = cx.spawn(async move |this, cx| {
-            while let Some(message) = rx.recv().await {
-                drop(message);
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
-                }
-            }
-        });
-        Self::read_only_with(text, tx, Some(messages), cx)
+        (tx, messages)
     }
 
     /// A read-only editor reporting on `tx` (tests watch the channel).
@@ -377,13 +241,9 @@ impl EditorView {
     /// Show `text` in a read-only editor, the caret back at the start.
     pub fn set_text_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
         // A press on the old text follows nothing in the new one.
-        self.pressed_target = None;
-        self.followed = None;
+        self.clicks_ro.reset();
         self.editor.set_text(text.to_string());
-        self.ac_revision = self.editor.content_revision();
-        self.preedit = None;
-        self.painted = None;
-        self.row_cache = ShapedRows::default();
+        self.forget_frame();
         cx.notify();
     }
 
@@ -412,149 +272,6 @@ impl EditorView {
         self.tx.same_channel(tx)
     }
 
-    /// Whether the editor completes `[[` and `#` from a vault (tests).
-    #[cfg(test)]
-    pub(crate) fn completes(&self) -> bool {
-        self.autocomplete.is_some()
-    }
-
-    /// Run the double-click rule on `clock` instead of the real one (tests).
-    #[cfg(test)]
-    pub(crate) fn set_clock(&mut self, clock: fn() -> Instant) {
-        self.clock = clock;
-    }
-
-    /// Complete `[[` and `#` from `source` (`None`: no vault, so no popup).
-    /// The popup's results wake the window through the app channel.
-    pub(crate) fn set_suggestions(&mut self, source: Option<Arc<dyn SuggestionSource>>) {
-        self.autocomplete = source.map(|source| {
-            let mut engine = AutocompleteEngine::new(source, AutocompleteMode::Both);
-            engine.set_redraw_callback(redraw_callback(self.tx.clone()));
-            engine
-        });
-        self.ac_revision = self.editor.content_revision();
-    }
-
-    /// The popup's state while it has something to show.
-    pub(crate) fn autocomplete_state(&self) -> Option<&AutocompleteState> {
-        self.autocomplete
-            .as_ref()
-            .filter(|engine| engine.is_open())
-            .and_then(|engine| engine.state())
-    }
-
-    /// Reconcile the popup with the buffer after input. Text typed (the
-    /// revision moved) may open it; a cursor move only keeps it or closes it.
-    /// Only where the editor types: never in vim's command modes, never while
-    /// the find bar has the keyboard.
-    fn sync_autocomplete(&mut self) {
-        let Some(engine) = self.autocomplete.as_mut() else {
-            return;
-        };
-        let types = !self.input_blocked
-            && !self.editor.find_open()
-            && self.editor.modal_is_insert() != Some(false);
-        if !types {
-            engine.close();
-            return;
-        }
-        let revision = self.editor.content_revision();
-        if revision == self.ac_revision {
-            engine.refresh_if_open(&EditorHost(&self.editor));
-            return;
-        }
-        self.ac_revision = revision;
-        // Prose with no `[` or `#` before the caret cannot open a popup: skip
-        // the buffer scan the engine would otherwise do per keystroke.
-        let (row, col) = self.editor.cursor();
-        let line = self.editor.buffer().row(row).unwrap_or_default();
-        if !engine.may_need_sync(&line, col) {
-            return;
-        }
-        engine.sync(&EditorHost(&self.editor));
-    }
-
-    /// Drain finished queries, and drop a popup that no longer belongs: the
-    /// buffer changed without our input (another note loaded) or the editor
-    /// lost the keyboard.
-    fn tidy_autocomplete(&mut self, window: &Window) {
-        let revision = self.editor.content_revision();
-        let focused = self.focus_handle.is_focused(window);
-        if let Some(engine) = self.autocomplete.as_mut() {
-            engine.poll_results();
-            if engine.is_open() && (revision != self.ac_revision || !focused) {
-                engine.close();
-            }
-        }
-    }
-
-    /// Run `command` on the open popup. `true` when the popup took it.
-    fn run_popup_command(
-        &mut self,
-        command: PopupCommand,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.input_blocked || self.editor.find_open() {
-            return false;
-        }
-        let Some(engine) = self.autocomplete.as_mut().filter(|e| e.is_open()) else {
-            return false;
-        };
-        match engine.handle_command(command, &EditorHost(&self.editor)) {
-            HandleKeyOutcome::NotHandled => false,
-            HandleKeyOutcome::Consumed | HandleKeyOutcome::Dismissed => {
-                self.settle(window, cx);
-                true
-            }
-            HandleKeyOutcome::Accepted(action) => {
-                self.preedit = None;
-                self.editor.apply_autocomplete(&action);
-                // The edit is ours: reconciling with it would reopen the popup
-                // on the word just completed.
-                self.ac_revision = self.editor.content_revision();
-                self.settle(window, cx);
-                true
-            }
-        }
-    }
-
-    /// A press on popup row `offset` (from the top of the window): accept it.
-    pub(crate) fn autocomplete_click(
-        &mut self,
-        offset: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_popup_command(PopupCommand::ClickRow(offset), window, cx);
-    }
-
-    /// The pointer over popup row `offset`: highlight it.
-    pub(crate) fn autocomplete_hover(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if let Some(state) = self
-            .autocomplete
-            .as_mut()
-            .and_then(|engine| engine.state_mut())
-        {
-            let (start, end) = state.visible_window();
-            let idx = start + offset;
-            if idx < end && state.highlighted != idx {
-                state.highlighted = idx;
-                cx.notify();
-            }
-        }
-    }
-
-    /// A navigation `command` on the popup (the wheel over it).
-    pub(crate) fn autocomplete_command(&mut self, command: PopupCommand, cx: &mut Context<Self>) {
-        if let Some(engine) = self.autocomplete.as_mut()
-            && let Some(state) = engine.state_mut()
-        {
-            kimun_notes::logic::autocomplete::apply_command(state, command);
-            cx.notify();
-        }
-    }
-
     /// Run the vim engine (`vim`) or the plain editor from now on: a fresh,
     /// empty [`Editor`] of that kind, on the same channel. For a vault
     /// change, whose note was already let go; vim's registers go with the
@@ -569,11 +286,17 @@ impl EditorView {
         if let Some(engine) = self.autocomplete.as_mut() {
             engine.close();
         }
+        self.forget_frame();
+        cx.notify();
+    }
+
+    /// Forget what the last frames knew of the old text: the popup's
+    /// revision, the preedit, the painted grid and the cached rows.
+    fn forget_frame(&mut self) {
         self.ac_revision = self.editor.content_revision();
         self.preedit = None;
         self.painted = None;
         self.row_cache = ShapedRows::default();
-        cx.notify();
     }
 
     fn build(
@@ -604,8 +327,7 @@ impl EditorView {
             preedit: None,
             input_blocked: false,
             read_only: false,
-            pressed_target: None,
-            followed: None,
+            clicks_ro: ReadOnlyClicks::default(),
             _focus_out: None,
             painted: None,
             fonts: None,
@@ -642,726 +364,6 @@ impl EditorView {
         window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
     }
-
-    /// Whether text input (IME, multi-char text) may land in the buffer: only
-    /// where the editor types, plain mode or vim Insert. Elsewhere vim reads a
-    /// keystroke as a command, which must reach it through `handle_key`.
-    ///
-    /// An open find bar takes text in any mode: it lands in its focused field.
-    pub(crate) fn accepts_text(&self) -> bool {
-        self.editor.find_open() || self.editor.modal_is_insert() != Some(false)
-    }
-
-    /// Open the find bar, or step to the next match when it is open
-    /// (Ctrl-F, vim `/`). A composition in progress belonged to the buffer.
-    fn open_find(&mut self) {
-        if self.editor.open_find() {
-            self.preedit = None;
-        }
-    }
-
-    /// `key` as the editor's own (the find bar's while it is open), past the
-    /// keymap. True when it was consumed. The workspace uses it to hand back
-    /// a chord it does not act on (Alt+Up with nothing stacked, ADR-0050 §4).
-    pub(crate) fn editor_key(
-        &mut self,
-        key: KeyInput,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.preedit = None;
-        if self.input_blocked {
-            // A read-only surface still copies what is selected in it.
-            if self.read_only
-                && key == KeyInput::new(Key::Char('c'), keymap::Platform::current().primary())
-            {
-                self.copy_selection(cx);
-            }
-            // Taken, so it reaches nothing else either.
-            return true;
-        }
-        if self.editor.find_open() {
-            self.find_key(key, cx);
-            self.settle(window, cx);
-            return true;
-        }
-        let (handled, _) = self.editor.handle_key(key, &self.tx);
-        self.settle(window, cx);
-        handled == Handled::Consumed
-    }
-
-    /// Where a key arrives, for the keymap: the editor, running vim unless
-    /// the find bar (a plain field whatever the backend) has the keyboard.
-    /// The workspace resolves the chords the editor lets bubble in this same
-    /// context, so the two never disagree about whose a key is.
-    pub(crate) fn key_ctx(&self) -> KeyCtx {
-        let vim = self.editor.is_vim() && !self.editor.find_open();
-        KeyCtx {
-            panel: Panel::Editor,
-            vim,
-            query: false,
-            browser: false,
-            vim_pending: vim && self.editor.pending_input_hint().is_some(),
-            vim_insert: vim && self.editor.modal_is_insert() == Some(true),
-        }
-    }
-
-    /// Open the find bar (`replace`: with its replace field), or step to the
-    /// next match when open — the find and replace chords, run from the
-    /// command palette.
-    pub(crate) fn find_command(
-        &mut self,
-        replace: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.input_blocked {
-            return;
-        }
-        if replace {
-            if self.editor.open_replace() {
-                self.preedit = None;
-            }
-        } else {
-            self.open_find();
-        }
-        self.settle(window, cx);
-    }
-
-    /// Bold, italic or strikethrough on the selection (the leader's `+text`,
-    /// run from the command palette). Nothing while the editor takes no
-    /// input or its find bar has the keyboard.
-    pub(crate) fn apply_text_action(
-        &mut self,
-        action: TextAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.input_blocked || self.editor.find_open() {
-            return;
-        }
-        self.preedit = None;
-        self.editor.apply_text_action(action);
-        self.settle(window, cx);
-    }
-
-    /// Act on `key` if the keymap binds it to an app command here, whether or
-    /// not the find bar is open: find opens the bar (or steps), replace opens
-    /// it with the replace field.
-    fn app_command(&mut self, key: KeyInput, cx: &App) -> AppCommand {
-        let keymap = keymap::active(cx);
-        match keymap.resolve(key, self.key_ctx()) {
-            None => AppCommand::None,
-            // A read-only surface has no find bar: it would take every key
-            // (Esc too) and could not be closed. Not ours: the chord bubbles
-            // to the owner, as the other chords do, and never reaches the
-            // editor.
-            Some(ActionShortcuts::FindInBuffer | ActionShortcuts::ReplaceInBuffer)
-                if self.read_only =>
-            {
-                AppCommand::NotOurs
-            }
-            Some(ActionShortcuts::FindInBuffer) => {
-                self.open_find();
-                AppCommand::Handled
-            }
-            Some(ActionShortcuts::ReplaceInBuffer) => {
-                if self.editor.open_replace() {
-                    self.preedit = None;
-                }
-                AppCommand::Handled
-            }
-            Some(_) => AppCommand::NotOurs,
-        }
-    }
-
-    /// A key while the find bar is open: the bar takes it, whatever it is.
-    ///
-    /// Ctrl-V (and the platform's Cmd-V) pastes the clipboard into the
-    /// focused field: a terminal pastes through its own channel, a window has
-    /// to ask. The logic bar maps Cmd-Z/Y/Shift-Z to its undo/redo and drops
-    /// every other Super (Cmd) chord rather than typing it. Cmd-A is not
-    /// Ctrl-A there: that chord is replace-all. The bar's field keys are the
-    /// logic bar's literal chords, not keymap actions; only the app commands
-    /// go through the GUI keymap (ADR-0050 §6).
-    fn find_key(&mut self, key: KeyInput, cx: &mut Context<Self>) {
-        if Editor::is_paste_chord(key) {
-            match cx.read_from_clipboard().and_then(|item| item.text()) {
-                Some(text) if !text.is_empty() => {
-                    self.editor.paste_into_find(&text);
-                }
-                _ => {
-                    self.editor.ignore_find_key();
-                }
-            }
-        } else {
-            self.editor.handle_find_key(key);
-        }
-    }
-
-    /// The caret's shape for the editor's mode: the TUI's rule (bar in vim
-    /// Insert, block in every other vim mode). The plain editor always types,
-    /// so it gets the bar.
-    pub(crate) fn caret_shape(&self) -> CaretShape {
-        match self.editor.modal_is_insert() {
-            Some(false) => CaretShape::Block,
-            Some(true) | None => CaretShape::Bar,
-        }
-    }
-
-    /// The editor's face for `inputs` (see [`EditorFonts`]). The view keeps
-    /// its own copy for the frame-to-frame case. Behind it, one cache for the
-    /// whole app: a new editor group (a split, a restored session) reuses the
-    /// face another group chose instead of listing the machine's fonts on the
-    /// UI thread again.
-    pub(crate) fn editor_fonts(
-        &mut self,
-        inputs: &FaceInputs,
-        text_system: &TextSystem,
-        cx: &mut App,
-    ) -> EditorFonts {
-        match &self.fonts {
-            Some((key, fonts)) if key == inputs => fonts.clone(),
-            _ => {
-                let fonts = shared_faces(inputs, text_system, cx);
-                self.fonts = Some((inputs.clone(), fonts.clone()));
-                fonts
-            }
-        }
-    }
-
-    /// The mode line's content; `None` for the plain editor, which has no mode.
-    pub(crate) fn mode_line(&self) -> Option<ModeLine> {
-        self.editor.mode_label().map(|label| ModeLine {
-            label,
-            hint: self.editor.pending_input_hint(),
-        })
-    }
-
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !event.keystroke.is_modifier_key() {
-            self.clicks.end();
-        }
-        if let Some(key) = input::key_down_input(event) {
-            // A dead key or compose sequence finishes as a plain key-down
-            // (`´` preedit, then `é` as a keystroke): whatever was being
-            // composed is over once a key acts.
-            // The popup, when open, has Up/Down/Tab/Enter/Esc before anything
-            // else: they are its own, not the editor's or an app command.
-            // Except mid-composition: those keys then belong to the IME
-            // (Enter commits, Esc cancels), and an accept would drop the
-            // composed text.
-            if self.preedit.is_none()
-                && let Some(command) = key_command(key, false)
-                && self.run_popup_command(command, window, cx)
-            {
-                cx.stop_propagation();
-                return;
-            }
-            self.preedit = None;
-            match self.app_command(key, cx) {
-                AppCommand::Handled => {
-                    self.settle(window, cx);
-                    cx.stop_propagation();
-                }
-                // Bubbles to the command's owner (the workspace); the editor
-                // never sees it unless the owner hands it back.
-                AppCommand::NotOurs => {}
-                AppCommand::None => {
-                    // A consumed key must not also reach the platform's input
-                    // handler, or typed text would be inserted twice.
-                    if self.editor_key(key, window, cx) {
-                        cx.stop_propagation();
-                    }
-                }
-            }
-            return;
-        }
-        // A bare modifier is not an action at all.
-        if event.keystroke.is_modifier_key() {
-            return;
-        }
-        // Multi-char text (a grapheme cluster, an emoji sequence) propagates so
-        // the platform hands it to the input handler, where the editor types.
-        // In a vim command mode it is no command: it ends up as an unmapped
-        // key below, and must not reach the handler either.
-        let carries_text = input::carries_text(event);
-        if carries_text && self.accepts_text() {
-            return;
-        }
-        if carries_text {
-            cx.stop_propagation();
-        }
-        // A key with no editing meaning still ends the typing run (TUI parity);
-        // the open find bar owns it all the same.
-        if !self.editor.ignore_find_key() {
-            self.editor.ignore_unmapped_key();
-        }
-        self.settle(window, cx);
-    }
-
-    pub(crate) fn pointer_down(
-        &mut self,
-        event: &MouseDownEvent,
-        origin: Point<Pixels>,
-        cells: &CellMetrics,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        window.focus(&self.focus_handle, cx);
-        self.pressed_at = event.position;
-        // A press on the text (the popup's own rows never get here) dismisses
-        // the popup.
-        if let Some(engine) = self.autocomplete.as_mut() {
-            engine.close();
-        }
-        let Some(pointer) = input::pointer_down(event, origin, cells) else {
-            return;
-        };
-        // The find bar and the mode line are not text: a press on them only
-        // focuses (and, on the bar's other field, moves the keyboard there).
-        // Without either (plain mode) a press below the last full row still
-        // reaches the editor, as in M1.
-        if let Some(p) = &self.painted
-            && (p.mode_line.is_some() || p.find_bar.is_some())
-            && pointer.row >= p.rows
-        {
-            self.clicks.end();
-            if pointer.kind == PointerKind::Down(Button::Left) {
-                self.focus_bar_row(pointer.row - p.rows);
-                self.settle(window, cx);
-            }
-            return;
-        }
-        let left = pointer.kind == PointerKind::Down(Button::Left);
-        if self.read_only {
-            // Read-only text: a left press places the caret and may start a
-            // drag selection, and a double press on text selects a word. A
-            // plain press on a follow target arms a click: its release on the
-            // same target follows ([`Self::pointer_up`]), unless the pointer
-            // moved more than [`CLICK_SLOP`] pixels. A primary press on
-            // a target follows at once. Presses right after a click that
-            // followed are plain presses. Never a follow on the channel, a
-            // menu or an edit; a right press does nothing.
-            self.pressed_target = None;
-            if left {
-                let now = (self.clock)();
-                let after_follow = self.followed.is_some_and(|(col, row, at)| {
-                    (col, row) == (pointer.col, pointer.row)
-                        && now.saturating_duration_since(at) < DOUBLE_CLICK
-                });
-                self.followed = after_follow.then_some((pointer.col, pointer.row, now));
-                if after_follow {
-                    self.clicks.end();
-                    self.editor.handle_pointer(&pointer, &self.tx);
-                    self.editor.settle_pointer(true);
-                    self.dragging = true;
-                    self.settle(window, cx);
-                    return;
-                }
-                let primary = pointer.mods == keymap::Platform::current().primary();
-                let double = pointer.mods == Mods::NONE
-                    && self
-                        .clicks
-                        .completes_double(pointer.col, pointer.row, (self.clock)());
-                if pointer.mods != Mods::NONE {
-                    self.clicks.end();
-                }
-                self.editor.handle_pointer(&pointer, &self.tx);
-                self.editor.settle_pointer(true);
-                let target = self.editor.follow_target_at_cursor();
-                if primary && let Some(target) = target {
-                    self.followed = Some((pointer.col, pointer.row, now));
-                    cx.emit(EditorEvent::ReadOnlyFollow { target });
-                } else if pointer.mods == Mods::NONE && !double {
-                    let buffer_row = self.editor.buffer().cursor().0;
-                    self.pressed_target = target.map(|target| PressedTarget {
-                        col: pointer.col,
-                        row: pointer.row,
-                        at: now,
-                        buffer_row,
-                        target,
-                    });
-                }
-                if double {
-                    self.select_word_at_caret();
-                }
-                // A double press is done; any other press stays armed so the
-                // release (or a drag) reaches the editor.
-                self.dragging = !double;
-                self.settle(window, cx);
-            }
-            return;
-        }
-        // A press on a link (the hand cursor) only places the caret, as the
-        // TUI's first press does. The primary modifier (Cmd on macOS, Ctrl
-        // elsewhere, as the keymap's `primary`; Ctrl+click is a right-click on
-        // a Mac) follows in one press: place the caret, then follow what is
-        // under it. The find bar owns the pointer while open, so there it is
-        // an ordinary press.
-        if left
-            && pointer.mods == keymap::Platform::current().primary()
-            && self.editor.find_bar().is_none()
-        {
-            self.clicks.end();
-            self.editor.handle_pointer(&pointer, &self.tx);
-            self.editor.settle_pointer(true);
-            // Stay armed even when it follows: the release must still reach
-            // the editor to end the press `handle_pointer` started.
-            self.follow_at_caret();
-            self.dragging = true;
-            self.settle(window, cx);
-            return;
-        }
-        // A second plain left press on the same cell soon after follows the
-        // **follow target** the first one put the caret on (ADR-0043): the
-        // workspace does it, as for the chord. With nothing to follow there,
-        // it is an ordinary press.
-        if left && pointer.mods == Mods::NONE {
-            if self
-                .clicks
-                .completes_double(pointer.col, pointer.row, (self.clock)())
-                && self.follow_at_caret()
-            {
-                self.dragging = false;
-                self.settle(window, cx);
-                return;
-            }
-        } else {
-            self.clicks.end();
-        }
-        self.editor.handle_pointer(&pointer, &self.tx);
-        self.editor.settle_pointer(left);
-        self.dragging = left;
-        self.settle(window, cx);
-    }
-
-    /// Ask the window's owner to follow the follow target under the caret
-    /// (a link, a label). False when there is none.
-    fn follow_at_caret(&self) -> bool {
-        let message = match self.editor.follow_target_at_cursor() {
-            Some(FollowTarget::Link { target, kind }) => AppMessage::FollowLink { target, kind },
-            Some(FollowTarget::Label(name)) => AppMessage::FollowLabel(name),
-            None => return false,
-        };
-        self.tx.send(message).ok();
-        true
-    }
-
-    /// Select the word under the caret (a run of letters, digits and `_`;
-    /// on anything else, the run of that kind of char). Nothing on an empty
-    /// row.
-    fn select_word_at_caret(&mut self) {
-        let (row, col) = self.editor.buffer().cursor();
-        let line = self.editor.buffer().row(row).unwrap_or_default();
-        if let Some(cols) = word_at(&line, col) {
-            self.editor
-                .buffer_mut()
-                .set_selection((row, cols.start), (row, cols.end));
-            self.editor.sync_highlight();
-        }
-    }
-
-    /// A read-only surface without the keyboard drops its selection: the copy
-    /// chord only reaches the surface that has the keyboard, so a selection
-    /// left drawn elsewhere could not be copied. The caret stays where the
-    /// selection ended and the text is untouched. Nothing while a drag is
-    /// still selecting (its release checks again), nor in an editor that
-    /// edits.
-    fn drop_unreachable_selection(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if !self.read_only
-            || self.dragging
-            || self.focus_handle.contains_focused(window, cx)
-            || self.editor.selection().is_none()
-        {
-            return;
-        }
-        self.editor.buffer_mut().cancel_selection();
-        self.editor.sync_highlight();
-        cx.notify();
-    }
-
-    /// Put the selected text on the clipboard (a read-only surface's copy
-    /// chord). Nothing when nothing is selected.
-    fn copy_selection(&self, cx: &mut Context<Self>) {
-        if let Some(text) = self.editor.buffer().selection_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }
-    }
-
-    /// A press on find bar row `row` (0 the query, 1 the replacement) gives
-    /// that field the keyboard. The bar's own Tab is the one way it moves
-    /// focus, so the press uses it.
-    fn focus_bar_row(&mut self, row: u16) {
-        let Some(bar) = self.editor.find_bar() else {
-            return;
-        };
-        let want = match row {
-            0 => kimun_notes::logic::editor::find_bar::BarFocus::Find,
-            1 if bar.is_replacing() => kimun_notes::logic::editor::find_bar::BarFocus::Replace,
-            _ => return,
-        };
-        if bar.focus() != want {
-            self.preedit = None;
-            self.editor.handle_find_key(KeyInput::plain(Key::Tab));
-        }
-    }
-
-    pub(crate) fn pointer_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        origin: Point<Pixels>,
-        cells: &CellMetrics,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.dragging {
-            return;
-        }
-        // The release happened where we could not see it (outside the window).
-        if event.pressed_button != Some(MouseButton::Left) {
-            self.dragging = false;
-            self.pressed_target = None;
-            self.drop_unreachable_selection(window, cx);
-            return;
-        }
-        let Some(pointer) = input::pointer_move(event, origin, cells) else {
-            return;
-        };
-        self.editor.handle_pointer(&pointer, &self.tx);
-        self.editor.settle_pointer(false);
-        // Off the pressed target, or moved past the slop: a drag, not a
-        // click.
-        if !self.on_pressed_target() || self.moved_past_slop(event.position) {
-            self.pressed_target = None;
-        }
-        self.settle(window, cx);
-    }
-
-    pub(crate) fn pointer_up(
-        &mut self,
-        event: &MouseUpEvent,
-        origin: Point<Pixels>,
-        cells: &CellMetrics,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.dragging || event.button != MouseButton::Left {
-            return;
-        }
-        self.dragging = false;
-        let pressed = self.pressed_target.take();
-        if let Some(pointer) = input::pointer_up(event, origin, cells) {
-            self.editor.handle_pointer(&pointer, &self.tx);
-            self.editor.settle_pointer(false);
-            self.settle(window, cx);
-            // A read-only click: released on the target it pressed.
-            if let Some(pressed) = pressed
-                && self.caret_on(&pressed)
-            {
-                self.followed = Some((pressed.col, pressed.row, pressed.at));
-                cx.emit(EditorEvent::ReadOnlyFollow {
-                    target: pressed.target,
-                });
-            }
-        }
-        // The keyboard left during the drag: what it selected is out of reach.
-        self.drop_unreachable_selection(window, cx);
-    }
-
-    /// Whether `at` lies more than [`CLICK_SLOP`] pixels from the press.
-    fn moved_past_slop(&self, at: Point<Pixels>) -> bool {
-        let dx = f32::from(at.x - self.pressed_at.x);
-        let dy = f32::from(at.y - self.pressed_at.y);
-        dx.hypot(dy) > CLICK_SLOP
-    }
-
-    /// Whether the pointer is still on the pressed follow target (true with
-    /// none pressed).
-    fn on_pressed_target(&self) -> bool {
-        self.pressed_target
-            .as_ref()
-            .is_none_or(|pressed| self.caret_on(pressed))
-    }
-
-    /// Whether the caret, which the pointer drags, sits inside a span of
-    /// `pressed`'s target on its row: a wobble across a cell edge inside
-    /// the tag keeps it there.
-    fn caret_on(&self, pressed: &PressedTarget) -> bool {
-        self.editor.buffer().cursor().0 == pressed.buffer_row
-            && self.editor.follow_target_at_cursor().as_ref() == Some(&pressed.target)
-    }
-
-    pub(crate) fn scroll_wheel(
-        &mut self,
-        event: &ScrollEvent,
-        origin: Point<Pixels>,
-        cells: &CellMetrics,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let steps = input::pointer_scroll(event, origin, cells, &mut self.scroll);
-        if steps.is_empty() {
-            return;
-        }
-        // The same cell now shows other text.
-        self.clicks.end();
-        for step in &steps {
-            self.editor.handle_pointer(step, &self.tx);
-        }
-        self.editor.settle_pointer(false);
-        self.settle(window, cx);
-    }
-
-    /// The input handler's whole "document": the cursor row, with the preedit
-    /// spliced in at the caret. The IME only ever needs the text around the
-    /// caret, and a row-local document keeps every query O(row) instead of
-    /// O(buffer). The preedit is in the document but not in the buffer.
-    ///
-    /// While the find bar is open the document is its focused field instead.
-    fn document(&self) -> Document {
-        if let Some(bar) = self.editor.find_bar() {
-            let field = find_bar::focused_field(bar);
-            return Document::new(
-                0,
-                field.value().to_string(),
-                field.cursor_char_offset(),
-                self.preedit.as_deref(),
-            );
-        }
-        let (row, caret) = self.editor.cursor();
-        let buffer_line = self
-            .editor
-            .buffer()
-            .row(row)
-            .map(|r| r.into_owned())
-            .unwrap_or_default();
-        Document::new(row, buffer_line, caret, self.preedit.as_deref())
-    }
-
-    /// Commit `text`: over `range` of the document when given, else at the
-    /// cursor.
-    ///
-    /// Composition rule: a preedit never touches the buffer. A selection made
-    /// before composing stays as it is while composing; *cancelling* (empty
-    /// text over the preedit, or an empty preedit update) only drops the
-    /// preedit, so nothing the user selected is ever lost to an abandoned
-    /// composition; *committing* text acts exactly like typing it, replacing
-    /// that selection.
-    fn commit(&mut self, range: Option<Range<usize>>, text: &str) {
-        let doc = self.document();
-        let marked = doc.marked();
-        let had_preedit = self.preedit.take().is_some();
-        let over_preedit = had_preedit && (range.is_none() || range == marked);
-        if over_preedit && text.is_empty() {
-            return;
-        }
-        let target = range.filter(|r| Some(r) != marked.as_ref()).map(|r| {
-            (
-                doc.row,
-                doc.to_buffer(r.start)..doc.to_buffer(r.end.max(r.start)),
-            )
-        });
-        if self.editor.find_open() {
-            self.commit_to_bar(target.map(|(_, cols)| cols), text);
-        } else {
-            self.editor.commit_text(target, text);
-        }
-    }
-
-    /// Committed text into the find bar's focused field: over `cols` (chars
-    /// of the field) when given, else at its caret. The field is the logic
-    /// bar's, reached only through its key and paste API, so a range is
-    /// walked to with Left / Right, cleared with Backspace, and the text goes
-    /// in as the one key it is, or as a paste (first line only; a field is
-    /// one line).
-    fn commit_to_bar(&mut self, cols: Option<Range<usize>>, text: &str) {
-        let press = |editor: &mut Editor, key: Key, n: usize| {
-            for _ in 0..n {
-                editor.handle_find_key(KeyInput::plain(key));
-            }
-        };
-        if let Some(cols) = cols
-            && let Some(bar) = self.editor.find_bar()
-        {
-            let caret = find_bar::focused_field(bar).cursor_char_offset();
-            let len = find_bar::focused_field(bar).value().chars().count();
-            let end = cols.end.min(len);
-            let start = cols.start.min(end);
-            if caret > end {
-                press(&mut self.editor, Key::Left, caret - end);
-            } else {
-                press(&mut self.editor, Key::Right, end - caret);
-            }
-            press(&mut self.editor, Key::Backspace, end - start);
-        }
-        let mut chars = text.chars();
-        match (chars.next(), chars.next()) {
-            (None, _) => {}
-            (Some(c), None) if c.is_control() => {}
-            (Some(c), None) => {
-                self.editor.handle_find_key(KeyInput::plain(Key::Char(c)));
-            }
-            _ => {
-                self.editor.paste_into_find(text);
-            }
-        }
-    }
-}
-
-/// The cursor row as the input handler sees it (see [`EditorView::document`]).
-struct Document {
-    row: usize,
-    /// The row with the preedit spliced in at the caret.
-    line: String,
-    /// UTF-16 offset of the caret (= the preedit's start) in `line`.
-    caret: usize,
-    /// The caret's char column in the buffer row.
-    caret_col: usize,
-    /// UTF-16 length of the preedit, 0 without one.
-    preedit_len: usize,
-}
-
-impl Document {
-    fn new(row: usize, buffer_line: String, caret_col: usize, preedit: Option<&str>) -> Self {
-        let byte = buffer_line
-            .char_indices()
-            .nth(caret_col)
-            .map_or(buffer_line.len(), |(i, _)| i);
-        let preedit = preedit.unwrap_or("");
-        let mut line = buffer_line;
-        line.insert_str(byte, preedit);
-        let caret = char_to_utf16(&line, caret_col);
-        Self {
-            row,
-            line,
-            caret,
-            caret_col,
-            preedit_len: preedit.encode_utf16().count(),
-        }
-    }
-
-    /// Where the preedit sits, when there is one.
-    fn marked(&self) -> Option<Range<usize>> {
-        (self.preedit_len > 0).then(|| self.caret..self.caret + self.preedit_len)
-    }
-
-    /// A document UTF-16 offset as a buffer char column. Offsets inside the
-    /// preedit land on the caret: none of it is in the buffer.
-    fn to_buffer(&self, utf16: usize) -> usize {
-        if utf16 <= self.caret {
-            utf16_to_char(&self.line, utf16)
-        } else if utf16 >= self.caret + self.preedit_len {
-            utf16_to_char(&self.line, utf16) - self.preedit_chars()
-        } else {
-            self.caret_col
-        }
-    }
-
-    fn preedit_chars(&self) -> usize {
-        let end = utf16_to_char(&self.line, self.caret + self.preedit_len);
-        end - self.caret_col
-    }
 }
 
 impl Focusable for EditorView {
@@ -1397,362 +399,5 @@ impl Render for EditorView {
             .py_2()
             .bg(theme::background(&theme::current(cx)))
             .child(EditorElement::new(cx.entity()))
-    }
-}
-
-impl EntityInputHandler for EditorView {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        adjusted_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let line = self.document().line;
-        let (a, b) = (
-            utf16_to_char(&line, range.start),
-            utf16_to_char(&line, range.end.max(range.start)),
-        );
-        *adjusted_range = Some(char_to_utf16(&line, a)..char_to_utf16(&line, b));
-        Some(line.chars().skip(a).take(b - a).collect())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let doc = self.document();
-        // While composing the caret is drawn after the preedit.
-        if let Some(marked) = doc.marked() {
-            return Some(UTF16Selection {
-                range: marked.end..marked.end,
-                reversed: false,
-            });
-        }
-        let (row, line) = (doc.row, &doc.line);
-        let col = doc.caret_col;
-        let caret = doc.caret;
-        // A find bar field has a caret and no selection.
-        let selection = self
-            .editor
-            .selection()
-            .filter(|_| !self.editor.find_open())
-            .filter(|((sr, _), (er, _))| *sr == row && *er == row);
-        Some(match selection {
-            Some(((_, sc), (_, ec))) => UTF16Selection {
-                range: char_to_utf16(line, sc)..char_to_utf16(line, ec),
-                reversed: col == sc && sc != ec,
-            },
-            None => UTF16Selection {
-                range: caret..caret,
-                reversed: false,
-            },
-        })
-    }
-
-    /// The preedit's place in the document. It is not in the buffer, but the
-    /// platform must see it: Linux cancels a composition by deleting the
-    /// marked range, and macOS reads "composing" from its presence (so Enter
-    /// commits rather than inserting a newline).
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        self.document().marked()
-    }
-
-    /// Turns the platform's text services (IME) off outside plain mode and vim
-    /// Insert. Linux and Windows honour it each frame; the methods below gate
-    /// on the same rule for a platform that does not.
-    fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        self.accepts_text()
-    }
-
-    /// Ending composition keeps what was composed (GPUI's contract): with the
-    /// preedit outside the buffer, that means committing it now.
-    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.preedit.take() {
-            if self.accepts_text() && !self.input_blocked {
-                self.commit(None, &text);
-            }
-            self.settle(window, cx);
-        }
-    }
-
-    /// Committed text. Outside plain mode and vim Insert it is not typing: a
-    /// single char the platform composed (a dead-key `é`, say) goes to vim as
-    /// the keystroke it is, so `r` then `é` still replaces; anything longer
-    /// is dropped.
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.input_blocked {
-            self.preedit = None;
-        } else if self.accepts_text() {
-            self.commit(range, text);
-        } else {
-            self.preedit = None;
-            let mut chars = text.chars();
-            if let (Some(c), None) = (chars.next(), chars.next()) {
-                self.editor
-                    .handle_key(KeyInput::plain(Key::Char(c)), &self.tx);
-            }
-        }
-        self.settle(window, cx);
-    }
-
-    /// A new or updated preedit. An active selection is left alone (see the
-    /// composition rule on `commit`). A `range` other than the current preedit
-    /// is buffer text the platform explicitly hands to the composition (macOS
-    /// reconversion): it is removed and the preedit starts where it was.
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // No composing where the editor does not type.
-        if self.input_blocked || !self.accepts_text() {
-            self.preedit = None;
-            self.settle(window, cx);
-            return;
-        }
-        let doc = self.document();
-        if let Some(r) = range.filter(|r| Some(r) != doc.marked().as_ref()) {
-            let cols = doc.to_buffer(r.start)..doc.to_buffer(r.end.max(r.start));
-            // The preedit is not in the field/buffer: drop it before editing.
-            self.preedit = None;
-            if self.editor.find_open() {
-                self.commit_to_bar(Some(cols), "");
-            } else {
-                self.editor.commit_text(Some((doc.row, cols)), "");
-            }
-        }
-        self.preedit = (!new_text.is_empty()).then(|| new_text.to_string());
-        self.settle(window, cx);
-    }
-
-    /// Where the IME should put its candidate window: the caret cell (the
-    /// find bar's while it is open).
-    fn bounds_for_range(
-        &mut self,
-        _range_utf16: Range<usize>,
-        _element_bounds: Bounds<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        self.painted.as_ref().and_then(|p| p.caret)
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _point: Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
-    }
-}
-
-/// The char columns of the word at char column `col` of `line`: the run of
-/// word chars (letters, digits, `_`) there, else the run of whitespace or of
-/// other chars. A column past the end counts as the last char. `None` on an
-/// empty line.
-fn word_at(line: &str, col: usize) -> Option<Range<usize>> {
-    let chars: Vec<char> = line.chars().collect();
-    let at = col.min(chars.len().checked_sub(1)?);
-    let class = |c: char| {
-        if c.is_alphanumeric() || c == '_' {
-            0
-        } else if c.is_whitespace() {
-            1
-        } else {
-            2
-        }
-    };
-    let kind = class(chars[at]);
-    let start = chars[..at]
-        .iter()
-        .rposition(|&c| class(c) != kind)
-        .map_or(0, |i| i + 1);
-    let end = chars[at..]
-        .iter()
-        .position(|&c| class(c) != kind)
-        .map_or(chars.len(), |i| at + i);
-    Some(start..end)
-}
-
-/// The char index `utf16` code units into `s`, clamped to its end. An offset
-/// inside a surrogate pair rounds down to the char that starts it.
-fn utf16_to_char(s: &str, utf16: usize) -> usize {
-    let mut units = 0;
-    for (i, c) in s.chars().enumerate() {
-        let next = units + c.len_utf16();
-        if next > utf16 {
-            return i;
-        }
-        units = next;
-    }
-    s.chars().count()
-}
-
-/// UTF-16 code units in the first `chars` chars of `s`, clamped to its end.
-fn char_to_utf16(s: &str, chars: usize) -> usize {
-    s.chars().take(chars).map(char::len_utf16).sum()
-}
-
-/// How many faces the app-wide cache keeps. A live font preview in
-/// Preferences makes a new key per family tried: the oldest go first.
-const SHARED_FACES: usize = 8;
-
-/// The faces chosen so far, by inputs. One per app, shared by every editor
-/// group.
-#[derive(Default)]
-struct FaceCache(Vec<(FaceInputs, EditorFonts)>);
-
-impl gpui_kit::Global for FaceCache {}
-
-/// The face for `inputs`, probing the machine's fonts only the first time
-/// the app sees them (listing fonts is slow on macOS).
-fn shared_faces(inputs: &FaceInputs, text_system: &TextSystem, cx: &mut App) -> EditorFonts {
-    if let Some(cache) = cx.try_global::<FaceCache>()
-        && let Some((_, fonts)) = cache.0.iter().find(|(key, _)| key == inputs)
-    {
-        return fonts.clone();
-    }
-    let fonts = EditorFonts::resolve(text_system, &inputs.kit_family, inputs.preferred.as_ref());
-    let cache = cx.default_global::<FaceCache>();
-    if cache.0.len() >= SHARED_FACES {
-        cache.0.remove(0);
-    }
-    cache.0.push((inputs.clone(), fonts.clone()));
-    fonts
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui_kit::SharedString;
-
-    fn at(millis: u64) -> Instant {
-        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(millis)
-    }
-
-    #[test]
-    fn two_quick_presses_on_one_cell_are_a_double_and_end_the_run() {
-        let mut run = ClickRun::default();
-        assert!(!run.completes_double(4, 2, at(0)), "one press is not");
-        assert!(run.completes_double(4, 2, at(399)));
-        // A third press starts over rather than pairing with the second.
-        assert!(!run.completes_double(4, 2, at(450)));
-    }
-
-    #[test]
-    fn a_slow_pair_or_another_cell_is_no_double() {
-        let mut run = ClickRun::default();
-        assert!(!run.completes_double(4, 2, at(0)));
-        assert!(
-            !run.completes_double(4, 2, at(400)),
-            "the window is exclusive"
-        );
-        assert!(!run.completes_double(5, 2, at(500)), "a neighbour cell");
-        assert!(!run.completes_double(5, 3, at(600)), "another row");
-        assert!(run.completes_double(5, 3, at(700)));
-    }
-
-    #[test]
-    fn ending_the_run_forgets_the_first_press() {
-        let mut run = ClickRun::default();
-        assert!(!run.completes_double(1, 1, at(0)));
-        run.end();
-        assert!(!run.completes_double(1, 1, at(100)));
-    }
-
-    /// Degraded: the headless GPUI text system has no fonts, so every
-    /// family resolves to the same fallback and the chosen family cannot
-    /// tell the calls apart. What is pinned is the cache key: a new
-    /// `preferred` with the same kit family must miss the cache and be
-    /// stored, so a key on the kit family alone fails here.
-    #[gpui_kit::test]
-    fn a_new_preferred_family_is_a_new_face_cache_key(cx: &mut gpui_kit::TestAppContext) {
-        use gpui_kit::AppContext as _;
-        let text_system = cx.text_system().clone();
-        let view = cx.new(|cx| EditorView::new(None, false, cx));
-        let inputs = |preferred: Option<&str>| FaceInputs {
-            kit_family: "Kit Mono".into(),
-            preferred: preferred.map(SharedString::from),
-        };
-        let key = |view: &EditorView| view.fonts.as_ref().map(|(key, _)| key.clone());
-        view.update(cx, |view, cx| {
-            for preferred in [Some("Alpha Mono"), Some("Beta Mono"), None] {
-                view.editor_fonts(&inputs(preferred), &text_system, cx);
-                assert_eq!(key(view), Some(inputs(preferred)));
-            }
-        });
-    }
-
-    /// A second editor group asks for the face the first one chose: the app
-    /// holds one entry for the pair, and the cache stays within its bound
-    /// however many families are tried.
-    #[gpui_kit::test]
-    fn editor_groups_share_one_face_cache(cx: &mut gpui_kit::TestAppContext) {
-        use gpui_kit::AppContext as _;
-        let text_system = cx.text_system().clone();
-        let first = cx.new(|cx| EditorView::new(None, false, cx));
-        let second = cx.new(|cx| EditorView::new(None, false, cx));
-        let inputs = |preferred: Option<String>| FaceInputs {
-            kit_family: "Kit Mono".into(),
-            preferred: preferred.map(SharedString::from),
-        };
-        let entries = |cx: &mut gpui_kit::TestAppContext| {
-            cx.update(|cx| cx.try_global::<FaceCache>().map_or(0, |c| c.0.len()))
-        };
-        for view in [&first, &second] {
-            view.update(cx, |view, cx| {
-                view.editor_fonts(&inputs(None), &text_system, cx);
-            });
-        }
-        assert_eq!(entries(cx), 1, "two groups, one entry");
-        first.update(cx, |view, cx| {
-            for n in 0..(SHARED_FACES * 2) {
-                view.editor_fonts(&inputs(Some(format!("Mono {n}"))), &text_system, cx);
-            }
-        });
-        assert_eq!(entries(cx), SHARED_FACES, "the cache keeps its bound");
-    }
-
-    #[test]
-    fn a_word_is_a_run_of_one_kind_of_char() {
-        assert_eq!(word_at("a #idea b", 4), Some(3..7));
-        assert_eq!(word_at("a #idea b", 2), Some(2..3), "the `#` alone");
-        assert_eq!(word_at("a  b", 1), Some(1..3), "the spaces");
-        assert_eq!(word_at("snake_case.rs", 3), Some(0..10));
-        assert_eq!(word_at("été ok", 1), Some(0..3));
-        assert_eq!(word_at("end", 9), Some(0..3), "past the end: the last word");
-        assert_eq!(word_at("", 0), None);
-    }
-
-    #[test]
-    fn utf16_offsets_round_trip_through_chars() {
-        // 'a' (1 unit), 'é' (1), '😀' (2), 'b' (1).
-        let s = "aé😀b";
-        assert_eq!(char_to_utf16(s, 0), 0);
-        assert_eq!(char_to_utf16(s, 3), 4);
-        assert_eq!(char_to_utf16(s, 99), 5);
-        assert_eq!(utf16_to_char(s, 4), 3);
-        assert_eq!(utf16_to_char(s, 2), 2);
-        // Inside the surrogate pair: the emoji's own index.
-        assert_eq!(utf16_to_char(s, 3), 2);
-        assert_eq!(utf16_to_char(s, 99), 4);
     }
 }

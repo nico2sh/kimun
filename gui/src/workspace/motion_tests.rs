@@ -1417,3 +1417,146 @@ fn try_presence_is_none_for_a_key_never_sampled(cx: &mut TestAppContext) {
     rig.frame(cx, vec![spec(key, true, Speed::Quick, Enter::AtRest)]);
     assert!(rig.motion.borrow().try_presence(key).is_some());
 }
+
+// ---- The height a widget follows: one measured value, at Quick speed.
+
+use super::motion::HeightFollow;
+
+/// A view that samples one height in its render, toward the target the test
+/// sets.
+struct FollowProbe {
+    follow: Rc<RefCell<HeightFollow>>,
+    target: Rc<Cell<f32>>,
+    out: Rc<Cell<f32>>,
+}
+
+impl Render for FollowProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let value = self
+            .follow
+            .borrow_mut()
+            .sample(self.target.get(), window, cx);
+        self.out.set(value);
+        div()
+    }
+}
+
+struct FollowRig {
+    handle: AnyWindowHandle,
+    follow: Rc<RefCell<HeightFollow>>,
+    target: Rc<Cell<f32>>,
+    out: Rc<Cell<f32>>,
+}
+
+impl FollowRig {
+    /// A rig whose window draws its first frame toward `first`.
+    fn new(cx: &mut TestAppContext, first: f32) -> FollowRig {
+        let follow = Rc::new(RefCell::new(HeightFollow::new()));
+        let target = Rc::new(Cell::new(first));
+        let out = Rc::new(Cell::new(f32::NAN));
+        let probe = FollowProbe {
+            follow: follow.clone(),
+            target: target.clone(),
+            out: out.clone(),
+        };
+        let (handle, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| probe))
+            })
+            .expect("open the probe window");
+        FollowRig {
+            handle,
+            follow,
+            target,
+            out,
+        }
+    }
+
+    /// Draw one frame toward `target`: the height it sampled.
+    fn frame(&self, cx: &mut TestAppContext, target: f32) -> f32 {
+        self.target.set(target);
+        cx.update_window(self.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        self.out.get()
+    }
+
+    fn moving(&self) -> bool {
+        self.follow.borrow().moving()
+    }
+}
+
+#[gpui_kit::test]
+fn follow_adopts_the_first_target(cx: &mut TestAppContext) {
+    let rig = FollowRig::new(cx, 80.0);
+    assert_eq!(rig.out.get(), 80.0, "the first frame draws the target");
+    assert_eq!(rig.frame(cx, 80.0), 80.0);
+    assert!(!rig.moving(), "the first target is adopted with no motion");
+}
+
+#[gpui_kit::test]
+fn follow_eases_to_a_new_target_over_the_quick_duration(cx: &mut TestAppContext) {
+    let rig = FollowRig::new(cx, 100.0);
+    rig.frame(cx, 100.0);
+    assert_eq!(rig.frame(cx, 200.0), 100.0, "a new target starts from here");
+    assert!(rig.moving());
+    wait(cx, 60);
+    let middle = rig.frame(cx, 200.0);
+    // Ease-out: past the straight line at half the time.
+    assert!(middle > 150.0 && middle < 200.0, "after 60 ms: {middle}");
+    assert!(rig.moving());
+    wait(cx, 60);
+    assert_eq!(rig.frame(cx, 200.0), 200.0, "done after 120 ms");
+    assert!(!rig.moving());
+}
+
+#[gpui_kit::test]
+fn follow_retargets_from_the_sampled_value(cx: &mut TestAppContext) {
+    let rig = FollowRig::new(cx, 0.0);
+    rig.frame(cx, 0.0);
+    rig.frame(cx, 100.0);
+    wait(cx, 60);
+    let reached = rig.frame(cx, 100.0);
+    assert!(reached > 0.0 && reached < 100.0, "after 60 ms: {reached}");
+    // A new target goes on from the value on screen: no jump, no queue.
+    let turned = rig.frame(cx, 300.0);
+    assert!(
+        (turned - reached).abs() < 1e-3,
+        "retarget from {reached}: {turned}"
+    );
+    wait(cx, 60);
+    let on = rig.frame(cx, 300.0);
+    assert!(on > reached && on < 300.0, "on its way to 300: {on}");
+    wait(cx, 60);
+    assert_eq!(
+        rig.frame(cx, 300.0),
+        300.0,
+        "one motion after the last target"
+    );
+    assert!(!rig.moving());
+}
+
+#[gpui_kit::test]
+fn follow_snaps_under_reduced_motion(cx: &mut TestAppContext) {
+    let rig = FollowRig::new(cx, 100.0);
+    rig.frame(cx, 100.0);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    assert_eq!(rig.frame(cx, 200.0), 200.0);
+    assert!(!rig.moving());
+}
+
+#[gpui_kit::test]
+fn snap_ends_a_motion_at_once(cx: &mut TestAppContext) {
+    let rig = FollowRig::new(cx, 100.0);
+    rig.frame(cx, 100.0);
+    rig.frame(cx, 200.0);
+    wait(cx, 30);
+    rig.frame(cx, 200.0);
+    assert!(rig.moving());
+    rig.follow.borrow_mut().snap(50.0);
+    assert!(!rig.moving(), "a snap ends the motion");
+    assert_eq!(rig.frame(cx, 50.0), 50.0, "it rests where it snapped");
+    assert!(!rig.moving());
+    // A later target moves from the snapped height.
+    assert_eq!(rig.frame(cx, 150.0), 50.0);
+    assert!(rig.moving());
+}
