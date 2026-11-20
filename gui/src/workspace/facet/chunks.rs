@@ -25,9 +25,6 @@ impl FacetView {
         {
             self.plans_run += 1;
         }
-        // A plan can change the picks, the summary and the counts: the bar
-        // eases to its new height.
-        self.bar_motion.mark();
         let (old_plans, old_refs) = self.members.plan(self.limit);
         let len = self.members.len();
         self.chunks.truncate(len);
@@ -63,6 +60,10 @@ impl FacetView {
             }
         }
         self.close_list_if_gone(cx);
+        // A plan can change the picks, the summary and the counts. The bar
+        // eases to its new height only when what it draws changed.
+        let shape = self.bar_shape();
+        self.bar_motion.mark_if_shape_changed(shape);
         cx.notify();
     }
 

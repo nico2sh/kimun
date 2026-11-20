@@ -14,12 +14,12 @@ use kimun_core::nfs::VaultPath;
 use kimun_core::note::Facet;
 
 use super::facet::{
-    CLEAR_ID, FACET_BAR_ID, FacetView, HINT_FRAME_ID, ListKind, MORE_LIST_ID, UNDO_ID, menu_id,
-    more_item_id, pill_id, row_tick_id,
+    CLEAR_ID, FACET_BAR_ID, FacetView, ListKind, MORE_LIST_ID, UNDO_ID, menu_id, more_item_id,
+    pill_id, row_tick_id,
 };
 use super::facet_motion_tests::{
-    TWO_TAGS, animated, bar_frame, column_top, drawn_bar, found, frame, long, long_note, moving,
-    natural, rest, toggle, wait,
+    TWO_TAGS, animated, bar_frame, column_top, drawn_bar, found, frame, hint_frame, long,
+    long_note, moving, natural, rest, toggle, wait,
 };
 use super::facet_tests::{
     click, field_focused, focus_view, has_focus, key, next_frame, open_animated, open_with, picks,
@@ -33,7 +33,7 @@ fn heights(cx: &mut VisualTestContext) -> Vec<f32> {
     for _ in 0..20 {
         frame(cx);
         drawn.push(drawn_bar(cx));
-        if !moving(cx) && found(cx, HINT_FRAME_ID).is_none() {
+        if !moving(cx) && hint_frame(cx).is_none() {
             return drawn;
         }
         wait(cx, 20);
@@ -220,7 +220,7 @@ fn the_bar_and_the_hint_move_the_column_one_way_on_the_first_pick(cx: &mut TestA
     for _ in 0..20 {
         frame(cx);
         tops.push(column_top(cx));
-        if !moving(cx) && found(cx, HINT_FRAME_ID).is_none() {
+        if !moving(cx) && hint_frame(cx).is_none() {
             break;
         }
         wait(cx, 20);

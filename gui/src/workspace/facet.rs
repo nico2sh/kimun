@@ -70,7 +70,7 @@ use std::cell::RefCell;
 
 use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Rems, ScrollHandle, Subscription};
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{Facet, MAX_RANGES};
+use kimun_core::note::{Facet, FacetKind, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
 use kimun_notes::logic::facet_bar::FacetBar;
 
@@ -85,20 +85,22 @@ use crate::editor_view::EditorView;
 mod bar_motion;
 mod chunks;
 mod collection;
+mod collection_text;
 mod ids;
 mod keys;
 mod line;
+#[cfg(test)]
+mod list_kind_tests;
 mod members;
 mod more;
 mod render;
 #[cfg(test)]
 mod test_seams;
+mod timed;
+#[cfg(test)]
+mod timed_tests;
 mod undo;
 
-#[cfg(test)]
-pub(crate) use self::collection::{
-    dateline_folder_id, dateline_id, dateline_meta_id, dateline_rule_id, dateline_title_id,
-};
 pub(crate) use self::ids::*;
 #[cfg(test)]
 pub(crate) use self::line::LIST_CAP;
@@ -133,6 +135,42 @@ pub(crate) enum ListKind {
     Sections,
     /// Every facet, by kind: the search chip and `/`.
     All,
+}
+
+impl ListKind {
+    /// The kind lists in chip order. Row 1 draws their chips in this order.
+    pub(crate) fn chip_order() -> [ListKind; 3] {
+        [ListKind::Tags, ListKind::Links, ListKind::Sections]
+    }
+
+    /// The name of the list. The chip, the list and the group label of
+    /// the all-kinds list use it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            ListKind::Tags => "Tags",
+            ListKind::Links => "Links",
+            ListKind::Sections => "Sections",
+            ListKind::All => "Find",
+        }
+    }
+
+    /// The facet kinds the list holds. The all-kinds list holds every kind.
+    pub(crate) fn facet_kinds(self) -> &'static [FacetKind] {
+        match self {
+            ListKind::Tags => &[FacetKind::Tag],
+            ListKind::Links => &[FacetKind::NoteLink],
+            ListKind::Sections => &[FacetKind::Heading],
+            ListKind::All => &[FacetKind::Tag, FacetKind::NoteLink, FacetKind::Heading],
+        }
+    }
+
+    /// The kind list that holds facets of `kind`.
+    pub(crate) fn of(kind: FacetKind) -> ListKind {
+        Self::chip_order()
+            .into_iter()
+            .find(|list| list.facet_kinds().contains(&kind))
+            .expect("every facet kind has a chip list")
+    }
 }
 
 const HINT_TEXT: &str = "Pick a tag, link or section to narrow this note. \

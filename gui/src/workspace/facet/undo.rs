@@ -11,6 +11,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::keys::Stop;
 use super::render::muted_note;
+use super::timed::Timed;
 use super::{CLEARED_ID, FacetEvent, FacetView, UNDO_ID};
 use crate::workspace::facet_ui::chip;
 
@@ -26,9 +27,9 @@ pub(super) struct Undo {
     /// The cleared pick sets, oldest first. Ctrl+Z brings back the last one.
     sets: Vec<Vec<Facet>>,
     /// While it runs, the summary row says `Picks cleared` and offers
-    /// `Undo`. It ends after [`UNDO_SHOWN`]; a pick, an unpick or an undo
-    /// drops it sooner.
-    shown: Option<gpui_kit::Task<()>>,
+    /// `Undo`. It ends after [`UNDO_SHOWN`]. A pick, an unpick or an undo
+    /// ends it sooner.
+    shown: Timed,
 }
 
 impl Undo {
@@ -54,17 +55,27 @@ impl Undo {
     /// Whether the summary row offers `Undo`: the timer runs and a set is
     /// on the stack.
     pub(super) fn offered(&self) -> bool {
-        self.shown.is_some() && !self.sets.is_empty()
+        self.shown.is_active() && !self.sets.is_empty()
     }
 
-    /// Offer `Undo` while `task` runs.
-    pub(super) fn show(&mut self, task: gpui_kit::Task<()>) {
-        self.shown = Some(task);
+    /// Offer `Undo` for [`UNDO_SHOWN`]. Then `expire` runs on the view.
+    pub(super) fn offer(
+        &mut self,
+        cx: &mut Context<FacetView>,
+        expire: impl FnOnce(&mut FacetView, &mut Context<FacetView>) + 'static,
+    ) {
+        self.shown.start(UNDO_SHOWN, cx, expire);
     }
 
-    /// Stop the offer of `Undo`.
+    /// Whether the timer of the offer runs (tests).
+    #[cfg(test)]
+    pub(super) fn timer_active(&self) -> bool {
+        self.shown.is_active()
+    }
+
+    /// Stop the offer of `Undo` and its timer.
     pub(super) fn hide(&mut self) {
-        self.shown = None;
+        self.shown.cancel();
     }
 }
 
@@ -78,16 +89,14 @@ impl FacetView {
         self.undo.push(self.bar.picks().to_vec());
         self.bar.clear();
         self.end_refresh_report();
-        self.undo.show(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(UNDO_SHOWN).await;
-            this.update(cx, |this, cx| {
-                this.undo.hide();
-                // `Picks cleared` leaves the bar.
-                this.bar_motion.mark();
-                cx.notify();
-            })
-            .ok();
-        }));
+        self.undo.offer(cx, |this, _| {
+            this.undo.hide();
+            // `Picks cleared` leaves the bar. The direct mark moves it.
+            // The kept shape follows, so the next plan sees no change.
+            this.bar_motion.mark();
+            let shape = this.bar_shape();
+            this.bar_motion.mark_if_shape_changed(shape);
+        });
         self.select(cx);
         cx.emit(FacetEvent::PicksChanged);
     }

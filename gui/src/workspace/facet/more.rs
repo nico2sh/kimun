@@ -7,7 +7,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     App, AppContext as _, Context, Entity, Focusable as _, ScrollHandle, Subscription, Window, px,
 };
-use kimun_core::note::{Facet, FacetKind};
+use kimun_core::note::Facet;
 
 use super::keys::Stop;
 use super::{FacetView, ListKind, line};
@@ -41,29 +41,19 @@ impl FacetView {
     /// open while this holds.
     pub(super) fn list_holds(&self, kind: ListKind) -> bool {
         let entries = &self.members.merged.entries;
-        let of = |k: FacetKind| entries.iter().any(|e| e.facet.kind == k);
-        match kind {
-            ListKind::Tags => of(FacetKind::Tag),
-            ListKind::Links => of(FacetKind::NoteLink),
-            ListKind::Sections => of(FacetKind::Heading),
-            ListKind::All => !entries.is_empty(),
-        }
+        entries
+            .iter()
+            .any(|e| kind.facet_kinds().contains(&e.facet.kind))
     }
 
     /// Whether `kind`'s list has anything to pick: an unpicked facet in
     /// its scope (its kind, or any kind for [`ListKind::All`]). Ticked rows
     /// do not count: a list opens only while this holds.
     pub(super) fn list_drawable(&self, kind: ListKind) -> bool {
-        let any = self
+        let counts = self
             .bar
-            .menus(&self.members.merged, &|f| self.members.in_view_of(f))
-            .any;
-        match kind {
-            ListKind::Tags => any.tags,
-            ListKind::Links => any.links,
-            ListKind::Sections => any.sections,
-            ListKind::All => any.tags || any.links || any.sections,
-        }
+            .menus(&self.members.merged, &|f| self.members.in_view_of(f));
+        line::list_counts(counts, kind).1
     }
 
     pub(super) fn list_open(&self, kind: ListKind) -> bool {
@@ -131,7 +121,7 @@ impl FacetView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_open = self.more.as_ref().is_some_and(|more| more.kind == kind);
+        let is_open = self.list_open(kind);
         if open && !is_open {
             self.open_list(kind, window, cx);
         } else if !open && is_open {
