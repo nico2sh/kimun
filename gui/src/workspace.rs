@@ -3350,7 +3350,13 @@ impl Workspace {
         };
         if let Some(facet) = &state.facet {
             let room = lone.then(|| gpui_kit::rems(group_header::CORNER_ROOM_REMS));
-            facet.update(cx, |view, cx| view.set_corner_room(room, cx));
+            // A collection's line says `Loading...` while a load for the
+            // group runs (a refresh, or a newer open).
+            let loading = state.facet_loading.is_some();
+            facet.update(cx, |view, cx| {
+                view.set_corner_room(room, cx);
+                view.set_loading(loading, cx);
+            });
         }
         let shown = state.view().filter(|_| self.empty.is_none());
         let empty = match &shown {
@@ -3896,9 +3902,13 @@ mod collection_tests;
 #[cfg(test)]
 mod drop_tests;
 #[cfg(test)]
+mod facet_chrome_tests;
+#[cfg(test)]
 mod facet_line_tests;
 #[cfg(test)]
 mod facet_tests;
+#[cfg(test)]
+mod facet_undo_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]

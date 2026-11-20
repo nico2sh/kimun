@@ -209,7 +209,7 @@ impl Workspace {
             return;
         }
         match event {
-            FacetEvent::OpenSource { note, .. } => self.open_note_in_new_tab(note.clone(), cx),
+            FacetEvent::OpenNote { note, line } => self.open_note_at(note.clone(), *line, cx),
             FacetEvent::Follow {
                 from,
                 target: FollowTarget::Link { target, kind },

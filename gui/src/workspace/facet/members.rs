@@ -16,12 +16,13 @@
 //! reveal never crosses a note boundary. For one member, gap `g` lies
 //! before chunk `g`, and the last gap follows the last chunk.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{
-    ChunkPlan, Facet, NoteDetails, NoteFacets, NotePlan, Reveal, merge_entries, note_facets,
-    plan_collection, reveal, reveal_gap, select_collection,
+    ChunkPlan, Facet, NoteDetails, NoteFacets, NotePlan, Reveal, in_view_counts, merge_entries,
+    note_facets, plan_collection, reveal, reveal_gap, select_collection,
 };
 
 /// A note handed to a collection view: where it is, its title and its text.
@@ -119,6 +120,12 @@ pub(crate) struct Members {
     pub(super) list: Vec<Member>,
     /// Every member's entries merged, for the filter bar. No blocks.
     pub(super) merged: NoteFacets,
+    /// Per facet, the pieces it gives in the view under `picks`, summed
+    /// over members (core's `in_view_counts`). The filter bar reads it.
+    /// Rebuilt on each select and each change to the members.
+    pub(super) in_view: HashMap<Facet, usize>,
+    /// The picks of the last select, to recount after a member change.
+    picks: Vec<Facet>,
     /// One plan per member with a drawn chunk, in list order.
     plans: Vec<NotePlan>,
     /// Per drawn chunk, where it lives.
@@ -137,6 +144,8 @@ impl Members {
                 blocks: Vec::new(),
                 entries: Vec::new(),
             },
+            in_view: HashMap::new(),
+            picks: Vec::new(),
             plans: Vec::new(),
             refs: Vec::new(),
             gaps: Vec::new(),
@@ -211,19 +220,29 @@ impl Members {
         self.list.iter().filter(|m| !m.shown.is_empty()).count()
     }
 
-    /// Merge every member's entries again (a member's facets changed).
+    /// Merge every member's entries again (a member's facets changed), and
+    /// recount under the last picks.
     pub(crate) fn merge(&mut self) {
         let notes: Vec<&NoteFacets> = self.list.iter().map(|m| &m.facets).collect();
         self.merged.entries = merge_entries(&notes);
+        self.in_view = in_view_counts(&notes, &self.picks);
     }
 
-    /// Show what `picks` select in each member, nothing revealed.
+    /// Show what `picks` select in each member, nothing revealed, and count
+    /// each facet in view under them.
     pub(crate) fn select(&mut self, picks: &[Facet]) {
         let notes: Vec<&NoteFacets> = self.list.iter().map(|m| &m.facets).collect();
         let shown = select_collection(&notes, picks);
+        self.in_view = in_view_counts(&notes, picks);
+        self.picks = picks.to_vec();
         for (member, shown) in self.list.iter_mut().zip(shown) {
             member.shown = shown;
         }
+    }
+
+    /// The count function of the filter bar: a lookup in [`Self::in_view`].
+    pub(crate) fn in_view_of(&self, facet: &Facet) -> usize {
+        self.in_view.get(facet).copied().unwrap_or(0)
     }
 
     /// Plan every member's `shown` under one cap of `limit` chunks, and
@@ -427,6 +446,71 @@ mod tests {
         m.reveal_gap(3);
         assert_eq!(m.list[0].shown, [1..2]);
         assert_eq!(m.list[1].shown, [0..2]);
+    }
+
+    fn link(key: &str) -> Facet {
+        Facet::new(FacetKind::NoteLink, key)
+    }
+
+    #[test]
+    fn select_recounts_the_links_in_view() {
+        let mut m = members(&["#a [[x]]\n\n#b [[y]] [[z]]\n", "#a [[y]]\n"]);
+        m.select(&[]);
+        assert_eq!(m.in_view.get(&link("y")), Some(&2));
+        m.select(&[tag("a")]);
+        assert_eq!(m.in_view.get(&link("x")), Some(&1));
+        assert_eq!(m.in_view.get(&link("y")), Some(&1));
+        assert_eq!(m.in_view.get(&link("z")), Some(&0));
+    }
+
+    #[test]
+    fn a_text_change_recounts_before_the_next_select() {
+        let mut m = members(&["#a [[x]]\n"]);
+        m.select(&[tag("a")]);
+        m.set_text(0, "#a [[x]]\n\n#a [[x]]\n\n[[y]]\n".into());
+        assert_eq!(m.in_view.get(&link("x")), Some(&2));
+        assert_eq!(m.in_view.get(&link("y")), Some(&0));
+    }
+
+    #[test]
+    fn removing_a_member_recounts_without_a_select() {
+        let mut m = members(&["#a [[x]]\n", "#a [[x]]\n"]);
+        m.select(&[tag("a")]);
+        assert_eq!(m.in_view.get(&link("x")), Some(&2));
+        m.remove_paths(&[VaultPath::new("/n1.md")]);
+        assert_eq!(m.in_view.get(&link("x")), Some(&1));
+        m.set_path(0, VaultPath::new("/sub/n0.md"));
+        assert_eq!(m.in_view.get(&link("x")), Some(&1));
+    }
+
+    /// Timing, run by hand: 500 notes, 5000 tags, 10 picks. The counts are
+    /// built once in `select`, and each read is one map lookup.
+    #[test]
+    #[ignore = "timing, run by hand"]
+    fn timing_of_the_cached_counts() {
+        let texts: Vec<String> = (0..500)
+            .map(|n| {
+                let tags: String = (0..10).map(|t| format!("#t{n}x{t} ")).collect();
+                format!("# Day\n\n#p{} {tags}[[l{}]]\n\nplain\n", n % 10, n % 50)
+            })
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let mut m = members(&refs);
+        let picks: Vec<Facet> = (0..10).map(|i| tag(&format!("p{i}"))).collect();
+        let start = std::time::Instant::now();
+        m.select(&picks);
+        let built = start.elapsed();
+        let facets: Vec<Facet> = m.merged.entries.iter().map(|e| e.facet.clone()).collect();
+        assert!(facets.len() > 5000);
+        let start = std::time::Instant::now();
+        let sum: usize = facets.iter().map(|f| m.in_view_of(f)).sum();
+        let read = start.elapsed();
+        assert!(sum > 0);
+        eprintln!(
+            "{} facets: select with counts {built:?}, all reads {read:?} ({:?} per read)",
+            facets.len(),
+            read / facets.len() as u32
+        );
     }
 
     #[test]
