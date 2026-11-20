@@ -60,11 +60,6 @@ impl FacetView {
         self.undo.sets()
     }
 
-    /// The rows each chunk was sized for by the last render (tests).
-    pub(crate) fn sized_rows(&self) -> &[usize] {
-        &self.sized_rows
-    }
-
     /// The chip the last frame drew open, in the selected style (tests).
     pub(crate) fn chip_drawn_open(&self) -> Option<ListKind> {
         self.open_chip.get()
@@ -78,11 +73,6 @@ impl FacetView {
     /// How many times the chunks were planned (tests).
     pub(crate) fn plans_run(&self) -> usize {
         self.plans_run
-    }
-
-    /// Whether the last paint asked for a correcting frame (tests).
-    pub(crate) fn resize_asked(&self) -> bool {
-        self.frame_asked
     }
 
     /// How many measuring frames the bar drew (tests).

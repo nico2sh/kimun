@@ -15,6 +15,7 @@ use super::facet::{
     menu_id, more_item_id, outline_mark_id, pill_count_id, pill_id, remove_mark_id, row_count_id,
     row_tick_id,
 };
+use super::facet_size_tests::assert_no_correction;
 use super::facet_tests::{
     bounds, click, field_focused, focus_view, has_focus, heading, key, label, list_open,
     next_frame, open, picks, picks_changed, query, settle, shows, tab_to, tag, view_focused,
@@ -879,10 +880,7 @@ fn drawing_5000_facets_asks_for_no_correcting_frame_for_the_bar(cx: &mut TestApp
     click(cx, menu_id(ListKind::Tags));
     assert_eq!(results(&view, cx).len(), super::facet::LIST_CAP);
     cx.update(|window, cx| window.render_frame(cx));
-    assert!(
-        !view.read_with(cx, |view, _| view.resize_asked()),
-        "an open list asks for no correcting frame"
-    );
+    assert_no_correction(&view, cx, "an open list");
 }
 
 #[gpui_kit::test]

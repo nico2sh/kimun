@@ -150,8 +150,25 @@ pub(super) fn chunk_texts(view: &Entity<FacetView>, cx: &mut VisualTestContext) 
     })
 }
 
-fn chunk(view: &Entity<FacetView>, i: usize, cx: &mut VisualTestContext) -> Entity<EditorView> {
+pub(super) fn chunk(
+    view: &Entity<FacetView>,
+    i: usize,
+    cx: &mut VisualTestContext,
+) -> Entity<EditorView> {
     view.read_with(cx, |view, _| view.chunks()[i].clone())
+}
+
+/// The visual rows of each piece's layout now, in order.
+pub(super) fn piece_rows(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<usize> {
+    view.read_with(cx, |view, cx| {
+        view.chunks()
+            .iter()
+            .map(|chunk| {
+                let layout = &chunk.read(cx).editor.session().display.layout;
+                layout.visual_line_count()
+            })
+            .collect()
+    })
 }
 
 /// Window position of cell (`col`, `row`) in chunk `i`'s last frame.
@@ -293,49 +310,8 @@ fn a_wrapped_paragraph_shows_every_visual_row(cx: &mut TestAppContext) {
     );
 }
 
-/// A large chunk is laid out unwrapped first and wrapped on a background
-/// task: the chunk grows again when that layout lands.
-#[gpui_kit::test]
-fn a_large_chunk_grows_when_its_background_layout_lands(cx: &mut TestAppContext) {
-    let rt = super::start_tests::runtime();
-    let _guard = rt.enter();
-    let long: String = (0..60).map(|i| format!("word{i} ")).collect();
-    let rest: String = (0..1200).map(|i| format!("l{i}\n")).collect();
-    let text = format!("{long}\n{rest}");
-    let (view, cx, _events, _sub) = open(cx, &text, vec![]);
-    cx.simulate_resize(gpui_kit::size(px(260.), px(800.)));
-    let chunk = chunk(&view, 0, cx);
-    let visual = |cx: &mut VisualTestContext| {
-        cx.update(|_, cx| {
-            chunk
-                .read(cx)
-                .editor
-                .session()
-                .display
-                .layout
-                .visual_line_count()
-        })
-    };
-    let written = text.split('\n').count();
-    for _ in 0..100 {
-        cx.update(|window, cx| window.render_frame(cx));
-        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
-        cx.run_until_parked();
-        if visual(cx) > written {
-            break;
-        }
-    }
-    let visual = visual(cx);
-    assert!(
-        visual > written,
-        "the background layout wrapped the paragraph"
-    );
-    cx.update(|window, cx| window.render_frame(cx));
-    let rows = cx.update(|_, cx| chunk.read(cx).painted.clone().unwrap().rows);
-    assert!(usize::from(rows) >= visual, "{rows} grid rows for {visual}");
-}
-
-/// Draw until the view settles: every chunk sized to its rows.
+/// Draw a few frames and run what each asks for next, until the view
+/// rests.
 pub(super) fn settle(cx: &mut VisualTestContext) {
     for _ in 0..3 {
         cx.update(|window, cx| window.render_frame(cx));
@@ -349,64 +325,6 @@ pub(super) fn next_frame(cx: &mut VisualTestContext) -> usize {
     let ran = cx.update(|window, cx| window.simulate_next_frame(cx));
     cx.run_until_parked();
     ran
-}
-
-/// A frame that finds a chunk sized for other rows than its editor laid
-/// out asks for exactly one more frame (a notify while painting draws
-/// nothing); a frame with stable rows asks for none.
-#[gpui_kit::test]
-fn a_frame_that_changes_the_rows_asks_for_one_more_and_then_settles(cx: &mut TestAppContext) {
-    let long: String = (0..60).map(|i| format!("word{i} ")).collect();
-    let text = format!("{long}\n\nnext #a\n");
-    let (view, cx, _events, _sub) = open(cx, &text, vec![]);
-    cx.update(|window, cx| window.render_frame(cx));
-    next_frame(cx);
-    cx.update(|window, cx| window.render_frame(cx));
-    assert_eq!(next_frame(cx), 0, "a stable frame asks for nothing");
-
-    cx.simulate_resize(gpui_kit::size(px(260.), px(1200.)));
-    cx.update(|window, cx| window.render_frame(cx));
-    assert_eq!(next_frame(cx), 1, "the wrap changed: one more frame");
-    cx.update(|window, cx| window.render_frame(cx));
-    assert_eq!(next_frame(cx), 0, "settled");
-    let chunk = chunk(&view, 0, cx);
-    let (visual, rows) = cx.update(|_, cx| {
-        let editor = chunk.read(cx);
-        (
-            editor.editor.session().display.layout.visual_line_count(),
-            editor.painted.clone().unwrap().rows,
-        )
-    });
-    assert!(
-        visual > 4 && usize::from(rows) >= visual,
-        "{rows} rows for {visual}"
-    );
-}
-
-/// New text in a reused editor with as many rows as written as the old:
-/// until the editor lays it out, the chunk is sized by the new text, never
-/// by the old text's wrapped rows.
-#[gpui_kit::test]
-fn a_swapped_text_is_not_sized_by_the_old_layout(cx: &mut TestAppContext) {
-    let long: String = (0..60).map(|i| format!("word{i} ")).collect();
-    let (view, cx, _events, _sub) = open(cx, &format!("#a {long}\n\nother\n"), vec![tag("a")]);
-    cx.simulate_resize(gpui_kit::size(px(260.), px(1200.)));
-    for _ in 0..3 {
-        cx.update(|window, cx| window.render_frame(cx));
-        next_frame(cx);
-    }
-    assert!(
-        view.read_with(cx, |view, _| view.sized_rows()[0]) > 4,
-        "the old text wraps"
-    );
-    // In one update, so no frame lays the new text out in between.
-    let rows = cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            view.set_text("#a short\n\nother\n".to_string(), cx);
-            view.rows_of(0, cx)
-        })
-    });
-    assert_eq!(rows, 1);
 }
 
 #[gpui_kit::test]
@@ -1278,22 +1196,15 @@ fn the_list_opens_over_the_content_without_moving_it(cx: &mut TestAppContext) {
     settle(cx);
     let bar = bounds(cx, FACET_BAR_ID);
     let first = bounds(cx, chunk_id(0));
-    let rows = view.read_with(cx, |view, _| view.sized_rows().to_vec());
+    let rows = piece_rows(&view, cx);
     click(cx, menu_id(ListKind::Tags));
     assert!(list_open(&view, cx));
     assert!(shows(cx, MORE_LIST_ID));
     assert_eq!(bounds(cx, FACET_BAR_ID), bar, "the bar did not grow");
     assert_eq!(bounds(cx, chunk_id(0)), first, "the content did not move");
-    assert_eq!(
-        view.read_with(cx, |view, _| view.sized_rows().to_vec()),
-        rows,
-        "no piece was sized again"
-    );
+    assert_eq!(piece_rows(&view, cx), rows, "no piece was laid out again");
     cx.update(|window, cx| window.render_frame(cx));
-    assert!(
-        !view.read_with(cx, |view, _| view.resize_asked()),
-        "no resize frame was asked for"
-    );
+    super::facet_size_tests::assert_no_correction(&view, cx, "the open list");
     let chip = bounds(cx, menu_id(ListKind::Tags));
     let list = bounds(cx, MORE_LIST_ID);
     assert!(

@@ -24,7 +24,7 @@
 //! The column holds the shown chunks with a gap row between them, then
 //! `Show N more` with `100 of 340 pieces shown` beside it when more chunks
 //! match than the view draws. Each chunk is
-//! a read-only [`EditorView`] sized to its lines, with no frame, under a
+//! a read-only [`EditorView`] sized to its wrapped text, measured in the frame that draws it, with no frame, under a
 //! slim row: the headings that contain it as clickable crumbs, outer ones
 //! shortened first with an ellipsis when the row is narrow, and `Open
 //! note`. A gap row counts the hidden blocks (`3 blocks hidden`) and
@@ -190,15 +190,6 @@ pub struct FacetView {
     /// One read-only editor per drawn chunk, reused in place.
     chunks: Vec<Entity<EditorView>>,
     _chunk_events: Vec<Subscription>,
-    /// The visual row count each chunk was last sized for ([`Self::rows_of`]).
-    /// A frame that paints other counts draws the view again.
-    sized_rows: Vec<usize>,
-    /// Per chunk: its editor has been painted since it got its text, so its
-    /// layout describes that text. A new or swapped text is not laid out
-    /// until the next frame's prepaint.
-    laid_out: Vec<bool>,
-    /// A correcting frame is asked for and has not run yet.
-    frame_asked: bool,
     more: Option<More>,
     focus: FocusHandle,
     pub(crate) scroll: ScrollHandle,
@@ -266,9 +257,6 @@ impl FacetView {
             limit: MAX_RANGES,
             chunks: Vec::new(),
             _chunk_events: Vec::new(),
-            sized_rows: Vec::new(),
-            laid_out: Vec::new(),
-            frame_asked: false,
             more: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),

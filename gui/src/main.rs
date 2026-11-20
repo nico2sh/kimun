@@ -36,6 +36,10 @@ mod grid;
 mod identity_tests;
 mod input;
 mod keymap;
+#[cfg(test)]
+mod measure_guard_tests;
+#[cfg(test)]
+mod measure_tests;
 mod mono_families;
 mod motion;
 mod row_cache;

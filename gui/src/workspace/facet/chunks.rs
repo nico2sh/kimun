@@ -1,9 +1,10 @@
-//! Chunk planning and sizing of the facet view.
+//! Chunk planning of the facet view.
 //!
-//! It owns which chunks show, the read-only editor of each chunk, and the
-//! extra frame after paint. It does not draw.
+//! It owns which chunks show and the read-only editor of each chunk. It
+//! does not draw. Each editor measures its own height (module
+//! `editor_view::measure`), so nothing here sizes a chunk.
 
-use gpui_kit::{App, AppContext as _, Context, IntoElement, Styled as _, WeakEntity, canvas};
+use gpui_kit::{AppContext as _, Context};
 use kimun_core::note::Reveal;
 
 use super::FacetView;
@@ -29,7 +30,6 @@ impl FacetView {
         let len = self.members.len();
         self.chunks.truncate(len);
         self._chunk_events.truncate(len);
-        self.laid_out.truncate(len);
         for i in 0..len {
             let plan = self
                 .members
@@ -40,7 +40,6 @@ impl FacetView {
                     let old = chunk_plan(&old_plans, &old_refs, i);
                     if old.is_none_or(|old| old.text != plan.text) {
                         editor.update(cx, |editor, cx| editor.set_text_read_only(&plan.text, cx));
-                        self.laid_out[i] = false;
                     }
                 }
                 None => {
@@ -55,7 +54,6 @@ impl FacetView {
                     });
                     self.chunks.push(editor);
                     self._chunk_events.push(events);
-                    self.laid_out.push(false);
                 }
             }
         }
@@ -105,72 +103,4 @@ impl FacetView {
         let (drawn, cut) = (self.members.len(), self.members.cut);
         (cut > 0).then(|| format!("{drawn} of {} pieces shown", drawn + cut))
     }
-
-    /// The visual rows chunk `i`'s editor lays its text out in: soft-wrapped
-    /// at the width it was last drawn at. Until the editor has laid out its
-    /// current text (a new chunk, new text), its rows as written: the layout
-    /// still describes the old text, even when that had as many rows.
-    pub(crate) fn rows_of(&self, i: usize, cx: &App) -> usize {
-        let written = self
-            .members
-            .chunk(i)
-            .map_or(1, |plan| plan.text.split('\n').count());
-        let layout = &self.chunks[i].read(cx).editor.session().display.layout;
-        if self.laid_out.get(i) == Some(&true) && layout.row_count() == written {
-            layout.visual_line_count().max(1)
-        } else {
-            written.max(1)
-        }
-    }
-
-    /// Whether a chunk's editor now lays out in other rows than its chunk
-    /// was sized for (a resize, a new layout, the background layout of a
-    /// large chunk landing).
-    pub(super) fn rows_changed(&self, cx: &App) -> bool {
-        self.sized_rows.len() != self.members.len()
-            || (0..self.members.len()).any(|i| self.rows_of(i, cx) != self.sized_rows[i])
-    }
-
-    /// After a paint (the editors laid out in its prepaint): every chunk's
-    /// layout is current. True when a chunk was sized for other rows and no
-    /// correcting frame is asked for yet; the caller asks for one.
-    pub(super) fn painted(&mut self, cx: &App) -> bool {
-        self.laid_out.iter_mut().for_each(|done| *done = true);
-        if self.frame_asked || !self.rows_changed(cx) {
-            return false;
-        }
-        self.frame_asked = true;
-        true
-    }
-}
-
-/// Painted after the chunks, whose editors lay out in prepaint. When an
-/// editor's visual rows differ from what its chunk was sized for, it asks
-/// for one more frame ([`gpui_kit::Window::on_next_frame`]) that notifies
-/// the view: a notify made while painting marks nothing dirty and draws no
-/// frame. A frame with every chunk sized right asks for nothing, so it
-/// settles after one correcting frame.
-pub(super) fn resize_check(view: WeakEntity<FacetView>) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |_, _, window, cx| {
-            let Some(entity) = view.upgrade() else {
-                return;
-            };
-            if !entity.update(cx, |this, cx| this.painted(cx)) {
-                return;
-            }
-            let view = view.clone();
-            window.on_next_frame(move |_, cx| {
-                if let Some(entity) = view.upgrade() {
-                    entity.update(cx, |this, cx| {
-                        this.frame_asked = false;
-                        cx.notify();
-                    });
-                }
-            });
-        },
-    )
-    .absolute()
-    .size_0()
 }

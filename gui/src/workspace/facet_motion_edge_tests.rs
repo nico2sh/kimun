@@ -21,9 +21,9 @@ use super::facet_motion_tests::{
     TWO_TAGS, animated, bar_frame, column_top, drawn_bar, found, frame, hint_frame, long,
     long_note, moving, natural, rest, toggle, wait,
 };
+use super::facet_size_tests::assert_no_correction;
 use super::facet_tests::{
-    click, field_focused, focus_view, has_focus, key, next_frame, open_animated, open_with, picks,
-    settle, tag,
+    click, field_focused, focus_view, has_focus, key, open_animated, open_with, picks, settle, tag,
 };
 
 /// The drawn bar height of each frame, one frame every 20 ms, from the
@@ -198,17 +198,13 @@ fn no_correcting_frame_is_asked_while_the_bar_grows(cx: &mut TestAppContext) {
     click(cx, CLEAR_ID);
     rest(cx, 20);
     click(cx, UNDO_ID);
-    // The undo's own new chunks may ask for one correcting frame.
-    frame(cx);
-    next_frame(cx);
-    frame(cx);
-    next_frame(cx);
-    for _ in 0..5 {
+    // The undo's new chunks are sized in their first frame.
+    assert_no_correction(&view, cx, "the undo's frame");
+    for step in 0..5 {
         wait(cx, 20);
         frame(cx);
         assert!(moving(cx), "the bar grows");
-        let asked = view.read_with(cx, |view, _| view.resize_asked());
-        assert!(!asked, "a growing bar asks for no correcting frame");
+        assert_no_correction(&view, cx, &format!("growing frame {step}"));
     }
 }
 
