@@ -65,10 +65,14 @@ pub(crate) const CORNER_REFRESH_ID: &str = "group-refresh-corner";
 pub(crate) const REFRESH_LABEL: &str = "Refresh results";
 /// The floating note-menu button of a lone group (no header).
 pub(crate) const CORNER_MENU_ID: &str = "group-menu-corner";
+/// The box around a lone group's note-menu button that dims it until the
+/// pointer comes near. The facet and Refresh buttons sit outside it.
+pub(crate) const CORNER_DIM_ID: &str = "group-menu-corner-dim";
 /// The hover group of a lone group's document: the corner button lights up
 /// while the pointer is anywhere over it.
 pub(crate) const LONE_GROUP_HOVER: &str = "lone-group";
-/// The corner button's opacity until the group or the button is hovered.
+/// The note-menu corner button's opacity until the group or the button is
+/// hovered.
 pub(crate) const CORNER_DIM_OPACITY: f32 = 0.35;
 /// The room, in rems, a lone group's facet view keeps clear at its bar's
 /// right end for the corner buttons: their inset from the document's right
@@ -123,9 +127,10 @@ pub(crate) fn facet_hover_fills(pressed: bool) -> bool {
     !pressed
 }
 
-/// The corner buttons' opacity while neither the group nor they are hovered:
-/// dim, except for a facet group, whose pressed button stays at full opacity
-/// so the pressed look shows at rest.
+/// The note-menu corner button's opacity while neither the group nor it is
+/// hovered: dim, except in a facet group, where it stays at full opacity
+/// beside the pressed facet button. The facet and Refresh buttons are never
+/// dimmed: in a lone pane they are the one visible way in.
 pub(crate) fn corner_idle_opacity(facet: bool) -> f32 {
     if facet { 1.0 } else { CORNER_DIM_OPACITY }
 }
@@ -205,7 +210,11 @@ impl Workspace {
             .when(facet_hover_fills(facet), |el| {
                 el.hover(move |style| style.bg(hover))
             })
-            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+            .tooltip(move |window, cx| {
+                let tip =
+                    super::chrome::tooltip_with_chord(label, &ActionShortcuts::ToggleFacetView, cx);
+                Tooltip::new(tip).build(window, cx)
+            })
             .child(Icon::new(super::chrome::FACET_ICON).size_3())
             .on_mouse_down(gpui_kit::MouseButton::Left, super::chrome::stop_press)
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -233,10 +242,12 @@ impl Workspace {
         self.facet_button(facet_id, group, cx)
     }
 
-    /// The floating corner button of a lone group: top-right of its
-    /// document, dim until the group or the button is hovered, drawn over
-    /// the document so it reserves no space. The find bar docks at the
-    /// bottom of the editor, so the two never meet.
+    /// The floating corner buttons of a lone group: top-right of its
+    /// document, drawn over the document so they reserve no space. The facet
+    /// (or Refresh) button draws at its normal muted look. The note-menu
+    /// button is dim until the group or the button is hovered
+    /// ([`corner_idle_opacity`]). The find bar docks at the bottom of the
+    /// editor, so the two never meet.
     pub(super) fn render_corner_menu_button(
         &self,
         group: GroupId,
@@ -248,18 +259,22 @@ impl Workspace {
             .top_1()
             // Clear of a scrollbar down the document's right edge.
             .right_4()
-            // Pressed: a single-note facet view (a collection's Refresh
-            // is no toggle).
-            .opacity(corner_idle_opacity(
-                self.facet_source_in(group, cx).is_some(),
-            ))
-            .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
-            .hover(|s| s.opacity(corner_opacity(true)))
             .flex()
             .flex_row()
             .items_center()
             .children(self.facet_or_refresh(CORNER_FACET_ID, CORNER_REFRESH_ID, group, cx))
-            .child(self.menu_button(CORNER_MENU_ID, group, cx))
+            .child(
+                div()
+                    .id(CORNER_DIM_ID)
+                    // Full in a single-note facet view, beside the pressed
+                    // facet button (a collection's Refresh is no toggle).
+                    .opacity(corner_idle_opacity(
+                        self.facet_source_in(group, cx).is_some(),
+                    ))
+                    .group_hover(LONE_GROUP_HOVER, |s| s.opacity(corner_opacity(true)))
+                    .hover(|s| s.opacity(corner_opacity(true)))
+                    .child(self.menu_button(CORNER_MENU_ID, group, cx)),
+            )
             .into_any_element()
     }
 

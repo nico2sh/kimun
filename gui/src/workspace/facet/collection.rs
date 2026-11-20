@@ -15,17 +15,34 @@
 //! count reads as the note's own; the note above keeps its last gap above
 //! the dateline. Every dateline but the column's first row has 24 px above
 //! it. A piece's breadcrumb row holds only its heading crumbs and `Open
-//! source`. A member's first and last gap are its own: between two notes a
+//! note`. A member's first and last gap are its own: between two notes a
 //! gap row of each may stand next to each other.
+//! The title is drawn at the pieces' size, semibold, in the text colour.
 //! With no member the view says "No notes match this query." with a
-//! `Refresh` button. When the query hit the loader's cap, a muted line under
-//! the bar says how many notes it matched.
+//! `Refresh` button.
+//!
+//! **The collection line.** One muted line under the bar, always there in
+//! a collection and never in a single-note view; a screen reader hears it
+//! as a status. It holds the note numbers: `23 notes` with no picks, `12
+//! pieces in 5 of 23 notes` with picks. Then, joined by ` · `, `showing 100
+//! of 340` when the cap cuts the column, `first 500 of 600` when the query
+//! hit the loader's cap, and the list's age, `list from 10:42` (the local
+//! time its load completed, 24-hour). While a load runs it says
+//! `Loading...` over the old content. For a few seconds after a refresh it
+//! says what changed: `Refreshed: 2 notes added, 1 removed`, or
+//! `Refreshed: no changes`, and ` · 1 pick dropped` when the new list
+//! dropped picks. A pick, an unpick, a clear or an undo ends that report
+//! at once.
 
+use std::time::Duration;
+
+use chrono::NaiveTime;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, App, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Task, div, px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, MAX_RANGES};
@@ -34,9 +51,9 @@ use kimun_notes::settings::themes::Theme;
 
 use super::keys::Stop;
 use super::members::{GapRef, MemberInit, Members};
-use super::{FIRST_NOTES_ID, FacetEvent, FacetView, REFRESH_ID};
-use crate::theme;
+use super::{COLLECTION_LINE_ID, FacetEvent, FacetView, REFRESH_ID};
 use crate::workspace::facet_ui::text_button;
+use crate::{editor_font, theme};
 
 /// The dateline of member `member` (its index in the member list).
 pub(crate) fn dateline_id(member: usize) -> SharedString {
@@ -98,8 +115,56 @@ pub(crate) fn dateline_meta(path: &VaultPath, pieces: usize) -> String {
 /// How much faster a dateline's folder shrinks than its title.
 const META_FOLDER_SHRINK: f32 = 1000.;
 
-/// The size of a dateline's title, in pixels.
-const DATELINE_TITLE_PX: f32 = 13.0;
+/// The size of a dateline's title: the size the pieces under it are drawn
+/// at (the editor's font size), never smaller. The title stays quiet by the
+/// room around it, not by its size.
+pub(crate) fn dateline_title_size(cx: &App) -> Pixels {
+    editor_font::font_size(cx)
+}
+
+/// How long the collection line reports a refresh.
+const REFRESH_SHOWN: Duration = Duration::from_secs(6);
+
+/// What tells a collection the local time a load completed.
+pub(crate) type Clock = fn() -> NaiveTime;
+
+/// The local wall-clock time.
+fn local_now() -> NaiveTime {
+    chrono::Local::now().time()
+}
+
+/// `1 note`, `2 notes`.
+fn note_count(notes: usize) -> String {
+    match notes {
+        1 => "1 note".into(),
+        n => format!("{n} notes"),
+    }
+}
+
+/// What the collection line says for a while after a refresh: the notes
+/// `added` and `removed` against the list before, and the picks `dropped`
+/// because no note holds them any more. The first count names the notes.
+pub(crate) fn refresh_text(added: usize, removed: usize, dropped: usize) -> String {
+    let mut changes = Vec::new();
+    if added > 0 {
+        changes.push(format!("{} added", note_count(added)));
+    }
+    if removed > 0 {
+        changes.push(match changes.is_empty() {
+            true => format!("{} removed", note_count(removed)),
+            false => format!("{removed} removed"),
+        });
+    }
+    let mut text = match changes.is_empty() {
+        true => "Refreshed: no changes".to_string(),
+        false => format!("Refreshed: {}", changes.join(", ")),
+    };
+    if dropped > 0 {
+        let picks = if dropped == 1 { "pick" } else { "picks" };
+        text.push_str(&format!(" \u{b7} {dropped} {picks} dropped"));
+    }
+    text
+}
 
 /// What a collection view keeps beyond its members.
 pub(super) struct Collection {
@@ -108,15 +173,26 @@ pub(super) struct Collection {
     /// How many notes the query matched, before the loader's cap.
     total: usize,
     /// The last load hit the loader's cap ([`COLLECTION_NOTE_CAP`]): the
-    /// "first N of M" line shows only then. A note that could not be read
+    /// line says "first N of M" only then. A note that could not be read
     /// also makes `total` exceed the members, but is no cap.
     capped: bool,
+    /// The local time the last load completed (the view opened, or a
+    /// refresh landed).
+    loaded_at: NaiveTime,
+    /// Where `loaded_at` comes from: the local time, or a test's clock.
+    clock: Clock,
+    /// A load for the view is under way: the line says `Loading...`.
+    loading: bool,
+    /// What the line says just after a refresh, and the timer that ends it
+    /// after [`REFRESH_SHOWN`]. A new load or refresh drops it.
+    refreshed: Option<(String, Task<()>)>,
 }
 
 impl FacetView {
     /// A collection view of `members` (list order kept), the resolved
-    /// `query`, the `total` hits (for the "first 500 of N" line) and the
-    /// picks (pruned against the merged set).
+    /// `query`, the `total` hits (for "first 500 of N") and the picks
+    /// (pruned against the merged set). The list's age is the local time
+    /// now: the view opens when its load completes.
     pub fn new_collection(
         query: String,
         members: Vec<MemberInit>,
@@ -124,12 +200,59 @@ impl FacetView {
         picks: Vec<Facet>,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_collection_at(query, members, total, picks, local_now, cx)
+    }
+
+    /// [`Self::new_collection`] with the times taken from `clock`.
+    pub(crate) fn new_collection_at(
+        query: String,
+        members: Vec<MemberInit>,
+        total: usize,
+        picks: Vec<Facet>,
+        clock: Clock,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let collection = Collection {
             query,
             total,
             capped: total > COLLECTION_NOTE_CAP,
+            loaded_at: clock(),
+            clock,
+            loading: false,
+            refreshed: None,
         };
         Self::build(Members::from_inits(members), Some(collection), picks, cx)
+    }
+
+    /// Whether a load for the view is under way. While one is, the
+    /// collection line says `Loading...` over the old content. A new load
+    /// ends the report of the last refresh. Nothing for a single-note view.
+    pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        let Some(collection) = &mut self.collection else {
+            return;
+        };
+        if collection.loading == loading {
+            return;
+        }
+        collection.loading = loading;
+        if loading {
+            collection.refreshed = None;
+        }
+        cx.notify();
+    }
+
+    /// End the report of the last refresh: a pick, an unpick, a clear or
+    /// an undo changes what the collection line has to say.
+    pub(super) fn end_refresh_report(&mut self) {
+        if let Some(collection) = &mut self.collection {
+            collection.refreshed = None;
+        }
+    }
+
+    /// Whether the line says `Loading...` now (tests).
+    #[cfg(test)]
+    pub(crate) fn is_loading(&self) -> bool {
+        self.collection.as_ref().is_some_and(|c| c.loading)
     }
 
     /// The resolved query of a collection; `None` for a single-note view.
@@ -142,7 +265,9 @@ impl FacetView {
     }
 
     /// Replace the member list (a manual refresh): prune picks, reset
-    /// reveals and the `Show more` cap. Nothing for a single-note view.
+    /// reveals and the `Show more` cap. The list's age is now. For
+    /// [`REFRESH_SHOWN`] the collection line reports the notes added and
+    /// removed and the picks dropped. Nothing for a single-note view.
     pub fn replace_members(
         &mut self,
         members: Vec<MemberInit>,
@@ -154,9 +279,37 @@ impl FacetView {
         };
         collection.total = total;
         collection.capped = total > COLLECTION_NOTE_CAP;
-        self.members = Members::from_inits(members);
+        collection.loaded_at = (collection.clock)();
+        let old = std::mem::replace(&mut self.members, Members::from_inits(members));
+        let added = self
+            .members
+            .list
+            .iter()
+            .filter(|m| old.position(&m.path).is_none())
+            .count();
+        let removed = old
+            .list
+            .iter()
+            .filter(|m| self.members.position(&m.path).is_none())
+            .count();
+        let picks_before = self.bar.picks().len();
         self.limit = MAX_RANGES;
         self.members_changed(cx);
+        let dropped = picks_before - self.bar.picks().len();
+        let text = refresh_text(added, removed, dropped);
+        let timer = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REFRESH_SHOWN).await;
+            this.update(cx, |this, cx| {
+                if let Some(collection) = &mut this.collection {
+                    collection.refreshed = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        if let Some(collection) = &mut self.collection {
+            collection.refreshed = Some((text, timer));
+        }
     }
 
     /// A member's new text (a save or reload): only that member
@@ -247,6 +400,7 @@ impl FacetView {
         &self,
         gap: GapRef,
         spaced: bool,
+        title_size: Pixels,
         t: &Theme,
     ) -> Option<AnyElement> {
         self.collection.as_ref()?;
@@ -271,9 +425,9 @@ impl FacetView {
                         // A shrunk title keeps a letter and its ellipsis.
                         .min_w_8()
                         .truncate()
-                        .text_size(px(DATELINE_TITLE_PX))
+                        .text_size(title_size)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::bright(t))
+                        .text_color(theme::foreground(t))
                         .child(title)
                         .test_support(),
                 )
@@ -351,21 +505,50 @@ impl FacetView {
         Some(self.button(Stop::Refresh, el, t, cx).into_any_element())
     }
 
-    /// "Showing the first N of M notes", muted, under the bar: when the
-    /// last load hit the loader's cap and the query matched more notes than
-    /// the view holds.
-    pub(super) fn render_first_notes(&self, t: &Theme) -> Option<Div> {
+    /// What the collection line says (see the module docs); `None` for a
+    /// single-note view.
+    pub(super) fn collection_line(&self) -> Option<String> {
         let collection = self.collection.as_ref()?;
-        let total = collection.total;
-        let held = self.members.list.len();
-        if !collection.capped || total <= held {
-            return None;
+        if collection.loading {
+            return Some("Loading...".into());
         }
-        let text = SharedString::from(format!("Showing the first {held} of {total} notes"));
+        if let Some((text, _)) = &collection.refreshed {
+            return Some(text.clone());
+        }
+        let held = self.members.list.len();
+        let drawn = self.members.len();
+        let cut = self.members.cut;
+        let mut parts = Vec::new();
+        parts.push(match self.bar.picks().is_empty() {
+            true => note_count(held),
+            false => format!(
+                "{} in {} of {}",
+                piece_count(drawn + cut),
+                self.members.notes_shown(),
+                note_count(held)
+            ),
+        });
+        if cut > 0 {
+            parts.push(format!("showing {drawn} of {}", drawn + cut));
+        }
+        if collection.capped && collection.total > held {
+            parts.push(format!("first {held} of {}", collection.total));
+        }
+        parts.push(format!(
+            "list from {}",
+            collection.loaded_at.format("%H:%M")
+        ));
+        Some(parts.join(" \u{b7} "))
+    }
+
+    /// The collection line, muted, under the bar: always in a collection,
+    /// never in a single-note view. A screen reader hears it as a status.
+    pub(super) fn render_collection_line(&self, t: &Theme) -> Option<Div> {
+        let text = SharedString::from(self.collection_line()?);
         Some(
             div().flex_none().px_4().pt_2().child(
                 div()
-                    .id(FIRST_NOTES_ID)
+                    .id(COLLECTION_LINE_ID)
                     .role(Role::Status)
                     .aria_label(text.clone())
                     .text_xs()

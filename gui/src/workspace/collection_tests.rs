@@ -10,10 +10,10 @@ use kimun_core::note::{Facet, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
 
 use super::facet::{
-    COLUMN_ID, EMPTY_ID, FIRST_NOTES_ID, FacetEvent, FacetView, ListKind, MemberInit, REFRESH_ID,
-    REMOVE_LAST_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id, dateline_folder_id, dateline_id,
-    dateline_meta_id, dateline_rule_id, dateline_title_id, gap_count_id, gap_down_id, gap_up_id,
-    menu_id, more_item_id, open_id, show_all_id,
+    COLLECTION_LINE_ID, COLUMN_ID, EMPTY_ID, FacetEvent, FacetView, ListKind, MemberInit,
+    REFRESH_ID, REMOVE_LAST_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id, crumb_id, dateline_folder_id,
+    dateline_id, dateline_meta_id, dateline_rule_id, dateline_title_id, gap_count_id, gap_down_id,
+    gap_up_id, menu_id, more_item_id, open_id, show_all_id,
 };
 use super::facet_tests::{
     Events, bounds, cell, chunk_texts, click, focus_view, has_focus, heading, key, label, open,
@@ -46,8 +46,25 @@ fn open_collection<'a>(
         .map(|(path, title, text)| member(path, title, text))
         .collect();
     open_with(cx, move |cx| {
-        FacetView::new_collection("#q".into(), members, total, picks, cx)
+        FacetView::new_collection_at("#q".into(), members, total, picks, ten_forty_two, cx)
     })
+}
+
+/// The test clock: the collection line's age reads `10:42`.
+fn ten_forty_two() -> chrono::NaiveTime {
+    chrono::NaiveTime::from_hms_opt(10, 42, 0).unwrap()
+}
+
+/// What the collection line says.
+fn line(cx: &mut VisualTestContext) -> Option<String> {
+    label(cx, COLLECTION_LINE_ID)
+}
+
+/// Let the report of a refresh run out (6 seconds).
+fn refresh_report_ends(cx: &mut VisualTestContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(6));
+    cx.run_until_parked();
 }
 
 const A: &str = "/a/alpha.md";
@@ -113,12 +130,12 @@ fn a_single_note_view_is_no_collection(cx: &mut TestAppContext) {
         assert_eq!(view.query(), None);
         assert_eq!(view.member_paths(), [p("/notes/n.md")]);
     });
-    assert!(!shows(cx, FIRST_NOTES_ID));
+    assert!(!shows(cx, COLLECTION_LINE_ID));
 }
 
 /// Supersedes slice 3's `every_piece_shows_its_notes_title_in_its_breadcrumb_row`:
 /// the note's title moved to its dateline, so a breadcrumb row holds only
-/// the heading crumbs and `Open source`.
+/// the heading crumbs and `Open note`.
 #[gpui_kit::test]
 fn breadcrumbs_no_longer_start_with_the_note_title(cx: &mut TestAppContext) {
     let alpha = "# Day\n\n#x a1\n\nfar\n\nfar\n\n#x a2\n";
@@ -138,11 +155,16 @@ fn breadcrumbs_no_longer_start_with_the_note_title(cx: &mut TestAppContext) {
             );
         }
     }
-    // The first crumb starts the row; `Open source` ends it.
+    // The first crumb starts the row; `Open note` ends it.
     let piece = bounds(cx, chunk_id(0));
     let crumb = bounds(cx, crumb_id(0, 0));
     assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Day"));
-    assert_eq!(crumb.left(), piece.left(), "nothing before the first crumb");
+    // Only the focus ring's room, which the clipping piece keeps.
+    assert_eq!(
+        crumb.left(),
+        piece.left() + gpui_kit::px(3.),
+        "nothing before the first crumb"
+    );
     assert!(crumb.right() <= bounds(cx, open_id(0)).left());
     // A piece with no crumbs still draws its row.
     assert!(shows(cx, open_id(2)));
@@ -213,7 +235,10 @@ fn the_dateline_sits_above_its_notes_first_gap(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "#x a\n"), (B, "Beta", "b head\n\n#x b\n")];
     let (_view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
     // Gap 2 is B's first gap: it hides B's head.
-    assert_eq!(label(cx, gap_count_id(2)).as_deref(), Some("1 hidden"));
+    assert_eq!(
+        label(cx, gap_count_id(2)).as_deref(),
+        Some("1 block hidden")
+    );
     let line = bounds(cx, dateline_id(1));
     let gap = bounds(cx, gap_up_id(2));
     assert!(bounds(cx, chunk_id(0)).bottom() <= line.top());
@@ -226,7 +251,10 @@ fn the_previous_notes_last_gap_sits_above_the_next_dateline(cx: &mut TestAppCont
     let notes = [(A, "Alpha", "#x a\n\na tail\n"), (B, "Beta", "#x b\n")];
     let (_view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
     // Gap 1 is A's last gap: it hides A's tail.
-    assert_eq!(label(cx, gap_count_id(1)).as_deref(), Some("1 hidden"));
+    assert_eq!(
+        label(cx, gap_count_id(1)).as_deref(),
+        Some("1 block hidden")
+    );
     let gap = bounds(cx, gap_down_id(1));
     let line = bounds(cx, dateline_id(1));
     assert_eq!(dist(line.top(), gap.bottom()), 24.0, "{gap:?} {line:?}");
@@ -312,7 +340,7 @@ fn the_dateline_is_not_a_tab_stop_and_not_clickable(cx: &mut TestAppContext) {
     click(cx, dateline_meta_id(1));
     assert_eq!(picks(&view, cx), [tag("x")]);
     assert!(events.borrow().is_empty(), "{:?}", events.borrow());
-    // Tab walks from B's `Open source` round to the bar and never lands
+    // Tab walks from B's `Open note` round to the bar and never lands
     // on a dateline.
     focus_view(&view, cx);
     tab_to(cx, open_id(1), 20);
@@ -524,8 +552,14 @@ fn reveal_never_crosses_a_note_boundary(cx: &mut TestAppContext) {
     assert_eq!(chunk_texts(&view, cx), ["#x a", "#x b"]);
     // Gaps: 0 above A's piece, 1 below it, 2 above B's piece, 3 below it.
     assert!(!shows(cx, gap_count_id(0)));
-    assert_eq!(label(cx, gap_count_id(1)).as_deref(), Some("1 hidden"));
-    assert_eq!(label(cx, gap_count_id(2)).as_deref(), Some("1 hidden"));
+    assert_eq!(
+        label(cx, gap_count_id(1)).as_deref(),
+        Some("1 block hidden")
+    );
+    assert_eq!(
+        label(cx, gap_count_id(2)).as_deref(),
+        Some("1 block hidden")
+    );
     assert!(!shows(cx, gap_count_id(3)));
     assert!(shows(cx, gap_down_id(1)) && !shows(cx, gap_up_id(1)));
     assert!(shows(cx, gap_up_id(2)) && !shows(cx, gap_down_id(2)));
@@ -543,20 +577,26 @@ fn show_all_fills_only_its_own_gap(cx: &mut TestAppContext) {
         (B, "Beta", "u1\n\n#x b\n"),
     ];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
-    assert_eq!(label(cx, gap_count_id(1)).as_deref(), Some("2 hidden"));
+    assert_eq!(
+        label(cx, gap_count_id(1)).as_deref(),
+        Some("2 blocks hidden")
+    );
     click(cx, show_all_id(1));
     assert_eq!(chunk_texts(&view, cx), ["#x a\n\nt1\n\nt2", "#x b"]);
-    assert_eq!(label(cx, gap_count_id(2)).as_deref(), Some("1 hidden"));
+    assert_eq!(
+        label(cx, gap_count_id(2)).as_deref(),
+        Some("1 block hidden")
+    );
 }
 
 #[gpui_kit::test]
-fn open_source_names_the_pieces_own_note(cx: &mut TestAppContext) {
+fn open_note_names_the_pieces_own_note(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "#x a\n"), (B, "Beta", "b\n\n#x b\n")];
     let (_view, cx, events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
     click(cx, open_id(1));
     assert_eq!(
         *events.borrow(),
-        [FacetEvent::OpenSource {
+        [FacetEvent::OpenNote {
             note: p(B),
             line: 2
         }]
@@ -649,7 +689,7 @@ fn set_member_path_rekeys_a_member(cx: &mut TestAppContext) {
     click(cx, open_id(1));
     assert_eq!(
         *events.borrow(),
-        [FacetEvent::OpenSource {
+        [FacetEvent::OpenNote {
             note: p("/d/moved.md"),
             line: 0
         }]
@@ -700,12 +740,13 @@ fn the_first_500_line_shows_when_total_exceeds_members(cx: &mut TestAppContext) 
     let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 600, vec![]);
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 2 of 600 notes")
+        line(cx).as_deref(),
+        Some("2 notes \u{b7} first 2 of 600 \u{b7} list from 10:42")
     );
     let members = vec![member(A, "Alpha", "a\n"), member(B, "Beta", "b\n")];
     view.update(cx, |view, cx| view.replace_members(members, 2, cx));
-    assert!(!shows(cx, FIRST_NOTES_ID));
+    refresh_report_ends(cx);
+    assert_eq!(line(cx).as_deref(), Some("2 notes \u{b7} list from 10:42"));
 }
 
 #[gpui_kit::test]
@@ -750,7 +791,7 @@ fn a_single_note_view_ignores_r_and_has_no_refresh(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_summary_names_the_notes(cx: &mut TestAppContext) {
+fn the_summary_leaves_the_note_numbers_to_the_collection_line(cx: &mut TestAppContext) {
     let notes = [
         (A, "Alpha", "#x a\n\nb\n\n#x c\n"),
         (B, "Beta", "#x d\n"),
@@ -759,14 +800,20 @@ fn the_summary_names_the_notes(cx: &mut TestAppContext) {
     let (_view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![tag("x")]);
     assert_eq!(
         label(cx, SUMMARY_ID).as_deref(),
-        Some("Showing text tagged #x \u{b7} 3 pieces in 2 notes")
+        Some("Showing text tagged #x \u{b7} 3 pieces")
+    );
+    assert_eq!(
+        line(cx).as_deref(),
+        Some("3 pieces in 2 of 3 notes \u{b7} list from 10:42")
     );
 }
 
-/// A plain press on a note link in a collection is a text press: the
-/// filter is unchanged.
+/// A plain click on a note link in a collection follows it from the
+/// piece's own note. The filter is unchanged.
 #[gpui_kit::test]
-fn a_plain_press_on_a_link_in_a_collection_does_not_change_the_filter(cx: &mut TestAppContext) {
+fn a_plain_click_on_a_link_in_a_collection_follows_it_and_keeps_the_filter(
+    cx: &mut TestAppContext,
+) {
     let notes = [(A, "Alpha", "see [[Plan]] now\n"), (B, "Beta", "other\n")];
     let (view, cx, events, _sub) = open_collection(cx, &notes, 2, vec![]);
     let at = cell(&view, 0, 7, 0, cx);
@@ -774,18 +821,27 @@ fn a_plain_press_on_a_link_in_a_collection_does_not_change_the_filter(cx: &mut T
     assert!(picks(&view, cx).is_empty());
     assert_eq!(picks_changed(&events), 0);
     assert_eq!(chunk_texts(&view, cx), ["see [[Plan]] now", "other"]);
+    let follows: Vec<_> = events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            FacetEvent::Follow { from, .. } => Some(from.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(follows, [VaultPath::new(A)]);
 }
 
 // ── carried over from the member refactor ────────────────────────────────
 
 #[gpui_kit::test]
-fn open_source_names_its_note(cx: &mut TestAppContext) {
+fn open_note_names_its_note(cx: &mut TestAppContext) {
     let text = "#x p0\n\np1\n\n#x p2\n";
     let (_view, cx, events, _sub) = open(cx, text, vec![tag("x")]);
     click(cx, open_id(1));
     assert_eq!(
         *events.borrow(),
-        [FacetEvent::OpenSource {
+        [FacetEvent::OpenNote {
             note: VaultPath::new("/notes/n.md"),
             line: 4
         }]
@@ -815,7 +871,7 @@ fn removing_from_an_uncapped_collection_shows_no_first_notes_line(cx: &mut TestA
     let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n"), (C, "Gamma", "c\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![]);
     view.update(cx, |view, cx| view.remove_members(&[p(B)], cx));
-    assert!(!shows(cx, FIRST_NOTES_ID));
+    assert_eq!(line(cx).as_deref(), Some("2 notes \u{b7} list from 10:42"));
 }
 
 /// A capped collection that loses a note: the deleted note is no hit.
@@ -830,13 +886,13 @@ fn removing_from_a_capped_collection_lowers_both_counts(cx: &mut TestAppContext)
         .collect();
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 600, vec![]);
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 500 of 600 notes")
+        line(cx).as_deref(),
+        Some("500 notes \u{b7} showing 100 of 500 \u{b7} first 500 of 600 \u{b7} list from 10:42")
     );
     view.update(cx, |view, cx| view.remove_members(&[p("/n/007.md")], cx));
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 499 of 599 notes")
+        line(cx).as_deref(),
+        Some("499 notes \u{b7} showing 100 of 499 \u{b7} first 499 of 599 \u{b7} list from 10:42")
     );
 }
 
@@ -849,6 +905,36 @@ fn a_blank_title_falls_back_to_the_file_name(cx: &mut TestAppContext) {
     let members = vec![member(C, "", "#x c\n")];
     view.update(cx, |view, cx| view.replace_members(members, 1, cx));
     assert_eq!(label(cx, dateline_id(0)).as_deref(), Some("gamma"));
+}
+
+/// The report of a refresh ends as soon as the user picks, unpicks,
+/// clears or undoes: the line then tells what the picks show.
+#[gpui_kit::test]
+fn a_pick_clear_or_undo_ends_the_refresh_report(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "#x a\n"), (B, "Beta", "#y b\n")];
+    let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![]);
+    let refresh = |view: &Entity<FacetView>, cx: &mut VisualTestContext| {
+        let members = vec![member(A, "Alpha", "#x a\n"), member(B, "Beta", "#y b\n")];
+        view.update(cx, |view, cx| view.replace_members(members, 2, cx));
+        assert_eq!(line(cx).as_deref(), Some("Refreshed: no changes"));
+    };
+    let refreshed =
+        |cx: &mut VisualTestContext| line(cx).is_some_and(|l| l.starts_with("Refreshed"));
+    refresh(&view, cx);
+    view.update(cx, |view, cx| view.toggle(tag("x"), cx));
+    assert!(!refreshed(cx), "a pick ends it");
+    refresh(&view, cx);
+    view.update(cx, |view, cx| view.toggle(tag("x"), cx));
+    assert!(!refreshed(cx), "an unpick ends it");
+    view.update(cx, |view, cx| view.toggle(tag("y"), cx));
+    refresh(&view, cx);
+    click(cx, super::facet::CLEAR_ID);
+    assert!(!refreshed(cx), "a clear ends it");
+    refresh(&view, cx);
+    focus_view(&view, cx);
+    key(cx, "ctrl-z");
+    assert_eq!(picks(&view, cx), [tag("y")]);
+    assert!(!refreshed(cx), "an undo ends it");
 }
 
 /// A refresh brings the cap back to `MAX_RANGES`, as it resets reveals.
@@ -895,11 +981,12 @@ fn remove_members_removes_all_named_and_plans_once(cx: &mut TestAppContext) {
 fn an_unreadable_hit_shows_no_first_notes_line(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![]);
-    assert!(!shows(cx, FIRST_NOTES_ID));
+    assert_eq!(line(cx).as_deref(), Some("2 notes \u{b7} list from 10:42"));
     // Nor after a refresh that loses one to a failed read.
     let members = vec![member(A, "Alpha", "a\n")];
     view.update(cx, |view, cx| view.replace_members(members, 2, cx));
-    assert!(!shows(cx, FIRST_NOTES_ID));
+    refresh_report_ends(cx);
+    assert_eq!(line(cx).as_deref(), Some("1 note \u{b7} list from 10:42"));
 }
 
 /// A capped load with one unreadable note still says what it holds, and so
@@ -915,19 +1002,20 @@ fn a_capped_load_with_an_unreadable_note_reads_first_of_total(cx: &mut TestAppCo
         .collect();
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 600, vec![]);
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 499 of 600 notes")
+        line(cx).as_deref(),
+        Some("499 notes \u{b7} showing 100 of 499 \u{b7} first 499 of 600 \u{b7} list from 10:42")
     );
     view.update(cx, |view, cx| view.remove_members(&[p("/n/007.md")], cx));
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 498 of 599 notes")
+        line(cx).as_deref(),
+        Some("498 notes \u{b7} showing 100 of 498 \u{b7} first 498 of 599 \u{b7} list from 10:42")
     );
     let members = vec![member(A, "Alpha", "a\n")];
     view.update(cx, |view, cx| view.replace_members(members, 700, cx));
+    refresh_report_ends(cx);
     assert_eq!(
-        label(cx, FIRST_NOTES_ID).as_deref(),
-        Some("Showing the first 1 of 700 notes")
+        line(cx).as_deref(),
+        Some("1 note \u{b7} first 1 of 700 \u{b7} list from 10:42")
     );
 }
 
@@ -1392,6 +1480,32 @@ mod in_a_group {
         assert_eq!(members(&s, group, cx), [path("/c.md")]);
     }
 
+    /// A refresh that lands on a view that no longer shows its query ends
+    /// the load too: the line must stop saying `Loading...` at once.
+    #[gpui_kit::test]
+    fn a_refresh_for_another_query_still_ends_loading(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = vault(cx, &rt, &[], "c.md");
+        let group = new_tab(&s, cx);
+        open_coll(&s, &rt, group, "#x", vec![], cx);
+        let view = facet(&s, group, cx).unwrap();
+        // A load that never ends by itself.
+        s.workspace.update(cx, |w, cx| {
+            let task = cx.spawn(async move |_, _| std::future::pending::<()>().await);
+            w.state_mut(group).unwrap().facet_loading = Some(task);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).is_loading()), "the line loads");
+        s.workspace.update(cx, |w, cx| {
+            w.collection_refreshed(group, "#other", Err("gone".into()), cx)
+        });
+        cx.run_until_parked();
+        assert!(!loading(&s, group, cx));
+        assert!(!cx.read(|cx| view.read(cx).is_loading()), "stale line");
+    }
+
     #[gpui_kit::test]
     fn a_follow_from_a_piece_opens_a_new_tab_and_resolves_from_its_note(cx: &mut TestAppContext) {
         let rt = super::super::start_tests::runtime();
@@ -1429,7 +1543,7 @@ mod in_a_group {
     }
 
     #[gpui_kit::test]
-    fn open_source_opens_the_pieces_own_note_in_a_new_tab(cx: &mut TestAppContext) {
+    fn open_note_opens_the_pieces_own_note_in_a_new_tab(cx: &mut TestAppContext) {
         let rt = super::super::start_tests::runtime();
         let _guard = rt.enter();
         let (_v, s) = vault(cx, &rt, &[], "c.md");
@@ -1809,4 +1923,27 @@ mod entry_points {
                 .any(|m| m.is_like(&path("n.md")))
         });
     }
+}
+
+#[gpui_kit::test]
+fn a_reload_or_a_removal_recounts_the_chips(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "#a [[x]]\n"), (B, "Beta", "#a [[x]] [[y]]\n")];
+    let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("a")]);
+    let links = || menu_id(ListKind::Links);
+    assert_eq!(label(cx, links()).as_deref(), Some("Links 2"));
+    // A refresh brings other members.
+    let fresh = vec![
+        member(A, "Alpha", "#a [[x]]\n\n[[y]]\n"),
+        member(C, "Gamma", "#a [[y]] [[z]]\n"),
+    ];
+    view.update(cx, |view, cx| view.replace_members(fresh, 2, cx));
+    assert_eq!(label(cx, links()).as_deref(), Some("Links 3"));
+    // A save of one member.
+    view.update(cx, |view, cx| {
+        view.set_member_text(&p(C), "#a [[y]]\n\n[[z]]\n".into(), cx)
+    });
+    assert_eq!(label(cx, links()).as_deref(), Some("Links 2"));
+    // A delete that drops no pick plans again but does not select.
+    view.update(cx, |view, cx| view.remove_members(&[p(C)], cx));
+    assert_eq!(label(cx, links()).as_deref(), Some("Links 1"));
 }

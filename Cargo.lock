@@ -5028,6 +5028,7 @@ name = "kimun-gui"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "gpui-kit",
  "gpui-pre-wgpu",
  "image",

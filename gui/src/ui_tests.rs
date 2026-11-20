@@ -2058,10 +2058,86 @@ fn assert_no_follow(
     }
 }
 
-/// A plain press is a text press: it places the caret and tells no one.
+/// A plain press off any target is a text press: it places the caret and
+/// tells no one.
 #[gpui_kit::test]
 fn a_plain_read_only_press_emits_no_event(cx: &mut TestAppContext) {
     let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 1, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+        assert_eq!(view.read(cx).editor.cursor(), (0, 1), "the caret is placed");
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    assert_no_follow(&mut rx);
+}
+
+/// A plain click on a tag asks the owner to follow it at the release,
+/// through the event (never the channel).
+#[gpui_kit::test]
+fn a_plain_read_only_click_on_a_tag_emits_a_follow(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        assert!(events.borrow().is_empty(), "not at the press");
+        window.pointer_up(at, MouseButton::Left, cx);
+        assert_eq!(view.read(cx).editor.cursor(), (0, 6), "the caret is placed");
+    })
+    .unwrap();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::ReadOnlyFollow {
+            target: kimun_notes::logic::editor::claim::FollowTarget::Label("idea".to_string()),
+        }]
+    );
+    assert_no_follow(&mut rx);
+}
+
+/// An editor that edits keeps its press: a single click on a tag places the
+/// caret and follows nothing, on the channel or as an event.
+#[gpui_kit::test]
+fn a_normal_editor_click_on_a_tag_only_places_the_caret(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        editor_view::init(cx);
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let events = Events::default();
+    let sink = events.clone();
+    let (handle, view, _sub) = cx.update(|cx| {
+        let mut sub = None;
+        let (handle, view) = gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(640.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut view = EditorView::on_channel(false, tx, cx);
+                    view.editor.set_text("see #idea here".to_string());
+                    view
+                });
+                window.focus(&view.read(cx).focus_handle(cx), cx);
+                sub = Some(cx.subscribe(&view, move |_, event, _| {
+                    sink.borrow_mut().push(event.clone());
+                }));
+                view
+            },
+        )
+        .expect("open test window");
+        (handle, view, sub.unwrap())
+    });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let at = cell_center(&view, 6, 0, cx);
@@ -2073,6 +2149,88 @@ fn a_plain_read_only_press_emits_no_event(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(events.borrow().is_empty(), "{:?}", events.borrow());
     assert_no_follow(&mut rx);
+}
+
+/// A double click on a tag follows once, on the first click. The second
+/// press is a plain press: no word selected, no second follow.
+#[gpui_kit::test]
+fn a_read_only_double_click_on_a_tag_follows_once(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update(|cx| view.update(cx, |view, _| view.set_clock(editor_view::frozen_clock)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        for _ in 0..2 {
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(events.borrow().len(), 1, "{:?}", events.borrow());
+    assert_no_follow(&mut rx);
+    let selected = cx.update(|cx| view.read(cx).editor.buffer().selection_text());
+    assert_eq!(selected, None);
+}
+
+/// New text between the press and the release (the owner re-plans the
+/// piece): the release follows nothing.
+#[gpui_kit::test]
+fn new_text_between_press_and_release_follows_nothing(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        window.pointer_down(at, MouseButton::Left, cx);
+        view.update(cx, |view, cx| view.set_text_read_only("saw #idea here", cx));
+        window.render_frame(cx);
+        window.pointer_move(at, Some(MouseButton::Left), cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+}
+
+/// A wobble of a few pixels between press and release on a tag is still a
+/// click: it follows.
+#[gpui_kit::test]
+fn a_small_wobble_on_a_tag_still_follows(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #longideatag here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 8, 0, cx);
+        let wobble = at + gpui_kit::point(px(2.), px(0.));
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_move(wobble, Some(MouseButton::Left), cx);
+        window.pointer_up(wobble, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(events.borrow().len(), 1, "{:?}", events.borrow());
+}
+
+/// A drag of more than a few pixels that stays inside one tag selects the
+/// text it covers and follows nothing: a drag across part of a long title
+/// copies it.
+#[gpui_kit::test]
+fn a_drag_inside_a_tag_selects_and_does_not_follow(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #longideatag here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 6, 0, cx);
+        let to = at + gpui_kit::point(px(10.), px(0.));
+        let end = cell_center(&view, 14, 0, cx);
+        assert!(to.x < end.x, "the drag stays inside the tag");
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_move(to, Some(MouseButton::Left), cx);
+        window.pointer_up(to, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    let selected = cx.update(|cx| view.read(cx).editor.buffer().selection_text());
+    assert!(selected.is_some(), "the drag selected text");
 }
 
 /// A primary press on a tag asks the owner to follow it, through the event
@@ -2102,37 +2260,17 @@ fn a_primary_read_only_press_emits_a_primary_event(cx: &mut TestAppContext) {
     assert_no_follow(&mut rx);
 }
 
-/// Over a read-only editor's tag the cursor is the I-beam; a pointer move
-/// with the primary modifier held asks for a frame that shows the hand. (A
-/// later key event draws the frame the move asked for.)
+/// A read-only editor draws its follow targets with the pointing hand with
+/// no modifier held, and plain text with the text cursor.
 #[gpui_kit::test]
-fn a_move_with_primary_held_shows_the_hand_over_a_read_only_target(cx: &mut TestAppContext) {
-    use gpui_kit::InputEvent as _;
+fn a_read_only_target_shows_the_hand_without_a_modifier(cx: &mut TestAppContext) {
     let (handle, view, _rx, _events, _sub) = open_read_only(cx, "see #idea here");
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(!painted(&view, cx).targets_hand, "no modifier: text");
-        let at = cell_center(&view, 6, 0, cx);
-        let held = gpui_kit::Modifiers::control();
-        window.dispatch_event(
-            gpui_kit::MouseMoveEvent {
-                position: at,
-                pressed_button: None,
-                modifiers: held,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        let capslock = window.capslock();
-        window.dispatch_event(
-            gpui_kit::ModifiersChangedEvent {
-                modifiers: held,
-                capslock,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        assert!(painted(&view, cx).targets_hand, "primary held: the hand");
+        let tag = cell_center(&view, 6, 0, cx);
+        let text = cell_center(&view, 1, 0, cx);
+        assert!(painted(&view, cx).hand_at(tag), "the hand over the tag");
+        assert!(!painted(&view, cx).hand_at(text), "the I-beam over text");
     })
     .unwrap();
 }

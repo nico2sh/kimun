@@ -2,31 +2,34 @@
 //! anchored to the chip that opened it, floating over the view so nothing
 //! under it moves. A kind's list hangs from its menu chip. The list of every
 //! kind hangs from the search chip, which `/` opens too. Its filter field
-//! comes first and takes the keyboard when it opens. Escape and a press
-//! outside close it (the kit's dismissal), and a press outside still does
-//! what it does there. The view owns the open state and passes it in
-//! ([`Popover::open`]). The kit reports a dismissal through
-//! `on_open_change`.
+//! comes first and takes the keyboard when it opens. Under it the rows stand
+//! one per line, as wide as the list, under a small label per kind in the
+//! list of every kind. A filter that matches nothing leaves one muted line
+//! that says so. Escape and a press outside close it (the kit's dismissal),
+//! and a press outside still does what it does there. The view owns the
+//! open state and passes it in ([`Popover::open`]). The kit reports a
+//! dismissal through `on_open_change`. The chip that opened the list is
+//! told the list is open, so it is drawn open and reports it.
 
 use gpui_kit::base::{Selectable, TestSupportExt as _};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::{
     Anchor, AnyElement, App, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px,
+    IntoElement, ParentElement as _, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use kimun_notes::settings::themes::Theme;
 
-use super::facet::{LIST_REST_ID, ListKind, MORE_LIST_ID, MORE_QUERY_ID};
+use super::facet::{LIST_EMPTY_ID, LIST_REST_ID, ListKind, MORE_LIST_ID, MORE_QUERY_ID};
 use super::popup_layer;
 use super::query_field::query_field;
 use crate::theme;
 
-/// The list's width: room for a few pills a line.
+/// The list's width: room for a long label and its count.
 const LIST_WIDTH: f32 = 320.;
-/// The most the pills take before they scroll inside the list.
-const PILLS_MAX_HEIGHT: f32 = 280.;
+/// The most the rows take before they scroll inside the list.
+const ROWS_MAX_HEIGHT: f32 = 280.;
 
 /// The popover of `kind`'s list.
 fn popover_id(kind: ListKind) -> SharedString {
@@ -38,9 +41,13 @@ fn popover_id(kind: ListKind) -> SharedString {
     }
 }
 
-/// The kit's popover asks its trigger to be [`Selectable`] (to mark it open);
-/// a chip shows no open state, so this wraps any element as one.
-struct Trigger(AnyElement);
+/// The kit's popover asks its trigger to be [`Selectable`] (to mark it
+/// open). The view draws the chip open itself, so this wraps the drawn chip
+/// and only reports the open state the view gave it (`open`).
+struct Trigger {
+    el: AnyElement,
+    open: bool,
+}
 
 impl Selectable for Trigger {
     fn selected(self, _: bool) -> Self {
@@ -48,7 +55,7 @@ impl Selectable for Trigger {
     }
 
     fn is_selected(&self) -> bool {
-        false
+        self.open
     }
 }
 
@@ -56,23 +63,29 @@ impl IntoElement for Trigger {
     type Element = AnyElement;
 
     fn into_element(self) -> AnyElement {
-        self.0
+        self.el
     }
 }
 
 /// A group of the open list: a small muted label (`id`, text) over its
-/// pills. A kind's list is one group with no label.
+/// rows. A kind's list is one group with no label.
 pub(super) struct ListGroup {
     pub label: Option<(SharedString, &'static str)>,
-    pub pills: Vec<AnyElement>,
+    pub rows: Vec<AnyElement>,
 }
 
-/// The open list: its field (`input`, which takes the keyboard), its
-/// groups of pills and the muted last line that says how many matches it
-/// left out (`rest`), in the frame the app's other floating lists use.
+/// The open list: its field (`input`, which takes the keyboard), its name
+/// and the name of its rows for screen readers (`Tags`, `Links`,
+/// `Sections`, `Find`), the scroll of its rows, its groups of
+/// rows, the muted line that says the filter matches nothing
+/// (`empty`), and the muted last line that says how many matches it left
+/// out (`rest`), in the frame the app's other floating lists use.
 pub(super) struct OpenList {
     pub input: Entity<InputState>,
+    pub name: &'static str,
+    pub scroll: ScrollHandle,
     pub groups: Vec<ListGroup>,
+    pub empty: Option<SharedString>,
     pub rest: Option<SharedString>,
 }
 
@@ -92,7 +105,10 @@ pub(super) fn list_popover(
     let popover = Popover::new(popover_id(kind))
         .appearance(false)
         .anchor(anchor)
-        .trigger(Trigger(trigger))
+        .trigger(Trigger {
+            el: trigger,
+            open: list.is_some(),
+        })
         .open(list.is_some())
         .on_open_change(changed);
     match list {
@@ -107,63 +123,70 @@ pub(super) fn list_popover(
     }
 }
 
+/// A muted line of the list (`id`): not a button and not a row, so no tab
+/// stop, and the highlight skips it.
+fn note(id: &'static str, text: SharedString, t: &Theme) -> impl IntoElement {
+    div()
+        .id(id)
+        .px_2()
+        .pb_1()
+        .role(Role::Status)
+        .aria_label(text.clone())
+        .text_xs()
+        .text_color(theme::muted(t))
+        .child(text)
+        .test_support()
+}
+
 fn frame(list: OpenList, t: &Theme) -> impl IntoElement {
-    // Not a button and not a pill: no tab stop, and the highlight skips it.
-    let rest = list.rest.map(|text| {
-        div()
-            .id(LIST_REST_ID)
-            .px_2()
-            .pb_1()
-            .role(Role::Status)
-            .aria_label(text.clone())
-            .text_xs()
-            .text_color(theme::muted(t))
-            .child(text)
-            .test_support()
-    });
-    let groups = list.groups.into_iter().map(|group| {
+    let empty = list.empty.map(|text| note(LIST_EMPTY_ID, text, t));
+    let rest = list.rest.map(|text| note(LIST_REST_ID, text, t));
+    // The labels and rows are direct children of the scroll container, so
+    // the view can scroll a row into view by its child index.
+    let items = list.groups.into_iter().flat_map(|group| {
         let label = group.label.map(|(id, text)| {
             div()
                 .id(id)
+                .px_2()
+                .pt_1()
                 .role(Role::Label)
                 .aria_label(text)
                 .text_xs()
                 .text_color(theme::muted(t))
                 .child(text)
                 .test_support()
+                .into_any_element()
         });
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(label)
-            .child(div().flex().flex_wrap().gap_1().children(group.pills))
+        label.into_iter().chain(group.rows)
     });
     popup_layer::frame(
         div()
             .id(MORE_LIST_ID)
             .role(Role::Group)
-            .aria_label("Facets")
+            .aria_label(list.name)
             .gap_1()
             .pt_2()
             .pb_1(),
         px(LIST_WIDTH),
         t,
     )
-    .child(query_field(&list.input, MORE_QUERY_ID, "Filter facets", t))
+    .child(query_field(&list.input, MORE_QUERY_ID, "Filter", t))
     .child(
         div()
-            .id("facet-list-pills")
+            .id("facet-list-rows")
+            .role(Role::ListBox)
+            .aria_label(list.name)
+            .track_scroll(&list.scroll)
             .flex()
             .flex_col()
-            .gap_2()
-            .px_2()
+            .px_1()
             .pb_1()
-            .max_h(px(PILLS_MAX_HEIGHT))
+            .max_h(px(ROWS_MAX_HEIGHT))
             .overflow_y_scroll()
-            .children(groups),
+            .children(items),
     )
-    // Under the scrolling pills, so it shows without a scroll.
+    .children(empty)
+    // Under the scrolling rows, so it shows without a scroll.
     .children(rest)
     .test_support()
 }

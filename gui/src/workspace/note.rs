@@ -71,6 +71,11 @@ pub(crate) struct NoteHost {
     wanted_emphasis: Option<Vec<String>>,
     /// The needles of the note being read, applied once it has loaded.
     reading_emphasis: Option<Vec<String>>,
+    /// The source line (0-based) the caret goes to once the wanted note
+    /// has loaded ([`Workspace::open_note_at`]); replaced by every open.
+    wanted_line: Option<usize>,
+    /// The line of the note being read, applied once it has loaded.
+    reading_line: Option<usize>,
     /// The switch under way (its flush, then its read). Dropped with the
     /// workspace; the tokio halves finish on their own.
     switching: Option<Task<()>>,
@@ -100,6 +105,8 @@ impl NoteHost {
             wanted: None,
             wanted_emphasis: None,
             reading_emphasis: None,
+            wanted_line: None,
+            reading_line: None,
             switching: None,
             save_again: false,
             discard_expiry: None,
@@ -337,6 +344,49 @@ impl Workspace {
         self.open_note_in(group, path, cx);
     }
 
+    /// Open the note at `path` with the caret at the start of source line
+    /// `line` (0-based), scrolled into view: a facet view's `Open note`. A
+    /// note open somewhere shows there ([`Self::focus_group`]) and jumps at
+    /// once, or once it has loaded when it is still on its way. Otherwise it
+    /// opens in a new tab ([`Self::open_note_in_new_tab`]) and jumps once
+    /// it has loaded. An open held for a session restore opens at the top.
+    pub(crate) fn open_note_at(&mut self, path: VaultPath, line: usize, cx: &mut Context<Self>) {
+        let holder = self.locate_note(&path);
+        self.open_note_in_new_tab(path.clone(), cx);
+        let group = holder.or_else(|| {
+            let active = self.layout.active_group();
+            self.host_in(active)
+                .is_some_and(|host| host.holds(&path))
+                .then_some(active)
+        });
+        if let Some(group) = group {
+            self.jump_in(group, &path, line, cx);
+        }
+    }
+
+    /// Put `group`'s caret on source line `line` of `path`: now when the
+    /// group shows that note, else once it has loaded. Nothing when the
+    /// group is on its way to another note.
+    fn jump_in(&mut self, group: GroupId, path: &VaultPath, line: usize, cx: &mut Context<Self>) {
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
+        let Some(host) = state.notes.as_mut() else {
+            return;
+        };
+        let like = |p: Option<&VaultPath>| p.is_some_and(|p| p.is_like(path));
+        if like(host.wanted.as_ref()) {
+            host.wanted_line = Some(line);
+        } else if like(host.session.pending_open()) {
+            host.reading_line = Some(line);
+        } else if like(host.note.as_ref()) && host.wanted.is_none() {
+            state.editor.update(cx, |view, cx| {
+                view.editor.jump_to_row(line);
+                cx.notify();
+            });
+        }
+    }
+
     /// Open the note at `path` in a new group split off the active one
     /// along `axis`, right after it: the group starts empty, becomes the
     /// active group with the keyboard, and the note opens into it. A note
@@ -433,6 +483,7 @@ impl Workspace {
         };
         host.wanted = Some(path);
         host.wanted_emphasis = emphasis;
+        host.wanted_line = None;
         // A file operation or a property write holds the open note (flushed,
         // its tick stopped): the open waits for it to end
         // ([`Self::file_op_ended`]).
@@ -541,6 +592,7 @@ impl Workspace {
         if let Some(problem) = outcome.as_ref().and_then(flush_problem) {
             host.wanted = None;
             host.wanted_emphasis = None;
+            host.wanted_line = None;
             let note = host.note.clone().unwrap_or_else(VaultPath::root);
             self.flash_error(
                 format!("Couldn't save {note}: {problem}. It stays open."),
@@ -552,6 +604,7 @@ impl Workspace {
         if self.closing == Closing::Requested {
             host.wanted = None;
             host.wanted_emphasis = None;
+            host.wanted_line = None;
             self.close_flush(cx);
             return;
         }
@@ -566,6 +619,7 @@ impl Workspace {
             return;
         };
         host.reading_emphasis = host.wanted_emphasis.take();
+        host.reading_line = host.wanted_line.take();
         let read = host.session.begin_open(path);
         host.switching = Some(cx.spawn(async move |this, cx| {
             let read = tokio::spawn(read.run()).await;
@@ -595,6 +649,7 @@ impl Workspace {
         };
         host.switching = None;
         let emphasis = host.reading_emphasis.take();
+        let line = host.reading_line.take();
         let read = match read {
             Ok(read) => read,
             Err(e) => {
@@ -624,6 +679,11 @@ impl Workspace {
                 // After the load, so the new text's revision owns them.
                 if let Some(needles) = emphasis {
                     view.editor.set_search_needles(needles);
+                }
+                // The buffer holds the note as written, frontmatter too:
+                // a source line is a buffer row.
+                if let Some(line) = line {
+                    view.editor.jump_to_row(line);
                 }
             }
             cx.notify();

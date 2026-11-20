@@ -5,36 +5,57 @@
 //! away and takes at most 40% of the view's height, scrolling inside itself
 //! past that. It has three rows ([`mod@line`]). Row 1 holds a menu chip per
 //! kind with facets left to pick (`Tags N`, `Links N`, `Sections N`) and
-//! the search chip (`⌕ /`) at its right end. Row 2 holds the picked pills,
+//! the search chip (`⌕ Find`, its key `/`) at its right end. Row 2 holds the picked pills,
 //! each with a remove mark, and wraps. The summary line with `Clear` comes
-//! last, while there are picks. A kind chip opens the list of that kind's
-//! unpicked facets. The search chip and `/` open the list of every unpicked
-//! facet, by kind. A list floats under its chip ([`super::facet_list`]),
-//! stays open while picks are made in it, and closes on Escape or a press
-//! outside, or when new text or a pick takes away all it holds. The bar
+//! last, while there are picks. Just after a clear it says `Picks cleared`
+//! and offers `Undo` instead, for a few seconds or until the next pick. A
+//! kind chip opens the list of that kind's
+//! facets. The search chip and `/` open the list of every facet, by kind.
+//! A list floats under its chip ([`super::facet_list`]) as one row per
+//! facet, picked rows first with a tick, each with the pieces it gives in
+//! the current view. It stays open while picks are made in it, even once
+//! every row is ticked. It closes on Escape or a press outside, or when new
+//! text leaves no facet at all in its scope. The bar
 //! keeps clear of buttons its host floats over the view's top-right corner
 //! ([`FacetView::set_corner_room`]).
 //!
+//! Under the bar a collection draws its collection line ([`mod@collection`]),
+//! then the first-use hint shows until the first pick: what picks do, and
+//! that `/` finds, `j`/`k` step and a click on a tag or link opens it.
+//!
 //! The column holds the shown chunks with a gap row between them, then
-//! `Show N more` when more chunks match than the view draws. Each chunk is
+//! `Show N more` with `100 of 340 pieces shown` beside it when more chunks
+//! match than the view draws. Each chunk is
 //! a read-only [`EditorView`] sized to its lines, with no frame, under a
 //! slim row: the headings that contain it as clickable crumbs, outer ones
 //! shortened first with an ellipsis when the row is narrow, and `Open
-//! source`. A gap row counts the hidden blocks (`3 hidden`) and reveals one
-//! at a time next to the chunk above (down) or below (up), or all of them
-//! with `Show all` when few are hidden.
+//! note`. A gap row counts the hidden blocks (`3 blocks hidden`) and
+//! reveals one at a time next to the chunk above (`Show next block`) or
+//! below (`Show previous block`), or all of them with `Show all` when few
+//! are hidden.
 //!
-//! **Picking.** A pill in a list picks its facet, a picked pill unpicks
-//! it, and a breadcrumb button toggles its heading. A press in a piece never changes the
-//! filter, with or without a modifier: the piece is read-only text (a caret,
-//! a drag or a double press selects, the copy chord copies). A primary press
-//! (Ctrl, or Cmd on macOS) on a link or tag only asks to follow it.
+//! **Colour.** Buttons (chips, `Clear`, `Undo`, `Show all`, `Show more`,
+//! crumbs, `Open note`) have their labels in the text colour. Meta text
+//! (counts, the hint, the summary, dateline meta, the collection line) is
+//! muted ([`theme::muted`], 4.5:1 against the page, less on a theme with
+//! faint text so it stays quieter than the text).
+//!
+//! **Picking.** A row in a list toggles its facet, a picked pill unpicks
+//! it, and a breadcrumb button toggles its heading. A press in a piece never
+//! changes the filter: the piece is read-only text (a caret, a drag or a
+//! double press on text selects, the copy chord copies). A click on a link
+//! or tag there asks the host to follow it at the release. A drag that
+//! moves more than a few pixels or leaves the target selects instead.
+//! Ctrl+click (Cmd+click on macOS) follows at the press. The pointer is
+//! the hand over every link and tag. `Clear` and Escape put the picks they
+//! remove on a small undo stack, and Ctrl+Z (Cmd+Z) or `Undo` brings the
+//! last set back, less the facets the notes lost since.
 //!
 //! **Keyboard** ([`mod@keys`]): every chip, pill and text button is a tab stop
-//! with a focus ring, and Enter or Space does what a click does. `/` opens
-//! the list of every unpicked facet, `j`/`k` step between pieces, Escape
-//! clears the picks (from inside a piece it first hands the keyboard to the
-//! view).
+//! with a 2 px focus ring outside it, and Enter or Space does what a click
+//! does. `/` opens the list of every facet, `j`/`k` step between pieces,
+//! Escape clears the picks (from inside a piece it first hands the keyboard
+//! to the view), and Ctrl+Z brings them back.
 //!
 //! **Content.** The view shows a list of member notes ([`mod@members`]); a
 //! single-note view is a list of one. Core plans everything: the merged
@@ -42,12 +63,14 @@
 //! reveals inside a member. A change of picks or text plans again from the
 //! picks (revealed blocks reset); new text also drops picks the notes no
 //! longer hold. Each piece answers for its own note: a follow resolves links
-//! against it, `Open source` and a follow name it. The view takes plain
+//! against it, `Open note` and a follow name it. The view takes plain
 //! data in and emits [`FacetEvent`]s; it knows no workspace.
 //!
 //! **Collections** ([`mod@collection`]): a view of the notes one query
 //! returned. Each note starts with a dateline (its title, a hairline, its
 //! folder and drawn piece count), so a piece says which note it comes from.
+//! The summary keeps the picks in words and the pieces; the note numbers
+//! are on the collection line.
 
 use std::cell::RefCell;
 
@@ -70,7 +93,7 @@ use kimun_notes::settings::themes::Theme;
 use self::collection::Collection;
 use self::keys::{Stop, Stops, keys};
 use self::members::{Member, Members, chunk_plan};
-use super::facet_ui::{chip, crumb as crumb_button, icon_chip, text_button};
+use super::facet_ui::{chip, crumb as crumb_button, icon_chip, ring_room, text_button};
 use super::query_field::focus_input;
 use crate::editor_element::LINE_HEIGHT;
 use crate::editor_font;
@@ -106,16 +129,24 @@ pub(crate) const REMOVE_LAST_ID: &str = "facet-remove-last";
 /// The one-line hint under the bar, until the first pick.
 pub(crate) const HINT_ID: &str = "facet-hint";
 pub(crate) const CLEAR_ID: &str = "facet-clear";
+/// The summary row's `Undo` button, after a clear.
+pub(crate) const UNDO_ID: &str = "facet-undo";
+/// The summary row's `Picks cleared` text, after a clear.
+pub(crate) const CLEARED_ID: &str = "facet-cleared";
 /// Row 1 of the bar: the kind menu chips and the search chip.
 pub(crate) const LINE_ID: &str = "facet-line";
 /// The muted last line of a list that draws only [`line::LIST_CAP`] matches.
 pub(crate) const LIST_REST_ID: &str = "facet-list-rest";
+/// The muted line of a list whose filter matches nothing.
+pub(crate) const LIST_EMPTY_ID: &str = "facet-list-empty";
 /// The scrolling column of pieces.
 pub(crate) const COLUMN_ID: &str = "facet-column";
 /// A collection's `Refresh` text button, in its empty state.
 pub(crate) const REFRESH_ID: &str = "facet-refresh";
-/// A collection's "Showing the first N of M notes" line under the bar.
-pub(crate) const FIRST_NOTES_ID: &str = "facet-first-notes";
+/// A collection's muted line under the bar ([`mod@collection`]).
+pub(crate) const COLLECTION_LINE_ID: &str = "facet-collection-line";
+/// The muted `100 of 340 pieces shown` beside `Show N more`.
+pub(crate) const SHOW_MORE_COUNT_ID: &str = "facet-show-more-count";
 
 fn kind_slug(kind: FacetKind) -> &'static str {
     match kind {
@@ -130,6 +161,12 @@ pub(crate) fn pill_id(facet: &Facet) -> SharedString {
     format!("facet-pill:{}:{}", kind_slug(facet.kind), facet.key).into()
 }
 
+/// The count on the picked pill of `facet`.
+#[cfg(test)]
+pub(crate) fn pill_count_id(facet: &Facet) -> SharedString {
+    super::facet_ui::pill_count(&pill_id(facet))
+}
+
 /// The remove mark on the picked pill of `facet`.
 #[cfg(test)]
 pub(crate) fn remove_mark_id(facet: &Facet) -> SharedString {
@@ -142,9 +179,21 @@ pub(crate) fn outline_mark_id(facet: &Facet) -> SharedString {
     super::facet_ui::outline_mark(&pill_id(facet))
 }
 
-/// The pill of `facet` in an open list.
+/// The row of `facet` in an open list.
 pub(crate) fn more_item_id(facet: &Facet) -> SharedString {
     format!("facet-more-item:{}:{}", kind_slug(facet.kind), facet.key).into()
+}
+
+/// The tick before the label of `facet`'s row, while it is picked.
+#[cfg(test)]
+pub(crate) fn row_tick_id(facet: &Facet) -> SharedString {
+    super::facet_ui::row_tick(&more_item_id(facet))
+}
+
+/// The in-view count at the right end of `facet`'s row.
+#[cfg(test)]
+pub(crate) fn row_count_id(facet: &Facet) -> SharedString {
+    super::facet_ui::row_count(&more_item_id(facet))
 }
 
 /// The label over `kind`'s group in the list of every kind (`Tags`,
@@ -169,7 +218,7 @@ pub(crate) fn chunk_id(i: usize) -> SharedString {
     format!("facet-chunk:{i}").into()
 }
 
-/// Chunk `i`'s `Open source` button.
+/// Chunk `i`'s `Open note` button.
 pub(crate) fn open_id(i: usize) -> SharedString {
     format!("facet-open:{i}").into()
 }
@@ -192,7 +241,7 @@ pub(crate) fn show_all_id(g: usize) -> SharedString {
     format!("facet-show-all:{g}").into()
 }
 
-/// Gap `g`'s count of hidden blocks (`3 hidden`).
+/// Gap `g`'s count of hidden blocks (`3 blocks hidden`).
 pub(crate) fn gap_count_id(g: usize) -> SharedString {
     format!("facet-gap-count:{g}").into()
 }
@@ -207,9 +256,9 @@ pub(crate) fn crumb_id(chunk: usize, index: usize) -> SharedString {
 pub enum FacetEvent {
     /// Jump to `note`, the piece's own note, at the piece's first source
     /// line (0-based).
-    OpenSource { note: VaultPath, line: usize },
-    /// Primary+click on a link or tag in a piece of `from`, the note a
-    /// relative link resolves against.
+    OpenNote { note: VaultPath, line: usize },
+    /// A click on a link or tag in a piece of `from`, the note a relative
+    /// link resolves against.
     Follow {
         from: VaultPath,
         target: FollowTarget,
@@ -223,28 +272,47 @@ pub enum FacetEvent {
 /// Which list is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ListKind {
-    /// The unpicked tags: the `Tags N` chip.
+    /// The tags: the `Tags N` chip.
     Tags,
-    /// The unpicked note links: the `Links N` chip.
+    /// The note links: the `Links N` chip.
     Links,
-    /// The unpicked headings: the `Sections N` chip.
+    /// The headings: the `Sections N` chip.
     Sections,
-    /// Every unpicked facet, by kind: the search chip and `/`.
+    /// Every facet, by kind: the search chip and `/`.
     All,
 }
 
-/// The open list: its kind, its fuzzy query field, and the result Enter
-/// toggles (lit, an index into the list's pills in order; a new query
-/// lights the first).
+/// The open list: its kind, its fuzzy query field, and the row Enter
+/// toggles (lit, an index into the list's drawn rows in order, picked rows
+/// too; a new query lights the first).
 struct More {
     kind: ListKind,
     input: Entity<InputState>,
+    /// The order of the rows, set when the list opens and when its filter
+    /// changes. A pick or unpick leaves it alone: rows do not move under
+    /// the pointer or the highlight while the list is open.
+    order: line::Order,
     highlight: usize,
+    /// The scroll of the list's rows.
+    scroll: ScrollHandle,
+    /// The highlight moved since the last frame: that frame scrolls the
+    /// lit row into view.
+    reveal: std::cell::Cell<bool>,
+    /// The last move of the highlight was up. Up onto the first row of a
+    /// group scrolls to the group's label, so it shows above the row.
+    up: bool,
     _events: Subscription,
 }
 
-const HINT_TEXT: &str = "Pick a tag, link or section to narrow this note.";
-const HINT_TEXT_NOTES: &str = "Pick a tag, link or section to narrow these notes.";
+/// The most cleared pick sets Ctrl+Z can bring back.
+const UNDO_MAX: usize = 20;
+/// How long `Picks cleared` and its `Undo` button stay after a clear.
+const UNDO_SHOWN: std::time::Duration = std::time::Duration::from_secs(8);
+
+const HINT_TEXT: &str = "Pick a tag, link or section to narrow this note. \
+    / finds, j and k step, a click on a tag or link opens it.";
+const HINT_TEXT_NOTES: &str = "Pick a tag, link or section to narrow these notes. \
+    / finds, j and k step, a click on a tag or link opens it.";
 
 /// The facet view. See the module docs.
 pub struct FacetView {
@@ -282,15 +350,29 @@ pub struct FacetView {
     /// Room the bar keeps clear at its right end for what its host floats
     /// over the view's top-right corner ([`Self::set_corner_room`]).
     corner_room: Option<Rems>,
-    /// The primary modifier was held at the last modifiers change: a piece's
-    /// links and tags show the pointing hand only while it is ([`mod@keys`]).
-    primary_held: bool,
+    /// The pick sets that clears removed, oldest first, at most
+    /// [`UNDO_MAX`]. Ctrl+Z brings back the last one. Not saved to the
+    /// session.
+    undo: Vec<Vec<Facet>>,
+    /// While it runs, the summary row says `Picks cleared` and offers
+    /// `Undo`. It ends after [`UNDO_SHOWN`]; a pick, an unpick or an undo
+    /// drops it sooner.
+    undo_shown: Option<gpui_kit::Task<()>>,
+    /// The stop the next frame gives the keyboard to, once drawn: `Undo`
+    /// after Enter or Space on `Clear`.
+    focus_after: Option<Stop>,
     /// The focus handle of a list's field that [`Self::plan`] closed: the
     /// next frame gives the keyboard to the view if the field still had it.
     stranded: Option<FocusHandle>,
     /// How many times [`Self::plan`] ran (tests).
     #[cfg(test)]
     plans_run: usize,
+    /// The chip the last frame drew in the selected style (tests).
+    #[cfg(test)]
+    open_chip: std::cell::Cell<Option<ListKind>>,
+    /// The chips the last frame drew dimmed (tests).
+    #[cfg(test)]
+    dimmed_chips: RefCell<Vec<ListKind>>,
 }
 
 impl EventEmitter<FacetEvent> for FacetView {}
@@ -334,10 +416,16 @@ impl FacetView {
             piece_items: Vec::new(),
             hint_done,
             corner_room: None,
-            primary_held: false,
+            undo: Vec::new(),
+            undo_shown: None,
+            focus_after: None,
             stranded: None,
             #[cfg(test)]
             plans_run: 0,
+            #[cfg(test)]
+            open_chip: Default::default(),
+            #[cfg(test)]
+            dimmed_chips: RefCell::default(),
         };
         view.select(cx);
         view
@@ -388,6 +476,8 @@ impl FacetView {
     fn members_changed(&mut self, cx: &mut Context<Self>) {
         let pruned = self.bar.prune(&self.members.merged);
         self.select(cx);
+        // New text can add or drop rows: an open list sorts again.
+        self.sort_list(cx);
         if pruned {
             cx.emit(FacetEvent::PicksChanged);
         }
@@ -430,7 +520,13 @@ impl FacetView {
     /// The open list's results, in order (tests).
     #[cfg(test)]
     pub(crate) fn list_results(&self, cx: &App) -> Vec<Facet> {
-        self.list_pills(cx).into_iter().map(|p| p.facet).collect()
+        self.list_rows(cx).into_iter().map(|p| p.facet).collect()
+    }
+
+    /// The open list's drawn rows, in order (tests).
+    #[cfg(test)]
+    pub(crate) fn list_row_pills(&self, cx: &App) -> Vec<kimun_notes::logic::facet_bar::Pill> {
+        self.list_rows(cx)
     }
 
     /// The ids of the tab stops the last frame drew, in order (tests).
@@ -445,11 +541,29 @@ impl FacetView {
         self.stops.borrow().ringed.as_ref().map(Stop::id)
     }
 
+    /// How many cleared pick sets Ctrl+Z can bring back (tests).
+    #[cfg(test)]
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// The cleared pick sets on the undo stack, oldest first (tests).
+    #[cfg(test)]
+    pub(crate) fn undo_sets(&self) -> &[Vec<Facet>] {
+        &self.undo
+    }
+
     /// `Show N more`, while chunks are left out: N is what the next click
     /// shows, the limit or what is left when that is less.
     pub(crate) fn show_more_label(&self) -> Option<String> {
         let cut = self.members.cut;
         (cut > 0).then(|| format!("Show {} more", cut.min(self.limit)))
+    }
+
+    /// `100 of 340 pieces shown`, beside `Show N more` while it shows.
+    fn show_more_count(&self) -> Option<String> {
+        let (drawn, cut) = (self.members.len(), self.members.cut);
+        (cut > 0).then(|| format!("{drawn} of {} pieces shown", drawn + cut))
     }
 
     /// Show what the picks select, nothing revealed.
@@ -500,27 +614,51 @@ impl FacetView {
                 }
             }
         }
-        // New text, or a pick of the last facet in the open list's scope
-        // (its kind, or every kind for the search list), can leave the list
-        // nothing to hold: it closes, and the next frame hands the keyboard
-        // from its field to the view.
+        // New text can leave the open list no facet at all in its scope
+        // (its kind, or every kind for the search list): it closes, and the
+        // next frame hands the keyboard from its field to the view. A pick
+        // never closes it: the picked rows stay, ticked.
         let gone = self
             .more
             .as_ref()
-            .is_some_and(|more| !self.list_drawable(more.kind));
+            .is_some_and(|more| !self.list_holds(more.kind));
         if gone && let Some(more) = self.more.take() {
             self.stranded = Some(more.input.read(cx).focus_handle(cx));
         }
         cx.notify();
     }
 
-    /// Whether `kind`'s list has anything to hold: an unpicked facet in
-    /// its scope (its kind, or any kind for [`ListKind::All`]).
-    fn list_drawable(&self, kind: ListKind) -> bool {
-        !self.scope(kind, "").is_empty()
+    /// Whether `kind`'s list holds any facet, picked or not, in its scope
+    /// (its kind, or any kind for [`ListKind::All`]). An open list stays
+    /// open while this holds.
+    fn list_holds(&self, kind: ListKind) -> bool {
+        let entries = &self.members.merged.entries;
+        let of = |k: FacetKind| entries.iter().any(|e| e.facet.kind == k);
+        match kind {
+            ListKind::Tags => of(FacetKind::Tag),
+            ListKind::Links => of(FacetKind::NoteLink),
+            ListKind::Sections => of(FacetKind::Heading),
+            ListKind::All => !entries.is_empty(),
+        }
     }
 
-    /// A primary press on `target` in chunk `i`: ask the host to follow it,
+    /// Whether `kind`'s list has anything to pick: an unpicked facet in
+    /// its scope (its kind, or any kind for [`ListKind::All`]). Ticked rows
+    /// do not count: a list opens only while this holds.
+    fn list_drawable(&self, kind: ListKind) -> bool {
+        let any = self
+            .bar
+            .menus(&self.members.merged, &|f| self.members.in_view_of(f))
+            .any;
+        match kind {
+            ListKind::Tags => any.tags,
+            ListKind::Links => any.links,
+            ListKind::Sections => any.sections,
+            ListKind::All => any.tags || any.links || any.sections,
+        }
+    }
+
+    /// A click on `target` in chunk `i`: ask the host to follow it,
     /// from the chunk's own note (a relative link resolves against it).
     fn follow(&mut self, i: usize, target: FollowTarget, cx: &mut Context<Self>) {
         if let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) {
@@ -535,6 +673,8 @@ impl FacetView {
         }
         self.bar.toggle(facet);
         self.hint_done = true;
+        self.undo_shown = None;
+        self.end_refresh_report();
         self.select(cx);
         cx.emit(FacetEvent::PicksChanged);
     }
@@ -559,7 +699,7 @@ impl FacetView {
         }
         self.bar
             .empty_reason(&self.members.merged, self.members.len() > 0)
-            .unwrap_or_else(|| "Nothing matches the picked facets.".into())
+            .unwrap_or_else(|| "Nothing matches the picks.".into())
     }
 
     /// Whether the hint under the bar shows: no pick made yet in this view,
@@ -568,26 +708,70 @@ impl FacetView {
         !self.hint_done && self.bar.picks().is_empty() && !self.members.merged.entries.is_empty()
     }
 
-    /// Unpick everything: the whole note again, reveals reset.
+    /// Unpick everything: the whole note again, reveals reset. The picks
+    /// go on the undo stack, and the summary row offers `Undo` for a while.
     fn clear(&mut self, cx: &mut Context<Self>) {
         if self.bar.picks().is_empty() {
             return;
         }
+        self.push_undo(self.bar.picks().to_vec());
         self.bar.clear();
+        self.end_refresh_report();
+        self.undo_shown = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(UNDO_SHOWN).await;
+            this.update(cx, |this, cx| {
+                this.undo_shown = None;
+                cx.notify();
+            })
+            .ok();
+        }));
         self.select(cx);
         cx.emit(FacetEvent::PicksChanged);
     }
 
+    /// Ctrl+Z, `Undo`: bring back the picks of the last clear, less those
+    /// the notes no longer hold. Picks made since the clear go on the stack
+    /// first, unless they equal the set brought back. False when no clear
+    /// is left to undo.
+    pub(super) fn undo_clear(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(picks) = self.undo.pop() else {
+            return false;
+        };
+        // Picks made since the clear go on the stack, so the next Ctrl+Z
+        // brings them back. Picks equal to the set brought back do not: the
+        // next Ctrl+Z would change nothing.
+        if !self.bar.picks().is_empty() && self.bar.picks() != picks.as_slice() {
+            self.push_undo(self.bar.picks().to_vec());
+        }
+        self.bar.set_picks(picks);
+        self.bar.prune(&self.members.merged);
+        self.hint_done = true;
+        self.undo_shown = None;
+        self.end_refresh_report();
+        self.select(cx);
+        cx.emit(FacetEvent::PicksChanged);
+        true
+    }
+
+    /// Put `picks` on the undo stack, dropping the oldest set past
+    /// [`UNDO_MAX`].
+    fn push_undo(&mut self, picks: Vec<Facet>) {
+        self.undo.push(picks);
+        if self.undo.len() > UNDO_MAX {
+            self.undo.remove(0);
+        }
+    }
+
     /// What the picks show, while they show something: the picks in words
-    /// and the pieces, counting those the cap leaves out.
+    /// and the pieces, counting those the cap leaves out. The note numbers
+    /// of a collection are on its collection line, not here.
     fn summary(&self) -> Option<String> {
         let drawn = self.members.len();
         if drawn == 0 {
             return None;
         }
-        let notes = self.collection.as_ref().map(|_| self.members.notes_shown());
         self.bar
-            .summary(&self.members.merged, drawn + self.members.cut, notes)
+            .summary(&self.members.merged, drawn + self.members.cut, None)
     }
 
     /// Reveal one block hidden in gap `g`: next to the chunk above it
@@ -659,6 +843,18 @@ impl FacetView {
         &self.sized_rows
     }
 
+    /// The chip the last frame drew open, in the selected style (tests).
+    #[cfg(test)]
+    pub(crate) fn chip_drawn_open(&self) -> Option<ListKind> {
+        self.open_chip.get()
+    }
+
+    /// The chips the last frame drew dimmed (tests).
+    #[cfg(test)]
+    pub(crate) fn chips_drawn_dimmed(&self) -> Vec<ListKind> {
+        self.dimmed_chips.borrow().clone()
+    }
+
     /// How many times the chunks were planned (tests).
     #[cfg(test)]
     pub(crate) fn plans_run(&self) -> usize {
@@ -692,17 +888,26 @@ impl FacetView {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let events = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                // A new query sorts the rows again and lights its first
+                // row, at the top.
+                this.sort_list(cx);
                 if let Some(more) = &mut this.more {
                     more.highlight = 0;
+                    more.scroll.set_offset(gpui_kit::point(px(0.), px(0.)));
                 }
                 cx.notify();
             }
         });
         focus_input(&input, window, cx);
+        let order = line::order_of(&self.scope(kind, ""));
         self.more = Some(More {
             kind,
             input,
+            order,
             highlight: 0,
+            scroll: ScrollHandle::new(),
+            reveal: std::cell::Cell::new(false),
+            up: false,
             _events: events,
         });
         cx.notify();
@@ -737,11 +942,34 @@ impl FacetView {
         }
     }
 
-    /// A pick from the open list: toggle it. The list stays open, its filter
-    /// kept and holding the keyboard, for the next pick.
-    fn pick_more(&mut self, facet: Facet, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle(facet, cx);
-        if let Some(more) = &self.more {
+    /// Sort the open list's rows again for its current filter: picked rows
+    /// first, then the others as [`mod@line`] orders them.
+    fn sort_list(&mut self, cx: &App) {
+        let Some(more) = &self.more else {
+            return;
+        };
+        let query = more.input.read(cx).value().to_string();
+        let order = line::order_of(&self.scope(more.kind, &query));
+        if let Some(more) = &mut self.more {
+            more.order = order;
+        }
+    }
+
+    /// A press or Enter on a row of the open list: pick its facet, or unpick
+    /// it. The list stays open, its filter kept and holding the keyboard, for
+    /// the next pick. The row keeps its place and shows its tick there. The
+    /// highlight goes to it, which for Enter is where it already was, and
+    /// the list does not move. A row the cap now leaves out lights the last
+    /// row. The list stays open even when every row is ticked.
+    pub(super) fn toggle_row(&mut self, facet: Facet, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle(facet.clone(), cx);
+        let rows = self.list_rows(cx);
+        let at = rows.iter().position(|p| p.facet == facet);
+        let last = rows.len().saturating_sub(1);
+        if let Some(more) = &mut self.more {
+            more.highlight = at.unwrap_or(more.highlight.min(last));
+            more.reveal.set(true);
+            more.up = false;
             focus_input(&more.input, window, cx);
         }
         cx.notify();
@@ -753,7 +981,9 @@ impl FacetView {
     /// ([`mod@line`]), then the summary line. `None` when it would be empty
     /// (a note with no facet).
     fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let counts = self.bar.menus(&self.members.merged);
+        let counts = self
+            .bar
+            .menus(&self.members.merged, &|f| self.members.in_view_of(f));
         // Drawn in this order, so Tab walks the chips, the picks, `Clear`.
         let chips = self.render_chips(counts, t, cx);
         let picks = self.render_picks(t, cx);
@@ -808,6 +1038,9 @@ impl FacetView {
     /// ("Showing text tagged #a · 3 pieces"), and `Clear` at the line's right
     /// end either way.
     fn render_summary(&self, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
+        if self.undo_shown.is_some() && !self.undo.is_empty() && self.bar.picks().is_empty() {
+            return Some(self.render_cleared(t, cx));
+        }
         if self.bar.picks().is_empty() {
             return None;
         }
@@ -830,8 +1063,36 @@ impl FacetView {
                 .items_center()
                 .gap_2()
                 .child(div().flex_1().min_w_0().children(text))
-                .child(self.button(Stop::Clear, chip(CLEAR_ID.into(), "Clear", t), t, cx)),
+                .child(self.button(Stop::Clear, chip(CLEAR_ID.into(), "Clear", false, t), t, cx)),
         )
+    }
+
+    /// The summary row just after a clear: `Picks cleared` and the `Undo`
+    /// button that brings them back.
+    fn render_cleared(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
+        const TEXT: &str = "Picks cleared";
+        div()
+            .flex()
+            .flex_none()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id(CLEARED_ID)
+                    .role(Role::Status)
+                    .aria_label(TEXT)
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .child(TEXT)
+                    .test_support(),
+            )
+            .child(self.button(
+                Stop::Undo,
+                chip(UNDO_ID.into(), "Undo", false, t).aria_label("Undo clear"),
+                t,
+                cx,
+            ))
     }
 
     /// Whether `kind`'s list is the open one (tests).
@@ -851,7 +1112,10 @@ impl FacetView {
         if hidden == 0 {
             return None;
         }
-        let count = SharedString::from(format!("{hidden} hidden"));
+        let count = SharedString::from(match hidden {
+            1 => "1 block hidden".to_string(),
+            n => format!("{n} blocks hidden"),
+        });
         let show_all = (hidden <= GAP_SHOW_ALL_MAX).then(|| {
             self.button(
                 Stop::ShowAll(g),
@@ -870,11 +1134,11 @@ impl FacetView {
                 .text_color(theme::muted(t))
                 .when(gap.above.is_some(), |row| {
                     let down = gap_down_id(g);
-                    let el = icon_chip(down, IconName::ChevronDown, "Show one more below", t);
+                    let el = icon_chip(down, IconName::ChevronDown, "Show next block", t);
                     row.child(self.button(Stop::GapDown(g), el, t, cx))
                 })
                 .when(gap.below.is_some(), |row| {
-                    let el = icon_chip(gap_up_id(g), IconName::ChevronUp, "Show one more above", t);
+                    let el = icon_chip(gap_up_id(g), IconName::ChevronUp, "Show previous block", t);
                     row.child(self.button(Stop::GapUp(g), el, t, cx))
                 })
                 .child(
@@ -891,7 +1155,7 @@ impl FacetView {
 
     /// The slim row above chunk `i`, outside its sized height: the headings
     /// that contain it as clickable crumbs joined by ` › `, and `Open
-    /// source` at the right end. Drawn with no crumbs too, so pieces line up.
+    /// note` at the right end. Drawn with no crumbs too, so pieces line up.
     fn render_crumbs(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
         let mut crumbs: Vec<AnyElement> = Vec::new();
         let plan_crumbs = self.members.chunk(i).map_or(&[][..], |plan| &plan.crumbs);
@@ -913,11 +1177,16 @@ impl FacetView {
                     .into_any_element(),
             );
         }
+        // The piece clips, and so does the crumbs' own box: both keep room
+        // for a focus ring at their edge. The crumbs' box reaches into the
+        // row's room, so the crumbs sit where the row's other parts do.
+        let room = ring_room();
         div()
             .flex()
             .flex_none()
             .items_center()
             .gap_2()
+            .p(room)
             .child(
                 div()
                     .flex()
@@ -925,12 +1194,14 @@ impl FacetView {
                     .min_w_0()
                     .items_center()
                     .gap_0p5()
+                    .p(room)
+                    .m(-room)
                     .overflow_hidden()
                     .children(crumbs),
             )
             .child(self.button(
                 Stop::Open(i),
-                text_button(open_id(i), "Open source", t),
+                text_button(open_id(i), "Open note", t),
                 t,
                 cx,
             ))
@@ -1009,6 +1280,7 @@ impl Render for FacetView {
         let theme = theme::current(cx);
         let t = &*theme;
         let line_height = (f32::from(editor_font::font_size(cx)) * LINE_HEIGHT).round();
+        let title_size = collection::dateline_title_size(cx);
         let rem = f32::from(window.rem_size());
         self.sized_rows = (0..self.members.len())
             .map(|i| self.rows_of(i, cx))
@@ -1025,7 +1297,7 @@ impl Render for FacetView {
         let mut lead = None;
         for g in 0..self.members.gaps.len() {
             let spaced = !body.is_empty();
-            if let Some(line) = self.render_dateline(self.members.gaps[g], spaced, t) {
+            if let Some(line) = self.render_dateline(self.members.gaps[g], spaced, title_size, t) {
                 lead = Some(body.len());
                 body.push(line);
             }
@@ -1087,13 +1359,37 @@ impl Render for FacetView {
                 .child(text)
                 .test_support()
         });
-        let first_notes = self.render_first_notes(t);
-        let show_more = self
-            .show_more_label()
-            .map(|label| self.button(Stop::ShowMore, chip(SHOW_MORE_ID.into(), label, t), t, cx));
-        // The stop with the keyboard went away (`Clear` once cleared): the
-        // view takes it.
-        if self.stops.get_mut().end() {
+        let collection_line = self.render_collection_line(t);
+        let show_more = self.show_more_label().map(|label| {
+            self.button(
+                Stop::ShowMore,
+                chip(SHOW_MORE_ID.into(), label, false, t),
+                t,
+                cx,
+            )
+        });
+        let show_more_count = self.show_more_count().map(|text| {
+            let text = SharedString::from(text);
+            div()
+                .id(SHOW_MORE_COUNT_ID)
+                .role(Role::Label)
+                .aria_label(text.clone())
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child(text)
+                .test_support()
+        });
+        // A stop asked for the keyboard (`Undo`, after Enter on `Clear`)
+        // takes it once drawn. Else, when the stop with the keyboard went
+        // away (`Undo` once used), the view takes it.
+        let gone = self.stops.get_mut().end();
+        let asked = self
+            .focus_after
+            .take()
+            .and_then(|stop| self.stops.get_mut().handle(&stop));
+        if let Some(handle) = asked {
+            window.focus(&handle, cx);
+        } else if gone {
             window.focus(&self.focus, cx);
         }
         // A list closed by new text took its field with it (see `plan`).
@@ -1115,7 +1411,7 @@ impl Render for FacetView {
             .min_h_0()
             .bg(theme::background(t))
             .children(bar)
-            .children(first_notes)
+            .children(collection_line)
             .children(hint)
             .child(
                 div()
@@ -1132,7 +1428,15 @@ impl Render for FacetView {
                     .track_scroll(&self.scroll)
                     .children(body)
                     .when_some(show_more, |column, button| {
-                        column.child(div().flex().flex_none().child(button))
+                        column.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap_2()
+                                .child(button)
+                                .children(show_more_count),
+                        )
                     })
                     .child(resize_check(cx.entity().downgrade())),
             )

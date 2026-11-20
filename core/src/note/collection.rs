@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use super::facet_counts::in_view_count;
 use super::facet_view::{plan_chunks, ChunkPlan};
 use super::facets::{select_blocks, Facet, FacetEntry, NoteFacets};
 
@@ -37,6 +38,13 @@ pub fn select_collection(notes: &[&NoteFacets], picks: &[Facet]) -> Vec<Vec<Rang
     // `select_blocks` with no picks already gives the whole note, and `[]` for
     // a note without blocks.
     notes.iter().map(|n| select_blocks(n, picks)).collect()
+}
+
+/// The sum of [`in_view_count`] over `notes`: how many pieces `facet`
+/// gives in the collection's view under `picks`. To count every facet at
+/// once, use [`in_view_counts`](super::in_view_counts).
+pub fn in_view_count_collection(notes: &[&NoteFacets], picks: &[Facet], facet: &Facet) -> usize {
+    notes.iter().map(|n| in_view_count(n, picks, facet)).sum()
 }
 
 /// The chunks of one note of a collection.
@@ -158,6 +166,19 @@ mod tests {
         let (a, b, c) = (nf("#a x\n"), nf("none\n"), nf("#a y\n"));
         let out = select_collection(&[&a, &b, &c], &[tag("a")]);
         assert_eq!(out, [vec![0..1], vec![], vec![0..1]]);
+    }
+
+    #[test]
+    fn collection_counts_sum_over_notes() {
+        let a = nf("# H\n\n#a one [[l]]\n\n#a two\n");
+        let b = nf("#a three [[l]]\n\n[[l]] four\n");
+        let c = nf("none\n");
+        let notes = [&a, &b, &c];
+        let l = Facet::new(FacetKind::NoteLink, "l");
+        assert_eq!(in_view_count_collection(&notes, &[], &l), 3);
+        assert_eq!(in_view_count_collection(&notes, &[tag("a")], &l), 2);
+        assert_eq!(in_view_count_collection(&notes, &[tag("a")], &tag("a")), 3);
+        assert_eq!(in_view_count_collection(&[], &[tag("a")], &l), 0);
     }
 
     fn paras(prefix: &str, n: usize) -> String {

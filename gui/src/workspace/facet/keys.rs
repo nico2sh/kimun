@@ -3,18 +3,19 @@
 //! **Tab stops.** Every chip, pill and text button the view draws is a tab
 //! stop on a focus handle the view keeps ([`Stops`]), so the kit's root walks
 //! them with Tab in the order they are painted: the bar's kind chips, its
-//! search chip, its picked pills, `Clear`, then the column top to bottom.
-//! The stop with the keyboard is drawn with the focus ring
-//! (`theme::focus_border`), and Enter or Space on it does what a click does
-//! ([`FacetView::activate`]). A picked pill that unpicks itself while it has
-//! the keyboard hands it to the next pick, or to the one before when it was
-//! the last. Any other stop that goes away with the keyboard (`Clear` once
-//! the picks are cleared, the only pick) hands it to the view.
+//! search chip, its picked pills, `Clear` (or `Undo` just after a clear),
+//! then the column top to bottom. The stop with the keyboard is drawn with
+//! the focus ring ([`focus_ring`], a 2 px stroke 1 px outside the stop), and
+//! Enter or Space on it does what a click does ([`FacetView::activate`]).
+//! Enter or Space on `Clear` hands the keyboard to `Undo`. A picked pill
+//! that unpicks itself while it has the keyboard hands it to the next pick,
+//! or to the one before when it was the last. Any other stop that goes away
+//! with the keyboard (`Undo` once used, the only pick) hands it to the view.
 //!
 //! **Keys.** Taken before anything inside the view sees them (a piece's
 //! read-only editor would take letters), and never passed on, so neither the
 //! group's hidden editor nor the workspace's keymap gets them: `/` opens the
-//! list of every unpicked facet, the one the search chip opens (nothing when
+//! list of every facet, the one the search chip opens (nothing when
 //! every facet is picked), `j`/`k` bring the next/previous piece to the top,
 //! `r` asks a collection to run its query again ([`FacetEvent::Refresh`]),
 //! Escape clears the picks. An open list closes on Escape first: the kit's
@@ -23,20 +24,25 @@
 //! then clears, and Tab and Shift+Tab, which the piece's editor leaves
 //! alone, walk on to the next stop. While the list's filter field has the
 //! keyboard the view leaves plain keys to it. Up and Down move the list's
-//! highlight over its drawn pills in order (tags, then links, then headings
-//! in the search list), and Enter picks the lit facet.
+//! highlight one row at a time over its drawn rows in order, ticked rows
+//! included (tags, then links, then headings in the search list), and the
+//! list scrolls the lit row into view. Enter toggles the lit row: it picks
+//! an unpicked facet and unpicks a ticked one. The list stays open, the row
+//! keeps its place and the highlight stays on it. A muted line (the empty
+//! filter text, the count of rows left out) is never lit.
 //!
-//! **The primary modifier.** Pressing or releasing it (Ctrl, or Cmd on
-//! macOS) while the keyboard is anywhere in the view draws the view again,
-//! with no pointer move: a piece's links and tags show the pointing hand only
-//! while it is held.
+//! **Undo.** Ctrl+Z (Cmd+Z on macOS) brings back the picks the last clear
+//! removed (`Clear`, Escape), from anywhere in the view, a piece included.
+//! While the list's filter field has the keyboard, Ctrl+Z is the field's
+//! own text undo. The `Undo` button the summary row shows after a clear does
+//! the same.
 
 use std::collections::HashMap;
 
 use gpui_kit::component::input::{Enter, MoveDown, MoveUp};
 use gpui_kit::{
     App, Context, Div, FocusHandle, Focusable as _, InteractiveElement, KeyDownEvent,
-    ModifiersChangedEvent, Stateful, Styled, Window, point, px,
+    ParentElement, Stateful, Styled, Window, point, px,
 };
 use kimun_core::note::{Facet, Reveal};
 use kimun_notes::logic::input::{Key, Mods};
@@ -45,7 +51,7 @@ use kimun_notes::settings::themes::Theme;
 use super::{FacetEvent, FacetView, ListKind};
 use crate::input;
 use crate::keymap::Platform;
-use crate::theme;
+use crate::workspace::facet_ui::focus_ring;
 
 /// A tab stop of the view: what it is, so a key can do what its click does.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,6 +60,8 @@ pub(crate) enum Stop {
     /// search chip).
     Menu(ListKind),
     Clear,
+    /// The summary row's `Undo`, after a clear.
+    Undo,
     /// The empty message's `Remove last pick`.
     RemoveLast,
     /// A collection's empty message's `Refresh`.
@@ -61,7 +69,7 @@ pub(crate) enum Stop {
     Pill(Facet),
     /// Crumb `.1` of chunk `.0`'s breadcrumb.
     Crumb(usize, usize),
-    /// Chunk `.0`'s `Open source`.
+    /// Chunk `.0`'s `Open note`.
     Open(usize),
     GapDown(usize),
     GapUp(usize),
@@ -69,8 +77,7 @@ pub(crate) enum Stop {
     ShowMore,
 }
 
-/// Element ids, for tests.
-#[cfg(test)]
+/// Element ids.
 impl Stop {
     /// The stop's element id.
     pub(crate) fn id(&self) -> gpui_kit::SharedString {
@@ -78,6 +85,7 @@ impl Stop {
         match self {
             Stop::Menu(kind) => menu_id(*kind),
             Stop::Clear => CLEAR_ID.into(),
+            Stop::Undo => UNDO_ID.into(),
             Stop::RemoveLast => REMOVE_LAST_ID.into(),
             Stop::Refresh => REFRESH_ID.into(),
             Stop::Pill(facet) => pill_id(facet),
@@ -104,6 +112,8 @@ pub(super) struct Stops {
     before: Option<Stop>,
     /// The stop this frame drew with the focus ring (tests).
     pub(super) ringed: Option<Stop>,
+    /// The window's rem size this frame: the ring's corners follow it.
+    rem: gpui_kit::Pixels,
 }
 
 impl Stops {
@@ -136,6 +146,7 @@ impl Stops {
     /// A frame begins: note the stop with the keyboard, draw none yet.
     pub(super) fn begin(&mut self, window: &Window) {
         self.focused = self.focused(window);
+        self.rem = window.rem_size();
         self.drawn.clear();
         self.ringed = None;
     }
@@ -152,8 +163,9 @@ impl Stops {
             .is_some_and(|stop| !drawn.contains(stop))
     }
 
-    /// `el` as `stop`: a tab stop, ringed while it has the keyboard.
-    pub(super) fn track<E: InteractiveElement + Styled>(
+    /// `el` as `stop`: a tab stop, with the focus ring
+    /// ([`focus_ring`]) while it has the keyboard.
+    pub(super) fn track<E: InteractiveElement + Styled + ParentElement>(
         &mut self,
         stop: Stop,
         el: E,
@@ -169,10 +181,11 @@ impl Stops {
         if ring {
             self.ringed = Some(stop.clone());
         }
+        let id = stop.id();
         self.drawn.push(stop);
         let el = el.track_focus(&handle);
         if ring {
-            el.border_color(theme::focus_border(t))
+            el.child(focus_ring(&id, self.rem, t))
         } else {
             el
         }
@@ -202,15 +215,6 @@ pub(super) fn keys(el: Stateful<Div>, cx: &mut Context<FacetView>) -> Stateful<D
             cx.notify();
         }
     }))
-    .on_modifiers_changed(
-        cx.listener(|this, event: &ModifiersChangedEvent, window, _| {
-            let held = input::mods(&event.modifiers) == Platform::current().primary();
-            if this.primary_held != held {
-                this.primary_held = held;
-                window.refresh();
-            }
-        }),
-    )
     .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
         if this.field_has_keyboard(window, cx) {
             this.step_highlight(false, cx);
@@ -233,7 +237,7 @@ pub(super) fn keys(el: Stateful<Div>, cx: &mut Context<FacetView>) -> Stateful<D
 
 impl FacetView {
     /// `el` as `stop`, a tab stop of the view (drawing helpers take `&self`).
-    pub(super) fn track<E: InteractiveElement + Styled>(
+    pub(super) fn track<E: InteractiveElement + Styled + ParentElement>(
         &self,
         stop: Stop,
         el: E,
@@ -270,7 +274,15 @@ impl FacetView {
         let Some(key) = input::key_down_input(event) else {
             return false;
         };
-        if self.field_has_keyboard(window, cx) || key.mods.ctrl || key.mods.alt || key.mods.sup {
+        if self.field_has_keyboard(window, cx) {
+            return false;
+        }
+        // Ctrl+Z (Cmd+Z on macOS) brings back the last cleared picks, in a
+        // piece too: a piece has no text undo.
+        if key.key == Key::Char('z') && key.mods == Platform::current().primary() {
+            return self.undo_clear(cx);
+        }
+        if key.mods.ctrl || key.mods.alt || key.mods.sup {
             return false;
         }
         let in_piece = self.piece_has_keyboard(window, cx);
@@ -310,7 +322,16 @@ impl FacetView {
                     self.open_list(kind, window, cx);
                 }
             }
-            Stop::Clear => self.clear(cx),
+            Stop::Clear => {
+                // With the keyboard on `Clear`, it moves to `Undo`.
+                if self.stops.borrow().focused(window) == Some(Stop::Clear) {
+                    self.focus_after = Some(Stop::Undo);
+                }
+                self.clear(cx);
+            }
+            Stop::Undo => {
+                self.undo_clear(cx);
+            }
             Stop::RemoveLast => self.remove_last_pick(cx),
             Stop::Refresh => {
                 self.refresh_key(cx);
@@ -323,7 +344,7 @@ impl FacetView {
             }
             Stop::Open(i) => {
                 if let Some((note, line)) = self.chunk_source(i) {
-                    cx.emit(FacetEvent::OpenSource { note, line });
+                    cx.emit(FacetEvent::OpenNote { note, line });
                 }
             }
             Stop::GapDown(g) => self.reveal(g, Reveal::Below, cx),
@@ -374,9 +395,11 @@ impl FacetView {
         }
     }
 
-    /// Move the open list's highlight one result down or up.
+    /// Move the open list's highlight one row down or up, and scroll the
+    /// lit row into view (with its group's label, going up onto a group's
+    /// first row).
     fn step_highlight(&mut self, down: bool, cx: &mut Context<Self>) {
-        let len = self.list_pills(cx).len();
+        let len = self.list_rows(cx).len();
         if let Some(more) = &mut self.more {
             let last = len.saturating_sub(1);
             more.highlight = if down {
@@ -384,29 +407,22 @@ impl FacetView {
             } else {
                 more.highlight.min(last).saturating_sub(1)
             };
+            more.reveal.set(true);
+            more.up = !down;
             cx.notify();
         }
     }
 
-    /// Enter in the list: toggle the lit facet; the list stays open.
+    /// Enter in the list: toggle the lit row; the list stays open and the
+    /// highlight stays on the row ([`FacetView::toggle_row`]).
     fn pick_highlighted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let pills = self.list_pills(cx);
+        let rows = self.list_rows(cx);
         let Some(more) = &self.more else {
             return;
         };
-        let lit = more.highlight.min(pills.len().saturating_sub(1));
-        let Some(facet) = pills.into_iter().nth(lit).map(|pill| pill.facet) else {
-            return;
-        };
-        self.pick_more(facet.clone(), window, cx);
-        // A pick leaves the list (its pill joins the picks row). The
-        // highlight follows a facet still listed; else it keeps its place,
-        // on the facet that moved up into it (the last when the list got
-        // shorter).
-        let pills = self.list_pills(cx);
-        let at = pills.iter().position(|p| p.facet == facet);
-        if let Some(more) = &mut self.more {
-            more.highlight = at.unwrap_or(more.highlight.min(pills.len().saturating_sub(1)));
+        let lit = more.highlight.min(rows.len().saturating_sub(1));
+        if let Some(facet) = rows.into_iter().nth(lit).map(|row| row.facet) {
+            self.toggle_row(facet, window, cx);
         }
     }
 }

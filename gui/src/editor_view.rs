@@ -25,11 +25,15 @@
 //! bar open a press never follows, as in the TUI.
 //!
 //! **Read-only.** A read-only editor (a facet view's piece) is text: a press
-//! places the caret, a drag selects, a double press selects a word, and the
-//! copy chord copies. Only a primary press on a link or label does more: it
-//! emits [`EditorEvent::ReadOnlyFollow`] for the owner, never a follow on the
-//! channel. Its targets show the pointing hand only while the primary
-//! modifier is held.
+//! places the caret, a drag selects, a double press on text selects a word,
+//! and the copy chord copies. A click on a link or label (a press and its
+//! release with the pointer kept on that target) also asks the owner to
+//! follow it: it emits [`EditorEvent::ReadOnlyFollow`] at the release. A
+//! primary press on a target emits it at the press. The presses right after
+//! a click that followed, on the same cell, are plain presses. A drag that
+//! leaves the target selects and follows nothing. It never follows on the
+//! channel (ADR-0061). Its targets show the pointing hand at all times, as
+//! in an editor that edits.
 //!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
 //! ([`crate::keymap`]) with the editor focused. Find and replace are the
@@ -118,14 +122,25 @@ pub enum EditorEvent {
     /// A right-press with no selection — open the note menu at `at`, the
     /// pointer in window coordinates.
     ContextMenu { at: Point<Pixels> },
-    /// A primary press (Cmd on macOS, Ctrl elsewhere) on a **follow target**
-    /// in a read-only editor: the owner decides how to follow it (the editor
-    /// never follows on the app channel). Only a primary press on a target
-    /// emits; every other press is a text press (caret, selection).
+    /// A click on a **follow target** in a read-only editor: the owner
+    /// decides how to follow it (the editor never follows on the app
+    /// channel). A plain click emits at its release, while the pointer
+    /// stayed on the target. A primary press (Cmd on macOS, Ctrl elsewhere)
+    /// emits at the press. A drag off the target, a press off any target and
+    /// the presses right after a follow emit nothing: they are text presses
+    /// (caret, selection).
     ReadOnlyFollow { target: FollowTarget },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
+
+impl Painted {
+    /// Whether the pointer at `at` shows the pointing hand (tests).
+    #[cfg(test)]
+    pub(crate) fn hand_at(&self, at: Point<Pixels>) -> bool {
+        self.hand_areas.iter().any(|area| area.contains(&at))
+    }
+}
 
 /// How the caret is drawn. Mirrors the TUI's terminal cursor shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,14 +188,21 @@ pub struct Painted {
     /// The autocomplete popup, when one is drawn: its box in window
     /// coordinates.
     pub popup: Option<Bounds<Pixels>>,
-    /// Follow targets were drawn with the pointing hand (else the text
-    /// cursor): see [`EditorView::hand_over_targets`].
-    pub targets_hand: bool,
+    /// Where the pointer is the pointing hand: the cells of every follow
+    /// target drawn, in window coordinates. The text cursor elsewhere.
+    /// Kept for tests only: the element sets the cursor from its own copy.
+    #[cfg(test)]
+    pub hand_areas: Vec<Bounds<Pixels>>,
 }
 
 /// How close together two presses on a cell must be to follow (ADR-0043;
 /// the TUI's `DOUBLE_CLICK`).
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// How far, in pixels, the pointer may move from a press on a follow target
+/// in read-only text and still click it. A longer drag selects text and
+/// follows nothing, even inside the target.
+const CLICK_SLOP: f32 = 4.0;
 
 /// The presses forming one double-click (ADR-0043): two plain left presses on
 /// the same cell within [`DOUBLE_CLICK`]. Not a neighbourhood, so two clicks
@@ -218,6 +240,20 @@ pub(crate) fn frozen_clock() -> Instant {
     *AT.get_or_init(Instant::now)
 }
 
+/// A read-only press on a follow target, waiting for its release.
+#[derive(Debug)]
+struct PressedTarget {
+    /// The pressed cell, and when.
+    col: u16,
+    row: u16,
+    at: Instant,
+    /// The buffer row the target is on, and the target. The pointer stays
+    /// on the target while the caret it drags stays on this row inside a
+    /// span of this target.
+    buffer_row: usize,
+    target: FollowTarget,
+}
+
 /// One editor pane: the logic [`Editor`] plus what only a GPUI host needs.
 pub struct EditorView {
     pub(crate) editor: Editor,
@@ -247,11 +283,18 @@ pub struct EditorView {
     /// App chords still resolve.
     pub(crate) input_blocked: bool,
     /// A read-only surface: no caret drawn, presses select text (a double
-    /// press a word), the copy chord copies, and a primary press on a follow
-    /// target reports [`EditorEvent::ReadOnlyFollow`] instead of following.
+    /// press a word), the copy chord copies, and a click on a follow target
+    /// reports [`EditorEvent::ReadOnlyFollow`] instead of following.
     /// Losing the keyboard drops the selection. Other keys are stopped by
     /// `input_blocked`, which this sets.
     pub(crate) read_only: bool,
+    /// A read-only surface's plain press on a follow target, until the
+    /// release. A move that leaves the target's span (a drag) drops it.
+    pressed_target: Option<PressedTarget>,
+    /// A read-only surface's last click that followed: its cell and when
+    /// the last press of that run came. A press on the same cell within
+    /// [`DOUBLE_CLICK`] of it is a plain press: no word, no second follow.
+    followed: Option<(u16, u16, Instant)>,
     /// A read-only surface's watch on its keyboard: once the keyboard leaves
     /// it, its selection goes ([`Self::drop_unreachable_selection`]).
     /// Subscribed at the first render, which has the window.
@@ -297,8 +340,8 @@ impl EditorView {
     }
 
     /// An editor over `text` that takes no input: a press places the caret
-    /// and may select, as in read-only text; a primary press on a follow
-    /// target emits [`EditorEvent::ReadOnlyFollow`] instead of following. It
+    /// and may select, as in read-only text; a click on a follow target
+    /// emits [`EditorEvent::ReadOnlyFollow`] instead of following. It
     /// drains its own app channel, as `Self::new` does.
     pub fn new_read_only(text: &str, cx: &mut Context<Self>) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -333,6 +376,9 @@ impl EditorView {
 
     /// Show `text` in a read-only editor, the caret back at the start.
     pub fn set_text_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
+        // A press on the old text follows nothing in the new one.
+        self.pressed_target = None;
+        self.followed = None;
         self.editor.set_text(text.to_string());
         self.ac_revision = self.editor.content_revision();
         self.preedit = None;
@@ -558,6 +604,8 @@ impl EditorView {
             preedit: None,
             input_blocked: false,
             read_only: false,
+            pressed_target: None,
+            followed: None,
             _focus_out: None,
             painted: None,
             fonts: None,
@@ -888,11 +936,29 @@ impl EditorView {
         let left = pointer.kind == PointerKind::Down(Button::Left);
         if self.read_only {
             // Read-only text: a left press places the caret and may start a
-            // drag selection, a double press selects a word, and neither
-            // tells anyone. A primary press on a follow target also asks the
-            // owner to follow it. Never a follow on the channel, a menu or an
-            // edit; a right press does nothing.
+            // drag selection, and a double press on text selects a word. A
+            // plain press on a follow target arms a click: its release on the
+            // same target follows ([`Self::pointer_up`]), unless the pointer
+            // moved more than [`CLICK_SLOP`] pixels. A primary press on
+            // a target follows at once. Presses right after a click that
+            // followed are plain presses. Never a follow on the channel, a
+            // menu or an edit; a right press does nothing.
+            self.pressed_target = None;
             if left {
+                let now = (self.clock)();
+                let after_follow = self.followed.is_some_and(|(col, row, at)| {
+                    (col, row) == (pointer.col, pointer.row)
+                        && now.saturating_duration_since(at) < DOUBLE_CLICK
+                });
+                self.followed = after_follow.then_some((pointer.col, pointer.row, now));
+                if after_follow {
+                    self.clicks.end();
+                    self.editor.handle_pointer(&pointer, &self.tx);
+                    self.editor.settle_pointer(true);
+                    self.dragging = true;
+                    self.settle(window, cx);
+                    return;
+                }
                 let primary = pointer.mods == keymap::Platform::current().primary();
                 let double = pointer.mods == Mods::NONE
                     && self
@@ -903,8 +969,19 @@ impl EditorView {
                 }
                 self.editor.handle_pointer(&pointer, &self.tx);
                 self.editor.settle_pointer(true);
-                if primary && let Some(target) = self.editor.follow_target_at_cursor() {
+                let target = self.editor.follow_target_at_cursor();
+                if primary && let Some(target) = target {
+                    self.followed = Some((pointer.col, pointer.row, now));
                     cx.emit(EditorEvent::ReadOnlyFollow { target });
+                } else if pointer.mods == Mods::NONE && !double {
+                    let buffer_row = self.editor.buffer().cursor().0;
+                    self.pressed_target = target.map(|target| PressedTarget {
+                        col: pointer.col,
+                        row: pointer.row,
+                        at: now,
+                        buffer_row,
+                        target,
+                    });
                 }
                 if double {
                     self.select_word_at_caret();
@@ -1012,13 +1089,6 @@ impl EditorView {
         }
     }
 
-    /// Whether follow targets show the pointing hand with `mods` held: always
-    /// in an editor that follows, and only while the primary modifier alone
-    /// is held in a read-only one (there a target is text until then).
-    pub(crate) fn hand_over_targets(&self, mods: Mods) -> bool {
-        !self.read_only || mods == keymap::Platform::current().primary()
-    }
-
     /// A press on find bar row `row` (0 the query, 1 the replacement) gives
     /// that field the keyboard. The bar's own Tab is the one way it moves
     /// focus, so the press uses it.
@@ -1051,6 +1121,7 @@ impl EditorView {
         // The release happened where we could not see it (outside the window).
         if event.pressed_button != Some(MouseButton::Left) {
             self.dragging = false;
+            self.pressed_target = None;
             self.drop_unreachable_selection(window, cx);
             return;
         }
@@ -1059,6 +1130,11 @@ impl EditorView {
         };
         self.editor.handle_pointer(&pointer, &self.tx);
         self.editor.settle_pointer(false);
+        // Off the pressed target, or moved past the slop: a drag, not a
+        // click.
+        if !self.on_pressed_target() || self.moved_past_slop(event.position) {
+            self.pressed_target = None;
+        }
         self.settle(window, cx);
     }
 
@@ -1074,13 +1150,46 @@ impl EditorView {
             return;
         }
         self.dragging = false;
+        let pressed = self.pressed_target.take();
         if let Some(pointer) = input::pointer_up(event, origin, cells) {
             self.editor.handle_pointer(&pointer, &self.tx);
             self.editor.settle_pointer(false);
             self.settle(window, cx);
+            // A read-only click: released on the target it pressed.
+            if let Some(pressed) = pressed
+                && self.caret_on(&pressed)
+            {
+                self.followed = Some((pressed.col, pressed.row, pressed.at));
+                cx.emit(EditorEvent::ReadOnlyFollow {
+                    target: pressed.target,
+                });
+            }
         }
         // The keyboard left during the drag: what it selected is out of reach.
         self.drop_unreachable_selection(window, cx);
+    }
+
+    /// Whether `at` lies more than [`CLICK_SLOP`] pixels from the press.
+    fn moved_past_slop(&self, at: Point<Pixels>) -> bool {
+        let dx = f32::from(at.x - self.pressed_at.x);
+        let dy = f32::from(at.y - self.pressed_at.y);
+        dx.hypot(dy) > CLICK_SLOP
+    }
+
+    /// Whether the pointer is still on the pressed follow target (true with
+    /// none pressed).
+    fn on_pressed_target(&self) -> bool {
+        self.pressed_target
+            .as_ref()
+            .is_none_or(|pressed| self.caret_on(pressed))
+    }
+
+    /// Whether the caret, which the pointer drags, sits inside a span of
+    /// `pressed`'s target on its row: a wobble across a cell edge inside
+    /// the tag keeps it there.
+    fn caret_on(&self, pressed: &PressedTarget) -> bool {
+        self.editor.buffer().cursor().0 == pressed.buffer_row
+            && self.editor.follow_target_at_cursor().as_ref() == Some(&pressed.target)
     }
 
     pub(crate) fn scroll_wheel(

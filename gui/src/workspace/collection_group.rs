@@ -18,6 +18,10 @@
 //! move re-keys the members it touches (a folder move every member under
 //! it) and reads them again; a delete takes them out of the list, down to
 //! the empty state. [`Workspace::refresh_collection`] runs the query again.
+//! While a load for the group runs, the view's collection line says
+//! `Loading...` over the old content ([`FacetView::set_loading`], set each
+//! time the group is drawn). When a refresh lands, the line says for a few
+//! seconds what changed.
 //!
 //! **What it is not.** It shows no one note: the toggle refuses (no editor
 //! to go back to), the Note menu offers only the layout items, and the
@@ -259,11 +263,13 @@ impl Workspace {
         if let Some(state) = self.state_mut(group) {
             state.facet_loading = Some(task);
         }
+        // The view's line says `Loading...` from the next frame.
+        cx.notify();
     }
 
     /// The query ran again: `group`'s view takes the new list, when it
     /// still shows that query.
-    fn collection_refreshed(
+    pub(super) fn collection_refreshed(
         &mut self,
         group: GroupId,
         query: &str,
@@ -274,6 +280,9 @@ impl Workspace {
             return;
         };
         state.facet_loading = None;
+        // The line stops saying `Loading...` on the next frame, also when
+        // the result is not for the view any more.
+        cx.notify();
         let Some(view) = state.facet.clone() else {
             return;
         };
