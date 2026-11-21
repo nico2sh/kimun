@@ -11,8 +11,8 @@
 //! title, a hairline that fills the row, and a muted meta text, the note's
 //! folder and how many of its pieces are drawn (`journal · 2 pieces`; a note
 //! at the vault root shows the count only). It is plain text, no tab stop and
-//! no button. It stands above the note's first gap, so that gap's hidden
-//! count reads as the note's own; the note above keeps its last gap above
+//! no button. It stands above the note's first piece and that piece's up
+//! row, so the hidden count of the note's first gap reads as the note's own; the note above keeps its last gap above
 //! the dateline. Every dateline but the column's first row has 24 px above
 //! it. A piece's breadcrumb row holds only its heading crumbs and `Open
 //! note`. A member's first and last gap are its own: between two notes a
@@ -21,18 +21,22 @@
 //! With no member the view says "No notes match this query." with a
 //! `Refresh` button.
 //!
+//! **The view title.** The row at the top of the view says what it shows:
+//! a muted `Collection` and the query ([`mod@super::heading`]).
+//!
 //! **The collection line.** One muted line under the bar, always there in
-//! a collection and never in a single-note view; a screen reader hears it
-//! as a status. It holds the note numbers: `23 notes` with no picks, `12
-//! pieces in 5 of 23 notes` with picks. Then, joined by ` · `, `showing 100
-//! of 340` when the cap cuts the column, `first 500 of 600` when the query
-//! hit the loader's cap, and the list's age, `list from 10:42` (the local
-//! time its load completed, 24-hour). While a load runs it says
-//! `Loading...` over the old content. For a few seconds after a refresh it
+//! a collection and never in a single-note view. It holds the note
+//! numbers: `23 notes` with no picks, `12 pieces in 5 of 23 notes` with
+//! picks. Then, joined by ` · `, `first 500 of 600` when the query hit the
+//! loader's cap, and the list's age, `list from 10:42` (the local time its
+//! load completed, 24-hour). When the cap cuts the column, the `Show more`
+//! row says how many pieces show. While a load runs it says `Loading…`
+//! over the old content. For a few seconds after a refresh it
 //! says what changed: `Refreshed: 2 notes added, 1 removed`, or
 //! `Refreshed: no changes`, and ` · 1 pick dropped` when the new list
 //! dropped picks. A pick, an unpick, a clear or an undo ends that report
-//! at once.
+//! at once. A screen reader hears the line as a status only while it
+//! reports a load or a refresh.
 
 use std::time::Duration;
 
@@ -40,9 +44,8 @@ use chrono::NaiveTime;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    div, px,
+    AnyElement, App, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, MAX_RANGES};
@@ -51,13 +54,14 @@ use kimun_notes::settings::themes::Theme;
 
 pub(crate) use super::collection_text::{dateline_meta, note_folder, piece_count, refresh_text};
 use super::collection_text::{local_now, note_count};
+use super::heading::DATELINE_LEVEL;
 use super::keys::Stop;
 use super::members::{GapRef, MemberInit, Members};
 use super::rows;
 use super::timed::Timed;
 use super::{
-    COLLECTION_LINE_ID, FacetEvent, FacetView, REFRESH_ID, dateline_folder_id, dateline_id,
-    dateline_meta_id, dateline_rule_id, dateline_title_id,
+    FacetEvent, FacetView, REFRESH_ID, dateline_folder_id, dateline_id, dateline_meta_id,
+    dateline_rule_id, dateline_title_id,
 };
 use crate::workspace::facet_ui::text_button;
 use crate::{editor_font, theme};
@@ -71,6 +75,9 @@ const META_FOLDER_SHRINK: f32 = 1000.;
 pub(crate) fn dateline_title_size(cx: &App) -> Pixels {
     editor_font::font_size(cx)
 }
+
+/// What the collection line says while a load runs.
+const LOADING: &str = "Loading\u{2026}";
 
 /// How long the collection line reports a refresh.
 const REFRESH_SHOWN: Duration = Duration::from_secs(6);
@@ -93,7 +100,7 @@ pub(super) struct Collection {
     loaded_at: NaiveTime,
     /// Where `loaded_at` comes from: the local time, or a test's clock.
     clock: Clock,
-    /// A load for the view is under way: the line says `Loading...`.
+    /// A load for the view is under way: the line says `Loading…`.
     loading: bool,
     /// What the line says just after a refresh. A new load or refresh
     /// drops it.
@@ -148,7 +155,7 @@ impl FacetView {
     }
 
     /// Whether a load for the view is under way. While one is, the
-    /// collection line says `Loading...` over the old content. A new load
+    /// collection line says `Loading…` over the old content. A new load
     /// ends the report of the last refresh. Nothing for a single-note view.
     pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
         let Some(collection) = &mut self.collection else {
@@ -180,7 +187,7 @@ impl FacetView {
             .is_some_and(|c| c.report.is_active())
     }
 
-    /// Whether the line says `Loading...` now (tests).
+    /// Whether the line says `Loading…` now (tests).
     #[cfg(test)]
     pub(crate) fn is_loading(&self) -> bool {
         self.collection.as_ref().is_some_and(|c| c.loading)
@@ -341,12 +348,16 @@ impl FacetView {
             div()
                 .id(dateline_id(m))
                 .role(Role::Heading)
+                .aria_level(DATELINE_LEVEL)
                 .aria_label(title.clone())
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap_2()
                 .when(spaced, |row| row.mt(rows::dateline_margin()))
+                // The title starts at the column's edge, left of the spine
+                // the piece text and the crumbs share ([`rows::spine`]). The
+                // outdent is on purpose: it marks where a note begins.
                 .child(
                     div()
                         .id(dateline_title_id(m))
@@ -400,8 +411,9 @@ impl FacetView {
             let mut el = div()
                 .id(dateline_folder_id(m))
                 .min_w_0()
-                // A space's width to the dot, not the row's gap.
-                .mr(px(-4.))
+                // About a space's width to the dot, not the row's gap. A rem
+                // value, so it follows the font size and the zoom.
+                .mr(-rows::meta_join())
                 .truncate()
                 .text_size(rows::small_text())
                 .text_color(muted)
@@ -433,12 +445,21 @@ impl FacetView {
         Some(self.button(Stop::Refresh, el, t, cx).into_any_element())
     }
 
+    /// Whether the collection line reports something new: a load that runs
+    /// or the end of a refresh. Only then is it a status a screen reader
+    /// says ([`Self::render_collection_line`]).
+    pub(super) fn collection_line_reports(&self) -> bool {
+        self.collection
+            .as_ref()
+            .is_some_and(|c| c.loading || c.refreshed.is_some())
+    }
+
     /// What the collection line says (see the module docs); `None` for a
     /// single-note view.
     pub(super) fn collection_line(&self) -> Option<String> {
         let collection = self.collection.as_ref()?;
         if collection.loading {
-            return Some("Loading...".into());
+            return Some(LOADING.into());
         }
         if let Some(text) = &collection.refreshed {
             return Some(text.clone());
@@ -456,9 +477,6 @@ impl FacetView {
                 note_count(held)
             ),
         });
-        if cut > 0 {
-            parts.push(format!("showing {drawn} of {}", drawn + cut));
-        }
         if collection.capped && collection.total > held {
             parts.push(format!("first {held} of {}", collection.total));
         }
@@ -467,23 +485,5 @@ impl FacetView {
             collection.loaded_at.format("%H:%M")
         ));
         Some(parts.join(" \u{b7} "))
-    }
-
-    /// The collection line, muted, under the bar: always in a collection,
-    /// never in a single-note view. A screen reader hears it as a status.
-    pub(super) fn render_collection_line(&self, t: &Theme) -> Option<Div> {
-        let text = SharedString::from(self.collection_line()?);
-        Some(
-            div().flex_none().px_4().pt_2().child(
-                div()
-                    .id(COLLECTION_LINE_ID)
-                    .role(Role::Status)
-                    .aria_label(text.clone())
-                    .text_xs()
-                    .text_color(theme::muted(t))
-                    .child(text)
-                    .test_support(),
-            ),
-        )
     }
 }

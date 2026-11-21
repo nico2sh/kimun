@@ -250,17 +250,22 @@ impl FacetBar {
         pieces: usize,
         notes: Option<usize>,
     ) -> Option<String> {
-        if self.picks.is_empty() {
-            return None;
-        }
+        let picks = self.picks_text(facets)?;
         let noun = if pieces == 1 { "piece" } else { "pieces" };
         let in_notes = notes.map_or_else(String::new, |n| {
             format!(" in {n} {}", if n == 1 { "note" } else { "notes" })
         });
-        Some(format!(
-            "Showing text {} \u{b7} {pieces} {noun}{in_notes}",
-            join_and(&self.phrases(facets))
-        ))
+        Some(format!("{picks} \u{b7} {pieces} {noun}{in_notes}"))
+    }
+
+    /// The picks in words with no count: "Showing text tagged #a or #b, and
+    /// in D". For a view that shows its counts on another line. `None`
+    /// without picks.
+    pub fn picks_text(&self, facets: &NoteFacets) -> Option<String> {
+        if self.picks.is_empty() {
+            return None;
+        }
+        Some(format!("Showing text {}", join_and(&self.phrases(facets))))
     }
 
     /// Why nothing shows: "No text tagged #a, and in D." `None` when there are
@@ -382,6 +387,18 @@ mod tests {
         assert_eq!(
             bar.summary(&f, 1, None).as_deref(),
             Some("Showing text tagged #run \u{b7} 1 piece")
+        );
+    }
+
+    #[test]
+    fn picks_text_names_the_picks_with_no_count() {
+        let f = facets("# D\n\n#run #garden\n");
+        let mut bar = FacetBar::default();
+        assert_eq!(bar.picks_text(&f), None);
+        bar.set_picks(vec![tag("run"), tag("garden"), heading("d")]);
+        assert_eq!(
+            bar.picks_text(&f).as_deref(),
+            Some("Showing text tagged #run or #garden, and in D")
         );
     }
 

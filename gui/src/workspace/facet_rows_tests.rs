@@ -38,6 +38,11 @@ fn bottom(cx: &mut VisualTestContext, id: gpui_kit::SharedString) -> f32 {
     cx.update(|window, _| f32::from(window.find(id).bounds().bottom()))
 }
 
+/// The top of chunk `i`'s editor element.
+fn editor_top(cx: &mut VisualTestContext, i: usize) -> f32 {
+    cx.update(|window, _| f32::from(window.within(chunk_id(i)).find("editor").bounds().top()))
+}
+
 fn close(what: &str, drawn: f32, table: Pixels) {
     let table = f32::from(table);
     assert!(
@@ -48,8 +53,8 @@ fn close(what: &str, drawn: f32, table: Pixels) {
 
 /// Each fixed height of the table, read off the drawn rows of a
 /// collection: the dateline, the gap between items, a gap row, a tail
-/// row with the margin above the next dateline, and every piece's crumbs
-/// and inset around its rows.
+/// row with the margin above the next dateline, and every piece's crumbs,
+/// up row and inset around its rows.
 fn assert_rows_match(view: &Entity<FacetView>, cx: &mut VisualTestContext, rem: f32) {
     let m = view.read_with(cx, |v, _| v.table_metrics());
     assert!(
@@ -61,19 +66,24 @@ fn assert_rows_match(view: &Entity<FacetView>, cx: &mut VisualTestContext, rem: 
     close(&format!("{rem}: column gap"), gap, m.column_gap);
     let dateline = top(cx, chunk_id(0)) - top(cx, dateline_id(0));
     close(&format!("{rem}: dateline"), dateline, m.dateline);
-    // A gap row stands between pieces 0 and 1.
+    // A gap row stands between pieces 0 and 1, pulled up toward piece 0.
     let row = top(cx, chunk_id(1)) - bottom(cx, chunk_id(0)) - gap;
-    close(&format!("{rem}: gap row"), row, m.gap_row);
+    close(&format!("{rem}: gap row"), row, m.gap_row - m.gap_pull);
     // Piece 2 ends note 0 with a tail row; note 1's dateline has its margin.
     let after = top(cx, dateline_id(1)) - bottom(cx, chunk_id(2));
     close(
         &format!("{rem}: tail and margin"),
         after,
-        m.gap_row + m.column_gap + m.dateline_margin,
+        m.gap_row - m.gap_pull + m.column_gap + m.dateline_margin,
     );
-    // Each piece: crumbs, rows, inset.
+    // Piece 1's up row lies between its crumbs and its text.
+    let up = editor_top(cx, 1) - top(cx, chunk_id(1)) - f32::from(m.crumbs);
+    close(&format!("{rem}: up row"), up, m.up_row);
+    // Each piece: crumbs, the up row when the gap above it hides blocks
+    // (the second and third piece of each note), rows, inset.
     let n = view.read_with(cx, |v, _| v.chunks().len());
     for i in 0..n {
+        let up = if i % 3 == 0 { px(0.) } else { m.up_row };
         let rows = view.read_with(cx, |v, cx| {
             v.chunks()[i]
                 .read(cx)
@@ -88,7 +98,7 @@ fn assert_rows_match(view: &Entity<FacetView>, cx: &mut VisualTestContext, rem: 
         close(
             &format!("{rem}: piece {i}"),
             height,
-            m.crumbs + m.inset + m.line * rows as f32,
+            m.crumbs + up + m.inset + m.line * rows as f32,
         );
     }
 }
@@ -112,7 +122,8 @@ fn the_table_rows_are_the_drawn_rows_at_rem_20(cx: &mut TestAppContext) {
 }
 
 /// One shared number moves the drawn rows and the table together: taller
-/// buttons make the gap rows and the crumbs rows taller in both.
+/// buttons make the gap rows, the up rows and the crumbs rows taller in
+/// both.
 #[gpui_kit::test]
 fn a_shared_row_number_moves_the_drawn_row_and_the_table_together(cx: &mut TestAppContext) {
     let (view, cx) = three(cx, 16.);
@@ -134,6 +145,11 @@ fn a_shared_row_number_moves_the_drawn_row_and_the_table_together(cx: &mut TestA
     close(
         "table gap row",
         f32::from(after.gap_row - before.gap_row),
+        px(8.),
+    );
+    close(
+        "table up row",
+        f32::from(after.up_row - before.up_row),
         px(8.),
     );
     assert_rows_match(&view, cx, 16.);

@@ -1127,7 +1127,7 @@ fn a_row_with_no_result_in_view_is_dimmed_and_last(cx: &mut TestAppContext) {
         "a link with results first, the rest last"
     );
     let rows = view.read_with(cx, |view, cx| view.list_row_pills(cx));
-    let dim: Vec<bool> = rows.iter().map(super::facet_ui::dimmed).collect();
+    let dim: Vec<bool> = rows.iter().map(super::facet_pill::dimmed).collect();
     assert_eq!(dim, [false, true, true]);
     assert_eq!(count(cx, &link("alpha")).as_deref(), Some("0"));
     assert_eq!(
@@ -1146,7 +1146,10 @@ fn a_row_with_no_result_in_view_is_dimmed_and_last(cx: &mut TestAppContext) {
     assert!(list_open(&view, cx));
     let rows = view.read_with(cx, |view, cx| view.list_row_pills(cx));
     assert_eq!(rows[1].facet, link("alpha"), "it keeps its place");
-    assert!(!super::facet_ui::dimmed(&rows[1]), "a pick is never dimmed");
+    assert!(
+        !super::facet_pill::dimmed(&rows[1]),
+        "a pick is never dimmed"
+    );
 }
 
 #[gpui_kit::test]

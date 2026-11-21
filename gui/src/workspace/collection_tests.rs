@@ -142,9 +142,12 @@ fn breadcrumbs_no_longer_start_with_the_note_title(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", alpha), (B, "Beta", "#x b1\n")];
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 2, vec![tag("x")]);
     assert_eq!(chunk_texts(&view, cx), ["#x a1", "#x a2", "#x b1"]);
-    // Each title is drawn once, by its dateline, outside every piece.
+    // Each title is drawn once, by its dateline, outside every piece. A
+    // piece group with no crumbs is named after its note too, but draws
+    // no title text: it is left out here.
     for title in ["Alpha", "Beta"] {
-        let found = named(cx, title);
+        let mut found = named(cx, title);
+        found.retain(|e| e.role() != Some(Role::Group));
         assert_eq!(found.len(), 1, "{title}: {found:?}");
         assert_eq!(found[0].role(), Some(Role::Heading), "{title}");
         for i in 0..3 {
@@ -159,10 +162,17 @@ fn breadcrumbs_no_longer_start_with_the_note_title(cx: &mut TestAppContext) {
     let piece = bounds(cx, chunk_id(0));
     let crumb = bounds(cx, crumb_id(0, 0));
     assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Day"));
-    // Only the focus ring's room, which the clipping piece keeps.
+    // Its label starts at the column's one left edge, where the text does.
+    let (spine, inset) = cx.update(|window, _| {
+        let rem = window.rem_size();
+        (
+            super::facet::rows::spine().to_pixels(rem),
+            super::facet_ui::label_inset(rem),
+        )
+    });
     assert_eq!(
-        crumb.left(),
-        piece.left() + gpui_kit::px(3.),
+        crumb.left() + inset,
+        piece.left() + spine,
         "nothing before the first crumb"
     );
     assert!(crumb.right() <= bounds(cx, open_id(0)).left());
@@ -176,10 +186,15 @@ fn a_single_note_view_has_no_dateline(cx: &mut TestAppContext) {
     let (_view, cx, _events, _sub) = open(cx, "# Day\n\n#x a\n", vec![tag("x")]);
     assert!(shows(cx, crumb_id(0, 0)));
     assert!(!exists(cx, dateline_id(0)));
-    assert!(headings(cx).is_empty(), "{:?}", headings(cx));
-    // The first gap (it hides `# Day`) is the column's first row, as before.
+    // The view title row is the one heading: it names the note.
+    let only = headings(cx);
+    assert_eq!(only.len(), 1, "{only:?}");
+    assert_eq!(only[0].label(), Some("Day"));
+    // The piece is the column's first row. The first gap (it hides `# Day`)
+    // has nothing above it, so it draws only its up row, under the crumbs.
     let column = bounds(cx, COLUMN_ID);
-    assert_eq!(dist(bounds(cx, gap_up_id(0)).top(), column.top()), 12.0);
+    assert_eq!(dist(bounds(cx, chunk_id(0)).top(), column.top()), 12.0);
+    assert!(bounds(cx, gap_up_id(0)).top() >= bounds(cx, open_id(0)).bottom());
 }
 
 #[gpui_kit::test]
@@ -243,7 +258,9 @@ fn the_dateline_sits_above_its_notes_first_gap(cx: &mut TestAppContext) {
     let gap = bounds(cx, gap_up_id(2));
     assert!(bounds(cx, chunk_id(0)).bottom() <= line.top());
     assert!(line.bottom() <= gap.top(), "{line:?} {gap:?}");
-    assert!(gap.bottom() <= bounds(cx, chunk_id(1)).top());
+    // The gap's up row lies inside piece 1, under its crumbs.
+    assert!(line.bottom() <= bounds(cx, chunk_id(1)).top());
+    assert!(gap.top() >= bounds(cx, open_id(1)).bottom());
 }
 
 #[gpui_kit::test]
@@ -322,7 +339,8 @@ fn a_note_with_no_drawn_piece_has_no_dateline(cx: &mut TestAppContext) {
     assert!(!exists(cx, dateline_id(0)));
     assert_eq!(label(cx, dateline_id(1)).as_deref(), Some("Beta"));
     assert!(!exists(cx, dateline_id(2)));
-    assert_eq!(headings(cx).len(), 1);
+    // The view title row and Beta's dateline.
+    assert_eq!(headings(cx).len(), 2);
     // Beta's dateline is now the column's first row.
     let column = bounds(cx, COLUMN_ID);
     assert_eq!(dist(bounds(cx, dateline_id(1)).top(), column.top()), 12.0);
@@ -791,7 +809,7 @@ fn a_single_note_view_ignores_r_and_has_no_refresh(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_summary_leaves_the_note_numbers_to_the_collection_line(cx: &mut TestAppContext) {
+fn the_summary_leaves_the_counts_to_the_collection_line(cx: &mut TestAppContext) {
     let notes = [
         (A, "Alpha", "#x a\n\nb\n\n#x c\n"),
         (B, "Beta", "#x d\n"),
@@ -800,7 +818,7 @@ fn the_summary_leaves_the_note_numbers_to_the_collection_line(cx: &mut TestAppCo
     let (_view, cx, _events, _sub) = open_collection(cx, &notes, 3, vec![tag("x")]);
     assert_eq!(
         label(cx, SUMMARY_ID).as_deref(),
-        Some("Showing text tagged #x \u{b7} 3 pieces")
+        Some("Showing text tagged #x")
     );
     assert_eq!(
         line(cx).as_deref(),
@@ -887,12 +905,12 @@ fn removing_from_a_capped_collection_lowers_both_counts(cx: &mut TestAppContext)
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 600, vec![]);
     assert_eq!(
         line(cx).as_deref(),
-        Some("500 notes \u{b7} showing 100 of 500 \u{b7} first 500 of 600 \u{b7} list from 10:42")
+        Some("500 notes \u{b7} first 500 of 600 \u{b7} list from 10:42")
     );
     view.update(cx, |view, cx| view.remove_members(&[p("/n/007.md")], cx));
     assert_eq!(
         line(cx).as_deref(),
-        Some("499 notes \u{b7} showing 100 of 499 \u{b7} first 499 of 599 \u{b7} list from 10:42")
+        Some("499 notes \u{b7} first 499 of 599 \u{b7} list from 10:42")
     );
 }
 
@@ -1003,12 +1021,12 @@ fn a_capped_load_with_an_unreadable_note_reads_first_of_total(cx: &mut TestAppCo
     let (view, cx, _events, _sub) = open_collection(cx, &notes, 600, vec![]);
     assert_eq!(
         line(cx).as_deref(),
-        Some("499 notes \u{b7} showing 100 of 499 \u{b7} first 499 of 600 \u{b7} list from 10:42")
+        Some("499 notes \u{b7} first 499 of 600 \u{b7} list from 10:42")
     );
     view.update(cx, |view, cx| view.remove_members(&[p("/n/007.md")], cx));
     assert_eq!(
         line(cx).as_deref(),
-        Some("498 notes \u{b7} showing 100 of 498 \u{b7} first 498 of 599 \u{b7} list from 10:42")
+        Some("498 notes \u{b7} first 498 of 599 \u{b7} list from 10:42")
     );
     let members = vec![member(A, "Alpha", "a\n")];
     view.update(cx, |view, cx| view.replace_members(members, 700, cx));
@@ -1481,7 +1499,7 @@ mod in_a_group {
     }
 
     /// A refresh that lands on a view that no longer shows its query ends
-    /// the load too: the line must stop saying `Loading...` at once.
+    /// the load too: the line must stop saying `Loading…` at once.
     #[gpui_kit::test]
     fn a_refresh_for_another_query_still_ends_loading(cx: &mut TestAppContext) {
         let rt = super::super::start_tests::runtime();

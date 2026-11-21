@@ -10,24 +10,12 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Div, InteractiveElement as _, ParentElement as _, Pixels, Rgba, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div, px, rems,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
-use kimun_core::note::FacetKind;
-use kimun_notes::logic::facet_bar::Pill;
-use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::themes::Theme;
 
-use super::facet::rows::button;
-use super::rail_icon;
+use super::facet::rows::{self, button};
 use crate::theme;
-
-/// A pill's padding on each side (`px_1p5`), in rems.
-const PILL_PAD_REMS: f32 = 0.375;
-/// The gap between a pill's parts (`gap_1`), in rems.
-const PILL_GAP_REMS: f32 = 0.25;
-/// A pill's icon (the outline icon, the remove mark), square, in rems
-/// (`size_3`).
-const PILL_ICON_REMS: f32 = 0.75;
 
 /// The focus ring's width: a physical stroke, so a fixed pixel size.
 const RING_WIDTH: f32 = 2.0;
@@ -41,8 +29,15 @@ const STOP_BORDER: f32 = 1.0;
 /// The stops' corner radius (`rounded_md`), in rems.
 const STOP_RADIUS_REMS: f32 = 0.375;
 
+/// The search chip's icon, before its `Find`.
+pub(super) const SEARCH_ICON: IconName = IconName::Search;
+/// The caret after a menu chip's label: the chip opens a list.
+pub(super) const CARET_ICON: IconName = IconName::ChevronDown;
 /// The tick before a picked row's label.
-const TICK: &str = "\u{2713}";
+pub(super) const TICK_ICON: IconName = IconName::Check;
+/// The bar's icons, one Lucide family with the gap and pill icons (tests).
+#[cfg(test)]
+pub(crate) const BAR_ICONS: [IconName; 3] = [SEARCH_ICON, CARET_ICON, TICK_ICON];
 
 /// The colour of a button's label: the text colour, so what can be pressed
 /// stands apart from the muted meta text (counts, the hint, the summary). A
@@ -55,6 +50,60 @@ pub(super) fn label_color(dimmed: bool, t: &Theme) -> Rgba {
     }
 }
 
+/// The fills of a control: under the pointer and while pressed. The press
+/// is one step stronger than the hover ([`theme::pressed_background`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Fills {
+    pub(crate) hover: Rgba,
+    pub(crate) press: Rgba,
+}
+
+impl Fills {
+    /// The fills of a control on the view's page.
+    pub(super) fn page(t: &Theme) -> Self {
+        Self::from_hover(theme::hover_background(t), t)
+    }
+
+    /// The fills that start from `hover`.
+    fn from_hover(hover: Rgba, t: &Theme) -> Self {
+        Self {
+            hover,
+            press: theme::pressed_background(hover, t),
+        }
+    }
+}
+
+/// The colours of a piece's crumbs strip and of the stops on it. They start
+/// from the page ([`theme::facet_strip_background`]), so the strip is a faint
+/// step off the view in every theme. Found by a search: the view takes them
+/// once per frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Strip {
+    pub(crate) bg: Rgba,
+    pub(crate) fills: Fills,
+}
+
+impl Strip {
+    /// The strip colours of `t`.
+    pub(crate) fn of(t: &Theme) -> Self {
+        Self {
+            bg: theme::facet_strip_background(t),
+            fills: Fills::from_hover(theme::facet_strip_hover(t), t),
+        }
+    }
+}
+
+/// The colour of a crumb's label: muted at rest, so the crumbs stay quieter
+/// than the text under them. The text colour while it has the keyboard
+/// (`focused`), as under the pointer.
+pub(crate) fn crumb_color(focused: bool, t: &Theme) -> Rgba {
+    if focused {
+        theme::foreground(t)
+    } else {
+        theme::muted(t)
+    }
+}
+
 /// A small bordered button, in the style of the sort chip, 24 px tall, its
 /// label in [`label_color`]. A `dimmed` chip (a kind chip with no result in
 /// view) has a fainter border and a muted label. It is still a button.
@@ -64,18 +113,37 @@ pub(super) fn chip(
     dimmed: bool,
     t: &Theme,
 ) -> Stateful<Div> {
-    let hover = theme::hover_background(t);
+    let label: SharedString = label.into();
+    chip_frame(id, label.clone(), dimmed, t).child(label)
+}
+
+/// A [`chip`] with `icon` before its `label`: the search chip.
+pub(super) fn icon_label_chip(
+    id: SharedString,
+    icon: IconName,
+    label: &'static str,
+    t: &Theme,
+) -> Stateful<Div> {
+    chip_frame(id, label.into(), false, t)
+        .gap_1()
+        .child(Icon::new(icon).size_3())
+        .child(label)
+}
+
+/// What the chips share: the frame named `name`, no label drawn yet. It
+/// keeps the arrow pointer, as a native button does. A press fills it one
+/// step past its hover.
+fn chip_frame(id: SharedString, name: SharedString, dimmed: bool, t: &Theme) -> Stateful<Div> {
+    let fills = Fills::page(t);
     let border = if dimmed {
-        // The divider colour, halfway to the background.
-        theme::mix_rgba(theme::divider(t), theme::background(t), 0.5)
+        theme::divider_faint(t)
     } else {
         theme::divider(t)
     };
-    let label: SharedString = label.into();
     div()
         .id(id)
         .role(Role::Button)
-        .aria_label(label.clone())
+        .aria_label(name)
         .flex()
         .flex_none()
         .h(button())
@@ -87,11 +155,10 @@ pub(super) fn chip(
         .rounded_md()
         .border_1()
         .border_color(border)
-        .text_xs()
+        .text_size(rows::small_text())
         .text_color(label_color(dimmed, t))
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover))
-        .child(label)
+        .hover(move |style| style.bg(fills.hover))
+        .active(move |style| style.bg(fills.press))
 }
 
 /// A [`chip`] that shows an icon, 24 px square, named `label` for screen
@@ -102,7 +169,7 @@ pub(super) fn icon_chip(
     label: &'static str,
     t: &Theme,
 ) -> Stateful<Div> {
-    let hover = theme::hover_background(t);
+    let fills = Fills::page(t);
     div()
         .id(id)
         .role(Role::Button)
@@ -117,21 +184,32 @@ pub(super) fn icon_chip(
         .border_1()
         .border_color(theme::divider(t))
         .text_color(theme::muted(t))
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover))
+        .hover(move |style| style.bg(fills.hover))
+        .active(move |style| style.bg(fills.press))
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .child(Icon::new(icon).size_3())
 }
 
 /// A button drawn as plain text in [`label_color`] with no border, 24 px
-/// tall: a piece's `Open note`, a gap's `Show all`.
+/// tall, on the page: a gap's `Show all`, `Refresh`.
 pub(super) fn text_button(
     id: SharedString,
     label: impl Into<SharedString>,
     t: &Theme,
 ) -> Stateful<Div> {
+    text_button_on(id, label, Fills::page(t), t)
+}
+
+/// A [`text_button`] on a surface with its own `fills`: a piece's `Open
+/// note` on the crumbs strip.
+pub(super) fn text_button_on(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    fills: Fills,
+    t: &Theme,
+) -> Stateful<Div> {
     let label: SharedString = label.into();
-    text_frame(id, label.clone(), t)
+    text_frame(id, label.clone(), fills, t)
         .flex_none()
         .min_w(button())
         .justify_center()
@@ -146,16 +224,35 @@ const OUTER_CRUMB_SHRINK: f32 = 1000.;
 /// row is too narrow, its label cut with an ellipsis. Outer crumbs shrink
 /// first; the innermost (`last`) only once they are down to a letter and
 /// the ellipsis. A row too narrow even for that is cut at its right end.
+/// Its label is in [`crumb_color`]: muted at rest, the text colour under
+/// the pointer and while `focused`. It takes the strip's `fills`. A crumb
+/// whose heading is `picked` shows it as a picked pill does: the selected
+/// fill (kept under the pointer), a toggled state, and the name `Remove
+/// <heading>`, since a press removes the pick.
 pub(super) fn crumb(
     id: SharedString,
     label: impl Into<SharedString>,
     last: bool,
+    (picked, focused): (bool, bool),
+    fills: Fills,
     t: &Theme,
 ) -> Stateful<Div> {
     let label: SharedString = label.into();
+    let name = match picked {
+        true => SharedString::from(format!("Remove {label}")),
+        false => label.clone(),
+    };
+    let selected = theme::selected_background(t);
+    let fills = match picked {
+        true => Fills::from_hover(selected, t),
+        false => fills,
+    };
     // A shrunk crumb keeps a letter and its ellipsis: never an invisible
-    // tab stop.
-    let mut el = text_frame(id, label.clone(), t)
+    // tab stop. The frame's hover gives the text colour back.
+    let mut el = text_frame(id, name, fills, t)
+        .aria_toggled(toggled(picked))
+        .when(picked, |el| el.bg(selected))
+        .text_color(crumb_color(focused, t))
         .min_w_8()
         .child(div().min_w_0().truncate().child(label));
     el.style().flex_shrink = Some(if last { 1. } else { OUTER_CRUMB_SHRINK });
@@ -190,15 +287,24 @@ pub(crate) fn ring_radius(rem: Pixels) -> Pixels {
     rem * STOP_RADIUS_REMS + px(RING_OUT)
 }
 
+/// How far a text button's label sits inside the button's edge at the rem
+/// size `rem`: its clear border, then its padding ([`rows::text_pad`]).
+pub(crate) fn label_inset(rem: Pixels) -> Pixels {
+    px(STOP_BORDER) + rows::text_pad().to_pixels(rem)
+}
+
 /// The room a clipping container keeps inside its edge, so the focus ring of
 /// a stop at that edge shows whole.
 pub(super) fn ring_room() -> Pixels {
     px(RING_OUT)
 }
 
-/// What [`text_button`] and [`crumb`] share: the frame, no label drawn yet.
-fn text_frame(id: SharedString, label: SharedString, t: &Theme) -> Stateful<Div> {
-    let hover = theme::hover_background(t);
+/// What [`text_button`] and [`crumb`] share: the frame, no label drawn yet,
+/// with the hover and press of `fills`. Under the pointer the label takes
+/// the text colour, whatever colour it has at rest.
+fn text_frame(id: SharedString, label: SharedString, fills: Fills, t: &Theme) -> Stateful<Div> {
+    let hover = fills.hover;
+    let text = label_color(false, t);
     div()
         .id(id)
         .role(Role::Button)
@@ -207,41 +313,15 @@ fn text_frame(id: SharedString, label: SharedString, t: &Theme) -> Stateful<Div>
         .h(button())
         .items_center()
         .whitespace_nowrap()
-        .px_1()
+        .px(rows::text_pad())
         .rounded_md()
         // A clear border, so a text button lines up with the bordered chips.
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .text_xs()
-        .text_color(label_color(false, t))
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover))
-}
-
-/// A facet's text on its pill: the kind in its own syntax, a tag `#name`,
-/// a note link `[[name]]`, a heading its text.
-pub(super) fn pill_text(p: &Pill) -> String {
-    match p.facet.kind {
-        FacetKind::Tag => format!("#{}", p.label),
-        FacetKind::NoteLink => format!("[[{}]]", p.label),
-        FacetKind::Heading => p.label.clone(),
-    }
-}
-
-/// Whether `p` draws the outline icon in front of its text: a picked
-/// heading.
-fn has_outline(p: &Pill) -> bool {
-    p.picked && p.facet.kind == FacetKind::Heading
-}
-
-/// The id of the outline icon on the pill `id`.
-pub(super) fn outline_mark(id: &str) -> SharedString {
-    format!("{id}:outline").into()
-}
-
-/// The id of the remove mark on the pill `id`.
-pub(super) fn remove_mark(id: &str) -> SharedString {
-    format!("{id}:remove").into()
+        .text_size(rows::small_text())
+        .text_color(text)
+        .hover(move |style| style.bg(hover).text_color(text))
+        .active(move |style| style.bg(fills.press).text_color(text))
 }
 
 /// The id of the focus ring around the tab stop `id`.
@@ -249,202 +329,10 @@ pub(crate) fn ring_id(id: &str) -> SharedString {
     format!("{id}:ring").into()
 }
 
-/// The id of the tick on the list row `id`.
-pub(super) fn row_tick(id: &str) -> SharedString {
-    format!("{id}:tick").into()
-}
-
-/// The id of the count on the pill `id`.
-pub(super) fn pill_count(id: &str) -> SharedString {
-    format!("{id}:count").into()
-}
-
-/// The id of the count on the list row `id`.
-pub(super) fn row_count(id: &str) -> SharedString {
-    format!("{id}:count").into()
-}
-
-/// Whether the list row of `p` is dimmed: it gives nothing in the current
-/// view and is not picked. A dimmed row can still be picked.
-pub(super) fn dimmed(p: &Pill) -> bool {
-    p.in_view == 0 && !p.picked
-}
-
-/// A facet's pill: the outline icon of a picked heading, its text
-/// ([`pill_text`]) in its kind's colour, its count in view
-/// ([`Pill::in_view`], what its list row shows) when more than one, and
-/// a picked pill's remove mark; filled when picked. 24 px tall. The marks
-/// are part of the pill: a press anywhere on it toggles it.
-pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
-    let hover = theme::hover_background(t);
-    let color = kind_color(p.facet.kind, t);
-    let label = pill_text(p);
-    // A press on a picked pill unpicks it: its name says so.
-    let name = if p.picked {
-        format!("Remove {label}")
-    } else {
-        label.clone()
-    };
-    let muted = theme::muted(t);
-    let count_id = pill_count(&id);
-    let outline =
-        has_outline(p).then(|| mark(outline_mark(&id), rail_icon(DrawerView::Outline), muted));
-    let remove = p
-        .picked
-        .then(|| mark(remove_mark(&id), IconName::Close, muted));
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(SharedString::from(name))
-        .flex()
-        .flex_none()
-        // A long name is cut with an ellipsis: the marks stay in view.
-        .max_w_full()
-        .h(button())
-        .items_center()
-        .gap(rems(PILL_GAP_REMS))
-        .whitespace_nowrap()
-        .px(rems(PILL_PAD_REMS))
-        .rounded_md()
-        .border_1()
-        .text_xs()
-        .cursor_pointer()
-        .map(|pill| {
-            if p.picked {
-                pill.border_color(theme::accent(t))
-                    .bg(theme::selected_background(t))
-            } else {
-                pill.border_color(theme::divider(t))
-                    .hover(move |style| style.bg(hover))
-            }
-        })
-        .children(outline)
-        .child(div().min_w_0().truncate().text_color(color).child(label))
-        .when(p.in_view > 1, |pill| {
-            let n = p.in_view.to_string();
-            pill.child(
-                div()
-                    .id(count_id)
-                    .flex_none()
-                    .aria_label(SharedString::from(n.clone()))
-                    .text_color(muted)
-                    .child(n)
-                    .test_support(),
-            )
-        })
-        .children(remove)
-}
-
-/// The colour of a facet's text: its kind's.
-fn kind_color(kind: FacetKind, t: &Theme) -> Rgba {
-    match kind {
-        FacetKind::Tag => theme::tag(t),
-        FacetKind::Heading => theme::bright(t),
-        FacetKind::NoteLink => theme::accent(t),
+/// The toggled state a screen reader hears for a control that is `on`.
+pub(super) fn toggled(on: bool) -> gpui_kit::accesskit::Toggled {
+    match on {
+        true => gpui_kit::accesskit::Toggled::True,
+        false => gpui_kit::accesskit::Toggled::False,
     }
-}
-
-/// The words that name a row's count for screen readers.
-fn in_view_text(n: usize) -> String {
-    match n {
-        0 => "No pieces in view".into(),
-        1 => "1 piece in view".into(),
-        n => format!("{n} pieces in view"),
-    }
-}
-
-/// A facet's row in an open list, as wide as the list and 24 px tall: a
-/// slot that holds the tick of a picked facet, its text ([`pill_text`]) cut
-/// with an ellipsis when long, and at the right end its count in view
-/// ([`Pill::in_view`]). The text is in its kind's colour, muted when the
-/// row is [`dimmed`]. A lit row (`lit`, the keyboard highlight) has the
-/// background of the app's other lit list rows. A press anywhere on it
-/// toggles the facet.
-pub(super) fn row(id: SharedString, p: &Pill, lit: bool, t: &Theme) -> Stateful<Div> {
-    let hover = theme::hover_background(t);
-    let muted = theme::muted(t);
-    let color = if dimmed(p) {
-        muted
-    } else {
-        kind_color(p.facet.kind, t)
-    };
-    let label = pill_text(p);
-    let tick = p.picked.then(|| {
-        div()
-            .id(row_tick(&id))
-            .flex_none()
-            .text_color(theme::accent(t))
-            .child(TICK)
-            .test_support()
-    });
-    let n = p.in_view.to_string();
-    let count = div()
-        .id(row_count(&id))
-        .flex_none()
-        .aria_label(SharedString::from(n.clone()))
-        .text_color(muted)
-        .child(n)
-        .test_support();
-    let toggled = if p.picked {
-        gpui_kit::accesskit::Toggled::True
-    } else {
-        gpui_kit::accesskit::Toggled::False
-    };
-    div()
-        .id(id)
-        .role(Role::ListBoxOption)
-        .aria_label(SharedString::from(label.clone()))
-        .aria_description(SharedString::from(in_view_text(p.in_view)))
-        .aria_selected(lit)
-        .aria_toggled(toggled)
-        .flex()
-        .flex_none()
-        .w_full()
-        .h_6()
-        .items_center()
-        .gap(rems(PILL_GAP_REMS))
-        .whitespace_nowrap()
-        .px_2()
-        .rounded_md()
-        .text_xs()
-        .cursor_pointer()
-        .map(|row| {
-            if lit {
-                row.bg(theme::selected_background(t))
-            } else {
-                row.hover(move |style| style.bg(hover))
-            }
-        })
-        // A slot of fixed width, so every label starts in one column.
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .w(rems(PILL_ICON_REMS))
-                .justify_center()
-                .children(tick),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(color)
-                .child(label),
-        )
-        .child(count)
-}
-
-/// A small icon inside a pill, in a box of its own fixed size.
-fn mark(id: SharedString, icon: IconName, color: Rgba) -> impl gpui_kit::IntoElement {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .size(rems(PILL_ICON_REMS))
-        .items_center()
-        .justify_center()
-        .text_color(color)
-        .child(Icon::new(icon).size_3())
-        .test_support()
 }

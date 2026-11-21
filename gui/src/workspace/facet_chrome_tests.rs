@@ -15,13 +15,14 @@ use kimun_core::note::Facet;
 use kimun_notes::settings::themes::Theme;
 
 use super::facet::{
-    COLLECTION_LINE_ID, EMPTY_ID, FacetView, MemberInit, SHOW_MORE_COUNT_ID, SUMMARY_ID,
-    dateline_title_id, gap_count_id, gap_down_id, gap_up_id,
+    COLLECTION_LINE_ID, EMPTY_ID, FacetView, MemberInit, SHOW_MORE_COUNT_ID, SUMMARY_ID, chunk_id,
+    crumb_id, dateline_title_id, gap_count_id, gap_down_id, gap_up_id,
 };
 use super::facet_tests::{
-    Events, bounds, chunk_texts, heading, label, open, open_with, picks, shows, tag, to_bottom,
+    Events, bounds, chunk_texts, click, heading, label, open, open_with, picks, shows, tag,
+    to_bottom,
 };
-use super::facet_ui::label_color;
+use super::facet_ui::{Strip, crumb_color, label_color};
 use crate::theme;
 
 fn member(path: &str, title: &str, text: &str) -> MemberInit {
@@ -90,12 +91,36 @@ fn a_collection_always_shows_its_note_count(cx: &mut TestAppContext) {
     let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n"), (C, "Gamma", "c\n")];
     let (_view, cx, _events, _sub) = collection(cx, &notes, 3, vec![]);
     assert_eq!(line(cx).as_deref(), Some("3 notes \u{b7} list from 10:42"));
-    // It is part of the status a screen reader hears.
-    let role = cx.update(|window, cx| {
+    // At rest it is a plain label: a screen reader does not read the
+    // numbers again after each pick.
+    assert_eq!(line_role(cx), Some(Role::Label));
+}
+
+fn line_role(cx: &mut VisualTestContext) -> Option<Role> {
+    cx.update(|window, cx| {
         window.render_frame(cx);
         window.find(COLLECTION_LINE_ID).role()
+    })
+}
+
+/// The line is a status only while it reports something new: a load or
+/// the end of a refresh. Then a screen reader says it.
+#[gpui_kit::test]
+fn the_collection_line_is_a_status_only_while_it_reports(cx: &mut TestAppContext) {
+    let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n")];
+    let (view, cx, _events, _sub) = collection(cx, &notes, 2, vec![]);
+    view.update(cx, |view, cx| view.set_loading(true, cx));
+    assert_eq!(line_role(cx), Some(Role::Status), "loading");
+    let members = vec![member(A, "Alpha", "a\n")];
+    view.update(cx, |view, cx| {
+        view.replace_members(members, 1, cx);
+        view.set_loading(false, cx);
     });
-    assert_eq!(role, Some(Role::Status));
+    assert!(line(cx).unwrap().starts_with("Refreshed"));
+    assert_eq!(line_role(cx), Some(Role::Status), "the refresh report");
+    cx.executor().advance_clock(Duration::from_secs(6));
+    cx.run_until_parked();
+    assert_eq!(line_role(cx), Some(Role::Label), "at rest again");
 }
 
 #[gpui_kit::test]
@@ -122,22 +147,22 @@ fn the_collection_line_counts_matched_notes_with_picks(cx: &mut TestAppContext) 
         line(cx).as_deref(),
         Some("3 pieces in 2 of 3 notes \u{b7} list from 10:42")
     );
-    // The summary keeps the filter text and the pieces; the line holds the
-    // note numbers.
+    // The summary keeps the filter text. The line holds the counts, so
+    // the summary does not say them again.
     assert_eq!(
         label(cx, SUMMARY_ID).as_deref(),
-        Some("Showing text tagged #x \u{b7} 3 pieces")
+        Some("Showing text tagged #x")
     );
 }
 
 #[gpui_kit::test]
-fn the_collection_line_shows_showing_n_of_m_when_the_cap_cuts(cx: &mut TestAppContext) {
+fn the_collection_line_leaves_the_cut_to_the_show_more_row(cx: &mut TestAppContext) {
     let text: String = (0..150).map(|i| format!("#t m{i}\n\nplain\n\n")).collect();
     let notes = [(A, "Alpha", text.as_str())];
     let (view, cx, _events, _sub) = collection(cx, &notes, 1, vec![tag("t")]);
     assert_eq!(
         line(cx).as_deref(),
-        Some("150 pieces in 1 of 1 note \u{b7} showing 100 of 150 \u{b7} list from 10:42")
+        Some("150 pieces in 1 of 1 note \u{b7} list from 10:42")
     );
     to_bottom(&view, cx);
     assert_eq!(
@@ -185,7 +210,7 @@ fn the_collection_line_shows_loading_while_the_query_runs(cx: &mut TestAppContex
     let notes = [(A, "Alpha", "a\n"), (B, "Beta", "b\n")];
     let (view, cx, _events, _sub) = collection(cx, &notes, 2, vec![]);
     view.update(cx, |view, cx| view.set_loading(true, cx));
-    assert_eq!(line(cx).as_deref(), Some("Loading..."));
+    assert_eq!(line(cx).as_deref(), Some("Loading\u{2026}"));
     assert_eq!(chunk_texts(&view, cx), ["a", "b"], "the old content stays");
     view.update(cx, |view, cx| view.set_loading(false, cx));
     assert_eq!(line(cx).as_deref(), Some("2 notes \u{b7} list from 10:42"));
@@ -227,7 +252,7 @@ fn a_refresh_reports_added_removed_and_dropped_picks_then_clears(cx: &mut TestAp
     assert_eq!(line(cx).as_deref(), Some("Refreshed: no changes"));
     // A new load takes over the line at once.
     view.update(cx, |view, cx| view.set_loading(true, cx));
-    assert_eq!(line(cx).as_deref(), Some("Loading..."));
+    assert_eq!(line(cx).as_deref(), Some("Loading\u{2026}"));
     view.update(cx, |view, cx| view.set_loading(false, cx));
     assert_eq!(line(cx).as_deref(), Some("3 notes \u{b7} list from 10:42"));
 
@@ -304,6 +329,30 @@ fn interactive_labels_use_the_foreground_color() {
     }
 }
 
+/// The crumbs strip and the hover and press of the stops on it start from
+/// the page, not from the panel: the slot header tint is not used here.
+#[test]
+fn the_crumbs_strip_takes_its_colors_from_the_page() {
+    for t in Theme::builtins() {
+        let strip = Strip::of(&t);
+        assert_eq!(strip.bg, theme::facet_strip_background(&t), "{}", t.name);
+        let hover = theme::facet_strip_hover(&t);
+        assert_eq!(strip.fills.hover, hover, "{}", t.name);
+        let press = theme::pressed_background(hover, &t);
+        assert_eq!(strip.fills.press, press, "{}", t.name);
+    }
+}
+
+/// A crumb is quieter than the text at rest. It takes the text colour
+/// while it has the keyboard, as it does under the pointer.
+#[test]
+fn a_crumb_is_muted_at_rest_and_in_the_text_colour_with_the_keyboard() {
+    for t in Theme::builtins() {
+        assert_eq!(crumb_color(false, &t), theme::muted(&t), "{}", t.name);
+        assert_eq!(crumb_color(true, &t), theme::foreground(&t), "{}", t.name);
+    }
+}
+
 /// Measured on the drawn title, not on the size function: at the default
 /// and at a large editor font the title row is at least one line of the
 /// piece text high.
@@ -329,4 +378,45 @@ fn the_dateline_title_is_not_smaller_than_the_piece_text(cx: &mut TestAppContext
             title.size.height
         );
     }
+}
+
+/// A crumb toggles a pick of its heading, so it shows that state as a
+/// picked pill does: it reports itself toggled and its name says that a
+/// press removes the pick.
+#[gpui_kit::test]
+fn a_crumb_shows_whether_its_heading_is_picked(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "# Day\n\n#x a\n", vec![tag("x")]);
+    let checked = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find(crumb_id(0, 0)).checked()
+        })
+    };
+    assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Day"));
+    assert_eq!(checked(cx), Some(false));
+    click(cx, crumb_id(0, 0));
+    assert_eq!(picks(&view, cx), [tag("x"), heading("day")]);
+    assert_eq!(label(cx, crumb_id(0, 0)).as_deref(), Some("Remove Day"));
+    assert_eq!(checked(cx), Some(true));
+}
+
+/// Each piece is a named group, so a screen reader says where it is. In a
+/// single-note view the name is its crumbs. In a collection it is the note
+/// title and the last crumb. A piece with no crumbs takes the note title.
+#[gpui_kit::test]
+fn each_piece_group_is_named_after_its_place(cx: &mut TestAppContext) {
+    let text = "# Day\n\n## Morning\n\n#x a\n";
+    let (_view, cx, _events, _sub) = open(cx, text, vec![tag("x")]);
+    assert_eq!(label(cx, chunk_id(0)).as_deref(), Some("Day, Morning"));
+}
+
+#[gpui_kit::test]
+fn a_collection_piece_group_is_named_after_its_note_and_last_crumb(cx: &mut TestAppContext) {
+    let notes = [
+        (A, "Alpha", "# Day\n\n## Morning\n\n#x a\n"),
+        (B, "Beta", "#x b\n"),
+    ];
+    let (_view, cx, _events, _sub) = collection(cx, &notes, 2, vec![tag("x")]);
+    assert_eq!(label(cx, chunk_id(0)).as_deref(), Some("Alpha, Morning"));
+    assert_eq!(label(cx, chunk_id(1)).as_deref(), Some("Beta"));
 }

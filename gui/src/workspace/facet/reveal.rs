@@ -9,8 +9,7 @@ use gpui_kit::{Context, Pixels, Window, point, px};
 use kimun_core::note::GAP_SHOW_ALL_MAX;
 
 use super::FacetView;
-use super::body::PieceGaps;
-use super::body::to_px;
+use super::body::{PieceGaps, count_in_up_row, to_px};
 use super::keys::Stop;
 use super::rows::column_pad;
 use super::window::{Heights, Row};
@@ -22,10 +21,18 @@ pub(super) fn stop_row(stop: &Stop, gaps: &[PieceGaps]) -> Option<Row> {
     match *stop {
         // A stop of the last frame can name a piece a new plan dropped.
         Stop::Crumb(i, _) | Stop::Open(i) => (i < gaps.len()).then_some(Row::Crumbs(i)),
+        // A lead gap's down button sits above the crumbs, its up button
+        // under them. `Show all` sits with the count ([`count_in_up_row`]).
         Stop::GapDown(g) | Stop::GapUp(g) | Stop::ShowAll(g) => {
             gaps.iter().enumerate().find_map(|(i, p)| {
+                let up = match stop {
+                    Stop::GapUp(_) => true,
+                    Stop::ShowAll(_) => !p.lead_above,
+                    _ => false,
+                };
+                let lead = if up { Row::Up(i) } else { Row::Lead(i) };
                 (p.lead == Some(g))
-                    .then_some(Row::Lead(i))
+                    .then_some(lead)
                     .or((p.tail == Some(g)).then_some(Row::Tail(i)))
             })
         }
@@ -160,34 +167,33 @@ impl FacetView {
         true
     }
 
-    /// Piece `i`'s stops in the order they are painted: the gap row above
-    /// it, its crumbs, `Open note`, and the gap row under it.
+    /// Piece `i`'s stops in the order they are painted: the row of the gap
+    /// above it, its crumbs, `Open note`, the gap's up row under them, and
+    /// the row of the gap after it.
     fn piece_stops(&self, i: usize, gaps: PieceGaps) -> Vec<Stop> {
-        let mut out = self.gap_stops(gaps.lead);
+        let mut out = self.gap_stops(gaps.lead, false);
         let crumbs = self.members.chunk(i).map_or(0, |c| c.crumbs.len());
         out.extend((0..crumbs).map(|k| Stop::Crumb(i, k)));
         out.push(Stop::Open(i));
-        out.extend(self.gap_stops(gaps.tail));
+        out.extend(self.gap_stops(gaps.lead, true));
+        out.extend(self.gap_stops(gaps.tail, false));
         out
     }
 
-    /// The stops of gap `g`'s row, as `render_gap` paints them.
-    fn gap_stops(&self, g: Option<usize>) -> Vec<Stop> {
+    /// The stops of gap `g`'s up row (`up`), as `render_up_row` paints
+    /// them, or of its other row, as `render_gap` paints it.
+    fn gap_stops(&self, g: Option<usize>, up: bool) -> Vec<Stop> {
         let Some((g, gap)) = g.and_then(|g| Some((g, *self.members.gaps.get(g)?))) else {
             return Vec::new();
         };
         let hidden = self.members.gap_hidden(g);
-        if hidden == 0 {
+        let drawn = if up { gap.below } else { gap.above };
+        if hidden == 0 || drawn.is_none() {
             return Vec::new();
         }
-        let mut out = Vec::with_capacity(3);
-        if gap.above.is_some() {
-            out.push(Stop::GapDown(g));
-        }
-        if gap.below.is_some() {
-            out.push(Stop::GapUp(g));
-        }
-        if hidden <= GAP_SHOW_ALL_MAX {
+        let mut out = Vec::with_capacity(2);
+        out.push(if up { Stop::GapUp(g) } else { Stop::GapDown(g) });
+        if hidden <= GAP_SHOW_ALL_MAX && count_in_up_row(gap.above) == up {
             out.push(Stop::ShowAll(g));
         }
         out

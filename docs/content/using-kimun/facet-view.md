@@ -19,17 +19,19 @@ Use any of these:
 
 The pane now shows the note as read-only text. The funnel button looks pressed, and its tooltip says `Back to the editor`. When a tab has two panes or more, each pane has a header, and a pane that shows a facet view has a small funnel before its title there. A lone pane has no header: its corner button looks pressed instead. When the window has two tabs or more, a tab whose pane shows a facet view also has a small funnel before its title. To go back, click the funnel button again, run `Toggle facet view`, or open the note menu and pick `Edit note`.
 
+At the top of the view, a title row shows the title of the note in bold. It changes when you rename the note or change its first line. So you can see what the view shows also when the window shows no tabs.
+
 Kimün saves the text of the note before it opens the view. If another pane changes and saves the note, the facet view updates. When you start Kimün again, the pane opens as a facet view with the same picks.
 
 ## Pick facets
 
 A bar at the top of the view lists the facets of the note. A facet is a tag, a link to another note, or a heading. The bar stays in view when you scroll the text.
 
-The top row of the bar has one chip for each kind that still has facets to pick: `Tags N`, `Links N`, and `Sections N`. N is the number of facets of that kind that give a result in the view now. A chip with an N of 0 is dimmed, but it still opens its list. A kind with nothing left to pick has no chip, unless its list is open. The chip of the open list is drawn selected. At the right end of the row is the search chip, `⌕ Find`. Hover it to see its tooltip: `Find (/)`. The row never wraps.
+The top row of the bar has one chip for each kind that still has facets to pick: `Tags N`, `Links N`, and `Sections N`. N is the number of facets of that kind that give a result in the view now. A chip with an N of 0 is dimmed, but it still opens its list. A kind with nothing left to pick has no chip, unless its list is open. The chip of the open list is drawn selected. At the right end of the row is the search chip: a magnifier icon and `Find`. Hover it to see its tooltip: `Find (/)`. The row never wraps.
 
 Click a chip to open the list of the facets of that kind. The list starts with a `Filter` field. Type in it to narrow the list. Each row shows the name of a facet at the left. A tag reads `#name`. A link reads `[[name]]`. The right end of the row shows how many pieces the facet gives in the view now.
 
-- A tick before the name means that you picked the facet. Picked rows come first.
+- A check mark before the name means that you picked the facet. Picked rows come first.
 - Rows that give no result are dimmed. You can still pick them. In the tag and link lists, rows with no result come last. Sections stay in note order, and the dimmed ones stay in place.
 - The order of the rows is set when the list opens and when you change the `Filter` text. It stays the same while you pick: a row that you pick or unpick keeps its place and shows or loses its tick there. Only the counts change. Open the list again to see your picks first.
 - The count leaves out your picks of the same kind. So it tells you what you get when you pick that facet now.
@@ -46,7 +48,7 @@ A list stays open while you pick, so you can make more picks. It stays open whil
 The facets that you picked show in their own row under the chips, in the order that you picked them. Each has a small remove mark. A heading that you picked shows its text with the outline icon. The row wraps onto more lines when it needs them. The bar takes at most 40 percent of the height of the view. When it is taller, it scrolls inside itself.
 
 - Click a picked facet, or its remove mark, to remove the pick.
-- With nothing picked, the view shows the whole note. Under the bar, a line says `Pick a tag, link or section to narrow this note. / finds, j and k step, a click on a tag or link opens it.` It goes away when you make your first pick.
+- With nothing picked, the view shows the whole note. Under the bar, a line says `Pick a tag, link or section to narrow this note. Press / to find. Press j or k to move between pieces. Click a tag or link to open it.` It goes away when you make your first pick.
 - A pick of a tag or a link shows the paragraph, list item, or table row that holds it. A pick of a heading shows the whole section under it, with its sub-headings.
 - Picks of the same kind add up: the view shows the parts that match any of them. Picks of different kinds narrow the view: it shows only the parts that match every kind that you picked.
 - A note with no tags, links, or headings has no bar.
@@ -73,17 +75,22 @@ If the note has no text, the view says `This note is empty.`
 - Click a link or a tag to follow it. Kimün follows it when you release the button. A link to a note opens that note in a new tab. A link to an attachment opens it in a new tab. A link to a web address opens in your browser. A tag opens a search for that tag.
 - A drag that leaves the link or the tag, or that moves more than a few pixels, selects text and follows nothing. So you can drag across part of a long link to copy it. A double click on a link or a tag does not select the word, because the first click already followed. `Ctrl+click` (`Cmd+click` on macOS) follows too. The mouse cursor over every tag and link is a pointing hand.
 - In a normal editor, a plain click on a link or a tag only places the cursor.
-- The view shows the note as pieces of text. A piece is one block, or several blocks that are next to each other. For example, a heading section is one piece. A piece has no frame. A slim row above it holds the breadcrumb and the `Open note` button.
-- The breadcrumb lists the headings that contain the piece, from the outside in, with `›` between them, for example `Summer › July › Week 3`. Click a heading in it to pick that heading, or to remove its pick. A piece that sits under no heading has no breadcrumb. If the breadcrumb is too long for the row, Kimün shortens the headings with `…`, the outer ones first, so that the last heading stays readable for as long as possible. `Open note` always shows in full.
+- The view shows the note as pieces of text. A piece is one block, or several blocks that are next to each other. For example, a heading section is one piece. A piece has no frame. A slim row above it, a little lighter or darker than the view, holds the breadcrumb and the `Open note` button. The breadcrumb starts at the same left edge as the text of the piece.
+- The breadcrumb lists the headings that contain the piece, from the outside in, with `›` between them, for example `Summer › July › Week 3`. The headings are quieter than the text. Click a heading in it to pick that heading, or to remove its pick. A heading that you picked has a filled background. A piece that sits under no heading has no breadcrumb. If the breadcrumb is too long for the row, Kimün shortens the headings with `…`, the outer ones first, so that the last heading stays readable for as long as possible. `Open note` always shows in full.
 - `Open note` opens the note in a new tab. If a pane already shows the note, Kimün goes to that pane instead. In both cases the cursor and the view go to the first line of the piece.
 
 ## Show hidden blocks
 
 When you pick a facet, the view can skip blocks of the note. A block is a paragraph, a list item, a table row, or a similar part. Between two shown pieces, and before the first and after the last, a line tells you how many blocks are hidden, for example `3 blocks hidden`. For one block, it says `1 block hidden`.
 
-Click the down arrow on that line to show the block after the one above it. Click the up arrow to show the block before the one below it. The first line has only an up arrow and the last has only a down arrow. Each click shows one block. Hover an arrow to see its tooltip: `Show next block` for the down arrow, or `Show previous block` for the up arrow.
+Two buttons show hidden blocks, one block for each click. Each has an arrow that points the way it shows text:
 
-When a line hides 3 blocks or fewer, it also has a `Show all` button. It shows all of them at once.
+- The button with the down arrow sits on the line with the count, right under the piece above. It shows the block after that piece. Its tooltip is `Show next block`.
+- The button with the up arrow sits under a piece's headings, right above its text. It shows the block before that text. Its tooltip is `Show previous block`.
+
+Before the first piece of a note, nothing is above to extend. There, the count moves to the line under the headings, next to the button. After the last piece, the line has only the `Show next block` button.
+
+When a line hides 3 blocks or fewer, it also has a `Show all` button. It shows all of them at once. It is always next to the count.
 
 ## Use the keyboard
 
@@ -126,17 +133,17 @@ Open FIND and type a query. Then use one of these:
 
 Neither has a key by default. Both use the query that is now in FIND, not the results that you see. If FIND has no query, a message says `No query to open`. If the query uses `{note}` and the pane has no open note, a message says `This query needs an open note.` The query is filled in with the open note when the collection opens, and it stays so.
 
-The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title.
+The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title. The title row at the top of the view shows a small `Collection` and then the query in bold. A long query is shortened with `…`. Hover it to see the full query.
 
 ### What a collection shows
 
 - A line under the bar, the collection line, says what the collection holds. With nothing picked, it reads `23 notes`. With picks, it reads `12 pieces in 5 of 23 notes`.
-- The collection line adds ` · showing 100 of 340` when the 100-piece limit hides pieces. It adds ` · first 500 of N` when the query hit the 500-note limit. It ends with ` · list from 10:42`, the time when the list was made.
-- While a query runs, the line says `Loading...` and the old text stays. For 6 seconds after a refresh, the line says what changed, for example `Refreshed: 2 notes added, 1 removed`. Dropped picks add ` · 1 pick dropped`. A pick, a removed pick, `Clear`, or an undo ends this message at once.
-- With nothing picked, the view shows every note whole, in the order of the results. Above the text, a line says `Pick a tag, link or section to narrow these notes. / finds, j and k step, a click on a tag or link opens it.`
+- The collection line adds ` · first 500 of N` when the query hit the 500-note limit. It ends with ` · list from 10:42`, the time when the list was made. When the 100-piece limit hides pieces, the `Show N more` row at the end says so.
+- While a query runs, the line says `Loading…` and the old text stays. For 6 seconds after a refresh, the line says what changed, for example `Refreshed: 2 notes added, 1 removed`. Dropped picks add ` · 1 pick dropped`. A pick, a removed pick, `Clear`, or an undo ends this message at once.
+- With nothing picked, the view shows every note whole, in the order of the results. Above the text, a line says `Pick a tag, link or section to narrow these notes. Press / to find. Press j or k to move between pieces. Click a tag or link to open it.`
 - The bar lists the tags, the links, and the headings of all the notes together. A tag that is in 3 notes shows once, with its counts added up. Headings with the same text are one facet.
-- A pick narrows each note as it does in a facet view. A note that has no match shows nothing. The summary line names the picks and the pieces, for example `Showing text tagged #run · 12 pieces`. The collection line counts the notes.
-- Each note starts with a dateline: the title of the note, a thin line that fills the rest of the row, and a muted text at the right end. That text is the folder of the note and the number of pieces of the note that the view shows, for example `journal · 2 pieces`. The 100-piece limit can make this number smaller. A note in the root of the vault has the count only. When the row is narrow, Kimün shortens the folder with `…` first. There is space above each dateline except the first. When you press `j` or `k` to go to the first piece of a note, its dateline shows.
+- A pick narrows each note as it does in a facet view. A note that has no match shows nothing. The summary line names the picks, for example `Showing text tagged #run`. The collection line counts the pieces and the notes.
+- Each note starts with a dateline: the title of the note, a little to the left of the text, a thin line that fills the rest of the row, and a muted text at the right end. That text is the folder of the note and the number of pieces of the note that the view shows, for example `journal · 2 pieces`. The 100-piece limit can make this number smaller. A note in the root of the vault has the count only. When the row is narrow, Kimün shortens the folder with `…` first. There is space above each dateline except the first. When you press `j` or `k` to go to the first piece of a note, its dateline shows.
 - Each piece has a row above it with a breadcrumb. In a collection, the breadcrumb has only the headings inside the note, for example `Summer › Week 3`. It does not have the title of the note: the dateline has it. A piece that sits under no heading has no breadcrumb.
 - `Open note` opens the note that the piece belongs to, at the first line of the piece.
 - A line of hidden blocks never joins two notes. `Show next block`, `Show previous block`, and `Show all` work inside one note.

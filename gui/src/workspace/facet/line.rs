@@ -6,7 +6,7 @@
 //! A kind with nothing left has no chip, unless its list is open: the list
 //! hangs from it. A chip whose N is 0 is drawn dimmed, with a fainter
 //! border, and still opens its list. A spacer follows, then the search chip
-//! (`⌕ Find`, its key `/` in its tooltip and name), drawn while any chip
+//! (a search icon and `Find`, its key `/` in its tooltip and name), drawn while any chip
 //! is. Row 1 never wraps. The chip labels are in the text colour; a dimmed
 //! chip's is muted.
 //!
@@ -44,6 +44,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -58,18 +59,16 @@ use super::keys::Stop;
 use super::{FacetView, LINE_ID, ListKind, list_group_id, menu_id, more_item_id, pill_id};
 use crate::theme;
 use crate::workspace::facet_list::{ListGroup, OpenList, list_popover};
-use crate::workspace::facet_ui::{chip, pill, row};
+use crate::workspace::facet_pill::{pill, row};
+use crate::workspace::facet_ui::{CARET_ICON, SEARCH_ICON, chip, icon_label_chip};
 
 /// The most matches a list draws.
 pub(crate) const LIST_CAP: usize = 200;
 
-/// The search chip's text.
-const SEARCH_TEXT: &str = "\u{2315} Find";
+/// The search chip's text, after its icon ([`SEARCH_ICON`]).
+const SEARCH_TEXT: &str = "Find";
 /// The search chip's name and tooltip: its text and its key.
 const SEARCH_LABEL: &str = "Find (/)";
-
-/// The caret after a menu chip's label.
-const CARET: &str = "\u{25BE}";
 
 /// A list's groups: each with its kind label (`None` for a kind list) and
 /// the pills of its rows.
@@ -123,7 +122,12 @@ impl FacetView {
                 let el = self
                     .open_chip(kind, el, t)
                     .gap_0p5()
-                    .child(div().text_color(theme::muted(t)).child(CARET))
+                    .child(
+                        div()
+                            .flex()
+                            .text_color(theme::muted(t))
+                            .child(Icon::new(CARET_ICON).size_3()),
+                    )
                     .test_support();
                 let el = self.track(Stop::Menu(kind), el, t, cx);
                 self.render_list(kind, Anchor::TopLeft, el.into_any_element(), t, cx)
@@ -132,7 +136,7 @@ impl FacetView {
         let search = self
             .open_chip(
                 ListKind::All,
-                chip(menu_id(ListKind::All), SEARCH_TEXT, false, t),
+                icon_label_chip(menu_id(ListKind::All), SEARCH_ICON, SEARCH_TEXT, t),
                 t,
             )
             .aria_label(SEARCH_LABEL)
