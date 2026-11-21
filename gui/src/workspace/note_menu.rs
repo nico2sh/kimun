@@ -34,9 +34,11 @@ use gpui_kit::{
     Subscription, Window, anchored, canvas, deferred, div, point, px, rems,
 };
 use kimun_core::nfs::VaultPath;
+use kimun_core::nfs::pinned_notes;
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout_tree::{Axis as TreeAxis, GroupId};
+use kimun_notes::logic::leader_route::LeaderJob;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
@@ -68,6 +70,11 @@ pub(crate) enum MenuItem {
     FacetView,
     /// Back from a facet view to the editor on its note.
     EditNote,
+    /// Pin the group's note (leader `m p`). Shown while the note is not
+    /// pinned; [`MenuItem::Unpin`] takes its place once the menu knows it is.
+    Pin,
+    /// Unpin the group's note. Both run the same toggle.
+    Unpin,
     SplitRight,
     SplitDown,
     NewTab,
@@ -84,6 +91,8 @@ impl MenuItem {
             MenuItem::Note(FileOpKind::Delete) => "Delete…",
             MenuItem::FacetView => "Facet view",
             MenuItem::EditNote => "Edit note",
+            MenuItem::Pin => "Pin note",
+            MenuItem::Unpin => "Unpin note",
             MenuItem::SplitRight => "Split right",
             MenuItem::SplitDown => "Split down",
             MenuItem::NewTab => "New tab",
@@ -99,6 +108,8 @@ impl MenuItem {
         match self {
             MenuItem::FacetView => Some('f'),
             MenuItem::EditNote => Some('e'),
+            // `p` is Properties; the leader's `m p` has no single key here.
+            MenuItem::Pin | MenuItem::Unpin => Some('n'),
             MenuItem::Note(FileOpKind::Properties) => Some('p'),
             MenuItem::Note(FileOpKind::Rename) => Some('r'),
             MenuItem::Note(FileOpKind::Move) => Some('m'),
@@ -115,14 +126,22 @@ impl MenuItem {
             MenuItem::NewTab => Some(ActionShortcuts::NewTab),
             MenuItem::CloseGroup => Some(ActionShortcuts::CloseSlot),
             MenuItem::CloseTab => Some(ActionShortcuts::CloseTab),
-            MenuItem::Note(_) | MenuItem::FacetView | MenuItem::EditNote => None,
+            MenuItem::Note(_)
+            | MenuItem::FacetView
+            | MenuItem::EditNote
+            | MenuItem::Pin
+            | MenuItem::Unpin => None,
         }
     }
 
     fn is_note(self) -> bool {
         matches!(
             self,
-            MenuItem::Note(_) | MenuItem::FacetView | MenuItem::EditNote
+            MenuItem::Note(_)
+                | MenuItem::FacetView
+                | MenuItem::EditNote
+                | MenuItem::Pin
+                | MenuItem::Unpin
         )
     }
 }
@@ -147,10 +166,15 @@ pub(crate) struct MenuContext {
 pub(crate) fn menu_items(ctx: &MenuContext) -> Vec<MenuItem> {
     let mut items = Vec::new();
     if ctx.facet {
-        items.extend([MenuItem::EditNote, MenuItem::Note(FileOpKind::Properties)]);
+        items.extend([
+            MenuItem::EditNote,
+            MenuItem::Pin,
+            MenuItem::Note(FileOpKind::Properties),
+        ]);
     } else if ctx.has_note {
         items.extend([
             MenuItem::FacetView,
+            MenuItem::Pin,
             MenuItem::Note(FileOpKind::Properties),
             MenuItem::Note(FileOpKind::Rename),
             MenuItem::Note(FileOpKind::Move),
@@ -187,6 +211,8 @@ pub(crate) fn menu_item_element_id(item: MenuItem) -> &'static str {
         MenuItem::Note(FileOpKind::Delete) => "note-menu-delete",
         MenuItem::FacetView => "note-menu-facet-view",
         MenuItem::EditNote => "note-menu-edit-note",
+        MenuItem::Pin => "note-menu-pin",
+        MenuItem::Unpin => "note-menu-unpin",
         MenuItem::SplitRight => "note-menu-split-right",
         MenuItem::SplitDown => "note-menu-split-down",
         MenuItem::NewTab => "note-menu-new-tab",
@@ -209,6 +235,10 @@ pub(crate) struct NoteMenu {
     items: Vec<MenuItem>,
     focus: FocusHandle,
     selected: usize,
+    /// The read that says whether the note is pinned landed. Until then
+    /// `Pin note` is only a guess, and picking it would toggle a pin the
+    /// user may not mean to toggle, so a pick of it waits.
+    pin_known: bool,
 }
 
 impl EventEmitter<NoteMenuEvent> for NoteMenu {}
@@ -226,6 +256,7 @@ impl NoteMenu {
             items: menu_items(&ctx),
             focus: cx.focus_handle(),
             selected: 0,
+            pin_known: false,
         }
     }
 
@@ -240,7 +271,34 @@ impl NoteMenu {
         self.target.as_ref()
     }
 
+    /// The note is pinned: its `Pin note` row reads `Unpin note`. Called
+    /// when the read that tells so lands, a moment after the menu opens, so
+    /// the menu never waits on the disk. Either row runs the same toggle,
+    /// and its flash says which way it went.
+    pub(crate) fn set_pinned(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        self.pin_known = true;
+        let (from, to) = if pinned {
+            (MenuItem::Pin, MenuItem::Unpin)
+        } else {
+            (MenuItem::Unpin, MenuItem::Pin)
+        };
+        if let Some(item) = self.items.iter_mut().find(|i| **i == from) {
+            *item = to;
+            cx.notify();
+        }
+    }
+
+    /// Whether the pin read landed (tests).
+    #[cfg(test)]
+    pub(crate) fn pin_known(&self) -> bool {
+        self.pin_known
+    }
+
     fn pick(&mut self, item: MenuItem, cx: &mut Context<Self>) {
+        // The pin row is a guess until the read lands (a few milliseconds).
+        if matches!(item, MenuItem::Pin | MenuItem::Unpin) && !self.pin_known {
+            return;
+        }
         cx.emit(NoteMenuEvent::Picked(item));
     }
 
@@ -451,7 +509,8 @@ impl Workspace {
             Some(open) => open.restore,
             None => window.focused(cx),
         };
-        let view = cx.new(|cx| NoteMenu::new(group, target, ctx, cx));
+        let view = cx.new(|cx| NoteMenu::new(group, target.clone(), ctx, cx));
+        self.read_pin_state(&view, target, cx);
         let events = cx.subscribe_in(&view, window, Self::on_note_menu_event);
         let focus = view.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
@@ -463,6 +522,31 @@ impl Workspace {
             _events: events,
         });
         cx.notify();
+    }
+
+    /// Tell `menu` whether `target` is pinned, once the read lands: core
+    /// reads the pins on tokio, and the menu is already open by then. The
+    /// answer is dropped when the menu is gone.
+    fn read_pin_state(
+        &self,
+        menu: &Entity<NoteMenu>,
+        target: Option<VaultPath>,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(target), Some(vault)) = (target, self.vault()) else {
+            return;
+        };
+        let reading = tokio::spawn(async move { vault.list_pinned_notes().await });
+        let menu = menu.downgrade();
+        cx.spawn(async move |_, cx| {
+            // A read that failed leaves the guess `Pin note` standing: the
+            // pick then pins, or says why it cannot.
+            let pins = reading.await.ok().and_then(Result::ok).unwrap_or_default();
+            // Core's own comparison: its pins are absolute, the target is not.
+            let pinned = pinned_notes::position_of(&pins, &target).is_some();
+            menu.update(cx, |menu, cx| menu.set_pinned(pinned, cx)).ok();
+        })
+        .detach();
     }
 
     /// The `FileOperations` chord: the note menu for the active group,
@@ -630,6 +714,11 @@ impl Workspace {
                 }
             }
             MenuItem::EditNote => self.close_facet_view(group, cx),
+            MenuItem::Pin | MenuItem::Unpin => {
+                if let Some(target) = target {
+                    self.run_leader_job(LeaderJob::TogglePin(target), cx);
+                }
+            }
             MenuItem::SplitRight => {
                 self.split_focused(TreeAxis::Horizontal, window, cx);
             }

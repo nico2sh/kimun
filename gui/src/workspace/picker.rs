@@ -100,6 +100,20 @@ pub(crate) const BROWSER_SORT_ID: &str = "note-picker-sort";
 const WIDTH_REMS: f32 = 36.;
 /// The list's height, in rems: about seven rows.
 const LIST_REMS: f32 = 20.;
+
+/// The saved searches' teaching line, shown while nothing is saved.
+pub(crate) const SAVED_EMPTY_ID: &str = "saved-searches-empty";
+
+/// How to make a saved search: `chord` is the
+/// `SaveCurrentQuery` chord, when bound.
+pub(crate) fn saved_empty_text(chord: Option<&str>) -> String {
+    match chord {
+        Some(chord) => {
+            format!("No saved searches yet. In Find, press {chord} or choose Save… to keep one.")
+        }
+        None => "No saved searches yet. In Find, choose Save… to keep one.".to_string(),
+    }
+}
 /// The search browser's width, in rems: results and preview side by side.
 const SEARCH_WIDTH_REMS: f32 = 64.;
 /// Below this window width (rems) the preview goes under the results.
@@ -627,7 +641,7 @@ impl<R: PickerRow> NotePicker<R> {
             .core
             .selected_row()
             .is_some_and(|row| row.deletable_name().is_some());
-        div()
+        let row = div()
             .flex()
             .items_center()
             .gap_2()
@@ -648,7 +662,34 @@ impl<R: PickerRow> NotePicker<R> {
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.delete_selected(window, cx)
                     })),
-            )
+            );
+        // With nothing saved yet (only the built-in Backlinks entry, and no
+        // filter hiding any), say what a saved search is and how to make one.
+        let nothing_saved = !self.core.is_loading()
+            && self.core.query().trim().is_empty()
+            && self
+                .core
+                .rows()
+                .iter()
+                .all(|row| row.deletable_name().is_none());
+        let teach = nothing_saved.then(|| {
+            let chord = crate::keymap::chord_label(
+                cx,
+                &kimun_notes::logic::actions::ActionShortcuts::SaveCurrentQuery,
+            );
+            div()
+                .id(SAVED_EMPTY_ID)
+                .test_support()
+                .text_sm()
+                .text_color(theme::muted(&theme::current(cx)))
+                .child(saved_empty_text(chord.as_deref()))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(teach)
+            .child(row)
             .into_any_element()
     }
 

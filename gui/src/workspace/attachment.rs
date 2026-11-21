@@ -744,6 +744,7 @@ impl Workspace {
                         title: format!("{name} was deleted"),
                         detail: String::new(),
                         failed: false,
+                        shortcuts: Vec::new(),
                     },
                 ));
                 if let Some(files) = self.files.as_ref() {

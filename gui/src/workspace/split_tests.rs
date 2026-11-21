@@ -339,6 +339,56 @@ fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 1.5
 }
 
+/// An empty group lists what to do with no note open, each action with its
+/// chord, and says nothing else about finding a note: the list replaces the
+/// detail line.
+#[gpui_kit::test]
+fn an_empty_group_lists_its_actions_with_their_chords(cx: &mut TestAppContext) {
+    use super::EMPTY_SHORTCUT_ID;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started(cx, &rt);
+    started.press(SPLIT_RIGHT, cx);
+    let right = started.active(cx);
+    assert_eq!(started.note_in(right, cx), None);
+    let rows = cx.read(|cx| {
+        started
+            .workspace
+            .read(cx)
+            .note_empty_state_in(right)
+            .expect("an empty group has an empty state")
+            .shortcuts
+    });
+    let labels: Vec<_> = rows.iter().map(|(label, _)| *label).collect();
+    assert_eq!(
+        labels,
+        [
+            "Find or create a note",
+            "Today's journal",
+            "Quick note",
+            "Command palette"
+        ]
+    );
+    let chord_of = |label: &str| {
+        rows.iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, chord)| chord.to_string())
+    };
+    assert_eq!(chord_of("Find or create a note"), Some(chords("Ctrl+O")));
+    assert_eq!(chord_of("Today's journal"), Some(chords("Ctrl+J")));
+    assert_eq!(chord_of("Quick note"), Some(chords("Ctrl+Shift+W")));
+    for (label, _) in &rows {
+        let id = gpui_kit::SharedString::from(format!("{EMPTY_SHORTCUT_ID}:{label}"));
+        let shown = cx
+            .update_window(started.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some_and(|e| e.visible())
+            })
+            .unwrap();
+        assert!(shown, "{label} is drawn");
+    }
+}
+
 /// The split chord with the editor focused splits the active group: an
 /// empty group comes right of it (down for the other chord), becomes the
 /// active group with the keyboard, and offers the note finder; the other
@@ -1248,4 +1298,32 @@ fn a_busy_group_is_written_once_per_interval(cx: &mut TestAppContext) {
             "{group:?}"
         );
     }
+}
+
+/// A screen reader hears the actions of an empty group with their chords,
+/// not only the find line: the list replaces the detail on screen.
+#[test]
+fn an_empty_state_with_actions_describes_them_to_a_screen_reader() {
+    use crate::startup::EmptyState;
+    let plain = EmptyState {
+        title: "No note open".into(),
+        detail: "Press Ctrl+O to find or create one.".into(),
+        failed: false,
+        shortcuts: Vec::new(),
+    };
+    assert_eq!(
+        super::empty_description(&plain),
+        "Press Ctrl+O to find or create one."
+    );
+    let listed = EmptyState {
+        shortcuts: vec![
+            ("Quick note", "Ctrl+Shift+W".into()),
+            ("Command palette", "Ctrl+P".into()),
+        ],
+        ..plain
+    };
+    assert_eq!(
+        super::empty_description(&listed),
+        "Quick note: Ctrl+Shift+W. Command palette: Ctrl+P"
+    );
 }

@@ -59,6 +59,7 @@ gpui_kit::assets::icon_assets!(
         CircleQuestionMark,
         Funnel,
         Layers,
+        Bookmark,
         ArrowDownToLine,
         ArrowUpToLine
     ]
@@ -213,5 +214,16 @@ mod tests {
                 "{path} is not bundled"
             );
         }
+    }
+
+    /// The Find panel's saved searches button icon is bundled: a missing SVG
+    /// paints an empty button.
+    #[test]
+    fn the_find_saved_searches_icon_is_bundled() {
+        let path = crate::workspace::SAVED_ICON.path();
+        assert!(
+            AppAssets.load(&path).unwrap().is_some(),
+            "{path} is not bundled"
+        );
     }
 }
