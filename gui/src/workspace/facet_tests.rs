@@ -1952,7 +1952,9 @@ pub(super) mod in_a_group {
             v.settings.clone(),
         );
         let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
-        drive(rt, cx, |cx| started.text(cx) == want);
+        drive(rt, cx, |cx| {
+            started.text(cx) == want && !started.indexing(cx)
+        });
         (v, started)
     }
 

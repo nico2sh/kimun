@@ -189,7 +189,7 @@ fn a_single_note_view_has_no_dateline(cx: &mut TestAppContext) {
     // The view title row is the one heading: it names the note.
     let only = headings(cx);
     assert_eq!(only.len(), 1, "{only:?}");
-    assert_eq!(only[0].label(), Some("Day"));
+    assert_eq!(only[0].label(), Some("Note: Day"));
     // The piece is the column's first row. The first gap (it hides `# Day`)
     // has nothing above it, so it draws only its up row, under the crumbs.
     let column = bounds(cx, COLUMN_ID);

@@ -22,7 +22,7 @@
 //! `Refresh` button.
 //!
 //! **The view title.** The row at the top of the view says what it shows:
-//! a muted `Collection` and the query ([`mod@super::heading`]).
+//! a small muted `Collection` and, under it, the query ([`mod@super::heading`]).
 //!
 //! **The collection line.** One muted line under the bar, always there in
 //! a collection and never in a single-note view. It holds the note

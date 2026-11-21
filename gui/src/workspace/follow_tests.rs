@@ -146,7 +146,9 @@ fn the_chord_on_a_wikilink_opens_the_note(cx: &mut TestAppContext) {
     cx.update_window(started.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
     started.chord("ctrl-enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(started.on("sub/bravo.md", cx));
     assert_eq!(
         rt.block_on(v.vault.get_note_text(&path("a.md"))).unwrap(),
@@ -185,7 +187,9 @@ fn primary_enter_follows_under_vim(cx: &mut TestAppContext) {
         true,
     );
     started.chord("ctrl-enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(started.on("bravo.md", cx));
 }
 
@@ -226,7 +230,9 @@ fn a_suffix_wikilink_opens_its_note_from_another_folder(cx: &mut TestAppContext)
         false,
     );
     started.chord("ctrl-enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Work");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Work" && !started.indexing(cx)
+    });
     assert!(started.on("work/dup.md", cx));
 }
 
@@ -249,7 +255,9 @@ fn a_bare_markdown_link_opens_the_same_folder_note(cx: &mut TestAppContext) {
         false,
     );
     started.chord("ctrl-enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Here");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Here" && !started.indexing(cx)
+    });
     assert!(started.on("journal/dup.md", cx));
 }
 
@@ -270,7 +278,9 @@ fn a_double_click_on_a_link_follows_it(cx: &mut TestAppContext) {
     let on_link = started.cell(7, 0, cx);
     started.click(on_link, cx);
     started.click(on_link, cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(started.on("bravo.md", cx));
 }
 
@@ -298,7 +308,9 @@ fn a_modifier_click_on_a_link_follows_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     started.click(on_link, cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(started.on("bravo.md", cx));
 }
 

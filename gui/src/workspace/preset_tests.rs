@@ -486,7 +486,9 @@ fn applying_a_preset_leaves_tabs_and_open_notes_untouched(cx: &mut TestAppContex
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     cx.update_window(started.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
 

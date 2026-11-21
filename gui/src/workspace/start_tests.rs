@@ -371,7 +371,9 @@ fn the_restore_lands_on_the_last_live_note_after_indexing(cx: &mut TestAppContex
         Some("Opening your last note…")
     );
 
-    drive(&rt, cx, |cx| started.text(cx) == "still here");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "still here" && !started.indexing(cx)
+    });
     assert!(!started.shows(EMPTY_STATE_ID, cx));
     assert!(started.shows("editor", cx));
     assert!(!started.indexing(cx));

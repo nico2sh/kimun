@@ -37,7 +37,7 @@ fn role(cx: &mut VisualTestContext, id: &'static str) -> Option<Role> {
 }
 
 #[gpui_kit::test]
-fn a_collection_title_says_collection_then_the_query(cx: &mut TestAppContext) {
+fn a_collection_title_has_the_word_collection_above_the_query(cx: &mut TestAppContext) {
     let cx = collection(cx, "#q");
     assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Collection: #q"));
     assert_eq!(role(cx, VIEW_TITLE_ID), Some(Role::Heading));
@@ -45,11 +45,9 @@ fn a_collection_title_says_collection_then_the_query(cx: &mut TestAppContext) {
         bounds(cx, VIEW_TITLE_KIND_ID),
         bounds(cx, VIEW_TITLE_TEXT_ID),
     );
-    assert!(kind.right() <= text.left(), "the word comes first");
-    assert!(
-        kind.top() < text.bottom() && text.top() < kind.bottom(),
-        "one line"
-    );
+    assert!(kind.bottom() <= text.top(), "the word is above the query");
+    assert_eq!(kind.left(), text.left(), "both start at the left edge");
+    assert!(shows(cx, VIEW_TITLE_KIND_ID));
     let title = bounds(cx, VIEW_TITLE_ID);
     assert!(title.bottom() <= bounds(cx, COLLECTION_LINE_ID).top());
     assert!(title.bottom() <= bounds(cx, COLUMN_ID).top());
@@ -61,11 +59,11 @@ fn a_collection_title_says_collection_then_the_query(cx: &mut TestAppContext) {
 fn a_long_query_stays_on_one_line(cx: &mut TestAppContext) {
     let long = "#tag ".repeat(200);
     let cx = collection(cx, long.trim_end());
-    let (short, text) = (
+    let (kind, text) = (
         bounds(cx, VIEW_TITLE_KIND_ID),
         bounds(cx, VIEW_TITLE_TEXT_ID),
     );
-    assert!(text.size.height < short.size.height * 2.5, "one line");
+    assert!(text.size.height < kind.size.height * 2.5, "one line");
     assert!(text.right() <= bounds(cx, VIEW_TITLE_ID).right() + gpui_kit::px(0.5));
     let want = format!("Collection: {}", long.trim_end());
     assert_eq!(label(cx, VIEW_TITLE_ID), Some(want));
@@ -75,8 +73,9 @@ fn a_long_query_stays_on_one_line(cx: &mut TestAppContext) {
 fn a_single_note_view_titles_itself_with_the_note_title(cx: &mut TestAppContext) {
     let (_view, cx, _e, _s) = open(cx, "# Groceries\n\nmilk\n", vec![]);
     assert!(shows(cx, VIEW_TITLE_ID));
-    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Groceries"));
-    assert!(!shows(cx, VIEW_TITLE_KIND_ID), "no `Collection` word");
+    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Note: Groceries"));
+    assert!(shows(cx, VIEW_TITLE_KIND_ID));
+    assert!(bounds(cx, VIEW_TITLE_KIND_ID).bottom() <= bounds(cx, VIEW_TITLE_TEXT_ID).top());
     assert_eq!(role(cx, VIEW_TITLE_ID), Some(Role::Heading));
 }
 
@@ -87,13 +86,13 @@ fn a_single_note_title_follows_new_text_and_a_rename(cx: &mut TestAppContext) {
     let (view, cx, _e, _s) = open(cx, "# Groceries\n\nmilk\n", vec![]);
     view.update(cx, |v, cx| v.set_text("# Shopping\n\nmilk\n".into(), cx));
     settle(cx);
-    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Shopping"));
+    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Note: Shopping"));
     view.update(cx, |v, cx| {
         v.set_source(VaultPath::new("/notes/errands.md"));
         v.set_text(String::new(), cx);
     });
     settle(cx);
-    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("errands"));
+    assert_eq!(label(cx, VIEW_TITLE_ID).as_deref(), Some("Note: errands"));
 }
 
 /// The title is one type step (1.25) above the datelines, from one shared

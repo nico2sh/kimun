@@ -176,7 +176,9 @@ fn started_on(cx: &mut TestAppContext, rt: &Runtime, first: &str) -> (TestVault,
         v.settings.clone(),
     );
     let want = NOTES.iter().find(|(p, _)| *p == first).unwrap().1;
-    drive(rt, cx, |cx| started.text(cx) == want && started.listed(cx));
+    drive(rt, cx, |cx| {
+        started.text(cx) == want && started.listed(cx) && !started.indexing(cx)
+    });
     (v, started)
 }
 
@@ -292,7 +294,9 @@ fn the_keys_select_and_enter_opens_the_note(cx: &mut TestAppContext) {
     assert_eq!(started.selected(cx).as_deref(), Some("b.md"));
     started.press_key("enter", cx);
     assert_eq!(started.focused(cx), Panel::Editor);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(
         started
             .open_in_editor(cx)
@@ -424,7 +428,9 @@ fn a_click_opens_a_note(cx: &mut TestAppContext) {
     assert_eq!(started.text(cx), "Alpha");
     started.click_row("b.md", cx);
     assert_eq!(started.selected(cx).as_deref(), Some("b.md"));
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert_eq!(started.focused(cx), Panel::Editor);
 }
 

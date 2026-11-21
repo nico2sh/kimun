@@ -54,7 +54,9 @@ fn started_on(
         v.settings.clone(),
     );
     let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
-    drive(rt, cx, |cx| started.text(cx) == want);
+    drive(rt, cx, |cx| {
+        started.text(cx) == want && !started.indexing(cx)
+    });
     (v, started)
 }
 
@@ -438,7 +440,9 @@ fn deleting_the_open_note_leaves_nothing_behind(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(path("d/a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.typed("X", cx);
     started.hit("f2", cx);
     started.hit("d", cx);
@@ -475,7 +479,9 @@ fn deleting_the_open_notes_folder_discards_it(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(path("d/a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.typed("X", cx);
     started.open_op_dialog(FileOpKind::Delete, "d", cx);
     started.hit("enter", cx);
@@ -505,7 +511,9 @@ fn moving_the_open_note_follows_it(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(path("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.typed("X", cx);
     started.hit("f2", cx);
     started.hit("m", cx);

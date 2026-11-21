@@ -667,7 +667,9 @@ fn zoom_on_a_group_shows_only_that_group(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let ws = started.workspace.clone();
     // A second tab, then back to the first; split there.
     cx.update(|cx| {
@@ -675,7 +677,9 @@ fn zoom_on_a_group_shows_only_that_group(cx: &mut TestAppContext) {
             w.open_note_in_new_tab(VaultPath::new("c.md"), cx)
         })
     });
-    drive(&rt, cx, |cx| started.text(cx) == "gamma");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "gamma" && !started.indexing(cx)
+    });
     cx.update_window(started.handle, |_, window, cx| window.press("ctrl-tab", cx))
         .unwrap();
     cx.update(|cx| {
@@ -683,7 +687,9 @@ fn zoom_on_a_group_shows_only_that_group(cx: &mut TestAppContext) {
             w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
         })
     });
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     let active = cx.read(|cx| ws.read(cx).layout.active_group());
     cx.update_window(started.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -729,14 +735,18 @@ fn switching_tabs_while_zoomed_ends_the_zoom(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let ws = started.workspace.clone();
     cx.update(|cx| {
         ws.update(cx, |w, cx| {
             w.open_note_in_new_tab(VaultPath::new("b.md"), cx)
         })
     });
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     let second = cx.read(|cx| ws.read(cx).layout.region().shown());
     // Each key in a frame of its own: the keyboard follows the shown tab's
     // editor once the frame settles.
@@ -792,7 +802,9 @@ fn directional_focus_moves_the_zoomed_group_between_groups(cx: &mut TestAppConte
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let ws = started.workspace.clone();
     let left = cx.read(|cx| ws.read(cx).layout.active_group());
     cx.update(|cx| {
@@ -800,7 +812,9 @@ fn directional_focus_moves_the_zoomed_group_between_groups(cx: &mut TestAppConte
             w.open_note_in_split(VaultPath::new("b.md"), Axis::Horizontal, cx)
         })
     });
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     let right = cx.read(|cx| ws.read(cx).layout.active_group());
     cx.update(|cx| ws.update(cx, |w, cx| w.focus_group(left, cx)));
     cx.run_until_parked();
