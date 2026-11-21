@@ -86,6 +86,7 @@ fn open_motion(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        super::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
         cx.set_reduce_motion(reduce);
     });

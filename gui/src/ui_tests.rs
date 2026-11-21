@@ -30,6 +30,7 @@ fn open_with(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         // A fixed platform, so `ctrl-f` means the same on every CI runner.
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
@@ -707,6 +708,7 @@ fn open_spy_with(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let text = text.to_string();
@@ -1997,6 +1999,7 @@ fn open_read_only(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2106,6 +2109,7 @@ fn a_normal_editor_click_on_a_tag_only_places_the_caret(cx: &mut TestAppContext)
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

@@ -86,6 +86,7 @@ fn open_undrawn(
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::editor_view::init(cx);
+        super::init_facet_keys(cx);
         crate::keymap::init(
             cx,
             crate::keymap::Keymap::defaults(crate::keymap::Platform::LinuxWindows),

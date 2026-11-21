@@ -3827,6 +3827,7 @@ mod directory_choice;
 mod drawer_list;
 mod drop_zones;
 mod facet;
+pub(crate) use facet::init_keys as init_facet_keys;
 mod facet_group;
 mod facet_list;
 mod facet_ui;
@@ -3917,6 +3918,14 @@ mod facet_size_tests;
 mod facet_tests;
 #[cfg(test)]
 mod facet_undo_tests;
+#[cfg(test)]
+mod facet_window_jump_tests;
+#[cfg(test)]
+mod facet_window_keys_tests;
+#[cfg(test)]
+mod facet_window_tests;
+#[cfg(test)]
+mod facet_window_view_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]

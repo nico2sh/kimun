@@ -136,6 +136,7 @@ pub(super) fn open_shell_motion(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
         cx.set_reduce_motion(reduce);
     });

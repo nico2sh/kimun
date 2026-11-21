@@ -72,9 +72,8 @@ mod popup;
 mod read_only;
 
 #[cfg(test)]
-pub(crate) use self::measure::line_height;
-#[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
+pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
 #[cfg(test)]
 pub use self::painted::ModeLine;
 pub use self::painted::{CaretShape, Painted};
@@ -287,6 +286,11 @@ impl EditorView {
             engine.set_redraw_callback(redraw_callback(tx.clone()));
         }
         self.tx = tx;
+    }
+
+    /// Whether a left press in this editor is being dragged.
+    pub(crate) fn dragging(&self) -> bool {
+        self.dragging
     }
 
     /// Whether the editor reports on `tx`'s channel (tests).

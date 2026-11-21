@@ -137,6 +137,7 @@ pub(super) fn open(cx: &mut TestAppContext, rt: &Runtime, p: &Pair, store: Layou
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let name = current(&p.settings);
