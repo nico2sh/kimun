@@ -2513,17 +2513,32 @@ date: 2026-07-17
 -- title "2026-11-04"
 -- headings
 1 0 "2026-11-04"
+2 4 "Nested list check"
 -- chunks
 [2026-11-04] "New note, journal entry actually"
+[2026-11-04Nested list check] "* Morning\n    * Walk\n        * \nPark loop nestedcheck\nThe second line of this item sits three levels deep.\nA second paragraph at the same depth.\n* \nCoffee after"
 -- index chunks
 [2026-11-04] "New note, journal entry actually"
+[2026-11-04Nested list check] "* Morning\n    * Walk\n        * \nPark loop nestedcheck\nThe second line of this item sits three levels deep.\nA second paragraph at the same depth.\n* \nCoffee after"
 -- index links (sorted)
--- tags []
+Hashtag "#nestedcheck" "nestedcheck"
+-- tags ["nestedcheck"]
 -- markdown links
+Hashtag "#nestedcheck" "nestedcheck"
 -- markdown
 # 2026-11-04
 
 New note, journal entry actually
+
+## Nested list check
+
+- Morning
+  - Walk
+    - Park loop [#nestedcheck](#nestedcheck)
+      The second line of this item sits three levels deep.
+
+      A second paragraph at the same depth.
+    - Coffee after
 
 
 === ../example/personal/projects/garden-plan.md
