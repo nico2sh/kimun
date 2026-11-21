@@ -126,7 +126,7 @@ pub(in crate::note) struct NoteWalk {
 /// after only the first line of an unclosed fence (an unclosed fence is not
 /// frontmatter), or after a byte-order mark — and, for a closed block, the
 /// bytes between its fences.
-fn body_start(note: &str) -> (usize, Option<Range<usize>>) {
+pub(in crate::note) fn body_start(note: &str) -> (usize, Option<Range<usize>>) {
     if let Some(bounds) = frontmatter_bounds(note) {
         return (bounds.end, Some(bounds.inner));
     }
@@ -1320,7 +1320,7 @@ impl NoteWalk {
     }
 
     /// The links every view lists, in document order.
-    fn listed_links(&self) -> impl Iterator<Item = &WalkLink> {
+    pub(in crate::note) fn listed_links(&self) -> impl Iterator<Item = &WalkLink> {
         self.links.iter().filter(|link| link.is_link())
     }
 
@@ -1332,6 +1332,29 @@ impl NoteWalk {
         self.listed_links().map(|l| l.target.clone()).collect()
     }
 
+    /// The listed links that name a note, each with the [`NoteTarget`] it
+    /// names, in document order — the one rule for which links are note
+    /// links, shared by the index and the facets. Images are none, and a
+    /// wikilink to a non-note file is none (see [`NoteTarget::from_wikilink`]).
+    pub(in crate::note) fn note_links<'a>(
+        &'a self,
+        ref_path: &'a VaultPath,
+    ) -> impl Iterator<Item = (&'a WalkLink, NoteTarget)> + 'a {
+        self.listed_links().filter_map(move |link| {
+            let target = match link.kind {
+                WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
+                    NoteTarget::from_wikilink(&link.target, ref_path)
+                }
+                WalkLinkKind::Inline
+                | WalkLinkKind::Found
+                | WalkLinkKind::Reference
+                | WalkLinkKind::Autolink => NoteTarget::from_markdown(&link.target, ref_path),
+                WalkLinkKind::Image => None,
+            };
+            target.map(|target| (link, target))
+        })
+    }
+
     /// The links the index records, in document order: wikilinks to notes
     /// (by name, or by path when written from the root or the note's folder;
     /// see [`NoteTarget::from_wikilink`] — a wikilink to an image or another
@@ -1339,28 +1362,19 @@ impl NoteWalk {
     /// that resolve to a note (exact, canonical paths; see
     /// [`NoteTarget::from_markdown`]), and hashtags.
     pub(in crate::note) fn index_links(&self, ref_path: &VaultPath) -> Vec<NoteLink> {
-        let mut found: Vec<(usize, NoteLink)> = Vec::new();
-        for link in self.listed_links() {
-            match link.kind {
-                WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
-                    if let Some(target) = NoteTarget::from_wikilink(&link.target, ref_path) {
-                        let note = NoteLink::note(target, lf(&link.label), &link.target);
-                        found.push((link.range.start, note));
+        let mut found: Vec<(usize, NoteLink)> = self
+            .note_links(ref_path)
+            .map(|(link, target)| {
+                let note = match link.kind {
+                    WalkLinkKind::Wiki | WalkLinkKind::WikiEmbed => {
+                        NoteLink::note(target, lf(&link.label), &link.target)
                     }
-                }
-                WalkLinkKind::Inline
-                | WalkLinkKind::Found
-                | WalkLinkKind::Reference
-                | WalkLinkKind::Autolink => {
                     // The index stores no link text; skip the allocation.
-                    if let Some(target) = NoteTarget::from_markdown(&link.target, ref_path) {
-                        let note = NoteLink::note(target, "", &link.target);
-                        found.push((link.range.start, note));
-                    }
-                }
-                WalkLinkKind::Image => {}
-            }
-        }
+                    _ => NoteLink::note(target, "", &link.target),
+                };
+                (link.range.start, note)
+            })
+            .collect();
         found.extend(
             self.tags
                 .iter()

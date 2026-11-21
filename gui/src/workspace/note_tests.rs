@@ -131,7 +131,9 @@ fn started_on(
         v.settings.clone(),
     );
     let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
-    drive(rt, cx, |cx| started.text(cx) == want);
+    drive(rt, cx, |cx| {
+        started.text(cx) == want && !started.indexing(cx)
+    });
     (v, started)
 }
 
@@ -168,7 +170,9 @@ fn the_restored_note_saves_to_its_own_path(cx: &mut TestAppContext) {
         &["b.md"],
     ));
     let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     started.type_text("X", cx);
     started.press("ctrl-s", cx);
     drive(&rt, cx, |cx| !started.dirty(cx));
@@ -188,7 +192,9 @@ fn the_autosave_tick_writes_on_its_own(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(path("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.type_text("X", cx);
     drive(&rt, cx, |cx| !started.dirty(cx));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
@@ -270,7 +276,9 @@ fn switching_notes_saves_the_one_left(cx: &mut TestAppContext) {
     let (v, started) = started_on(cx, &rt, &[("a.md", "alpha"), ("b.md", "beta")], "a.md");
     started.type_text("X", cx);
     send(&started, AppMessage::open(path("b.md")), cx);
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
     assert_eq!(started.note(cx), Some(path("b.md")));
     assert!(!started.dirty(cx));
@@ -296,7 +304,9 @@ fn nothing_is_written_while_an_open_is_pending(cx: &mut TestAppContext) {
     send(&started, AppMessage::Autosave, cx);
     started.press("ctrl-s", cx);
 
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     drive(&rt, cx, |_| true);
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
     assert_eq!(disk(&rt, &v, "a.md").as_deref(), Some("Xalpha"));
@@ -525,7 +535,9 @@ fn nothing_can_be_typed_before_the_first_note_opens(cx: &mut TestAppContext) {
     started.type_text("X", cx);
     assert_eq!(started.text(cx), "");
     assert!(!started.dirty(cx));
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     assert!(!started.dirty(cx));
     assert_eq!(started.flash(cx), None, "no \"not kept\" warning");
     started.type_text("X", cx);
@@ -1074,7 +1086,9 @@ fn the_discard_guard_is_not_fooled_by_revisions_that_sum_equal(cx: &mut TestAppC
             .workspace
             .update(cx, |w, cx| w.open_note_in_new_tab(path("b.md"), cx))
     });
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     let second = cx.read(|cx| started.workspace.read(cx).layout.active_group());
     let editor_of = |group: GroupId, cx: &TestAppContext| {
         cx.read(|cx| {

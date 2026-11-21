@@ -354,7 +354,9 @@ fn close_with_nothing_dirty_closes(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.tb_client(cx);
     assert_eq!(
         started.tb_chip(cx).map(|c| c.0),
@@ -377,7 +379,9 @@ fn close_with_a_dirty_note_saves_first(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started.tb_client(cx);
     cx.update_window(started.handle, |_, window, cx| window.input("X", cx))
         .unwrap();
@@ -427,7 +431,9 @@ fn on_a_vault(cx: &mut TestAppContext, rt: &tokio::runtime::Runtime) -> Started 
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(rt, cx, |cx| started.text(cx) == "alpha");
+    drive(rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     started
 }
 

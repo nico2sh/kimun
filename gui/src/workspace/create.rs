@@ -53,6 +53,8 @@ pub(crate) struct CreateNoteBody {
     path: VaultPath,
     /// What the note starts with (a saved Ask answer); `None`: empty.
     content: Option<String>,
+    /// The note made opens in a new tab (a follow from a facet view).
+    new_tab: bool,
     workspace: WeakEntity<Workspace>,
     status: Entity<OpStatus>,
     _status_watch: Subscription,
@@ -62,6 +64,7 @@ impl CreateNoteBody {
     fn new(
         path: VaultPath,
         content: Option<String>,
+        new_tab: bool,
         workspace: WeakEntity<Workspace>,
         status: Entity<OpStatus>,
         cx: &mut Context<Self>,
@@ -70,6 +73,7 @@ impl CreateNoteBody {
         Self {
             path,
             content,
+            new_tab,
             workspace,
             status,
             _status_watch: watch,
@@ -84,6 +88,7 @@ impl Render for CreateNoteBody {
         let confirm = self.workspace.clone();
         let path = self.path.clone();
         let content = self.content.clone();
+        let new_tab = self.new_tab;
         let cancel = self.workspace.clone();
         div()
             .id(CREATE_ID)
@@ -105,7 +110,7 @@ impl Render for CreateNoteBody {
                     let content = content.clone();
                     confirm
                         .update(cx, |workspace, cx| {
-                            workspace.create_confirmed(path, content, window, cx)
+                            workspace.create_confirmed(path, content, new_tab, window, cx)
                         })
                         .ok();
                 },
@@ -278,6 +283,18 @@ impl Workspace {
         content: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.offer_create_opening(path, content, false, cx);
+    }
+
+    /// [`Self::offer_create_with`], the note made opening in a new tab when
+    /// `new_tab` (a follow from a facet view, ADR-0061).
+    pub(crate) fn offer_create_opening(
+        &mut self,
+        path: VaultPath,
+        content: Option<String>,
+        new_tab: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.with_window(cx, move |workspace, window, cx| {
             if modal::dialog_open(window, cx) {
                 // A saved answer is not "not found": say what to do.
@@ -288,18 +305,19 @@ impl Workspace {
                 };
                 workspace.flash_error(why, cx);
             } else {
-                workspace.open_create_dialog(path, content, window, cx);
+                workspace.open_create_dialog(path, content, new_tab, window, cx);
             }
         });
     }
 
     /// Open the create dialog for `path`, the note to hold `content` once
-    /// made (`None`: empty). Refused while a modal is open, and without a
-    /// workspace.
+    /// made (`None`: empty), opening in a new tab when `new_tab`. Refused
+    /// while a modal is open, and without a workspace.
     pub(crate) fn open_create_dialog(
         &mut self,
         path: VaultPath,
         content: Option<String>,
+        new_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -314,7 +332,7 @@ impl Workspace {
             let path = path.clone();
             let content = content.clone();
             let status = status.clone();
-            cx.new(|cx| CreateNoteBody::new(path, content, workspace.clone(), status, cx))
+            cx.new(|cx| CreateNoteBody::new(path, content, new_tab, workspace.clone(), status, cx))
         };
         self.show_modal(
             Slot::Own(ModalKind::CreateNote),
@@ -333,7 +351,7 @@ impl Workspace {
                         let content = content.clone();
                         confirm
                             .update(cx, |workspace, cx| {
-                                workspace.create_confirmed(path, content, window, cx)
+                                workspace.create_confirmed(path, content, new_tab, window, cx)
                             })
                             .ok();
                         false
@@ -348,12 +366,13 @@ impl Workspace {
 
     /// `Create` in the create dialog: core makes the note (or finds one
     /// already there; with `content` it always makes a fresh one, a taken
-    /// name getting a suffix), then it opens; a failure stays in the
-    /// dialog.
+    /// name getting a suffix), then it opens (in a new tab when `new_tab`);
+    /// a failure stays in the dialog.
     pub(crate) fn create_confirmed(
         &mut self,
         path: VaultPath,
         content: Option<String>,
+        new_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -374,7 +393,9 @@ impl Workspace {
                     Ok(outcome) => {
                         workspace.close_note_dialog(&mine, window, cx);
                         workspace.focus_panel(Panel::Editor, window, cx);
-                        if let Some(tx) = workspace.tx.as_ref() {
+                        if new_tab {
+                            workspace.open_made_in_new_tab(outcome, cx);
+                        } else if let Some(tx) = workspace.tx.as_ref() {
                             outcome.announce_and_open(tx);
                         }
                     }

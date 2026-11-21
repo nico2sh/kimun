@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
+use kimun_core::nfs::NoteEntryData;
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::NoteContentData;
 
 use crate::logic::list::{Emit, ListRow, RowSource, YankTarget};
 use crate::logic::query::{
@@ -116,6 +118,18 @@ pub async fn load_query(vault: &NoteVault, query: &str) -> Vec<BacklinkEntry> {
     entries
 }
 
+/// Put `results` of `query` in the order the Query panel lists them. The DB
+/// orders only when the query carries an `or:` directive; without one, sort
+/// by lowercase file name (stable, so ties keep the DB's order).
+pub(super) fn order_hits(query: &str, results: &mut [(NoteEntryData, NoteContentData)]) {
+    if kimun_core::SearchTerms::from_query_string(query)
+        .order_by
+        .is_empty()
+    {
+        results.sort_by_key(|(entry, _)| entry.path.get_parent_path().1.to_lowercase());
+    }
+}
+
 /// One bounded page of a query's results ([`load_query_page`]).
 #[derive(Debug, Clone, Default)]
 pub struct QueryPage {
@@ -144,14 +158,9 @@ pub async fn load_query_page(
     use futures::StreamExt as _;
     let needles = emphasis_needles(query);
     let mut results = vault.search_notes(query).await.unwrap_or_default();
-    // The source's no-directive order (stable: the same ties as there), taken
-    // before the cut so the page is the head of the same list.
-    if kimun_core::SearchTerms::from_query_string(query)
-        .order_by
-        .is_empty()
-    {
-        results.sort_by_key(|(entry, _)| entry.path.get_parent_path().1.to_lowercase());
-    }
+    // The source's no-directive order, taken before the cut so the page is
+    // the head of the same list.
+    order_hits(query, &mut results);
     let total = results.len();
     results.truncate(cap);
     let needles = &needles;

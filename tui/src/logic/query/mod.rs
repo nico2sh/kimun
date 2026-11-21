@@ -10,6 +10,7 @@
 
 mod breadcrumb;
 mod builder;
+mod collection;
 mod emphasis;
 mod find;
 mod syntax;
@@ -18,6 +19,9 @@ mod vars;
 pub use self::breadcrumb::SavedSearchBreadcrumb;
 pub use self::builder::{
     BuilderModel, BuilderRow, PROPERTY_OPS, RowKind, property_op_label, property_op_name,
+};
+pub use self::collection::{
+    COLLECTION_NOTE_CAP, CollectionLoad, LoadedNote, load_collection, resolve_collection_query,
 };
 pub use self::emphasis::{emphasis_needles, error_reason};
 pub use self::find::{

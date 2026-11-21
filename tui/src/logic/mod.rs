@@ -16,6 +16,7 @@ pub mod attachment;
 pub mod doc_meta;
 pub mod editor;
 pub mod editor_region;
+pub mod facet_bar;
 pub mod file_ops;
 pub mod files;
 pub mod follow;

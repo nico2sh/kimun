@@ -255,6 +255,7 @@ pub(super) fn open_started_motion(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
         cx.set_reduce_motion(reduce);
     });
@@ -370,7 +371,9 @@ fn the_restore_lands_on_the_last_live_note_after_indexing(cx: &mut TestAppContex
         Some("Opening your last note…")
     );
 
-    drive(&rt, cx, |cx| started.text(cx) == "still here");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "still here" && !started.indexing(cx)
+    });
     assert!(!started.shows(EMPTY_STATE_ID, cx));
     assert!(started.shows("editor", cx));
     assert!(!started.indexing(cx));
@@ -639,6 +642,7 @@ fn a_flash_without_a_toast_layer_is_dropped(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let layout =

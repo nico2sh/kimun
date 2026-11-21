@@ -228,9 +228,17 @@ use crate::status_row::{self, DocFacts, Status};
 use crate::theme;
 use kimun_notes::logic::task_slot::TaskSlot;
 
+#[cfg(test)]
+pub(crate) use chrome::FACET_ICON;
+#[cfg(test)]
+pub(crate) use facet::{GAP_DOWN_ICON as FACET_GAP_DOWN_ICON, GAP_UP_ICON as FACET_GAP_UP_ICON};
+#[cfg(test)]
+pub(crate) use facet_ui::BAR_ICONS as FACET_BAR_ICONS;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
+#[cfg(test)]
+pub(crate) use find::COLLECTION_ICON;
 #[cfg(test)]
 pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
@@ -958,6 +966,8 @@ impl Workspace {
                     self.open_note_menu(group, *at, window, cx);
                 }
             }
+            // Only a read-only editor emits this; the note editors are not.
+            EditorEvent::ReadOnlyFollow { .. } => {}
         }
     }
 
@@ -1224,6 +1234,7 @@ impl Workspace {
                 self.file_op_closes_modals(&op, cx);
                 self.files_file_op(&op, cx);
                 self.attachment_file_op(&op, cx);
+                self.facet_file_op(&op, cx);
                 self.views_file_op(&op, cx);
                 self.refresh_note_counts();
                 // Every result changed the working tree.
@@ -1294,7 +1305,10 @@ impl Workspace {
             }
             // A property write changed a note on disk (sent by the write
             // itself, so it arrives with the dialog closed too).
-            AppMessage::NoteReloadFromDisk(path) => self.reload_from_disk(path, cx),
+            AppMessage::NoteReloadFromDisk(path) => {
+                self.refresh_facets(&path, cx);
+                self.reload_from_disk(path, cx)
+            }
             // Results addressed to an open modal: the properties dialog's
             // (path-guarded); every other one is stale.
             AppMessage::OverlayData(data) => self.properties_data(data, cx),
@@ -1841,11 +1855,15 @@ impl Workspace {
                 Some(view) => self.view_handle(view, slot, cx),
                 None => self.slot_handle(slot),
             },
-            // The attachment view while one shows, else the editor.
-            Focus::Leaf(Leaf::Editor) => match self.active_state().attachment.as_ref() {
-                Some(view) => view.read(cx).focus_handle(cx),
-                None => self.active_state().editor.read(cx).focus_handle(cx),
-            },
+            // The attachment or facet view while one shows, else the editor.
+            Focus::Leaf(Leaf::Editor) => {
+                let state = self.active_state();
+                match (state.attachment.as_ref(), state.facet.as_ref()) {
+                    (Some(view), _) => view.read(cx).focus_handle(cx),
+                    (None, Some(view)) => view.read(cx).focus_handle(cx),
+                    (None, None) => state.editor.read(cx).focus_handle(cx),
+                }
+            }
         }
     }
 
@@ -2617,8 +2635,8 @@ impl Workspace {
     /// [`Self::intercept_modal_key`]).
     fn key_ctx(&self, cx: &App) -> KeyCtx {
         match self.focused_panel() {
-            // The attachment view reads no vim keys.
-            Panel::Editor if self.active_state().attachment.is_some() => KeyCtx {
+            // The attachment and facet views read no vim keys.
+            Panel::Editor if self.active_state().shows_view() => KeyCtx {
                 panel: Panel::Editor,
                 vim: false,
                 query: false,
@@ -2815,6 +2833,12 @@ impl Workspace {
                 Some(DrawerView::Find) => self.save_find_query(window, cx),
                 _ => return false,
             },
+            // FIND's query (field or results); elsewhere the chord goes on.
+            ActionShortcuts::OpenQueryAsCollection => match self.focused_view() {
+                Some(DrawerView::Find) => self.open_find_as_collection(cx),
+                _ => return false,
+            },
+            ActionShortcuts::RefreshCollection => self.refresh_active_collection(cx),
             // The focused list (FILES, FIND); the palette's row sorts FILES
             // when no view is focused. Elsewhere the chord goes on.
             ActionShortcuts::OpenSortDialog => return self.sort_command(key.is_some(), window, cx),
@@ -2906,6 +2930,10 @@ impl Workspace {
             }
             // The tabs (ADR-0058).
             ActionShortcuts::NewTab => self.new_tab(cx),
+            ActionShortcuts::ToggleFacetView => {
+                let group = self.layout.active_group();
+                self.toggle_facet_view(group, cx);
+            }
             ActionShortcuts::CloseTab => self.close_shown_tab(cx),
             ActionShortcuts::NextTab => self.step_tab(true, cx),
             ActionShortcuts::PrevTab => self.step_tab(false, cx),
@@ -3306,30 +3334,43 @@ impl Workspace {
     /// Whether `group` shows its editor ([`Self::render_group_document`]).
     fn group_editor_shown(&self, group: GroupId) -> bool {
         self.empty.is_none()
-            && self.state(group).is_some_and(|s| s.attachment.is_none())
+            && self.state(group).is_some_and(|s| !s.shows_view())
             && self.note_empty_state_in(group).is_none()
     }
 
-    /// What `group` shows: its attachment view, else why there is no note
-    /// (the window's own empty state first), else its editor
-    /// ([`Self::group_editor_shown`] says which).
+    /// What `group` shows: its attachment or facet view, else why there is
+    /// no note (the window's own empty state first), else its editor
+    /// ([`Self::group_editor_shown`] says which). `lone`: the group is drawn
+    /// with no header, its corner buttons floating over the document's
+    /// top-right, so a facet view keeps its bar's controls clear of them.
     pub(super) fn render_group_document(
         &self,
         group: GroupId,
+        lone: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(state) = self.state(group) else {
             return div().flex_1().into_any_element();
         };
-        let attachment = state.attachment.clone().filter(|_| self.empty.is_none());
-        let empty = match &attachment {
+        if let Some(facet) = &state.facet {
+            let room = lone.then(|| gpui_kit::rems(group_header::CORNER_ROOM_REMS));
+            // A collection's line says `Loading...` while a load for the
+            // group runs (a refresh, or a newer open).
+            let loading = state.facet_loading.is_some();
+            facet.update(cx, |view, cx| {
+                view.set_corner_room(room, cx);
+                view.set_loading(loading, cx);
+            });
+        }
+        let shown = state.view().filter(|_| self.empty.is_none());
+        let empty = match &shown {
             None => self
                 .empty
                 .clone()
                 .or_else(|| self.note_empty_state_in(group)),
             Some(_) => None,
         };
-        match (&empty, attachment) {
+        match (&empty, shown) {
             // The editor is not drawn: its focus handle sits on the empty
             // state, so the keyboard still reaches the window's chords (F5
             // away from a workspace that would not open, the leader, the
@@ -3370,7 +3411,7 @@ impl Workspace {
         let document = if several {
             self.render_groups(size, f64::from(window.rem_size()), cx)
         } else {
-            self.render_group_document(active, cx)
+            self.render_group_document(active, true, cx)
         };
         let editor_shown = self.group_editor_shown(active);
         // The which-key docks over the bottom of the document, right above
@@ -3783,11 +3824,18 @@ mod ask_sources;
 mod attachment;
 mod chevron;
 mod chrome;
+mod collection_group;
 mod config;
 mod create;
 mod directory_choice;
 mod drawer_list;
 mod drop_zones;
+mod facet;
+pub(crate) use facet::init_keys as init_facet_keys;
+mod facet_group;
+mod facet_list;
+mod facet_pill;
+mod facet_ui;
 mod file_dialogs;
 mod file_ops;
 mod files;
@@ -3856,7 +3904,41 @@ mod cfg_tests;
 #[cfg(test)]
 mod chevron_tests;
 #[cfg(test)]
+mod collection_tests;
+#[cfg(test)]
 mod drop_tests;
+#[cfg(test)]
+mod facet_chrome_tests;
+#[cfg(test)]
+mod facet_gap_rows_tests;
+#[cfg(test)]
+mod facet_line_tests;
+#[cfg(test)]
+mod facet_motion_edge_tests;
+#[cfg(test)]
+mod facet_motion_shape_tests;
+#[cfg(test)]
+mod facet_motion_tests;
+#[cfg(test)]
+mod facet_rows_tests;
+#[cfg(test)]
+mod facet_size_tests;
+#[cfg(test)]
+mod facet_tests;
+#[cfg(test)]
+mod facet_title_tests;
+#[cfg(test)]
+mod facet_undo_tests;
+#[cfg(test)]
+mod facet_window_edge_tests;
+#[cfg(test)]
+mod facet_window_jump_tests;
+#[cfg(test)]
+mod facet_window_keys_tests;
+#[cfg(test)]
+mod facet_window_tests;
+#[cfg(test)]
+mod facet_window_view_tests;
 #[cfg(test)]
 mod file_ops_tests;
 #[cfg(test)]

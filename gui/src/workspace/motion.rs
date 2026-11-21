@@ -81,7 +81,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 
-use gpui_kit::base::motion::{Transition, TransitionState};
+use gpui_kit::base::motion::{MotionStatus, Transition, TransitionState};
 use gpui_kit::{App, Context, Pixels, Size, Window};
 use kimun_notes::logic::editor_region::TabId;
 use kimun_notes::logic::layout_tree::{Leaf, RailPosition, SlotId, TreeShape};
@@ -160,6 +160,61 @@ pub(super) struct Spec {
 pub(super) struct Presence {
     pub frame: f32,
     pub content: f32,
+}
+
+/// A height that follows a measured value at the Quick speed: a widget whose
+/// height follows its content (the facet bar). The first sample adopts its
+/// target. A new target moves from the value on screen and never queues.
+/// Under reduced motion it jumps to the target.
+pub(crate) struct HeightFollow {
+    state: TransitionState<f32>,
+    /// The height a snap set. The next sample starts from it.
+    held: Option<f32>,
+    /// Whether the last sample was in a motion.
+    moving: bool,
+}
+
+impl HeightFollow {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: TransitionState::default(),
+            held: None,
+            moving: false,
+        }
+    }
+
+    /// The height to draw now, toward `target`. Asks for the next frame
+    /// only while a motion runs.
+    pub(crate) fn sample(&mut self, target: f32, window: &mut Window, cx: &mut App) -> f32 {
+        let policy = || Transition::new(Speed::Quick.duration());
+        if let Some(held) = self.held.take() {
+            // Adopt the snapped height first, so the target below is a move
+            // from it.
+            self.state.sample(held, policy(), window, cx);
+        }
+        let sampled = self.state.sample(target, policy(), window, cx);
+        self.moving = matches!(
+            sampled.status,
+            MotionStatus::Running | MotionStatus::Delayed
+        );
+        sampled.value
+    }
+
+    /// Jump to `target` with no motion.
+    pub(crate) fn snap(&mut self, target: f32) {
+        if self.held == Some(target) {
+            // Snapped there already, and not sampled since.
+            return;
+        }
+        self.state = TransitionState::default();
+        self.held = Some(target);
+        self.moving = false;
+    }
+
+    /// Whether a motion runs.
+    pub(crate) fn moving(&self) -> bool {
+        self.moving
+    }
 }
 
 #[derive(Default)]
