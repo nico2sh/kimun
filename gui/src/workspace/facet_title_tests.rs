@@ -69,6 +69,20 @@ fn a_long_query_stays_on_one_line(cx: &mut TestAppContext) {
     assert_eq!(label(cx, VIEW_TITLE_ID), Some(want));
 }
 
+/// A note title too long for the view stays on one line, cut with an
+/// ellipsis, inside the title row.
+#[gpui_kit::test]
+fn a_long_note_title_stays_on_one_line(cx: &mut TestAppContext) {
+    let long = "word ".repeat(200);
+    let (_view, cx, _e, _s) = open(cx, &format!("# {}\n\nmilk\n", long.trim_end()), vec![]);
+    let (kind, text) = (
+        bounds(cx, VIEW_TITLE_KIND_ID),
+        bounds(cx, VIEW_TITLE_TEXT_ID),
+    );
+    assert!(text.size.height < kind.size.height * 2.5, "one line");
+    assert!(text.right() <= bounds(cx, VIEW_TITLE_ID).right() + gpui_kit::px(0.5));
+}
+
 #[gpui_kit::test]
 fn a_single_note_view_titles_itself_with_the_note_title(cx: &mut TestAppContext) {
     let (_view, cx, _e, _s) = open(cx, "# Groceries\n\nmilk\n", vec![]);
