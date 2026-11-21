@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.8.0...kimun_core-v0.8.1) - 2026-11-21
+
+### Added
+
+- facet view clarity, context-aware counts, undo, plain click
+- multiple notes (collection) faceted view
+- visual selection of facets in note
+- facets from notes
+
+### Fixed
+
+- keep nested list and indented code shape in facet chunks
+- test failing extraction snapshot
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into facet-core-slice-1
+- base, common rendering of the frontmatter
+
 ## [0.8.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.7.1...kimun_core-v0.8.0) - 2026-11-18
 
 ### Fixed

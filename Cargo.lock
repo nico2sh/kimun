@@ -5045,7 +5045,7 @@ dependencies = [
 
 [[package]]
 name = "kimun-notes"
-version = "0.25.3"
+version = "0.25.4"
 dependencies = [
  "arboard",
  "async-trait",
@@ -5098,7 +5098,7 @@ dependencies = [
 
 [[package]]
 name = "kimun_core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "criterion 0.5.1",
