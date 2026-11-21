@@ -11,6 +11,11 @@
 //! that unpicks itself while it has the keyboard hands it to the next pick,
 //! or to the one before when it was the last. Any other stop that goes away
 //! with the keyboard (`Undo` once used, the only pick) hands it to the view.
+//! A stop of the column that takes the keyboard scrolls into view with its
+//! ring ([`mod@super::reveal`]), so Tab walks on past the drawn pieces.
+//! Tab from the bar enters the column at piece 0 and Shift+Tab from
+//! `Show more` at the last piece, wherever the column is scrolled. A
+//! scroll never takes the keyboard from a stop: its piece stays drawn.
 //!
 //! **Keys.** Taken before anything inside the view sees them (a piece's
 //! read-only editor would take letters), and never passed on, so neither the
@@ -41,17 +46,33 @@ use std::collections::HashMap;
 
 use gpui_kit::component::input::{Enter, MoveDown, MoveUp};
 use gpui_kit::{
-    App, Context, Div, FocusHandle, Focusable as _, InteractiveElement, KeyDownEvent,
-    ParentElement, Stateful, Styled, Window, point, px,
+    App, Context, Div, FocusHandle, Focusable as _, InteractiveElement, KeyBinding, KeyDownEvent,
+    ParentElement, Stateful, Styled, Window, actions, point, px,
 };
 use kimun_core::note::{Facet, Reveal};
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::settings::themes::Theme;
 
+use super::window::column_pad;
 use super::{FacetEvent, FacetView, ListKind};
 use crate::input;
 use crate::keymap::Platform;
 use crate::workspace::facet_ui::focus_ring;
+
+actions!(kimun_facet, [FacetTab, FacetTabPrev]);
+
+/// The key context of the view's root.
+const KEY_CONTEXT: &str = "KimunFacet";
+
+/// Bind Tab and Shift+Tab in the view, over the kit root's traversal, so
+/// the view can enter its column in plan order. Call once, after
+/// `gpui_kit::init`.
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", FacetTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-tab", FacetTabPrev, Some(KEY_CONTEXT)),
+    ]);
+}
 
 /// A tab stop of the view: what it is, so a key can do what its click does.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -130,8 +151,7 @@ impl Stops {
         self.handles.get(stop).cloned()
     }
 
-    /// The stops the last frame drew, in order (tests).
-    #[cfg(test)]
+    /// The stops the last frame drew, in the order they were tracked.
     pub(super) fn drawn(&self) -> &[Stop] {
         &self.drawn
     }
@@ -216,30 +236,43 @@ pub(super) fn piece_offset(tops: &[f32], current: f32, max: f32, down: bool) -> 
 
 /// The view's keys on its root element. See the module docs.
 pub(super) fn keys(el: Stateful<Div>, cx: &mut Context<FacetView>) -> Stateful<Div> {
-    el.capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-        if this.key_down(event, window, cx) {
-            cx.stop_propagation();
-            cx.notify();
+    // Tab into the column from the bar or from `Show more` goes in plan
+    // order; any other Tab goes on to the kit root's traversal.
+    let tab = |back: bool| {
+        move |this: &mut FacetView, window: &mut Window, cx: &mut Context<FacetView>| {
+            if !this.enter_column(back, window, cx) {
+                cx.propagate();
+            }
         }
-    }))
-    .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
-        if this.field_has_keyboard(window, cx) {
-            this.step_highlight(false, cx);
-            cx.stop_propagation();
-        }
-    }))
-    .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
-        if this.field_has_keyboard(window, cx) {
-            this.step_highlight(true, cx);
-            cx.stop_propagation();
-        }
-    }))
-    .capture_action(cx.listener(|this, _: &Enter, window, cx| {
-        if this.field_has_keyboard(window, cx) {
-            this.pick_highlighted(window, cx);
-            cx.stop_propagation();
-        }
-    }))
+    };
+    let (next, prev) = (tab(false), tab(true));
+    el.key_context(KEY_CONTEXT)
+        .on_action(cx.listener(move |this, _: &FacetTab, window, cx| next(this, window, cx)))
+        .on_action(cx.listener(move |this, _: &FacetTabPrev, window, cx| prev(this, window, cx)))
+        .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if this.key_down(event, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
+        .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+            if this.field_has_keyboard(window, cx) {
+                this.step_highlight(false, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+            if this.field_has_keyboard(window, cx) {
+                this.step_highlight(true, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .capture_action(cx.listener(|this, _: &Enter, window, cx| {
+            if this.field_has_keyboard(window, cx) {
+                this.pick_highlighted(window, cx);
+                cx.stop_propagation();
+            }
+        }))
 }
 
 impl FacetView {
@@ -297,8 +330,8 @@ impl FacetView {
             // Shift is how some layouts type a slash. With every facet
             // picked, `open_list` opens nothing.
             Key::Char('/') => self.open_list(ListKind::All, window, cx),
-            Key::Char('j') => self.step_piece(true, cx),
-            Key::Char('k') => self.step_piece(false, cx),
+            Key::Char('j') => self.step_piece(true, window, cx),
+            Key::Char('k') => self.step_piece(false, window, cx),
             // A collection runs its query again; a single note has no `r`.
             Key::Char('r') if key.mods == Mods::NONE => return self.refresh_key(cx),
             // A piece's read-only editor binds Tab to nothing: walk on.
@@ -384,15 +417,18 @@ impl FacetView {
     }
 
     /// Bring the next (`down`) or previous piece to the top of the column.
-    fn step_piece(&mut self, down: bool, cx: &mut Context<Self>) {
+    /// The pieces' tops come from the height table, so a piece that is
+    /// not drawn is reached too.
+    fn step_piece(&mut self, down: bool, window: &Window, cx: &mut Context<Self>) {
+        // The table starts under the column's `py_3`.
+        let pad = column_pad(window.rem_size());
+        let tops: Vec<f32> = {
+            let heights = self.heights.borrow();
+            (0..self.members.len())
+                .map(|i| f32::from(pad + heights.step_top(i)))
+                .collect()
+        };
         let handle = &self.scroll;
-        let top = handle.bounds().top();
-        let tops: Vec<f32> = self
-            .piece_items
-            .iter()
-            .filter_map(|&ix| handle.bounds_for_item(ix))
-            .map(|bounds| f32::from(bounds.top() - top))
-            .collect();
         let offset = handle.offset();
         let current = -f32::from(offset.y);
         let max = f32::from(handle.max_offset().y);

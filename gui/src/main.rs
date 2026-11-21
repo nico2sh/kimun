@@ -202,6 +202,7 @@ fn main() {
             kit.motion.duration_normal = std::time::Duration::ZERO;
         });
         editor_view::init(cx);
+        workspace::init_facet_keys(cx);
         keymap::init(cx, keymap);
         dock::install(cx, &launch);
         open_main_window(&launch, start, theme, layout, cx);

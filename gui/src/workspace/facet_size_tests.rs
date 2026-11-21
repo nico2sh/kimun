@@ -7,8 +7,8 @@
 use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
 use gpui_kit::{Entity, MouseButton, TestAppContext, VisualTestContext, px, size};
 
-use super::facet::{FacetView, chunk_id, gap_down_id};
-use super::facet_tests::{cell, chunk, click, next_frame, open, settle, tag};
+use super::facet::{FacetView, SHOW_MORE_ID, chunk_id, gap_down_id};
+use super::facet_tests::{cell, chunk, click, next_frame, open, settle, tag, to_bottom};
 use crate::measure_tests::time_frames;
 
 /// What is wrong with the size of each piece in the last frame. It is
@@ -257,14 +257,38 @@ fn no_next_frame_is_asked_for_sizing_after_any_change(cx: &mut TestAppContext) {
 }
 
 /// A facet view at the cap: 150 tagged paragraphs that wrap, of which the
-/// view draws 100 pieces. It times 20 steady frames and 20 resize frames.
-/// Every resize crosses a cell boundary. The spike measured a bare column
-/// of 100 measured pieces at 4.5 ms steady and 7.0 ms per resize in a
-/// release build.
+/// view draws 100 pieces. For the app mode (`draw_all` off, spacers for far
+/// pieces) and for `draw_all` on, five rounds each time 20 steady frames,
+/// 20 scroll frames (a few viewports down, one frame per step) and 20
+/// resize frames. Every resize crosses a cell boundary. Prints the mean of
+/// each round of 20 and the median of the rounds. The spike measured a bare
+/// column of 100 measured pieces at 4.5 ms steady and 7.0 ms per resize.
 #[gpui_kit::test]
 #[ignore = "a timing bench, run by hand"]
 fn bench_a_facet_view_of_100_pieces(cx: &mut TestAppContext) {
-    let text: String = (0..150)
+    let (view, cx) = open_pieces(cx, 150);
+    assert_eq!(view.read_with(cx, |view, _| view.chunks().len()), 100);
+    bench_pieces(&view, cx);
+}
+
+/// [`bench_a_facet_view_of_100_pieces`] after `Show more` twice: 400
+/// pieces of 450.
+#[gpui_kit::test]
+#[ignore = "a timing bench, run by hand"]
+fn bench_a_facet_view_of_400_pieces(cx: &mut TestAppContext) {
+    let (view, cx) = open_pieces(cx, 450);
+    for shown in [200, 400] {
+        to_bottom(&view, cx);
+        click(cx, SHOW_MORE_ID);
+        settle(cx);
+        assert_eq!(view.read_with(cx, |view, _| view.chunks().len()), shown);
+    }
+    bench_pieces(&view, cx);
+}
+
+/// A view of `n` tagged paragraphs that wrap, picked, 600 by 600, settled.
+fn open_pieces(cx: &mut TestAppContext, n: usize) -> (Entity<FacetView>, &mut VisualTestContext) {
+    let text: String = (0..n)
         .map(|i| {
             format!(
                 "#a piece {i} {}\n\nuntagged {i}\n\n",
@@ -275,15 +299,52 @@ fn bench_a_facet_view_of_100_pieces(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, &text, vec![tag("a")]);
     cx.simulate_resize(size(px(600.), px(600.)));
     settle(cx);
-    assert_eq!(view.read_with(cx, |view, _| view.chunks().len()), 100);
-    for round in 0..2 {
-        let steady = time_frames(cx, 20, |cx, _| {
-            cx.update(|window, cx| window.render_frame(cx));
+    (view, cx)
+}
+
+/// The rounds of the facet benches, in app mode and with `draw_all` on.
+fn bench_pieces(view: &Entity<FacetView>, cx: &mut VisualTestContext) {
+    use super::facet_window_view_tests::scroll_to;
+    let view = view.clone();
+    for all in [false, true] {
+        view.update(cx, |view, _| view.set_draw_all(all));
+        scroll_to(&view, 0., cx);
+        let mut rounds: [Vec<f64>; 3] = Default::default();
+        for round in 0..5 {
+            let steady = time_frames(cx, 20, |cx, _| {
+                cx.update(|window, cx| window.render_frame(cx));
+            });
+            let scroll = time_frames(cx, 20, |cx, i| {
+                scroll_to(
+                    &view,
+                    if i < 10 {
+                        211. * i as f32
+                    } else {
+                        211. * (20 - i) as f32
+                    },
+                    cx,
+                );
+            });
+            let resize = time_frames(cx, 20, |cx, i| {
+                cx.simulate_resize(size(px(600. + 9. * (i % 10) as f32), px(600.)));
+            });
+            if all {
+                // `assert_sized` reads every piece: only drawn when all are.
+                assert_sized(&view, cx, "the last resize frame");
+            }
+            eprintln!(
+                "draw_all {all} round {round}: steady {steady:.2} ms, scroll {scroll:.2} ms, resize {resize:.2} ms"
+            );
+            for (r, t) in rounds.iter_mut().zip([steady, scroll, resize]) {
+                r.push(t);
+            }
+        }
+        let [steady, scroll, resize] = rounds.map(|mut r| {
+            r.sort_by(f64::total_cmp);
+            r[r.len() / 2]
         });
-        let resize = time_frames(cx, 20, |cx, i| {
-            cx.simulate_resize(size(px(600. + 9. * (i % 10) as f32), px(600.)));
-        });
-        assert_sized(&view, cx, "the last resize frame");
-        eprintln!("round {round} facet view: steady {steady:.2} ms, resize {resize:.2} ms");
+        eprintln!(
+            "draw_all {all} MEDIAN: steady {steady:.2} ms, scroll {scroll:.2} ms, resize {resize:.2} ms"
+        );
     }
 }

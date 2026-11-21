@@ -8,14 +8,15 @@ use gpui_kit::base::{ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, relative,
 };
 use kimun_core::note::GAP_SHOW_ALL_MAX;
 use kimun_notes::settings::themes::Theme;
 
 use super::bar_motion::HintDraw;
 use super::keys::{Stop, keys};
+use super::window::{column_gap, column_pad};
 use super::{
     CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FACET_VIEW_ID, FacetView, HINT_ID, HINT_TEXT,
     HINT_TEXT_NOTES, REMOVE_LAST_ID, SHOW_MORE_COUNT_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id,
@@ -236,46 +237,9 @@ impl FacetView {
             .into_any_element()
     }
 
-    /// The column's items: each gap, then the chunk below it, and the
-    /// empty message while no chunk is drawn. It records where each piece
-    /// starts for `j`/`k`.
-    fn render_body(
-        &mut self,
-        title_size: Pixels,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut body: Vec<AnyElement> = Vec::new();
-        let mut pieces = Vec::with_capacity(self.members.len());
-        // Each gap, then the chunk below it if any: every chunk once, in
-        // order, each member's gaps its own. In a collection a member's
-        // dateline stands above its first gap; `j`/`k` onto the member's
-        // first chunk bring the dateline to the top.
-        let mut lead = None;
-        for g in 0..self.members.gaps.len() {
-            let spaced = !body.is_empty();
-            if let Some(line) = self.render_dateline(self.members.gaps[g], spaced, title_size, t) {
-                lead = Some(body.len());
-                body.push(line);
-            }
-            if let Some(gap) = self.render_gap(g, t, cx) {
-                body.push(gap.into_any_element());
-            }
-            if let Some(i) = self.members.gaps[g].below {
-                pieces.push(lead.take().unwrap_or(body.len()));
-                body.push(self.render_chunk(i, t, cx));
-            }
-        }
-        self.piece_items = pieces;
-        if self.members.len() == 0 {
-            body.push(self.render_empty(t, cx));
-        }
-        body
-    }
-
     /// The message that stands where the pieces would be, with `Remove
     /// last pick` or a collection's `Refresh` under it.
-    fn render_empty(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_empty(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let text = SharedString::from(self.empty_text());
         let remove = (!self.bar.picks().is_empty()).then(|| {
             self.button(
@@ -413,10 +377,11 @@ impl Render for FacetView {
         let t = &*theme;
         let title_size = collection::dateline_title_size(cx);
         self.stops.get_mut().begin(window);
+        let rem = window.rem_size();
 
         // Drawn in this order: the tab stops follow it.
         let bar = self.render_bar(t, window, cx);
-        let body = self.render_body(title_size, t, cx);
+        let (body, check) = self.render_body(title_size, t, window, cx);
         let hint = self.render_hint(t, window, cx);
         let collection_line = self.render_collection_line(t);
         let show_more = self.render_show_more(t, cx);
@@ -438,15 +403,17 @@ impl Render for FacetView {
             .children(hint)
             .child(
                 div()
+                    // Checks the drawn pieces against the height table.
+                    .on_children_prepainted(move |_, window, cx| check.run(window, cx))
                     .id(COLUMN_ID)
                     .test_support()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .gap_3()
+                    .gap(column_gap(rem))
                     .px_4()
-                    .py_3()
+                    .py(column_pad(rem))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(body)

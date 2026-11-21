@@ -5,8 +5,10 @@
 //! It does not own any behavior of the view. A seam here must not change
 //! state, so a test sees what a user would see.
 
+use std::ops::Range;
+
 use gpui_kit::component::input::InputState;
-use gpui_kit::{App, Entity, SharedString};
+use gpui_kit::{App, Entity, Pixels, SharedString};
 use kimun_core::note::Facet;
 
 use super::keys::Stop;
@@ -83,5 +85,44 @@ impl FacetView {
     /// Whether `kind`'s list is the open one (tests).
     pub(crate) fn list_is_open(&self, kind: ListKind) -> bool {
         self.list_open(kind)
+    }
+
+    /// Draw every piece (`true`), as before the window existed, or only
+    /// those near the viewport (tests).
+    pub(crate) fn set_draw_all(&mut self, all: bool) {
+        self.draw_all = all;
+    }
+
+    /// Draw at most `limit` pieces, as `Show more` would set it (tests).
+    pub(crate) fn cap_pieces(&mut self, limit: usize, cx: &mut gpui_kit::Context<Self>) {
+        self.limit = limit;
+        self.plan(cx);
+    }
+
+    /// The pieces the last frame drew as a range, pins left out (tests).
+    pub(crate) fn drawn_range(&self) -> Range<usize> {
+        self.drawn.clone()
+    }
+
+    /// How many drawn pieces the last frame checked against the height
+    /// table (tests).
+    pub(crate) fn checked_items(&self) -> usize {
+        self.checked.get()
+    }
+
+    /// Add `extra` to the crumbs row the height table counts, so the table
+    /// is wrong (tests).
+    pub(crate) fn forge_crumbs(&mut self, extra: Pixels) {
+        self.forged = extra;
+    }
+
+    /// The rows the height table holds for piece `i` now, and the width
+    /// it measured at (tests).
+    pub(crate) fn table_rows(&self, i: usize, cx: &App) -> (Option<usize>, Pixels) {
+        let heights = self.heights.borrow();
+        let chunk = &self.chunks[i];
+        let stamp = chunk.read(cx).edit_stamp();
+        let rows = heights.rows(i, chunk.entity_id().as_u64(), stamp);
+        (rows, heights.width())
     }
 }

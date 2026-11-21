@@ -67,6 +67,7 @@
 //! are on the collection line.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Rems, ScrollHandle, Subscription};
 use kimun_core::nfs::VaultPath;
@@ -83,6 +84,7 @@ use self::undo::Undo;
 use crate::editor_view::EditorView;
 
 mod bar_motion;
+mod body;
 mod chunks;
 mod collection;
 mod collection_text;
@@ -94,14 +96,17 @@ mod list_kind_tests;
 mod members;
 mod more;
 mod render;
+mod reveal;
 #[cfg(test)]
 mod test_seams;
 mod timed;
 #[cfg(test)]
 mod timed_tests;
 mod undo;
+pub(super) mod window;
 
 pub(crate) use self::ids::*;
+pub(crate) use self::keys::init as init_keys;
 #[cfg(test)]
 pub(crate) use self::line::LIST_CAP;
 pub use self::members::MemberInit;
@@ -199,8 +204,6 @@ pub struct FacetView {
     bar_motion: BarMotion,
     /// The view's tab stops ([`mod@keys`]).
     stops: RefCell<Stops>,
-    /// Per drawn chunk, its index among the column's children (`j`/`k`).
-    piece_items: Vec<usize>,
     /// A pick was made in this view (or it began with picks): the hint under
     /// the bar is gone for good. Not saved to the session.
     hint_done: bool,
@@ -211,11 +214,32 @@ pub struct FacetView {
     /// ([`Undo`]). Not saved to the session.
     undo: Undo,
     /// The stop the next frame gives the keyboard to, once drawn: `Undo`
-    /// after Enter or Space on `Clear`.
+    /// after Enter or Space on `Clear`, a column's first or last stop after
+    /// Tab into the column.
     focus_after: Option<Stop>,
     /// The focus handle of a list's field that [`Self::plan`] closed: the
     /// next frame gives the keyboard to the view if the field still had it.
     stranded: Option<FocusHandle>,
+    /// The rows of each piece at the layout width ([`mod@window`]).
+    heights: Rc<RefCell<window::Heights>>,
+    /// The pieces near the viewport the last frame drew; spacers stood in
+    /// for the rest, pinned pieces aside ([`mod@body`]) (tests).
+    #[cfg(test)]
+    drawn: std::ops::Range<usize>,
+    /// Draw every piece, as before the window existed (tests).
+    #[cfg(test)]
+    draw_all: bool,
+    /// A debug run warned of the table mismatch that goes on now.
+    #[cfg(not(test))]
+    warned: Rc<std::cell::Cell<bool>>,
+    /// How many drawn pieces the last frame checked against the table
+    /// (tests).
+    #[cfg(test)]
+    checked: Rc<std::cell::Cell<usize>>,
+    /// Added to the crumbs row the table counts, to forge a wrong table
+    /// (tests).
+    #[cfg(test)]
+    forged: gpui_kit::Pixels,
     /// How many times [`Self::plan`] ran (tests).
     #[cfg(test)]
     plans_run: usize,
@@ -263,12 +287,22 @@ impl FacetView {
             bar_scroll: ScrollHandle::new(),
             bar_motion: BarMotion::default(),
             stops: RefCell::default(),
-            piece_items: Vec::new(),
             hint_done,
             corner_room: None,
             undo: Undo::default(),
             focus_after: None,
             stranded: None,
+            heights: Rc::default(),
+            #[cfg(test)]
+            drawn: 0..0,
+            #[cfg(test)]
+            draw_all: false,
+            #[cfg(not(test))]
+            warned: Rc::default(),
+            #[cfg(test)]
+            checked: Rc::default(),
+            #[cfg(test)]
+            forged: gpui_kit::px(0.),
             #[cfg(test)]
             plans_run: 0,
             #[cfg(test)]
