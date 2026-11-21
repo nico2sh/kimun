@@ -1,3 +1,1731 @@
+=== ../example/personal/2026-07-summer-log.md
+-- title "Summer Log, July 2026"
+-- headings
+1 8 "Summer Log, July 2026"
+2 15 "2026-07-01"
+3 19 "Morning"
+3 23 "Afternoon"
+3 27 "Evening"
+3 31 "Tasks"
+2 40 "2026-07-02"
+3 44 "Morning"
+3 48 "Afternoon"
+2 55 "2026-07-03"
+3 59 "Morning"
+3 63 "Afternoon"
+3 67 "Tasks"
+3 75 "Ideas"
+2 86 "2026-07-04"
+3 90 "Morning"
+3 94 "Afternoon"
+3 98 "Evening"
+3 102 "Run log"
+2 110 "2026-07-05"
+3 114 "Morning"
+3 118 "Afternoon"
+3 122 "Tasks"
+2 133 "2026-07-06"
+3 137 "Morning"
+3 141 "Afternoon"
+2 148 "2026-07-07"
+3 152 "Morning"
+3 156 "Afternoon"
+3 160 "Evening"
+3 164 "Tasks"
+2 173 "2026-07-08"
+3 177 "Morning"
+3 181 "Afternoon"
+3 185 "Ideas"
+2 196 "2026-07-09"
+3 200 "Morning"
+3 204 "Afternoon"
+3 208 "Tasks"
+2 217 "2026-07-10"
+3 221 "Morning"
+3 225 "Afternoon"
+3 231 "Evening"
+3 235 "Run log"
+3 242 "Starter recipe"
+2 254 "2026-07-11"
+3 258 "Morning"
+3 262 "Afternoon"
+3 266 "Tasks"
+2 275 "2026-07-12"
+3 279 "Morning"
+3 283 "Afternoon"
+2 290 "2026-07-13"
+3 294 "Morning"
+3 298 "Afternoon"
+3 302 "Evening"
+3 306 "Tasks"
+3 314 "Ideas"
+2 325 "2026-07-14"
+3 329 "Morning"
+3 333 "Afternoon"
+2 340 "2026-07-15"
+3 344 "Morning"
+3 348 "Afternoon"
+3 352 "Tasks"
+3 360 "Mid-month review"
+2 371 "2026-07-16"
+3 375 "Morning"
+3 379 "Afternoon"
+3 383 "Evening"
+3 387 "Run log"
+2 395 "2026-07-17"
+3 399 "Morning"
+3 403 "Afternoon"
+3 407 "Tasks"
+2 416 "2026-07-18"
+3 420 "Morning"
+3 424 "Afternoon"
+3 430 "Ideas"
+2 441 "2026-07-19"
+3 445 "Morning"
+3 449 "Afternoon"
+3 453 "Evening"
+3 457 "Tasks"
+2 468 "2026-07-20"
+3 472 "Morning"
+3 476 "Afternoon"
+2 481 "2026-07-21"
+3 485 "Morning"
+3 489 "Afternoon"
+3 493 "Tasks"
+3 501 "Link roundup"
+2 506 "2026-07-22"
+3 510 "Morning"
+3 514 "Afternoon"
+3 520 "Evening"
+3 524 "Run log"
+2 532 "2026-07-23"
+3 536 "Morning"
+3 540 "Afternoon"
+3 544 "Tasks"
+3 552 "Ideas"
+2 563 "2026-07-24"
+3 567 "Morning"
+3 571 "Afternoon"
+2 576 "2026-07-25"
+3 580 "Morning"
+3 584 "Afternoon"
+3 588 "Evening"
+3 592 "Tasks"
+2 601 "2026-07-26"
+3 605 "Morning"
+3 609 "Afternoon"
+2 618 "2026-07-27"
+3 622 "Morning"
+3 626 "Afternoon"
+3 630 "Tasks"
+2 639 "2026-07-28"
+3 643 "Morning"
+3 647 "Afternoon"
+3 651 "Evening"
+3 655 "Ideas"
+3 665 "Run log"
+3 672 "Family visit"
+2 681 "2026-07-29"
+3 685 "Morning"
+3 689 "Afternoon"
+3 693 "Tasks"
+2 702 "2026-07-30"
+3 706 "Morning"
+3 710 "Afternoon"
+2 717 "2026-07-31"
+3 721 "Morning"
+3 725 "Afternoon"
+3 729 "Evening"
+3 733 "Tasks"
+2 742 "Month summary"
+3 746 "What I want to carry into August"
+3 755 "Gratitude"
+-- chunks
+[Summer Log, July 2026] "One long note for the whole month. Every day has its own section, and the same tags and links come back again and again, but each entry is its own. Handy to test filtering: pick a day, pick a tag, or follow a link.\nMain threads this month: run, garden, sourdough, coffee, reading and the kimun project. See also list and telescope-notes."
+[Summer Log, July 20262026-07-01] "Wednesday. Writing things down makes them lighter. kimun"
+[Summer Log, July 20262026-07-01Morning] "Grey light and a light drizzle. Walked the dog around the block twice. health"
+[Summer Log, July 20262026-07-01Afternoon] "Long phone call with my sister, we planned her visit for the end of the month. family"
+[Summer Log, July 20262026-07-01Evening] "Early night after writing three lines in the gratitude list. gratitude"
+[Summer Log, July 20262026-07-01Tasks] "* [x] Pay the water bill (1 July)\n* [ ] Fix the bike light, due 4 July todo\n    * [ ] read the notes first, by the 3rd\n    * [ ] check list for day 1\n* [ ] Back up the photo folder"
+[Summer Log, July 20262026-07-02] "Thursday. Simple tools, used every day, win. gratitude"
+[Summer Log, July 20262026-07-02Morning] "Thunder far away, nothing yet. Checked the tomatoes, more flowers than yesterday. garden"
+[Summer Log, July 20262026-07-02Afternoon] "Read two chapters and took notes, one quote is worth keeping. reading idea\nWrote the outline for a post about notes that link to each other. idea kimun"
+[Summer Log, July 20262026-07-03] "Friday. Nothing is urgent that I cannot write down. gratitude"
+[Summer Log, July 20262026-07-03Morning] "Hazy sun and no wind. Made a V60 with a finer grind, see coffee-brewing. coffee"
+[Summer Log, July 20262026-07-03Afternoon] "Compared two grinders on paper and decided to keep the old one. coffee"
+[Summer Log, July 20262026-07-03Tasks] "* [x] Book the campsite (3 July)\n* [ ] Plan the visit menu, due 6 July todo\n    * [ ] write two lines first, by the 5th\n    * [ ] check list for day 3\n* [ ] Wash the picnic blanket"
+[Summer Log, July 20262026-07-03Ideas] "* Group entries by season idea\n    * a search that remembers the last query\n    * an outline view for long notes, raised on the 3rd\n        * keep the keyboard first kimun\n* Garden: move the mint into a pot garden idea\n    * noted on the 3rd\n* Bread: bake two small loaves instead of one big one sourdough"
+[Summer Log, July 20262026-07-04] "Saturday. Bread teaches patience better than any book."
+[Summer Log, July 20262026-07-04Morning] "Clear sky, long shadows. Fed the starter and left it on the counter, notes in sourdough-starter. sourdough"
+[Summer Log, July 20262026-07-04Afternoon] "Fixed the bike light and oiled the chain. todo"
+[Summer Log, July 20262026-07-04Evening] "Tried to stargaze but the haze won, will try again after the new moon. idea"
+[Summer Log, July 20262026-07-04Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 10 km | 55 min | good |\n| warm up | 11 min | hilly |"
+[Summer Log, July 20262026-07-05] "Sunday. The garden does not care about my schedule. idea"
+[Summer Log, July 20262026-07-05Morning] "Dry heat building early. Wrote a page about how the week is going. gratitude"
+[Summer Log, July 20262026-07-05Afternoon] "Planned the next trip and compared the routes in hiking-trails. hike"
+[Summer Log, July 20262026-07-05Tasks] "* [x] Order rye flour (5 July)\n* [ ] Print the train tickets, due 8 July todo\n    * [ ] set a reminder first, by the 7th\n    * [ ] check list for day 5\n* [ ] Call the dentist\nQuote of the week 1: You do not need more notes, you need better paths between them. reading idea"
+[Summer Log, July 20262026-07-06] "Monday. Say it plainly, then say it shorter. health"
+[Summer Log, July 20262026-07-06Morning] "Cool and bright outside. Read for half an hour before breakfast, next up on reading-list. reading"
+[Summer Log, July 20262026-07-06Afternoon] "Tested a new search query in kimun and wrote down what felt slow. kimun\nSketched the autumn planting order on the back of an envelope. garden idea"
+[Summer Log, July 20262026-07-07] "Tuesday. I work best before noon."
+[Summer Log, July 20262026-07-07Morning] "Warm already at seven. Short run, then a long breakfast with the family. run family"
+[Summer Log, July 20262026-07-07Afternoon] "Worked on kimun for a few hours. The filtering idea keeps growing. kimun idea"
+[Summer Log, July 20262026-07-07Evening] "Called an old friend and talked far longer than planned. family gratitude"
+[Summer Log, July 20262026-07-07Tasks] "* [x] Renew the library card (7 July)\n* [ ] Repot the basil, due 10 July todo\n    * [ ] ask a neighbour first, by the 9th\n    * [ ] check list for day 7\n* [ ] Reply to the landlord"
+[Summer Log, July 20262026-07-08] "Wednesday. Gratitude is easier on a full stomach. gratitude"
+[Summer Log, July 20262026-07-08Morning] "A noisy bird woke me. Ran 9.5 km along the river at an easy pace. run health"
+[Summer Log, July 20262026-07-08Afternoon] "Helped a neighbour carry a table, got a jar of honey in return. family"
+[Summer Log, July 20262026-07-08Ideas] "* A view that shows one paragraph per day idea\n    * a way to pick two days\n    * a filter by tag, raised on the 8th\n        * keep the pills short kimun\n* Garden: add a bench by the beans garden idea\n    * noted on the 8th\n* Bread: bake with less water and see sourdough"
+[Summer Log, July 20262026-07-09] "Thursday. Friction is information. sourdough"
+[Summer Log, July 20262026-07-09Morning] "Rain overnight, fresh air now. Stretched for ten minutes and had tea instead of coffee. health"
+[Summer Log, July 20262026-07-09Afternoon] "Walked 9 km in the hills, mostly uphill and mostly alone. hike health"
+[Summer Log, July 20262026-07-09Tasks] "* [x] Feed the sourdough starter (9 July)\n* [ ] Water the garden beds, due 12 July todo\n    * [ ] open the list first, by the 11th\n    * [ ] check list for day 9\n* [ ] Sharpen the kitchen knives"
+[Summer Log, July 20262026-07-10] "Friday. Notice what is already working. sourdough"
+[Summer Log, July 20262026-07-10Morning] "Breezy and almost cold. Looked at the garden plan in garden-plan and marked two beds for autumn. garden idea"
+[Summer Log, July 20262026-07-10Afternoon] "Checked the sourdough schedule against sourdough-starter and moved feedings earlier. sourdough\nSat in the shade with a coffee and the second half of a long article. reading coffee"
+[Summer Log, July 20262026-07-10Evening] "Dinner outside, the first night warm enough for it. family"
+[Summer Log, July 20262026-07-10Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 10 km | 55 min | heavy |\n| warm up | 10 min | good |"
+[Summer Log, July 20262026-07-10Starter recipe] "Notes I do not want to forget (the hash lines below are shell comments, not tags):\n```sh\n# #notatag inside a code block\necho 'feed starter at 08:00'  # #alsonotatag\n```\nInline code like `#nope` is not a tag either, but this one is: sourdough"
+[Summer Log, July 20262026-07-11] "Saturday. What I measure, I tend to improve. todo"
+[Summer Log, July 20262026-07-11Morning] "Overcast and still. Weighed the flour for tonight's loaf and left the dough to rest. sourdough"
+[Summer Log, July 20262026-07-11Afternoon] "Sorted the photo folder from spring, deleted the blurry half. todo"
+[Summer Log, July 20262026-07-11Tasks] "* [x] Write the summary for the book (11 July)\n* [ ] Buy a gas hose for the camping stove, due 14 July todo\n    * [ ] find the number first, by the 13th\n    * [ ] check list for day 11\n* [ ] Clean the telescope lens"
+[Summer Log, July 20262026-07-12] "Sunday. A slow start is still a start. garden"
+[Summer Log, July 20262026-07-12Morning] "Humid, the kind that sticks to everything. Watered the pots on the balcony before the heat. garden"
+[Summer Log, July 20262026-07-12Afternoon] "Read about consistency in distributed-systems and re-read my cap-theorem summary. idea\nQuote of the week 2: Make it work, make it clear, then make it small. reading idea"
+[Summer Log, July 20262026-07-13] "Monday. Rest is part of the plan, not a reward for finishing it. health"
+[Summer Log, July 20262026-07-13Morning] "A noisy bird woke me. Tried a pour-over with the lighter roast, notes later. coffee"
+[Summer Log, July 20262026-07-13Afternoon] "Tried a rye and spelt mix, the smell alone was worth it. sourdough"
+[Summer Log, July 20262026-07-13Evening] "Stayed up late sketching a layout for the pill bar, then thought better of it. kimun idea"
+[Summer Log, July 20262026-07-13Tasks] "* [x] Sharpen the kitchen knives (13 July)\n* [ ] Repot the basil, due 16 July todo\n    * [ ] block an hour first, by the 15th\n    * [ ] check list for day 13\n* [ ] Order rye flour"
+[Summer Log, July 20262026-07-13Ideas] "* Link two notes with a short reason idea\n    * a filter by day\n    * a small count next to each pill, raised on the 13th\n        * show where the text came from kimun\n* Garden: plant garlic in autumn near the roses garden idea\n    * noted on the 13th\n* Bread: try a rye starter sourdough"
+[Summer Log, July 20262026-07-14] "Tuesday. A tidy desk helps, a tidy mind helps more. health"
+[Summer Log, July 20262026-07-14Morning] "Hazy sun and no wind. Planned the day on paper, three things only. todo"
+[Summer Log, July 20262026-07-14Afternoon] "Weeded two beds and moved the basil next to the tomatoes, as companion-planting suggests. garden\nBaked with a higher hydration. The crumb is open but the crust came out pale. sourdough"
+[Summer Log, July 20262026-07-15] "Wednesday. Notes that link to each other feel like a map, not a pile. health"
+[Summer Log, July 20262026-07-15Morning] "Cool and bright outside. Took the long way to the market for rye flour. sourdough health"
+[Summer Log, July 20262026-07-15Afternoon] "Cleaned the garage shelves and found the old camping stove, it needs a new gas hose. todo"
+[Summer Log, July 20262026-07-15Tasks] "* [x] Write the summary for the book (15 July)\n* [ ] Clean the telescope lens, due 18 July todo\n    * [ ] make a short plan first, by the 17th\n    * [ ] check list for day 15\n* [ ] Book the campsite"
+[Summer Log, July 20262026-07-15Mid-month review] "Halfway there. What worked: runs, bread, the garden. What did not: sleep. health run garden sourdough\n* Reading: two books started, none finished reading\n* Kimun: the filter idea has a name now kimun idea\n    * Needs a way to reveal context\n    * Needs a collection view for search results\n* Family: visit booked for the 28th family"
+[Summer Log, July 20262026-07-16] "Thursday. Today is a good day to be patient. kimun"
+[Summer Log, July 20262026-07-16Morning] "Breezy and almost cold. Cleared the emails first so the afternoon stays free. todo"
+[Summer Log, July 20262026-07-16Afternoon] "Picked a bowl of beans and the first small courgette. garden"
+[Summer Log, July 20262026-07-16Evening] "Watched a documentary about mountain huts and now I want to hike more. hike"
+[Summer Log, July 20262026-07-16Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 6 km | 30 min | good |\n| warm up | 9 min | steady |"
+[Summer Log, July 20262026-07-17] "Friday. The best days have one run, one loaf, and one page of writing."
+[Summer Log, July 20262026-07-17Morning] "Rain overnight, fresh air now. Weighed the flour for tonight's loaf and left the dough to rest. sourdough"
+[Summer Log, July 20262026-07-17Afternoon] "Tried a rye and spelt mix, the smell alone was worth it. That was the 17th. sourdough"
+[Summer Log, July 20262026-07-17Tasks] "* [x] Buy a gas hose for the camping stove (17 July)\n* [ ] Pay the water bill, due 20 July todo\n    * [ ] gather the parts first, by the 19th\n    * [ ] check list for day 17\n* [ ] Feed the sourdough starter"
+[Summer Log, July 20262026-07-18] "Saturday. Tired is not the same as lazy."
+[Summer Log, July 20262026-07-18Morning] "Warm already at seven. Ran 5.0 km along the river at an easy pace. run health"
+[Summer Log, July 20262026-07-18Afternoon] "Sketched the autumn planting order on the back of an envelope. That was the 18th. garden idea\nRead about consistency in distributed-systems and re-read my cap-theorem summary. Second part of day 18. idea"
+[Summer Log, July 20262026-07-18Ideas] "* Notes should show only what matters idea\n    * a filter by link to kimun\n    * an outline view for long notes, raised on the 18th\n        * reveal more text above and below kimun\n* Garden: build a small cold frame garden idea\n    * noted on the 18th\n* Bread: use a hotter oven sourdough"
+[Summer Log, July 20262026-07-19] "Sunday. Small habits keep adding up when I do not skip them. garden"
+[Summer Log, July 20262026-07-19Morning] "Overcast and still. Wrote a page about how the week is going. gratitude"
+[Summer Log, July 20262026-07-19Afternoon] "Worked on kimun for a few hours. The filtering idea keeps growing. That was the 19th. kimun idea"
+[Summer Log, July 20262026-07-19Evening] "Lit the lanterns on the balcony and finished the book. reading"
+[Summer Log, July 20262026-07-19Tasks] "* [x] Call the dentist (19 July)\n* [ ] Water the garden beds, due 22 July todo\n    * [ ] check the shed first, by the 21st\n    * [ ] check list for day 19\n* [ ] Print the train tickets\nQuote of the week 3: A note is only useful when it can be found again. reading idea"
+[Summer Log, July 20262026-07-20] "Monday. Quiet days are the ones I remember best. gratitude"
+[Summer Log, July 20262026-07-20Morning] "Dry heat building early. Short run, then a long breakfast with the family. run family"
+[Summer Log, July 20262026-07-20Afternoon] "Compared two grinders on paper and decided to keep the old one. That was the 20th. coffee"
+[Summer Log, July 20262026-07-21] "Tuesday. Context matters more than volume. health"
+[Summer Log, July 20262026-07-21Morning] "Thunder far away, nothing yet. Walked the dog around the block twice. health"
+[Summer Log, July 20262026-07-21Afternoon] "Wrote the outline for a post about notes that link to each other. That was the 21st. idea kimun"
+[Summer Log, July 20262026-07-21Tasks] "* [x] Back up the photo folder (21 July)\n* [ ] Wash the picnic blanket, due 24 July todo\n    * [ ] ask a neighbour first, by the 23rd\n    * [ ] check list for day 21\n* [ ] Fix the bike light"
+[Summer Log, July 20262026-07-21Link roundup] "Notes I touched this week: sourdough-starter, coffee-brewing, hiking-trails, garden-plan, reading-list and kimun. A link that goes nowhere: not-written-yet. A web link: Zola and a plain address https://example.com."
+[Summer Log, July 20262026-07-22] "Wednesday. Consistency beats intensity, most of the time."
+[Summer Log, July 20262026-07-22Morning] "Grey light and a light drizzle. Fed the starter and left it on the counter, notes in sourdough-starter. sourdough"
+[Summer Log, July 20262026-07-22Afternoon] "Planned the next trip and compared the routes in hiking-trails. That was the 22nd. hike\nTested a new search query in kimun and wrote down what felt slow. Second part of day 22. kimun"
+[Summer Log, July 20262026-07-22Evening] "Wrote down what went well today and what did not. gratitude"
+[Summer Log, July 20262026-07-22Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 8 km | 48 min | steady |\n| warm up | 8 min | steady |"
+[Summer Log, July 20262026-07-23] "Thursday. Finishing something small beats planning something big. gratitude"
+[Summer Log, July 20262026-07-23Morning] "Humid, the kind that sticks to everything. Stretched for ten minutes and had tea instead of coffee. health"
+[Summer Log, July 20262026-07-23Afternoon] "Fixed the bike light and oiled the chain. That was the 23rd. todo"
+[Summer Log, July 20262026-07-23Tasks] "* [x] Plan the visit menu (23 July)\n* [ ] Reply to the landlord, due 26 July todo\n    * [ ] block an hour first, by the 25th\n    * [ ] check list for day 23\n* [ ] Renew the library card"
+[Summer Log, July 20262026-07-23Ideas] "* A way to hide the boring days idea\n    * a small count next to each pill\n    * a filter by tag, raised on the 23rd\n        * avoid new windows kimun\n* Garden: save seeds from the first poppies garden idea\n    * noted on the 23rd\n* Bread: try a seeded crust sourdough"
+[Summer Log, July 20262026-07-24] "Friday. Slow is smooth and smooth is fast. sourdough"
+[Summer Log, July 20262026-07-24Morning] "Clear sky, long shadows. Cleared the emails first so the afternoon stays free. todo"
+[Summer Log, July 20262026-07-24Afternoon] "Checked the sourdough schedule against sourdough-starter and moved feedings earlier. That was the 24th. sourdough"
+[Summer Log, July 20262026-07-25] "Saturday. Small wins count as wins. kimun"
+[Summer Log, July 20262026-07-25Morning] "Thunder far away, nothing yet. Looked at the garden plan in garden-plan and marked two beds for autumn. garden idea"
+[Summer Log, July 20262026-07-25Afternoon] "Walked 9 km in the hills, mostly uphill and mostly alone. That was the 25th. hike health"
+[Summer Log, July 20262026-07-25Evening] "Cooked a big batch of soup for the week. health"
+[Summer Log, July 20262026-07-25Tasks] "* [x] Sharpen the kitchen knives (25 July)\n* [ ] Buy a gas hose for the camping stove, due 28 July todo\n    * [ ] gather the parts first, by the 27th\n    * [ ] check list for day 25\n* [ ] Fix the bike light"
+[Summer Log, July 20262026-07-26] "Sunday. I want fewer tasks and more finished things. garden"
+[Summer Log, July 20262026-07-26Morning] "Warm already at seven. Read for half an hour before breakfast, next up on reading-list. reading"
+[Summer Log, July 20262026-07-26Afternoon] "Weeded two beds and moved the basil next to the tomatoes, as companion-planting suggests. That was the 26th. garden\nSorted the photo folder from spring, deleted the blurry half. Second part of day 26. todo\nQuote of the week 4: Short feedback loops beat long plans. reading idea"
+[Summer Log, July 20262026-07-27] "Monday. Looking back makes the progress visible. health"
+[Summer Log, July 20262026-07-27Morning] "A noisy bird woke me. Made a V60 with a finer grind, see coffee-brewing. coffee"
+[Summer Log, July 20262026-07-27Afternoon] "Read two chapters and took notes, one quote is worth keeping. That was the 27th. reading idea"
+[Summer Log, July 20262026-07-27Tasks] "* [x] Feed the sourdough starter (27 July)\n* [ ] Book the campsite, due 30 July todo\n    * [ ] write two lines first, by the 29th\n    * [ ] check list for day 27\n* [ ] Write the summary for the book"
+[Summer Log, July 20262026-07-28] "Tuesday. Not every idea needs to become a project. idea"
+[Summer Log, July 20262026-07-28Morning] "Dry heat building early. Tried a pour-over with the lighter roast, notes later. coffee"
+[Summer Log, July 20262026-07-28Afternoon] "Helped a neighbour carry a table, got a jar of honey in return. That was the 28th. family"
+[Summer Log, July 20262026-07-28Evening] "Cleaned the kitchen and set the dough for the morning. sourdough"
+[Summer Log, July 20262026-07-28Ideas] "* Show where a tag was last used idea\n    * a way to pick two days\n    * a search that remembers the last query, raised on the 28th\n        * keep the look quiet kimun\n* Garden: try a second sowing of lettuce garden idea\n    * noted on the 28th\n* Bread: score the loaf deeper sourdough"
+[Summer Log, July 20262026-07-28Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 5 km | 30 min | slow start |\n| warm up | 14 min | windy |"
+[Summer Log, July 20262026-07-28Family visit] "My sister arrived. We cooked together, walked the river path and talked until late. family gratitude\n* Saturday: market, then bread baking sourdough family\n    * she liked the rye\n* Sunday: short hike, see hiking-trails hike family"
+[Summer Log, July 20262026-07-29] "Wednesday. I should say no to one thing this week. kimun"
+[Summer Log, July 20262026-07-29Morning] "Cool and bright outside. Planned the day on paper, three things only. todo"
+[Summer Log, July 20262026-07-29Afternoon] "Picked a bowl of beans and the first small courgette. That was the 29th. garden"
+[Summer Log, July 20262026-07-29Tasks] "* [x] Water the garden beds (29 July)\n* [ ] Back up the photo folder, due 32 July todo\n    * [ ] find the number first, by the 31st\n    * [ ] check list for day 29\n* [ ] Call the dentist"
+[Summer Log, July 20262026-07-30] "Thursday. Keep the loop short: try, look, adjust. idea"
+[Summer Log, July 20262026-07-30Morning] "Rain overnight, fresh air now. Watered the pots on the balcony before the heat. garden"
+[Summer Log, July 20262026-07-30Afternoon] "Baked with a higher hydration. The crumb is open but the crust came out pale. That was the 30th. sourdough\nSat in the shade with a coffee and the second half of a long article. Second part of day 30. reading coffee"
+[Summer Log, July 20262026-07-31] "Friday. A walk fixes more than I expect. todo"
+[Summer Log, July 20262026-07-31Morning] "Hazy sun and no wind. Took the long way to the market for rye flour. sourdough health"
+[Summer Log, July 20262026-07-31Afternoon] "Long phone call with my sister, we planned her visit for the end of the month. That was the 31st. family"
+[Summer Log, July 20262026-07-31Evening] "Read in the garden until it got dark. reading garden"
+[Summer Log, July 20262026-07-31Tasks] "* [x] Pay the water bill (31 July)\n* [ ] Wash the picnic blanket, due 34 July todo\n    * [ ] set a reminder first, by the 33rd\n    * [ ] check list for day 31\n* [ ] Order rye flour"
+[Summer Log, July 2026Month summary] "Total distance run this month: about 99 km. run"
+[Summer Log, July 2026Month summaryWhat I want to carry into August] "* Keep the morning run, even if it is short run health\n* Feed the starter on a fixed time sourdough\n* Finish one book reading\n* Write down the filter idea for kimun kimun idea\n    * the pill bar\n    * the reveal buttons"
+[Summer Log, July 2026Month summaryGratitude] "Warm evenings, good bread, and a sister who visits. gratitude family"
+[FrontMatter] "type: journal\nperiod: 2026-07\nmood: mixed\ntags:\n  - journal\n  - summer"
+-- index chunks
+[Summer Log, July 2026] "One long note for the whole month. Every day has its own section, and the same tags and links come back again and again, but each entry is its own. Handy to test filtering: pick a day, pick a tag, or follow a link.\nMain threads this month: run, garden, sourdough, coffee, reading and the kimun project. See also list and telescope-notes."
+[Summer Log, July 20262026-07-01] "Wednesday. Writing things down makes them lighter. kimun"
+[Summer Log, July 20262026-07-01Morning] "Grey light and a light drizzle. Walked the dog around the block twice. health"
+[Summer Log, July 20262026-07-01Afternoon] "Long phone call with my sister, we planned her visit for the end of the month. family"
+[Summer Log, July 20262026-07-01Evening] "Early night after writing three lines in the gratitude list. gratitude"
+[Summer Log, July 20262026-07-01Tasks] "* [x] Pay the water bill (1 July)\n* [ ] Fix the bike light, due 4 July todo\n    * [ ] read the notes first, by the 3rd\n    * [ ] check list for day 1\n* [ ] Back up the photo folder"
+[Summer Log, July 20262026-07-02] "Thursday. Simple tools, used every day, win. gratitude"
+[Summer Log, July 20262026-07-02Morning] "Thunder far away, nothing yet. Checked the tomatoes, more flowers than yesterday. garden"
+[Summer Log, July 20262026-07-02Afternoon] "Read two chapters and took notes, one quote is worth keeping. reading idea\nWrote the outline for a post about notes that link to each other. idea kimun"
+[Summer Log, July 20262026-07-03] "Friday. Nothing is urgent that I cannot write down. gratitude"
+[Summer Log, July 20262026-07-03Morning] "Hazy sun and no wind. Made a V60 with a finer grind, see coffee-brewing. coffee"
+[Summer Log, July 20262026-07-03Afternoon] "Compared two grinders on paper and decided to keep the old one. coffee"
+[Summer Log, July 20262026-07-03Tasks] "* [x] Book the campsite (3 July)\n* [ ] Plan the visit menu, due 6 July todo\n    * [ ] write two lines first, by the 5th\n    * [ ] check list for day 3\n* [ ] Wash the picnic blanket"
+[Summer Log, July 20262026-07-03Ideas] "* Group entries by season idea\n    * a search that remembers the last query\n    * an outline view for long notes, raised on the 3rd\n        * keep the keyboard first kimun\n* Garden: move the mint into a pot garden idea\n    * noted on the 3rd\n* Bread: bake two small loaves instead of one big one sourdough"
+[Summer Log, July 20262026-07-04] "Saturday. Bread teaches patience better than any book."
+[Summer Log, July 20262026-07-04Morning] "Clear sky, long shadows. Fed the starter and left it on the counter, notes in sourdough-starter. sourdough"
+[Summer Log, July 20262026-07-04Afternoon] "Fixed the bike light and oiled the chain. todo"
+[Summer Log, July 20262026-07-04Evening] "Tried to stargaze but the haze won, will try again after the new moon. idea"
+[Summer Log, July 20262026-07-04Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 10 km | 55 min | good |\n| warm up | 11 min | hilly |"
+[Summer Log, July 20262026-07-05] "Sunday. The garden does not care about my schedule. idea"
+[Summer Log, July 20262026-07-05Morning] "Dry heat building early. Wrote a page about how the week is going. gratitude"
+[Summer Log, July 20262026-07-05Afternoon] "Planned the next trip and compared the routes in hiking-trails. hike"
+[Summer Log, July 20262026-07-05Tasks] "* [x] Order rye flour (5 July)\n* [ ] Print the train tickets, due 8 July todo\n    * [ ] set a reminder first, by the 7th\n    * [ ] check list for day 5\n* [ ] Call the dentist\nQuote of the week 1: You do not need more notes, you need better paths between them. reading idea"
+[Summer Log, July 20262026-07-06] "Monday. Say it plainly, then say it shorter. health"
+[Summer Log, July 20262026-07-06Morning] "Cool and bright outside. Read for half an hour before breakfast, next up on reading-list. reading"
+[Summer Log, July 20262026-07-06Afternoon] "Tested a new search query in kimun and wrote down what felt slow. kimun\nSketched the autumn planting order on the back of an envelope. garden idea"
+[Summer Log, July 20262026-07-07] "Tuesday. I work best before noon."
+[Summer Log, July 20262026-07-07Morning] "Warm already at seven. Short run, then a long breakfast with the family. run family"
+[Summer Log, July 20262026-07-07Afternoon] "Worked on kimun for a few hours. The filtering idea keeps growing. kimun idea"
+[Summer Log, July 20262026-07-07Evening] "Called an old friend and talked far longer than planned. family gratitude"
+[Summer Log, July 20262026-07-07Tasks] "* [x] Renew the library card (7 July)\n* [ ] Repot the basil, due 10 July todo\n    * [ ] ask a neighbour first, by the 9th\n    * [ ] check list for day 7\n* [ ] Reply to the landlord"
+[Summer Log, July 20262026-07-08] "Wednesday. Gratitude is easier on a full stomach. gratitude"
+[Summer Log, July 20262026-07-08Morning] "A noisy bird woke me. Ran 9.5 km along the river at an easy pace. run health"
+[Summer Log, July 20262026-07-08Afternoon] "Helped a neighbour carry a table, got a jar of honey in return. family"
+[Summer Log, July 20262026-07-08Ideas] "* A view that shows one paragraph per day idea\n    * a way to pick two days\n    * a filter by tag, raised on the 8th\n        * keep the pills short kimun\n* Garden: add a bench by the beans garden idea\n    * noted on the 8th\n* Bread: bake with less water and see sourdough"
+[Summer Log, July 20262026-07-09] "Thursday. Friction is information. sourdough"
+[Summer Log, July 20262026-07-09Morning] "Rain overnight, fresh air now. Stretched for ten minutes and had tea instead of coffee. health"
+[Summer Log, July 20262026-07-09Afternoon] "Walked 9 km in the hills, mostly uphill and mostly alone. hike health"
+[Summer Log, July 20262026-07-09Tasks] "* [x] Feed the sourdough starter (9 July)\n* [ ] Water the garden beds, due 12 July todo\n    * [ ] open the list first, by the 11th\n    * [ ] check list for day 9\n* [ ] Sharpen the kitchen knives"
+[Summer Log, July 20262026-07-10] "Friday. Notice what is already working. sourdough"
+[Summer Log, July 20262026-07-10Morning] "Breezy and almost cold. Looked at the garden plan in garden-plan and marked two beds for autumn. garden idea"
+[Summer Log, July 20262026-07-10Afternoon] "Checked the sourdough schedule against sourdough-starter and moved feedings earlier. sourdough\nSat in the shade with a coffee and the second half of a long article. reading coffee"
+[Summer Log, July 20262026-07-10Evening] "Dinner outside, the first night warm enough for it. family"
+[Summer Log, July 20262026-07-10Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 10 km | 55 min | heavy |\n| warm up | 10 min | good |"
+[Summer Log, July 20262026-07-10Starter recipe] "Notes I do not want to forget (the hash lines below are shell comments, not tags):\n```sh\n# #notatag inside a code block\necho 'feed starter at 08:00'  # #alsonotatag\n```\nInline code like `#nope` is not a tag either, but this one is: sourdough"
+[Summer Log, July 20262026-07-11] "Saturday. What I measure, I tend to improve. todo"
+[Summer Log, July 20262026-07-11Morning] "Overcast and still. Weighed the flour for tonight's loaf and left the dough to rest. sourdough"
+[Summer Log, July 20262026-07-11Afternoon] "Sorted the photo folder from spring, deleted the blurry half. todo"
+[Summer Log, July 20262026-07-11Tasks] "* [x] Write the summary for the book (11 July)\n* [ ] Buy a gas hose for the camping stove, due 14 July todo\n    * [ ] find the number first, by the 13th\n    * [ ] check list for day 11\n* [ ] Clean the telescope lens"
+[Summer Log, July 20262026-07-12] "Sunday. A slow start is still a start. garden"
+[Summer Log, July 20262026-07-12Morning] "Humid, the kind that sticks to everything. Watered the pots on the balcony before the heat. garden"
+[Summer Log, July 20262026-07-12Afternoon] "Read about consistency in distributed-systems and re-read my cap-theorem summary. idea\nQuote of the week 2: Make it work, make it clear, then make it small. reading idea"
+[Summer Log, July 20262026-07-13] "Monday. Rest is part of the plan, not a reward for finishing it. health"
+[Summer Log, July 20262026-07-13Morning] "A noisy bird woke me. Tried a pour-over with the lighter roast, notes later. coffee"
+[Summer Log, July 20262026-07-13Afternoon] "Tried a rye and spelt mix, the smell alone was worth it. sourdough"
+[Summer Log, July 20262026-07-13Evening] "Stayed up late sketching a layout for the pill bar, then thought better of it. kimun idea"
+[Summer Log, July 20262026-07-13Tasks] "* [x] Sharpen the kitchen knives (13 July)\n* [ ] Repot the basil, due 16 July todo\n    * [ ] block an hour first, by the 15th\n    * [ ] check list for day 13\n* [ ] Order rye flour"
+[Summer Log, July 20262026-07-13Ideas] "* Link two notes with a short reason idea\n    * a filter by day\n    * a small count next to each pill, raised on the 13th\n        * show where the text came from kimun\n* Garden: plant garlic in autumn near the roses garden idea\n    * noted on the 13th\n* Bread: try a rye starter sourdough"
+[Summer Log, July 20262026-07-14] "Tuesday. A tidy desk helps, a tidy mind helps more. health"
+[Summer Log, July 20262026-07-14Morning] "Hazy sun and no wind. Planned the day on paper, three things only. todo"
+[Summer Log, July 20262026-07-14Afternoon] "Weeded two beds and moved the basil next to the tomatoes, as companion-planting suggests. garden\nBaked with a higher hydration. The crumb is open but the crust came out pale. sourdough"
+[Summer Log, July 20262026-07-15] "Wednesday. Notes that link to each other feel like a map, not a pile. health"
+[Summer Log, July 20262026-07-15Morning] "Cool and bright outside. Took the long way to the market for rye flour. sourdough health"
+[Summer Log, July 20262026-07-15Afternoon] "Cleaned the garage shelves and found the old camping stove, it needs a new gas hose. todo"
+[Summer Log, July 20262026-07-15Tasks] "* [x] Write the summary for the book (15 July)\n* [ ] Clean the telescope lens, due 18 July todo\n    * [ ] make a short plan first, by the 17th\n    * [ ] check list for day 15\n* [ ] Book the campsite"
+[Summer Log, July 20262026-07-15Mid-month review] "Halfway there. What worked: runs, bread, the garden. What did not: sleep. health run garden sourdough\n* Reading: two books started, none finished reading\n* Kimun: the filter idea has a name now kimun idea\n    * Needs a way to reveal context\n    * Needs a collection view for search results\n* Family: visit booked for the 28th family"
+[Summer Log, July 20262026-07-16] "Thursday. Today is a good day to be patient. kimun"
+[Summer Log, July 20262026-07-16Morning] "Breezy and almost cold. Cleared the emails first so the afternoon stays free. todo"
+[Summer Log, July 20262026-07-16Afternoon] "Picked a bowl of beans and the first small courgette. garden"
+[Summer Log, July 20262026-07-16Evening] "Watched a documentary about mountain huts and now I want to hike more. hike"
+[Summer Log, July 20262026-07-16Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 6 km | 30 min | good |\n| warm up | 9 min | steady |"
+[Summer Log, July 20262026-07-17] "Friday. The best days have one run, one loaf, and one page of writing."
+[Summer Log, July 20262026-07-17Morning] "Rain overnight, fresh air now. Weighed the flour for tonight's loaf and left the dough to rest. sourdough"
+[Summer Log, July 20262026-07-17Afternoon] "Tried a rye and spelt mix, the smell alone was worth it. That was the 17th. sourdough"
+[Summer Log, July 20262026-07-17Tasks] "* [x] Buy a gas hose for the camping stove (17 July)\n* [ ] Pay the water bill, due 20 July todo\n    * [ ] gather the parts first, by the 19th\n    * [ ] check list for day 17\n* [ ] Feed the sourdough starter"
+[Summer Log, July 20262026-07-18] "Saturday. Tired is not the same as lazy."
+[Summer Log, July 20262026-07-18Morning] "Warm already at seven. Ran 5.0 km along the river at an easy pace. run health"
+[Summer Log, July 20262026-07-18Afternoon] "Sketched the autumn planting order on the back of an envelope. That was the 18th. garden idea\nRead about consistency in distributed-systems and re-read my cap-theorem summary. Second part of day 18. idea"
+[Summer Log, July 20262026-07-18Ideas] "* Notes should show only what matters idea\n    * a filter by link to kimun\n    * an outline view for long notes, raised on the 18th\n        * reveal more text above and below kimun\n* Garden: build a small cold frame garden idea\n    * noted on the 18th\n* Bread: use a hotter oven sourdough"
+[Summer Log, July 20262026-07-19] "Sunday. Small habits keep adding up when I do not skip them. garden"
+[Summer Log, July 20262026-07-19Morning] "Overcast and still. Wrote a page about how the week is going. gratitude"
+[Summer Log, July 20262026-07-19Afternoon] "Worked on kimun for a few hours. The filtering idea keeps growing. That was the 19th. kimun idea"
+[Summer Log, July 20262026-07-19Evening] "Lit the lanterns on the balcony and finished the book. reading"
+[Summer Log, July 20262026-07-19Tasks] "* [x] Call the dentist (19 July)\n* [ ] Water the garden beds, due 22 July todo\n    * [ ] check the shed first, by the 21st\n    * [ ] check list for day 19\n* [ ] Print the train tickets\nQuote of the week 3: A note is only useful when it can be found again. reading idea"
+[Summer Log, July 20262026-07-20] "Monday. Quiet days are the ones I remember best. gratitude"
+[Summer Log, July 20262026-07-20Morning] "Dry heat building early. Short run, then a long breakfast with the family. run family"
+[Summer Log, July 20262026-07-20Afternoon] "Compared two grinders on paper and decided to keep the old one. That was the 20th. coffee"
+[Summer Log, July 20262026-07-21] "Tuesday. Context matters more than volume. health"
+[Summer Log, July 20262026-07-21Morning] "Thunder far away, nothing yet. Walked the dog around the block twice. health"
+[Summer Log, July 20262026-07-21Afternoon] "Wrote the outline for a post about notes that link to each other. That was the 21st. idea kimun"
+[Summer Log, July 20262026-07-21Tasks] "* [x] Back up the photo folder (21 July)\n* [ ] Wash the picnic blanket, due 24 July todo\n    * [ ] ask a neighbour first, by the 23rd\n    * [ ] check list for day 21\n* [ ] Fix the bike light"
+[Summer Log, July 20262026-07-21Link roundup] "Notes I touched this week: sourdough-starter, coffee-brewing, hiking-trails, garden-plan, reading-list and kimun. A link that goes nowhere: not-written-yet. A web link: Zola and a plain address https://example.com."
+[Summer Log, July 20262026-07-22] "Wednesday. Consistency beats intensity, most of the time."
+[Summer Log, July 20262026-07-22Morning] "Grey light and a light drizzle. Fed the starter and left it on the counter, notes in sourdough-starter. sourdough"
+[Summer Log, July 20262026-07-22Afternoon] "Planned the next trip and compared the routes in hiking-trails. That was the 22nd. hike\nTested a new search query in kimun and wrote down what felt slow. Second part of day 22. kimun"
+[Summer Log, July 20262026-07-22Evening] "Wrote down what went well today and what did not. gratitude"
+[Summer Log, July 20262026-07-22Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 8 km | 48 min | steady |\n| warm up | 8 min | steady |"
+[Summer Log, July 20262026-07-23] "Thursday. Finishing something small beats planning something big. gratitude"
+[Summer Log, July 20262026-07-23Morning] "Humid, the kind that sticks to everything. Stretched for ten minutes and had tea instead of coffee. health"
+[Summer Log, July 20262026-07-23Afternoon] "Fixed the bike light and oiled the chain. That was the 23rd. todo"
+[Summer Log, July 20262026-07-23Tasks] "* [x] Plan the visit menu (23 July)\n* [ ] Reply to the landlord, due 26 July todo\n    * [ ] block an hour first, by the 25th\n    * [ ] check list for day 23\n* [ ] Renew the library card"
+[Summer Log, July 20262026-07-23Ideas] "* A way to hide the boring days idea\n    * a small count next to each pill\n    * a filter by tag, raised on the 23rd\n        * avoid new windows kimun\n* Garden: save seeds from the first poppies garden idea\n    * noted on the 23rd\n* Bread: try a seeded crust sourdough"
+[Summer Log, July 20262026-07-24] "Friday. Slow is smooth and smooth is fast. sourdough"
+[Summer Log, July 20262026-07-24Morning] "Clear sky, long shadows. Cleared the emails first so the afternoon stays free. todo"
+[Summer Log, July 20262026-07-24Afternoon] "Checked the sourdough schedule against sourdough-starter and moved feedings earlier. That was the 24th. sourdough"
+[Summer Log, July 20262026-07-25] "Saturday. Small wins count as wins. kimun"
+[Summer Log, July 20262026-07-25Morning] "Thunder far away, nothing yet. Looked at the garden plan in garden-plan and marked two beds for autumn. garden idea"
+[Summer Log, July 20262026-07-25Afternoon] "Walked 9 km in the hills, mostly uphill and mostly alone. That was the 25th. hike health"
+[Summer Log, July 20262026-07-25Evening] "Cooked a big batch of soup for the week. health"
+[Summer Log, July 20262026-07-25Tasks] "* [x] Sharpen the kitchen knives (25 July)\n* [ ] Buy a gas hose for the camping stove, due 28 July todo\n    * [ ] gather the parts first, by the 27th\n    * [ ] check list for day 25\n* [ ] Fix the bike light"
+[Summer Log, July 20262026-07-26] "Sunday. I want fewer tasks and more finished things. garden"
+[Summer Log, July 20262026-07-26Morning] "Warm already at seven. Read for half an hour before breakfast, next up on reading-list. reading"
+[Summer Log, July 20262026-07-26Afternoon] "Weeded two beds and moved the basil next to the tomatoes, as companion-planting suggests. That was the 26th. garden\nSorted the photo folder from spring, deleted the blurry half. Second part of day 26. todo\nQuote of the week 4: Short feedback loops beat long plans. reading idea"
+[Summer Log, July 20262026-07-27] "Monday. Looking back makes the progress visible. health"
+[Summer Log, July 20262026-07-27Morning] "A noisy bird woke me. Made a V60 with a finer grind, see coffee-brewing. coffee"
+[Summer Log, July 20262026-07-27Afternoon] "Read two chapters and took notes, one quote is worth keeping. That was the 27th. reading idea"
+[Summer Log, July 20262026-07-27Tasks] "* [x] Feed the sourdough starter (27 July)\n* [ ] Book the campsite, due 30 July todo\n    * [ ] write two lines first, by the 29th\n    * [ ] check list for day 27\n* [ ] Write the summary for the book"
+[Summer Log, July 20262026-07-28] "Tuesday. Not every idea needs to become a project. idea"
+[Summer Log, July 20262026-07-28Morning] "Dry heat building early. Tried a pour-over with the lighter roast, notes later. coffee"
+[Summer Log, July 20262026-07-28Afternoon] "Helped a neighbour carry a table, got a jar of honey in return. That was the 28th. family"
+[Summer Log, July 20262026-07-28Evening] "Cleaned the kitchen and set the dough for the morning. sourdough"
+[Summer Log, July 20262026-07-28Ideas] "* Show where a tag was last used idea\n    * a way to pick two days\n    * a search that remembers the last query, raised on the 28th\n        * keep the look quiet kimun\n* Garden: try a second sowing of lettuce garden idea\n    * noted on the 28th\n* Bread: score the loaf deeper sourdough"
+[Summer Log, July 20262026-07-28Run log] "| Distance | Time | Feel run |\n|----------|------|------|\n| 5 km | 30 min | slow start |\n| warm up | 14 min | windy |"
+[Summer Log, July 20262026-07-28Family visit] "My sister arrived. We cooked together, walked the river path and talked until late. family gratitude\n* Saturday: market, then bread baking sourdough family\n    * she liked the rye\n* Sunday: short hike, see hiking-trails hike family"
+[Summer Log, July 20262026-07-29] "Wednesday. I should say no to one thing this week. kimun"
+[Summer Log, July 20262026-07-29Morning] "Cool and bright outside. Planned the day on paper, three things only. todo"
+[Summer Log, July 20262026-07-29Afternoon] "Picked a bowl of beans and the first small courgette. That was the 29th. garden"
+[Summer Log, July 20262026-07-29Tasks] "* [x] Water the garden beds (29 July)\n* [ ] Back up the photo folder, due 32 July todo\n    * [ ] find the number first, by the 31st\n    * [ ] check list for day 29\n* [ ] Call the dentist"
+[Summer Log, July 20262026-07-30] "Thursday. Keep the loop short: try, look, adjust. idea"
+[Summer Log, July 20262026-07-30Morning] "Rain overnight, fresh air now. Watered the pots on the balcony before the heat. garden"
+[Summer Log, July 20262026-07-30Afternoon] "Baked with a higher hydration. The crumb is open but the crust came out pale. That was the 30th. sourdough\nSat in the shade with a coffee and the second half of a long article. Second part of day 30. reading coffee"
+[Summer Log, July 20262026-07-31] "Friday. A walk fixes more than I expect. todo"
+[Summer Log, July 20262026-07-31Morning] "Hazy sun and no wind. Took the long way to the market for rye flour. sourdough health"
+[Summer Log, July 20262026-07-31Afternoon] "Long phone call with my sister, we planned her visit for the end of the month. That was the 31st. family"
+[Summer Log, July 20262026-07-31Evening] "Read in the garden until it got dark. reading garden"
+[Summer Log, July 20262026-07-31Tasks] "* [x] Pay the water bill (31 July)\n* [ ] Wash the picnic blanket, due 34 July todo\n    * [ ] set a reminder first, by the 33rd\n    * [ ] check list for day 31\n* [ ] Order rye flour"
+[Summer Log, July 2026Month summary] "Total distance run this month: about 99 km. run"
+[Summer Log, July 2026Month summaryWhat I want to carry into August] "* Keep the morning run, even if it is short run health\n* Feed the starter on a fixed time sourdough\n* Finish one book reading\n* Write down the filter idea for kimun kimun idea\n    * the pill bar\n    * the reveal buttons"
+[Summer Log, July 2026Month summaryGratitude] "Warm evenings, good bread, and a sister who visits. gratitude family"
+[FrontMatter] "type: journal\nperiod: 2026-07\nmood: mixed\ntags:\n  - journal\n  - summer"
+-- index links (sorted)
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#family" "family"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#hike" "hike"
+Hashtag "#hike" "hike"
+Hashtag "#hike" "hike"
+Hashtag "#hike" "hike"
+Hashtag "#hike" "hike"
+Hashtag "#hike" "hike"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#kimun" "kimun"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#reading" "reading"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("not-written-yet.md")] })) "not-written-yet" "not-written-yet"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("telescope-notes.md")] })) "telescope-notes" "telescope-notes"
+-- tags ["coffee", "family", "garden", "gratitude", "health", "hike", "idea", "journal", "kimun", "reading", "run", "sourdough", "summer", "todo"]
+-- markdown links
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("telescope-notes.md")] })) "telescope-notes" "telescope-notes"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("distributed-systems.md")] })) "distributed-systems" "distributed-systems"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("cap-theorem.md")] })) "cap-theorem" "cap-theorem"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("not-written-yet.md")] })) "not-written-yet" "not-written-yet"
+Url "https://www.getzola.org" "Zola"
+Url "https://example.com" "https://example.com"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("sourdough-starter.md")] })) "sourdough-starter" "sourdough-starter"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("garden-plan.md")] })) "garden-plan" "garden-plan"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("reading-list.md")] })) "reading-list" "reading-list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("companion-planting.md")] })) "companion-planting" "companion-planting"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("coffee-brewing.md")] })) "coffee-brewing" "coffee-brewing"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("hiking-trails.md")] })) "hiking-trails" "hiking-trails"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("list.md")] })) "list" "list"
+Note(Name(VaultPath { absolute: false, slices: [PathSlice("kimun.md")] })) "kimun" "kimun"
+Hashtag "#run" "run"
+Hashtag "#garden" "garden"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#coffee" "coffee"
+Hashtag "#reading" "reading"
+Hashtag "#kimun" "kimun"
+Hashtag "#health" "health"
+Hashtag "#family" "family"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#todo" "todo"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#garden" "garden"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#coffee" "coffee"
+Hashtag "#coffee" "coffee"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#run" "run"
+Hashtag "#idea" "idea"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#hike" "hike"
+Hashtag "#todo" "todo"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#health" "health"
+Hashtag "#reading" "reading"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#run" "run"
+Hashtag "#family" "family"
+Hashtag "#kimun" "kimun"
+Hashtag "#idea" "idea"
+Hashtag "#family" "family"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#todo" "todo"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#run" "run"
+Hashtag "#health" "health"
+Hashtag "#family" "family"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#health" "health"
+Hashtag "#hike" "hike"
+Hashtag "#health" "health"
+Hashtag "#todo" "todo"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#reading" "reading"
+Hashtag "#coffee" "coffee"
+Hashtag "#family" "family"
+Hashtag "#run" "run"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#garden" "garden"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#health" "health"
+Hashtag "#coffee" "coffee"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#kimun" "kimun"
+Hashtag "#idea" "idea"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#health" "health"
+Hashtag "#todo" "todo"
+Hashtag "#garden" "garden"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#health" "health"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#health" "health"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#health" "health"
+Hashtag "#run" "run"
+Hashtag "#garden" "garden"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#reading" "reading"
+Hashtag "#kimun" "kimun"
+Hashtag "#idea" "idea"
+Hashtag "#family" "family"
+Hashtag "#kimun" "kimun"
+Hashtag "#todo" "todo"
+Hashtag "#garden" "garden"
+Hashtag "#hike" "hike"
+Hashtag "#run" "run"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#run" "run"
+Hashtag "#health" "health"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#garden" "garden"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#kimun" "kimun"
+Hashtag "#idea" "idea"
+Hashtag "#reading" "reading"
+Hashtag "#todo" "todo"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#run" "run"
+Hashtag "#family" "family"
+Hashtag "#coffee" "coffee"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#todo" "todo"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#hike" "hike"
+Hashtag "#kimun" "kimun"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#run" "run"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#health" "health"
+Hashtag "#todo" "todo"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#todo" "todo"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#hike" "hike"
+Hashtag "#health" "health"
+Hashtag "#health" "health"
+Hashtag "#todo" "todo"
+Hashtag "#garden" "garden"
+Hashtag "#reading" "reading"
+Hashtag "#garden" "garden"
+Hashtag "#todo" "todo"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#health" "health"
+Hashtag "#coffee" "coffee"
+Hashtag "#reading" "reading"
+Hashtag "#idea" "idea"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#coffee" "coffee"
+Hashtag "#family" "family"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#idea" "idea"
+Hashtag "#kimun" "kimun"
+Hashtag "#garden" "garden"
+Hashtag "#idea" "idea"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#run" "run"
+Hashtag "#family" "family"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#family" "family"
+Hashtag "#hike" "hike"
+Hashtag "#family" "family"
+Hashtag "#kimun" "kimun"
+Hashtag "#todo" "todo"
+Hashtag "#garden" "garden"
+Hashtag "#todo" "todo"
+Hashtag "#idea" "idea"
+Hashtag "#garden" "garden"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#reading" "reading"
+Hashtag "#coffee" "coffee"
+Hashtag "#todo" "todo"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#health" "health"
+Hashtag "#family" "family"
+Hashtag "#reading" "reading"
+Hashtag "#garden" "garden"
+Hashtag "#todo" "todo"
+Hashtag "#run" "run"
+Hashtag "#run" "run"
+Hashtag "#health" "health"
+Hashtag "#sourdough" "sourdough"
+Hashtag "#reading" "reading"
+Hashtag "#kimun" "kimun"
+Hashtag "#idea" "idea"
+Hashtag "#gratitude" "gratitude"
+Hashtag "#family" "family"
+-- markdown
+---
+type: journal
+period: 2026-07
+mood: mixed
+tags:
+  - journal
+  - summer
+---
+# Summer Log, July 2026
+
+One long note for the whole month. Every day has its own section, and the same tags and links come back again and again, but each entry is its own. Handy to test filtering: pick a day, pick a tag, or follow a link.
+
+Main threads this month: [#run](#run), [#garden](#garden), [#sourdough](#sourdough), [#coffee](#coffee), [#reading](#reading) and the [kimun](kimun.md) project. See also [list](list.md) and [telescope-notes](telescope-notes.md).
+
+
+## 2026-07-01
+
+Wednesday. Writing things down makes them lighter. [#kimun](#kimun)
+
+### Morning
+
+Grey light and a light drizzle. Walked the dog around the block twice. [#health](#health)
+
+### Afternoon
+
+Long phone call with my sister, we planned her visit for the end of the month. [#family](#family)
+
+### Evening
+
+Early night after writing three lines in the gratitude list. [#gratitude](#gratitude)
+
+### Tasks
+
+- [x] Pay the water bill (1 July)
+- [ ] Fix the bike light, due 4 July [#todo](#todo)
+  - [ ] read the notes first, by the 3rd
+  - [ ] check [list](list.md) for day 1
+- [ ] Back up the photo folder
+
+
+## 2026-07-02
+
+Thursday. Simple tools, used every day, win. [#gratitude](#gratitude)
+
+### Morning
+
+Thunder far away, nothing yet. Checked the tomatoes, more flowers than yesterday. [#garden](#garden)
+
+### Afternoon
+
+Read two chapters and took notes, one quote is worth keeping. [#reading](#reading) [#idea](#idea)
+
+Wrote the outline for a post about notes that link to each other. [#idea](#idea) [#kimun](#kimun)
+
+
+## 2026-07-03
+
+Friday. Nothing is urgent that I cannot write down. [#gratitude](#gratitude)
+
+### Morning
+
+Hazy sun and no wind. Made a V60 with a finer grind, see [coffee-brewing](coffee-brewing.md). [#coffee](#coffee)
+
+### Afternoon
+
+Compared two grinders on paper and decided to keep the old one. [#coffee](#coffee)
+
+### Tasks
+
+- [x] Book the campsite (3 July)
+- [ ] Plan the visit menu, due 6 July [#todo](#todo)
+  - [ ] write two lines first, by the 5th
+  - [ ] check [list](list.md) for day 3
+- [ ] Wash the picnic blanket
+
+### Ideas
+
+- Group entries by season [#idea](#idea)
+  - a search that remembers the last query
+  - an outline view for long notes, raised on the 3rd
+    - keep the keyboard first [#kimun](#kimun)
+- Garden: move the mint into a pot [#garden](#garden) [#idea](#idea)
+  - noted on the 3rd
+- Bread: bake two small loaves instead of one big one [#sourdough](#sourdough)
+
+
+## 2026-07-04
+
+Saturday. Bread teaches patience better than any book.
+
+### Morning
+
+Clear sky, long shadows. Fed the starter and left it on the counter, notes in [sourdough-starter](sourdough-starter.md). [#sourdough](#sourdough)
+
+### Afternoon
+
+Fixed the bike light and oiled the chain. [#todo](#todo)
+
+### Evening
+
+Tried to stargaze but the haze won, will try again after the new moon. [#idea](#idea)
+
+### Run log
+
+| Distance | Time | Feel [#run](#run) |
+|----------|------|------|
+| 10 km | 55 min | good |
+| warm up | 11 min | hilly |
+
+
+## 2026-07-05
+
+Sunday. The garden does not care about my schedule. [#idea](#idea)
+
+### Morning
+
+Dry heat building early. Wrote a page about how the week is going. [#gratitude](#gratitude)
+
+### Afternoon
+
+Planned the next trip and compared the routes in [hiking-trails](hiking-trails.md). [#hike](#hike)
+
+### Tasks
+
+- [x] Order rye flour (5 July)
+- [ ] Print the train tickets, due 8 July [#todo](#todo)
+  - [ ] set a reminder first, by the 7th
+  - [ ] check [list](list.md) for day 5
+- [ ] Call the dentist
+
+> Quote of the week 1: You do not need more notes, you need better paths between them. [#reading](#reading) [#idea](#idea)
+
+
+## 2026-07-06
+
+Monday. Say it plainly, then say it shorter. [#health](#health)
+
+### Morning
+
+Cool and bright outside. Read for half an hour before breakfast, next up on [reading-list](reading-list.md). [#reading](#reading)
+
+### Afternoon
+
+Tested a new search query in [kimun](kimun.md) and wrote down what felt slow. [#kimun](#kimun)
+
+Sketched the autumn planting order on the back of an envelope. [#garden](#garden) [#idea](#idea)
+
+
+## 2026-07-07
+
+Tuesday. I work best before noon.
+
+### Morning
+
+Warm already at seven. Short run, then a long breakfast with the family. [#run](#run) [#family](#family)
+
+### Afternoon
+
+Worked on [kimun](kimun.md) for a few hours. The filtering idea keeps growing. [#kimun](#kimun) [#idea](#idea)
+
+### Evening
+
+Called an old friend and talked far longer than planned. [#family](#family) [#gratitude](#gratitude)
+
+### Tasks
+
+- [x] Renew the library card (7 July)
+- [ ] Repot the basil, due 10 July [#todo](#todo)
+  - [ ] ask a neighbour first, by the 9th
+  - [ ] check [list](list.md) for day 7
+- [ ] Reply to the landlord
+
+
+## 2026-07-08
+
+Wednesday. Gratitude is easier on a full stomach. [#gratitude](#gratitude)
+
+### Morning
+
+A noisy bird woke me. Ran 9.5 km along the river at an easy pace. [#run](#run) [#health](#health)
+
+### Afternoon
+
+Helped a neighbour carry a table, got a jar of honey in return. [#family](#family)
+
+### Ideas
+
+- A view that shows one paragraph per day [#idea](#idea)
+  - a way to pick two days
+  - a filter by tag, raised on the 8th
+    - keep the pills short [#kimun](#kimun)
+- Garden: add a bench by the beans [#garden](#garden) [#idea](#idea)
+  - noted on the 8th
+- Bread: bake with less water and see [#sourdough](#sourdough)
+
+
+## 2026-07-09
+
+Thursday. Friction is information. [#sourdough](#sourdough)
+
+### Morning
+
+Rain overnight, fresh air now. Stretched for ten minutes and had tea instead of coffee. [#health](#health)
+
+### Afternoon
+
+Walked 9 km in the hills, mostly uphill and mostly alone. [#hike](#hike) [#health](#health)
+
+### Tasks
+
+- [x] Feed the sourdough starter (9 July)
+- [ ] Water the garden beds, due 12 July [#todo](#todo)
+  - [ ] open the list first, by the 11th
+  - [ ] check [list](list.md) for day 9
+- [ ] Sharpen the kitchen knives
+
+
+## 2026-07-10
+
+Friday. Notice what is already working. [#sourdough](#sourdough)
+
+### Morning
+
+Breezy and almost cold. Looked at the garden plan in [garden-plan](garden-plan.md) and marked two beds for autumn. [#garden](#garden) [#idea](#idea)
+
+### Afternoon
+
+Checked the sourdough schedule against [sourdough-starter](sourdough-starter.md) and moved feedings earlier. [#sourdough](#sourdough)
+
+Sat in the shade with a coffee and the second half of a long article. [#reading](#reading) [#coffee](#coffee)
+
+### Evening
+
+Dinner outside, the first night warm enough for it. [#family](#family)
+
+### Run log
+
+| Distance | Time | Feel [#run](#run) |
+|----------|------|------|
+| 10 km | 55 min | heavy |
+| warm up | 10 min | good |
+
+### Starter recipe
+
+Notes I do not want to forget (the hash lines below are shell comments, not tags):
+
+```sh
+# #notatag inside a code block
+echo 'feed starter at 08:00'  # #alsonotatag
+```
+
+Inline code like `#nope` is not a tag either, but this one is: [#sourdough](#sourdough)
+
+
+## 2026-07-11
+
+Saturday. What I measure, I tend to improve. [#todo](#todo)
+
+### Morning
+
+Overcast and still. Weighed the flour for tonight's loaf and left the dough to rest. [#sourdough](#sourdough)
+
+### Afternoon
+
+Sorted the photo folder from spring, deleted the blurry half. [#todo](#todo)
+
+### Tasks
+
+- [x] Write the summary for the book (11 July)
+- [ ] Buy a gas hose for the camping stove, due 14 July [#todo](#todo)
+  - [ ] find the number first, by the 13th
+  - [ ] check [list](list.md) for day 11
+- [ ] Clean the telescope lens
+
+
+## 2026-07-12
+
+Sunday. A slow start is still a start. [#garden](#garden)
+
+### Morning
+
+Humid, the kind that sticks to everything. Watered the pots on the balcony before the heat. [#garden](#garden)
+
+### Afternoon
+
+Read about consistency in [distributed-systems](distributed-systems.md) and re-read my [cap-theorem](cap-theorem.md) summary. [#idea](#idea)
+
+> Quote of the week 2: Make it work, make it clear, then make it small. [#reading](#reading) [#idea](#idea)
+
+
+## 2026-07-13
+
+Monday. Rest is part of the plan, not a reward for finishing it. [#health](#health)
+
+### Morning
+
+A noisy bird woke me. Tried a pour-over with the lighter roast, notes later. [#coffee](#coffee)
+
+### Afternoon
+
+Tried a rye and spelt mix, the smell alone was worth it. [#sourdough](#sourdough)
+
+### Evening
+
+Stayed up late sketching a layout for the pill bar, then thought better of it. [#kimun](#kimun) [#idea](#idea)
+
+### Tasks
+
+- [x] Sharpen the kitchen knives (13 July)
+- [ ] Repot the basil, due 16 July [#todo](#todo)
+  - [ ] block an hour first, by the 15th
+  - [ ] check [list](list.md) for day 13
+- [ ] Order rye flour
+
+### Ideas
+
+- Link two notes with a short reason [#idea](#idea)
+  - a filter by day
+  - a small count next to each pill, raised on the 13th
+    - show where the text came from [#kimun](#kimun)
+- Garden: plant garlic in autumn near the roses [#garden](#garden) [#idea](#idea)
+  - noted on the 13th
+- Bread: try a rye starter [#sourdough](#sourdough)
+
+
+## 2026-07-14
+
+Tuesday. A tidy desk helps, a tidy mind helps more. [#health](#health)
+
+### Morning
+
+Hazy sun and no wind. Planned the day on paper, three things only. [#todo](#todo)
+
+### Afternoon
+
+Weeded two beds and moved the basil next to the tomatoes, as [companion-planting](companion-planting.md) suggests. [#garden](#garden)
+
+Baked with a higher hydration. The crumb is open but the crust came out pale. [#sourdough](#sourdough)
+
+
+## 2026-07-15
+
+Wednesday. Notes that link to each other feel like a map, not a pile. [#health](#health)
+
+### Morning
+
+Cool and bright outside. Took the long way to the market for rye flour. [#sourdough](#sourdough) [#health](#health)
+
+### Afternoon
+
+Cleaned the garage shelves and found the old camping stove, it needs a new gas hose. [#todo](#todo)
+
+### Tasks
+
+- [x] Write the summary for the book (15 July)
+- [ ] Clean the telescope lens, due 18 July [#todo](#todo)
+  - [ ] make a short plan first, by the 17th
+  - [ ] check [list](list.md) for day 15
+- [ ] Book the campsite
+
+### Mid-month review
+
+Halfway there. What worked: runs, bread, the garden. What did not: sleep. [#health](#health) [#run](#run) [#garden](#garden) [#sourdough](#sourdough)
+
+- Reading: two books started, none finished [#reading](#reading)
+- Kimun: the filter idea has a name now [#kimun](#kimun) [#idea](#idea)
+  - Needs a way to reveal context
+  - Needs a collection view for search results
+- Family: visit booked for the 28th [#family](#family)
+
+
+## 2026-07-16
+
+Thursday. Today is a good day to be patient. [#kimun](#kimun)
+
+### Morning
+
+Breezy and almost cold. Cleared the emails first so the afternoon stays free. [#todo](#todo)
+
+### Afternoon
+
+Picked a bowl of beans and the first small courgette. [#garden](#garden)
+
+### Evening
+
+Watched a documentary about mountain huts and now I want to hike more. [#hike](#hike)
+
+### Run log
+
+| Distance | Time | Feel [#run](#run) |
+|----------|------|------|
+| 6 km | 30 min | good |
+| warm up | 9 min | steady |
+
+
+## 2026-07-17
+
+Friday. The best days have one run, one loaf, and one page of writing.
+
+### Morning
+
+Rain overnight, fresh air now. Weighed the flour for tonight's loaf and left the dough to rest. [#sourdough](#sourdough)
+
+### Afternoon
+
+Tried a rye and spelt mix, the smell alone was worth it. That was the 17th. [#sourdough](#sourdough)
+
+### Tasks
+
+- [x] Buy a gas hose for the camping stove (17 July)
+- [ ] Pay the water bill, due 20 July [#todo](#todo)
+  - [ ] gather the parts first, by the 19th
+  - [ ] check [list](list.md) for day 17
+- [ ] Feed the sourdough starter
+
+
+## 2026-07-18
+
+Saturday. Tired is not the same as lazy.
+
+### Morning
+
+Warm already at seven. Ran 5.0 km along the river at an easy pace. [#run](#run) [#health](#health)
+
+### Afternoon
+
+Sketched the autumn planting order on the back of an envelope. That was the 18th. [#garden](#garden) [#idea](#idea)
+
+Read about consistency in [distributed-systems](distributed-systems.md) and re-read my [cap-theorem](cap-theorem.md) summary. Second part of day 18. [#idea](#idea)
+
+### Ideas
+
+- Notes should show only what matters [#idea](#idea)
+  - a filter by link to [kimun](kimun.md)
+  - an outline view for long notes, raised on the 18th
+    - reveal more text above and below [#kimun](#kimun)
+- Garden: build a small cold frame [#garden](#garden) [#idea](#idea)
+  - noted on the 18th
+- Bread: use a hotter oven [#sourdough](#sourdough)
+
+
+## 2026-07-19
+
+Sunday. Small habits keep adding up when I do not skip them. [#garden](#garden)
+
+### Morning
+
+Overcast and still. Wrote a page about how the week is going. [#gratitude](#gratitude)
+
+### Afternoon
+
+Worked on [kimun](kimun.md) for a few hours. The filtering idea keeps growing. That was the 19th. [#kimun](#kimun) [#idea](#idea)
+
+### Evening
+
+Lit the lanterns on the balcony and finished the book. [#reading](#reading)
+
+### Tasks
+
+- [x] Call the dentist (19 July)
+- [ ] Water the garden beds, due 22 July [#todo](#todo)
+  - [ ] check the shed first, by the 21st
+  - [ ] check [list](list.md) for day 19
+- [ ] Print the train tickets
+
+> Quote of the week 3: A note is only useful when it can be found again. [#reading](#reading) [#idea](#idea)
+
+
+## 2026-07-20
+
+Monday. Quiet days are the ones I remember best. [#gratitude](#gratitude)
+
+### Morning
+
+Dry heat building early. Short run, then a long breakfast with the family. [#run](#run) [#family](#family)
+
+### Afternoon
+
+Compared two grinders on paper and decided to keep the old one. That was the 20th. [#coffee](#coffee)
+
+
+## 2026-07-21
+
+Tuesday. Context matters more than volume. [#health](#health)
+
+### Morning
+
+Thunder far away, nothing yet. Walked the dog around the block twice. [#health](#health)
+
+### Afternoon
+
+Wrote the outline for a post about notes that link to each other. That was the 21st. [#idea](#idea) [#kimun](#kimun)
+
+### Tasks
+
+- [x] Back up the photo folder (21 July)
+- [ ] Wash the picnic blanket, due 24 July [#todo](#todo)
+  - [ ] ask a neighbour first, by the 23rd
+  - [ ] check [list](list.md) for day 21
+- [ ] Fix the bike light
+
+### Link roundup
+
+Notes I touched this week: [sourdough-starter](sourdough-starter.md), [coffee-brewing](coffee-brewing.md), [hiking-trails](hiking-trails.md), [garden-plan](garden-plan.md), [reading-list](reading-list.md) and [kimun](kimun.md). A link that goes nowhere: [not-written-yet](not-written-yet.md). A web link: [Zola](https://www.getzola.org) and a plain address <https://example.com>.
+
+
+## 2026-07-22
+
+Wednesday. Consistency beats intensity, most of the time.
+
+### Morning
+
+Grey light and a light drizzle. Fed the starter and left it on the counter, notes in [sourdough-starter](sourdough-starter.md). [#sourdough](#sourdough)
+
+### Afternoon
+
+Planned the next trip and compared the routes in [hiking-trails](hiking-trails.md). That was the 22nd. [#hike](#hike)
+
+Tested a new search query in [kimun](kimun.md) and wrote down what felt slow. Second part of day 22. [#kimun](#kimun)
+
+### Evening
+
+Wrote down what went well today and what did not. [#gratitude](#gratitude)
+
+### Run log
+
+| Distance | Time | Feel [#run](#run) |
+|----------|------|------|
+| 8 km | 48 min | steady |
+| warm up | 8 min | steady |
+
+
+## 2026-07-23
+
+Thursday. Finishing something small beats planning something big. [#gratitude](#gratitude)
+
+### Morning
+
+Humid, the kind that sticks to everything. Stretched for ten minutes and had tea instead of coffee. [#health](#health)
+
+### Afternoon
+
+Fixed the bike light and oiled the chain. That was the 23rd. [#todo](#todo)
+
+### Tasks
+
+- [x] Plan the visit menu (23 July)
+- [ ] Reply to the landlord, due 26 July [#todo](#todo)
+  - [ ] block an hour first, by the 25th
+  - [ ] check [list](list.md) for day 23
+- [ ] Renew the library card
+
+### Ideas
+
+- A way to hide the boring days [#idea](#idea)
+  - a small count next to each pill
+  - a filter by tag, raised on the 23rd
+    - avoid new windows [#kimun](#kimun)
+- Garden: save seeds from the first poppies [#garden](#garden) [#idea](#idea)
+  - noted on the 23rd
+- Bread: try a seeded crust [#sourdough](#sourdough)
+
+
+## 2026-07-24
+
+Friday. Slow is smooth and smooth is fast. [#sourdough](#sourdough)
+
+### Morning
+
+Clear sky, long shadows. Cleared the emails first so the afternoon stays free. [#todo](#todo)
+
+### Afternoon
+
+Checked the sourdough schedule against [sourdough-starter](sourdough-starter.md) and moved feedings earlier. That was the 24th. [#sourdough](#sourdough)
+
+
+## 2026-07-25
+
+Saturday. Small wins count as wins. [#kimun](#kimun)
+
+### Morning
+
+Thunder far away, nothing yet. Looked at the garden plan in [garden-plan](garden-plan.md) and marked two beds for autumn. [#garden](#garden) [#idea](#idea)
+
+### Afternoon
+
+Walked 9 km in the hills, mostly uphill and mostly alone. That was the 25th. [#hike](#hike) [#health](#health)
+
+### Evening
+
+Cooked a big batch of soup for the week. [#health](#health)
+
+### Tasks
+
+- [x] Sharpen the kitchen knives (25 July)
+- [ ] Buy a gas hose for the camping stove, due 28 July [#todo](#todo)
+  - [ ] gather the parts first, by the 27th
+  - [ ] check [list](list.md) for day 25
+- [ ] Fix the bike light
+
+
+## 2026-07-26
+
+Sunday. I want fewer tasks and more finished things. [#garden](#garden)
+
+### Morning
+
+Warm already at seven. Read for half an hour before breakfast, next up on [reading-list](reading-list.md). [#reading](#reading)
+
+### Afternoon
+
+Weeded two beds and moved the basil next to the tomatoes, as [companion-planting](companion-planting.md) suggests. That was the 26th. [#garden](#garden)
+
+Sorted the photo folder from spring, deleted the blurry half. Second part of day 26. [#todo](#todo)
+
+> Quote of the week 4: Short feedback loops beat long plans. [#reading](#reading) [#idea](#idea)
+
+
+## 2026-07-27
+
+Monday. Looking back makes the progress visible. [#health](#health)
+
+### Morning
+
+A noisy bird woke me. Made a V60 with a finer grind, see [coffee-brewing](coffee-brewing.md). [#coffee](#coffee)
+
+### Afternoon
+
+Read two chapters and took notes, one quote is worth keeping. That was the 27th. [#reading](#reading) [#idea](#idea)
+
+### Tasks
+
+- [x] Feed the sourdough starter (27 July)
+- [ ] Book the campsite, due 30 July [#todo](#todo)
+  - [ ] write two lines first, by the 29th
+  - [ ] check [list](list.md) for day 27
+- [ ] Write the summary for the book
+
+
+## 2026-07-28
+
+Tuesday. Not every idea needs to become a project. [#idea](#idea)
+
+### Morning
+
+Dry heat building early. Tried a pour-over with the lighter roast, notes later. [#coffee](#coffee)
+
+### Afternoon
+
+Helped a neighbour carry a table, got a jar of honey in return. That was the 28th. [#family](#family)
+
+### Evening
+
+Cleaned the kitchen and set the dough for the morning. [#sourdough](#sourdough)
+
+### Ideas
+
+- Show where a tag was last used [#idea](#idea)
+  - a way to pick two days
+  - a search that remembers the last query, raised on the 28th
+    - keep the look quiet [#kimun](#kimun)
+- Garden: try a second sowing of lettuce [#garden](#garden) [#idea](#idea)
+  - noted on the 28th
+- Bread: score the loaf deeper [#sourdough](#sourdough)
+
+### Run log
+
+| Distance | Time | Feel [#run](#run) |
+|----------|------|------|
+| 5 km | 30 min | slow start |
+| warm up | 14 min | windy |
+
+### Family visit
+
+My sister arrived. We cooked together, walked the river path and talked until late. [#family](#family) [#gratitude](#gratitude)
+
+- Saturday: market, then bread baking [#sourdough](#sourdough) [#family](#family)
+  - she liked the rye
+- Sunday: short hike, see [hiking-trails](hiking-trails.md) [#hike](#hike) [#family](#family)
+
+
+## 2026-07-29
+
+Wednesday. I should say no to one thing this week. [#kimun](#kimun)
+
+### Morning
+
+Cool and bright outside. Planned the day on paper, three things only. [#todo](#todo)
+
+### Afternoon
+
+Picked a bowl of beans and the first small courgette. That was the 29th. [#garden](#garden)
+
+### Tasks
+
+- [x] Water the garden beds (29 July)
+- [ ] Back up the photo folder, due 32 July [#todo](#todo)
+  - [ ] find the number first, by the 31st
+  - [ ] check [list](list.md) for day 29
+- [ ] Call the dentist
+
+
+## 2026-07-30
+
+Thursday. Keep the loop short: try, look, adjust. [#idea](#idea)
+
+### Morning
+
+Rain overnight, fresh air now. Watered the pots on the balcony before the heat. [#garden](#garden)
+
+### Afternoon
+
+Baked with a higher hydration. The crumb is open but the crust came out pale. That was the 30th. [#sourdough](#sourdough)
+
+Sat in the shade with a coffee and the second half of a long article. Second part of day 30. [#reading](#reading) [#coffee](#coffee)
+
+
+## 2026-07-31
+
+Friday. A walk fixes more than I expect. [#todo](#todo)
+
+### Morning
+
+Hazy sun and no wind. Took the long way to the market for rye flour. [#sourdough](#sourdough) [#health](#health)
+
+### Afternoon
+
+Long phone call with my sister, we planned her visit for the end of the month. That was the 31st. [#family](#family)
+
+### Evening
+
+Read in the garden until it got dark. [#reading](#reading) [#garden](#garden)
+
+### Tasks
+
+- [x] Pay the water bill (31 July)
+- [ ] Wash the picnic blanket, due 34 July [#todo](#todo)
+  - [ ] set a reminder first, by the 33rd
+  - [ ] check [list](list.md) for day 31
+- [ ] Order rye flour
+
+
+## Month summary
+
+Total distance run this month: about 99 km. [#run](#run)
+
+### What I want to carry into August
+
+- Keep the morning run, even if it is short [#run](#run) [#health](#health)
+- Feed the starter on a fixed time [#sourdough](#sourdough)
+- Finish one book [#reading](#reading)
+- Write down the filter idea for [kimun](kimun.md) [#kimun](#kimun) [#idea](#idea)
+  - the pill bar
+  - the reveal buttons
+
+### Gratitude
+
+Warm evenings, good bread, and a sister who visits. [#gratitude](#gratitude) [#family](#family)
+
+
 === ../example/personal/ideas/cap-theorem.md
 -- title "CAP Theorem"
 -- headings
@@ -797,19 +2525,6 @@ date: 2026-07-17
 
 New note, journal entry actually
 
-
-=== ../example/personal/list.md
--- title "This is another list file"
--- headings
--- chunks
-[] "This is another list file"
--- index chunks
-[] "This is another list file"
--- index links (sorted)
--- tags []
--- markdown links
--- markdown
-This is another list file
 
 === ../example/personal/projects/garden-plan.md
 -- title "Garden Plan"
