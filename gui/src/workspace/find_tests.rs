@@ -480,6 +480,24 @@ fn find_has_no_toolbar_expand_button(cx: &mut TestAppContext) {
     assert!(drawn_find(&started, FIND_HELP_ID, cx));
 }
 
+/// The saved searches button is drawn, and a click opens the Saved
+/// Searches. Unlike `Save…` it never waits on a query: it is a way to start
+/// one.
+#[gpui_kit::test]
+fn find_saved_button_opens_the_saved_searches(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    open_find_on_backlinks(&started, cx);
+    assert!(drawn_find(&started, super::find::FIND_SAVED_ID, cx));
+    click(&started, super::find::FIND_SAVED_ID, cx);
+    assert_eq!(
+        started.shown_modal(cx),
+        Some(ModalKind::SavedSearches),
+        "the button opens what F3 opens"
+    );
+}
+
 /// The selected row shows the chevron, the others do not (at rest).
 #[gpui_kit::test]
 fn find_selected_row_shows_chevron(cx: &mut TestAppContext) {

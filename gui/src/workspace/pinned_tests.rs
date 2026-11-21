@@ -527,3 +527,267 @@ fn the_palette_leaf_is_blocked_without_a_workspace(cx: &mut TestAppContext) {
     });
     assert_eq!(blocked, Some(NO_WORKSPACE));
 }
+
+// ── The Files pinned section ─────────────────────────────────────────────
+
+mod in_files {
+    use gpui_kit::{AppContext as _, TestAppContext};
+
+    use super::super::files::{
+        FILES_PINNED_ID, FILES_PINNED_MANAGE_ID, FILES_PINNED_TOGGLE_ID, files_pinned_row_id,
+    };
+    use super::super::modal::ModalKind;
+    use super::super::start_tests::{drive, runtime};
+    use super::{click, open_pins, press, rows, started_with, type_in};
+
+    /// The pin rows the Files pane shows, by name.
+    fn shown(s: &super::Started, cx: &TestAppContext) -> Vec<String> {
+        cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .files
+                .as_ref()
+                .map(|f| {
+                    f.read(cx)
+                        .pins()
+                        .iter()
+                        .map(|p| p.path.get_clean_name())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    fn drawn(
+        s: &super::Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        use gpui_kit::test::TestWindowExt as _;
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some_and(|e| e.visible())
+        })
+        .unwrap()
+    }
+
+    /// The pins are listed above the folder's rows in the user's order,
+    /// once core has read them off the UI thread; a click opens the note.
+    #[gpui_kit::test]
+    fn the_section_lists_the_pins_in_order_and_a_click_opens_one(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &["gamma.md", "alpha.md"]);
+        drive(&rt, cx, |cx| shown(&started, cx).len() == 2);
+        assert_eq!(shown(&started, cx), ["gamma", "alpha"]);
+        assert!(drawn(&started, FILES_PINNED_ID, cx));
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        // The pins core keeps are absolute: the row's id names that path.
+        let gamma = cx.read(|cx| {
+            let files = started.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).pins()[0].path.clone()
+        });
+        assert!(drawn(&started, files_pinned_row_id(&gamma), cx));
+        click(&started, files_pinned_row_id(&gamma), cx);
+        drive(&rt, cx, |cx| started.text(cx) == "# Gamma\nthe gamma note");
+    }
+
+    /// No pins, no section: users who never pin see no change.
+    #[gpui_kit::test]
+    fn without_pins_there_is_no_section(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &[]);
+        cx.run_until_parked();
+        assert!(!drawn(&started, FILES_PINNED_ID, cx));
+    }
+
+    /// Pinning with the leader makes the section appear, and unpinning with
+    /// it takes the section away again.
+    #[gpui_kit::test]
+    fn the_section_follows_a_leader_pin_and_unpin(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &[]);
+        press(&started, "ctrl-shift-b", cx);
+        type_in(&started, "mp", cx);
+        drive(&rt, cx, |cx| shown(&started, cx) == ["alpha"]);
+        assert!(drawn(&started, FILES_PINNED_ID, cx));
+        assert!(
+            !is_open(&started, cx),
+            "a new pin does not open the section"
+        );
+        press(&started, "ctrl-shift-b", cx);
+        type_in(&started, "mp", cx);
+        drive(&rt, cx, |cx| shown(&started, cx).is_empty());
+        assert!(!drawn(&started, FILES_PINNED_ID, cx));
+    }
+
+    /// An unpin made in the dialog shows in the section at once.
+    #[gpui_kit::test]
+    fn the_section_follows_the_dialog(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &["alpha.md", "beta.md"]);
+        drive(&rt, cx, |cx| shown(&started, cx).len() == 2);
+        open_pins(&started, cx);
+        rows(&started, &rt, cx);
+        press(&started, "delete", cx);
+        drive(&rt, cx, |cx| shown(&started, cx) == ["beta"]);
+    }
+
+    fn is_open(s: &super::Started, cx: &TestAppContext) -> bool {
+        cx.read(|cx| {
+            let files = s.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).pins_open()
+        })
+    }
+
+    /// The section starts closed in a run, with only its heading (and the
+    /// count) drawn. The heading opens it and closes it again; the rows and
+    /// the `Manage` link are drawn only while it is open. The state is not
+    /// saved: it is a field of the pane, so a new run starts closed.
+    #[gpui_kit::test]
+    fn the_section_starts_closed_and_the_heading_toggles_it(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &["gamma.md", "alpha.md"]);
+        drive(&rt, cx, |cx| shown(&started, cx).len() == 2);
+        let gamma = cx.read(|cx| {
+            let files = started.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).pins()[0].path.clone()
+        });
+        assert!(!is_open(&started, cx));
+        assert!(drawn(&started, FILES_PINNED_TOGGLE_ID, cx));
+        assert!(!drawn(&started, files_pinned_row_id(&gamma), cx));
+        assert!(!drawn(&started, FILES_PINNED_MANAGE_ID, cx));
+
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        assert!(is_open(&started, cx));
+        assert!(drawn(&started, files_pinned_row_id(&gamma), cx));
+        assert!(drawn(&started, FILES_PINNED_MANAGE_ID, cx));
+
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        assert!(!is_open(&started, cx));
+        assert!(!drawn(&started, files_pinned_row_id(&gamma), cx));
+    }
+
+    /// The chevrons of the heading are bundled: a missing SVG paints an
+    /// empty button.
+    #[test]
+    fn the_heading_chevrons_are_bundled() {
+        use crate::assets::AppAssets;
+        use gpui_kit::AssetSource as _;
+        for icon in [
+            gpui_kit::assets::IconName::ChevronDown,
+            gpui_kit::assets::IconName::ChevronRight,
+        ] {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
+    /// The rows ease open and shut: part way, the frame is between nothing
+    /// and its full height; at rest it is exactly the rows, none cut off.
+    /// Closed, no row is drawn.
+    #[gpui_kit::test]
+    fn the_rows_ease_open_and_shut(cx: &mut TestAppContext) {
+        use std::time::Duration;
+
+        use gpui_kit::test::TestWindowExt as _;
+
+        use super::super::files::FILES_PINNED_ROWS_ID;
+        use super::super::start_tests::{open_started_motion, vault_start};
+        use super::{FirstNote, NOTES, path, test_vault};
+        let rt = runtime();
+        let _guard = rt.enter();
+        let v = rt.block_on(test_vault(NOTES, &[]));
+        for p in ["gamma.md", "alpha.md"] {
+            rt.block_on(v.vault.toggle_pinned_note(&path(p))).unwrap();
+        }
+        let started = open_started_motion(
+            cx,
+            vault_start(&v, FirstNote::Note(path("alpha.md"))),
+            v.settings.clone(),
+            false,
+            false,
+        );
+        drive(&rt, cx, |cx| {
+            shown(&started, cx).len() == 2
+                && started.text(cx) == NOTES[0].1
+                && !started.indexing(cx)
+        });
+        let frame = |cx: &mut TestAppContext| -> f32 {
+            cx.update_window(started.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .find(FILES_PINNED_ROWS_ID)
+                    .bounds()
+                    .size
+                    .height
+                    .into()
+            })
+            .unwrap()
+        };
+        let step = |ms: u64, cx: &mut TestAppContext| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        assert_eq!(frame(cx), 0.0, "closed at the start");
+
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        step(60, cx);
+        let part = frame(cx);
+        step(1000, cx);
+        let full = frame(cx);
+        assert!(full > 0.0, "open at rest");
+        assert!(0.0 < part && part < full, "part way: {part} of {full}");
+        let last = cx.read(|cx| {
+            let files = started.workspace.read(cx).files.clone().unwrap();
+            files.read(cx).pins()[1].path.clone()
+        });
+        let last_bottom: f32 = cx
+            .update_window(started.handle, |_, window, cx| {
+                window.render_frame(cx);
+                let b = window.find(files_pinned_row_id(&last)).bounds();
+                (b.origin.y + b.size.height).into()
+            })
+            .unwrap();
+        let frame_bottom: f32 = cx
+            .update_window(started.handle, |_, window, _| {
+                let b = window.find(FILES_PINNED_ROWS_ID).bounds();
+                (b.origin.y + b.size.height).into()
+            })
+            .unwrap();
+        assert!(last_bottom <= frame_bottom + 0.5, "no row is cut off");
+
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        step(60, cx);
+        let closing = frame(cx);
+        assert!(0.0 < closing && closing < full, "closing: {closing}");
+        step(1000, cx);
+        assert_eq!(frame(cx), 0.0);
+        assert!(!drawn(&started, files_pinned_row_id(&last), cx));
+    }
+
+    /// `Manage` opens the dialog.
+    #[gpui_kit::test]
+    fn manage_opens_the_dialog(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, started) = started_with(cx, &rt, &["alpha.md"]);
+        drive(&rt, cx, |cx| shown(&started, cx).len() == 1);
+        assert!(
+            !drawn(&started, FILES_PINNED_MANAGE_ID, cx),
+            "closed: no link"
+        );
+        click(&started, FILES_PINNED_TOGGLE_ID, cx);
+        click(&started, FILES_PINNED_MANAGE_ID, cx);
+        cx.run_until_parked();
+        assert_eq!(started.shown_modal(cx), Some(ModalKind::PinnedNotes));
+    }
+}

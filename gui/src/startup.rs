@@ -16,6 +16,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
+use gpui_kit::SharedString;
 use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
@@ -99,6 +100,9 @@ pub(crate) struct EmptyState {
     pub(crate) detail: String,
     /// Something went wrong (as opposed to nothing set up yet).
     pub(crate) failed: bool,
+    /// Actions worth knowing, each as a label and its chord, shown under the
+    /// title in place of the detail (the editor group with no note).
+    pub(crate) shortcuts: Vec<(&'static str, SharedString)>,
 }
 
 /// The editor area's empty state for `start`, `None` when there is a vault.
@@ -108,11 +112,13 @@ pub(crate) fn empty_state(start: &Start) -> Option<EmptyState> {
             title: "No workspace configured".into(),
             detail: "The setup assistant makes one.".into(),
             failed: false,
+            shortcuts: Vec::new(),
         }),
         Start::OpenFailed(reason) => Some(EmptyState {
             title: "Couldn't open the workspace".into(),
             detail: reason.clone(),
             failed: true,
+            shortcuts: Vec::new(),
         }),
         Start::Vault(_) => None,
     }

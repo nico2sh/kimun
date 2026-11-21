@@ -65,7 +65,8 @@ pub(crate) const PINNED_UNPIN_ID: &str = "pinned-unpin";
 pub(crate) const PINNED_CLOSE_ID: &str = "pinned-close";
 
 /// What the dialog says with no pins (once the first read has landed).
-pub(crate) const EMPTY_TEXT: &str = "No pinned notes yet — leader m p pins the open note";
+pub(crate) const EMPTY_TEXT: &str =
+    "No pinned notes yet. Use Pin note in the note menu, or leader m p.";
 
 /// A pin's row id, by its note.
 pub(crate) fn pinned_row_id(path: &VaultPath) -> SharedString {
@@ -205,6 +206,11 @@ impl PinnedNotesDialog {
                     Outcome::Stale(text) => workspace.flash(text.clone(), cx),
                     Outcome::Failed(text) => workspace.flash_error(text.clone(), cx),
                 })
+                .ok();
+            // The Files pinned section follows each edit made here, and
+            // only an edit: opening the dialog changes nothing.
+            workspace
+                .update(cx, |workspace, cx| workspace.reload_pins(cx))
                 .ok();
             this.update(cx, |dialog, cx| dialog.landed(generation, rows, cx))
                 .ok();

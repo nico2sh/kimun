@@ -179,7 +179,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::empty::{
-    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+    Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{Icon, WindowExt as _, tooltip::Tooltip};
@@ -238,7 +238,7 @@ use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
 #[cfg(test)]
-pub(crate) use find::COLLECTION_ICON;
+pub(crate) use find::{COLLECTION_ICON, SAVED_ICON};
 #[cfg(test)]
 pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
@@ -430,6 +430,8 @@ pub(crate) fn slot_content_id(view: DrawerView) -> SharedString {
 
 /// The element id of the editor Panel's empty state.
 pub(crate) const EMPTY_STATE_ID: &str = "empty-state";
+/// An empty group's action row, keyed by its label (`empty-shortcut:Quick note`).
+pub(crate) const EMPTY_SHORTCUT_ID: &str = "empty-shortcut";
 
 /// The window's root view. See the module docs.
 pub(crate) struct Workspace {
@@ -722,6 +724,16 @@ pub(crate) struct Workspace {
     session: session::SessionHost,
 }
 
+/// The empty editor group's list, in order: what a user with no note open
+/// can do, and the action whose chord does it. The chord is the feature, so
+/// the list shows it ([`ChordLabels::shortcuts`]).
+pub(crate) const EMPTY_GROUP_SHORTCUTS: [(&str, ActionShortcuts); 4] = [
+    ("Find or create a note", ActionShortcuts::OpenNote),
+    (files::JOURNAL_LABEL, ActionShortcuts::NewJournal),
+    (files::QUICK_NOTE_LABEL, ActionShortcuts::QuickNote),
+    ("Command palette", ActionShortcuts::OpenCommandPalette),
+];
+
 /// The labels the window derives from the active keymap's chords.
 struct ChordLabels {
     /// The `Leader` chord (`Ctrl+Shift+B`), or a stand-in when unbound.
@@ -732,6 +744,9 @@ struct ChordLabels {
     follow_link: Option<KeyInput>,
     /// What the Footer says while zoomed: `Zoomed · {chord} to restore`.
     zoom_hint: SharedString,
+    /// The empty editor group's list: what to do with no note open, each
+    /// with the chord that does it. An action with no chord is left out.
+    shortcuts: Vec<(&'static str, SharedString)>,
 }
 
 impl ChordLabels {
@@ -743,6 +758,12 @@ impl ChordLabels {
                 Some(finder) => format!("Press {finder} to find or create one."),
                 None => "Open one from FILES.".to_string(),
             },
+            shortcuts: EMPTY_GROUP_SHORTCUTS
+                .iter()
+                .filter_map(|(label, action)| {
+                    chord(action.clone()).map(|chord| (*label, SharedString::from(chord)))
+                })
+                .collect(),
             follow_link: keymap::active(cx).chord_for(&ActionShortcuts::FollowLink),
             zoom_hint: match chord(ActionShortcuts::ToggleZoom) {
                 Some(zoom) => format!("Zoomed · {zoom} to restore").into(),
@@ -3314,6 +3335,7 @@ impl Workspace {
         if let Some((_, gone)) = self.note_gone.as_ref().filter(|(g, _)| *g == group) {
             return Some(gone.clone());
         }
+        let mut idle = false;
         let (title, detail) = if self.restore_pending && group == self.layout.active_group() {
             (
                 "Opening your last note…",
@@ -3322,12 +3344,20 @@ impl Workspace {
         } else if host.is_switching() {
             ("Opening the note…", "")
         } else {
+            idle = true;
             ("No note open", self.chord_labels.no_note_hint.as_str())
         };
         Some(EmptyState {
             title: title.into(),
             detail: detail.into(),
             failed: false,
+            // Only the idle empty group teaches: not an opening, not a note
+            // that went away.
+            shortcuts: if idle {
+                self.chord_labels.shortcuts.clone()
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -3560,7 +3590,7 @@ impl Workspace {
             .test_support()
             .role(Role::Group)
             .aria_label(SharedString::from(empty.title.clone()))
-            .aria_description(SharedString::from(empty.detail.clone()))
+            .aria_description(SharedString::from(empty_description(empty)))
             .flex()
             .flex_1()
             .min_h_0()
@@ -3577,14 +3607,65 @@ impl Workspace {
                                     .child(Icon::new(icon).text_color(tint)),
                             )
                             .title(EmptyTitle::new().child(empty.title.clone()))
-                            .description(
-                                EmptyDescription::new()
-                                    .text_color(theme::muted(&theme::current(cx)))
-                                    .child(empty.detail.clone()),
-                            ),
-                    ),
+                            // The list replaces the detail: it says the same
+                            // first line, with the chord of each action.
+                            .when(empty.shortcuts.is_empty(), |header| {
+                                header.description(
+                                    EmptyDescription::new()
+                                        .text_color(theme::muted(&theme::current(cx)))
+                                        .child(empty.detail.clone()),
+                                )
+                            }),
+                    )
+                    .when(!empty.shortcuts.is_empty(), |empty_view| {
+                        empty_view.content(shortcut_list(&empty.shortcuts, cx))
+                    }),
             )
     }
+}
+
+/// What a screen reader says under an empty state's title: the detail, or,
+/// when the state lists actions, each action with its chord (the list is
+/// what the screen shows in place of the detail).
+fn empty_description(empty: &EmptyState) -> String {
+    if empty.shortcuts.is_empty() {
+        return empty.detail.clone();
+    }
+    empty
+        .shortcuts
+        .iter()
+        .map(|(label, chord)| format!("{label}: {chord}"))
+        .collect::<Vec<_>>()
+        .join(". ")
+}
+
+/// The empty group's actions: a label at the left and its chord at the
+/// right, in the muted tone, with no boxes (the text stays the main thing).
+fn shortcut_list(shortcuts: &[(&'static str, SharedString)], cx: &App) -> EmptyContent {
+    let theme = theme::current(cx);
+    let t = &*theme;
+    shortcuts
+        .iter()
+        .fold(EmptyContent::new().gap_1(), |list, (label, chord)| {
+            list.child(
+                div()
+                    .id(SharedString::from(format!("{EMPTY_SHORTCUT_ID}:{label}")))
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .w_full()
+                    .text_sm()
+                    .child(div().text_color(theme::foreground(t)).child(*label))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::muted(t))
+                            .child(chord.clone()),
+                    ),
+            )
+        })
 }
 
 impl Focusable for Workspace {

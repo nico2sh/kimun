@@ -35,7 +35,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Icon;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
     Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MovePageDown,
     MovePageUp, MoveUp,
@@ -54,9 +54,11 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::file_ops::{self, NewEntryKind};
 use kimun_notes::logic::files::{Activation, FileListEntry, FilesModel};
 use kimun_notes::logic::layout::Panel;
+use kimun_notes::logic::message::PinnedRow;
 use kimun_notes::logic::message::SortTarget;
 use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::pinned;
 use kimun_notes::logic::session::Saved;
 use kimun_notes::logic::sort::{SortField, SortOrder, SortState};
 use kimun_notes::settings::AppSettings;
@@ -67,9 +69,11 @@ use super::drawer_list::page_move;
 #[cfg(test)]
 use super::drawer_list::page_of;
 use super::file_dialogs::FileOpKind;
+use super::motion::HeightFollow;
 use super::query_field::query_field_with;
 use super::sort::{chip_label, sort_chip};
 use crate::keymap;
+use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -81,6 +85,27 @@ pub(crate) const FILES_SORT_ID: &str = "files-sort";
 pub(crate) const FILES_NEW_ID: &str = "files-new";
 pub(crate) const FILES_NEW_NOTE_ID: &str = "files-new-note";
 pub(crate) const FILES_NEW_DIRECTORY_ID: &str = "files-new-directory";
+pub(crate) const FILES_NEW_JOURNAL_ID: &str = "files-new-journal";
+pub(crate) const FILES_NEW_QUICK_NOTE_ID: &str = "files-new-quick-note";
+/// The `New` button's tooltip and accessibility label.
+pub(crate) const NEW_MENU_LABEL: &str = "New note, directory, journal or quick note";
+/// The `New` menu's journal and quick note rows.
+pub(crate) const JOURNAL_LABEL: &str = "Today's journal";
+pub(crate) const QUICK_NOTE_LABEL: &str = "Quick note";
+
+/// The pinned section: its heading, its `Manage` link and a row (keyed by
+/// the pin's path).
+pub(crate) const FILES_PINNED_ID: &str = "files-pinned";
+pub(crate) const FILES_PINNED_MANAGE_ID: &str = "files-pinned-manage";
+pub(crate) const FILES_PINNED_TOGGLE_ID: &str = "files-pinned-toggle";
+/// The clipping frame the pinned rows open and close in.
+pub(crate) const FILES_PINNED_ROWS_ID: &str = "files-pinned-rows";
+pub(crate) fn files_pinned_row_id(path: &VaultPath) -> SharedString {
+    format!("files-pinned-row:{path}").into()
+}
+/// A pinned row's height, in rems: one line (the section is a short list
+/// above the folder's rows, not a listing of its own).
+const PINNED_ROW_REMS: f32 = 1.75;
 
 /// A note row's height, in rems: two lines of small text and their gap
 /// (a title over its filename). Every FILES row has it (the list is
@@ -137,6 +162,11 @@ pub(crate) const ICONS: [IconName; 7] = [
 pub(crate) enum FilesEvent {
     /// Open this note in the editor and give it the keyboard.
     Open(VaultPath),
+    /// The `New` menu's journal and quick note rows: run what the chord
+    /// runs.
+    Command(ActionShortcuts),
+    /// The pinned section's `Manage` link: the pinned notes dialog.
+    ManagePins,
     /// The `+` menu or a `Create:` row asked for the new note / directory
     /// dialog; `initial` is the name the row offered.
     NewEntry {
@@ -164,6 +194,20 @@ pub(crate) struct FilesPane {
     tx: AppTx,
     /// The workspace's name: the breadcrumb's root.
     root_name: SharedString,
+    vault: Arc<NoteVault>,
+    /// The vault's pinned notes in the user's order, as the last read left
+    /// them: the pinned section's rows. Empty until the first read lands,
+    /// and the section is drawn only while this is not empty.
+    pins: Vec<PinnedRow>,
+    /// The newest pin read started: older ones are dropped.
+    pins_gen: u64,
+    /// The pinned section shows its rows. Starts closed in every run and is
+    /// not saved: a user who wants the rows opens them each time.
+    pins_open: bool,
+    /// The height of the pinned rows, in rems, easing to its target (every
+    /// row, or none while closed) at the Quick speed; a jump under reduced
+    /// motion.
+    pins_height: HeightFollow,
     /// The folder the counts belong to and the notes under each of its
     /// child folders (a folder with none is absent).
     note_counts: (VaultPath, NoteCounts),
@@ -225,7 +269,12 @@ impl FilesPane {
             }
         });
         Self {
-            model: FilesModel::new(vault, settings),
+            model: FilesModel::new(vault.clone(), settings),
+            vault,
+            pins: Vec::new(),
+            pins_gen: 0,
+            pins_open: false,
+            pins_height: HeightFollow::new(),
             filter,
             scroll: UniformListScrollHandle::new(),
             tx,
@@ -236,6 +285,50 @@ impl FilesPane {
             counts_inbox: Arc::default(),
             _filter_events: filter_events,
         }
+    }
+
+    /// Read the pinned notes again, off the UI thread (a pin was made,
+    /// moved or removed, or a note a pin names was renamed, moved or
+    /// deleted). Only the newest read lands.
+    pub(crate) fn reload_pins(&mut self, cx: &mut Context<Self>) {
+        self.pins_gen += 1;
+        let generation = self.pins_gen;
+        let vault = self.vault.clone();
+        let reading = tokio::spawn(async move { pinned::load(&vault).await });
+        cx.spawn(async move |this, cx| {
+            let rows = tasks::joined(reading).await;
+            this.update(cx, |pane, cx| {
+                // A failed read keeps the rows on screen: the section is a
+                // convenience, and the dialog says why when it fails.
+                if generation == pane.pins_gen
+                    && let Ok(rows) = rows
+                    && rows != pane.pins
+                {
+                    pane.pins = rows;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Open or close the pinned section's rows.
+    fn toggle_pins(&mut self, cx: &mut Context<Self>) {
+        self.pins_open = !self.pins_open;
+        cx.notify();
+    }
+
+    /// Whether the pinned section shows its rows (tests).
+    #[cfg(test)]
+    pub(crate) fn pins_open(&self) -> bool {
+        self.pins_open
+    }
+
+    /// The pinned notes shown (tests).
+    #[cfg(test)]
+    pub(crate) fn pins(&self) -> &[PinnedRow] {
+        &self.pins
     }
 
     /// The workspace was renamed: the breadcrumb's root follows.
@@ -502,6 +595,15 @@ impl FilesPane {
     /// TUI's row effects; the dialogs and the open note follow it in
     /// `file_ops`).
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
+        // Core rewrites the pin of a note that was renamed or moved, and
+        // drops the pin of one that was deleted: only these can change the
+        // pinned section.
+        if matches!(
+            op,
+            FileOp::Deleted(_) | FileOp::Moved { .. } | FileOp::Renamed { .. }
+        ) {
+            self.reload_pins(cx);
+        }
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {
                 self.changed_in(&[&path.get_parent_path().0], true, cx);
@@ -677,18 +779,22 @@ impl FilesPane {
             .icon(IconName::Plus)
             .label("New")
             .small()
-            .accessibility_label("New note or directory")
+            .accessibility_label(NEW_MENU_LABEL)
             .tooltip(super::chrome::tooltip_with_chord(
-                "New note or directory",
+                NEW_MENU_LABEL,
                 &ActionShortcuts::NewNote,
                 cx,
             ))
             .dropdown_menu(move |menu, _, _| {
-                let item = |kind: NewEntryKind, id: &'static str, action: ActionShortcuts| {
+                let item = |title: &'static str,
+                            id: &'static str,
+                            action: ActionShortcuts,
+                            event: FilesEvent| {
                     let owner = owner.clone();
+                    let hint_action = action.clone();
                     PopupMenuItem::element(move |_, cx| {
                         let theme = theme::current(cx);
-                        let hint = keymap::chord_label(cx, &action);
+                        let hint = keymap::chord_label(cx, &hint_action);
                         div()
                             .id(id)
                             .test_support()
@@ -697,7 +803,7 @@ impl FilesPane {
                             .justify_between()
                             .gap_4()
                             .w_full()
-                            .child(kind.title())
+                            .child(title)
                             .children(hint.map(|chord| {
                                 div()
                                     .text_xs()
@@ -709,27 +815,40 @@ impl FilesPane {
                         // After the menu has given the keyboard back, so the
                         // dialog it opens returns it there too.
                         let owner = owner.clone();
+                        let event = event.clone();
                         window.defer(cx, move |_, cx| {
-                            owner
-                                .update(cx, |_, cx| {
-                                    cx.emit(FilesEvent::NewEntry {
-                                        kind,
-                                        initial: None,
-                                    })
-                                })
-                                .ok();
+                            owner.update(cx, |_, cx| cx.emit(event)).ok();
                         });
                     })
                 };
+                let entry = |kind: NewEntryKind| FilesEvent::NewEntry {
+                    kind,
+                    initial: None,
+                };
                 menu.item(item(
-                    NewEntryKind::Note,
+                    NewEntryKind::Note.title(),
                     FILES_NEW_NOTE_ID,
                     ActionShortcuts::NewNote,
+                    entry(NewEntryKind::Note),
                 ))
                 .item(item(
-                    NewEntryKind::Directory,
+                    NewEntryKind::Directory.title(),
                     FILES_NEW_DIRECTORY_ID,
                     ActionShortcuts::NewDirectory,
+                    entry(NewEntryKind::Directory),
+                ))
+                .separator()
+                .item(item(
+                    JOURNAL_LABEL,
+                    FILES_NEW_JOURNAL_ID,
+                    ActionShortcuts::NewJournal,
+                    FilesEvent::Command(ActionShortcuts::NewJournal),
+                ))
+                .item(item(
+                    QUICK_NOTE_LABEL,
+                    FILES_NEW_QUICK_NOTE_ID,
+                    ActionShortcuts::QuickNote,
+                    FilesEvent::Command(ActionShortcuts::QuickNote),
                 ))
             })
     }
@@ -782,6 +901,124 @@ impl FilesPane {
             Some(path) => with_file_menu(row, path, cx.entity().downgrade(), FilesEvent::FileOp),
             None => row.into_any_element(),
         }
+    }
+
+    /// The pinned section: a quiet heading that opens and closes it (closed
+    /// at the start of every run; the count shows while closed), and, open,
+    /// a `Manage` link and a short row for each pin. Drawn only while
+    /// something is pinned and the filter is empty (a filter is for finding in the folder). A click opens
+    /// the note, as a click on a folder row does; a note missing on disk is
+    /// dimmed and does nothing. The keyboard has the leader's digits and
+    /// the dialog.
+    fn render_pins(&self, height: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.pins.is_empty() || !self.query(cx).is_empty() {
+            return None;
+        }
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let open = self.pins_open;
+        // Rows are drawn while open and while they still close (the frame
+        // clips them to its height).
+        let drawn = open || height > 0.0;
+        let rows = self
+            .pins
+            .iter()
+            .enumerate()
+            .filter(|_| drawn)
+            .map(|(index, pin)| {
+                let name = pin.path.get_clean_name();
+                let color = if pin.missing {
+                    theme::muted(t)
+                } else {
+                    theme::foreground(t)
+                };
+                let label: SharedString = if pin.missing {
+                    format!("{} {name} (missing)", index + 1).into()
+                } else {
+                    format!("{} {name}", index + 1).into()
+                };
+                let number = div()
+                    .text_xs()
+                    .text_color(theme::muted(t))
+                    .child((index + 1).to_string());
+                let frame = lane_row(
+                    files_pinned_row_id(&pin.path),
+                    label,
+                    false,
+                    PINNED_ROW_REMS,
+                    Some(number.into_any_element()),
+                    [ellipsis(name).text_color(color).into_any_element()],
+                    t,
+                );
+                let path = pin.path.clone();
+                with_click_cursor(frame, ClickPolicy::Open, !pin.missing)
+                    .test_support()
+                    .when(!pin.missing, |row| {
+                        row.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            cx.emit(FilesEvent::Open(path.clone()))
+                        }))
+                    })
+            });
+        let (chevron, tip) = if open {
+            (IconName::ChevronDown, "Hide the pinned notes")
+        } else {
+            (IconName::ChevronRight, "Show the pinned notes")
+        };
+        // Closed, the heading carries the count: it says what is behind it.
+        let title = if open {
+            "Pinned".to_string()
+        } else {
+            format!("Pinned ({})", self.pins.len())
+        };
+        let heading = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .child(
+                Button::new(FILES_PINNED_TOGGLE_ID)
+                    .ghost()
+                    .xsmall()
+                    .icon(chevron)
+                    .label(title)
+                    .tooltip(tip)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pins(cx))),
+            )
+            .when(open, |heading| {
+                heading.child(
+                    Button::new(FILES_PINNED_MANAGE_ID)
+                        .ghost()
+                        .xsmall()
+                        .label("Manage")
+                        .tooltip("Reorder or unpin the pinned notes")
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FilesEvent::ManagePins)),
+                        ),
+                )
+            });
+        Some(
+            div()
+                .id(FILES_PINNED_ID)
+                .test_support()
+                .role(Role::List)
+                .aria_label("Pinned notes")
+                .flex()
+                .flex_none()
+                .flex_col()
+                .pb_1()
+                .child(heading)
+                .child(
+                    div()
+                        .id(FILES_PINNED_ROWS_ID)
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .h(rems(height))
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
     }
 
     /// What the list area says when it has no row to show.
@@ -1178,7 +1415,13 @@ impl Focusable for FilesPane {
 }
 
 impl Render for FilesPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pins_target = if self.pins_open {
+            self.pins.len() as f32 * PINNED_ROW_REMS
+        } else {
+            0.0
+        };
+        let pins_height = self.pins_height.sample(pins_target, window, cx);
         let (count, selected, loading) = self.model.core().map_or((0, None, false), |core| {
             (core.visible_len(), core.selected(), core.is_loading())
         });
@@ -1256,6 +1499,7 @@ impl Render for FilesPane {
             }))
             .child(self.render_breadcrumb(cx))
             .child(self.render_filter(cx))
+            .children(self.render_pins(pins_height, cx))
             .child(
                 div()
                     .id("files-rows")
@@ -1287,7 +1531,16 @@ impl Workspace {
         let name = SharedString::from(name);
         let pane = cx.new(|cx| FilesPane::new(vault, name, settings, tx, window, cx));
         self._files_events = Some(cx.subscribe_in(&pane, window, Self::on_files_event));
+        pane.update(cx, |pane, cx| pane.reload_pins(cx));
         self.files = Some(pane);
+    }
+
+    /// The pins changed (the pinned dialog edited them, a leader pin ran):
+    /// the Files pinned section reads them again.
+    pub(crate) fn reload_pins(&mut self, cx: &mut Context<Self>) {
+        if let Some(files) = self.files.as_ref() {
+            files.update(cx, |pane, cx| pane.reload_pins(cx));
+        }
     }
 
     fn on_files_event(
@@ -1304,6 +1557,10 @@ impl Workspace {
             }
             FilesEvent::NewEntry { kind, initial } => {
                 self.open_new_entry_here(*kind, initial.clone(), window, cx)
+            }
+            FilesEvent::ManagePins => self.open_pinned_notes(window, cx),
+            FilesEvent::Command(action) => {
+                self.workspace_command(action, None, window, cx);
             }
             FilesEvent::OpenAttachment(path) => {
                 self.focus_panel(Panel::Editor, window, cx);

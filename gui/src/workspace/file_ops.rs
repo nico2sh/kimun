@@ -713,6 +713,7 @@ impl Workspace {
                 title,
                 detail,
                 failed: false,
+                shortcuts: Vec::new(),
             },
         ));
         if let Some(files) = self.files.clone() {
